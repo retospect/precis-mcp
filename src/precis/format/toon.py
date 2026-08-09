@@ -1,7 +1,7 @@
 """TOON (Token-Oriented Object Notation) serialiser / deserialiser.
 
 The format we emit is the flat homogeneous-rows shape from
-`docs/design/b10-toon-output.md` §"Format spec":
+``b10-toon-output`` (git-only) §"Format spec":
 
     col1<TAB>col2<TAB>col3
     val1<TAB>val2<TAB>val3
@@ -41,7 +41,7 @@ from our own dumps. Round-trip is best-effort for cells we
 control: any cell starting with a literal ``"`` is the only
 known shape that ``load`` cannot reverse, since the leading
 quote is indistinguishable from a wrapper open. That trade is
-intentional — see ``docs/design/b10-toon-output.md``.
+intentional — see ``b10-toon-output`` (git-only).
 
 The implementation is pure Python with no external dependency.
 """

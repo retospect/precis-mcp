@@ -761,7 +761,7 @@ hub, so a hub's own evidence never resurfaces as a false gap. A topic
 precision gate keeps candidates on-domain when the cited papers carry
 `topic:` tags (a nanobuds review won't surface nanoribbon/graphene
 neighbours) — a no-op when they don't. Full contract:
-`docs/design/source-backfill.md`.
+`the `precis.backfill` package docstring`.
 
 ## Cite a paper we don't have yet — request it, don't fake it
 

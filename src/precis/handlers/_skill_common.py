@@ -8,7 +8,7 @@ The redesign adds list fields (``invokes_personas:``) and adds
 validation on ``flavor:``, so the parser graduates into a typed
 :class:`SkillFrontmatter` dataclass.
 
-See ``docs/design/docs-and-skills-redesign.md`` decision 7 (flavour
+See ``docs/backlog/docs-and-skills-redesign.md`` decision 7 (flavour
 discriminator), decision 9 (runbook orchestration), decision 13
 (availability gating).
 """

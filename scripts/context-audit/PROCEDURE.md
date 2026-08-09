@@ -4,7 +4,7 @@ Mechanical, step-by-step. Run this occasionally (it isn't a gate — nothing
 blocks on it) to check whether the contexts precis assembles for LLMs are
 actually good, and to surface classifier/pre-worker gaps as a distinct,
 queryable signal. Source of truth for *why* each context is in scope and the
-rubric being applied: `docs/design/context-quality-eval.md` (catalog +
+rubric being applied: `docs/backlog/context-quality-eval.md` (catalog +
 Section 2 rubric) and `RUBRIC.md` (the executable form of that rubric) in
 this directory.
 
@@ -103,10 +103,10 @@ Once every artifact in the manifest has a verdict:
   dry-run entry doesn't exist yet) — these are gaps in the *harness*, not
   findings about precis itself; mention them so the next run's coverage is
   visible, but don't file a gripe for a harness gap unless it's durable
-  (file a note in `docs/design/context-quality-eval.md`'s own tracking
+  (file a note in `docs/backlog/context-quality-eval.md`'s own tracking
   instead, or ask the coordinating agent).
 - If this was a from-scratch or renewed pass, consider whether
-  `docs/design/context-quality-eval.md`'s catalog (Section 1) still matches
+  `docs/backlog/context-quality-eval.md`'s catalog (Section 1) still matches
   what `capture.py`'s registry actually samples — a catalog row with no
   corresponding sampler, or a sampler with no catalog row, is itself worth a
   one-line gripe (dimension: none of the six — file it as a plain

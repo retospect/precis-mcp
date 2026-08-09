@@ -1,5 +1,5 @@
 """Tests for the `quest` kind — the striving above the work (quest layer,
-slice 1, docs/proposals/quest-layer.md).
+slice 1, ``quest-layer`` (git-only)).
 
 Covers: create (emits the embeddable card + STATUS:active), the append-only
 logbook (entry types + deed/tote accounting), the `serves` relation + its

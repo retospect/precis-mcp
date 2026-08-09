@@ -1,5 +1,5 @@
 """Dream PROCESS lens seeds (Part B of
-``docs/design/tool-friction-reflection-and-dreams.md``).
+the friction-reflection design; git holds the full plan).
 
 The dream cycle colours each pass with a **lens** injected into the dream
 prompt's *variable* layer so the same steps come out with a different

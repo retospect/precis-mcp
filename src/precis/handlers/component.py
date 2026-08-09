@@ -1,6 +1,6 @@
 """ComponentHandler — a general procurable-part store: bolts, hoses, pipes,
 beams, gaskets, bearings, adhesives, electronic components
-(docs/proposals/component-kind.md).
+(``component-kind`` (git-only)).
 
 Mirrors ``material``'s star schema (entity + typed registry + sourced value
 fact table, canonical-units-only) but adds a **category dimension**: every
@@ -28,7 +28,7 @@ Two writes share one ``put``, discriminated by whether ``spec=`` is present:
   if it isn't one) and create the ``made-of`` link.
 * ``put(kind='component', id=<parent slug>, contains=<child component ref>,
   qty=<int>=0, ref_designator=...)`` — the assembly tree (BOM edge,
-  docs/proposals/component-assembly-tree.md): ``contains=`` resolves to a
+  ``component-assembly-tree`` (git-only)): ``contains=`` resolves to a
   ``component`` ref; ``qty=0`` removes the edge; ``qty`` omitted on an
   existing edge preserves its current quantity; a cycle (self or transitive
   ancestor) is rejected.
@@ -281,7 +281,7 @@ class ComponentHandler(Handler):
         ``slug`` to ``contains=``. Mirrors ``_put_made_of``'s resolve-then-
         link shape, plus: the cycle guard, and the qty=0-removes /
         qty-omitted-preserves CRUD semantics
-        (docs/proposals/component-assembly-tree.md)."""
+        (``component-assembly-tree`` (git-only))."""
         parent_ref = self.store.get_ref(kind="component", id=slug)
         if parent_ref is None:
             raise NotFound(
@@ -517,7 +517,7 @@ class ComponentHandler(Handler):
     ) -> dict[str, Any]:
         """Mint a fresh ``proposed`` spec when ``spec=`` is unknown, scoped
         to the *writing component's* category (never universal — see
-        ``docs/proposals/component-kind.md``'s resolved "Runtime spec-mint
+        ``component-kind`` (git-only)'s resolved "Runtime spec-mint
         category" decision).
 
         With no explicit ``value_type=``, mirrors

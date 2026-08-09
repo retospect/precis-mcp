@@ -1,6 +1,9 @@
 """briefing_audio — narrate the morning news briefing onto the podcast feed.
 
-The **first automatic producer** on the audio pipe (docs/design/audio-feed.md).
+The **first automatic producer** on the audio pipe — now superseded by the
+combined morning cast (:mod:`precis.workers.cast_audio` folds the news wire
+in at narration time); kept registered but dark so the two can't
+double-publish, and as the reference for a *prose* (non-draft) producer.
 The news briefing (:mod:`precis.workers.briefing`) runs in-process on the *agent*
 worker (melchior) and persists a dated ``briefing-<date>`` ``news`` ref. This pass
 finds the newest briefing ref that has no audio yet and renders its markdown to

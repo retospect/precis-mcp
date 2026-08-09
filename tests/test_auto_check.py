@@ -594,7 +594,7 @@ def test_pass_skips_done_leaves(handler: TodoHandler, store: Store) -> None:
 
 
 # ── all_child_findings_resolved evaluator ────────────────────────────
-# AC #4 (finding-acquisition-mode.md): a lit-hunt todo whose children
+# Acquisition-mode AC #4: a lit-hunt todo whose children
 # are all `acquiring` is NOT resolved (poll-again), same as `tracing`;
 # a todo whose children reached a terminal finding status resolves
 # exactly as before. No code change was needed for the exclusion (any

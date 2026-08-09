@@ -1,11 +1,9 @@
 """sandbox_run — an open-ended coding task in a throwaway container.
 
-Slices 1+2+3+4 of the ``sandbox_run`` design
-(``docs/design/sandbox-run.md``): the mint → claim → launch → poll →
-terminal spine, run by the :mod:`precis.workers.executors.claude_docker`
-executor; ``mode:run`` (design §"Re-run + operationalize" — stage the
-harvested tarball, ``uv sync`` + ``RUN.json.cmd``, no claude/OAuth); and
-``precis_access:read`` (design §"Precis access" — a per-run, token'd,
+The mint → claim → launch → poll → terminal spine, run by the
+:mod:`precis.workers.executors.claude_docker` executor; ``mode:run``
+(stage the harvested tarball, ``uv sync`` + ``RUN.json.cmd``, no
+claude/OAuth); and ``precis_access:read`` (a per-run, token'd,
 read-only MCP callback, gated by ``PRECIS_SANDBOX_READ_MCP`` and built by
 :mod:`precis.workers.executors._sandbox_read_mcp`). Ships **dark** — the
 executor pass is registered only under ``PRECIS_SANDBOX_ENABLED``, so a
@@ -33,7 +31,20 @@ The job_type module is a pure declaration + helpers:
   contract) the executor stages into the run dir (``mode:build`` only —
   ``mode:run`` never gets a prompt).
 
-Trust model (design decisions log): the container runs Claude with a
+Trust model: the executor stages a run dir and mounts it ``/work`` —
+the volume mount is the whole IN/OUT bus. The executor (trusted, DB
+creds) is the only thing touching both the DB and ``/work``; the
+container (untrusted, **no DB creds**) reads/writes only files, so a
+prompt-injected agent can spend its capped tokens and scribble in
+``/work`` but cannot reach the database. Env evaporates (keys ride
+``--env``, never land on ``/work``); deps shrink to ``uv.lock`` (the
+``.venv`` is scratch, never harvested). Executor-user (the
+creds-bearing ``deploy``) ≠ container-user (the locked-down rootless
+``agent_sandbox``), so an escape lands on the latter. A future slurm /
+aws-batch backend is a ``ComputeBackend`` adapter
+({submit, poll, collect, kill}) + a staging location, not a rewrite —
+the poll lifecycle already is the submit→poll shape those need.
+The container runs Claude with a
 **dedicated** long-lived ``CLAUDE_CODE_OAUTH_TOKEN`` (Max, *not*
 ``--bare`` / ``ANTHROPIC_API_KEY``), no DB creds, cgroup-capped, never a
 GPU. melchior is excluded (it holds OAuth / gateway / creds — an escape
@@ -133,7 +144,7 @@ DESCRIPTION: str = (
     "container on an agent_sandbox_host and keep minimal forensics. "
     "precis_access:read (mode:build only) gives it a per-run, token'd, "
     "read-only MCP callback when PRECIS_SANDBOX_READ_MCP=1. Registered "
-    "only under PRECIS_SANDBOX_ENABLED. See docs/design/sandbox-run.md."
+    "only under PRECIS_SANDBOX_ENABLED."
 )
 
 
@@ -152,9 +163,9 @@ def _sandbox_hosts() -> frozenset[str]:
 
 
 def read_mcp_enabled() -> bool:
-    """Ops capability flag for ``precis_access:read`` (design §"precis
-    serve gains an optional network transport" + the read-only MCP
-    callback). Default OFF (fail-closed) — reads
+    """Ops capability flag for ``precis_access:read`` (``precis serve``'s
+    optional network transport + the read-only MCP callback).
+    Default OFF (fail-closed) — reads
     ``PRECIS_SANDBOX_READ_MCP`` (``1``/``true``/``yes``).
     """
     return os.environ.get("PRECIS_SANDBOX_READ_MCP", "").strip().lower() in (

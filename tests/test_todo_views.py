@@ -261,7 +261,7 @@ def test_ask_user_skips_done(handler: TodoHandler) -> None:
 def test_asking_reto_alias_removed(handler: TodoHandler) -> None:
     """The deprecated ``view='asking-reto'`` alias was removed
     (2026-06-19) — it is now an unknown view, not a silent fall-through
-    to ask-user. See docs/design/user-identity-and-ask-routing.md."""
+    to ask-user. See docs/backlog/user-identity-and-ask-routing.md."""
     from precis.errors import Unsupported
 
     with pytest.raises(Unsupported, match="unknown view"):

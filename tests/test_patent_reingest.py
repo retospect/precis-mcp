@@ -3,7 +3,7 @@
 
 Drives ``ingest_patent(force=True)`` over existing patents so their
 claim blocks pick up the slice-1 ``patent_block`` markers
-(docs/design/patent-authoring-loop.md). Uses ``FakeOpsClient`` (no
+(docs/backlog/patent-authoring-loop.md). Uses ``FakeOpsClient`` (no
 network) + the ephemeral ``store`` fixture.
 """
 

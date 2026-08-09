@@ -2,7 +2,7 @@
 
 A held paper's PDF lives at ``<root>/<letter>/<cite_key>.pdf`` where
 ``letter`` is the lower-cased first ASCII-alnum char of the cite_key (else
-``_``), the layout described in ``docs/design/pip-merge.md`` and laid down
+``_``), the layout described in ``pip-merge`` (git-only) and laid down
 by ``precis watch``. This convention used to be re-derived in three places
 (``cli.watch``, ``ingest.remediate``, the web PDF resolver); they now all
 call :func:`corpus_pdf_dest` so the shard math lives once.

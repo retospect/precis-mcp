@@ -1,7 +1,7 @@
 """Rung 3a of the paper-writing pipeline — the whole-draft review fanout
-(docs/design/paper-writing-pipeline.md §"Review — the memoized approval
-ledger"; incremental re-check + scope + document-altitude lens added by
-``docs/proposals/smartdraft-review-status-ui.md``).
+(docs/backlog/paper-writing-pipeline.md §"Review — the memoized approval
+ledger"; the review-status UI work added incremental re-check + scope +
+the document-altitude lens).
 
 :mod:`precis.quest.weave_review`'s ``mint_weave_reviews`` mints review-
 todos for *one just-woven section* across the two per-weave lenses
@@ -25,9 +25,9 @@ design doc's persona table — routed to ``llm_tier='opus'``
 (``Tier.FRONTIER`` in ``utils/llm/router.py``; the same value
 ``workers/deep_review.py`` and the dispatcher's auto-run-signal
 predicate resolve for the opus rung). ``toc`` (the document-altitude
-lens, smartdraft-review-status-ui item 10) is also ``opus``.
+lens) is also ``opus``.
 
-**Lens × chunk-kind granularity** (smartdraft-review-status-ui item 2):
+**Lens × chunk-kind granularity**:
 ``flow``/``cites`` mint on **prose chunks only**
 (``store.PROSE_CHUNK_KINDS`` — paragraph/aside/callout/claim, never
 equations, tables, headings, or terms); ``structure``/``adversarial``

@@ -1,5 +1,5 @@
 """End-of-run tool-friction reflection (Part A of
-``docs/design/tool-friction-reflection-and-dreams.md``).
+the friction-reflection design; git holds the full plan).
 
 Every *eligible* agentic ``claude -p`` run can be asked, at the very
 end, whether the MCP surface fought it — and to file one grounded

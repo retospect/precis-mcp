@@ -8,7 +8,7 @@
      scan). Replaces the in-browser Play CDN, which warns in production and is
      slower on first paint. See tailwind.config.js. #}
   <link rel="stylesheet" href="/static/tailwind.css" />
-  {# Vendored KaTeX (docs/proposals/smartdraft-claim-ux.md slice 1 item 2) —
+  {# Vendored KaTeX (the claim-page math-rendering work) —
      self-hosted like tailwind.css/pdf.js above, no runtime CDN fetch
      (tailnet-only deployment). Renders math ONLY inside an opt-in
      ``.tex-scope`` container (see the init script near the end of body) —
@@ -26,8 +26,8 @@
   <div class="min-h-full">
     <header class="bg-slate-900 text-slate-100">
       <div class="mx-auto max-w-6xl px-4">
-        {# Nav, by attention priority (docs/proposals/web-ui-rationalization.md
-           "Target information architecture"; see also precis_web.nav):
+        {# Nav, by attention priority (the rationalized target information
+           architecture; see also precis_web.nav):
              • Daily — daily-driver kinds, always visible, left.
              • Browse ▾ — the corpus look-up long tail (Drive's five
                standalone kind-specific readers), behind a dropdown.
@@ -248,7 +248,7 @@
   </script>
   <script>
     // KaTeX auto-render, scoped to opt-in ``.tex-scope`` containers
-    // (docs/proposals/smartdraft-claim-ux.md slice 1 item 2). Delimiters
+    // (the claim-page math-rendering work). Delimiters
     // cover both the ``$…$``/``$$…$$`` a paper's markdown chunk text uses
     // and the ``\(…\)``/``\[…\]`` a LaTeX-imported passage may still carry.
     // Re-run on ``htmx:afterSwap`` too, so content an htmx fragment loads

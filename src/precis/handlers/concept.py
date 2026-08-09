@@ -7,7 +7,7 @@ canonical ``definition``/``aliases``. On create it emits the reused
 ``card_combined`` chunk (ord=-1) built from name+definition so the concept
 **is a vector** in the corpus manifold (frontier distance / routing get this for
 free). Objectives are concepts, not todos (supersedes decision 7). Full design:
-docs/design/reading-prep-loop.md.
+docs/backlog/reading-prep-loop.md.
 
 ``put`` text is ``"<name> — <definition>"`` (em-dash / newline separated). The
 **promotion pass** (slice 2c) writes richer nodes — aliases, provenance links,
@@ -39,7 +39,7 @@ class ConceptHandler(NumericRefHandler):
             "continuous mastery field, derived state, an embeddable definition, "
             "and typed edges (has-prerequisite / analogy-of / contrasts-with) to "
             "other concepts. Body is '<name> — <definition>'. Objectives are "
-            "concepts. See docs/design/reading-prep-loop.md."
+            "concepts. See docs/backlog/reading-prep-loop.md."
         ),
         supports_get=True,
         supports_search=True,

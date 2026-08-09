@@ -1,6 +1,6 @@
 """``precis sim verify`` — lit-search-verify a sim's low-confidence YAML entries.
 
-Slice 1 of ``docs/proposals/sim-harness.md`` (In-scope item 4, AC #4/#5,
+Slice 1 of ``docs/backlog/sim-harness.md`` (In-scope item 4, AC #4/#5,
 the "Verify judge trust — DECIDED" entry). For each ``verify:`` YAML entry
 flagged ``verified: false`` (or a ``confidence`` below a floor):
 

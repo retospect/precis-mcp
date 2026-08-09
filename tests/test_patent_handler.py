@@ -477,7 +477,7 @@ class TestSpec:
 class TestClaimsView:
     """Slice 1: view='claims' filters to claim blocks and prefixes each
     with its independent/dependent structure; view='description' excludes
-    claims (docs/design/patent-authoring-loop.md)."""
+    claims (docs/backlog/patent-authoring-loop.md)."""
 
     def test_claims_view_filters_and_labels(self, handler: PatentHandler) -> None:
         handler.get(id="EP1234567B1")  # ingest

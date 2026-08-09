@@ -1,5 +1,4 @@
-"""The integration ledger — paper-writing pipeline rung 2 (docs/design/
-paper-writing-pipeline.md §"The integration ledger"; migration 0085).
+"""The integration ledger — paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md §"The integration ledger"; migration 0085).
 
 Covers:
 

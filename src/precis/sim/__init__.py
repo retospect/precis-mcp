@@ -1,4 +1,4 @@
-"""``precis.sim`` — slice 1 of the sim-harness (``docs/proposals/sim-harness.md``).
+"""``precis.sim`` — slice 1 of the sim-harness (``docs/backlog/sim-harness.md``).
 
 Plain-CLI machinery (no job/worker/dispatch) that lets ``precis sim …``
 drive external Pareto-sim repos (``lighterthanair``, ``flowsim``,

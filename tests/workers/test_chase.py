@@ -6,7 +6,7 @@ meta, links) tuple. Mocks ``_load_s2_references`` for any test that
 needs S2 references — the chase worker itself is deterministic
 otherwise.
 
-Scenarios per the C5 design (`docs/design/finding-chase.md`):
+Scenarios per the C5 design (`docs/backlog/finding-chase.md`):
 
   terminal       — no inline cites on the chunk → snapshot pass,
                    STATUS:established, card_combined re-emitted.
@@ -645,7 +645,7 @@ def test_card_combined_reemits_at_chain_termination(store) -> None:
     assert "primary=primary" in rows[0][0]
 
 
-# ── acquisition mode (finding-acquisition-mode.md) ───────────────────
+# ── acquisition mode (the acquiring-finding chase arm) ───────────────
 #
 # All of these go through run_finding_chase_pass (the worker-loop entry
 # point), NOT a hand-built call to advance_finding -- the readiness

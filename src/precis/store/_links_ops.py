@@ -506,7 +506,7 @@ class LinksMixin:
         )
         return cur.rowcount or 0
 
-    # -- s2_neighbors (paper-viewer-nav slice 3) ------------------------
+    # -- s2_neighbors (the Sources/Cited tabs' store) --------------------
 
     def replace_s2_neighbors(
         self,
@@ -606,7 +606,7 @@ class LinksMixin:
         30-day staleness gate that decides whether to re-fetch; this is
         purely "is there anything to show yet", the signal the web layer
         needs to decide whether opening Sources/Cited should trigger an
-        inline first-view backfill fetch (paper-viewer-nav slice 3 §4)."""
+        inline first-view backfill fetch."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM s2_neighbors WHERE ref_id = %s LIMIT 1",

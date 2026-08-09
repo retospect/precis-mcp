@@ -1,5 +1,5 @@
 """Tests for :func:`precis.quest.weave_tick.weave_tick` — rung 6e-1 of the
-paper-writing pipeline (docs/design/paper-writing-pipeline.md §"Integrate —
+paper-writing pipeline (docs/backlog/paper-writing-pipeline.md §"Integrate —
 the tick body" + §"Make/Maintain, one loop").
 
 DB-backed (real ``chunks``/``links``/``tags`` via the ``store`` fixture),

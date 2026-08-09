@@ -172,7 +172,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
     # Routed through the LLM seam (ADR 0046 unit 4b): tool-less agent call on
     # BIG (sonnet). The structure round-trip eval
-    # (docs/design/structure-roundtrip-eval.md) showed sonnet TIES opus on this
+    # (docs/runbooks/structure-roundtrip-eval.md) showed sonnet TIES opus on this
     # mechanical describe→build step at ~½ the cost — so the *build* runs mid-tier
     # while catalyst *reasoning* (quest ticks, reviewers) stays FRONTIER=opus.
     # Override the model with PRECIS_STRUCTURE_PROPOSE_MODEL (e.g. back to an opus

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 #: The append-only logbook chunk_kind (seeded by migration 0065).
 LOG_KIND = "quest_log"
 
-#: Lightly-typed logbook entry vocabulary (docs/proposals/quest-layer.md). A
+#: Lightly-typed logbook entry vocabulary (``quest-layer`` (git-only)). A
 #: ``milestone`` is a deed; a ``cost`` entry (or any entry with ``meta.cost``)
 #: feeds the tote; a ``dead-end`` records what failed so the system stops
 #: re-treading it; an un-answered ``hypothesis`` is a gap (slice 3).

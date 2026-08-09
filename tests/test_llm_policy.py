@@ -1,5 +1,5 @@
 """Tests for the selection policy — deterministic requirement→model
-(llm-catalog slice 4, docs/proposals/llm-catalog.md).
+(llm-catalog slice 4, ``llm-catalog`` (git-only)).
 
 Covers: the degrade-to-Tier-floor invariant (empty catalog ⇒ resolve_model), the
 hard filters (window / required flags / budget band), the cheapest-meeting-axis

@@ -2,7 +2,7 @@
 
 Judge prompt for one sampled artifact under `out/NN-<slug>.md`. Applied by a
 Sonnet agent walking `PROCEDURE.md`, one artifact at a time. This file is the
-*executable* form of `docs/design/context-quality-eval.md` §"Section 2 — The
+*executable* form of `docs/backlog/context-quality-eval.md` §"Section 2 — The
 inspection rubric" — that doc is the source of truth for the six dimensions
 and the severity vocabulary; this file only turns it into a per-artifact
 judge prompt + a fixed output shape. If a dimension below seems to assume
@@ -29,7 +29,7 @@ apart from "this build never registered the kind."
 
 ## The six dimensions
 
-(Verbatim in substance from `docs/design/context-quality-eval.md` §Section 2.)
+(Verbatim in substance from `docs/backlog/context-quality-eval.md` §Section 2.)
 
 1. **Skills reachable?** Does the context name/link the skill the next action
    needs, and does `get(kind='skill', id=…)` actually return it (not a 404,

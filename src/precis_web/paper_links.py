@@ -75,7 +75,7 @@ def scholar_url(identifier: str) -> str:
 
 
 def scholar_title_url(title: str) -> str:
-    """Google Scholar search on a bare *title* (paper-viewer-nav slice 3).
+    """Google Scholar search on a bare *title* (a Sources/Cited row link).
 
     :func:`scholar_url` above only accepts an identifier-shaped token
     (DOI / arXiv id, via :func:`_search_token`) — an S2 neighbour row

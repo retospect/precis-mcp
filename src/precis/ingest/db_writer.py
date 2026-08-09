@@ -19,7 +19,7 @@ Public surface (in dependency order):
 * :func:`write_paper` — the atomic INSERT cascade. Caller owns
   the transaction boundary.
 
-See ``docs/design/b4-precis-add.md`` for the full contract.
+See ``b4-precis-add`` (git-only) for the full contract.
 """
 
 from __future__ import annotations
@@ -562,7 +562,7 @@ def register_aliases_and_maybe_upgrade(
 
     # ── 2. Stub upgrade / markup printable-attach.
     #
-    # Markup-first ingest (docs/design/markup-first-ingest.md) splits the
+    # Markup-first ingest (docs/backlog/markup-first-ingest.md) splits the
     # historical single case ("stub gets a PDF → set hash + write
     # chunks") into two, distinguished by whether the ref already has
     # *body* chunks (``ord >= 0``):

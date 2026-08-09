@@ -3,7 +3,7 @@
 The registry (``precis.workers.registry``) is the single declarative
 table that ``cli/worker.py`` derives its pass gating from and the
 ``/env`` inspector derives its agent list from
-(docs/design/factory-console-and-scheduling.md, slice 1). These tests
+(docs/backlog/factory-console-and-scheduling.md, slice 1). These tests
 are the CI guard that the table can no longer drift from the code:
 
 * every pass *wired* in ``cli/worker.py`` (a ``_pass_enabled("X")``

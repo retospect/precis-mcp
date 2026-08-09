@@ -593,7 +593,7 @@ class MemoryHandler(NumericRefHandler):
         """Consolidate >=2 near-duplicate memories into one survivor.
 
         The single guarded compress-only merge a dream uses instead of raw
-        ``delete`` (docs/design/dreaming.md, §Consolidate). In one
+        ``delete`` (docs/backlog/dreaming.md, §Consolidate). In one
         transaction: mint a new ``memory`` (title + ``memory_body`` chunk +
         merged tags), migrate every link off each original onto the survivor,
         add ``survivor --supersedes--> original`` edges, stamp

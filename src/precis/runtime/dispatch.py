@@ -207,7 +207,7 @@ class DispatchMixin(RuntimeShape):
             self._maybe_hint_tag_shaped_q(args)
 
         # Focus region: ``search(view='dreamable')`` is the salience
-        # seed + its ANN ring (docs/design/dreaming.md, §view='dreamable'),
+        # seed + its ANN ring (docs/backlog/dreaming.md, §view='dreamable'),
         # not the lexical+RRF path. Intercept before kind resolution —
         # it picks its own seed and cross-kind target set.
         if verb == "search" and str(args.get("view") or "").strip() == "dreamable":
@@ -215,7 +215,7 @@ class DispatchMixin(RuntimeShape):
 
         # Backlog view: ``search(view='stubs')`` is the "papers we still
         # need to get" list — paper refs with an external id but no PDF
-        # yet (docs/design/stubs-mcp-and-skill.md). Paper-only; ignores
+        # yet (the stub surfaces). Paper-only; ignores
         # ``q=``. Intercept before kind resolution.
         if verb == "search" and str(args.get("view") or "").strip() == "stubs":
             return self._dispatch_stubs(dict(args))
@@ -223,13 +223,13 @@ class DispatchMixin(RuntimeShape):
         # Chase-queue view: ``search(view='chase-queue')`` is the DOI-only,
         # never-tried-first slice of the same stub backlog — a tighter feed
         # for "what should I go find a DOI-resolvable PDF for right now"
-        # (docs/design/stubs-mcp-and-skill.md). Paper-only; ignores ``q=``.
+        # (the stub surfaces). Paper-only; ignores ``q=``.
         # Intercept before kind resolution, same as ``view='stubs'``.
         if verb == "search" and str(args.get("view") or "").strip() == "chase-queue":
             return self._dispatch_chase_queue(dict(args))
 
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
-        # diverse-cone semantic sampler (docs/design/dreaming.md), not
+        # diverse-cone semantic sampler (docs/backlog/dreaming.md), not
         # the lexical+RRF path. Intercept before kind resolution — it
         # owns its own seed resolution and cross-kind target set.
         if verb == "search" and ("angle" in args or "like" in args):
@@ -262,7 +262,7 @@ class DispatchMixin(RuntimeShape):
                 dict(args),
             )
 
-        # Source search (unified-item-view Slice 2): a ``sort=`` /
+        # Source search (the cross-kind primitive): a ``sort=`` /
         # ``since=`` / ``until=`` search routes to the chunk-level
         # cross-kind primitive — one store query over ``refs.kind =
         # ANY(...)`` that RRF-fuses lexical+semantic, collapses to one

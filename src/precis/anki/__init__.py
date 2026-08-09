@@ -3,10 +3,14 @@
 precis is the Anki *client*: it holds a single local `.anki2` mirror and drives
 Anki's own sync via the official `anki` pylib (lazy-imported; installed on the
 one designated sync runner by ansible, gated behind PRECIS_ANKI_ENABLED). Sync
-is add-only-own-notes by stable guid; the guard allows FULL_DOWNLOAD but
-**refuses FULL_UPLOAD**, so precis can never clobber the account. Decay stats
-read back into ``meta.anki_stats``; a ``deck-<topic>`` tag maps to a
-``Precis::<topic>`` sub-deck. See `docs/design/anki-integration.md`.
+is add-only-own-notes by deterministic guid (``precis:<ref_id>`` — a text
+edit updates the note in place, never re-guids, so Anki's scheduling history
+survives); the guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, so
+precis can never clobber the account. Media never syncs (cards are text).
+Soft-deleted refs retire their notes on the next tick — own-guid lookups
+only, 90-day window, ``--no-retire`` opts out. Decay stats read back into
+``meta.anki_stats``; a ``deck-<topic>`` tag maps to a ``Precis::<topic>``
+sub-deck.
 
 - `notes` — pure, anki-free helpers (guid/deck/tag conventions, ref→card spec,
   stats aggregation). Safe to import anywhere.

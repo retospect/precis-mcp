@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate docs/design/schema.md from the live (prod) database.
+# Regenerate docs/reference/schema.md from the live (prod) database.
 #
 # Prod's pgbouncer password lives in caspar's ~/.pgpass, and a tunnel
 # from a dev host hits "fe_sendauth: no password supplied". So the
@@ -9,7 +9,7 @@
 # command module so there's a single source of truth.
 #
 # Usage:
-#   scripts/gen-schema                      # → docs/design/schema.md
+#   scripts/gen-schema                      # → docs/reference/schema.md
 #   scripts/gen-schema path/to/out.md       # → custom path
 #
 # Override the connection via env (defaults target precis_prod):
@@ -24,7 +24,7 @@ DB_HOST="${PRECIS_SCHEMA_DB_HOST:-100.126.127.107}"
 DB_PORT="${PRECIS_SCHEMA_DB_PORT:-6432}"
 DB_USER="${PRECIS_SCHEMA_DB_USER:-agent_rw}"
 DB_NAME="${PRECIS_SCHEMA_DB_NAME:-precis_prod}"
-OUT="${1:-docs/design/schema.md}"
+OUT="${1:-docs/reference/schema.md}"
 DATE="$(date +%Y-%m-%d)"
 
 # Single source of truth for the introspection query.

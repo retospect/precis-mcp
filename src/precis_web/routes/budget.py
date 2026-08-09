@@ -1,6 +1,6 @@
 """``/budget`` — the spend meter + web-editable circuit-breaker caps.
 
-WS3 (docs/proposals/web-ui-rationalization.md) folded the page formerly
+The System-page merge folded the page formerly
 served at ``GET /budget`` into the "Budget" sub-tab of the merged System
 page (``/status?tab=budget``); ``GET /budget`` now just redirects there.
 The rendering (tote, quota lane, cap-editor state — see ``status.py``'s

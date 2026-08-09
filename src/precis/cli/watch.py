@@ -1327,7 +1327,7 @@ def _is_pdf(path: Path) -> bool:
 
 
 #: Markup trigger extensions (single-suffix) and the tarball suffixes we
-#: treat as LaTeX e-print bundles. See ``docs/design/markup-first-ingest.md``.
+#: treat as LaTeX e-print bundles. See ``docs/backlog/markup-first-ingest.md``.
 _MARKUP_SUFFIXES: frozenset[str] = frozenset({".xml", ".tex", ".ltx", ".html", ".htm"})
 _MARKUP_TARBALL_SUFFIXES: tuple[str, ...] = (".tar.gz", ".tgz", ".tar")
 
@@ -1623,7 +1623,7 @@ def _move_to_corpus(pdf: Path, *, cite_key: str, corpus_dir: Path) -> Path:
     """Move ``pdf`` to ``<corpus_dir>/<letter>/<cite_key>.pdf``. The
     letter shard is the lower-case first character of ``cite_key``,
     or ``_`` if it isn't ASCII alphanumeric — matches the layout
-    described in ``docs/design/pip-merge.md``.
+    described in ``pip-merge`` (git-only).
 
     Tolerates ``FileNotFoundError`` on the rename: another host on a
     shared inbox may have moved the same file between our existence

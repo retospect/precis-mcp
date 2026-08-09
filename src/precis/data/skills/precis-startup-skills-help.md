@@ -94,7 +94,7 @@ This skill covers *pinning* existing skills at boot, not *authoring*
 one. A new skill file (or a rewrite of the prose conventions in an
 existing one) is repo-dev work on `src/precis/data/skills/` — outside
 what this MCP session can do. Use the `scaffold` agent, or read
-`docs/design/skill-authoring-style.md` in the precis-mcp repo.
+`docs/conventions/skill-authoring-style.md` in the precis-mcp repo.
 
 ## See also
 

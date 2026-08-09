@@ -1,7 +1,7 @@
 """Taproot Phase 2 — the single write door for claim hubs + evidence edges.
 
-Build ticket: ``docs/proposals/taproot-phase2-hub-node.md``; governance:
-ADR 0073; design: ``docs/proposals/taproot.md`` §"The core model".
+Build ticket: ``docs/backlog/taproot-phase2-hub-node.md``; governance:
+ADR 0073; design: ``docs/backlog/taproot.md`` §"The core model".
 
 **Single write path (open #16, ADR 0073).** Every hub-finding and every
 ``establishes``/``corroborates``/``contradicts`` evidence edge is written

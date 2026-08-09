@@ -63,7 +63,7 @@ def _h(ref_id: int | str, kind: str = "todo") -> str:
 #:   ``ask-user:<freeform>`` = the question itself, so the attention
 #:   view can render it inline. (The pre-rename ``asking-reto`` alias
 #:   was removed 2026-06-19 — see
-#:   ``docs/design/user-identity-and-ask-routing.md``.)
+#:   ``docs/backlog/user-identity-and-ask-routing.md``.)
 _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
     "halt",
     "halt:",

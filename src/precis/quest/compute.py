@@ -642,8 +642,8 @@ def dispatch_autocatpath(
     The two-level nesting (seed job -> seed todo -> T_agg, not seed job ->
     T_agg directly) is load-bearing: a bare seed job as T_agg's direct
     child would satisfy ``child_job_succeeded`` on the FIRST seed's
-    success, not the aggregate's own. See ``docs/proposals/gpu-priority.md``
-    Phase 1 and ``docs/design/autocatpath-integration.md`` §3.8.
+    success, not the aggregate's own (the gpu-priority seed-chunking
+    design). See ``docs/backlog/autocatpath-integration.md`` §3.8.
 
     The aggregate job (``precis_pathway.aggregate_job``) combines the seed
     partials in-process (pure numpy, ``aggregate_partials`` — no ML deps)
@@ -931,8 +931,8 @@ def _stamp_preflight_dead_end(
 _AUTOCATPATH_BARRIER_KEYS: tuple[str, ...] = ("barrier", "rate_Ea", "rate_ea", "ea")
 _AUTOCATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
 
-#: CHE electrochemistry scalars (docs/proposals/pathway-potential-lever.md,
-#: precis slice 2) that ride the SAME harvest path — and the SAME trust gate —
+#: CHE electrochemistry scalars (the pathway potential lever)
+#: that ride the SAME harvest path — and the SAME trust gate —
 #: as the barrier: ``_dispatch_common.finish`` already stamps these verbatim
 #: onto the job's own meta (a straight pass-through of catpath's
 #: ``results_json``), so lifting them here is the same "read the job meta"

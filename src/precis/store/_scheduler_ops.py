@@ -1,7 +1,7 @@
 """``scheduler_leases`` claim — the decentralized recurring-work trigger.
 
 Mixin on :class:`precis.store.Store`. Backs slice 10 of
-``docs/design/factory-console-and-scheduling.md`` (§15i). Migration
+``docs/backlog/factory-console-and-scheduling.md`` (§15i). Migration
 ``0074_scheduler_leases.sql`` defines the table: one row per folded
 thin-timer cadence, carrying a ``next_fire_at`` lease clock.
 

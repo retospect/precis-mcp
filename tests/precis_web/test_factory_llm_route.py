@@ -133,7 +133,7 @@ def test_post_llm_cloud_route_false_and_true(
     assert budget_settings.get_setting(store, live_config.CLOUD_ENABLED_KEY) is None
 
 
-# ── Phase 2 (docs/proposals/llm-operation-routing.md item 4) — the
+# ── Per-operation routing Phase 2 — the
 # per-operation override editor ───────────────────────────────────────────
 
 

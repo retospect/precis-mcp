@@ -22,7 +22,7 @@ Derived, idempotent, reversible: a paper carrying a current-version glossary
 re-derive the corpus lazily. **No AnkiWeb / account writes.** Default-OFF
 (``PRECIS_PAPER_GLOSSARY_ENABLED=1`` or ``--only paper_glossary``) — a corpus-wide
 backfill is a deliberate, node-targeted batch, like ``classify``. Full design:
-docs/design/reading-prep-loop.md (slice 1).
+docs/backlog/reading-prep-loop.md (slice 1).
 
 A ``data is None``/exception failure writes no marker — but a claim-time
 attempt lease (:mod:`precis.workers.ref_lease`), stamped just before the LLM

@@ -1,6 +1,6 @@
 """Quest layer runtime — the striving's autonomous research loop.
 
-Design-of-record docs/proposals/quest-layer.md; kind + logbook surface in
+Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 :mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `dossier` (the living

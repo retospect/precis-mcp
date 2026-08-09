@@ -25,7 +25,7 @@ Differences from ``claude_inproc``:
   built-in fallback ``if/elif`` doesn't apply here (coordinator
   has no built-in job_types).
 - A ``children_done`` ``Yield`` also gets ``meta.wake_deadline`` stamped
-  at park time (§H piece 5, ``docs/proposals/compute-lane-lease-epoch.md``)
+  at park time (the child-deadlock wake deadline)
   — MAX of the children's own ``params.resources.wall_seconds`` plus
   margin, floored at ``PRECIS_WAKE_DEADLINE_HOURS`` (default 6h; also the
   fallback when no child declares a budget at all) so a resource-
@@ -38,7 +38,7 @@ Differences from ``claude_inproc``:
   unschedulable/stuck child might never satisfy — the master's "a parent
   never blocks forever on a child".
 
-See ``docs/design/dft-phase-0-pr-3-coordinator-executor.md`` for
+See ``dft-phase-0-pr-3-coordinator-executor`` (git-only) for
 the full design rationale.
 """
 

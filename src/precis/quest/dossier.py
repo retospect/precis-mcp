@@ -1,6 +1,6 @@
 """Dossier — the living research synthesis a *process* owns.
 
-Slice 4a of the quest layer (docs/proposals/quest-layer.md §Two memories),
+Slice 4a of the quest layer (``quest-layer`` (git-only) §Two memories),
 generalized per ADR 0064 §B:
 a dossier belongs to a **process, never an artifact**. A quest is the process
 that owns one today, but the owner is now **any ref** (``owner_id``) — a
@@ -47,8 +47,7 @@ _RELATION = "dossier-of"
 #: dossier (the dossier is the internal thinking substrate; the paper is
 #: what a human reads). Mirrors ``dossier-of`` exactly (asymmetric,
 #: auto-mirrored inverse ``has-paper``), but this module does not mint the
-#: paper draft — that pipeline is unbuilt (docs/design/paper-writing-
-#: pipeline.md). :func:`paper_ref_id` is a read-only resolver so callers
+#: paper draft — that pipeline is unbuilt (docs/backlog/paper-writing-pipeline.md). :func:`paper_ref_id` is a read-only resolver so callers
 #: (the quest web dashboard) can link to a paper when one exists and
 #: degrade gracefully when it doesn't. Keep in sync with the `relations`
 #: seed in migration 0089_paper_of_relation.sql.

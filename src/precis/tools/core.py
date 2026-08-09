@@ -834,8 +834,7 @@ def put(
     # it's made of; put(kind='component', id=<parent slug>,
     # contains='component:<child slug>', qty=<int>=0, ref_designator=…)
     # writes an assembly-tree edge — qty=0 removes it, qty omitted on an
-    # existing edge preserves its current quantity (docs/proposals/
-    # component-assembly-tree.md).
+    # existing edge preserves its current quantity (the component assembly tree).
     spec: str | None = None,
     category: str | None = None,
     uom: str | None = None,
@@ -1254,7 +1253,7 @@ def more(cursor: str) -> _ToolReturn:
 #
 # The MCP-facing tool descriptions (verb docstrings above) carry only a
 # tight summary + wire-level constraints + a pointer to the per-verb help
-# skill (see docs/design/mcp-cold-start-token-budget.md). The CLI surface
+# skill (see docs/backlog/mcp-cold-start-token-budget.md). The CLI surface
 # still benefits from explicit per-arg ``--help`` strings, so we keep
 # them here adjacent to the functions rather than scraping the trimmed
 # docstrings. The CLI argparse adapter in :mod:`precis.tools.cli_adapter`

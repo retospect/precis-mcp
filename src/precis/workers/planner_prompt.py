@@ -739,7 +739,7 @@ def _render_patent_authoring(store: Store, ref_id: int) -> str:
     prior-art claims themselves arrive via the tick's working set (the
     ``patent_digest`` claims digest stamped on ``meta.working_set``); this
     block is the *methodology* that reads them. See
-    ``docs/design/patent-authoring-loop.md`` and the ``patent-*`` skills."""
+    ``docs/backlog/patent-authoring-loop.md`` and the ``patent-*`` skills."""
     return (
         "## Patent authoring — write against the prior art\n\n"
         "You are drafting a **patent**. Do not write in a vacuum; each tick:\n\n"
@@ -774,8 +774,7 @@ def _render_plan_ledger(store: Store, plan_ref_id: int, slug: str) -> str:
     """Inject the project's ``plan`` (ADR 0051 §2b) — its reasoning /
     decision ledger — so a tick respects recorded decisions without having
     to fetch it. For a patent this is the freedom-to-operate scoping ledger:
-    what was declined or narrowed, and why (``docs/design/
-    patent-authoring-loop.md``). One line per node, capped for the flow."""
+    what was declined or narrowed, and why (``docs/backlog/patent-authoring-loop.md``). One line per node, capped for the flow."""
     try:
         chunks = store.reading_order(plan_ref_id)
     except Exception:  # pragma: no cover — no plan / store hiccup

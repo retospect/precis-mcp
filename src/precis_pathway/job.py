@@ -22,8 +22,8 @@ registered so pre-existing queued/legacy rows don't error-loop. New
 dispatches fan out ``autocatpath_seed`` (one per ``(model, seed)``, minutes-
 scale) + ``autocatpath_aggregate`` (pure numpy, gated via the existing
 ``child_job_succeeded`` auto_check) — see ``quest.compute.
-dispatch_autocatpath``'s docstring for the tree shape, and
-``docs/proposals/gpu-priority.md`` Phase 1 for the design.
+dispatch_autocatpath``'s docstring for the tree shape and the
+seed-chunking rationale.
 """
 
 from __future__ import annotations

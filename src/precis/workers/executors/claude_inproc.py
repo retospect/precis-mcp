@@ -97,7 +97,7 @@ def _claim_jobs(
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable claude_inproc jobs.
 
-    ``reclaim_stale_running=True`` (§H, compute-lane-lease-epoch.md): the
+    ``reclaim_stale_running=True`` (the lease-epoch reclaim arm): the
     dispatch runs entirely in-process (a ``claude -p`` subprocess this
     worker owns), so a worker restart mid-tick means the compute is
     genuinely dead — same "worker death = compute death" assumption
@@ -790,7 +790,7 @@ def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
 
 
 # ── Review-ledger writeback (rung 3b — pass-only, "no record = not
-# passed" per docs/design/paper-writing-pipeline.md §"Review — the
+# passed" per docs/backlog/paper-writing-pipeline.md §"Review — the
 # memoized approval ledger") ───────────────────────────────────────────
 #
 # A review-mode plan_tick's parent todo carries meta.review=<lens> +

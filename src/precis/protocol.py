@@ -97,7 +97,7 @@ class KindSpec:
     #: caches (web, wolfram, youtube), and generators (oracle, random,
     #: skill) don't accidentally accumulate session-context tags they
     #: shouldn't carry. The flip-list is curated in
-    #: ``docs/design/mcp-cold-start-token-budget.md`` Phase 5 step 2:
+    #: ``docs/backlog/mcp-cold-start-token-budget.md`` Phase 5 step 2:
     #: memory, gripe, conversation, anki, todo (numeric
     #: refs) and markdown, plaintext, tex (file-rooted authored
     #: content).

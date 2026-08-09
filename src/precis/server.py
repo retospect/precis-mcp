@@ -4,7 +4,7 @@ stdio is the default and every existing caller's transport
 (`precis serve`, Claude Code's MCP config, `precis repl` — see
 `main()`). An optional network transport (`sse` / `streamable-http`,
 bearer-token gated) exists for the `sandbox_run` `precis_access:read`
-callback (`docs/design/sandbox-run.md` §"precis_access:read") — a
+callback — a
 per-run child process bound to `127.0.0.1` that only a sandboxed
 container reaches over its bounded network mode. Nothing else uses it;
 stdio stays the default and is byte-identical to before it existed.

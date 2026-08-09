@@ -3,7 +3,7 @@
 The draft handler auto-materialises `cites` edges from `[pc<id>]` handles, so
 the dream frontier can ride that existing graph — a wandering re-read of an
 active draft sees the evidence it cites (drift/contradiction spotting, the
-payoff named in docs/design/dreaming.md).
+payoff named in docs/backlog/dreaming.md).
 """
 
 from __future__ import annotations

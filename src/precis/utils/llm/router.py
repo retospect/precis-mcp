@@ -261,7 +261,7 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     ``backend`` (default ``None`` — no coherence check, today's behavior for
     every caller that doesn't pass it) is the *effective*, already-demoted
     backend a dispatch call is about to run on
-    (`docs/proposals/glm-fleet-flip-safety.md` Part 3). When it is
+    (``glm-fleet-flip-safety`` (git-only) Part 3). When it is
     :data:`Backend.ANTHROPIC` and the ``app_settings`` override resolves to a
     non-claude slug (heuristic: doesn't start with ``"claude"``), the override
     is incoherent with the claude transport it would land on — drop it and
@@ -823,7 +823,7 @@ def select_transport(
     takes the loopback local completion wire (:data:`Transport.LOCAL`); under
     ``OPENAI`` it takes :data:`Transport.OPENAI_COMPAT` (a hosted OSS backend —
     OpenRouter — with no local hardware fallback of its own). This is the
-    gap-fill from `docs/proposals/llm-openrouter-bypass.md` item 2.
+    OpenRouter-bypass hosted-small gap-fill.
 
     ``MEDIUM`` / ``BIG`` / ``FRONTIER`` split on ``tools_needed``, which
     mirrors the ``AGENT`` vs ``HELPER`` :class:`~precis.utils.prompt.model.Profile`
@@ -1484,8 +1484,8 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
     claude equivalent as a safety net (only when the primary is an OSS
     transport — a claude/local primary has nothing to fall back to).
 
-    ``SMALL`` is the one exception: per the roster cascade
-    (`docs/proposals/llm-openrouter-bypass.md` — "small" skips Anthropic
+    ``SMALL`` is the one exception: per the decided OpenRouter roster
+    cascade ("small" skips Anthropic
     entirely, low-stakes/high-volume dispatch traffic), its ladder stops at
     the OSS rung with no claude fallback, however this call resolves.
     """
@@ -1823,7 +1823,7 @@ def _hosted_small_remap(
 ) -> str:
     """Transparently remap a local-only model alias onto a real hosted small
     model when the call is actually headed to a hosted OSS backend
-    (`docs/proposals/glm-fleet-flip-safety.md` Part 1 — the 395-error class:
+    (``glm-fleet-flip-safety`` (git-only) Part 1 — the 395-error class:
     ``classify``/``summarize`` pin ``model="summarizer"``, which means nothing
     to OpenRouter).
 
@@ -1878,7 +1878,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
-    # Per-operation routing (docs/proposals/llm-operation-routing.md, Phase 1):
+    # Per-operation routing (the operation rung, `utils/llm/operations.py`):
     # a *registered* (allow-listed) source has its effective tier + model owned
     # by the registry default + any live `llm.op.<source>` override — the
     # operation rung between the tier default and a call-site `req.model` pin.
@@ -2050,7 +2050,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
         # `local_url` override) sends rung 0 to the *hosted* OSS endpoint
         # (`PRECIS_LLM_BASE_URL`, e.g. OpenRouter) instead of the busy local
         # slot, falling through to the claude rung only if that also fails.
-        # docs/proposals/llm-openrouter-bypass.md item 3 — gated on the
+        # The saturated-local-slot hosted escape — gated on the
         # PRECIS_LLM_FAILOVER flag OR an operator chain (both produce a
         # FailoverProvider here) rather than a new one. But this
         # escape only exists when rung 0's transport is one of the two that
@@ -2984,7 +2984,7 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     # price the accumulated token split via the catalog, exactly as
     # ``result_from_openai`` does for the tool-less openai_compat transport —
     # so the budget breaker isn't blind to openai_tools spend either
-    # (docs/proposals/glm-fleet-flip-safety.md Part 2).
+    # (``glm-fleet-flip-safety`` (git-only) Part 2).
     cost = result.cost_usd
     if cost is None and result.total_tokens is not None:
         from precis.budget.pricing import cost_from_tokens

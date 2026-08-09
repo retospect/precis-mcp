@@ -1,6 +1,6 @@
 """``precis sim ...`` — drive external Pareto-sim repos as quests.
 
-Slice 1 (``docs/proposals/sim-harness.md``): a plain CLI tool, no
+Slice 1 (``docs/backlog/sim-harness.md``): a plain CLI tool, no
 job_type/executor/dispatch/worker.
 
 - ``list``   — read the registry, print each sim's slug/path/quest;

@@ -1,7 +1,7 @@
 """Tests for :mod:`precis.default_tags` + the dispatch wiring.
 
 Phase 5 of the cold-start token budget design
-(``docs/design/mcp-cold-start-token-budget.md``). Covers:
+(``docs/backlog/mcp-cold-start-token-budget.md``). Covers:
 
 - :func:`precis.default_tags.parse` parsing semantics.
 - :func:`precis.default_tags.merge` set-union with order preservation.

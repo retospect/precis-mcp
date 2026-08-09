@@ -112,8 +112,8 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
 
 # RW's ``notice_nature`` vocabulary maps onto our internal severity
 # triple. Distinct from Crossref's ``update_type`` map because the two
-# data sources use different strings for the same concepts. See
-# docs/design/provenance-kind-plan.md § "Severity classification".
+# data sources use different strings for the same concepts. Keep
+# aligned with ``ingest/provenance.py::_UPDATE_TYPE_MAP``.
 _RW_NATURE_MAP: dict[
     str, tuple[Severity, RetractionStatus | None, LinkRelation | None]
 ] = {

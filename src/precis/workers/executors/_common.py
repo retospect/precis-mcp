@@ -170,7 +170,7 @@ def reserve_host() -> str:
 
 def _this_worker_lease_identity() -> tuple[str | None, str | None, str | None]:
     """``(boot_id, process, host)`` this worker stamps onto every job it
-    claims (§H boot epoch, compute-lane-lease-epoch.md).
+    claims (the worker boot epoch / lease-identity stamp).
 
     Returns the real triple ONLY when BOTH a boot_id has been minted AND a
     ``PRECIS_PROCESS`` is set — i.e. only when this worker's boot_id is
@@ -241,7 +241,7 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
 
 def _advertised_boot_ids(conn: Connection) -> dict[tuple[str, str], str]:
     """``(host, process) -> currently-advertised boot_id`` from
-    ``host_heartbeat.meta.boot_ids`` (§H, compute-lane-lease-epoch.md).
+    ``host_heartbeat.meta.boot_ids`` (the worker boot epoch).
 
     Mirrors the SQL epoch-arm's correlated subquery (kept as a Python
     lookup here so the reclaim-reason classification below — which needs
@@ -401,7 +401,7 @@ def claim_executor_jobs(
       (``lease_until`` non-null and ``< now()``). The lease, sized to
       outlive the job plus margin, is the death-presumption signal when no
       faster proof exists.
-    * **Epoch arm** (§H, ``docs/proposals/compute-lane-lease-epoch.md``) —
+    * **Epoch arm** (the lease-epoch reclaim arm) —
       the row's stamped ``meta.lease_boot_id`` is non-null and does NOT
       match the boot_id currently advertised (``host_heartbeat.meta.
       boot_ids``) for ``(meta.lease_host, meta.lease_process)`` — i.e. the

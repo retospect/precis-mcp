@@ -454,7 +454,7 @@ def _render_one(
     # Print set (★): originators when derived, else corroborators as the
     # fallback — the same policy `finding_cite_keys` prints from.
     corroborators_print = not evidence.originators
-    # The hub-derived trust label (finding-trust-surfaces §3): empty print
+    # The hub-derived trust label (trust-surfaces editor badges): empty print
     # set → "unverified", any print-visible supporter → "clean" (hub
     # "unsupported" is deferred — see `claim_trust`'s hub arm). Was a
     # dormant `None` placeholder; `claim_trust` is the ONE mapping every
@@ -580,7 +580,7 @@ def _render_one(
 
 def _citation_miss_rows(hub_ref: Any) -> list[dict[str, Any]]:
     """The hub's ``meta.citation_misses`` (hub_refine's citation-following
-    red flag, docs/proposals/citation-taproot-resolve.md) shaped for the
+    red flag, docs/backlog/citation-taproot-resolve.md) shaped for the
     claim page: "we read the paper this claim cites and the content isn't
     there". Each record is ``{marker, cited_ref, from_chunk}``; the template
     renders a red line per miss, linking the cited paper by ref_id."""

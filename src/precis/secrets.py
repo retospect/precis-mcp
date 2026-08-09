@@ -1,11 +1,23 @@
 """Secrets resolver — the thin Python wrapper over the DB secrets vault.
 
-Design-of-record: ``docs/design/secrets-vault.md`` (ADR 0055). Postgres is the
-authority: values are pgcrypto-encrypted in ``vault.secrets`` and reached only
-through the ``vault.*`` SECURITY DEFINER functions (list / mask / reveal /
-set_secret / delete_secret). This module holds **no policy** — it is transport
-plus ergonomics (a boot-bound store, a small TTL cache, and a legible
-resolution order).
+ADR 0055. Postgres is the authority: values are pgcrypto-encrypted in
+``vault.secrets`` and reached only through the ``vault.*`` SECURITY DEFINER
+functions (list / mask / reveal / set_secret / delete_secret — reveal is the
+sole decrypt path and always writes an audit row; there is deliberately no
+bulk-plaintext function). The passphrase lives in server config
+(``ALTER SYSTEM SET app.secret_key`` → ``postgresql.auto.conf``), a file
+``pg_dump`` structurally never emits — so a **logical** dump is safe to
+share (ciphertext + function source that only *names* the key). Physical
+backups (``pg_basebackup`` / WAL) copy the key file; the guarantee is
+logical-dump-only. Trust model v1 (migration 0059): the functions are
+granted to PUBLIC — holding a DSN *is* the boundary; the per-role split +
+per-name ACL are designed in ADR 0055 and deferrable one-liners. The
+secrets TCB is therefore every package imported into a DSN-holding process:
+keep those processes to hash-pinned, audited deps, and push heavy/untrusted
+code out-of-process (:func:`adopt_process_store` scrubs the DSN from env so
+spawned subprocesses never inherit it). This module holds **no policy** —
+it is transport plus ergonomics (a boot-bound store, a small TTL cache, and
+a legible resolution order).
 
 Resolution order for :func:`get_secret` (env-override-wins is the migration
 safety net — a call site can move onto ``get_secret`` with zero behaviour

@@ -204,7 +204,7 @@ async def reader(
     _, owner_ws = _owner_workspace(store, ref)
 
     # Whole-draft review-ledger status (migration 0086) — ONE query
-    # (smartdraft-review-status-ui item 6) shared by the per-block indicator,
+    # shared by the per-block indicator,
     # its dropdown, and the toolbar rollup below. Recomputed each render
     # (incl. the __sdRefresh after any review/human-review/retract click) —
     # never baked into the cached ChunkNodes, since a review action changes
@@ -275,7 +275,7 @@ async def reader(
             "cur_voice": str(owner_ws.get("voice") or ""),
             "authoring_enabled": store.draft_authoring_enabled(ref.id),
             "focus_review": focus_review,
-            # ── Review status (smartdraft-review-status-ui) ──
+            # ── Review status (indicator + rollup) ──
             "review_by_dc": review_by_dc,
             "rollup": rollup,
             "checker_counts": checker_counts,

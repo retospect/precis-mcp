@@ -1,6 +1,6 @@
 """Per-host capability + slot self-probe for the factory scheduler.
 
-Slice 6b of ``docs/design/factory-console-and-scheduling.md`` (§5.5). Each
+Slice 6b of ``docs/backlog/factory-console-and-scheduling.md`` (§5.5). Each
 host discovers what it can do and how many parallel slots it offers; the
 ``heartbeat`` reporter writes the result into ``resource_slots`` every
 cycle, and the scheduler (slice 6c) + the ``/factory`` console read the

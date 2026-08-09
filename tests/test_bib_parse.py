@@ -1,5 +1,5 @@
 """Tests for the bib_parse pass (``paper_bib_entries``,
-docs/proposals/citation-bib-parse.md).
+``citation-bib-parse`` (git-only)).
 
 Pure helpers (chunk detection, entry splitting/dedup, field extraction,
 candidate resolution) run everywhere, no DB. The end-to-end pass runs
@@ -359,7 +359,7 @@ class TestNoConnectionHeldDuringLlmCall:
         # gr: the LLM parse call must not run inside an open transaction --
         # holding a connection idle across it trips Postgres's
         # idle_in_transaction_session_timeout and fails the paper (see
-        # docs/proposals/citation-bib-parse.md). Prove it by having the
+        # ``citation-bib-parse`` (git-only)). Prove it by having the
         # fake client's `complete`, while it runs, successfully acquire and
         # use a *fresh* connection from the same pool -- if the pass were
         # still holding one open (e.g. pool exhaustion, or blocked on

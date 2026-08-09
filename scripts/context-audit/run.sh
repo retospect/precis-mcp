@@ -130,7 +130,7 @@ scripts/context-audit/ lists this run's artifacts). Apply
 scripts/context-audit/RUBRIC.md to every non-skipped artifact. Dedup-check
 before filing any gripe (search(kind='gripe', ...)) and file only genuinely
 new defects, tagged as PROCEDURE.md Step 1c specifies. Read
-docs/design/context-quality-eval.md if you need the catalog's 'why' for a
+docs/backlog/context-quality-eval.md if you need the catalog's 'why' for a
 row.
 
 End your report with: the pass/thin/bad tally, the classifier/pre-worker gap

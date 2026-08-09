@@ -881,7 +881,7 @@ def test_instructions_advertises_every_verb() -> None:
 
 
 def test_instructions_lead_with_skill_search_cta() -> None:
-    """Phase 2 banner CTA (docs/design/mcp-cold-start-token-budget.md):
+    """Phase 2 banner CTA (docs/backlog/mcp-cold-start-token-budget.md):
     the cold-start banner pushes agents to ``search(kind='skill', ...)``
     as the first action on a non-trivial request. Pin the CTA shape
     so future edits don't silently regress the discoverability story.

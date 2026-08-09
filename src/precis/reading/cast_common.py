@@ -1,7 +1,12 @@
 """cast_common — shared substrate for the audio *casts* (morning brief + nidra).
 
-A **cast** is a daily audio episode composed as a ``draft`` and narrated onto the
-shipped podcast feed (docs/design/audio-feed.md). Two standing casts ride the same
+A **cast** is a daily audio episode composed as a ``draft`` and narrated onto
+the shipped podcast feed (:mod:`precis.audio_feed` + ``precis_web.routes.
+podcast``; ``PRECIS_PODCAST_DIR`` is a shared NAS dir, so a producer on any
+node publishes and the gateway serves — no cross-host copy). Listeners
+subscribe **on-device** over Tailscale (Apple Podcasts *Add a Show by URL* /
+Downcast); server-side fetchers (Overcast, Pocket Casts) can't reach the
+tailnet. Two standing casts ride the same
 produce → narrate → publish spine, differing only by a **voice profile**:
 
 - ``reading`` — the morning situational-awareness brief (voice ``bm_george``).

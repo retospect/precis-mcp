@@ -9,7 +9,7 @@ status: active
 # precis-nursery-help — tree-incoherence detectors → alerts
 
 The nursery is the first of three review tiers in
-`docs/design/todo-tree-plan.md` (Slice 3). It walks the todo tree
+`docs/backlog/todo-tree-plan.md` (Slice 3). It walks the todo tree
 (and the worker fleet) every pass, surfaces local incoherence via
 SQL-only detectors, and raises a `kind='alert'` per condition (see
 `precis-alert-help`). No LLM call. The only proactive push is a

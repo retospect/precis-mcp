@@ -490,7 +490,7 @@ def test_claim_is_node_pinned_and_leased(
     assert meta["run_host"] == "spark"
 
 
-# ── §H boot epoch: reclaim + re-adopt (compute-lane-lease-epoch.md) ────
+# ── Worker boot epoch: reclaim + re-adopt (the lease-epoch reclaim arm) ──
 
 
 def _mk_running_job_with_container(

@@ -7,7 +7,7 @@ tokens chasing a file that moved or was deleted. This test pins the *live*
 docs so a dead relative link fails the gate.
 
 It deliberately checks only markdown **link targets** (`[text](path)`), not
-prose file mentions, and only the live doc set — not `docs/design/` or
+prose file mentions, and only the live doc set — not
 `docs/decisions/`, which are frozen historical artefacts that may point at
 since-removed files on purpose (the one exception is `docs/decisions/
 README.md` itself, an index that should stay accurate). Also excludes
@@ -27,7 +27,7 @@ import pytest
 # Repo root: this file is <root>/tests/test_doc_pointers.py
 ROOT = Path(__file__).resolve().parent.parent
 
-_FROZEN_DIRS = ("docs/design/", "docs/decisions/")
+_FROZEN_DIRS = ("docs/decisions/",)
 _FROZEN_EXEMPT = {"docs/decisions/README.md"}
 
 
@@ -51,7 +51,7 @@ def _live_docs() -> list[str]:
 
 
 # The live acquaintance path — every current-state doc a fresh agent might
-# read to orient. Frozen historical docs (docs/design/, docs/decisions/)
+# read to orient. Frozen historical docs (docs/decisions/, pending deletion)
 # are excluded on purpose; see module docstring.
 LIVE_DOCS = _live_docs()
 

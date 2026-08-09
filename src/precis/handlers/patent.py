@@ -560,7 +560,7 @@ class PatentHandler(Handler):
                 return Response(body=f"no body blocks stored for {slug}")
             want = "claim" if view == "claims" else "description"
             # Blocks ingested since slice 1 carry a ``patent_block`` meta
-            # marker (docs/design/patent-authoring-loop.md); filter to the
+            # marker (docs/backlog/patent-authoring-loop.md); filter to the
             # requested section, and prefix each claim with its number +
             # independent/dependent structure. Patents ingested before the
             # marker have none — fall back to the historical full dump so

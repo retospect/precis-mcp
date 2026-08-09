@@ -72,7 +72,7 @@ def _seed_pathway(store: Any, *, meta: dict[str, Any], body_text: str | None) ->
 def _pd_n_scene(n_frac: tuple[float, float, float]) -> Scene:
     """A minimal Pd(111)-ish slab (two Pd, so the element repeats) plus a
     single adsorbed N (a scene singleton) at ``n_frac`` — the explorer's
-    identity-drift worked example (reaction-pathway-explorer.md AC3):
+    identity-drift worked example (the explorer's measure-verification AC):
     ``min_distance`` anchored on the singleton N is identity-free/verified;
     ``distance`` anchored on one of the two Pd atoms is not."""
     scene = Scene(cell=Cell(np.eye(3) * 12.0, (True, True, False)))
@@ -220,7 +220,7 @@ def test_pathway_detail_sparse_meta_no_500(client, runtime) -> None:
     assert "no body chunk recorded for this pathway" in resp.text
 
 
-# ── Interactive explorer (docs/proposals/reaction-pathway-explorer.md) ──
+# ── Interactive explorer (clickable diagram + 3D cell + measures) ───────
 
 
 def test_pathway_detail_ac1_diagram_container_and_node_click_targets(
@@ -1167,7 +1167,7 @@ def test_pathway_detail_run_jobs_degrade_cleanly_without_pool_support(
     assert "run job #" not in resp.text
 
 
-# ── potential lever (slice 3, docs/proposals/pathway-potential-lever.md) ──
+# ── potential lever (the explorer's CHE U-slider) ─────────────────────────
 
 #: ``_GRAPH3`` with a per-node ``n_H`` (reservoir H atoms absorbed relative
 #: to the root, "R") — s1 is the root, s2/s3 have each absorbed one H.

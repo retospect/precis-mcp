@@ -1,5 +1,5 @@
 """Tests for the llm-catalog ledger — review log + tote + observed evals
-(llm-catalog slice 3, docs/proposals/llm-catalog.md).
+(llm-catalog slice 3, ``llm-catalog`` (git-only)).
 
 Covers: the append-only review log (WORM, typed, provenance) via `put(id=…,
 entry=…)` and `view='reviews'`; the `llm_call_log` tote rollup + `view='tote'`;

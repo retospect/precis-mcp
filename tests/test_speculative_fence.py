@@ -2,7 +2,7 @@
 
 Inspirations (tagged ``DREAM:speculative``) must stay out of
 authoritative results and surface only on explicit ask
-(docs/design/dreaming.md §Inspire — fencing). Consolidated dream
+(docs/backlog/dreaming.md §Inspire — fencing). Consolidated dream
 memories carry no such tag and stay visible. Covered across all three
 block-search paths plus the pure fence-decision helper.
 """

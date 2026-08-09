@@ -528,7 +528,7 @@ def run(args: argparse.Namespace) -> None:
     # path, so unattended deploys to a fresh DB don't die at boot.
     _attach_db_log_handler(dsn)
     _record_boot_event(store, profile=args.profile)
-    # §H boot epoch (compute-lane-lease-epoch.md): mint + advertise THIS
+    # Worker boot epoch (lease-epoch reclaim): mint + advertise THIS
     # process's generation NOW, before ref_passes ever registers — both
     # profiles pass through here, and a claim can happen seconds after boot,
     # well inside the heartbeat pass's 60s throttle window. Without this the
@@ -564,7 +564,7 @@ def run(args: argparse.Namespace) -> None:
         # Profile membership + the extra ``PRECIS_*_ENABLED`` gates are
         # now declared once in ``workers/registry.py`` (the ServiceSpec
         # table) — the source of truth the factory console + capability
-        # scheduler read too (docs/design/factory-console-and-scheduling.md).
+        # scheduler read too (docs/backlog/factory-console-and-scheduling.md).
         # ``system`` = every node's rotation (embed/summarize/… + the
         # coordinator/ssh_node/clusterize/reconcile passes that ship on
         # every node); ``agent`` = melchior's OAuth worker (the opus
@@ -658,7 +658,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_chunk_keywords_pass)
 
         # bib_parse — per-paper bibliography parse + DOI match
-        # (docs/proposals/citation-bib-parse.md). Default-ON like
+        # (``citation-bib-parse`` (git-only)). Default-ON like
         # chunk_keywords above: the `meta.bib_parse_version` predicate
         # converges, so normal cadence drains the backlog; `--only
         # bib_parse` is the fast-path burst backfill. SMALL-tier LLM via
@@ -705,7 +705,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_bib_parse_pass)
 
         # bib_mark — inline citation-marker extraction into chunk_citations
-        # (docs/proposals/citation-taproot-resolve.md). Default-ON like
+        # (docs/backlog/citation-taproot-resolve.md). Default-ON like
         # bib_parse above and drains the same way (a BIBMARK:<version> chunk
         # tag done-marker converges, so normal cadence drains the backlog;
         # `--only bib_mark` is the fast-path burst). Pure regex over body
@@ -767,7 +767,7 @@ def run(args: argparse.Namespace) -> None:
             # The embedder threaded as ``taproot_embedder`` is dual-purpose
             # (workers/chase.py's ``advance_finding`` docstring): the
             # Taproot Phase-3 W1 forward bridge's ``canon.block`` ANN
-            # lookup, AND (finding-acquisition-mode.md) the acquiring
+            # lookup, AND (acquisition-mode findings) the acquiring
             # arm's claim-text grounding search over a newly-fetched
             # stub's chunks. Both degrade gracefully to a deterministic
             # fallback with no embedder (the bridge no-ops; the
@@ -836,8 +836,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_chase_pass)
 
         # inbound_chase — inbound counterpart to the finding-chase pass
-        # above (docs/design/citation-chunk-grounding.md "Inbound sweep
-        # policy"): exhaustive one-hop citer sweep + chunk-level verdicts
+        # above: exhaustive one-hop citer sweep + chunk-level verdicts
         # for papers ``PaperHandler.get`` has flagged ``INBOUND:pending``.
         # Default-OFF (`service prio` / --only inbound_chase — §L retired
         # PRECIS_INBOUND_CHASE_ENABLED as the live gate) — the exhaustive-
@@ -862,7 +861,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_inbound_chase_pass)
 
         # hub_refine — periodic, converging enrichment of EXISTING taproot
-        # claim hubs (docs/proposals/taproot-hub-refine.md): per due hub,
+        # claim hubs (docs/backlog/taproot-hub-refine.md): per due hub,
         # semantic-search the corpus for corroborating paper chunks,
         # LLM-verify, attach the survivors. Default-OFF — dark like every
         # other taproot service (§L: enable via `service prio '*' hub_refine
@@ -1152,8 +1151,8 @@ def run(args: argparse.Namespace) -> None:
 
         # job_claude_docker — drains sandbox_run jobs (meta.executor==
         # 'claude_docker') by launching a detached, cgroup-capped
-        # container, polling it by name, and reaping it (ADR 0048 /
-        # docs/design/sandbox-run.md). Registered **default-OFF** — only
+        # container, polling it by name, and reaping it (ADR 0048).
+        # Registered **default-OFF** — only
         # via a `service prio` row (seeded once at deploy from the sandbox
         # hosts' group membership; §L retired PRECIS_SANDBOX_ENABLED as the
         # live gate) or an explicit `--only job_claude_docker`, mirroring
@@ -1353,7 +1352,7 @@ def run(args: argparse.Namespace) -> None:
         # PRECIS_PAPER_GLOSSARY_ENABLED as the live gate): a
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify. Model defaults to the cheap `summarizer` alias. See
-        # workers/paper_glossary.py + docs/design/reading-prep-loop.md.
+        # workers/paper_glossary.py + docs/backlog/reading-prep-loop.md.
         if _register("paper_glossary"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
@@ -1525,8 +1524,7 @@ def run(args: argparse.Namespace) -> None:
                 ref_passes.append(_axis_pass)
 
         # briefing_audio — narrate the morning news briefing onto the podcast
-        # feed (the first automatic audio producer, docs/design/audio-feed.md).
-        # Default-OFF (`service prio` or --only briefing_audio — §L retired
+        # feed (the first automatic audio producer). Default-OFF (`service prio` or --only briefing_audio — §L retired
         # PRECIS_BRIEFING_AUDIO_ENABLED as the live gate)
         # and TTS-host-only: it needs the `[tts]` extra + Kokoro model files +
         # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on spark. Decoupled
@@ -1584,7 +1582,7 @@ def run(args: argparse.Namespace) -> None:
                 ref_passes.append(_briefing_audio_pass)
 
         # cast_audio — narrate the daily *casts* (morning reading-brief + evening
-        # nidra) onto the podcast feed (docs/design/reading-prep-loop.md §Audio).
+        # nidra) onto the podcast feed (docs/backlog/reading-prep-loop.md §Audio).
         # Same substrate as briefing_audio: TTS-host-only (spark), container-first,
         # self-scheduling off an un-narrated cast draft, idempotent via
         # meta.audio_episode_id. Default-OFF (`service prio` or --only
@@ -1715,7 +1713,7 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_fetch_pass)
 
-        # Citation-forward watcher (docs/design/watching.md). Polls
+        # Citation-forward watcher. Polls
         # Semantic Scholar for papers that cite our most-due salient
         # papers and mints metadata-only stubs; fetch_oa then OA-acquires
         # them. Deliberately NOT in system_passes/agent_passes — it makes
@@ -2121,7 +2119,7 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_dream_agent_pass)
 
-        # health_digest — §D (docs/proposals/health-watchdog.md). Same shape
+        # health_digest — §D (docs/backlog/health-watchdog.md). Same shape
         # as dream_agent just above: this registration is for a manual/ad-hoc
         # `--only health_digest` run only (no `default_profiles`, no
         # `enable_env`). The STANDING trigger is the `health_digest`
@@ -2137,7 +2135,7 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_health_digest_pass)
 
-        # materialize — §F cycle a (docs/proposals/cluster-scheduling.md
+        # materialize — §F cycle a (docs/backlog/cluster-scheduling.md
         # §F). Same shape as health_digest just above: this registration is
         # for a manual/ad-hoc `--only materialize` run only (no
         # `default_profiles`, no `enable_env`). The STANDING trigger is the

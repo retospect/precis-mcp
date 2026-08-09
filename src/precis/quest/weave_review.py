@@ -1,5 +1,5 @@
 """Rung 6f of the paper-writing pipeline — the per-weave review-todo
-trigger (docs/design/paper-writing-pipeline.md §"Review — the memoized
+trigger (docs/backlog/paper-writing-pipeline.md §"Review — the memoized
 approval ledger").
 
 The reviewer ENGINE already exists: a todo carrying ``meta.review=<lens>``
@@ -23,7 +23,7 @@ via ``store.insert_ref`` + ``store.add_tag`` directly instead — the same
 trusted-code-path convention ``workers/dispatch.py`` (job children of a
 todo) and ``workers/backlog_groom.py`` (its own todo children) already use.
 
-**Lenses.** ``docs/design/paper-writing-pipeline.md``'s persona table
+**Lenses.** ``docs/backlog/paper-writing-pipeline.md``'s persona table
 marks ``flow`` (``precis-review-paragraph-flow``) and ``cites``
 (``precis-review-citation-faithfulness``) as the two *per-weave* checkers;
 ``structure``/``adversarial`` are the weekly/deep tiers, out of scope for

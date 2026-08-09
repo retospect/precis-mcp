@@ -137,7 +137,7 @@ scripts/classify/
 
 The chunk axes ship as a **cascade** — junk-gate → `role3` (own/background/
 furniture) → optional escalate. Full design + eval:
-`docs/design/chunk-classifier-cascade.md` and `EVAL_RESULTS.md`.
+`chunk-classifier-cascade` (git-only) and `EVAL_RESULTS.md`.
 
 ```sh
 ./scripts/classify/classify --cascade --limit 200            # DRY-RUN (default)

@@ -903,7 +903,7 @@ def test_openai_tools_threads_loop_paused(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 # ── Part 2: openai_tools cost capture (un-blind the budget breaker) ────
-# docs/proposals/glm-fleet-flip-safety.md Part 2 — the 14 "successful"
+# ``glm-fleet-flip-safety`` (git-only) Part 2 — the 14 "successful"
 # openai_tools rows that all logged cost_usd=None.
 
 
@@ -1387,7 +1387,7 @@ def test_resolve_backend(
         (Tier.FRONTIER, True, Transport.OPENAI_TOOLS),
         (Tier.BIG, True, Transport.OPENAI_TOOLS),
         # SMALL mirrors the cloud split (OPENAI_COMPAT under the openai
-        # backend — docs/proposals/llm-openrouter-bypass.md item 2).
+        # backend — the OpenRouter-bypass hosted-small remap).
         (Tier.SMALL, False, Transport.OPENAI_COMPAT),
     ],
 )
@@ -1607,7 +1607,7 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
 
 
 # ── Part 1: transparent hosted-small remap ──────────────────────────────
-# docs/proposals/glm-fleet-flip-safety.md Part 1 — the 395-error class:
+# ``glm-fleet-flip-safety`` (git-only) Part 1 — the 395-error class:
 # classify/summarize pin model="summarizer" (a local-only alias),
 # which 400s when it reaches a hosted OSS endpoint under the flip.
 
@@ -2722,7 +2722,7 @@ def test_dispatch_chain_override_falls_through_to_rung_1(
     assert rung1_calls["model"] == "claude-backup"
 
 
-# ── paused local slot degrades into the ladder (llm-openrouter-bypass item 3) ──
+# ── paused local slot degrades into the failover ladder's hosted rung ──
 
 
 def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(

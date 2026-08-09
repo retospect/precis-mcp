@@ -1,5 +1,5 @@
 """Rung 6b of the paper-writing pipeline — deterministic residual-paper
-clustering (docs/design/paper-writing-pipeline.md §Integrate — the tick
+clustering (docs/backlog/paper-writing-pipeline.md §Integrate — the tick
 body, step 3: Residual → section: "cluster deferred papers (gist embedding
 + KeyBERT labels, deterministic); the model judges a digest (label + 3-5
 exemplar titles), not raw titles; skip clustering when residual <~15").

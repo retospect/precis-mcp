@@ -708,7 +708,7 @@ def test_ref_anchor_opens_new_tab() -> None:
 
 
 # ---- Paper cite anchors reuse a named window + land at the cited passage ---
-# (smartdraft-claim-ux slice 2 item 7): the compact § cite and a paper-chunk
+# (the claim-UX paper-at-position behaviour): the compact § cite and a paper-chunk
 # (pc<id>) universal handle both already carry the cited chunk in their href
 # (the existing ``?chunk=`` deep-link — the paper reader jumps to it,
 # routes_web.papers._cited_chunk + the reader's ``paperDoc()`` JS); this pins
@@ -950,7 +950,7 @@ def test_claim_hub_head_renders_claim_anchor() -> None:
 
 
 def test_claim_hub_anchor_carries_data_claim_head() -> None:
-    """smartdraft-claim-ux slice 2 item 5: the prose ◆ carries
+    """The claim-UX diamond↔rail sync: the prose ◆ carries
     ``data-claim-head`` so the reader's diamond↔rail-sync JS can find every
     element citing the same hub."""
     out = str(linkify_refs("see [fi123]", compact=True, claims=frozenset({"fi123"})))

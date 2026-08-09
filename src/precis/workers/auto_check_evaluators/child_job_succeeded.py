@@ -1,6 +1,6 @@
 """``type='child_job_succeeded'`` — wait for any child job to succeed.
 
-Slice-5 of ``docs/design/todo-tree-plan.md``: a todo with
+Slice-5 of ``docs/backlog/todo-tree-plan.md``: a todo with
 ``meta.executor`` is the *intent*; the dispatch worker mints a
 ``kind='job'`` ref under it; when that job finishes successfully
 the todo's auto_check resolves and the leaf flips to

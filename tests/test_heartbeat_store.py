@@ -67,7 +67,7 @@ def test_recent_heartbeats_ordered_by_host(store: Store) -> None:
     assert hosts == sorted(hosts)
 
 
-# ── §H boot epoch: meta.boot_ids nested-merge (compute-lane-lease-epoch.md) ──
+# ── Worker boot epoch: meta.boot_ids nested-merge ──────────────────────────
 
 
 def test_boot_ids_merge_across_two_processes_on_one_host(store: Store) -> None:

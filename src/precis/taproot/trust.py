@@ -1,7 +1,6 @@
 """The single shared trust derivation for a finding-backed citation.
 
-Design: ``docs/proposals/finding-trust-surfaces.md``. `finding-acquisition-
-mode` gave a claim a life *before* its evidence is verified
+The acquisition-mode mint gave a claim a life *before* its evidence is verified
 (``STATUS:acquiring``, and the pre-existing ``tracing``) — this module is
 the read-time mapping from that machine state to the two human-facing
 trust labels, so a citation never quietly launders an unverified claim

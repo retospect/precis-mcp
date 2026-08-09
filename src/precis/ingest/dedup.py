@@ -17,7 +17,15 @@ migrate external identifiers + graph edges to the survivor, record a
 ``probe_existing`` already filters soft-deleted refs, so a retired
 duplicate can't resurrect.
 
-See ``docs/design/duplicate-paper-handling.md``.
+Why a sweep at all: ingest-time dedup (``db_writer.probe_existing`` on
+pdf_sha256 / doi / arxiv / s2 / content_hash / paper_id) only misses a
+second copy that shares *none* of those keys — a different file of the
+same paper that resolved no DOI, or a different OCR of the same text.
+Better ingest-time resolution shrinks that set but can't zero it, so the
+periodic reconciliation (this module, run by ``paper_reconcile``) is the
+safety net. Phase 3 (:func:`reconcile_by_title_similarity`) covers the
+id-less title-only-stub class; near-dup detection across two *held*
+copies with different OCR (SimHash/MinHash) is not built.
 """
 
 from __future__ import annotations
@@ -443,7 +451,6 @@ def reconcile_by_doi_case(
 # sameness (preprint vs published, erratum, version, namesake). Those are
 # left to the identifier-proven paths (reconcile_by_doi_case / pdf) or
 # surfaced for human review — never auto-merged on title alone.
-# See docs/design/duplicate-paper-handling.md (Phase 3).
 
 #: Auto-merge floor: trigram title similarity at/above this (with a
 #: compatible year) folds the stub into the held paper unattended.

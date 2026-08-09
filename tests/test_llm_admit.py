@@ -1,5 +1,5 @@
 """Tests for window admission — the `admit()` guardrail (llm-catalog slice 2,
-docs/proposals/llm-catalog.md).
+``llm-catalog`` (git-only)).
 
 Covers: the pure fit-check (boundaries, headroom, unknown-window degrade), the
 catalog window lookup precedence, the router `dispatch` hook (ships dark on an

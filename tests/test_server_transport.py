@@ -1,5 +1,5 @@
 """``precis serve``'s optional network transport (§H cycle b, deliverable 3
-— ``docs/design/sandbox-run.md`` §"precis_access:read"): the bearer-token
+— the sandbox_run ``precis_access:read`` callback): the bearer-token
 gate that guards ``sse``/``streamable-http``, and ``main()``'s
 transport branching. ``stdio`` — every existing caller — must stay
 byte-identical; the pure token-check function and the ASGI middleware

@@ -24,8 +24,8 @@
 {%- endmacro %}
 {% macro qs(dc) %}{{ slink(to_focus=dc) }}{% endmacro %}
 
-{# The per-block review indicator + dropdown (smartdraft-review-status-ui
-   items 6/7) is now the shared ``sd_block.sd_review_widget`` macro
+{# The per-block review indicator + dropdown
+   is now the shared ``sd_block.sd_review_widget`` macro
    (``smartdraft/_block.html.j2``, imported above as ``sd_block``) — it
    replaces both the old focus-only ✓ button and the heading-only
    ``review ▾`` menu (whose ``structural``/``deep_review`` vocabulary no
@@ -129,13 +129,13 @@
   .sd-collapse:hover { background: #f8fafc; color: #64748b; }
   .sd-badge { flex-shrink: 0; font-size: 10px; }
   .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
-  /* Per-block review indicator (smartdraft-review-status-ui item 6) — a
+  /* Per-block review indicator — a
      4-state dot: grey = checks outstanding, hollow-blue = machine-green
      (awaiting human), emerald = human-approved, amber = human-approved but
      edited since. A trailing red "!" (::after) marks the deterministic
      citation-integrity flag (item 5c) — orthogonal to the ledger state, so
      it never overrides the dot's own colour. Claim-trust overlay
-     (finding-trust-surfaces §3, same ::after slot), quietest→loudest:
+     (the trust-surfaces editor badges, same ::after slot), quietest→loudest:
      "Ⓐ" red for an abstract-only cite, "✍" calm slate for an author-vouched
      one (both the softer states an unacquirable-override folds to), "?"
      amber for unverified, "‼" red+bold for unsupported — ALL applicable
@@ -183,7 +183,7 @@
   .sd-dot-sourced { background: #16a34a; }
   .sd-dot-pending { background: #d97706; }
   .sd-dot-unsourced { background: #dc2626; }
-  /* Diamond ↔ Claims-rail sync (smartdraft-claim-ux slice 2, item 5):
+  /* Diamond ↔ Claims-rail sync:
      hovering either the prose ◆ or its rail chip highlights BOTH — every
      element sharing the same data-claim-head. sd-claim-flash is the
      one-shot "there it is" pulse a click's scroll-to-counterpart adds. */
@@ -488,7 +488,7 @@
        (an overflow-auto ancestor would clip them at the panel edge). ── #}
   <div class="rounded border border-slate-200 bg-white">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Focus</div>
-    {# ``tex-scope`` (smartdraft-claim-ux slice 1's KaTeX convention) marks
+    {# ``tex-scope`` (the opt-in KaTeX convention, base.html.j2) marks
        this as a prose container eligible for math rendering — the sanctioned
        overlap point with that slice; nothing else in this file changes. #}
     <div class="space-y-2 p-3 text-sm tex-scope">
@@ -624,7 +624,7 @@
   </div>
 
   {# ── RIGHT: docked Claim pane + collaboration — one sticky grid column.
-       The claim pane (smartdraft-claim-ux slice 2, item 6 — a "4th column"
+       The claim pane (the claim-UX docked pane — a "4th column"
        without an actual grid change) sits ABOVE Collaborate: a persistent,
        scrollable panel, hidden until a prose ◆ or a Claims-rail chip is
        clicked (the delegated handler below, in the click listener). It loads
@@ -1192,8 +1192,8 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       n.parentNode.replaceChild(span, n);
     });
   }
-  // ── Claim diamond ↔ Claims-rail sync + docked pane (smartdraft-claim-ux
-  // slice 2, items 5/6). Every element sharing a `[fi123]` cite carries
+  // ── Claim diamond ↔ Claims-rail sync + docked pane.
+  // Every element sharing a `[fi123]` cite carries
   // `data-claim-head="fi123"` — the prose ◆ (linkify's `_render_claim_hub`)
   // AND its Claims-rail chip. Both hover-highlight the other; a plain click
   // on either loads the SAME `/preview/claim/<head>` fragment used by the
@@ -1300,7 +1300,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // A plain (unmodified — metaKey/ctrlKey already returned above; a
     // middle-click never reaches 'click' at all) left-click on a prose ◆ or
     // a Claims-rail chip feeds the docked pane instead of opening a new tab
-    // (smartdraft-claim-ux item 6); the anchor's own target="_blank" (or the
+    // (the claim-UX docked pane); the anchor's own target="_blank" (or the
     // rail chip's plain href) still drives modified-click / right-click
     // "open in new tab", since those never preventDefault here.
     const claimEl = e.target.closest ? e.target.closest('[data-claim-head]') : null;
@@ -1646,7 +1646,7 @@ function smartClearPins() {
     body: JSON.stringify({ op: 'clear' }),
   }).then(() => window.__sdRefresh()).catch(() => {});
 }
-// ── Review status (smartdraft-review-status-ui items 6-8) ──────────────
+// ── Review status (indicator + dropdown + rollup) ──────────────────────
 // Every action below just POSTs the shared JSON endpoint then refreshes the
 // WHOLE panel (__sdRefresh, the same reload-free swap every other write path
 // here uses) — the fresh server render recomputes every block's indicator +

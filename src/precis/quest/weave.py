@@ -1,7 +1,7 @@
 """Rung 6d-2 of the paper-writing pipeline — ``weave_section``: recompose a
 dossier section from a *batch* of placed papers.
 
-Design: ``docs/design/paper-writing-pipeline.md`` §"Integrate — the tick
+Design: ``docs/backlog/paper-writing-pipeline.md`` §"Integrate — the tick
 body" step 2 (Weave, section-batch). "For each section with placed papers,
 hand the model the section at fisheye+1hop + its papers' claims →
 recompose (merge duplicates, one argument, transitions), mint citations,

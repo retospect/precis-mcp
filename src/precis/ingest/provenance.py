@@ -1,7 +1,5 @@
 """Provenance / retraction monitoring against Crossref.
 
-Phase 1 of ``docs/design/provenance-kind-plan.md``.
-
 Public surface:
 
     check_doi(doi, *, store, mailto=None) -> ProvenanceResult
@@ -98,8 +96,8 @@ from precis.ingest._provenance_types import (
 
 # Crossref's ``update_type`` vocabulary mapped to our internal severity
 # and the ``refs.retraction_status`` CHECK-constraint values from
-# ``0001_initial.sql:308``. Keep this aligned with the table in
-# ``docs/design/provenance-kind-plan.md`` § "Severity classification".
+# ``0001_initial.sql:308``. This map IS the severity classification;
+# keep ``_provenance_rw._RW_NATURE_MAP`` (RW's vocabulary) aligned.
 _UPDATE_TYPE_MAP: dict[
     str, tuple[Severity, RetractionStatus | None, LinkRelation | None]
 ] = {
@@ -232,8 +230,8 @@ class CandidateMatch:
     hint. Phase 5 deliberately does NOT substitute the supplied DOI
     with any candidate — the caller (human or LLM) reads the
     candidates and decides whether one of them is the citation they
-    actually meant. See ``docs/design/provenance-kind-plan.md`` §
-    "Rejected: fuzzy DOI auto-resolution" for the rationale.
+    actually meant (fuzzy DOI auto-resolution was rejected: a wrong
+    auto-pick silently corrupts the bibliography it exists to guard).
 
     ``score`` is Crossref's opaque ranking value. It's emitted so
     downstream tooling can apply its own threshold, but the

@@ -4,9 +4,9 @@
 appended to every numeric-ref ``get()``) used to be the only kind of
 handler that could render it — every ``Handler``-direct kind (paper,
 draft, structure, cad, pcb, plan, pres, patent) had no equivalent, so
-an agent reading e.g. a paper never saw its link graph
-(``OPEN-ITEMS.md`` graph-completeness audit item 1; blocks the inbound
-half of ``docs/design/citation-chunk-grounding.md``).
+an agent reading e.g. a paper never saw its link graph — which also
+blinded the inbound half of citation-chunk grounding (the
+``inbound_chase`` citer sweep + ``_citer_sidecar`` verdict render).
 
 :func:`render_links_section` is the free-standing extraction —
 ``NumericRefHandler`` delegates to it unchanged (pure refactor, no
@@ -15,6 +15,12 @@ from a new ``view='links'`` arm, registered in that kind's view enum.
 Kept free-standing (matches the ``_link_tag_ops`` / ``_slug_ref_shared``
 style already used across handlers) rather than a mixin, since the only
 shared state needed is ``store`` + the one ``ref``.
+
+Relation hygiene (citation-chunk grounding): a chunk-scoped ``cites``
+edge is *evidential* — citation-graph-confirmed, located to a chunk,
+carrying a support verdict. Topical similarity ("close but doesn't
+cite") must never ride ``cites``; it belongs on ``related-to`` +
+``meta.note`` (a type-2 similarity pass — not built).
 """
 
 from __future__ import annotations

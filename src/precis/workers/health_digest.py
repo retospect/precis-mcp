@@ -1,5 +1,5 @@
 """``health_digest`` — the §D liveness net (Phase 1 of
-``docs/proposals/health-watchdog.md``).
+``docs/backlog/health-watchdog.md``).
 
 A periodic, outcome-based digest that reaches out (push, not pull) so a
 scheduled producer never rots silently for days: nursery already owns the
@@ -185,7 +185,7 @@ def _hours_since(ts: datetime | None) -> float | None:
 #: activity" probe run in one batch via
 #: :func:`precis.health_checks.fetch_freshness_timestamps`. ``what`` is the
 #: human phrase used in the rendered detail line. Budgets are the design
-#: doc's pulse-probe-seeded values (``docs/proposals/health-watchdog.md``
+#: doc's pulse-probe-seeded values (``docs/backlog/health-watchdog.md``
 #: §A "Layer 1 — Outcomes"), not guesses.
 _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
     (

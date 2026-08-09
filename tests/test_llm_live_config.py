@@ -248,7 +248,7 @@ def test_resolve_model_dark_without_store_is_env(
 
 
 # ── Part 3: resolve_model backend-coherence ─────────────────────────────
-# docs/proposals/glm-fleet-flip-safety.md Part 3 — the 4 `dream` api_errors:
+# ``glm-fleet-flip-safety`` (git-only) Part 3 — the 4 `dream` api_errors:
 # a half-applied flip demotes the backend to ANTHROPIC (no PRECIS_LLM_BASE_URL)
 # but the app_settings model override still names an OSS slug, handing a
 # claude transport a model it can't run.

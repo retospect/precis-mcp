@@ -1,6 +1,6 @@
 """Window admission — refuse a doomed (context, model) pairing *loudly*.
 
-Slice 2 of the ``llm`` catalog (docs/proposals/llm-catalog.md). The guardrail
+Slice 2 of the ``llm`` catalog (``llm-catalog`` (git-only)). The guardrail
 that stops "100k tokens into a 2k window" from silently truncating or 400-ing:
 a **pure integer fit-check** run wherever a context is paired with a model, hot
 path included. It costs nothing (arithmetic), so it is unconditional — unlike

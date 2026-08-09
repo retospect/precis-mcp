@@ -530,7 +530,7 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     ledger_text = dossier_mod.read_ledger(store, qid) if did is not None else ""
 
     # Paper — the SEPARATE reader-facing draft (``paper-of``), when one
-    # exists. Nothing mints it yet (docs/design/paper-writing-pipeline.md);
+    # exists. Nothing mints it yet (docs/backlog/paper-writing-pipeline.md);
     # the hub just links it when some other writer has.
     pid = dossier_mod.paper_ref_id(store, qid)
     paper_url = _quest_draft_url(store, pid) if pid is not None else None
@@ -843,7 +843,7 @@ def _pathway_graph_payload(
             "rel_energy": n.get("rel_energy"),
             "energy_std": n.get("energy_std"),
             "low_confidence": bool(n.get("low_confidence")),
-            # CHE potential lever (docs/proposals/pathway-potential-lever.md)
+            # CHE potential lever
             # — reservoir H atoms this node has absorbed relative to the
             # root (root = 0); null on a legacy graph catpath never
             # annotated. Always present (even null) so the client treats a
@@ -1718,7 +1718,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         "warnings": warnings_list,
     }
 
-    # CHE potential lever (docs/proposals/pathway-potential-lever.md) — the
+    # CHE potential lever — the
     # explorer's U-slider readout strip. Every field is optional; on a
     # legacy pathway all five stay None (the slider itself is hidden by
     # ``diagram.has_n_h``, computed below, regardless of these).
@@ -1731,7 +1731,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         "T": results.get("T"),
     }
 
-    # Interactive explorer (docs/proposals/reaction-pathway-explorer.md) — the
+    # Interactive explorer — the
     # clickable energy diagram (item 1), the per-state 3D cell viewer (item 2),
     # and per-state measures (item 3). All three degrade gracefully: no graph
     # -> no diagram; no/partial structure_refs -> per-state "no geometry

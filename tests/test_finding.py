@@ -790,7 +790,7 @@ class TestPutSupportersHubMint:
 
 class TestPutAcquisitionMode:
     """``put(kind='finding', wants=[...], provenance=...)`` — the third
-    mint mode (finding-acquisition-mode.md): a claim whose supporting
+    mint mode (acquisition-mode findings): a claim whose supporting
     paper isn't in the corpus yet. AC #1 / #2 / #8 (regression)."""
 
     def test_wants_mints_acquiring_finding_with_linked_stub(self, store) -> None:
@@ -1440,8 +1440,8 @@ class TestRetitleHub:
 
 class TestUnacquirableOverride:
     """``edit(kind='finding', id=N, unacquirable_note=...)`` — writes
-    ``meta.unacquirable_override`` (docs/proposals/finding-trust-surfaces.md
-    §2). Settable pre-emptively on any lifecycle status."""
+    ``meta.unacquirable_override`` (the trust-surfaces override door).
+    Settable pre-emptively on any lifecycle status."""
 
     def _seed_finding(self, store) -> int:
         _seed_paper(store)

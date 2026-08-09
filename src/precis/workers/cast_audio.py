@@ -1,6 +1,6 @@
 """cast_audio — narrate the daily *casts* (morning brief + nidra) onto the feed.
 
-The audio organ of the cast pipeline (docs/design/reading-prep-loop.md §Audio),
+The audio organ of the cast pipeline (docs/backlog/reading-prep-loop.md §Audio),
 sibling to :mod:`precis.workers.briefing_audio`. The cast *producers*
 (:func:`precis.reading.briefing_cast.build_reading_briefing`,
 :func:`precis.reading.meditation.build_meditation`) run on any node and persist a

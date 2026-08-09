@@ -95,4 +95,4 @@ Every engine normalizes to the *same* `protein` IR: sequence + mmCIF + the
 scalar confidences. Swap AlphaFold3 for ColabFold (MSA) and `get` renders
 identically. The heavy predictor runs in a container on the GPU node — the
 weights are mounted, never baked (ADR 0056 §5) — so the always-on request path
-carries no bio dependencies. Design: `docs/design/chem-tools-integration.md`.
+carries no bio dependencies.

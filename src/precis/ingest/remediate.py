@@ -228,7 +228,7 @@ def remediate_one(
     # Phase 1 dedup: if the re-derived DOI already belongs to a *different*
     # live ref, this suspect is a duplicate of that canonical — fold it in
     # rather than "fixing" a redundant row (which would also fail on the
-    # DOI uniqueness conflict). See docs/design/duplicate-paper-handling.md.
+    # DOI uniqueness conflict). See ingest/dedup.py::merge_duplicate.
     if meta.doi:
         with store.pool.connection() as conn:
             owner = store.identifier_owner("doi", meta.doi, conn=conn)

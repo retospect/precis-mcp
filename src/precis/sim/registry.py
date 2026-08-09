@@ -1,6 +1,6 @@
 """Load the precis-side sim registry.
 
-Slice 1 of ``docs/proposals/sim-harness.md`` (In-scope item 2, AC #2). The
+Slice 1 of ``docs/backlog/sim-harness.md`` (In-scope item 2, AC #2). The
 registry is how precis learns the *set* of sims it drives and the
 sim↔quest link (AC #6) — a small YAML data file mapping::
 

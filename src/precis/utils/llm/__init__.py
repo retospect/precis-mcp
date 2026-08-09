@@ -106,7 +106,7 @@ no row ⇒ byte-identical to env-only routing. Two call sites whose
 ``sandbox_run``/``claude_docker`` — read :func:`resolve_backend` and skip
 clean under ``backend=openai`` instead of folding through :func:`dispatch`.
 
-The ``llm`` model catalog (docs/proposals/llm-catalog.md; all five slices
+The ``llm`` model catalog (``llm-catalog`` (git-only); all five slices
 built, ships dark) layers on this seam — facts/writer in
 :mod:`precis.llm_catalog`, handler in :mod:`precis.handlers.llm`:
 

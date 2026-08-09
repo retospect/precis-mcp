@@ -1,5 +1,5 @@
 """Rung 6a of the paper-writing pipeline: deterministic paper→section
-placement (docs/design/paper-writing-pipeline.md §Integrate — the tick
+placement (docs/backlog/paper-writing-pipeline.md §Integrate — the tick
 body, step 1: Place). Pure geometry — controlled one-hot vectors stand in
 for real bge-m3 embeddings so centroid math + the floor/top-k gate are
 exercised without a model in the loop.

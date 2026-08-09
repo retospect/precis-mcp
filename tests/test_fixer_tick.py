@@ -1,5 +1,5 @@
 """Unit + run_tick-level tests for the fixer's model tiering and branch
-cleanup (docs/proposals/fixer-spec-tiering-and-split.md).
+cleanup (``fixer-spec-tiering-and-split`` (git-only)).
 
 Two load-bearing behaviors:
 

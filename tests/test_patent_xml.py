@@ -227,7 +227,7 @@ class TestClaimRunSplitting:
     """A single ``<claim>`` element often holds the *entire* claims section
     (OPS ``<claim-text>`` children are arbitrary fragments, not per-claim).
     The parser splits such a block on the sequential claim number so each
-    claim becomes its own text (docs/design/patent-authoring-loop.md — the
+    claim becomes its own text (docs/backlog/patent-authoring-loop.md — the
     FTO digest wants per-claim granularity, not one giant blob)."""
 
     def _parse(self, body: str) -> list[str]:

@@ -160,7 +160,7 @@ def build_tag_filter(
 
 
 #: Canonical control tag for fenced, speculative dream output
-#: (docs/design/dreaming.md, §Inspire behavior). The ``DREAM`` axis is
+#: (docs/backlog/dreaming.md, §Inspire behavior). The ``DREAM`` axis is
 #: a closed vocabulary; ``speculative`` is its low-confidence value.
 SPECULATIVE_TAG = "DREAM:speculative"
 _SPECULATIVE_NS = "DREAM"
@@ -172,7 +172,7 @@ def is_speculative_tag(tag: str) -> bool:
 
     Used to detect an *explicit* opt-in: a caller that lists this tag in
     ``tags=`` is asking to see fenced inspirations, so the fence lifts
-    for that query (docs/design/dreaming.md §Inspire — "surface on
+    for that query (docs/backlog/dreaming.md §Inspire — "surface on
     explicit ask").
     """
     return tag.strip() == SPECULATIVE_TAG

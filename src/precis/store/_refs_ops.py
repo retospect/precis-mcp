@@ -416,7 +416,7 @@ class RefsMixin:
         Mirrors the chase worker's stub path
         (``workers/chase._resolve_or_create_stub``) but takes explicit
         identifier pairs so the gated dream ``acquire`` tool can reuse
-        it (docs/design/dreaming.md, §Acquire).
+        it (docs/backlog/dreaming.md, §Acquire).
         """
         from precis.identity import make_cite_key, normalize_doi
 
@@ -452,7 +452,7 @@ class RefsMixin:
             # re-acquire is idempotent too. Gated tight (held-only,
             # trigram sim >= 0.85, publication year within 1 when both are
             # known) so a genuinely-new paper still mints. See
-            # docs/design/duplicate-paper-handling.md (Phase 3).
+            # ingest/dedup.py (Phase 3).
             if not norm and title and title.strip():
                 # "Truly held" = a real, ingested copy: a pdf_sha256 AND
                 # body chunks (ord >= 0). The chunk requirement is the
@@ -565,7 +565,7 @@ class RefsMixin:
 
         Shared by ``precis stubs`` (CLI) and ``search(view='stubs'
         | 'chase-queue')`` (MCP) so all render from one query
-        (docs/design/stubs-mcp-and-skill.md).
+        (the stub surfaces; see ``store/_stub_predicate.py``).
 
         ``awaiting=True`` restricts to rows the fetcher would actually
         try on its next pass: never attempted, or attempted >24h ago
@@ -736,7 +736,7 @@ class RefsMixin:
 
         ``ref_ids`` narrows selection to that set — the single-paper
         sibling of the batch "Fetch next N" button
-        (``POST /papers/{ref_id}/fetch-ref``, paper-viewer-nav slice 3):
+        (``POST /papers/{ref_id}/fetch-ref``, the Sources/Cited per-row Fetch):
         pass a one-element list right after minting/reusing a stub so it
         jumps the queue immediately instead of waiting its unstamped turn.
         ``id_kinds`` defaults to DOI-only (the batch caller's long-standing
@@ -1248,8 +1248,8 @@ class RefsMixin:
         ``'expression_of_concern'`` (per the CHECK constraint in
         ``0001_initial.sql``) or ``None`` when the paper is clean —
         in which case we still touch ``retraction_checked_at`` so the
-        TTL gate works. See ``ingest/provenance.py`` for the caller
-        and ``docs/design/provenance-kind-plan.md`` for the schema rationale.
+        TTL gate works. See ``ingest/provenance.py`` for the caller;
+        the ``refs.retraction_*`` columns predate the kind (0001).
 
         Returns the number of findings whose chain was re-graded
         as a side effect (0 when ``status`` is None or no finding

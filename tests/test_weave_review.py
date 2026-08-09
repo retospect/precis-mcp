@@ -1,5 +1,5 @@
 """Tests for :func:`precis.quest.weave_review.mint_weave_reviews` — rung
-6f of the paper-writing pipeline (docs/design/paper-writing-pipeline.md
+6f of the paper-writing pipeline (docs/backlog/paper-writing-pipeline.md
 §"Review — the memoized approval ledger") — plus its wiring into
 :func:`precis.quest.weave_tick.weave_tick`.
 """

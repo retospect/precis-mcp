@@ -1,4 +1,4 @@
-"""Reviewer driver — Slice 3 of ``docs/design/todo-tree-plan.md``.
+"""Reviewer driver — Slice 3 of ``docs/backlog/todo-tree-plan.md``.
 
 One `claude_agent`-based pass that turns into multiple reviewers
 through configuration. Where structural.py + deep_review.py each

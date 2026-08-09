@@ -1,6 +1,6 @@
 """``source-backfill`` — find corpus sources a draft *should* cite but doesn't,
-and assemble the editing workspace to weave them in (design:
-``docs/design/source-backfill.md``).
+and assemble the editing workspace to weave them in (unbuilt follow-ups:
+``docs/backlog/source-backfill-followups.md``).
 
 The **recall** mirror of the citation **verifier**: the verifier asks "is what
 I cited true?" (precision); source-backfill asks "did I miss anything?"

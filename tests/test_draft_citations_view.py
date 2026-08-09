@@ -1,7 +1,7 @@
 """``get(kind='draft', id=<slug>, view='citations')`` — the draft-citation
-lifecycle view (docs/proposals/taproot-draft-citation-view.md).
+lifecycle view (to-fetch / re-ground / promote / done).
 
-Covers the proposal's acceptance criteria:
+Covers the view's acceptance criteria:
 
 1. A stub ``[pa]``, a fetched ``[pc]``, and a ``[fi]`` cite each land in
    to-fetch / to-promote / done respectively.

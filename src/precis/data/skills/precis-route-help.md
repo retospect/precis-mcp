@@ -82,5 +82,4 @@ Every engine normalizes to the *same* `route` IR via **LinChemIn** (the
 Marker-analog for routes): the engine's native output → SynGraph → the route
 graph you read. Container engines (aizynth) normalize in-image; service engines
 (askcos) via a standalone normalizer. So "swap the engine, keep what you read"
-is a fact — `get` renders identically whichever planner ran. Design:
-`docs/design/chem-tools-integration.md`.
+is a fact — `get` renders identically whichever planner ran.

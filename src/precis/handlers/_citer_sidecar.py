@@ -1,18 +1,17 @@
 """Citer-verdict sidecar — narrow, capped chunk-level citation display.
 
-``docs/design/citation-chunk-grounding.md`` Part 3 ("sidecar render"):
-a one-off, capped attachment for a chunk that carries resolved
+A one-off, capped attachment for a chunk that carries resolved
 chunk-scoped ``cites`` edges from ``workers/inbound_chase.py`` —
 deliberately **not** a slice of the deferred fidelity-ladder /
 turn-routing-context-DSL proposal
-(``docs/proposals/turn-routing-and-context-dsl.md``, still "deferred —
-design captured, not sliced"); see the design doc's "Status" section,
-"pragmatic call, not left open".
+(``docs/backlog/turn-routing-and-context-dsl.md``, still "deferred —
+design captured, not sliced"); this render reuses that proposal's
+*shape* (capped count, ``card_combined``-fidelity identity,
+expand-on-request) without committing to its scope.
 
-Both directions the design doc names are now buildable, because
+Both directions are buildable, because
 ``inbound_chase._resolve_citer_chunk`` runs a *second* locate pass
-into the cited paper Y's own chunks (docs/design/citation-chunk-
-grounding.md, "Part 2/3 deepening"): a chunk-scoped ``cites`` link's
+into the cited paper Y's own chunks: a chunk-scoped ``cites`` link's
 ``src_pos`` (the citer's located chunk) is always set when the citer
 has any chunks; ``dst_pos`` (Y's located chunk) is set whenever that
 second locate finds a confident match in Y, and left unset when it
@@ -25,8 +24,7 @@ logic (:func:`_render_sidecar`):
   on ``src_pos`` — "chunk C of paper X cites Y" (the original build).
 - :func:`render_cited_by_sidecar` — inbound, ``direction='in'``
   filtered on ``dst_pos`` — "chunk D of paper Y is cited by X",
-  answering the design doc's other named case now that ``dst_pos``
-  exists.
+  now that ``dst_pos`` exists.
 """
 
 from __future__ import annotations
@@ -40,10 +38,10 @@ if TYPE_CHECKING:
 
 #: Only these verdicts are worth surfacing in a capped sidecar — a
 #: ``no`` verdict is an explicit "this citer doesn't substantively
-#: engage", not worth the row (design doc, "Inbound sweep policy").
+#: engage", not worth the row.
 _SURFACE_VERDICTS = {"yes", "partial"}
 
-#: Cap on sidecar entries (design doc: "cap at ~5").
+#: Cap on sidecar entries.
 _MAX_ENTRIES = 5
 
 #: Best-first ordering key for the two surfaced verdicts.
@@ -73,9 +71,8 @@ def render_cited_by_sidecar(store: Store, ref: Ref, chunk_pos: int) -> str:
     """Capped sidecar for the inbound ``cites`` verdicts on one chunk.
 
     Rendering chunk D of the *cited* paper Y: who cites *this specific
-    passage* (``dst_pos == chunk_pos``), and with what verdict — the
-    design doc's other named sidecar case, now buildable since
-    ``inbound_chase``'s second locate pass populates ``dst_pos``.
+    passage* (``dst_pos == chunk_pos``), and with what verdict — buildable
+    since ``inbound_chase``'s second locate pass populates ``dst_pos``.
     Returns ``""`` when there's nothing to show, same contract as
     :func:`render_citer_sidecar`.
     """
@@ -119,11 +116,10 @@ def _render_sidecar(
     if not candidates:
         return ""
 
-    # Best-first: yes before partial. The design doc's tiebreak ("the
-    # citing paper's own citation count, if readily available") isn't
-    # — this repo doesn't persist S2 citationCount on a paper ref
-    # (checked) — so ties keep insertion (link id) order, the
-    # documented fallback.
+    # Best-first: yes before partial. The designed tiebreak (the citing
+    # paper's own citation count, if readily available) isn't — this
+    # repo doesn't persist S2 citationCount on a paper ref (checked) —
+    # so ties keep insertion (link id) order, the documented fallback.
     candidates.sort(key=lambda lk: (_QUALITY[lk.meta["supports"]], lk.id))
 
     shown, extra = candidates[:_MAX_ENTRIES], candidates[_MAX_ENTRIES:]

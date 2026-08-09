@@ -329,7 +329,7 @@ only) and still works.
 Everything above is outbound: X cites Y, chase it down to Y's
 supporting chunk. `workers/inbound_chase.py` (dark by default — the
 `inbound_chase` service; flip with `precis service prio '*' inbound_chase
-<n>` or `/categorizers`, `docs/design/citation-chunk-grounding.md`)
+<n>` or `/categorizers`)
 runs the other direction — once a paper has been read, it exhaustively
 resolves every corpus-intersecting citer at chunk granularity, no
 todo/finding needed. Nothing to register from the agent side; read

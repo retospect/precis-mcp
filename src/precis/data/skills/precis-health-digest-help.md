@@ -8,7 +8,7 @@ status: active
 
 # precis-health-digest-help — the §D liveness net
 
-`health_digest` (`docs/proposals/health-watchdog.md` §D, Phases 1+2) is the
+`health_digest` (`docs/backlog/health-watchdog.md` §D, Phases 1+2) is the
 slow-rot sibling of `nursery` (`precis-nursery-help`): nursery's `critical`
 lane pages the moment a worker/dispatch outage happens, but many outcomes
 degrade over hours-to-days with nothing that urgent watching them (a

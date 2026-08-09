@@ -1,7 +1,7 @@
 """``resource_slots`` CRUD — the factory scheduler's per-host resource map.
 
 Mixin on :class:`precis.store.Store`. Backs slice 6 of
-``docs/design/factory-console-and-scheduling.md`` (§5). Migration
+``docs/backlog/factory-console-and-scheduling.md`` (§5). Migration
 ``0073_resource_slots.sql`` defines the table: one row per
 ``(host, resource)`` the host offers, with a materialized ``free`` counter.
 

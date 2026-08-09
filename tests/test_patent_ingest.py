@@ -137,7 +137,7 @@ class TestIngestFirstCall:
 class TestClaimMarking:
     """Slice 1: each block carries a ``patent_block`` meta marker, and
     claim blocks record their independent/dependent structure
-    (docs/design/patent-authoring-loop.md)."""
+    (docs/backlog/patent-authoring-loop.md)."""
 
     def _ingest(self, store: Store, fake_ops: FakeOpsClient, raw_root: Path) -> object:
         embedder = MockEmbedder(dim=store.embedding_dim())
@@ -259,7 +259,7 @@ class TestForceReingest:
     """``force=True`` re-fetches OPS and swaps an existing ref's blocks in
     place, so patents ingested before the ``patent_block`` marker existed
     get re-marked (the claim-marking backfill,
-    docs/design/patent-authoring-loop.md)."""
+    docs/backlog/patent-authoring-loop.md)."""
 
     def test_force_refetches_and_replaces_blocks(
         self, store: Store, fake_ops: FakeOpsClient, raw_root: Path

@@ -282,4 +282,4 @@ next reconcile pass. Runs on the melchior agent worker **only when
 `PRECIS_QUEST_LOOP_ENABLED` is set** (dark by default); `precis quest run
 --force` still runs one manual allocator tick by hand, independent of the
 loop. The quest layer is complete. Design of record:
-`docs/proposals/quest-layer.md`.
+`quest-layer` (git-only).

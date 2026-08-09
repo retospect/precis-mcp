@@ -1,6 +1,6 @@
 """Structured full-text producers — JATS / arXiv HTML / Elsevier XML / LaTeX.
 
-Markup-first ingest (see ``docs/design/markup-first-ingest.md``): when a
+Markup-first ingest (see ``docs/backlog/markup-first-ingest.md``): when a
 publisher serves structured full text over an API, we chunk *that*
 instead of OCR'ing the PDF. Marker is never invoked; the PDF is kept
 only as the printable.

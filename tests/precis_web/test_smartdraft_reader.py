@@ -51,7 +51,7 @@ def _sd_chunk(
         chunk_id=chunk_id,
         ref_id=700,
         meta=meta or {},
-        # smartdraft-review-status-ui item 10's document-shape stats reuse
+        # The toc document-altitude lens's document-shape stats reuse
         # `precis.utils.wordcount.aggregate_word_counts`, which reads this
         # off every chunk (``_ChunkLike`` protocol) — default None (a flat,
         # unnested fixture) is enough for every existing test.
@@ -195,7 +195,7 @@ def smartdraft_client(smartdraft_runtime: FakeRuntime, tmp_path) -> TestClient:
 
 class ReviewMatrixFakeStore(SmartDraftFakeStore):
     """A richer ledger than ``SmartDraftFakeStore``'s 2-row fixture — one
-    chunk per smartdraft-review-status-ui item-6 state, PLUS the heading
+    chunk per review-indicator dot state, PLUS the heading
     (chunk 1) carrying its own ``structure``/``adversarial``/``toc`` rows
     (so a heading focus is reviewable at all — the base fixture's ledger
     never covers chunk 1). ``chunk_kind``/``section_chunk_id`` are set on
@@ -378,7 +378,7 @@ def test_smartdraft_full_doc_review_payload_skips_skel_placeholders(
 
 
 # ── claim_trust_for_block — the unit-level counterpart to cite_integrity_ok
-# (finding-trust-surfaces §3). ``claim_trust`` itself is monkeypatched — its
+# (the trust-surfaces editor badges). ``claim_trust`` itself is monkeypatched — its
 # real derivation over hub/lifecycle state is ``test_taproot_trust.py``'s job,
 # DB-backed; this only proves ``claim_trust_for_block``'s head-scan, cache,
 # and worst-of/ignore-unresolved contract. ``store`` is never dereferenced by
@@ -749,8 +749,8 @@ def test_smartdraft_blocks_hydration_carries_review_payload(
 
 class ClaimTrustFakeStore(SmartDraftFakeStore):
     """Chunks whose prose cites findings by ``fi<id>`` handle — the
-    claim-trust badge's cite-head grammar (``docs/proposals/
-    finding-trust-surfaces.md`` §3). ``fi<id>`` resolves to its ref_id
+    claim-trust badge's cite-head grammar (the trust-surfaces editor
+    badges). ``fi<id>`` resolves to its ref_id
     via a pure ``handle_registry.parse`` (no store hit), so these fixture
     "findings" need no backing ref row — only ``precis.taproot.trust.
     claim_trust`` itself is monkeypatched per test (deriving a real trust
@@ -808,7 +808,7 @@ def _dc_block(html: str, dc: str) -> str:
 def test_smartdraft_badge_marks_unverified_and_unsupported_claims(
     monkeypatch: pytest.MonkeyPatch, claim_trust_client: TestClient
 ) -> None:
-    """finding-trust-surfaces §3: a block citing an unverified-backed
+    """Trust-surfaces editor badges: a block citing an unverified-backed
     finding gets the amber "?" overlay class (``sd-trust-unverified``) plus
     a tooltip line naming the head; one citing an unsupported-backed
     finding gets the louder ``sd-trust-unsupported`` class + tooltip line.
@@ -1013,7 +1013,7 @@ def test_smartdraft_reader_loads_katex_for_inline_math(
 
 
 def test_smartdraft_reader_has_docked_claim_pane(smartdraft_client: TestClient) -> None:
-    """smartdraft-claim-ux slice 2 item 6: a docked "Claim" panel at the top
+    """The claim-UX docked pane: a docked "Claim" panel at the top
     of the right rail — hidden by default, with a close button and an
     "open full page" link out to ``/claim/<head>``. It's what a prose ◆ /
     Claims-rail chip click (item 5/6's delegated handler) loads

@@ -1,5 +1,5 @@
 """precis_pathway `pathway` kind + `autocatpath_explore` job (bundle-pathway-
-in-tree proposal, docs/proposals/bundle-pathway-in-tree-plugin.md).
+in-tree proposal, docs/backlog/bundle-pathway-in-tree-plugin.md).
 
 Ported from autocatpath's ``tests/test_precis_bridge.py`` (+ the slab case
 from ``tests/test_precis_runner_slab.py``) now that the glue lives in this

@@ -41,7 +41,7 @@ from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/status", tags=["status"])
 
-#: WS3 (docs/proposals/web-ui-rationalization.md) merged the read-only
+#: The System-page merge folded the read-only
 #: `/status`, the editable `/factory` console, and the `/budget` cap
 #: editor into one "System" page under these sub-tabs. `/status` stays
 #: the base URL (it's the most-deep-linked of the three); `?tab=`
@@ -777,7 +777,7 @@ def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     news briefing) as opposed to plain doable-queue recurrings. For each,
     surface the schedule + last tick + status plus the most recent artifact
     it produced (via a ``derived-into`` link), so the operator can see what
-    runs and what it made. See docs/design/automations-index.md.
+    runs and what it made. See ``automations-index`` (git-only).
 
     Uses ``store.list_refs(has_schedule=True, tags=['automation'])`` (§M
     facet normalization — recurring is a ``meta.schedule`` presence filter,
@@ -1113,8 +1113,7 @@ def _llm_op_stats(store: Any) -> dict[str, dict[str, Any]]:
 
 
 def _llm_ops_ctx(store: Any) -> dict[str, Any]:
-    """Per-operation LLM routing panel state (``docs/proposals/
-    llm-operation-routing.md`` item 4 / AC5) — one row per operation over
+    """Per-operation LLM routing panel state — one row per operation over
     **union(registry LLM_OPERATIONS keys, EXCLUDED_OPERATIONS keys, observed
     ``llm_call_log.source`` values)**, sorted last-run desc (never-run
     operations sort last). Excluded ops are unioned in unconditionally

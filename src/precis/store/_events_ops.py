@@ -20,7 +20,7 @@ Two read helpers:
 
 All event slugs are free-text. Convention: ``<subsystem>`` or
 ``<subsystem>:<provider>`` for ``source``; the verb that happened
-for ``event``. See :file:`docs/design/finding-chase.md` §"LLM
+for ``event``. See :file:`docs/backlog/finding-chase.md` §"LLM
 hooks" for the chase vocabulary; future subsystems pick their own.
 """
 

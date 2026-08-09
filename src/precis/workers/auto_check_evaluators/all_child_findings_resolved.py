@@ -33,7 +33,7 @@ No arguments. ``ref_id`` is the lit-hunt todo's id; the evaluator
 walks its direct ``kind='finding'`` children. Resolved =
 ``STATUS:established`` OR ``STATUS:dead_chain`` OR
 ``STATUS:multi_candidate``. ``tracing`` children block the close, and
-so does ``acquiring`` (finding-acquisition-mode.md — a claim minted
+so does ``acquiring`` (an acquisition-mode finding — a claim minted
 via ``wants=``/``provenance=`` before its supporting paper is in the
 corpus): it's deliberately absent from the resolved set below, same as
 ``tracing``, so a lit-hunt todo can't auto-close having "acquired"

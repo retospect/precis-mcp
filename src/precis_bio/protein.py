@@ -17,7 +17,7 @@ seven verbs:
 
 Ships **dark** behind ``PRECIS_BIO_ENABLED`` (``KindSpec.requires_env``): the
 kind is hidden from the catalogue and the dispatcher until the flag is set.
-See ``docs/design/chem-tools-integration.md`` + ADR 0056.
+See ADR 0056.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class ProteinHandler(Handler):
             "compute job on the GPU node. get lists proteins, renders one fold "
             "summary (id=slug), or returns the mmCIF (view='cif'); delete "
             "soft-retires. The LLM reads confidences + sequence, never runs a "
-            "GPU fold in the request path. See chem-tools-integration.md."
+            "GPU fold in the request path."
         ),
         supports_get=True,
         supports_put=True,

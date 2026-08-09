@@ -24,7 +24,7 @@ Endpoints (paths from :mod:`precis.embedder_wire`):
   Triggers a synchronous lazy reload first if the model is idle.
 - ``GET  /metrics`` — plaintext counters for scraping.
 
-**Idle-unload (§F cycle b, ``docs/proposals/cluster-scheduling.md`` §F,
+**Idle-unload (§F cycle b, ``docs/backlog/cluster-scheduling.md`` §F,
 the "elastic residency" amendment).** The RAM/GPU an idle-but-resident
 model holds is the scarce resource, not the process — so rather than the
 worker spinning the whole daemon up/down per batch, the ALREADY-standing

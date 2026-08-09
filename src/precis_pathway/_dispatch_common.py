@@ -1,8 +1,8 @@
 """Shared dispatch-tail helpers for the ``autocatpath_*`` job types.
 
 Both ``autocatpath_explore`` (the legacy monolith, kept registered so old
-queued rows don't error-loop — see ``docs/proposals/gpu-priority.md`` Phase
-1) and ``autocatpath_aggregate`` (the §B-1 seed fan-out's aggregate node)
+queued rows don't error-loop — retired by the per-seed chunking fan-out)
+and ``autocatpath_aggregate`` (the seed fan-out's aggregate node)
 end up with the same self-contained artifact shape (graph/results/methods)
 and finish identically: reduce it to the scalar summary
 ``quest.compute.harvest_measures`` reads, persist it onto the pathway ref,
@@ -29,8 +29,7 @@ def _finite_num(v: Any) -> float | None:
 
 
 #: Electrochemistry (CHE) scalars catpath's ``_apply_electrochemistry`` already
-#: computes onto ``results_json`` top level (docs/proposals/pathway-potential-
-#: lever.md, precis slice 2) — a straight pass-through, no recompute here.
+#: computes onto ``results_json`` top level (the potential-lever pass-through, slice 2) — a straight pass-through, no recompute here.
 #: ``span_target_at_Uopt``/``T`` are deliberately excluded: diagnostics that
 #: stay in ``meta.results`` (the verbatim artifact), never promoted to the
 #: job-meta scalar summary.

@@ -116,7 +116,7 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     "ssh_node": frozenset({"has_gpaw"}),
     # ``claude_docker`` runs a ``sandbox_run`` job as a detached,
     # cgroup-capped container on an ``agent_sandbox_host`` — launch,
-    # poll by name, reap (ADR 0048 / docs/design/sandbox-run.md). The
+    # poll by name, reap (ADR 0048). The
     # pass is registered only where ``PRECIS_SANDBOX_ENABLED=1`` (the
     # sandbox hosts), so this capability set is only *satisfiable*
     # there; a data host without podman + the OAuth token can't run it.

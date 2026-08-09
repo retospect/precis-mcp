@@ -2,7 +2,7 @@
 
 Named ``mail`` (not ``email``) so it never shadows the stdlib ``email``
 package, which the body-parsing modules import. Design:
-docs/design/email-kind.md. Slices 1-4 are built; v1 is read-only (send +
+docs/backlog/email-kind.md. Slices 1-4 are built; v1 is read-only (send +
 promotion/brief are later slices). IMAP is the source of truth — nothing
 mirrors a mailbox into refs.
 

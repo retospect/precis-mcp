@@ -13,7 +13,7 @@ This tool is the three verbs over one ``ast`` pass that make the convention stic
     coderef resolve src/precis/alerts.py::raise_alert   # -> src/precis/alerts.py:60  (clickable)
     coderef anchor  src/precis/alerts.py:60             # -> src/precis/alerts.py::raise_alert  (author it)
     coderef check   docs                                # DRIFT: written anchors whose symbol no longer resolves
-    coderef check --bare docs/design/foo.md             # + UPGRADE nudges: bare file.py:line refs, with the anchor to use
+    coderef check --bare `foo` (git-only)             # + UPGRADE nudges: bare file.py:line refs, with the anchor to use
 
 `check` default is drift-only — the ever-after value: a citation that broke because
 its symbol was renamed/removed (loud), high-signal, safe to run tree-wide. `--bare`

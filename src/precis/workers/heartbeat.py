@@ -63,7 +63,7 @@ log = logging.getLogger(__name__)
 
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
-# ── Worker boot epoch (§H, compute-lane-lease-epoch.md) ────────────
+# ── Worker boot epoch (the lease-epoch reclaim mechanism) ──────────
 #
 # One uuid4 minted the first time THIS process asks for it (module-global —
 # NOT persisted; a fresh process gets a fresh id by construction, which is

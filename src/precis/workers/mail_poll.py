@@ -1,6 +1,6 @@
 """mail_poll — per-account IMAP poll + inline tier-0 injection scan (slice 3).
 
-The mechanical, LLM-free lane of the email kind (docs/design/email-kind.md).
+The mechanical, LLM-free lane of the email kind (docs/backlog/email-kind.md).
 Each pass, for every account whose cadence is due:
 
 1. **First poll / after a UIDVALIDITY change** — adopt the folder's current

@@ -1,6 +1,6 @@
 """Structure round-trip eval — the monthly co-improvement harness.
 
-Design: ``docs/design/structure-roundtrip-eval.md``. For each generated
+Design: ``docs/runbooks/structure-roundtrip-eval.md``. For each generated
 ground-truth structure S and each model, run the cycle
 
     S --describe(model)--> prose --build(model)--> S'

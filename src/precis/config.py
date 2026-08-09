@@ -66,7 +66,7 @@ class PrecisConfig(BaseSettings):
     Defaults to ``"owner"`` so a fresh install reads correctly with no
     config. Reto's instance sets ``PRECIS_OWNER=elmsfeuer`` to line up
     with the existing ``user:elmsfeuer`` tags. See
-    ``docs/design/user-identity-and-ask-routing.md``.
+    ``docs/backlog/user-identity-and-ask-routing.md``.
 
     Set via ``PRECIS_OWNER`` in the env.
     """
@@ -302,7 +302,7 @@ def load_config() -> PrecisConfig:
 # directory (and edgar on a User-Agent string) via ``KindSpec.requires_env``
 # — so a kind that a host could trivially do showed as "unavailable" only
 # because a cache dir any host can create wasn't wired. These are the
-# *incidental* class (docs/design/factory-console-and-scheduling.md §3): not
+# *incidental* class (docs/backlog/factory-console-and-scheduling.md §3): not
 # real scarcity, so we default them and drop the gate. The genuinely-scarce
 # gates stay (patent still needs the EPO OPS credentials, which resolve
 # through the secrets vault). Callers read these instead of the raw env.

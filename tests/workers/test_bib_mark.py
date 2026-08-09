@@ -1,5 +1,5 @@
 """bib_mark sweep — inline citation markers → ``chunk_citations``
-(docs/proposals/citation-taproot-resolve.md, AC 1).
+(docs/backlog/citation-taproot-resolve.md, AC 1).
 
 Real DB ``store`` fixture. A paper's parsed bibliography is seeded directly
 into ``paper_bib_entries`` (the base slice), body chunks with inline

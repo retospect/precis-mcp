@@ -124,7 +124,7 @@ def claim_chunks_without_keywords(
     # majority of chunks have no ``no_index`` key and still match.
     # Documented in ``docs/decisions/`` alongside PR 2 of the
     # plugin-substrate work; see the design doc at
-    # ``docs/design/dft-phase-0-pr-2-substrate-hardening.md`` §2.3.
+    # ``dft-phase-0-pr-2-substrate-hardening`` (git-only) §2.3.
     sql = """
         SELECT c.chunk_id, c.ref_id, c.text, ce.vector::text
           FROM chunks c

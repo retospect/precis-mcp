@@ -1,8 +1,7 @@
 """Papers tab — read PDFs in-browser (list/triage folded into Drive, WS1b).
 
 The list (``/papers``) and triage-queue (``/papers/triage``) *browsing*
-folded into the unified Drive surface
-(``docs/proposals/web-ui-rationalization.md``, Workstream 1): both routes
+folded into the unified Drive surface: both routes
 now just redirect to a Drive kind/tag preset (``/drive?k=paper…`` /
 ``/drive?tag=needs-triage&k=paper…``) so old bookmarks keep working. The
 **reader** stays here in full: the detail page embeds the browser's native
@@ -810,7 +809,7 @@ async def chunk_in_paper(request: Request, ref_id: int, sel: str) -> JSONRespons
     return JSONResponse({"chunk": cited})
 
 
-# ── Sources / Cited tabs (paper-viewer-nav slice 3) ────────────────────
+# ── Sources / Cited tabs (S2 neighbour graph, per paper) ───────────────
 #
 # The bibliography a paper cites ("sources") and the papers that cite it
 # ("cited") — S2's citation graph, persisted per-paper into

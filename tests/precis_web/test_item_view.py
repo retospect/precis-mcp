@@ -2,8 +2,7 @@
 
 Exercises the presenter methods directly (no FastAPI client needed) —
 ``title_meta`` / ``chunk_full`` / ``thumbnail`` / ``actions`` are new
-surface on the Slice-3 contract
-(``docs/proposals/unified-item-view.md``); the per-kind registry and
+surface on the per-kind presenter contract; the per-kind registry and
 the ``artifact_kinds`` facet helper back the ``/drive`` route tests in
 ``test_routes.py``.
 """

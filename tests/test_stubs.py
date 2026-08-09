@@ -9,7 +9,7 @@ Two layers:
   ignored, paper-only — end to end through ``runtime.dispatch``.
 
 Shared by ``precis stubs`` (CLI) and the MCP view, so this guards both
-(docs/design/stubs-mcp-and-skill.md).
+(the stub surfaces; ``store/_stub_predicate.py``).
 """
 
 from __future__ import annotations
@@ -432,7 +432,7 @@ def test_requeue_stubs_for_fetch_excludes_already_tried(store: Store) -> None:
 
 
 def test_requeue_stubs_for_fetch_ref_ids_scopes_to_one_stub(store: Store) -> None:
-    """``ref_ids=`` (paper-viewer-nav slice 3's single-paper Fetch) stamps
+    """``ref_ids=`` (the Sources/Cited tabs' single-paper Fetch) stamps
     only the named stub even when other eligible stubs exist."""
     a = _stub(store, cite_key="rq_scope_a2024", doi="10.1/rqscopea")
     b = _stub(store, cite_key="rq_scope_b2024", doi="10.1/rqscopeb")

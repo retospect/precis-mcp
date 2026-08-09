@@ -1,6 +1,6 @@
 """Stub-eligibility SQL fragment — DRY across every stub-backlog query.
 
-A *stub* (docs/design/stubs-mcp-and-skill.md) is a ``paper`` ref with an
+A *stub* is a ``paper`` ref with an
 external identifier (DOI / arXiv / S2 by default) registered but no PDF
 yet — the backlog the ``fetch_oa`` worker auto-chases. Call sites needing
 the identical predicate: :func:`precis.store._refs_ops.RefsMixin.

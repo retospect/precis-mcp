@@ -55,7 +55,7 @@ def connect(account: Account, *, store: Store) -> Iterator[imaplib.IMAP4]:
     if account.auth is not AuthMode.PASSWORD:
         raise ImapAuthError(
             f"auth mode {account.auth.value!r} not implemented in v1 "
-            f"(only 'password' / app-password); see docs/design/email-kind.md"
+            f"(only 'password' / app-password); see docs/backlog/email-kind.md"
         )
 
     settings = account.imap

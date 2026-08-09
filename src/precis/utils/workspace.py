@@ -88,7 +88,7 @@ class Workspace:
     # | ``article`` | "". A first-class field (not an ``extra`` key) because
     # both the planner (genre-specific writing loop) and export (genre
     # citation/bibliography conventions) branch on it — see
-    # ``docs/design/patent-authoring-loop.md``. Empty = the neutral default.
+    # ``docs/backlog/patent-authoring-loop.md``. Empty = the neutral default.
     doc_type: str = ""
     # Forward-compatible storage for extra workspace metadata
     # (e.g., author, title, build_command overrides).

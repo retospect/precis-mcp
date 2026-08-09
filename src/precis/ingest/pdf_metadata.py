@@ -4,7 +4,7 @@ Vendored from ``acatome_extract.pdf_metadata`` during B4b. Two
 substantial diffs vs. the upstream module:
 
 1. **Bundle paths gone.** The ``.acatome`` bundle format is being
-   retired (see ``docs/design/pip-merge.md``). Bundle reads,
+   retired (see ``pip-merge`` (git-only)). Bundle reads,
    ``_find_acatome_bundle()``, ``_update_bundle_hash_history()``,
    ``get_valid_hashes_for_bundle()``, and the
    ``DoiProvenance.ACATOME_BUNDLE`` source are dropped. Cached

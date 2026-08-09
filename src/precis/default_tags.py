@@ -1,7 +1,7 @@
 """Resolve ``PRECIS_DEFAULT_TAGS`` and apply the policy at dispatch.
 
 Phase 5 of the cold-start token budget design
-(``docs/design/mcp-cold-start-token-budget.md``).
+(``docs/backlog/mcp-cold-start-token-budget.md``).
 
 The runtime parses the env value once at boot and caches a tuple of
 default tags on :class:`precis.runtime.PrecisRuntime`. At dispatch

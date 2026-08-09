@@ -17,7 +17,7 @@ onto the seven verbs:
 
 Ships **dark** behind ``PRECIS_CHEM_ENABLED`` (``KindSpec.requires_env``):
 the kind is hidden from the catalogue and the dispatcher until the flag is
-set. See ``docs/design/chem-tools-integration.md`` + ADR 0056.
+set. See ADR 0056.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class RouteHandler(Handler):
             "cache hit if already planned, else an in-process solve or a minted "
             "retrosynth compute job. get lists routes or renders one graph "
             "(id=slug); delete soft-retires. The LLM traverses the graph, never "
-            "runs a planner in the request path. See chem-tools-integration.md."
+            "runs a planner in the request path."
         ),
         supports_get=True,
         supports_put=True,

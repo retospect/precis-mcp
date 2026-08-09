@@ -20,8 +20,7 @@ Five wake conditions, each a separate SELECT bounded by the pass
    also has ``meta.wake_when`` set. Re-queues unconditionally so
    the coordinator's cancel-poll fires on its next slice.
 
-**Child-deadlock deadline (§H piece 5, ``docs/proposals/compute-lane-
-lease-epoch.md`` — a SIXTH, distinct step).** A ``children_done`` park's
+**Child-deadlock deadline (a sixth, distinct lease-epoch reclaim step).** A ``children_done`` park's
 wake condition can never fire at all if one of its children never reaches
 a terminal STATUS on its own (e.g. permanently unschedulable — no live
 executor ever claims it). The ``coordinator`` executor stamps
@@ -42,7 +41,7 @@ Cadence: piggy-backs on the system worker's idle poll (2 s by
 default). Low-latency enough for human-acknowledge → resume; if
 sub-second wake matters later, run wake_runner in a tighter loop.
 
-See ``docs/design/dft-phase-0-pr-3-coordinator-executor.md`` §3.2.
+See ``dft-phase-0-pr-3-coordinator-executor`` (git-only) §3.2.
 """
 
 from __future__ import annotations
@@ -99,7 +98,7 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
     has a *live*, non-terminal child. A soft-deleted child
     (``deleted_at`` set; its tags persist) counts as terminal /
     absent — matching the hard-delete behaviour documented in
-    ``docs/design/dft-phase-0-pr-3-coordinator-executor.md`` — so
+    ``dft-phase-0-pr-3-coordinator-executor`` (git-only) — so
     an operator soft-deleting a stuck child unblocks the wake
     instead of parking the coordinator forever.
     """
@@ -179,8 +178,8 @@ def _wake_children_deadline_exceeded(
     conn: Connection, *, limit: int
 ) -> list[tuple[int, list[int]]]:
     """Find ``waiting_children`` rows whose ``meta.wake_deadline`` has
-    passed with at least one child STILL non-terminal (§H piece 5,
-    compute-lane-lease-epoch.md — "a parent never blocks forever on a
+    passed with at least one child STILL non-terminal (the child-deadlock
+    wake deadline — "a parent never blocks forever on a
     child"). Returns ``(ref_id, still_non_terminal_child_ids)`` so the
     caller can bubble a ``child-failed:<id>`` marker per straggler before
     re-queueing "woken-degraded".

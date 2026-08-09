@@ -2,7 +2,7 @@
 
 The tier-0 regex core moved to :mod:`precis.utils.inject_scan` when the
 cascade went source-agnostic
-(``docs/proposals/untrusted-input-injection-scan.md``) — it is re-exported
+(``docs/backlog/untrusted-input-injection-scan.md``) — it is re-exported
 here unchanged so ``mail_poll`` / tests keep their import path. What stays
 in this module is the **email-worded model rung**: the tier-1 system
 prompt, the prompt builder, and the verdict parser used by

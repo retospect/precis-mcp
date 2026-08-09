@@ -1,7 +1,7 @@
 """``precis schema-doc`` — generate a Mermaid ER diagram of the DB.
 
 Introspects ``information_schema`` for base-table columns + foreign
-keys and renders a Markdown file (default ``docs/design/schema.md``)
+keys and renders a Markdown file (default ``docs/reference/schema.md``)
 carrying a Mermaid ``erDiagram``. A *generated* artifact — checked in
 so GitHub renders it inline, and regenerated rather than hand-edited
 so it cannot drift from the live schema (which the hand-drawn
@@ -16,7 +16,7 @@ Two row transports, one renderer:
   lives in caspar's ``.pgpass``, so the introspection runs *on* caspar
   via ssh and the rows are piped here.
 
-See ``docs/design/schema-doc-and-manual.md``.
+See ``schema-doc-and-manual`` (git-only).
 """
 
 from __future__ import annotations
@@ -212,8 +212,8 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     parser.add_argument(
         "-o",
         "--out",
-        default="docs/design/schema.md",
-        help="Output path ('-' for stdout). Default docs/design/schema.md.",
+        default="docs/reference/schema.md",
+        help="Output path ('-' for stdout). Default docs/reference/schema.md.",
     )
     return parser
 
@@ -238,7 +238,7 @@ def run(args: argparse.Namespace) -> None:
         sys.exit(1)
     body = render_mermaid(cols, fks, snapshot=getattr(args, "snapshot", None))
 
-    out = getattr(args, "out", "docs/design/schema.md")
+    out = getattr(args, "out", "docs/reference/schema.md")
     if out == "-":
         sys.stdout.write(body + "\n")
     else:

@@ -15,7 +15,7 @@ own returned ``cost`` field where present; this table covers models that
 don't report one.
 
 Prices drift; treat entries as approximate and update as needed (see
-``docs/design/budget-guardrails.md`` open question #2).
+``docs/backlog/budget-guardrails.md`` open question #2).
 """
 
 from __future__ import annotations

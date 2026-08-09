@@ -96,7 +96,7 @@ _AWAITS_EVIDENCE = "awaits-evidence"
 # claim tag but NEVER this marker (see the claim-query exclusion below).
 _TAPROOT_CASCADE_NS = f"{TAPROOT_NAMESPACE}CASCADE"
 
-# Acquisition-mode give-up reason (finding-acquisition-mode.md §4): a
+# Acquisition-mode give-up reason: a
 # dead_chain transition written when every linked awaits-evidence stub is
 # fetch-exhausted (see :func:`_stub_exhausted`) past the grace window.
 _UNACQUIRABLE = "unacquirable"
@@ -180,7 +180,7 @@ class FindingRow:
     title: str
     meta: dict[str, Any]
     #: STATUS tag value at claim time — ``'tracing'`` or ``'acquiring'``
-    #: (finding-acquisition-mode.md). Decides which arm of
+    #: (the acquisition-mode mint). Decides which arm of
     #: :func:`advance_finding` runs. Defaults to ``'tracing'`` when no
     #: STATUS tag is found (defensive; shouldn't happen for a row this
     #: query claims).
@@ -234,8 +234,8 @@ def claim_tracing_findings(
     """Lock and return up to ``limit`` ``STATUS:tracing`` OR
     ``STATUS:acquiring`` findings.
 
-    Widened for acquisition-mode findings (finding-acquisition-mode.md
-    §3): this is the *sole* feeder of :func:`advance_finding`, so an
+    Widened for acquisition-mode findings: this is the *sole* feeder
+    of :func:`advance_finding`, so an
     ``acquiring`` row that isn't claimed here never reaches its arm —
     the claim query is the load-bearing half of making that arm
     reachable in the real worker loop, not just in a hand-built unit
@@ -420,7 +420,7 @@ def advance_finding(
     flushes to ``ref_events``.
 
     Dispatches on ``finding.status`` first: an ``acquiring`` finding
-    (finding-acquisition-mode.md) runs :func:`_advance_acquiring` —
+    (the acquisition-mode mint) runs :func:`_advance_acquiring` —
     poll its linked ``awaits-evidence`` stubs, ground on the first one
     that gains chunks, or give up once every stub is fetch-exhausted
     past the grace window — never the ``tracing`` logic below (an empty
@@ -576,7 +576,7 @@ def advance_finding(
     return "advanced", ev
 
 
-# ── Acquisition-mode arm (finding-acquisition-mode.md) ────────────────
+# ── Acquisition-mode arm (acquiring-finding grounding) ────────────────
 
 
 def _acquire_grace_days() -> float:
@@ -677,7 +677,7 @@ def _select_grounding_chunk(
     Claim-text embedding search (:meth:`~precis.store.Store.search_blocks`
     ``mode='semantic'``, scoped to the stub) over the paper's own chunks
     when ``embedder`` is available — the "existing grounding machinery"
-    finding-acquisition-mode.md §3 calls for. Degrades to the same
+    the acquisition-mode design calls for. Degrades to the same
     lexical title/claim-overlap heuristic :func:`_select_target_chunk`
     uses for the ordinary chase when there's no embedder, or when the
     search errors — never a hard failure (mirrors the taproot forward
@@ -797,7 +797,7 @@ def _advance_acquiring(
     UNLESS every stub is fetch-exhausted (:func:`_stub_exhausted`) past
     the acquisition-mode grace window (:func:`_acquire_grace_days`), in
     which case it's an honest ``dead_chain(reason=unacquirable)`` give-up
-    (finding-acquisition-mode.md §4) — never the tracing arm's
+    (the acquisition-mode give-up rule) — never the tracing arm's
     empty-chain instant-dead (an acquiring finding is MINTED with an
     empty ``meta.chain`` by design).
     """
@@ -1259,10 +1259,8 @@ def load_s2_citation_graph(identifiers: dict[str, Any]) -> dict[str, Any] | None
 
     Public (no leading underscore) because it's shared beyond this
     module: :func:`_load_s2_references` below uses the outbound half;
-    ``workers/inbound_chase.py`` (docs/design/citation-chunk-grounding.md
-    "Inbound sweep policy") uses the ``cited_by`` half — previously
-    fetched and silently discarded by :func:`_load_s2_references`, the
-    gap the design doc's "What's actually missing" #1 flagged. One S2
+    ``workers/inbound_chase.py`` uses the ``cited_by`` half — previously
+    fetched and silently discarded by :func:`_load_s2_references`. One S2
     call per paper now serves both directions instead of two.
 
     Returns ``None`` on S2 failure (rate-limit, network, no usable

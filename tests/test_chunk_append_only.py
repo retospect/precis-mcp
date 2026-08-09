@@ -9,7 +9,7 @@ leaving the two sanctioned in-place edit paths alone:
 * draft-family chunks carry a non-NULL ``content_sha`` (sha-diff cascade);
 * card chunks live at ``ord < 0`` (``rewrite_cards`` drops their embeddings).
 
-See docs/design/chunk-append-only-trigger.md.
+See ``chunk-append-only-trigger`` (git-only).
 """
 
 from __future__ import annotations

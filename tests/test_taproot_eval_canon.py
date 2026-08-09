@@ -2,8 +2,8 @@
 
 Runs :func:`~precis.taproot.canon.dedup_judge` (a real MEDIUM-tier LLM
 dispatch) over all 238 pairs in ``tests/fixtures/taproot/claim_pairs.jsonl``
-and asserts **zero over-merges** (the bar from
-``docs/proposals/taproot-phase1-canonicalization.md``).
+and asserts **zero over-merges** (the Phase-1 canonicalizer gate's
+decided bar).
 
 This is a **validation harness, not a CI unit test** — it makes ~238 live
 model calls, costs real money, and is the item the build ticket explicitly
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("PRECIS_TAPROOT_LIVE_EVAL") != "1",
     reason=(
         "live-LLM validation harness — opt in with PRECIS_TAPROOT_LIVE_EVAL=1 "
-        "(see docs/proposals/taproot-phase1-canonicalization.md)"
+        "(the Phase-1 canonicalizer gate's fixture eval)"
     ),
 )
 

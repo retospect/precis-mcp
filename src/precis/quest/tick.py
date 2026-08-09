@@ -1,6 +1,6 @@
 """quest_tick — one bounded step of a quest's autonomous research loop.
 
-Slice 4a of the quest layer (docs/proposals/quest-layer.md §The autonomous
+Slice 4a of the quest layer (``quest-layer`` (git-only) §The autonomous
 research loop). This is the **skeleton** of the loop: a single, in-process,
 structured LLM step routed through the ADR-0046 seam (``dispatch(LlmRequest)``)
 that reads the quest's rolling context — its striving statement, the current

@@ -1,5 +1,5 @@
 """bib_parse — per-paper bibliography parse + identity match
-(``paper_bib_entries``, docs/proposals/citation-bib-parse.md).
+(``paper_bib_entries``, ``citation-bib-parse`` (git-only)).
 
 Self-contained ref-pass (shaped like ``classify``/``paper_glossary`` — DB
 reads + outbound LLM/Crossref calls, not a pure ``WorkerHandler``). For

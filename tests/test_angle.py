@@ -1,7 +1,7 @@
 """Anchor sampler for the ``angle`` spray (pure math, no DB).
 
 Pins the one invariant the whole feature rests on: every anchor sits
-at cosine ``angle`` from the seed (docs/design/dreaming.md, §The
+at cosine ``angle`` from the seed (docs/backlog/dreaming.md, §The
 ``angle`` spray), anchors are unit length and (in high-d) mutually
 diverse, and the sampler is deterministic under a seeded RNG.
 """

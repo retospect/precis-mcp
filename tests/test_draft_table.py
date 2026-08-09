@@ -235,7 +235,7 @@ def test_edit_table_on_non_table_chunk_errors(draft: DraftHandler, hub: Hub) -> 
         draft.edit(id=para.dc, table={"header": ["x"], "rows": [[1]]})
 
 
-# ── field-level table editing (docs/proposals/draft-table-editing.md #1) ──
+# ── field-level table editing (docs/backlog/draft-table-editing.md #1) ──
 # ── pure helpers ─────────────────────────────────────────────────────────
 
 

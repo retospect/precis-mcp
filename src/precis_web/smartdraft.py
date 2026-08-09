@@ -888,9 +888,9 @@ def semantic_ranks(
     return {int(cid): rank for rank, (cid,) in enumerate(rows, start=1)}
 
 
-# ── review status (docs/proposals/smartdraft-review-status-ui.md) ──────────
-# The per-block indicator (item 6), its dropdown (item 7), and the toolbar
-# rollup (item 8) all derive from ONE whole-draft ledger fetch
+# ── review status ───────────────────────────────────────────────────────────
+# The per-block indicator, its dropdown, and the toolbar
+# rollup all derive from ONE whole-draft ledger fetch
 # (``routes/drafts.py::_review_status_by_chunk``, itself one
 # ``Store.review_status_for_draft`` query) — everything below turns that
 # chunk_id-keyed map into the per-node render payload the template needs,
@@ -1083,7 +1083,7 @@ def claim_trust_for_block(
     store: Any, text: str, cache: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Worst-of claim trust across ``text``'s distinct cite heads —
-    ``docs/proposals/finding-trust-surfaces.md`` §3 (editor badges), the
+    the trust-surfaces editor badges, the
     ``claim_trust`` counterpart to :func:`cite_integrity_ok`. ``None`` when
     the block cites nothing shaky (no cite heads, or every resolved head is
     ``clean``). A non-clean head keeps its label — the softer ``abstract``

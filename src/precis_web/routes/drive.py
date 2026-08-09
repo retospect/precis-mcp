@@ -1,5 +1,4 @@
-"""Drive — the unified seek+manage surface (WS1a of
-``docs/proposals/web-ui-rationalization.md``; ADR 0045).
+"""Drive — the unified seek+manage surface (ADR 0045).
 
 Grafts Drive's folder tree + CRUD onto the Items cross-kind search/facet/
 presenter engine (``routes/items.py``, kept as the reusable
@@ -901,7 +900,7 @@ async def tag_item(
 
 
 #: Cap on the "Fetch next N" batch-requeue button (Part 3 of
-#: docs/design/stubs-mcp-and-skill.md) — bounds one click's blast radius
+#: the stub re-fetch door) — bounds one click's blast radius
 #: on the fetch queue regardless of what a hand-crafted request posts.
 _REQUEUE_STUBS_MAX = 25
 

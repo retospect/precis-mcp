@@ -635,7 +635,7 @@
         </h2>
         {# "Fetch next N" — jumps the top never-tried DOI stubs to the front
            of the fetch_oa queue (POST /drive/requeue-stubs stamps
-           meta.oa_requeued, docs/design/stubs-mcp-and-skill.md Part 3).
+           meta.oa_requeued — the stub re-fetch door).
            Only on the stub queue itself — the button's DOI-only, never-tried
            selection is meaningless on any other state/facet. #}
         {% if state == 'stub' %}

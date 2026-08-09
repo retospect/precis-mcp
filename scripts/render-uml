@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render PlantUML diagrams in docs/design/ via the precis-dev container.
+# Render PlantUML diagrams in docs/reference/ via the precis-dev container.
 #
 # Usage:
 #   scripts/render-uml                       # render every .puml
@@ -21,14 +21,14 @@ fi
 
 # Build the list of files (host paths). Translate to container paths (/app/...).
 if [[ $# -eq 0 ]]; then
-    mapfile -t puml_files < <(find docs/design -name '*.puml' -type f | sort)
+    mapfile -t puml_files < <(find docs/reference -name '*.puml' -type f | sort)
 else
     puml_files=()
     for f in "$@"; do
         if [[ "${f}" == /* ]]; then
             puml_files+=("${f}")
-        elif [[ -f "docs/design/${f}" ]]; then
-            puml_files+=("docs/design/${f}")
+        elif [[ -f "docs/reference/${f}" ]]; then
+            puml_files+=("docs/reference/${f}")
         elif [[ -f "${f}" ]]; then
             puml_files+=("${f}")
         else

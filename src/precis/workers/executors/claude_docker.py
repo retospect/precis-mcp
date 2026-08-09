@@ -40,9 +40,8 @@ and reap are runtime-agnostic** (``_reap_bin()``, shared
 back to docker instead of throwing ``FileNotFoundError`` on every boot
 reconcile.
 
-Slice 1 (``docs/proposals/sandbox-run-substrate.md``) stages
-``/work/PROMPT.md`` and drove the launch/poll/reap spine. Slices 2-4
-(design ``docs/design/sandbox-run.md``):
+Slice 1 (the stub-gated container-execution substrate) stages
+``/work/PROMPT.md`` and drove the launch/poll/reap spine. Slices 2-4:
 
 * **Harvest** (slice 2, this module's ``_terminate`` → ``_sandbox_harvest``)
   — a clean exit's ``/work/out`` mints a ``kind='folder'`` ref
@@ -572,7 +571,7 @@ def _claim(
     failed + bubbled right here instead of being handed back to run;
     ``rows`` excludes them.
 
-    ``reclaim_stale_running=True`` (§H, compute-lane-lease-epoch.md): the
+    ``reclaim_stale_running=True`` (the lease-epoch reclaim arm): the
     detached container outlives the launching worker process, so
     ``_running_jobs``' poll loop already self-heals across a restart FOR a
     row that made it far enough to get ``meta.container`` stamped. The
@@ -663,8 +662,7 @@ def _launch_build(
 ) -> None:
     """Stage ``/work`` with ``PROMPT.md``, launch a detached claude
     container, record its handle (``mode:build``)."""
-    # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
-    # safety.md Part 3): the container spawns a raw `claude` CLI, which
+    # GLM/OpenRouter fleet-flip safety gate: the container spawns a raw `claude` CLI, which
     # assumes Claude model semantics — under backend=openai,
     # resolve_sandbox_model() (-> resolve_model(Tier.FRONTIER)) returns an OSS
     # slug that `claude` can't run (HTTP 400). Skip cleanly rather than
@@ -724,7 +722,7 @@ def _launch_build(
         encoding="utf-8",
     )
 
-    # precis_access:read (design §"Precis access") — spawn a per-run,
+    # precis_access:read — spawn a per-run,
     # token'd, read-only MCP callback BEFORE the container starts, so
     # /work/mcp.json exists the moment the container can read /work.
     # Never for mode:run (this function is build-mode only) and gated
@@ -745,7 +743,8 @@ def _launch_build(
             return
         read_mcp_pid = handle.pid
         # Only THIS network mode gives the container a route back to the
-        # spawned callback's loopback bind (design §"Container networking").
+        # spawned callback's loopback bind (allow_host_loopback is the
+        # one hole punched for the read-only MCP callback).
         network = _sandbox_read_mcp.READ_MCP_NETWORK
 
     # A leftover container of the same name (crashed prior attempt) would
@@ -1026,7 +1025,7 @@ def _terminate(
     terminal STATUS, and bubble a failure to the parent todo.
 
     On a clean exit (``status == succeeded`` and ``exit_code == 0``),
-    harvests ``/work/out`` (design §"Harvest -> DB + NAS") **before** the
+    harvests ``/work/out`` (see ``_sandbox_harvest``) **before** the
     workdir is deleted — folder + plaintext projection + content-
     addressed tarball, plus (``mode:build`` only) the ``RUN.json``
     recipe and (``mode:run`` only) a ``derived-from`` link back to the
@@ -1066,7 +1065,7 @@ def _terminate(
 
     work_dir = _work_root() / name
 
-    # Per-unit pinned image provenance (design §"Image distribution" /
+    # Per-unit pinned image provenance (
     # `code-task:<sha>` tagging convention): the image that actually ran
     # this job is forensic text on every terminal job_summary, not just
     # meta/folder — the whole point is "which image built/ran this" being

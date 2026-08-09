@@ -1,5 +1,5 @@
 """``precis.taproot.resolve.resolve_citation`` — the shared inline-marker
-resolution API (docs/proposals/citation-taproot-resolve.md, AC 2).
+resolution API (docs/backlog/citation-taproot-resolve.md, AC 2).
 
 Real DB ``store`` fixture. A paper's parsed bib entry is seeded directly
 into ``paper_bib_entries`` (held / not-held / with DOI), a body chunk +

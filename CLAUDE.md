@@ -74,11 +74,11 @@ Start at `docs/codebase.md`'s package map, then the owning package's
   → `docs/conventions/discovery-layer-policy.md`.
 - **Chunk-tag classifier (ADR 0047)** — cascade regex → `role3` local →
   optional escalate; `ROLE3:own` = citation-grounding filter, default-OFF.
-  → `docs/design/chunk-classifier-cascade.md`.
+  → `chunk-classifier-cascade` (git-only).
 - **Live affordances** — `folder`, `plan`, `figure`, `mermaid`, `gripe`,
   `anki`, `concept`, `quest`, `llm`, `alert`, `agentlog`, `job`/sandbox,
   `structure`, `citation`, `cfp`, `email` (live IMAP browse, read-only;
-  `docs/design/email-kind.md`), term registry, `cad`/`pcb`, broad+deep
+  `docs/backlog/email-kind.md`), term registry, `cad`/`pcb`, broad+deep
   search, `precis web`, SSRF guard, ingest hygiene. → matching `precis-*-help`.
 - **Skill index** — start at `precis-toolpath-help` (call sequences) +
   `precis-overview` (master kinds table).
@@ -96,7 +96,7 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 | Master kinds table + recipes     | skills `precis-overview`, `precis-toolpath-help` |
 | Dated history                    | `git log` (no CHANGELOG) |
 | Replicate this repo's setup elsewhere | `docs/how-to-setup-like-this.md` (portable scaffolding brief) |
-| Full schema (prose / visual)     | `docs/design/storage-v2.md` (F20-amended); `schema-v2.svg` |
+| Full schema (prose / visual)     | `storage-v2` (git-only) (F20-amended); `schema-v2.svg` |
 | Worker queue pattern             | `docs/decisions/0007-derived-queue-no-block-jobs.md`, `0017` |
 | ADR index + supersession graph   | `docs/decisions/README.md` |
 | Ingest pipeline                  | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
@@ -208,7 +208,7 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   investigator — reproduces + traces symptom→true defect + flags whether the
   obvious fix masks a deeper one; reports a dossier, doesn't fix),
   `housekeeper` (worktree/branch GC via `/workspace-cleanup`), `ready` (the
-  ADR 0048 proposal-readiness judge — vets a `docs/proposals/*.md` spec, not
+  backlog-readiness judge — vets a `docs/backlog/*.md` spec, not
   yet wired into an automated gate), `issue-closer` (post-ship: closes
   gripes/backlog items the shipped commit resolved — spawned from
   `/land`/`/go`, background/non-blocking).

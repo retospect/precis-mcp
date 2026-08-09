@@ -11,7 +11,7 @@ out of it, in the same shape, so the two output formats never drift:
   claims" list each exporter renders in its own markup;
 * the set of findings rendered clean *only* because of an author's
   override, for the single ``ref_events`` export-record row
-  (docs/proposals/finding-trust-surfaces.md §2).
+  (the trust-surfaces override audit).
 
 Pure bookkeeping — no rendering, no I/O beyond the read-only ``store``
 calls :func:`~precis.taproot.trust.claim_trust` itself makes.

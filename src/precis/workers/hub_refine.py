@@ -1,6 +1,6 @@
 """hub_refine — periodic, converging enrichment of existing taproot claim hubs.
 
-Build ticket: ``docs/proposals/taproot-hub-refine.md``. Closes a gap the
+Build ticket: ``docs/backlog/taproot-hub-refine.md``. Closes a gap the
 shipped taproot phases leave open: evidence attaches to a claim hub only as
 a side effect of chasing a *finding* (the forward bridge,
 ``workers/chase.py``'s ``_taproot_bridge``) or when a human hands
@@ -20,7 +20,7 @@ a blind periodic rescan (the incremental-trigger design,
    ``last_refined_at`` next, ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass`
    — mirrors ``workers/inbound_chase.py``'s claim-query shape.
 2. **Discover** — TWO sources merged into one per-hub candidate list
-   (docs/proposals/citation-taproot-resolve.md), citation candidates first
+   (docs/backlog/citation-taproot-resolve.md), citation candidates first
    so they win the shared per-paper dedup slot:
    (a) a semantic (embedding-ANN) search over paper body chunks for the
        claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``. Note: *not*
@@ -132,7 +132,7 @@ _ROLE = "corroborates"
 _META_LAST_REFINED_AT = "last_refined_at"
 _META_LAST_REFINED_SHA = "last_refined_sha"
 _META_REJECTED = "taproot_rejected"
-#: Citation-following (docs/proposals/citation-taproot-resolve.md): a
+#: Citation-following (docs/backlog/citation-taproot-resolve.md): a
 #: ``supports=no`` verdict against a paper reached by *following a claim's
 #: own inline citation* is recorded here as ``{marker, cited_ref,
 #: from_chunk}`` — the queryable "we read the cited paper and the claimed
@@ -445,8 +445,7 @@ def _citation_candidates(
     claim_sentence: str,
     query_vec: list[float],
 ) -> tuple[list[_Candidate], list[dict[str, Any]]]:
-    """The **second** discover source (docs/proposals/citation-taproot-
-    resolve.md): follow this hub's *own* evidence citations.
+    """The **second** discover source (docs/backlog/citation-taproot-resolve.md): follow this hub's *own* evidence citations.
 
     For each grounding chunk of the hub's existing evidence edges
     (``links.src_chunk_id``), read ``chunk_citations`` → ``resolve_citation``
@@ -529,8 +528,7 @@ def _refine_one_hub(
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
-    **Two discover sources, one Filter→Verify→Write tail** (docs/proposals/
-    citation-taproot-resolve.md): the corpus-wide semantic ANN (unchanged)
+    **Two discover sources, one Filter→Verify→Write tail** (docs/backlog/citation-taproot-resolve.md): the corpus-wide semantic ANN (unchanged)
     and citation-following (:func:`_citation_candidates`). Both merge into a
     single per-hub candidate list — **citation candidates first, so they win
     the slot** — deduped by paper via ONE loop-local ``seen_papers`` set, so

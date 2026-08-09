@@ -29,7 +29,7 @@ gets a graph-informed decision, per the design's diagnosis ladder:
 
 Ships **observe-first**: with ``act=False`` (the default autonomy) every
 decision is computed and reported but nothing is written. See
-docs/design/reading-prep-loop.md (§The three genuinely hard parts, decision 3).
+docs/backlog/reading-prep-loop.md (§The three genuinely hard parts, decision 3).
 """
 
 from __future__ import annotations

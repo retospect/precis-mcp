@@ -1,5 +1,5 @@
 """``src/precis/taproot/trust.py`` — the single shared trust derivation
-(docs/proposals/finding-trust-surfaces.md). DB-backed (real
+behind the trust-surfaces marks. DB-backed (real
 ``refs``/``ref_tags``/``links`` via the ``store`` fixture), mirroring
 ``tests/test_taproot_cite.py``'s setup style.
 """

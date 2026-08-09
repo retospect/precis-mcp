@@ -43,8 +43,7 @@
   stamped onto every job claim as `meta.lease_boot_id` so a later successor
   can prove a `STATUS:running` row's prior holder was provably replaced
   (epoch reclaim) rather than waiting out the lease's full expiry.
-  → `src/precis/workers/executors/_common.py` (`claim_executor_jobs`) ·
-  `docs/proposals/compute-lane-lease-epoch.md`
+  → `src/precis/workers/executors/_common.py` (`claim_executor_jobs`)
 - **planner coroutine / `plan_tick`** — an `LLM:*`-tagged todo run as a resumable
   coroutine; each tick is a job that may mint children or yield, and an
   exhaustion (max-turns / timeout) is resumable, not a failure.
@@ -82,7 +81,8 @@
 - **CHE / potential lever** — the computational hydrogen electrode
   formalism: an applied potential U (vs RHE) shifts each node's energy by
   `n_H·eU`, closed-form (no extra compute) — `U_L`/`U_opt`/`span_at_U*`/
-  `P_side` are its derived scalars. → `docs/proposals/pathway-potential-lever.md`
+  `P_side` are its derived scalars. → `src/precis/quest/compute.py` (the CHE
+  scalar block)
 - **frontier tree** — a quest's candidate lineage (`derived-from` parents)
   rendered as an indented markdown tree, code-regenerated into a pinned
   dossier chunk every tick. → `src/precis/quest/frontier.py::render_frontier_tree`
@@ -118,10 +118,10 @@
   too big for the model's window, with the numbers. → `src/precis/utils/llm/admit.py`
 - **taproot** — the evidence-grounded claim graph: unify a claim into one hub
   node, ground it in many papers as typed graded evidence, resolve citations
-  onto it. Phased build (1–5). → `docs/proposals/taproot.md` · `src/precis/taproot/`
+  onto it. Phased build (1–5). → `docs/backlog/taproot.md` · `src/precis/taproot/`
 - **claim hub** — a `finding` tagged `TAPROOT:claim`, promoted to *the* node a
   claim lives on; many papers attach as `establishes`/`corroborates`/
-  `contradicts` evidence edges (taproot Phase 2). → `docs/proposals/taproot-phase2-hub-node.md`
+  `contradicts` evidence edges (taproot Phase 2). → `docs/backlog/taproot-phase2-hub-node.md`
 - **TAPROOT** — the `finding`-ref discriminator axis: `TAPROOT:claim` (grounded
   world-claim, a taproot hub) vs `TAPROOT:review` (editorial/manuscript note,
   excluded from the claim graph). Classifier = `data/axes/taproot.yaml` via
@@ -129,7 +129,7 @@
 - **establishes / corroborates** — taproot evidence-edge roles (paper → claim
   hub): the *originator(s)* that first showed a claim `establishes` it; later
   papers that cite them `corroborate`. Derived from the citation graph, not
-  hand-set. → `docs/proposals/taproot.md` §"Seniority is derived"
+  hand-set. → `docs/backlog/taproot.md` §"Seniority is derived"
 - **fisheye** (eye) — a degree-of-interest render: focus one node and get it
   plus its scaled-by-distance surroundings, not a bare chunk (ADR 0051 §6).
   `get(..., view='fisheye'/'fisheye+1hop')`. → `src/precis/utils/fisheye.py`,
@@ -199,8 +199,8 @@ value, don't trust a snapshot here).
   own compute cycle (setup → LM-potential → review/Pareto → lit → setup-new →
   maintain front), not separate projects. → quest `164903`
   (`get(kind='quest', id=164903)`); design docs
-  `docs/design/autocatpath-integration.md` ·
-  `docs/design/catalyst-discovery-quest.md`; autocatpath itself is a separate
+  `docs/backlog/autocatpath-integration.md` ·
+  `docs/backlog/catalyst-discovery-quest.md`; autocatpath itself is a separate
   repo, github.com/retospect/catpath, published as a precis-free science
   library — precis-mcp depends on it (`[catalyst]`/`[catalyst-gpu]` extras),
   and the `pathway` kind's glue is bundled in-tree at `src/precis_pathway/`

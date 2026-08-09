@@ -1,4 +1,4 @@
-"""Structural reviewer — Slice 3 of ``docs/design/todo-tree-plan.md``.
+"""Structural reviewer — Slice 3 of ``docs/backlog/todo-tree-plan.md``.
 
 The middle tier between the hourly nursery and the weekly deep
 review. Runs every 6 hours and asks an opus-class model to look at

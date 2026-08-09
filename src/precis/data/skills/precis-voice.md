@@ -201,8 +201,8 @@ A draft you author this way becomes audio through the shipped pipeline (no need
 to re-roll any of it): `render_narration` turns the draft into a voice score,
 `export_audio` drives the TTS synth (`precis.tts.kokoro.KokoroSynth`), and
 `audio_feed.publish_episode(...)` (or `precis podcast add`) puts the episode on
-the private feed. Delivery + on-device playback are already solved — see
-`docs/design/audio-feed.md`. Set the draft's default voice per profile
+the private feed. Delivery + on-device playback are already solved (subscribe
+by URL over Tailscale). Set the draft's default voice per profile
 (`bm_george` for the morning brief, `af_nicole` for the evening meditation).
 
 ## See also

@@ -354,8 +354,8 @@ def test_claim_preview_lists_cited_chunks(claim_client: TestClient, hub: Hub) ->
 
 def _insert_chunk(store, *, ref_id: int, ord: int, text: str) -> str:
     """Insert a real paper chunk, return its universal chunk handle — the
-    grounding-quote render fix (docs/proposals/smartdraft-claim-ux.md slice
-    1) needs REAL chunk text, not the ``pc999``-dangling-handle shape
+    grounding-quote render fix (the claim-page rendering work)
+    needs REAL chunk text, not the ``pc999``-dangling-handle shape
     `_seed_hub` uses."""
     with store.pool.connection() as conn:
         row = conn.execute(

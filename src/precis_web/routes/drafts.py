@@ -30,7 +30,7 @@ served from here:
   ``POST /drafts/{ident}/review/retract`` un-reviews (deletes the ledger
   row for a checker, default ``human``). Distinct from the per-heading
   ``POST /drafts/{ident}/review`` "review ▾" menu (now driving
-  ``mint_review_fanout``, smartdraft-review-status-ui items 1-3), which
+  ``mint_review_fanout``, the incremental review fanout), which
   files review-todos, not ledger rows. ``POST /drafts/{ident}/cites/convert``
   dry-runs/applies the taproot living-cite backfill (item 5b).
 * ``POST /drafts/{ident}/title`` — header rename: converges ``refs.title``
@@ -507,7 +507,7 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
 
 
 #: Chunk kinds the inline editor may edit as raw text (slice 2a,
-#: docs/design/draft-inline-editor.md). Prose kinds + the verbatim-text kinds
+#: docs/backlog/draft-inline-editor.md). Prose kinds + the verbatim-text kinds
 #: (code / listing — you edit their source). Math is not a kind: display math
 #: is a `paragraph` carrying `$$…$$`, edited like any other paragraph. Excludes
 #: figure (bytes), table (derived from meta.table, in DERIVED_KINDS), and the
@@ -550,7 +550,7 @@ def _review_status_by_chunk(store: Any, ref_id: int) -> dict[int, dict[str, Any]
     for now.
 
     Each per-chunk dict also carries two RESERVED, non-checker keys
-    (smartdraft-review-status-ui item 4) — ``_section_chunk_id`` (the
+    (the via-section rollup) — ``_section_chunk_id`` (the
     nearest enclosing HEADING chunk id, ``None`` if none — the id a
     paragraph's rollup uses to pull in its section's ``structure``/
     ``adversarial`` state "via section") and ``_chunk_kind``. Leading
@@ -1472,8 +1472,8 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     without a page reload.
 
     This route only *sets* the human checkmark — un-review (retract) is
-    ``POST /drafts/{ident}/review/retract`` (smartdraft-review-status-ui
-    item 7), a separate endpoint over ``Store.retract_review``."""
+    ``POST /drafts/{ident}/review/retract``,
+    a separate endpoint over ``Store.retract_review``."""
     try:
         payload = await request.json()
     except Exception:
@@ -1586,7 +1586,7 @@ async def edit_text_inline(
     base_sha: str = Form(""),
 ) -> JSONResponse:
     """Direct (non-LLM) in-place text edit of one draft block — the inline
-    editor's save (docs/design/draft-inline-editor.md, slice 2a).
+    editor's save (docs/backlog/draft-inline-editor.md, slice 2a).
 
     HARD-blocks (422, no write) a reference *this edit* newly breaks, so the
     editor can bounce the author back with the offending tokens ("comes back
@@ -1779,7 +1779,7 @@ async def add_block(
 ) -> JSONResponse:
     """Insert a new empty prose block right after ``after`` (same parent, a
     fractional ``pos`` between it and its next sibling) — the inline editor's
-    ``+`` affordance (docs/design/draft-inline-editor.md, slice 2b). Returns
+    ``+`` affordance (docs/backlog/draft-inline-editor.md, slice 2b). Returns
     the new block's handle so the client can hydrate and open it for editing.
 
     Goes straight to ``store.add_chunks`` rather than the ``put`` verb: the
@@ -1939,7 +1939,7 @@ async def delete_block(
 
 
 #: Old reviewer-menu vocabulary → the unified ledger's lens names (decided
-#: fallback, smartdraft-review-status-ui item 3): one checker namespace —
+#: fallback): one checker namespace —
 #: ``structural``/``deep_review`` are kept as accepted ``lens=`` ALIASES so
 #: an old caller (bookmark, script) still works, but every mint now lands
 #: under ``structure``/``adversarial`` in ``chunk_review``, never the old
@@ -1953,8 +1953,8 @@ _LENS_ALIASES: dict[str, str] = {
 @router.post("/drafts/{ident}/review")
 async def review_block(request: Request, ident: str) -> JSONResponse:
     """Run the incremental review fanout (``quest.review_fanout.
-    mint_review_fanout``) over a draft — smartdraft-review-status-ui items
-    1-3, replacing this route's old ``structural``/``deep_review`` reviewer
+    mint_review_fanout``) over a draft —
+    replacing this route's old ``structural``/``deep_review`` reviewer
     vocabulary and its own per-heading todo-minting.
 
     Body ``{lens, dc?, only_dirty?}``:
@@ -2042,7 +2042,7 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
 
 @router.post("/drafts/{ident}/review/retract")
 async def retract_review_route(request: Request, ident: str) -> JSONResponse:
-    """Un-review one block (smartdraft-review-status-ui item 7) — deletes
+    """Un-review one block — deletes
     the ``chunk_review`` row for ``(chunk, checker)`` via
     ``Store.retract_review``, reverting the chunk to "requires review".
 
@@ -2106,7 +2106,7 @@ def _backfill_chunk_json(result: ChunkBackfill) -> dict[str, Any]:
 
 @router.post("/drafts/{ident}/cites/convert")
 async def convert_cites_route(request: Request, ident: str) -> JSONResponse:
-    """Convert to living cites (smartdraft-review-status-ui item 5b) — a
+    """Convert to living cites — a
     web wrapper over ``taproot/backfill.py``'s ``plan_chunk``/``apply_chunk``:
     rewrites legacy ``[pc<id>]``/``[pa<id>]`` paper cites onto claim-hub
     cites (``[fi<hub>]``).

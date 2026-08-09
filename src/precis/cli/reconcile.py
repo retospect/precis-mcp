@@ -1,6 +1,6 @@
 """``precis reconcile-duplicates`` — collapse same-file duplicate papers.
 
-Phase 2 of the dedup plan (``docs/design/duplicate-paper-handling.md``):
+Phase 2 of the dedup plan (``ingest/dedup.py``):
 a standing sweep that finds live paper refs sharing a ``pdf_sha256`` (the
 same file ingested as two refs) and merges each group down to the best
 survivor (DOI → non-junk title → most authors → lowest id), soft-deleting

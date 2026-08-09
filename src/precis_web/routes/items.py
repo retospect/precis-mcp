@@ -1,10 +1,10 @@
 """``/items`` — retired into the unified Drive surface (WS1a).
 
 The cross-kind search + facet + presenter engine this module built
-(Slice-3 of ``docs/proposals/unified-item-view.md``) is now served at
+(the unified item view) is now served at
 ``/drive`` (``routes/drive.py``), grafted onto Drive's folder tree +
 CRUD + per-row actions per
-``docs/proposals/web-ui-rationalization.md``'s Workstream 1. This
+the web-UI rationalization's Drive workstream. This
 module keeps the ``/items`` path alive as a redirect (old bookmarks,
 saved searches, in-flight links) — WS1b/WS4 own its final retirement,
 not this slice.
@@ -297,7 +297,7 @@ async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
 @router.get("/")
 async def index(request: Request) -> Response:
     """Redirect to ``/drive``, preserving every filter verbatim — the
-    merged surface (WS1a of ``docs/proposals/web-ui-rationalization.md``).
+    merged Drive surface.
     """
     suffix = f"?{request.url.query}" if request.url.query else ""
     return RedirectResponse(url=f"/drive{suffix}")

@@ -1,6 +1,5 @@
 """``get(kind='draft', view='review')`` / ``view='review-diff'`` — the
-memoized approval ledger (paper-writing pipeline rung 3, docs/design/
-paper-writing-pipeline.md §"Review — the memoized approval ledger").
+memoized approval ledger (paper-writing pipeline rung 3, docs/backlog/paper-writing-pipeline.md §"Review — the memoized approval ledger").
 
 Two renderers, both pure reads over :class:`~precis.store._draft_ops.
 DraftMixin`'s ledger methods (``chunk_review``, migration 0086):

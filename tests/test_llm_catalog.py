@@ -1,5 +1,5 @@
 """Tests for the `llm` catalog — model choice as a queryable resource
-(llm-catalog slice 1, docs/proposals/llm-catalog.md).
+(llm-catalog slice 1, ``llm-catalog`` (git-only)).
 
 Covers: the shared writer (`upsert_card` — create emits the embeddable card +
 stamps facts; idempotent refresh), the handler surface (model-slug resolution on

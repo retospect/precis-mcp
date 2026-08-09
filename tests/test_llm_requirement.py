@@ -1,5 +1,5 @@
 """Tests for the task→requirement judge — the agent surface (llm-catalog slice 5,
-docs/proposals/llm-catalog.md).
+``llm-catalog`` (git-only)).
 
 Covers: `infer_requirement` (JSON parse + clamp/validate so a malformed judge
 reply can't produce an illegal requirement), tolerant JSON extraction, and the

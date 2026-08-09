@@ -12,7 +12,7 @@ autocatpath pipeline **in-process on EMT** (cheap, qualitative), and persists:
 Regen is content-addressed: re-``put``ting an unchanged config is a no-op
 cache hit. Fan-out across ``(model, seed)`` and heavy backends move to the
 precis compute lane in later slices (see
-``docs/design/autocatpath-integration.md`` in precis-mcp). Native `structure`
+``docs/backlog/autocatpath-integration.md`` in precis-mcp). Native `structure`
 refs per intermediate (the ``pathway-node`` link) are slice 1 — deferred
 here because link relations are a closed `Relation` Literal in precis core
 and need a core edit to extend.

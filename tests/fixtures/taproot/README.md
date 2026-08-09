@@ -1,7 +1,7 @@
 # Taproot canonicalization fixture
 
 Ground-truth for the Phase-1 claim-canonicalization gate in
-`docs/proposals/taproot.md`. 200 pairs of real corpus claims, each
+`docs/backlog/taproot.md`. 200 pairs of real corpus claims, each
 labeled with one lattice relation. The eval target is **over-merge rate
 → ~0** (a false `equivalent` is the dangerous error); under-merge is
 tolerated.

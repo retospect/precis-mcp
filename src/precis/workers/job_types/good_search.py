@@ -1,6 +1,6 @@
 """``good_search`` — agentic broad-retrieval as a coordinator campaign.
 
-Thin slice of ``docs/design/good-search-coordinator.md`` (Phasing step
+Thin slice of ``docs/backlog/good-search-coordinator.md`` (Phasing step
 1): fuse → fan out triage children → heartbeat gather → ``Done`` with a
 merged verdict. No verify rung, no ``kind='citation'`` writes, no
 query/HyDE self-expansion — those are phase 2.

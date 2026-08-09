@@ -16,8 +16,8 @@ resolves each neighbour against ``ref_identifiers`` (DOI / S2 id), and — only
 when the neighbour resolves to a *held* ref — writes a ``cites`` edge into
 ``links`` (idempotent; one direction, since ``cited-by`` is the read-time
 rewrite). A neighbour **not** in the corpus gets no ``links`` edge —
-acquiring it is chase/watch_poll's job, not backfill's — but as of
-paper-viewer-nav slice 3 the *full* neighbour list (held or not) is also
+acquiring it is chase/watch_poll's job, not backfill's — but since the
+Sources/Cited tabs landed, the *full* neighbour list (held or not) is also
 persisted into ``s2_neighbors`` (migration 0106) on the same fetch, so the web
 reader can render a complete Sources/Cited tab, including fetchable stubs for
 the non-held majority. Once materialised the ``links``/lens-query side is pure
@@ -223,7 +223,7 @@ def materialize_citation_edges(
                         )
                         edges += 1
 
-                # Full neighbour lists (paper-viewer-nav slice 3): persist
+                # Full neighbour lists (the Sources/Cited tabs' feed): persist
                 # every S2 neighbour, held or not, so the web reader can
                 # render a complete Sources/Cited tab. Same delete+insert
                 # refresh both directions ride — never a partial write, so
@@ -264,7 +264,7 @@ def materialize_citation_edges(
 def ensure_s2_neighbors(
     store: Any, ref_id: int, *, ttl_days: int | None = None
 ) -> bool:
-    """The single-ref on-demand entry point (paper-viewer-nav slice 3 §4):
+    """The single-ref on-demand entry point (the tabs' first-view backfill):
     fetch-and-persist ``s2_neighbors`` (+ held↔held ``cites`` edges) for
     **one** ref, honouring the same ``citation_edges`` 30-day TTL
     :func:`materialize_citation_edges` gates on — a thin single-ref

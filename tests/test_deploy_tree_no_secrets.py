@@ -5,8 +5,7 @@ The precis-mcp monorepo is **public**. The portable provisioning tree under
 LAN IPs, node hostnames, the encrypted vault — must NEVER be committed into it
 (an irreversible leak: a public git push is forever, even after a later delete).
 
-The boundary (design-of-record §15c / §16, ``docs/design/factory-console-and-
-scheduling.md``):
+The boundary (design-of-record §15c / §16, ``docs/backlog/factory-console-and-scheduling.md``):
 
 * ``deploy/`` — portable roles + playbooks + example overlay. Scanned here.
   Roles reference capabilities and inventory *variables*, never literal node

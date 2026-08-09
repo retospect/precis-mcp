@@ -246,7 +246,7 @@ search(kind="paper", q="co2 adsorption capacity", tags=["ROLE3:own"])
 `ROLE3:own` is ~91% precision — use it to *narrow candidates*, then
 confirm with the agentic search (`search(good=True)`), not as a lone hard
 filter. Full 11-way `role:` remains an optional refinement of `own`
-chunks. Design: `docs/design/chunk-classifier-cascade.md`.
+chunks. Design: `chunk-classifier-cascade` (git-only).
 
 ## See also
 

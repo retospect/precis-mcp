@@ -1,5 +1,5 @@
 """Rung 6a of the paper-writing pipeline — deterministic paper→section
-placement (docs/design/paper-writing-pipeline.md §Integrate — the tick body,
+placement (docs/backlog/paper-writing-pipeline.md §Integrate — the tick body,
 step 1: Place).
 
 "Sections are centroids; place = nearest section above a floor (multi-place

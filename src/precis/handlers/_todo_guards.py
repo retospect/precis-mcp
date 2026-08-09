@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 
 #: Hard depth cap on the ancestor chain. See knob #3 in
-#: ``docs/design/todo-tree-plan.md``: dreamer + worker + chatter all
+#: ``docs/backlog/todo-tree-plan.md``: dreamer + worker + chatter all
 #: push depth, so 10 catches the procrastinating-by-planning failure
 #: mode without strangling a legitimate
 #: strategic→tactical→section→subsection→paragraph→sentence chain.

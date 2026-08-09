@@ -4,7 +4,7 @@ A patent **specification** cites prior art *in the running text* by number
 ("U.S. Patent No. 2,943,737") with **no bibliography** — unlike a paper,
 which gets ``\\cite`` + a reference list. These formatters render the
 in-text string from a patent (or paper) ref's ``meta``. Pure — no store,
-no I/O. See ``docs/design/patent-authoring-loop.md`` (export reconciliation).
+no I/O. See ``docs/backlog/patent-authoring-loop.md`` (export reconciliation).
 """
 
 from __future__ import annotations

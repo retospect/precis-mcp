@@ -1,6 +1,6 @@
 """LLM-catalog reconcile pass — keep model-card facts true + flag drift.
 
-Slice 1 of the ``llm`` catalog (docs/proposals/llm-catalog.md). Reads the live
+Slice 1 of the ``llm`` catalog (``llm-catalog`` (git-only)). Reads the live
 model feed (OpenRouter ``/api/v1/models`` — 344 models, no key, rich: context
 window, per-token price, ``supported_parameters``) and refreshes each seeded
 ``llm`` card's facts, then flags **drift**: a card whose loopback-proxy offering

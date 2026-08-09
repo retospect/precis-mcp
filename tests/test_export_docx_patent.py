@@ -1,5 +1,5 @@
 """docx patent-mode export: prior art in-text, no References section
-(slice 6 docx mirror). See ``docs/design/patent-authoring-loop.md``.
+(slice 6 docx mirror). See ``docs/backlog/patent-authoring-loop.md``.
 
 Uses a fake paragraph (records ``add_run`` text) + fake store so we test
 the citation branching without building a real Document.

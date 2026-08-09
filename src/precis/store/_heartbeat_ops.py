@@ -86,7 +86,7 @@ class HeartbeatMixin:
         Re-running for the same ``host`` overwrites the previous row
         (latest-snapshot semantics) and bumps ``ts`` so staleness is
         always measured from the most recent report — EXCEPT
-        ``meta.boot_ids`` (§H boot epoch, compute-lane-lease-epoch.md),
+        ``meta.boot_ids`` (the worker boot epoch),
         which is nested-merged instead of replaced: a host can run more
         than one worker process (melchior runs both ``system`` and
         ``agent``), each advertising its own boot_id under the SAME

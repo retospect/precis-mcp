@@ -1,4 +1,4 @@
-"""Sources/Cited tabs + per-row fetch (paper-viewer-nav slice 3, web half).
+"""Sources/Cited tabs + per-row fetch (the paper viewer's S2 tabs, web half).
 
 - ``GET /papers/{id}/refs/{sources|cited}`` — the lazily-loaded tab
   fragment: numbered bibliography (sources), held+S2 union (cited),

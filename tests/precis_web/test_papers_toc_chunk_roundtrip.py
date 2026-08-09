@@ -2,7 +2,7 @@
 via the chunk selector (``_cited_chunk`` — the shared resolver behind the
 web ``/chunk/{sel}`` route, ``?chunk=``, and the Jump box).
 
-Regression for the paper-viewer-nav slice 1 gap: the TOC shows a segment's
+Regression for the paper-viewer chunk-anchoring gap: the TOC shows a segment's
 ``lo`` (and the compound ``pa<id>~lo..hi`` handle built from it), but
 nothing in the UI actually accepted those forms before this slice — a row
 click, or a pasted handle, was a dead end. This drives the real

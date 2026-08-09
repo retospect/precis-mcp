@@ -5,7 +5,7 @@ lays down a styled section skeleton to fill, and folds a standing-guidance
 line into the project brief so the planner writes in the right register.
 Shared by the web ``/drafts/new`` form (``precis_web.routes.drafts``) and
 the MCP ``edit(kind='draft', scaffold=…)`` surface (``handlers/draft.py``,
-paper-writing pipeline rung 4, ``docs/design/paper-writing-pipeline.md``
+paper-writing pipeline rung 4, ``docs/backlog/paper-writing-pipeline.md``
 §"Document classes") — a genre picked from either surface materialises the
 same skeleton, since both read this one table.
 """

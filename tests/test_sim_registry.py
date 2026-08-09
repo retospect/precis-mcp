@@ -1,6 +1,6 @@
 """Tests for ``precis.sim.registry`` + the ``precis sim list`` CLI verb.
 
-Covers AC #2 of ``docs/proposals/sim-harness.md``: ``precis sim list``
+Covers AC #2 of ``docs/backlog/sim-harness.md``: ``precis sim list``
 reads the registry and prints registered sims with resolved paths and
 their linked quest id; an unreachable path is reported, not a crash.
 No DB needed — the registry + ``list`` are pure filesystem/YAML.

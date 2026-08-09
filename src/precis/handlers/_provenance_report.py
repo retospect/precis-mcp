@@ -1,8 +1,9 @@
 """Markdown / JSON report renderer for ``ProvenanceResult``.
 
-Renders the four-severity-tier report described in
-``docs/design/provenance-kind-plan.md`` § "Report shape". Pure formatting —
-no DB access, no I/O. Takes one ``ProvenanceResult`` (single-DOI
+Renders the four-severity-tier report (🔴 blockers / 🟠 review /
+🟡 corrections / 🟢 info, + an Unknown section — malformed or
+unresolvable DOIs surface there rather than as errors). Pure
+formatting — no DB access, no I/O. Takes one ``ProvenanceResult`` (single-DOI
 path) or a list of them (Phase 2 batch path) and returns a string.
 
 Views:

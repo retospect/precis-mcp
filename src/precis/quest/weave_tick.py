@@ -1,5 +1,5 @@
 """Rung 6e-1 of the paper-writing pipeline — ``weave_tick``: the runnable
-loop over a topic dossier (docs/design/paper-writing-pipeline.md
+loop over a topic dossier (docs/backlog/paper-writing-pipeline.md
 §"Integrate — the tick body" + §"Make/Maintain, one loop").
 
 Composes the already-shipped substrate — placement (rung 6a, :mod:`precis.
@@ -190,7 +190,7 @@ def weave_tick(
     call actually weaves; anything past the cap is simply left for the
     next tick.
 
-    **Rung 6f — the review trigger** (docs/design/paper-writing-pipeline.md
+    **Rung 6f — the review trigger** (docs/backlog/paper-writing-pipeline.md
     §"Review — the memoized approval ledger"): every successful, applied
     ``weave_section`` call (``ok=True``, ``applied=True``, carrying a
     ``body_handle``) mints its ``flow``/``cites`` review-todos via

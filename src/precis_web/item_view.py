@@ -1,5 +1,5 @@
-"""Per-kind item presenter — the ``ItemPresenter`` contract
-(``docs/proposals/unified-item-view.md``).
+"""Per-kind item presenter — the ``ItemPresenter`` contract behind the
+unified Drive surface's cross-kind rows.
 
 One presenter renders a cross-kind search hit into a row view-model for
 the unified ``/items`` list: a name, the matching-chunk preview, a

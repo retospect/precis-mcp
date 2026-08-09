@@ -1,6 +1,6 @@
 """Salience primitives for dreaming target selection.
 
-Deterministic, in-process core (docs/design/dreaming.md, §Target
+Deterministic, in-process core (docs/backlog/dreaming.md, §Target
 selection): a chunk's score is ``last_seen - last_dreamt`` and the seed
 is the argmax over ``paper`` + ``memory``. These tests pin the four
 behaviours the design calls out:

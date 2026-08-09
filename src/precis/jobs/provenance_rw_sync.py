@@ -1,6 +1,8 @@
 """Retraction Watch dataset sync — fetches CSV, upserts into the cache.
 
-See ``docs/design/provenance-kind-plan.md`` § "Phase 3" for the design.
+Phase 3 of the provenance kind: Retraction Watch is the *reasons*
+source (Crossref carries the notices; RW carries why). The cache
+table lets the check join reason codes without a per-DOI RW call.
 
 Source order:
 

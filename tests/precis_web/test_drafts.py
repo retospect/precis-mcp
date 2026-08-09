@@ -1209,7 +1209,7 @@ def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
     assert r.status_code == 404
 
 
-# ── un-review (smartdraft-review-status-ui item 7) ──────────────────────
+# ── un-review (the review-retract door) ─────────────────────────────────
 
 
 def test_retract_review_route_deletes_row_and_reverts_indicator(tmp_path) -> None:
@@ -1684,7 +1684,7 @@ def test_draft_author_lines_empty() -> None:
     assert _draft_author_lines(make_ref(kind="draft", authors=None)) == ""
 
 
-# ── lens-run endpoint (smartdraft-review-status-ui items 1-3) ──────────
+# ── lens-run endpoint (the incremental review fanout) ──────────────────
 #
 # The fanout's own minting behaviour (only_dirty, subtree scope,
 # unsettled-skip, lens x chunk-kind mapping) is unit-tested against a real

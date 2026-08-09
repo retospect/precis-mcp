@@ -11,7 +11,7 @@ advisory-lock claim, transactional swap) lives separately so this
 planning phase stays unit-testable against the filesystem alone.
 
 Static gates enforced at scan time (decision 5 / Quality gates §
-Static gates of ``docs/design/docs-and-skills-redesign.md``):
+Static gates of ``docs/backlog/docs-and-skills-redesign.md``):
 
 - Frontmatter parses; ``flavor:`` is one of the four defined values.
 - Every ``{{include …}}`` directive resolves.

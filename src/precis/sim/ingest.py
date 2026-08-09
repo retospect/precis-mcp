@@ -1,6 +1,6 @@
 """``precis sim ingest`` — project a sim's manifest outputs into the corpus.
 
-Slice 1 of ``docs/proposals/sim-harness.md`` (In-scope item 3, AC #3, the
+Slice 1 of ``docs/backlog/sim-harness.md`` (In-scope item 3, AC #3, the
 "Ingest kinds — DECIDED" entry). Two steps, deliberately split:
 
 1. **Project** — copy each manifest ``outputs:`` file that's prose/CSV

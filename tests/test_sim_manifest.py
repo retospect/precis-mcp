@@ -1,6 +1,6 @@
 """Tests for the ``precis.sim.manifest`` loader/validator.
 
-Covers AC #1 of ``docs/proposals/sim-harness.md``: the loader parses a
+Covers AC #1 of ``docs/backlog/sim-harness.md``: the loader parses a
 valid ``precis.sim.yaml`` and raises a clear error for each
 missing/ill-typed required key.
 """

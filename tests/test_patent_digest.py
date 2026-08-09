@@ -1,7 +1,7 @@
 """Unit tests for the freedom-to-operate claims digest (slice 3).
 
 See ``src/precis/workers/patent_digest.py`` and
-``docs/design/patent-authoring-loop.md``.
+``docs/backlog/patent-authoring-loop.md``.
 """
 
 from __future__ import annotations

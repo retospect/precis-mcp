@@ -1,5 +1,4 @@
-"""Scenario tests for ``precis.workers.hub_refine`` (docs/proposals/
-taproot-hub-refine.md).
+"""Scenario tests for ``precis.workers.hub_refine`` (docs/backlog/taproot-hub-refine.md).
 
 Real DB ``store`` fixture (mirrors ``test_taproot_chase_bridge.py``): a
 hub is a real ``mint_hub``-minted ``TAPROOT:claim``/``STATUS:canonical``
@@ -527,7 +526,7 @@ def test_verify_call_uses_a_mock_object_not_the_real_router(store: Any) -> None:
 
 # ── citation-following discover source (AC 3, AC 4) ──────────────────
 #
-# docs/proposals/citation-taproot-resolve.md: a second Discover source
+# docs/backlog/citation-taproot-resolve.md: a second Discover source
 # inside _refine_one_hub follows the hub's OWN evidence citations —
 # grounding chunk -> chunk_citations -> resolve_citation -> held cited
 # paper -> scoped verify — sharing the single Filter/Verify/Write tail and

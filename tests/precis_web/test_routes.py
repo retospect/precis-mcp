@@ -455,8 +455,8 @@ def test_flag_toggle_blocks_open_redirect(runtime, client) -> None:
     assert resp.headers["location"] == "/drive"
 
 
-# ── unified Drive surface (/drive; WS1a of web-ui-rationalization.md) ──
-# Ported from the old /items suite (Slice-3 of unified-item-view.md) —
+# ── unified Drive surface (/drive) ─────────────────────────────────────
+# Ported from the old /items suite (the retired unified item view) —
 # same assertions, new URL. /items itself now just redirects here (see
 # test_items_redirects_to_drive_preserving_query below).
 
@@ -3823,7 +3823,7 @@ def test_status_services_tab_renders_llm_chain_editor(client) -> None:
 
 
 def test_status_services_tab_renders_llm_operations_panel(client) -> None:
-    """Phase 2 of ``docs/proposals/llm-operation-routing.md`` (item 4 / AC5):
+    """The per-operation routing UI (Phase 2 of per-operation model routing):
     the operations panel renders one row per registered operation, plus
     excluded operations shown read-only with their reason."""
     resp = client.get("/status?tab=services")

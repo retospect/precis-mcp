@@ -1,6 +1,6 @@
 """Load + validate a sim's ``precis.sim.yaml`` manifest.
 
-Slice 1 of ``docs/proposals/sim-harness.md`` (In-scope item 1, AC #1). The
+Slice 1 of ``docs/backlog/sim-harness.md`` (In-scope item 1, AC #1). The
 manifest lives **in each sim repo** (not precis) — it is the sim's own
 declaration of how it wants to be driven; the :mod:`precis.sim.registry`
 only points at it. Schema, four required keys:

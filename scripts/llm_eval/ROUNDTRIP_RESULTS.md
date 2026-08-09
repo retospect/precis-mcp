@@ -1,7 +1,7 @@
 # Structure round-trip eval — trend log
 
 Fidelity = mean representation-invariant match of the rebuilt structure vs the
-source, over the generated gold set (see `docs/design/structure-roundtrip-eval.md`).
+source, over the generated gold set (see `docs/runbooks/structure-roundtrip-eval.md`).
 Run ~monthly; `roundtrip.py` appends a dated row. Higher fidelity = the structure
 survived the describe→build language round trip; watch it rise as models and the
 structure tool improve.

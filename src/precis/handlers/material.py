@@ -1,5 +1,5 @@
 """MaterialHandler — CRC-handbook-style engineering material properties
-store with per-value sources (docs/proposals/materials-handbook-kind.md).
+store with per-value sources (``materials-handbook-kind`` (git-only)).
 
 v1 is **canonical-units-only**: no ``pint``, no unit conversion, no
 ``units=`` read param, no off-sample estimate/interpolation, no ``model``

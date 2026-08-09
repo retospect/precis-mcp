@@ -83,7 +83,7 @@ _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
 
 @dataclass(frozen=True, slots=True)
 class _WantDescriptor:
-    """One parsed ``wants=`` entry (finding-acquisition-mode.md §2).
+    """One parsed ``wants=`` entry (the acquisition-mode paper descriptor).
 
     Exactly one of ``doi`` / ``arxiv`` / (``title`` and ``url``) is
     guaranteed non-None by :meth:`FindingHandler._parse_want` — ``title``
@@ -180,7 +180,7 @@ class FindingHandler(NumericRefHandler):
         on ``ref_identifiers (id_kind='pub_id')`` and returns the
         existing finding's id.
 
-        **Acquisition mode** (finding-acquisition-mode.md) — the claim's
+        **Acquisition mode** — the claim's
         supporting paper isn't in the corpus yet: pass ``wants=`` (a list
         of ``{'doi':…}`` / ``{'arxiv':…}`` / ``{'title':…,'url':…}``
         descriptors, ≥1) and ``provenance=`` (a ref/chunk handle for
@@ -260,7 +260,7 @@ class FindingHandler(NumericRefHandler):
                 )
             )
 
-        # --- Acquisition mode (finding-acquisition-mode.md) ---
+        # --- Acquisition mode (claim-first mint) ---
         # A finding born with ``wants=`` (paper descriptors, no
         # ``cited_in=``/``supporters=``) records a claim whose supporting
         # paper(s) aren't in the corpus yet: mint STATUS:acquiring,
@@ -521,7 +521,7 @@ class FindingHandler(NumericRefHandler):
         )
 
     # ──────────────────────────────────────────────────────────────────
-    # _put_acquiring — acquisition-mode mint (finding-acquisition-mode.md)
+    # _put_acquiring — the acquisition-mode (claim-first) mint
     # ──────────────────────────────────────────────────────────────────
 
     def _put_acquiring(
@@ -742,8 +742,8 @@ class FindingHandler(NumericRefHandler):
                         )
                     if w.url:
                         # Informational only in this build — no fetch leg
-                        # reads a bare URL yet (finding-acquisition-mode.md
-                        # "Explicitly NOT in scope"); a human sees it via
+                        # reads a bare URL yet (explicitly out of the
+                        # acquisition-mode scope); a human sees it via
                         # get(kind='paper', id=<stub>).
                         self.store.update_ref(
                             stub_ref_id,
@@ -1300,7 +1300,7 @@ class FindingHandler(NumericRefHandler):
         **Unacquirable override.** A print-only / undigitized source is
         legitimately citeable even when no digital copy is obtainable.
         Recording that intent suppresses the trust surfaces' "unverified"
-        mark on this claim (docs/proposals/finding-trust-surfaces.md;
+        mark on this claim (the trust-surfaces override door;
         never the "unsupported" mark — a negative terminal verification
         always outranks the override, the paper was read):
 
@@ -1533,7 +1533,7 @@ class FindingHandler(NumericRefHandler):
     def _set_unacquirable_override(self, raw_id: int | str, note: str) -> Response:
         """Write ``meta.unacquirable_override`` — the write path behind
         ``edit(kind='finding', unacquirable_note=…)``
-        (docs/proposals/finding-trust-surfaces.md). ``note`` required
+        (the trust-surfaces override door). ``note`` required
         non-empty; the override is otherwise settable on any finding
         regardless of its current lifecycle status."""
         if not note.strip():
@@ -1719,7 +1719,7 @@ class FindingHandler(NumericRefHandler):
             for hop in chain:
                 lines.append(f"  ref_id={hop.get('ref_id')} ord={hop.get('ord')}")
 
-        # Trust-surfaces override (finding-trust-surfaces.md §2): an
+        # Trust-surfaces override (the unacquirable-override door): an
         # author's stated reason a print-only / undigitized source can
         # never be acquired, suppressing the export/badge "unverified"
         # mark. Shown whenever set, regardless of current lifecycle status.
@@ -1731,7 +1731,7 @@ class FindingHandler(NumericRefHandler):
                 f"(by {override.get('by', '?')}, at {override.get('at', '?')})"
             )
 
-        # Acquisition-mode findings (finding-acquisition-mode.md): the
+        # Acquisition-mode findings: the
         # DREAM:acquire paper stub(s) this claim is waiting on before the
         # chase worker can ground it. Only present on STATUS:acquiring
         # findings (and any that once were, before flipping to tracing —

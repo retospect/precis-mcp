@@ -43,7 +43,7 @@ topics don't register their own passes (one pass, one LLM call per paper).
 on when any ``topic:<slug>`` is enabled; an explicit row overrides.
 ``PRECIS_CLASSIFY_TOPICS_ENABLED`` / ``PRECIS_TOPICS_ENABLED`` only seed the
 deploy-time rows; ``--only classify_topics`` forces a run. See
-docs/decisions/0060-topic-dossiers.md + docs/design/topic-dossiers.md.
+docs/decisions/0060-topic-dossiers.md.
 """
 
 from __future__ import annotations

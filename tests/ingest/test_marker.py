@@ -640,9 +640,9 @@ class TestCleanTextDehyphenation:
 
 class TestAssignPages:
     """``_assign_pages`` is the ingest-time TOC-anchor carry-forward guess
-    behind ``chunks.page_first`` — untested since introduction
-    (paper-viewer-nav.md slice 1). These pin its documented-coarse
-    behavior, not fix it: the web layer's find-first anchoring (slice 1)
+    behind ``chunks.page_first`` — untested since introduction until the
+    paper-viewer chunk-anchoring work. These pin its documented-coarse
+    behavior, not fix it: the web layer's find-first anchoring
     exists precisely because this guess can be this coarse."""
 
     def test_no_toc_anchors_yields_all_page_zero(self) -> None:

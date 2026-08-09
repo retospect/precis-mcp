@@ -1,4 +1,4 @@
-"""Account config parsing — pure, no DB (docs/design/email-kind.md slice 1).
+"""Account config parsing — pure, no DB (docs/backlog/email-kind.md slice 1).
 
 :class:`precis.mail.account.Account` interprets the flat row + JSONB ``config``
 into typed IMAP/SMTP settings, applying provider presets by domain and letting

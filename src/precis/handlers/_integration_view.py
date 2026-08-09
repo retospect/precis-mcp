@@ -1,6 +1,5 @@
 """``get(kind='draft', id=<dossier-slug>, view='integration')`` — the
-integration ledger (paper-writing pipeline rung 2, docs/design/
-paper-writing-pipeline.md §"The integration ledger").
+integration ledger (paper-writing pipeline rung 2, docs/backlog/paper-writing-pipeline.md §"The integration ledger").
 
 A topic dossier is a `draft` (`dossier-of` → its quest). This view answers
 "what's been woven in, and what's still pending?" over that draft's

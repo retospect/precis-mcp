@@ -1,7 +1,7 @@
 """Source-agnostic tier-0 injection scanner (`precis.utils.inject_scan`).
 
 The regex core moved here from ``precis.mail.inject`` when the cascade went
-source-agnostic (docs/proposals/untrusted-input-injection-scan.md); the deep
+source-agnostic (docs/backlog/untrusted-input-injection-scan.md); the deep
 pattern coverage lives in ``test_mail_inject.py`` via the re-export. This
 file covers the new-home surface: the shared ``meta['inject']`` stamp and
 the back-compat re-export.

@@ -319,8 +319,7 @@ def run(
     t0 = time.perf_counter()
     cfg = config or load_config_from_env()
 
-    # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
-    # safety.md Part 3): fix_gripe's agent runs claude -p (via the
+    # GLM/OpenRouter fleet-flip safety gate: fix_gripe's agent runs claude -p (via the
     # call_claude_agent chokepoint), which assumes Claude model semantics —
     # under backend=openai, resolve_model(FRONTIER) returns an OSS slug that
     # `claude -p` can't run (HTTP 400). Skip cleanly rather than spawn a

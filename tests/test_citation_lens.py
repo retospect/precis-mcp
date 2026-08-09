@@ -137,7 +137,7 @@ def test_find_citation_candidates_builds_lead_chunk_candidates(hub: Hub) -> None
 
 
 def test_materialize_writes_s2_neighbors_both_directions(hub: Hub) -> None:
-    """paper-viewer-nav slice 3: the FULL neighbour list (held or not)
+    """The Sources/Cited tabs' data side: the FULL neighbour list (held or not)
     lands in ``s2_neighbors``, not just the held↔held subset that gets a
     ``cites`` edge."""
     g = _build_graph(hub.store)

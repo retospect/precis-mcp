@@ -1,5 +1,5 @@
 """Contract tests for :class:`precis.handlers.component.ComponentHandler`
-(docs/proposals/component-kind.md acceptance criteria).
+(``component-kind`` (git-only) acceptance criteria).
 """
 
 from __future__ import annotations

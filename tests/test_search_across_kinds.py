@@ -1,4 +1,4 @@
-"""Cross-kind chunk search — the unified-item-view Slice-2 primitive.
+"""Cross-kind chunk search — the source-search primitive.
 
 ``Store.search_chunks_across_kinds`` searches the chunks of a *set* of
 kinds at once (semantic + lexical, RRF-fused), collapses to one best

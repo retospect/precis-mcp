@@ -10,8 +10,7 @@ the job to its plugin, which typically shells out to
 This executor runs **plugin dispatchers only** — it has no in-tree
 built-in switch (``claude_inproc`` keeps ``fix_gripe`` / ``plan_tick``).
 
-**Detached submit/poll (§H piece 4, ``docs/proposals/compute-lane-lease-
-epoch.md`` / gr187627) — the preferred protocol.** A job_type that sets
+**Detached submit/poll (gr187627) — the preferred protocol.** A job_type that sets
 BOTH ``spec.submit`` and ``spec.poll`` never blocks a worker pass: each
 pass polls every in-flight handle THIS host submitted (cheap — a status
 check, a lease renewal), then claims + ``submit()``s any newly-queued

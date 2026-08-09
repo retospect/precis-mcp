@@ -1,4 +1,4 @@
-"""Cross-kind fan-out + the unified-item-view source-search primitive.
+"""Cross-kind fan-out + the source-search primitive.
 
 ``SearchMixin`` carries ``search(kind='*')`` / comma-list fan-out (RRF
 merge across handlers' ``search_hits``), the tags-only cross-kind sweep,
@@ -47,7 +47,7 @@ class SearchMixin(RuntimeShape):
         Lists ``paper`` refs with an external identifier (DOI / arXiv /
         S2) registered but no PDF yet — the "papers we still need to
         get" queue the chase worker and the dream ``acquire`` tool both
-        feed (docs/design/stubs-mcp-and-skill.md). Paper-only; ``q=`` is
+        feed (the stub surfaces). Paper-only; ``q=`` is
         ignored (the view *is* the filter). ``n=`` / ``page_size=`` cap
         the row count; newest stub first. Read-only — surfacing the
         backlog does not touch salience or the fetch pipeline.
@@ -101,7 +101,7 @@ class SearchMixin(RuntimeShape):
         ``search(view='chase-queue')``.
 
         A tighter slice of the same stub backlog ``view='stubs'``
-        surfaces (docs/design/stubs-mcp-and-skill.md): DOI-only (the
+        surfaces: DOI-only (the
         identifier kind the fetcher cascade covers most reliably) and
         ordered never-tried-first rather than oldest-request-first —
         "what should I go find a PDF for right now" rather than "what's
@@ -311,9 +311,8 @@ class SearchMixin(RuntimeShape):
     ) -> Response:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
 
-        The Slice-2 primitive (see
-        :meth:`Store.search_chunks_across_kinds` +
-        ``docs/proposals/unified-item-view.md``). Resolves the kind set
+        The source-search primitive (see
+        :meth:`Store.search_chunks_across_kinds`). Resolves the kind set
         (single / comma-list / wildcard / omitted → every cross-kind
         kind; kinds with no embedded chunks contribute nothing), embeds
         ``q`` once, runs the single store query, and renders the per-ref

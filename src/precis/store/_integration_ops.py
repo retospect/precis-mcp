@@ -1,5 +1,4 @@
-"""The integration ledger — paper-writing pipeline rung 2 (docs/design/
-paper-writing-pipeline.md §"The integration ledger"). Mixin on
+"""The integration ledger — paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md §"The integration ledger"). Mixin on
 :class:`precis.store.Store`.
 
 ``integrated-into`` is not a new table: disposition rides the existing

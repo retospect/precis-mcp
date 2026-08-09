@@ -1,7 +1,7 @@
 """Rolling spend meter — the tote, a query over the existing ledger.
 
 Sums *actual* recorded cost over a time window from the two authoritative
-ledgers, with no double-count (see ``docs/design/budget-guardrails.md`` open
+ledgers, with no double-count (see ``docs/backlog/budget-guardrails.md`` open
 question #1):
 
 * ``llm_call_log.cost_usd`` — every router dispatch (claude reports true

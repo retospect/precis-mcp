@@ -3,7 +3,7 @@
 Patents ingested **before** the slice-1 claim marker existed
 (``chunks.meta.patent_block``) carry no per-claim structure, so the
 freedom-to-operate claims digest can't tell their claim blocks from
-description (docs/design/patent-authoring-loop.md). Their stored chunks
+description (docs/backlog/patent-authoring-loop.md). Their stored chunks
 are also structurally inconsistent per authority — some fuse every claim
 into one chunk, some fragment a single claim, some enumerate
 "embodiments" — so there is *no* reliable in-DB heuristic to re-mark

@@ -1,6 +1,6 @@
 """Representation-invariant structure fingerprint + comparison.
 
-The round-trip eval (``docs/design/structure-roundtrip-eval.md``) scores a model
+The round-trip eval (``docs/runbooks/structure-roundtrip-eval.md``) scores a model
 by sending a structure through language (describe → build) and asking whether the
 rebuilt :class:`~precis.structure.scene.Scene` is the SAME structure. "Same" must
 ignore atom relabeling, ordering, translation, and periodic image — an atom

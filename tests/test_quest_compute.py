@@ -1186,7 +1186,7 @@ class TestLeaderboard:
         assert "no candidate structures serve this quest yet" in body
 
 
-# ── composite rubric objective (pathway-potential-lever proposal, slice 2) ─
+# ── composite rubric objective (the potential lever's weighted-sum rubric) ─
 
 
 class TestRubricComposite:

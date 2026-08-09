@@ -1,5 +1,4 @@
-"""Trust surfaces — LaTeX export marking (docs/proposals/finding-trust-
-surfaces.md, stage a). End-to-end via ``export_draft`` against real
+"""Trust surfaces — LaTeX export marking (the trust-surfaces export marking, stage a). End-to-end via ``export_draft`` against real
 Postgres (the ``hub`` fixture), mirroring ``tests/test_export_latex.py``'s
 hub/finding coverage."""
 

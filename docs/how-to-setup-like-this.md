@@ -33,7 +33,7 @@ link. Duplication = N rot sites for one fact.
 | `docs/decisions/NNNN-*.md` (ADRs) | rationale | why a decision, what was rejected. Numbered; **never delete, only supersede**; `README.md` = index + supersession graph |
 | `docs/architecture/glossary.md` | vocabulary | coined/overloaded term → best entry-point file |
 | `AGENTS.md` | conventions / workflow / Definition-of-Done | the rules that bite |
-| `docs/design/*.md` | plans | one per non-trivial change; **delete-on-ship** (see §7) |
+| `docs/backlog/*.md` | work items + specs | one per item; **delete-on-ship** (see §7) |
 
 **No CHANGELOG** — history is `git log`. **Freshness contract:** update the doc
 in the *same commit* that changes what it describes; a subsystem change updates
@@ -81,7 +81,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/db` | psql to the LOCAL dev DB | container-first |
 | `scripts/prod-psql "SELECT …"` | read prod through a bastion hop | prefer read-only; local `db` never reaches prod |
 | `scripts/code-index` | seed/refresh the semantic code-search index | reproducible from shell, no MCP session needed |
-| `scripts/docs-orphans` | flag `docs/design` plans with no inbound ref | advisory; wired into ship when the diff touches `docs/design/` |
+| `scripts/docs-index` | regenerate backlog/runbook indexes + the codebase package map | wired into ship |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
 | `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal | advisory; `/whatneedsdoing` |
 | `scripts/backlog-lint` | flag done-marked items still sitting in the backlog (`OPEN-ITEMS.md`) | advisory in ship when the diff touches it; `/whatneedsdoing` |
@@ -231,7 +231,7 @@ broken-link/unindexed/size checks still run every time).
 - **Forward-only migrations.** Never edit a sealed `*.sql`; ship a new forward
   migration to fix bugs. A fresh DB loads a `baseline/schema.sql` snapshot then
   applies the tail; regenerate the snapshot at release time only, never
-  hand-edit it. (A `docs/design/…md` path-link inside a sealed migration means
+  hand-edit it. (A doc path-link inside a sealed migration means
   you **can't de-ref it → can't delete that doc** — keep it.)
 - **ADR log:** next number, never reuse; the older ADR names its successor and
   vice-versa; supersede (never retro-edit). Archive a fully-superseded ADR only

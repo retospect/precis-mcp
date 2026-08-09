@@ -1,7 +1,7 @@
 """``handlers/_citer_sidecar.py`` — the Part 3 capped citer-verdict render.
 
-Covers the citation-chunk-grounding "sidecar render" (docs/design/
-citation-chunk-grounding.md Part 3): a chunk with resolved outbound
+Covers the citation-chunk-grounding "sidecar render"
+(handlers/_citer_sidecar.py): a chunk with resolved outbound
 ``cites`` links (from ``workers/inbound_chase.py``) gets a capped,
 best-first, expand-on-request sidecar of the surfaceable (yes/partial)
 verdicts. Also covers the symmetric inbound render

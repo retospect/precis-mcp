@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic sampler for the context-quality audit.
 
-For each row in the catalog documented at ``docs/design/context-quality-eval.md``
+For each row in the catalog documented at ``docs/backlog/context-quality-eval.md``
 (that file is the source of truth for *which* contexts matter and *why* — this
 script only pulls one real, representative sample of each so ``PROCEDURE.md``
 has something concrete to judge against ``RUBRIC.md``), this script produces
@@ -94,7 +94,7 @@ class SampleResult:
 @dataclass(frozen=True, slots=True)
 class ContextRow:
     """One registry entry — one row of the catalog in
-    ``docs/design/context-quality-eval.md``."""
+    ``docs/backlog/context-quality-eval.md``."""
 
     slug: str
     axis: str  # "interactive" | "agentic"
@@ -301,7 +301,7 @@ def sample_search_stubs(ctx: Ctx) -> SampleResult:
 
 
 def sample_search_source_recency(ctx: Ctx) -> SampleResult:
-    # The unified-item-view Slice 2 source-search primitive
+    # The cross-kind source-search primitive
     # (`sort=`/`since=`/`until=`) — one best-chunk-per-ref cross-kind hit
     # list ordered by recency rather than relevance.
     q = "catalyst reaction pathway"
@@ -447,7 +447,7 @@ def _kind_roster(runtime: PrecisRuntime) -> dict[str, Any]:
     authoritative read views for that — same source the boot log's "N kinds
     live" line uses — so record them here rather than letting the judge
     guess from `precis-overview` prose, which can itself drift from the live
-    registry (see docs/design/context-quality-eval.md's rubric dimension 5).
+    registry (see docs/backlog/context-quality-eval.md's rubric dimension 5).
     """
     hub = runtime.hub
     return {

@@ -1,4 +1,4 @@
-"""Nursery worker — Slice 3 of ``docs/design/todo-tree-plan.md``.
+"""Nursery worker — Slice 3 of ``docs/backlog/todo-tree-plan.md``.
 
 Pattern-matches the todo tree (and the worker fleet) for local
 incoherence and raises a ``kind='alert'`` per condition through
@@ -222,7 +222,7 @@ WORKER_CONTINUOUS_PROCESSES = ("precis-worker",)
 DEAD_WORKER_LOOKBACK_DAYS = 30
 
 #: A host's freshest ``host_heartbeat`` row older than this is dark — gr186752
-#: (§D, ``docs/proposals/health-watchdog.md``). Slightly wider than
+#: (§D, ``docs/backlog/health-watchdog.md``). Slightly wider than
 #: ``DEAD_WORKER_SILENCE_MIN`` (10 vs the daemon-level 10) since a host-level
 #: verdict should not trip on the same jitter a single-daemon check would;
 #: kept equal for now (no observed need to separate them) but named

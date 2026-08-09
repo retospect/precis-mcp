@@ -100,7 +100,7 @@ def add_parser(subparsers: Any) -> None:
     ra.add_argument(
         "--only-dirty",
         action="store_true",
-        help="Incremental re-check (smartdraft-review-status-ui item 1): "
+        help="Incremental re-check: "
         "skip a (chunk, lens) pair already approved at the chunk's "
         "current sha, and skip any chunk carrying an open anchored "
         "change-request. Cheap re-run after edits instead of a full "

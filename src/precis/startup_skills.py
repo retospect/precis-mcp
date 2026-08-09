@@ -16,7 +16,7 @@ No I/O beyond the skill loader; safe to call from
 skill index machinery and the underlying ``importlib.resources``
 calls are O(small)).
 
-See ``docs/design/mcp-cold-start-token-budget.md`` Phase 3 for the
+See ``docs/backlog/mcp-cold-start-token-budget.md`` Phase 3 for the
 broader design context and the skill ``precis-startup-skills-help``
 for the agent-facing documentation.
 """

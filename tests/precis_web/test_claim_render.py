@@ -1,5 +1,5 @@
 """``precis_web/claim_render.py::render_claim_evidence`` — the hub-derived
-``status`` field (``docs/proposals/finding-trust-surfaces.md`` §3), populated
+``status`` field (the trust-surfaces editor badges), populated
 from the shared ``precis.taproot.trust.claim_trust`` derivation. DB-backed
 (the ``hub``/``store`` fixtures), mirroring ``tests/test_claim_routes.py``'s
 setup style — the route-level ``/claim`` tests don't assert this field (the

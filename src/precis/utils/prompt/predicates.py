@@ -99,7 +99,7 @@ def is_patent(ctx: AssemblyContext) -> bool:
 
     Gates the patent-authoring block: the prior-art sweep→ingest loop, the
     freedom-to-operate claims view, and the scoping-decision ledger
-    convention (docs/design/patent-authoring-loop.md). Specialises a generic
+    convention (docs/backlog/patent-authoring-loop.md). Specialises a generic
     ``plan_tick`` in the variable layer — no separate job_type (like
     reviewer / backfill mode). Memoised under ``extras['is_patent']``."""
     if "is_patent" in ctx.extras:
@@ -205,7 +205,7 @@ def has_plan(ctx: AssemblyContext) -> bool:
 
     Gates the plan-outline injection block so a tick reads the recorded
     decisions it must respect — e.g. the patent freedom-to-operate scoping
-    ledger (``docs/design/patent-authoring-loop.md``) — without having to
+    ledger (``docs/backlog/patent-authoring-loop.md``) — without having to
     fetch the plan itself."""
     return _project_plan(ctx) is not None
 

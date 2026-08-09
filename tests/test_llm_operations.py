@@ -1,6 +1,6 @@
 """Per-operation LLM model routing — Phase 1 (registry + resolver).
 
-``docs/proposals/llm-operation-routing.md``: ``operations.py`` owns the
+``operations.py`` owns the
 steerable allow-list (:data:`LLM_OPERATIONS`) and the deliberately-excluded
 set (:data:`EXCLUDED_OPERATIONS`); :func:`resolve_op` layers a runtime
 ``app_settings`` override (``live_config.op_override``) over a legacy

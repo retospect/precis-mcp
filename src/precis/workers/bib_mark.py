@@ -1,5 +1,5 @@
 """bib_mark — extract inline citation markers into ``chunk_citations``
-(docs/proposals/citation-taproot-resolve.md).
+(docs/backlog/citation-taproot-resolve.md).
 
 The base slice ``bib_parse`` (``workers/bib_parse.py``) parses each held
 paper's *bibliography* into ``paper_bib_entries`` (``marker -> fields ->

@@ -140,7 +140,7 @@ end-to-end.
 ## Execution boundary — must run on cluster infra
 
 `PRECIS_ELSEVIER_API_KEY` lives in the DB-backed vault
-(`docs/design/secrets-vault.md`); `agent_rw` (the only DSN reachable from a
+(`src/precis/secrets.py`, ADR 0055); `agent_rw` (the only DSN reachable from a
 dev laptop session) has **zero vault grants by design**. The reset SQL can
 be prepared/reviewed from a dev session (as above, read-only until the
 `BEGIN`/`COMMIT` block runs), but the actual fetch pass needs a real

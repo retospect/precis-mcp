@@ -86,7 +86,7 @@ Write a **respelling** ("pray-see") — author-friendly; the narrator speaks it.
 documents — which is why the personal layer exists.
 
 Not-yet: pronunciation on term/glossary entries; inline per-occurrence override
-for homographs; LaTeX→speech. See `docs/design/audio-feed.md` + OPEN-ITEMS.
+for homographs; LaTeX→speech.
 
 ## Automatic producers
 
@@ -95,8 +95,8 @@ publish its own daily episode via a `briefing_audio` worker pass — now
 **retired** (`PRECIS_BRIEFING_AUDIO_ENABLED=0`, avoids double-publishing): the
 news wire is instead folded into the morning `reading` cast at narration time
 (see below), so one combined episode ships. Non-draft producers reuse
-`export.audio.synthesize_text` (the shared stitch loop). Design + how to add
-the next producer: `docs/design/audio-feed.md`.
+`export.audio.synthesize_text` (the shared stitch loop); copy the
+`briefing_audio` pass to wire the next one.
 
 ### Daily casts — morning brief + evening nidra
 

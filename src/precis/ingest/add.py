@@ -16,8 +16,10 @@ Idempotent on two layers:
 1. **Fast path** — for :class:`PdfInput`, the cheap ``pdf_sha256``
    is computed from bytes and probed against ``ref_identifiers``
    *before* Marker runs. A hit short-circuits without invoking
-   the pipeline at all (saves ~30–60 s/PDF on duplicates). See
-   ``docs/design/extract-once.md``.
+   the pipeline at all (saves ~30–60 s/PDF on duplicates). The
+   probe uses its own short-lived connection, dropped before
+   Marker — extraction is minutes of model inference and the pool
+   is sized for many short transactions, not a few long ones.
 2. **Slow path** — every identifier the pipeline assembled
    (paper_id, DOI, arXiv, S2, content_hash, …) is probed again
    after extraction. Catches "same paper, different bytes" cases
@@ -139,7 +141,7 @@ class PresInput:
 class MarkupInput:
     """Structured full text (JATS / Elsevier XML / arXiv HTML / LaTeX).
 
-    Markup-first ingest (docs/design/markup-first-ingest.md): the body
+    Markup-first ingest (docs/backlog/markup-first-ingest.md): the body
     chunks come from ``markup_path`` via
     :func:`precis.ingest.pipeline.extract_paper_from_markup` — **Marker
     is never run**.
@@ -256,7 +258,7 @@ def precis_add(
       :func:`precis.ingest.pipeline.extract_paper`. The cheap
       ``pdf_sha256`` is probed against ``ref_identifiers`` *before*
       Marker so re-ingesting a known file short-circuits without
-      paying for extraction (see ``docs/design/extract-once.md``).
+      paying for extraction.
     * :class:`DoiInput` — CrossRef-only fetch via
       :func:`precis.ingest.pipeline.fetch_paper_by_doi`.
     * :class:`ArxivInput` — Semantic Scholar via
@@ -410,7 +412,7 @@ def _ingest_pdf(
             # the row is a stub (``pdf_sha256 IS NULL``), upgrade it
             # by promoting this PDF to canonical and inserting the
             # extracted chunks. See db_writer.register_aliases_and_maybe_upgrade
-            # for the contract and docs/design/finding-chase.md
+            # for the contract and docs/backlog/finding-chase.md
             # §"Stub upgrade" for the rationale (chase findings
             # waiting on this stub resume on the next chase pass
             # without any extra plumbing).

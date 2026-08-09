@@ -335,13 +335,10 @@ for attempt in 1 2 3; do
 
     # Pre-ship advisories (never block the ship — `|| true`): a migration-number
     # collision across worktrees when this ship touches migrations, and orphaned
-    # design plans when it touches docs/design/. Both are also in
+    # Both are also in
     # /whatneedsdoing (the fleet-wide view).
     case "$CHANGED" in
         *src/precis/migrations/*) scripts/migration-check --quiet || true ;;
-    esac
-    case "$CHANGED" in
-        *docs/design/*) say "docs/design changed — orphan-plan check"; scripts/docs-orphans || true ;;
     esac
     case "$CHANGED" in
         *docs/backlog/*) scripts/backlog-lint || true ;;

@@ -299,7 +299,7 @@ precis add <pdf|url>               # Ingest one paper on the spot.
 precis migrate                     # Run pending forward-only SQL migrations.
 precis db ...                      # Schema utilities (dump-schema, …).
 precis schema-doc                  # Generate the Mermaid ER diagram
-                                   #   (docs/design/schema.md) from a DSN.
+                                   #   (docs/reference/schema.md) from a DSN.
 
 # Interactive & inspection
 precis repl                        # Interactive verb console (tab-complete).
@@ -352,7 +352,7 @@ high-traffic ones:
 - [`docs/mission.md`](docs/mission.md) — the mission, the pitch narrative, and the current corpus facts (positioning, not architecture — the single source for decks and talks).
 - [`docs/README.md`](docs/README.md) — the documentation landing index (directory-by-directory map).
 - [`docs/architecture.md`](docs/architecture.md) — the system manual: a narrative overview tying the surface, kinds, storage, todo-tree, and workers together.
-- [`docs/design/schema.md`](docs/design/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
+- [`docs/reference/schema.md`](docs/reference/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
 - [`docs/decisions/README.md`](docs/decisions/README.md) — the ADR index (one record per decision; supersession graph). The individual ADRs live in [`docs/decisions/`](docs/decisions/).
 - [`docs/reference/config-variables.md`](docs/reference/config-variables.md) — the full `PRECIS_*` config catalog: every var, its default, the value deployed to each cluster service, and a correctness assessment.
 - [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.
@@ -362,7 +362,7 @@ high-traffic ones:
 - [`docs/user-facing/python-kind-spec.md`](docs/user-facing/python-kind-spec.md) — python navigator design.
 - [`docs/user-facing/patent-kind-spec.md`](docs/user-facing/patent-kind-spec.md) — EPO OPS integration.
 - [`docs/user-facing/paper_ingest.md`](docs/user-facing/paper_ingest.md) — `.acatome` bundle ingest path.
-- [`docs/design/storage-v2.md`](docs/design/storage-v2.md) — full schema + discovery-layer design.
+- [`docs/reference/schema.md`](docs/reference/schema.md) — generated schema (full ER view: `schema-v2.svg`).
 - [`docs/decisions/0026-precis-web-surface.md`](docs/decisions/0026-precis-web-surface.md) — the `precis web` browser UI (Tasks / Papers / Conversations / Console / Status).
 - [`docs/decisions/0029-multi-root-corpus-pdf.md`](docs/decisions/0029-multi-root-corpus-pdf.md) — why `PRECIS_CORPUS_DIR` accepts a list of roots.
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.

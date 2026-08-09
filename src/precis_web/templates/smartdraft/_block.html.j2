@@ -26,13 +26,13 @@
 <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}"{% if n.provenance %} title="{{ prov_title(n.provenance) }}"{% endif %}>{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
 {%- endmacro %}
 
-{# The per-block review indicator + dropdown (smartdraft-review-status-ui
-   items 6/7) — a 4-state dot (grey/empty · hollow-blue/machine-green ·
+{# The per-block review indicator + dropdown
+   — a 4-state dot (grey/empty · hollow-blue/machine-green ·
    green/human · amber/dirty, ``review.state``) whose title is the
    per-checker tooltip matrix (``review.tooltip``, precomputed server-side —
    ``precis_web.smartdraft.review_indicator``) plus a red integrity marker
    (``review.integrity_ok is false``, item 5c) plus a claim-trust overlay
-   (``review.claim_trust``, ``docs/proposals/finding-trust-surfaces.md`` §3
+   (``review.claim_trust``, the trust-surfaces editor badges
    — orthogonal to the dot's prose-review state: an amber ``?`` for an
    unverified-backed citation, a louder red ``‼`` for an unsupported one,
    ``sd-trust-unsupported``/``sd-trust-unverified`` in ``view.html.j2``;

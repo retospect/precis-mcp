@@ -10,7 +10,7 @@ shape with four first-class extensions:
    ``open|doing|blocked|done|won't-do|paused|auto-timeout``.
    Every put-create starts at ``STATUS:open``.
 
-2. **Hierarchical tree** (Slice 1 of ``docs/design/todo-tree-plan.md``):
+2. **Hierarchical tree** (Slice 1 of ``docs/backlog/todo-tree-plan.md``):
    each todo carries an optional ``parent_id`` pointing at another
    todo. Branches are outcomes (the first line reads as "what does
    done look like"); leaves are next physical actions. The owner owns the

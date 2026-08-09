@@ -114,8 +114,8 @@ Relation = Literal[
     # sync with the `relations` seed in 0056_plan_kind.sql.
     "plan-of",
     "has-plan",
-    # Concept graph — migration 0063 (reading-prep loop, docs/design/
-    # reading-prep-loop.md; supersedes decision 7's objectives-as-todos).
+    # Concept graph — migration 0063 (reading-prep loop, docs/backlog/reading-prep-loop.md;
+    # supersedes decision 7's objectives-as-todos).
     # Concepts (kind='concept') form a personal knowledge graph.
     # `has-prerequisite` (Y has-prerequisite X ⇒ learn X before Y) is the
     # learning DAG, inverse `prerequisite-of` (X prerequisite-of Y).
@@ -129,7 +129,7 @@ Relation = Literal[
     "contrasts-with",
     "represents",
     "represented-by",
-    # Quest layer — migration 0065 (docs/proposals/quest-layer.md). `serves`
+    # Quest layer — migration 0065 (``quest-layer`` (git-only)). `serves`
     # binds any work/knowledge node (project/todo/concept/paper/job/draft/
     # structure/sub-quest) to the quest it is in the service of — a DAG of
     # strivings above the ordinary todo tree of deeds. Asymmetric, `served-by`
@@ -151,7 +151,7 @@ Relation = Literal[
     # substrate; the paper is what a human reads). Modeled 1:1 on
     # `dossier-of`: asymmetric, `has-paper` inverse, auto-mirrored.
     # Resolved read-only by `quest.dossier.paper_ref_id`; nothing yet
-    # *creates* the paper draft (docs/design/paper-writing-pipeline.md).
+    # *creates* the paper draft (docs/backlog/paper-writing-pipeline.md).
     # Keep in sync with the `relations` seed in 0089_paper_of_relation.sql.
     "paper-of",
     "has-paper",
@@ -170,7 +170,7 @@ Relation = Literal[
     "qualifies",
     "qualified-by",
     # Integration ledger — migration 0085 (paper-writing pipeline rung 2,
-    # docs/design/paper-writing-pipeline.md §"The integration ledger").
+    # docs/backlog/paper-writing-pipeline.md §"The integration ledger").
     # Disposition of a paper's relationship to a topic dossier `draft`,
     # ridden on the paper→dossier link edge (src=paper, dst=dossier,
     # optionally its section chunk). All four are asymmetric with NO
@@ -189,7 +189,7 @@ Relation = Literal[
     # 0088_draft_copy_of_relation.sql.
     "copy-of",
     "has-copy",
-    # Component kind — migration 0093 (docs/proposals/component-kind.md).
+    # Component kind — migration 0093 (``component-kind`` (git-only)).
     # `made-of` binds a `component` (a discrete procurable thing) to the
     # `material` it is made of — the one composition edge v1 ships; the
     # inverse `used-in` lives on the material. Asymmetric, auto-mirrored.
@@ -197,7 +197,7 @@ Relation = Literal[
     "made-of",
     "used-in",
     # Component assembly tree — migration 0095
-    # (docs/proposals/component-assembly-tree.md). `contains` binds a
+    # (``component-assembly-tree`` (git-only)). `contains` binds a
     # `component` (parent) to each `component` (child) it structurally
     # contains — a BOM edge, orthogonal to `made-of`'s substance
     # composition. Inverse `part-of` lives on the child. Asymmetric,
@@ -222,8 +222,7 @@ Relation = Literal[
     # relation='refines')`. Keep in sync with the `relations` seed in
     # 0100_taproot_refines_relation.sql.
     "refines",
-    # Acquisition-mode findings — migration 0105
-    # (docs/proposals/finding-acquisition-mode.md). `awaits-evidence` binds
+    # Acquisition-mode findings — migration 0105. `awaits-evidence` binds
     # a `finding` (STATUS:acquiring) to each `DREAM:acquire` paper stub its
     # `wants=` descriptors minted; the chase worker polls the linked stubs
     # and grounds the finding once one gains chunks. No inverse: the finding
@@ -385,7 +384,7 @@ class Ref:
     # Migration 0014 / Slice 4 priority column. 1..10 inclusive. NULL =
     # "use the default at sort time" (5). 1 preempts strategic rotation;
     # 2 = cron tick spawns; 3..10 share the 1/N strategic rotation. See
-    # docs/design/todo-tree-plan.md for the spawn-default table.
+    # docs/backlog/todo-tree-plan.md for the spawn-default table.
     prio: int | None = None
     # Migration 0099 / alert dedup+lifecycle columns, promoted off jsonb
     # `meta` so the ``kind='alert'`` open-uniqueness index
@@ -472,8 +471,8 @@ class Link:
 @dataclass(frozen=True, slots=True)
 class S2Neighbor:
     """A row from ``s2_neighbors`` — one Semantic Scholar bibliography /
-    cited-by neighbour of a held paper (migration 0106, paper-viewer-nav
-    slice 3). ``held_ref_id`` is ``None`` when the neighbour isn't (yet)
+    cited-by neighbour of a held paper (migration 0106, the Sources/Cited
+    tabs' feed). ``held_ref_id`` is ``None`` when the neighbour isn't (yet)
     held in the corpus; ``ord`` is the neighbour's position in the S2 list
     the fetch returned."""
 
@@ -805,7 +804,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     #     open → doing → done (or blocked / won't-do)
     # * finding — the citation-chase lifecycle (chase worker):
     #     tracing → established (or multi_candidate / dead_chain)
-    #     acquiring → tracing → ... (docs/proposals/finding-acquisition-mode.md
+    #     acquiring → tracing → ... (the acquisition-mode mint
     #     — a claim minted before its supporting paper is in the corpus;
     #     precedes tracing, never terminal on its own)
     #
@@ -825,7 +824,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "established",
             "multi_candidate",
             "dead_chain",
-            # Acquisition-mode findings (finding-acquisition-mode.md) — a
+            # Acquisition-mode findings — a
             # claim minted via wants=/provenance= before its supporting
             # paper is in the corpus. Precedes `tracing`; the chase worker
             # polls the linked `awaits-evidence` stub(s) and flips this to
@@ -875,7 +874,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "waiting_time",
             "waiting_ask_user",
             "waiting_manual_kick",
-            # quest lifecycle (migration 0065 / docs/proposals/quest-layer.md).
+            # quest lifecycle (migration 0065 / ``quest-layer`` (git-only)).
             # A quest is a perpetual striving — it has NO `done`. `active` (we
             # strive) → `dormant` (set aside, may reawaken) → `abandoned`
             # (renounced). Only these three are meaningful on kind='quest'.
@@ -894,7 +893,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # a typo (``WATCH:dialy``) fails loud at write time instead of
     # silently dropping the row from the sweep. (gripe:3681 phase 4.)
     "WATCH": frozenset({"hourly", "daily", "weekly", "monthly"}),
-    # Dreaming provenance (docs/design/dreaming.md). Agent-authored
+    # Dreaming provenance (docs/backlog/dreaming.md). Agent-authored
     # rows carry a DREAM: axis so they're identifiable and fenceable:
     #   * ``DREAM:consolidated`` — a survivor minted by a ``supersede``
     #     merge (stays visible in default search).
@@ -963,8 +962,8 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # blocking STATUS: transition. No author-facing `TRUST:` axis in v1 —
     # trust is the absence of a concern edge (§4, R3).
     "STALE": frozenset({"retracted-premise"}),
-    # Taproot Phase-2 predecessor (open #11, docs/proposals/
-    # taproot-phase2-hub-node.md). A `finding`-ref discriminator written by
+    # Taproot Phase-2 predecessor (open #11, docs/backlog/taproot-phase2-hub-node.md).
+    # A `finding`-ref discriminator written by
     # the `axis:taproot` classifier pass (data/axes/taproot.yaml): `TAPROOT:claim`
     # = a grounded world-claim (the taproot claim hub + evidence edges attach
     # only here), `TAPROOT:review` = an editorial/manuscript note (excluded from

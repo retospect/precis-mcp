@@ -1,5 +1,5 @@
 """Rung 6b of the paper-writing pipeline: deterministic residual-paper
-clustering (docs/design/paper-writing-pipeline.md §Integrate step 3).
+clustering (docs/backlog/paper-writing-pipeline.md §Integrate step 3).
 Controlled one-hot / grouped vectors stand in for real bge-m3 embeddings —
 same technique as ``tests/test_placement.py`` — so cosine-distance
 agglomeration is exercised without a model in the loop.

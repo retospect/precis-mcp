@@ -1,5 +1,5 @@
 """The `chunk_review` memoized approval ledger (paper-writing pipeline rung
-3, docs/design/paper-writing-pipeline.md §"Review — the memoized approval
+3, docs/backlog/paper-writing-pipeline.md §"Review — the memoized approval
 ledger"). Migration 0086; store ops in `_draft_ops.py`; MCP surface via
 `edit(kind='draft', review=…)` and `view='review'` / `'review-diff'`."""
 

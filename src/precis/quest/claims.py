@@ -1,6 +1,6 @@
 """Claims-v0 extractor — a paper's own assertions, grounded to source chunks.
 
-Design: ``docs/design/paper-writing-pipeline.md`` §Claims. **"A claim already
+Design: ``docs/backlog/paper-writing-pipeline.md`` §Claims. **"A claim already
 exists: the ``citation`` kind."** ``handlers/citation.py`` already stores claim
 text + ``source_handle`` + ``source_quote`` + verifier fields and embeds the
 claim. What's missing is the *extractor* that turns a paper's own contribution

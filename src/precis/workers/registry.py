@@ -1,7 +1,7 @@
 """The factory service registry — one declarative row per thing that runs.
 
 This is the single source of truth the *factory console* + capability
-scheduler are built on (docs/design/factory-console-and-scheduling.md,
+scheduler are built on (docs/backlog/factory-console-and-scheduling.md,
 slice 1). Before it, "what runs where, gated how" was spread across four
 parallel lists that drifted:
 
@@ -200,7 +200,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-search-help",
     ),
     ServiceSpec(
-        # docs/proposals/citation-bib-parse.md: parses each held paper's
+        # ``citation-bib-parse`` (git-only): parses each held paper's
         # bibliography (numeric-bracket entries) into `paper_bib_entries`
         # rows and matches each to a DOI (local `s2_neighbors` exact match,
         # else a Crossref bibliographic query) + `held_ref_id`. Default-ON
@@ -222,7 +222,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        # docs/proposals/citation-taproot-resolve.md: extracts inline
+        # docs/backlog/citation-taproot-resolve.md: extracts inline
         # citation markers ([126], [129,130], <sup>-wrapped) from paper
         # body chunks into `chunk_citations`, keyed to the parsed
         # `paper_bib_entries` marker (false-positive guarded — only real
@@ -335,7 +335,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-nursery-help",
     ),
     ServiceSpec(
-        # §D (docs/proposals/health-watchdog.md). Fleet-singleton via the
+        # §D (docs/backlog/health-watchdog.md). Fleet-singleton via the
         # `health_digest` scheduler cadence (workers/scheduler.py, hourly,
         # host-agnostic) — NOT `default_profiles`, mirroring `dream_agent`
         # below: a cadence-fired pass registers here only for a manual
@@ -354,7 +354,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-health-digest-help",
     ),
     ServiceSpec(
-        # §F cycle a (docs/proposals/cluster-scheduling.md §F). Fleet-
+        # §F cycle a (docs/backlog/cluster-scheduling.md §F). Fleet-
         # singleton via the `materialize` scheduler cadence (workers/
         # scheduler.py, 300s) — same shape as `health_digest` just above:
         # NOT `default_profiles`, so this registration is for a manual

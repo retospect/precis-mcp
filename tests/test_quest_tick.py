@@ -1,5 +1,5 @@
 """Tests for the quest dossier + quest_tick skeleton — slice 4a of the quest
-layer (docs/proposals/quest-layer.md §The autonomous research loop).
+layer (``quest-layer`` (git-only) §The autonomous research loop).
 
 Covers: the ``dossier-of`` substrate (create / read / whole-rewrite, 1:1), the
 single-step ``run_quest_tick`` with an injected model (applies logbook entries +
@@ -604,7 +604,7 @@ def test_dossier_relation_registered() -> None:
 class TestPaperRelation:
     """``paper-of`` — the SEPARATE reader-facing draft a quest may have,
     distinct from its dossier. Migration 0089. Nothing mints this draft yet
-    (docs/design/paper-writing-pipeline.md); only the relation + a read-only
+    (docs/backlog/paper-writing-pipeline.md); only the relation + a read-only
     resolver (:func:`paper_ref_id`) exist so the web dashboard can link one
     in when some other writer creates it."""
 

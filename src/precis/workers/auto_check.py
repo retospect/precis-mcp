@@ -1,4 +1,4 @@
-"""Auto-check worker pass — Slice 1b of ``docs/design/todo-tree-plan.md``.
+"""Auto-check worker pass — Slice 1b of ``docs/backlog/todo-tree-plan.md``.
 
 Polls open todos whose ``meta.auto_check`` is non-null, dispatches
 each to the registered evaluator, and either:

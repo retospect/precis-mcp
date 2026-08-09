@@ -1,6 +1,6 @@
 """Quest Pareto frontier — the non-dominated candidate materials.
 
-Slice 4b of the quest layer (docs/proposals/quest-layer.md §Materials are
+Slice 4b of the quest layer (``quest-layer`` (git-only) §Materials are
 `structure` servers). Every candidate a quest tries is a `structure` that
 ``serves`` it, carrying its relax **measures** (energy, max force, …). "Do
 better" = push the **Pareto frontier** of those measures against the quest's
@@ -14,8 +14,7 @@ now it defaults to **minimise energy** and can be overridden per quest via
 ``meta.rubric_objectives = [{"key": "energy", "sense": "min"}, …]``.
 
 A quest may additionally declare a **composite** objective — a weighted sum of
-other measures, human-set at seed time (docs/proposals/pathway-potential-
-lever.md): ``meta.rubric_composite = {"key": "score", "weights": {"barrier":
+other measures, human-set at seed time (the potential-lever rubric): ``meta.rubric_composite = {"key": "score", "weights": {"barrier":
 1.0, "U_L_abs": 0.5}}``. :func:`_apply_rubric_composite` computes it onto each
 candidate at frontier-assembly time (only when every weighted component is
 present — no partial sums) so ``rubric_objectives`` can reference the
@@ -287,9 +286,8 @@ def _rubric_composite_for(store: Store, quest_id: int) -> dict[str, Any] | None:
     """The quest's declared composite objective, or ``None`` (feature off).
 
     ``meta.rubric_composite = {"key": "<name>", "weights": {"<measure>":
-    <float>, ...}}`` — a **human-set rubric field** (docs/proposals/pathway-
-    potential-lever.md "Decisions": "the agent may not tune its own
-    objective"). Written only by :func:`precis.quest.catalyst_seed.
+    <float>, ...}}`` — a **human-set rubric field** (decided: "the agent may not tune its
+    own objective"). Written only by :func:`precis.quest.catalyst_seed.
     seed_catalyst_quest` at seed time; no quest-tick or LLM code path writes
     or modifies it (verified: the tick's only quest-meta writes are
     ``ticks_since_experiment`` and the weave-body marker — neither touches

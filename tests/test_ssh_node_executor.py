@@ -255,9 +255,10 @@ def _mk_running_job(
 ) -> int:
     """A STATUS:running job with a lease ``lease_offset_s`` from now (negative =
     expired) — stands in for a job whose worker died mid-dispatch. The
-    ``lease_boot_id``/``lease_process``/``lease_host`` trio (§H,
-    compute-lane-lease-epoch.md) stands in for a PRIOR claim's stamp — the
-    generation that (allegedly) died. ``compute_handle`` (§H piece 4) stands
+    ``lease_boot_id``/``lease_process``/``lease_host`` trio (the
+    lease-identity stamp) stands in for a PRIOR claim's stamp — the
+    generation that (allegedly) died. ``compute_handle`` (the detached
+    submit/poll protocol) stands
     in for a prior generation's successful ``spec.submit()`` — a detached
     job's compute may still be alive."""
     params: dict[str, Any] = {}
@@ -348,7 +349,7 @@ def test_poison_guard_fails_past_max_attempts(
     assert _meta(store, rid)["failure_class"] == "infra"
 
 
-# ── §H boot epoch: epoch-aware reclaim (compute-lane-lease-epoch.md) ──
+# ── Worker boot epoch: epoch-aware reclaim (the lease-epoch reclaim arm) ──
 
 
 def test_epoch_mismatch_reclaims_before_lease_expiry(

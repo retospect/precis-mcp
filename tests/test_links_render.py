@@ -1,7 +1,7 @@
 """``handlers/_links_render.py`` — the shared F8 "Links:" extraction.
 
-Covers the citation-chunk-grounding "paper link-blindness fix"
-(docs/design/citation-chunk-grounding.md): the compact links table
+Covers the citation-chunk-grounding "paper link-blindness fix":
+the compact links table
 used to live only on ``NumericRefHandler`` (memory/todo/gripe/finding/
 …); it's now a free function every ``Handler``-direct kind
 (paper/draft/structure/cad/pcb/plan/pres/patent) can call from its own

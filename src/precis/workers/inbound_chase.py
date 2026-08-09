@@ -1,7 +1,6 @@
 """inbound_chase — one-hop, exhaustive inbound citer sweep.
 
-The inbound counterpart to ``workers/chase.py``'s outbound finding-chase
-(docs/design/citation-chunk-grounding.md, "Inbound sweep policy").
+The inbound counterpart to ``workers/chase.py``'s outbound finding-chase.
 Where ``chase`` walks *outbound* from a finding's own claim (paper X
 cites paper Y — follow the S2 reference list forward, locate + verify
 the specific supporting chunk in Y), this pass walks *inbound* from an
@@ -13,11 +12,10 @@ them, and ``Store.upsert_stub_paper`` (which itself "mirrors the chase
 worker's stub path", see its docstring) for auto-ingesting S2-known
 citers that aren't in the corpus yet.
 
-Trigger — "active paper" (resolved, design doc §"Inbound sweep
-policy"): a *permanent* DB marker, not a session concept. The design
-doc leaves the exact engagement event to implementation judgment
-("read via get, cited by something, or an outbound chase landing on it
-as a real hop"). This module picks **read via get()**
+Trigger — "active paper": a *permanent* DB marker, not a session
+concept. The exact engagement event ("read via get, cited by
+something, or an outbound chase landing on it as a real hop") was left
+to implementation judgment; this module picks **read via get()**
 (:func:`mark_paper_active`, called from
 ``handlers/paper.py::PaperHandler.get`` on every resolved single-paper
 read) — the one engagement every paper path already funnels through
@@ -28,19 +26,19 @@ convention) rather than a ``meta.processing.*`` field — there is no
 existing ``meta.processing`` convention in this codebase to mirror
 (checked); ref-level tags are how every other pass records permanent
 per-ref state (``STATUS:tracing``, ``ROLE3:own``, …), so that's what
-this follows. Once ``swept``, a paper is never re-triggered — the
-"no re-sweep" policy the design doc is explicit about.
+this follows. Once ``swept``, a paper is never re-triggered — a
+deliberate no-re-sweep policy.
 
-No chase-side degree cap (design doc: chase is cheap and one-time per
-paper; context is the reader's scarce resource, so cap only at display
+No chase-side degree cap (chase is cheap and one-time per paper;
+context is the reader's scarce resource, so cap only at display
 time — see ``handlers/_citer_sidecar.py``). **Caveat, not resolved by
-this build**: the design doc flags the global spend circuit breaker
-(``OPEN-ITEMS.md`` "💰 Budget guardrails" Piece B) as this policy's
-real cost backstop, and it's implemented but **unshipped**. An outlier
+this build**: this policy's real cost backstop is the global spend
+circuit breaker ("Budget guardrails" Piece B), which is implemented
+but **unshipped**. An outlier
 landmark paper (thousands of in-corpus citers) has no automatic cost
 guard beyond manual observation until that ships. Not solved here —
-flagging per the design doc's own instruction not to bolt on a bespoke
-chase-side cap in its place. **This caveat now applies twice over**:
+a bespoke chase-side cap was deliberately rejected in its place.
+**This caveat now applies twice over**:
 :func:`_resolve_citer_chunk` runs a *second* ``_locate_chunk_in_target``
 call per citer (below) to localize into the cited paper Y's own
 chunks, not just the citer's — so the per-citer LLM *locate* cost
@@ -55,8 +53,7 @@ Staleness — link immediately, resolve later, never re-sweep:
 1. **Sweep** (``run_inbound_chase_pass``, claim query 1): one S2 call
    per activated paper Y (:func:`precis.workers.chase.load_s2_citation_graph`
    — the *same* call the outbound walk already makes; its ``cited_by``
-   field used to be silently discarded, docs/design/citation-chunk-
-   grounding.md "What's actually missing" #1). For every citer, mint-
+   field used to be silently discarded). For every citer, mint-
    or-resolve it (``Store.upsert_stub_paper``) and record a **paper-
    level** ``cites`` link right away, before any chunk-level work.
 2. **Follow-up** (claim query 2): once a citer stub actually has body
@@ -64,7 +61,7 @@ Staleness — link immediately, resolve later, never re-sweep:
    a real corpus paper), resolve the specific citing chunk and upgrade
    to a **chunk-scoped** ``cites`` link.
 
-Judgment call, flagged as discretion in the design doc: unlike
+Judgment call: unlike
 ``chase``'s exponential ``waiting``-backoff for a stub with no chunks
 (built to stop an event-write flood — see ``chase.py``'s module
 docstring and the ``bg_job_spin_loops`` incident), this pass writes
@@ -73,7 +70,7 @@ below simply excludes it via a cheap indexed ``EXISTS``, so an
 unresolved stub costs one SELECT-scan row per pass, not a written one.
 The flood ``chase``'s backoff exists to stop doesn't apply here, so
 building a parallel backoff (or wiring the ``paper_ingested``
-auto_check primitive, the design doc's other suggested option) would
+auto_check primitive, the other candidate mechanism) would
 be solving a problem this design doesn't have; the claim query itself
 *is* the "wait" mechanism, for free.
 
@@ -92,7 +89,7 @@ flag off after a period fully halts new activity — existing tags/links
 are inert data, not re-processed) and the pass itself. The inbound
 path's LLM calls are gated by *this* flag, not ``PRECIS_CHASE_LLM`` —
 that flag's default is untouched; turning this pass on at all already
-implies paying for verification (design doc, closing note), so
+implies paying for verification, so
 resolution always runs with ``with_llm=True`` once the pass is
 claiming work, independent of the old outbound flag's setting.
 """

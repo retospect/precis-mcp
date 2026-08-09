@@ -1,5 +1,5 @@
 """``job_inproc`` executor — claim ONE bounded job and run it synchronously
-in the worker pass (§F cycle a, ``docs/proposals/cluster-scheduling.md``
+in the worker pass (§F cycle a, ``docs/backlog/cluster-scheduling.md``
 §F).
 
 Sibling of ``claude_inproc``/``ssh_node`` (ADR 0017), but deliberately the

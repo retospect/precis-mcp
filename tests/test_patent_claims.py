@@ -1,6 +1,6 @@
 """Unit tests for the patent claim-structure heuristic (slice 1).
 
-See ``docs/design/patent-authoring-loop.md`` and
+See ``docs/backlog/patent-authoring-loop.md`` and
 ``src/precis/handlers/_patent_claims.py``.
 """
 

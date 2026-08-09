@@ -2,14 +2,14 @@
 
 **Audience**: anyone writing/editing docs an agent reads to *develop this
 repo* — `CLAUDE.md`, `docs/codebase.md`, package `__init__.py` docstrings, `glossary.md`,
-`AGENTS.md`, `docs/design/`, `docs/decisions/`, and files under
+`AGENTS.md`, `docs/backlog/`, and files under
 `.claude/{agents,skills,commands}/`.
 
 **These arch/design docs are LLM-guidance-first, human-second.** Written to
 be *acted on* by an agent, not read for narrative. So: no filler, no
 executive summary, no motivational preamble — the internals are the payload.
 
-**Sibling, opposite cut-list**: `docs/design/skill-authoring-style.md`
+**Sibling, opposite cut-list**: `docs/conventions/skill-authoring-style.md`
 governs the **product** surface (`src/precis/data/skills/`) — docs read by a
 cluster agent that can only call the seven verbs. This is a deliberate
 **fork**, not a shared kernel: the tone rules match, but the cut-list

@@ -37,8 +37,8 @@ link in the ``/drafts`` reader and is stripped entirely from the spoken/audio
 path (``narrate.speakable`` drops the ``[[…]]`` form), so the cast reads clean
 aloud while the page carries in-text citations back to the paper.
 
-See docs/design/reading-prep-loop.md (§The briefing, Slice 5) and
-docs/proposals/quest-layer.md.
+See docs/backlog/reading-prep-loop.md (§The briefing, Slice 5) and
+``quest-layer`` (git-only).
 """
 
 from __future__ import annotations
@@ -709,7 +709,7 @@ def _lane_quest(
     the full momentum + latest-deed treatment; when none is active, a *decaying*
     nudge about the dormant strivings takes its place (and goes quiet again on the
     off-cadence mornings). ``abandoned`` quests are never mentioned. LIVE once
-    quests exist; degrades to empty otherwise. See docs/proposals/quest-layer.md."""
+    quests exist; degrades to empty otherwise. See ``quest-layer`` (git-only)."""
     try:
         active = store.list_refs(
             kind="quest", tags=["STATUS:active"], limit=_LANE_ITEM_CAP
@@ -842,7 +842,7 @@ def build_reading_briefing(
     # PRECIS_READING_BRIEF_MODEL env hatch now live in the operation registry
     # (utils/llm/operations.py, source "reading_brief") — dispatch() resolves
     # them via req.source, and an operator can retune live with no redeploy
-    # via `llm.op.reading_brief` (docs/proposals/llm-operation-routing.md).
+    # via `llm.op.reading_brief` (the per-operation routing registry).
     # The rationale: Sonnet 5 is amply capable for this prose composition, and
     # pinning an explicit claude id both cuts consumption ~⅕ (so the *unified*
     # subscription quota lasts far longer under a crunch — the 07-24→30

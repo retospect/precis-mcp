@@ -1,6 +1,7 @@
 """``ProvenanceHandler`` — retraction / amendment checks against Crossref.
 
-Phase 1 + 2 surface (``docs/design/provenance-kind-plan.md``):
+The retraction/amendment preflight surface ("here are the papers I
+cite, release in a week — flag anything I need to deal with"):
 
 - ``get(id='<doi>')`` — single-DOI provenance check returning a
   markdown report. Accepts the DOI in any common form: bare
@@ -24,9 +25,13 @@ Behaviour:
   and a ``STATUS:notice`` tag so search surfaces can distinguish
   them from primary papers.
 
-Out of scope: Retraction Watch reason codes (Phase 3), transitive
-cite-walk (Phase 4), fuzzy DOI resolution + ``view='exists'`` /
-``view='verify'`` (Phase 5).
+Also shipped (later phases): ``view='verify'`` (structured BibEntry
+input, metadata verification), ``view='exists'`` (cheap existence
+shortcut, ignores the cite-walk), the ``transitive=`` depth-1
+cite-walk, Retraction Watch reason codes (``ingest/_provenance_rw.py``
++ the monthly ``provenance_rw_sync`` job), candidate-DOI hints on
+unknown DOIs (advisory only — never substituted, the caller decides),
+and the ``paper`` ``view='health'`` shim.
 
 The kind is stateless from the dispatch perspective — no refs of
 kind ``'provenance'`` exist; the handler enriches existing

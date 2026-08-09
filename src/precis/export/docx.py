@@ -119,7 +119,7 @@ class _Ctx:
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
-    #: Trust-mark bookkeeping (finding-trust-surfaces.md), mirrors
+    #: Trust-mark bookkeeping (the trust-surfaces export marking), mirrors
     #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
     trust: Any = None
 
@@ -321,7 +321,7 @@ def export_docx(
     # it — only emit it when the draft defines no terms of its own.
     if not terms:
         _append_acronyms(doc, ctx)
-    # "Unverified claims" end-matter (finding-trust-surfaces.md §1), before
+    # "Unverified claims" end-matter (trust-surfaces marking), before
     # the bibliography/end — no-op when nothing was marked. Independent of
     # patent_mode: a finding cite renders (and can be marked) either way.
     _append_unverified_claims(doc, ctx)
@@ -335,7 +335,7 @@ def export_docx(
             doc, list(range(1, len(ctx.cited) + 1)), style="Annotated"
         )
 
-    # ``ref_events`` export record (finding-trust-surfaces.md §2) — one row
+    # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
     # override. No-op (no row) when nothing was overridden.
     record_override_event(store, ref, ctx.trust)
@@ -618,13 +618,13 @@ _UNSUPPORTED_INK = "B00020"
 
 def _render_trust_mark(ctx: _Ctx, finding_ref_id: int, paragraph: Any) -> None:
     """The inline trust mark appended after a finding-backed cite
-    (finding-trust-surfaces.md §1) — mirrors
+    (the trust-surfaces export marking) — mirrors
     :func:`precis.export.latex._trust_mark_latex`. No-op for a clean
     citation (AC 6: identical content to today). Unverified gets a muted
     italic run; unsupported the louder bold red run.
 
-    "Export always works, always marks" (finding-trust-surfaces.md,
-    decided — no refusing/strict mode): any resolution failure (malformed
+    "Export always works, always marks" (the decided trust-surfaces
+    policy — no refusing/strict mode): any resolution failure (malformed
     ``meta``, a store hiccup) degrades to no mark rather than aborting an
     export that previously worked."""
     if ctx.trust is None:
@@ -704,7 +704,7 @@ def _inline_source_cite(
     """Patent-spec mode: render a prior-art reference **in-text** (no ``[n]``
     marker / no References section). A display-link's authored text wins
     (WYSIWYG); otherwise a patent formats to its citation string and a paper
-    to a light ``(Author, Year)``. See ``docs/design/patent-authoring-loop.md``."""
+    to a light ``(Author, Year)``. See ``docs/backlog/patent-authoring-loop.md``."""
     ctx.last_cite = None
     if surface:
         paragraph.add_run(surface)
@@ -916,7 +916,7 @@ def _append_acronyms(doc: Any, ctx: _Ctx) -> None:
 
 def _append_unverified_claims(doc: Any, ctx: _Ctx) -> None:
     """An "Unverified claims" section — one entry per finding that
-    rendered with a trust mark (finding-trust-surfaces.md AC 1/2),
+    rendered with a trust mark (trust-surfaces export marking),
     mirroring :func:`precis.export.latex.build_unverified_claims_section`.
     No-op when nothing was marked. Entry wording is shared with the latex
     exporter via :func:`precis.export._trust_marks.unverified_claims_entries`.

@@ -1,4 +1,4 @@
-"""Argument graph, v1 slice (ADR 0054 / docs/design/argument-graph.md).
+"""Argument graph, v1 slice (ADR 0054).
 
 Covers each of the five build-order steps:
 

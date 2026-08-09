@@ -11,7 +11,7 @@
 
 When to read keywords, when to recompute, what the worker assumes,
 and where the lazy-invalidation discipline applies. Companion to
-[`docs/design/storage-v2.md`](../design/storage-v2.md) (§"Discovery
+[`storage-v2` (git-only)](git-only: storage-v2) (§"Discovery
 layer", carrying its own F20 amendment banner).
 
 ## What the layer is now
@@ -107,7 +107,7 @@ meaningful, so don't skip them from keyword extraction.
 ## See also
 
 - ADR 0018 — original (superseded) discovery-layer rationale
-- `docs/design/storage-v2.md` §"Discovery layer" — F20-amended schema
+- `storage-v2` (git-only) §"Discovery layer" — F20-amended schema
 - `src/precis/workers/chunk_keywords.py` — the worker (module header
   is the canonical algorithm reference)
 - `src/precis/utils/toc_db.py` — request-time TOC clustering

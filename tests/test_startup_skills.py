@@ -1,7 +1,7 @@
 """Tests for :mod:`precis.startup_skills` + the banner integration.
 
 Phase 3 of the cold-start token budget design
-(``docs/design/mcp-cold-start-token-budget.md``). Covers:
+(``docs/backlog/mcp-cold-start-token-budget.md``). Covers:
 
 - :func:`precis.startup_skills.parse` parsing of the comma-list env
   value (whitespace, empties, duplicates).

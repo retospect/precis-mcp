@@ -6,7 +6,7 @@ cosine ``angle`` from ``v`` but point in different directions. The
 caller snaps each anchor to its nearest real chunk via ANN; high
 dimensions make the random perpendicular components near-orthogonal,
 so the snapped items spread on their own — no ``diversify`` flag
-(docs/design/dreaming.md, §The ``angle`` spray).
+(docs/backlog/dreaming.md, §The ``angle`` spray).
 
 **One formula covers every angle.** For a unit ``v`` and a random unit
 vector ``u`` drawn orthogonal to ``v``::

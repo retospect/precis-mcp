@@ -49,7 +49,7 @@ class WebConfig:
     #: addressee (``user:<owner>``) of an ``ask-user`` pause. Mirrors
     #: ``precis.config.PrecisConfig.owner``; both read ``PRECIS_OWNER``.
     #: Defaults to ``"owner"`` (generalises the formerly hard-coded
-    #: ``"reto"``). See ``docs/design/user-identity-and-ask-routing.md``.
+    #: ``"reto"``). See ``docs/backlog/user-identity-and-ask-routing.md``.
     owner: str = "owner"
     auth_token: str | None = None
     #: Directory holding published podcast episodes (audio + JSON sidecars).

@@ -16,8 +16,8 @@ future non-cloze notetype needs no migration::
 Slice 1 (this handler) is the corpus half — author / store / search a cloze
 card; there is **no** AnkiWeb dependency yet. On create it emits the shared
 ``card_combined`` chunk built from the *markup-stripped* text (+ Back Extra) so
-the embed + chunk_keywords workers index it and ``search`` finds it. Full
-design: ``docs/design/anki-integration.md``.
+the embed + chunk_keywords workers index it and ``search`` finds it. The
+AnkiWeb sync half lives in :mod:`precis.anki`.
 
 Authoring conventions (taught by ``precis-anki-help``):
 

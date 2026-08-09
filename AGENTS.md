@@ -86,8 +86,8 @@ precis-mcp/
    area you are touching.
 2. For any non-trivial change (schema change, new CLI subcommand, new
    handler, multi-package coordination): produce
-   `docs/design/<slug>.md` first. The plan is the artefact reviewers
-   react to before code lands.
+   a spec in `docs/backlog/<slug>.md` first (docs/README.md §Backlog
+   lifecycle). The spec is the artefact reviewers react to before code lands.
 3. Apply `docs/conventions/thresholds.md`. If a threshold trips, stop
    and ask the user; do not push past it silently.
 4. Implement. Keep edits minimal and scoped to the plan.
@@ -107,7 +107,8 @@ precis-mcp/
 
 ## Definition of done (any user-visible PR)
 
-- [ ] Plan in `docs/design/<slug>.md` exists and was reviewed.
+- [ ] Spec in `docs/backlog/<slug>.md` exists and was reviewed (deleted in
+      the shipping commit).
 - [ ] Decision log entry in `docs/decisions/` if a non-obvious trade-off
       was made.
 - [ ] Version bumped (`uv version`) and a clear commit message written

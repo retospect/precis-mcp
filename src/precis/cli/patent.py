@@ -605,7 +605,7 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
     """Implements ``precis jobs reingest-patents`` — force-reingest
     existing patents so their claim blocks carry the slice-1
     ``patent_block`` markers the freedom-to-operate digest reads
-    (docs/design/patent-authoring-loop.md).
+    (docs/backlog/patent-authoring-loop.md).
     """
 
     from precis.config import load_config

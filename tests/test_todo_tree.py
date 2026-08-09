@@ -1,7 +1,7 @@
 """Slice-1 todo-tree tests: guards, parent_id wiring, ancestry walk.
 
 Companion to :mod:`test_todo` (the flat surface). Tests here exercise
-the additions in ``docs/design/todo-tree-plan.md`` Slice 1:
+the additions in ``docs/backlog/todo-tree-plan.md`` Slice 1:
 
 * ``parent_id`` kwarg on ``put``
 * cycle / depth / parent-kind guards

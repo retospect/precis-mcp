@@ -1,6 +1,6 @@
 """Factory console — the window onto what the factory runs.
 
-WS3 (docs/proposals/web-ui-rationalization.md) folded the read/write
+The System-page merge folded the read/write
 console formerly served at ``GET /factory`` into the "Services" sub-tab
 of the merged System page (``/status?tab=services``); ``GET /factory``
 now just redirects there. The SQL helpers below (host strip, category
@@ -14,7 +14,7 @@ Host strip (load / worker-alive per machine) over one list per category
 of services — every pass / job-type / compute / daemon / serving row from
 the one `ServiceSpec` registry, joined to its live `service_config` prio
 and its last-success / last-failure from `worker_logs`
-(docs/design/factory-console-and-scheduling.md, slices 3–4).
+(docs/backlog/factory-console-and-scheduling.md, slices 3–4).
 
 * **Slice 3 (read):** the host strip + the total service list + last
   activity, all degrading to empty on a schema surprise (status-tab
@@ -650,7 +650,7 @@ async def set_llm_chain(
 
 def _set_op_override(store: Any, source: str, tier: str, model: str) -> None:
     """Write (or, for blank/"default" ``tier``, clear) one operation's
-    override (``docs/proposals/llm-operation-routing.md`` item 4).
+    override (the per-operation routing editor).
 
     Guarded to the steerable allow-list — an excluded or unregistered
     ``source`` is a no-op (the template renders those rows read-only; this
@@ -712,7 +712,7 @@ async def set_llm_op(
     model: str = Form(""),
 ) -> RedirectResponse:
     """Write (or clear) an operator override for one steerable operation
-    (``docs/proposals/llm-operation-routing.md`` item 4 / AC5) — blank/
+    (the per-operation routing editor) — blank/
     ``"default"`` ``tier`` reverts to the registry default; ``model`` is
     only honoured when ``tier == "pinned"``, so a plain capability tier
     can never be discarded by a stale sticky model selection. A

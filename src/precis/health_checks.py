@@ -1,6 +1,6 @@
 """Shared health-check SQL — the ONE liveness/backlog truth.
 
-Extracted (§D, ``docs/proposals/health-watchdog.md``) out of
+Extracted (§D, ``docs/backlog/health-watchdog.md``) out of
 ``precis_web.routes.status`` so the web `/status` panel and the
 ``health_digest`` worker pass (``workers/health_digest.py``) read the
 *same* backlog/freshness/activity computation instead of two

@@ -1,5 +1,5 @@
-"""Store-level CRUD tests for ``s2_neighbors`` (migration 0106,
-paper-viewer-nav slice 3): the persisted Semantic Scholar neighbour list a
+"""Store-level CRUD tests for ``s2_neighbors`` (migration 0106):
+the persisted Semantic Scholar neighbour list a
 paper's Sources/Cited tabs read. Covers
 :meth:`Store.replace_s2_neighbors` / :meth:`Store.list_s2_neighbors` /
 :meth:`Store.s2_neighbors_fresh` directly, against an ephemeral migrated

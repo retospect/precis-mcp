@@ -21,7 +21,7 @@ dispatch_autocatpath`` mints the per-seed jobs; the ``autocatpath_seed`` /
 ``autocatpath_aggregate`` job_types (``precis_pathway.seed_job`` /
 ``.aggregate_job``) call these two functions. Heavy backends still move to
 the precis compute lane the same way (see
-``docs/design/autocatpath-integration.md`` in precis-mcp).
+``docs/backlog/autocatpath-integration.md`` in precis-mcp).
 """
 
 from __future__ import annotations
@@ -316,7 +316,7 @@ def run_seed_partial(
 
     State geometries are NOT collected in this slice (native structure
     ingest per state is later work, §3.8/slice-1b of
-    ``docs/design/autocatpath-integration.md``) — ``run_one_seed`` is called
+    ``docs/backlog/autocatpath-integration.md``) — ``run_one_seed`` is called
     without ``collect=``.
     """
     from autocatpath.calculators import make_calculator, resolve_backend
@@ -659,8 +659,7 @@ def submit_seed_partial_detached(
     work_dir: str | None = None,
 ) -> dict[str, Any]:
     """Launch :func:`run_seed_partial` in a DETACHED child — the ssh_node
-    ``submit`` half of the §H piece 4 protocol (``docs/proposals/compute-
-    lane-lease-epoch.md`` / gr187627). Where
+    ``submit`` half of the detached submit/poll protocol (gr187627). Where
     :func:`run_seed_partial_subprocess` blocks the caller for the run's
     whole duration, this returns almost immediately: it writes the request
     file, spawns the same child entrypoint (:func:`_child_cmd`) via

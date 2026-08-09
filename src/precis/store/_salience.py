@@ -3,11 +3,11 @@
 The salience signal (``last_seen``) must reflect **external** access
 only. If a background loop's own searches advanced ``last_seen`` it
 would heat the region it is currently wandering into an echo chamber
-(docs/design/dreaming.md, §Access accounting: "Dream-actor reads
+(docs/backlog/dreaming.md, §Access accounting: "Dream-actor reads
 excluded ... otherwise the dreamer heats its own wandering").
 
 The dreamer was the first such loop; the **watcher**
-(docs/design/watching.md) is the second and has the identical failure
+(``workers/watch_poll.py``) is the second and has the identical failure
 mode — it reads the corpus to pick salient papers and to embed citing
 papers, and must not heat what it watches. So the suppression is a
 generic *background-actor* flag rather than a dream-specific one: both

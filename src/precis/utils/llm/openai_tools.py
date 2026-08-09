@@ -83,7 +83,7 @@ class ChatTurn:
     finish_reason: str | None
     #: A provider-reported USD cost for this turn (OpenRouter's
     #: ``usage.cost``), when the backend returns one — ``None`` otherwise
-    #: (docs/proposals/glm-fleet-flip-safety.md Part 2; mirrors how
+    #: (``glm-fleet-flip-safety`` (git-only) Part 2; mirrors how
     #: ``total_tokens`` is read off the same ``usage`` block).
     cost_usd: float | None = None
 
@@ -297,7 +297,7 @@ class AgentLoopResult:
     #: turn reported one (a backend that doesn't return ``usage.cost``, e.g. a
     #: local/loopback server). Mirrors :attr:`total_tokens`'s accumulation so
     #: the ``openai_tools`` transport can meter real spend
-    #: (docs/proposals/glm-fleet-flip-safety.md Part 2).
+    #: (``glm-fleet-flip-safety`` (git-only) Part 2).
     cost_usd: float | None = None
 
 

@@ -1,4 +1,4 @@
-"""LlmHandler — the `llm` model catalog (migration 0071, docs/proposals/llm-catalog.md).
+"""LlmHandler — the `llm` model catalog (migration 0071, ``llm-catalog`` (git-only)).
 
 A model card is one numeric ref per model (``claude-opus-4-8``, ``qwen-heavy``): the
 body is the capability prose (embedded as ``card_combined`` — an ``llm`` card *is a
@@ -40,7 +40,7 @@ class LlmHandler(NumericRefHandler):
             "with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', "
             "q='careful SQL'). The llm_reconcile pass mints + refreshes cards "
             "against the live OpenRouter feed and flags drift. Never exported. "
-            "See docs/proposals/llm-catalog.md."
+            "See ``llm-catalog`` (git-only)."
         ),
         supports_get=True,
         supports_search=True,

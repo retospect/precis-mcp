@@ -163,7 +163,7 @@ class NumericRefHandler(Handler):
     #: (``ord=-1``) holding the ref's text so the embed worker
     #: vectorizes it and semantic search finds neighbours. Scoped to
     #: ``memory`` for the dreaming capability (see
-    #: docs/design/dreaming.md); widen to other note-like kinds later.
+    #: docs/backlog/dreaming.md); widen to other note-like kinds later.
     emits_card: ClassVar[bool] = False
 
     #: Create-time hooks (default: identity / empty). A subclass that stores
@@ -1449,9 +1449,8 @@ class NumericRefHandler(Handler):
         ``Handler``-direct kinds — paper, draft, structure, cad, pcb,
         plan, pres, patent — that aren't ``NumericRefHandler``
         subclasses can render the same section from their own
-        ``view='links'`` without duplicating the logic; see
-        ``docs/design/citation-chunk-grounding.md`` "Paper
-        link-blindness fix"). Pure refactor — behaviour unchanged.
+        ``view='links'`` without duplicating the logic — the paper
+        link-blindness fix). Pure refactor — behaviour unchanged.
         """
         from precis.handlers._links_render import render_links_section
 

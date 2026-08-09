@@ -49,7 +49,7 @@ MODEL_KEY_PREFIX = "llm.model."
 CHAIN_KEY_PREFIX = "llm.chain."
 #: app_settings key prefix for a per-operation override (JSON
 #: ``{"tier": <str>?, "model": <str>?}``) — ``llm.op.<source>``
-#: (docs/proposals/llm-operation-routing.md). Kept in sync with
+#: (per-operation model routing). Kept in sync with
 #: :data:`precis.utils.llm.operations.OP_KEY_PREFIX` (the writer's mirror).
 OP_KEY_PREFIX = "llm.op."
 #: app_settings key for the cloud-throttle dial (ADR 0066 §5). ``"false"`` (or

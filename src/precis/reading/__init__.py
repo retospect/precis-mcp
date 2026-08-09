@@ -1,6 +1,6 @@
 """Reading-prep loop — the adaptive concept-graph study system.
 
-Design-of-record docs/design/reading-prep-loop.md (ships dark, in progress).
+Design-of-record docs/backlog/reading-prep-loop.md (ships dark, in progress).
 The spine is the ``concept`` graph: a node is a term with a continuous
 mastery field + an embeddable ``card_combined`` definition (a concept *is a
 vector*) and typed edges (``has-prerequisite``/``prerequisite-of``,

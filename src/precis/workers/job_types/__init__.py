@@ -73,8 +73,8 @@ class JobTypeSpec:
     #: ``ctx.meta['coordinator_state']``. Annotated loosely because the
     #: in-tree built-ins return ``None``.
     dispatch: Callable[..., Any] | None = None
-    #: Optional DETACHED dispatch pair (§H piece 4,
-    #: ``docs/proposals/compute-lane-lease-epoch.md`` / gr187627) — the
+    #: Optional DETACHED dispatch pair (the detached submit/poll
+    #: protocol, gr187627) — the
     #: ``ssh_node`` executor's non-blocking protocol. When BOTH ``submit``
     #: and ``poll`` are set, ``ssh_node`` prefers them over ``dispatch``:
     #:
@@ -102,10 +102,9 @@ class JobTypeSpec:
     #: this protocol exists to fix).
     submit: Callable[..., Any] | None = None
     poll: Callable[..., Any] | None = None
-    #: Optional wall-clock kill hook (§H piece 2, ``docs/proposals/
-    #: compute-lane-lease-epoch.md`` — a detached submit/poll job_type has
+    #: Optional wall-clock kill hook — a detached submit/poll job_type has
     #: no termination path once the sweeper's own wall-clock retirement
-    #: (§H piece 6) excludes its executor: ``ssh_node``'s ``_poll_one``
+    #: excludes its executor: ``ssh_node``'s ``_poll_one``
     #: renews the lease forever while ``poll`` returns falsy, so a run
     #: that never self-terminates would poll indefinitely. When
     #: ``_poll_one`` finds ``meta.deadline`` in the past, it calls
@@ -256,7 +255,7 @@ def _load_cad_discuss() -> JobTypeSpec:
 
 def _load_sandbox_run() -> JobTypeSpec:
     # Open-ended coding task in a throwaway container, run by the
-    # claude_docker poll executor (ADR 0048 / docs/design/sandbox-run.md).
+    # claude_docker poll executor (ADR 0048).
     # The executor pass is gated on PRECIS_SANDBOX_ENABLED, but the
     # job_type registers unconditionally so put/dispatch validation and
     # error messages work everywhere (a put on a non-sandbox host is

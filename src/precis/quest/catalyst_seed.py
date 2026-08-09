@@ -141,8 +141,8 @@ def seed_catalyst_quest(
     ``rubric_composite`` (default ``None`` = feature off) is the optional
     weighted-sum objective the caller has already decided on
     (``{"key": "score", "weights": {"barrier": 1.0, "U_L_abs": 0.5, ...}}``,
-    see :mod:`precis.quest.frontier`) — the human-set electrochemistry rubric
-    from docs/proposals/pathway-potential-lever.md. Written verbatim onto
+    see :mod:`precis.quest.frontier`) — the human-set CHE electrochemistry
+    rubric (the pathway potential lever). Written verbatim onto
     ``meta.rubric_composite`` at seed time only; nothing in the quest tick or
     the LLM loop may write this key later (the agent may not tune its own
     objective).

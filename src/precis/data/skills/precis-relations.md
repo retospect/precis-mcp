@@ -196,7 +196,7 @@ target selector (`~<section>`) anchors the disposition to one section.
 No inverse — read a dossier's ledger from the dossier side:
 `get(kind='draft', id='mof-review', view='integration')` (INTEGRATED,
 grouped by section, vs PENDING — `topic:`-tagged papers with no
-disposition edge yet). See `docs/design/paper-writing-pipeline.md`
+disposition edge yet). See `docs/backlog/paper-writing-pipeline.md`
 §"The integration ledger".
 
 ## Default — symmetric "see also"

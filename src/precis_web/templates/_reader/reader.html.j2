@@ -8,8 +8,8 @@
    ``_DOC_FAMILY`` ref, so pres reuses them). The Meta tab differs per
    kind — it ``{% include doc.meta_panel %}``, so a paper plugs its
    bibliographic edit form and a pres plugs its attribution form. The
-   Sources/Cited tabs (S2 bibliography + citing-papers, paper-viewer-nav
-   slice 3) are paper-only — ``doc.show_refs_tabs`` gates them out of the
+   Sources/Cited tabs (S2 bibliography + citing-papers)
+   are paper-only — ``doc.show_refs_tabs`` gates them out of the
    tab strip for the cfp/pres/datasheet siblings, which have no S2
    neighbour graph. All live inside the ``x-data="paperDoc(...)"`` scope,
    so a meta-panel button can call ``gotoPage(n)`` to drive the PDF (e.g. a
@@ -216,8 +216,8 @@
           </div>
         </div>
 
-        {# ── Sources / Cited: S2 bibliography + citing-papers tabs
-           (paper-viewer-nav slice 3). Each panel is a server-rendered
+        {# ── Sources / Cited: S2 bibliography + citing-papers tabs.
+           Each panel is a server-rendered
            fragment (held rows link locally; non-held rows carry off-site
            links + a Fetch button) — HTML, not JSON, unlike every other
            sidebar tab, so it's lazy-loaded via htmx (setTab(), in

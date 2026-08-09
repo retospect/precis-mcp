@@ -37,7 +37,7 @@ Axis defs (id + values + prompt + few-shot + ``applies_when``) live in
 ``scripts/classify/`` (``gold_set/``, ``eval-classifier``,
 ``EVAL_RESULTS.md``; ``scripts/classify/classify --cascade`` is the
 manual dry-run/commit backfill). Full design:
-``docs/design/chunk-classifier-cascade.md``.
+``chunk-classifier-cascade`` (git-only).
 
 Default-OFF: registered unconditionally but gated per-cycle by its
 ``service_config`` row (``PRECIS_CLASSIFY_ENABLED`` only seeds the

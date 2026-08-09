@@ -5,7 +5,7 @@ a scope is already claimed, we cannot claim it. This builds a working set
 of eyes over the related patents' claim chunks and stamps it into the
 writing todo's ``meta.working_set``, which the planner injects (the live
 ADR-0051 §6 reader path, ``PRECIS_PLANNER_FISHEYE``). See
-``docs/design/patent-authoring-loop.md``.
+``docs/backlog/patent-authoring-loop.md``.
 
 The view is **comprehensive, not a decaying fisheye**: every prior-art
 **independent** claim renders verbatim (it defines existing legal scope and

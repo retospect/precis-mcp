@@ -8,7 +8,7 @@ levers: provision a second agent host (caspar/balthazar) with the OAuth state
 + an agent daemon (no code); co-location relief — get the ~73 G mlock'd
 llama.cpp weight off the agent host (or drop `--mlock`) so jetsam stops
 targeting the worker. Durable north star: the sandbox_run/claude_docker
-substrate (docs/proposals/sandbox-run-substrate.md) subsumes both. See also
+substrate (`sandbox-run-substrate` (git-only)) subsumes both. See also
 spark-agent-worker for the local-lane offload.
 
 Update 2026-08-09 (dispatch-stall incident, alert 199905): redundancy is

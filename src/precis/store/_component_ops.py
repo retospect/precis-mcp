@@ -1,4 +1,4 @@
-"""Store ops for the ``component`` kind (docs/proposals/component-kind.md).
+"""Store ops for the ``component`` kind (``component-kind`` (git-only)).
 
 Mirrors ``_material_ops.py``'s star schema, plus a category dimension:
 

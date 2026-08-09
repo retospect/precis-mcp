@@ -1,7 +1,7 @@
 """sandbox_run harvest — ``/work/out`` → folder + content-addressed tarball.
 
-Slices 2+3 of the ``sandbox_run`` design (``docs/design/sandbox-run.md``,
-"Harvest → DB + NAS" + "Re-run + operationalize"). Called by
+Slices 2+3 of ``sandbox_run`` (harvest → DB + NAS, and re-run /
+operationalize). Called by
 :mod:`precis.workers.executors.claude_docker` after a container exits
 **0**:
 
@@ -83,7 +83,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Pathological-content guard (design §"Harvest → DB + NAS"): the DB
+# Pathological-content guard: the DB
 # projection is legible, not faithful (the tarball is faithful) — size
 # cap + binary skip only, no format validation.
 MAX_HARVEST_FILE_BYTES = 2_000_000

@@ -756,8 +756,7 @@ def boot(
         # (materials-handbook-kind proposal). Slug entity + typed property
         # registry + sourced value fact table; canonical-units-only in v1.
         _gated(MaterialHandler)
-        # component — general procurable-part store (docs/proposals/
-        # component-kind.md). Mirrors material's star schema plus a
+        # component — general procurable-part store. Mirrors material's star schema plus a
         # category-scoped spec registry; made-of links to a material.
         _gated(ComponentHandler)
         _gated(OracleHandler)

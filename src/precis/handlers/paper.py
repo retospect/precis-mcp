@@ -360,7 +360,7 @@ class PaperHandler(Handler):
         :meth:`put`); this method does the work. A dream (or anyone)
         notices the corpus keeps citing a paper it doesn't hold and mints
         a **stub** so the existing fetch pipeline takes over
-        (docs/design/dreaming.md, §Acquire). It does the minimum and
+        (docs/backlog/dreaming.md, §Acquire). It does the minimum and
         gets out of the way: it **never ingests inline** — no download,
         no Marker, in the dream turn.
 
@@ -583,8 +583,8 @@ class PaperHandler(Handler):
             options=_suggest_paper_slugs(slug, store=self.store, kind=kind),
         )
 
-        # Citation-chunk-grounding "active paper" trigger (docs/design/
-        # citation-chunk-grounding.md "Inbound sweep policy"): the first
+        # Citation-chunk-grounding "active paper" trigger (see
+        # workers/inbound_chase.py): the first
         # time a paper is actually read — any view, any chunk range —
         # flags it for the inbound-citer sweep, once, permanently. Dark
         # behind PRECIS_INBOUND_CHASE_ENABLED (no-op check + no tag write
@@ -1570,8 +1570,7 @@ class PaperHandler(Handler):
             )
             lines.append(f"# {b_handle}")
             lines.append(_render_block_body(ref.slug or "???", b.pos, b.text))
-            # Citation-chunk-grounding Part 3 (docs/design/citation-chunk-
-            # grounding.md "sidecar render"): capped, expand-on-request
+            # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
             # sidecars of this chunk's verified `cites` verdicts, when any
             # exist — outbound ("this chunk cites …", src_pos) and inbound
             # ("this chunk is cited by …", dst_pos) are two small sections,

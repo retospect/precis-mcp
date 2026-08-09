@@ -1,6 +1,6 @@
 """Quest gaps + health — the striving exposes its own exploration queue.
 
-Slice 3 of the quest layer (docs/proposals/quest-layer.md). Where slice 2
+Slice 3 of the quest layer (``quest-layer`` (git-only)). Where slice 2
 *reweighted* existing work down the ``serves`` DAG, slice 3 *surfaces what is
 missing or thin* — a quest's structure makes its own holes legible, and those
 holes **are** the exploration queue. Two read-time, mechanical computations over

@@ -1,4 +1,4 @@
-"""AC #9 (docs/proposals/finding-acquisition-mode.md): the planner's
+"""Acquisition-mode findings, AC #9: the planner's
 cached CONTRACT layer teaches the acquisition-mode mint (``wants=`` +
 ``provenance=``) for its literature-hunt guidance, not the dead
 ``cited_in``-less shape the pre-fix template taught (gr183824, gr183865

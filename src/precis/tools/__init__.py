@@ -36,7 +36,7 @@ def _register_tool(name: str, func: Callable) -> None:
         # Per-arg ``--help`` strings for the CLI argparse adapter. The
         # MCP-facing docstrings were trimmed to a tight summary +
         # discovery pointer (see
-        # ``docs/design/mcp-cold-start-token-budget.md``); explicit
+        # ``docs/backlog/mcp-cold-start-token-budget.md``); explicit
         # per-arg help lives in :data:`precis.tools.core.CLI_HELP`.
         "cli_help": CLI_HELP.get(name, {}),
     }

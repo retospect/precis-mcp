@@ -1,7 +1,7 @@
 """Unit tests for :func:`precis.format.toon.dump`.
 
 The TOON shape we emit is the flat homogeneous-rows form documented
-in `docs/design/b10-toon-output.md` §"Format spec":
+in ``b10-toon-output`` (git-only) §"Format spec":
 
     {col1<TAB>col2<TAB>col3}
     val1<TAB>val2<TAB>val3

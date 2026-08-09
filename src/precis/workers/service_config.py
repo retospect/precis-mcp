@@ -290,7 +290,7 @@ def list_service_config(store: Store) -> list[dict[str, object]]:
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
-# ── Reserve mode (§B-2, docs/proposals/gpu-priority.md) ────────────────
+# ── Reserve mode (the human-first GPU reservation) ─────────────────────
 #
 # A pseudo-service: `(host | '*', service='reserve', prio=1, expires_at=
 # <required>)`. Nothing ever calls `ServiceConfigResolver.enabled('reserve')`

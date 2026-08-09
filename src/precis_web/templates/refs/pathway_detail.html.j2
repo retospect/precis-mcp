@@ -93,7 +93,7 @@
 </div>
 
 {# ── Interactive explorer ─────────────────────────────────────────────
-   docs/proposals/reaction-pathway-explorer.md: a clickable energy diagram
+   a clickable energy diagram
    (item 1) + an embedded per-state 3D cell viewer (item 2) + per-state
    measures (item 3), rendered from ``meta.graph``/``structure_refs``/
    ``measures``. Degrades per AC4: no graph -> no diagram (below); no/
@@ -124,7 +124,7 @@
   </div>
   {% endif %}
 
-  {# ── potential lever (slice 3, docs/proposals/pathway-potential-lever.md)
+  {# ── potential lever (the CHE U-slider)
      — U slider vs RHE; rendered ONLY when at least one graph node carries
      ``n_H`` (``diagram.has_n_h``, computed server-side in
      ``_pathway_graph_payload``) — a legacy pathway catpath never annotated
@@ -418,7 +418,7 @@
     // server-computed (``_pathway_state_warnings``). ``isBadState`` below
     // folds this to the diagram's red/⚠ treatment, mirroring low_confidence.
     stateWarnings: {{ state_warnings | tojson }},
-    // Potential lever (slice 3, pathway-potential-lever.md) — U_L/U_opt/
+    // Potential lever (the CHE U-slider) — U_L/U_opt/
     // span_at_U*/P_side/T off ``meta.results`` when catpath computed them;
     // all null on a legacy pathway (the slider itself is hidden by the
     // ``diagram.has_n_h`` template guard in that case, but this stays
@@ -615,7 +615,7 @@
     const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
 
-    // ── potential lever (slice 3, docs/proposals/pathway-potential-lever.md)
+    // ── potential lever
     // — CHE: G_node(U) = G_node(0) + n_H(node)·U. Snapshot each node's
     // originally-stored rel_energy ONCE (repeated re-renders on every
     // slider move must always start from that same base, never compound

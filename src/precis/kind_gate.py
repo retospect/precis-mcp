@@ -27,7 +27,7 @@ sockets, and never raises a confusing late-binding error. The
 connected agent) precisely why each absent kind is absent.
 
 See ``docs/conventions/kind-enablement.md`` for the handler-author
-contract and ``docs/design/mcp-cold-start-token-budget.md`` Phase 4
+contract and ``docs/backlog/mcp-cold-start-token-budget.md`` Phase 4
 for the design context.
 """
 

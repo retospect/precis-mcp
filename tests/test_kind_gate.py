@@ -1,7 +1,7 @@
 """Tests for :mod:`precis.kind_gate` + the banner integration.
 
 Phase 4 of the cold-start token budget design
-(``docs/design/mcp-cold-start-token-budget.md``). Covers:
+(``docs/backlog/mcp-cold-start-token-budget.md``). Covers:
 
 - :func:`precis.kind_gate.parse_disabled` parsing of the env value.
 - :class:`precis.kind_gate.Loadability` invariants.

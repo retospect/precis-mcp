@@ -1,8 +1,9 @@
 """Taproot Phase 1 — flat claim canonicalization (the gate).
 
-Build ticket: ``docs/proposals/taproot-phase1-canonicalization.md``. Design
-context: ``docs/proposals/taproot.md`` §"The crux — canonicalization = flat
-claim dedup". Four functions, one cascade:
+The Phase-1 canonicalizer gate. Design context: ``docs/backlog/taproot.md``
+§"The crux — canonicalization = flat claim dedup". Acceptance bar (decided):
+the fixture eval scores **zero over-merges** — bar = 0, no exceptions
+(``tests/test_taproot_eval_canon.py``). Four functions, one cascade:
 
 1. :func:`extract_claim` — SMALL/local. A chunk of text -> a
    :class:`CanonicalClaim` (normalized sentence + light scope), or ``None``

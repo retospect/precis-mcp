@@ -6,12 +6,12 @@ mints a ``paper_id``, ``pub_id``, ``cite_key``, ``pdf_sha256``,
 
 Read first:
 
-- ``docs/design/identity.md`` — algorithm choices, edge cases, test plan
+- ``identity`` (git-only) — algorithm choices, edge cases, test plan
 - ``docs/decisions/0002-pub-id-and-toon.md`` — pub_id formula (locked)
 - ``docs/decisions/0006-tri-identifier-scheme.md`` — cite_key (locked)
 - ``docs/decisions/0008-drop-slug-identifier-normalisation.md`` —
   identifiers normalised into ``ref_identifiers``; ``slug`` retired
-- ``docs/design/storage-v2.md`` §"Identity & naming"
+- ``storage-v2`` (git-only) §"Identity & naming"
 
 Stability promise: the algorithms in this module are pinned. ``pub_id``
 values appear in LaTeX cites, MCP responses, and external references;

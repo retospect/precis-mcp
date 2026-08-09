@@ -1,5 +1,5 @@
 """``plan_tick`` patent claims-digest refresh hook
-(docs/design/patent-authoring-loop.md).
+(docs/backlog/patent-authoring-loop.md).
 
 DB-free: the workspace / bound-draft / digest helpers are stubbed, so no store
 and no ``claude`` binary. The §12 CLAUDE.md-injection lockdown tests retired
@@ -13,7 +13,7 @@ import pytest
 
 import precis.workers.job_types.plan_tick as pt
 
-# ── patent claims-digest refresh hook (docs/design/patent-authoring-loop.md) ──
+# ── patent claims-digest refresh hook (docs/backlog/patent-authoring-loop.md) ──
 
 
 def test_refresh_patent_digest_delegates_for_patent(

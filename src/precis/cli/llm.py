@@ -1,4 +1,4 @@
-"""``precis llm`` — drive the LLM catalog from the CLI (docs/proposals/llm-catalog.md).
+"""``precis llm`` — drive the LLM catalog from the CLI (``llm-catalog`` (git-only)).
 
     precis llm seed             # mint/refresh a card per model precis runs
     precis llm seed --frontier  # + the curated frontier open-weight ladder (OSS)
@@ -139,7 +139,7 @@ def add_parser(subparsers: Any) -> None:
     op = lsub.add_parser(
         "op",
         help="Per-operation model routing — the steerable registry "
-        "(docs/proposals/llm-operation-routing.md).",
+        "(utils/llm/operations.py).",
     )
     opsub = op.add_subparsers(dest="op_cmd", required=True)
 

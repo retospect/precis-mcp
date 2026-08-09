@@ -162,8 +162,8 @@ _CITE_EXTERNAL_CLS = "text-amber-600 underline decoration-dotted hover:decoratio
 _CLAIM_ANCHOR_CLS = "text-violet-700 underline decoration-dotted hover:decoration-solid"
 _CLAIM_SIGIL = "◆"
 
-#: Named window target for a paper citation (smartdraft-claim-ux slice 2,
-#: item 7): successive clicks on paper cites reuse ONE side window instead of
+#: Named window target for a paper citation (the claim-UX paper-at-position
+#: behaviour): successive clicks on paper cites reuse ONE side window instead of
 #: spawning a new tab per click, so a reader can keep the manuscript and the
 #: cited paper open side-by-side. Only the compact ``§`` glyph cite
 #: (:func:`_render_compact_cite`) and a paper-*chunk* (``pc<id>``) universal
@@ -220,8 +220,8 @@ def _anchor_html(
     ``label`` must already be HTML-safe.
 
     ``target`` defaults to ``"_blank"`` (a fresh tab per click); a caller
-    passing a named window (e.g. ``"precis-paper"``, smartdraft-claim-ux
-    slice 2) gets one reused window across successive clicks instead.
+    passing a named window (e.g. ``"precis-paper"``)
+    gets one reused window across successive clicks instead.
     ``extra_attrs`` is spliced verbatim onto the ``<a>`` tag (already
     HTML-safe, caller-built — e.g. ``data-claim-head="…"``) so a call site
     can carry extra hooks for client-side JS without every anchor needing
@@ -522,7 +522,7 @@ def _render_compact_cite(
         anchor_cls=anchor_cls,
         # href already lands at the cited chunk (the ``?chunk=`` suffix
         # above); the named window means successive clicks reuse ONE paper
-        # tab instead of spawning one per citation (smartdraft-claim-ux).
+        # tab instead of spawning one per citation.
         target=_PAPER_WINDOW,
     )
 
@@ -667,7 +667,7 @@ def _render_universal_handle(
             # passage (``/c/<h>`` resolves through the universal-chunk →
             # ``/r/paper/<id>?chunk=<ord>`` redirect chain); the named
             # window reuses one paper tab across successive citations
-            # (smartdraft-claim-ux) — other chunk kinds keep ``_blank``.
+            # — other chunk kinds keep ``_blank``.
             target=_PAPER_WINDOW if kind == "paper" else "_blank",
         )
     # A record handle. In the compact draft reader an inline *evidence

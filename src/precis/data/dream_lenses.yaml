@@ -1,7 +1,7 @@
 # Dream PROCESS lenses — multi-phase passes for the dream cycle.
 #
 # Home for the Part-B "lens seed" of
-# docs/design/tool-friction-reflection-and-dreams.md. The single-stance
+# the friction-reflection design (git history). The single-stance
 # PERSONA lenses (Feynman, Einstein, Shannon, Napoleon, …) moved out of
 # this file into first-class oracle traditions — `data/oracle/{scientists,
 # leadership,artists}.yaml` — so the dream and any "consult a mind" call

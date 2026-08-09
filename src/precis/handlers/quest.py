@@ -5,7 +5,7 @@ you never file it ``done``; you strive toward it and it *drives* — pulling
 subtasks and knowledge acquisition into its service. It is the **only new kind**
 in the model — the achievable structure beneath a quest stays ordinary
 todos/projects, marked as serving the quest by a ``serves`` link. Full design:
-docs/proposals/quest-layer.md.
+``quest-layer`` (git-only).
 
 Numeric-id ref (like memory/concept/gripe): ``refs.title`` = the striving
 statement (+ success criteria); ``refs.meta`` carries ``priority`` (the striving
@@ -65,7 +65,7 @@ from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
-#: never completes (docs/proposals/quest-layer.md). STATUS is a shared union
+#: never completes (``quest-layer`` (git-only)). STATUS is a shared union
 #: axis, so the value-subset is enforced here in the handler, not at the tag
 #: parser (which only gates *which* axes a kind may carry).
 _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
@@ -147,7 +147,7 @@ class QuestHandler(NumericRefHandler):
             "view='dossier' shows the living research synthesis; view='frontier' "
             "the Pareto frontier of candidate materials (banded); "
             "view='leaderboard' the same frontier as a TOON design table. "
-            "See docs/proposals/quest-layer.md."
+            "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
         supports_search=True,

@@ -1,4 +1,4 @@
-"""Schedule worker — Slice 4 of ``docs/design/todo-tree-plan.md``, extended
+"""Schedule worker — Slice 4 of ``docs/backlog/todo-tree-plan.md``, extended
 by ADR 0061 to also fire **push delivery** (the retired ``kind='cron'``
 mechanism, folded onto the recurring facet).
 

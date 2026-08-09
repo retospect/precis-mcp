@@ -8,7 +8,7 @@ only own schema is ``claim_embeddings`` (migration 0101) plus link relations
 ``establishes`` (0094, seeded without an inverse: hubs read evidence via
 ``links_for(direction='in')``) and ``refines`` (0100); ``corroborates`` /
 ``contradicts`` reuse existing slugs, endpoint kinds disambiguate. Design:
-``docs/proposals/taproot.md``; governance: ADR 0073 (+ ADR 0074 pins).
+``docs/backlog/taproot.md``; governance: ADR 0073 (+ ADR 0074 pins).
 
 Module map (each module's docstring carries its own detail):
 

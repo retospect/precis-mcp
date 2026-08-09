@@ -10,7 +10,7 @@ the typed edges the graph needs:
 Names are resolved back to concept ids *within the cohort* (normalized); edges to
 unknown names or self-loops are skipped. Re-runnable — ``add_link`` is idempotent
 (ON CONFLICT), so a growing cohort can re-infer safely. Cards + mastery + routing
-consume these edges in later slices. See docs/design/reading-prep-loop.md.
+consume these edges in later slices. See docs/backlog/reading-prep-loop.md.
 """
 
 from __future__ import annotations

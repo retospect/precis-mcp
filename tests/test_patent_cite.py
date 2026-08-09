@@ -1,7 +1,7 @@
 """Unit tests for patent-mode in-text citation formatting (slice 6).
 
 See ``src/precis/export/_patent_cite.py`` and
-``docs/design/patent-authoring-loop.md``.
+``docs/backlog/patent-authoring-loop.md``.
 """
 
 from __future__ import annotations

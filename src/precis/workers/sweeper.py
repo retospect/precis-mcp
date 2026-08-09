@@ -132,8 +132,8 @@ from precis.workers.runner import BatchResult
 #: first few jobs regardless.
 _UNSCHEDULABLE_SCAN_CAP = 500
 
-#: Executors that own the full lease-lifecycle for their own jobs (§H,
-#: compute-lane-lease-epoch.md pieces 1-3: boot epoch + epoch-aware
+#: Executors that own the full lease-lifecycle for their own jobs
+#: (boot epoch + epoch-aware
 #: reclaim + generalized attempt cap) — :func:`_enumerate_orphans`
 #: excludes their rows from the generic wall-clock sweep (see its
 #: docstring). ``coordinator`` is deliberately absent: it doesn't opt

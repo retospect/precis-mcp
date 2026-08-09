@@ -250,7 +250,7 @@ class TestQueryArgumentContradictions:
         assert _query_argument_contradictions(store) == []
 
 
-# ── utilization report (docs/design/utilization-log.md) ────────────
+# ── utilization report (``utilization-log`` (git-only)) ────────────
 
 
 def _seed_llm_call(store, *, minutes_ago: float, duration_ms: int = 60000) -> None:

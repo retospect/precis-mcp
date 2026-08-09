@@ -1,6 +1,6 @@
 """Quest reweighting — priority as a field flowing down the `serves` DAG.
 
-Slice 2 of the quest layer (docs/proposals/quest-layer.md). A quest's **striving
+Slice 2 of the quest layer (``quest-layer`` (git-only)). A quest's **striving
 weight** flows *down* the `serves` edges into the three places work + knowledge
 are actually chosen — rotation, reading, acquisition. Aggregation on overlap is
 **max** (a node serving two quests inherits the stronger pull), with light decay

@@ -523,7 +523,7 @@ class BlocksMixin:
         Fence by default. Lift it when the caller forces inclusion
         (``include_speculative=True``) or explicitly lists the
         ``DREAM:speculative`` tag in ``tags=`` — listing the control
-        tag *is* the opt-in (docs/design/dreaming.md §Inspire: "surface
+        tag *is* the opt-in (docs/backlog/dreaming.md §Inspire: "surface
         on explicit ask").
         """
         if include_speculative:
@@ -1183,8 +1183,8 @@ class BlocksMixin:
     ) -> list[tuple[Block, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
 
-        The Slice-2 primitive behind the unified item view
-        (``docs/proposals/unified-item-view.md``). Searches the ``chunks``
+        The source-search primitive behind the unified Drive
+        surface. Searches the ``chunks``
         of a *set* of kinds at once (semantic + lexical, RRF-fused via
         :meth:`search_blocks_multi`), collapses to one hit per ref — its
         best-scoring chunk, the breadth / triage row — optionally bounds by
@@ -1703,7 +1703,7 @@ class BlocksMixin:
 
         One in-DB ``bump_salience(ids)`` call advances ``last_seen=now()``
         and ``accesses += 1`` for the whole page in a single round-trip
-        (docs/design/dreaming.md, §Access accounting). Metadata-only —
+        (docs/backlog/dreaming.md, §Access accounting). Metadata-only —
         never touches ``chunks.text`` — so it's the one write permitted
         on the search path (thresholds.md relaxed for metadata bumps).
 
@@ -1760,8 +1760,8 @@ class BlocksMixin:
         Run-end rotation step shared by every attention actor (dream,
         watch, …): everything the loop surfaced is stamped so its
         ``last_seen - last_<actor>`` score drops and a *different* region
-        tops the next run (docs/design/dreaming.md, §Selection;
-        docs/design/watching.md). The act of looking *is* the anti-repeat
+        tops the next run (docs/backlog/dreaming.md, §Selection;
+        the watcher). The act of looking *is* the anti-repeat
         mechanism. ``actor`` selects the rotation column via
         :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError).
         Metadata-only, same as :meth:`bump_salience`. Returns the count
@@ -1850,8 +1850,8 @@ class BlocksMixin:
     ) -> list[int]:
         """Most-due salient chunks for ``actor``: ``argmax(last_seen - last_<actor>)``.
 
-        The shared attention-selection primitive (docs/design/dreaming.md,
-        §Target selection; docs/design/watching.md) — knob-free, no decay,
+        The shared attention-selection primitive (docs/backlog/dreaming.md,
+        §Target selection; the watcher mirrors it) — knob-free, no decay,
         no sampling. ``actor`` selects the per-actor rotation column via
         :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError). Restricted
         to live refs of the target ``kinds``. Ties break on ``chunk_id`` so
@@ -1953,7 +1953,7 @@ class BlocksMixin:
     ) -> tuple[int | None, list[tuple[Block, Ref, float]]]:
         """The focus region: the salience seed + its ANN neighbourhood.
 
-        Backs ``search(view='dreamable')`` (docs/design/dreaming.md,
+        Backs ``search(view='dreamable')`` (docs/backlog/dreaming.md,
         §view='dreamable'). Picks the most-due seed via
         :meth:`select_dream_seed`, then returns the ``n`` nearest
         embedded chunks to it (the seed included) over the target
@@ -2088,7 +2088,7 @@ class BlocksMixin:
         nearest not-yet-seen real chunk over the target ``kinds``, and
         dedups. The result is **not a cluster** — it's ``n`` points
         spread around the seed's cone, each snapped to a real item
-        (docs/design/dreaming.md, §The ``angle`` spray).
+        (docs/backlog/dreaming.md, §The ``angle`` spray).
 
         Card chunks (``ord=-1``) are **included** as snap targets so a
         memory's only embedded chunk is reachable — unlike the body-only

@@ -1,6 +1,6 @@
 """The decentralized recurring-work trigger — one scheduler, no singleton.
 
-Slice 10 / §15i of ``docs/design/factory-console-and-scheduling.md``. Today
+Slice 10 / §15i of ``docs/backlog/factory-console-and-scheduling.md``. Today
 recurring work has *two* triggers that overlap: the ``schedule`` pass (due
 recurring Watches — ``meta.schedule`` set) and a set of standalone launchd timers that each
 run ``precis <thing>`` on a cadence (``precis cron tick`` @60s,
@@ -39,7 +39,7 @@ skipping them never touches ``scheduler_leases``.
 down — that is the contract, not a bug. The lease's ``next_fire_at <=
 now()`` + advance-to-``now()+interval`` still gives catch-up-late-not-lost on
 recovery (one fire, no backlog burst) once the host returns. Law 6's
-no-stall-on-a-down-worker guarantee (docs/proposals/cluster-scheduling.md)
+no-stall-on-a-down-worker guarantee (docs/backlog/cluster-scheduling.md)
 applies to *unpinned* cadences only; §D's staleness alarms are the intended
 backstop for a pinned host that's down too long, not this lane.
 
@@ -172,8 +172,7 @@ def _run_health_digest(store: Any, batch_size: int) -> None:
 
 
 def _run_materialize(store: Any, batch_size: int) -> None:
-    """One demand-materializer tick (§F cycle a, ``docs/proposals/
-    cluster-scheduling.md`` §F), fired from the host-agnostic
+    """One demand-materializer tick (§F cycle a, ``docs/backlog/cluster-scheduling.md`` §F), fired from the host-agnostic
     ``materialize`` cadence (any live worker can win it — unpinned, like
     ``health_digest``). ``batch_size`` is unused. DARK unless
     ``PRECIS_MATERIALIZE_EMBED=1`` — see workers/materialize.py."""
@@ -350,7 +349,7 @@ def _over_daily_budget(store: Any, cadence: str) -> bool:
 CADENCES: tuple[Cadence, ...] = (
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
-    # §D (docs/proposals/health-watchdog.md): the liveness-net digest.
+    # §D (docs/backlog/health-watchdog.md): the liveness-net digest.
     # Host-agnostic like cron_tick/watch_poll — any live worker can win it;
     # §A's lease machinery IS the fleet-singleton throttle, so
     # workers/health_digest.py doesn't invent its own.

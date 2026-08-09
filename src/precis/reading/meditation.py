@@ -7,7 +7,7 @@ second-person meditation script (induction → soft walk → tapering coda) as a
 audio path (`export_audio` → ffmpeg → `audio_feed.publish_episode`); this module
 owns only the *content* — the walk ordering + the script + the draft. Authoring
 craft is the `precis-voice` skill (nidra profile). See
-docs/design/reading-prep-loop.md.
+docs/backlog/reading-prep-loop.md.
 
 This module is store + LLM only (no TTS, no audio deps), so it unit-tests with a
 fake client. The render+publish step lives in the `precis meditation` CLI, which
@@ -381,7 +381,7 @@ def build_meditation(
         # hatch live in the operation registry (utils/llm/operations.py, source
         # "meditation") — dispatch() resolves them via source, and an operator
         # can retune live with no redeploy via `llm.op.meditation`
-        # (docs/proposals/llm-operation-routing.md).
+        # (the per-operation routing registry).
         #
         # This used to pin claude-sonnet-5 inside FRONTIER: a nidra is prose
         # composition (Sonnet is amply capable), the explicit claude id cut

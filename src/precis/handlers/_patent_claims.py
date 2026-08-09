@@ -1,7 +1,7 @@
 """Claim-structure classification for ingested patents (slice 1).
 
 A patent's claims carry legal structure the freedom-to-operate writing
-loop needs (``docs/design/patent-authoring-loop.md``): which claims are
+loop needs (``docs/backlog/patent-authoring-loop.md``): which claims are
 **independent** — they define standalone legal scope, the claims a new
 application must design around and can never silently drop from a novelty
 view — versus **dependent**, which merely narrow an antecedent claim.

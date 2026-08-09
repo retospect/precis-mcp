@@ -1,6 +1,6 @@
 """Per-todo permission envelope — the *permission* side of a work spec.
 
-Slice 8 of the factory design (``docs/design/factory-console-and-scheduling.md``
+Slice 8 of the factory design (``docs/backlog/factory-console-and-scheduling.md``
 §4). Capability (§5 ``requires``) says *what a job consumes*; the envelope
 says *what a job is allowed to do* — its least-privilege box, honored by the
 executor **regardless of which host claims it**. A no-write / no-egress task

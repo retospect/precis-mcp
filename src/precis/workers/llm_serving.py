@@ -11,7 +11,7 @@ probe fails and nothing is written). Decentralised: each host owns only its own
 ``served_by`` entry on a shared card, so melchior + spark both serving the same
 27B advertise into one card without clobbering each other's endpoint.
 
-Design-of-record: ``docs/design/local-model-router-integration.md``.
+Design-of-record: ``local-model-router-integration`` (git-only).
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Reading-intent flags — kind-agnostic one-click tag toggles.
 
-The first slice of the unified-item-view proposal
-(``docs/proposals/unified-item-view.md``). A *flag* is a plain
+The first slice of the unified item view (since folded into
+Drive). A *flag* is a plain
 ``OPEN:`` tag carrying reading intent — ``read-later`` / ``must-read``
 / ``skim`` — that a person (or the LLM) can stick on any ref with one
 click. Because a paper stub and its eventually-ingested paper are the

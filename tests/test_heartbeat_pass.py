@@ -55,7 +55,7 @@ def test_heartbeat_registered_as_a_system_profile_pass() -> None:
     assert spec.ref_pass is True
 
 
-# ── §H boot epoch (compute-lane-lease-epoch.md) ────────────────────
+# ── Worker boot epoch (the lease-epoch reclaim mechanism) ──────────
 
 
 def _reset_boot_id(monkeypatch) -> None:

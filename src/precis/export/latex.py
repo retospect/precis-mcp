@@ -374,7 +374,7 @@ class _Ctx:
     footnote_refs: bool = (
         False  # reMarkable mode: source cites → self-contained footnotes
     )
-    #: Trust-mark bookkeeping (finding-trust-surfaces.md) — set in
+    #: Trust-mark bookkeeping (the trust-surfaces export marking) — set in
     #: ``__post_init__`` from ``store`` so every existing call site that
     #: only ever passed ``store=`` keeps working unchanged.
     trust: Any = None
@@ -528,15 +528,15 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
 
 def _trust_mark_latex(ctx: _Ctx, finding_ref_id: int) -> str:
     """The inline trust mark appended after a finding-backed cite
-    (finding-trust-surfaces.md §1). Empty for a clean citation — AC 6
+    (the trust-surfaces export marking). Empty for a clean citation — AC 6
     requires byte-identical content to today. Unverified gets a
     ``\\textsuperscript{?}`` flag plus a bracketed note; unsupported gets
     the louder bold bracket. Resolved (and cached / accumulated for the
     end-matter list) via :func:`precis.taproot.trust.claim_trust`, the ONE
     mapping this and the docx exporter both read.
 
-    "Export always works, always marks" (finding-trust-surfaces.md,
-    decided — no refusing/strict mode): any resolution failure (malformed
+    "Export always works, always marks" (the decided trust-surfaces
+    policy — no refusing/strict mode): any resolution failure (malformed
     ``meta``, a store hiccup) degrades to no mark rather than aborting an
     export that previously worked."""
     if ctx.trust is None:
@@ -831,7 +831,7 @@ def render_body(
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
     ``doc_type='patent'`` renders prior-art references in-text (no
-    ``\\cite`` / no bibliography) — see ``docs/design/patent-authoring-loop.md``.
+    ``\\cite`` / no bibliography) — see ``docs/backlog/patent-authoring-loop.md``.
 
     ``footnote_refs=True`` (reMarkable send-to-tablet mode) turns every source
     citation into a self-contained numbered ``\\footnote`` — human cite +
@@ -1153,8 +1153,8 @@ def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
 
 def build_unverified_claims_section(trust: Any) -> str:
     """An unnumbered "Unverified claims" end-matter section — one entry
-    per finding that rendered with a trust mark (finding-trust-surfaces.md
-    AC 1/2), listing the claim title, its state, and what it's waiting on.
+    per finding that rendered with a trust mark (trust-surfaces export
+    marking), listing the claim title, its state, and what it's waiting on.
     Empty string when nothing was marked (``trust`` is ``None`` or has no
     accumulated marks), so a clean draft's output is unaffected. Entry
     wording is shared with the docx exporter via
@@ -1308,7 +1308,7 @@ def export_draft(
         remarkable=remarkable,
         unverified_section=unverified_tex,
     )
-    # ``ref_events`` export record (finding-trust-surfaces.md §2) — one row
+    # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
     # override. No-op (no row) when nothing was overridden.
     record_override_event(store, ref, rendered.trust)

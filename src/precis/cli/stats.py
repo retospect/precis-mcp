@@ -337,7 +337,7 @@ def _query_argument_caveats(store: Store) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Utilization (docs/design/utilization-log.md)
+# Utilization (``utilization-log`` (git-only))
 # ---------------------------------------------------------------------------
 
 

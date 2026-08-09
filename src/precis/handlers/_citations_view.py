@@ -1,5 +1,5 @@
 """``get(kind='draft', id=<slug>, view='citations')`` — the draft-citation
-lifecycle view (docs/proposals/taproot-draft-citation-view.md).
+lifecycle view (to-fetch / re-ground / promote / done).
 
 A draft cites corpus papers with three token forms: ``[pa<id>]`` (whole
 paper), ``[pc<id>]`` (paper chunk), and the taproot end-state,

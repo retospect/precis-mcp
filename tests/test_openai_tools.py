@@ -167,7 +167,7 @@ def test_client_raises_on_no_choice() -> None:
 
 def test_client_parses_usage_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenRouter's ``usage.cost`` lands on ``ChatTurn.cost_usd``
-    (docs/proposals/glm-fleet-flip-safety.md Part 2)."""
+    (``glm-fleet-flip-safety`` (git-only) Part 2)."""
     tx = _FakeTransport(
         [
             {
@@ -400,7 +400,7 @@ def test_loop_4xx_stays_unpaused() -> None:
 def test_loop_sums_usage_cost_across_turns() -> None:
     """A turn carrying ``usage.cost`` sums into ``AgentLoopResult.cost_usd``,
     mirroring ``total_tokens``'s accumulation
-    (docs/proposals/glm-fleet-flip-safety.md Part 2)."""
+    (``glm-fleet-flip-safety`` (git-only) Part 2)."""
     call = ToolCall("c1", "get", {"id": 7})
     client = _ScriptedClient(
         [

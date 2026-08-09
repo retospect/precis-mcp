@@ -1,8 +1,8 @@
 """Papers-needed tab — retired into the unified Drive surface (WS1b).
 
 ``/papers-needed`` (and its ``?awaiting=1`` narrowing) used to render the
-chunkless paper-stub backlog directly; per
-``docs/proposals/web-ui-rationalization.md`` decision D3 it now just
+chunkless paper-stub backlog directly; per the web-UI rationalization's
+fold-into-Drive decision it now just
 redirects to Drive's ``state=stub`` facet (the "papers to get" queue) —
 fully folded, no retained nav badge (the fetcher works the backlog
 automatically; that was the original rationale for keeping it out of

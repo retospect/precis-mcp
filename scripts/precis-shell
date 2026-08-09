@@ -72,7 +72,7 @@ if [[ "${rebuild_base}" == 1 ]] || ! have_image "${BASE_IMAGE}"; then
     echo "[precis-shell] building ${BASE_IMAGE} (target=models — slow, models stage)" >&2
     base_args=()
     # Self-seed: a stale :premodels still avoids the bge-m3 cold-fetch
-    # deadlock documented in docs/design/bake-models-into-image.md.
+    # deadlock documented in `bake-models-into-image` (git-only).
     if have_image "${BASE_IMAGE}"; then
         base_args+=(--build-context "premodels=docker-image://${BASE_IMAGE}")
     fi

@@ -97,7 +97,7 @@ def test_dry_run_previews_text_edit_without_writing(
 def test_edit_review_verdict_retract_deletes_ledger_row(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """smartdraft-review-status-ui item 7: `edit(review=<checker>,
+    """The un-review door: `edit(review=<checker>,
     verdict='retract')` un-reviews instead of recording — the edit-door twin
     of `Store.retract_review` (tested at the store level in
     test_chunk_review.py), wired through the shared `edit` verb so the web
@@ -218,7 +218,7 @@ def test_edit_flags_newly_introduced_dangling_ref(
 ) -> None:
     """An edit that introduces a `[handle]` resolving to nothing is flagged
     with a ⚠ scoped to *this edit* — the advisory half of the inline-editor
-    validation gate (docs/design/draft-inline-editor.md). A dead ref already
+    validation gate (docs/backlog/draft-inline-editor.md). A dead ref already
     present in the chunk is NOT re-nagged: it isn't this edit's regression."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
@@ -1654,8 +1654,7 @@ def test_authors_edit_sets_byline_with_affiliation(
 
 
 # ---------------------------------------------------------------------------
-# scaffold — paper-writing pipeline rung 4 (docs/design/
-# paper-writing-pipeline.md §"Document classes"): edit(kind='draft',
+# scaffold — paper-writing pipeline rung 4 (docs/backlog/paper-writing-pipeline.md §"Document classes"): edit(kind='draft',
 # scaffold=…) lays down a genre's standard section skeleton via the shared
 # precis.draft.scaffolds table (see also tests/test_draft_scaffold.py for
 # the store-level scaffold_sections behavior).

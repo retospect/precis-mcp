@@ -1,6 +1,6 @@
 """Per-operation model routing — the declared operation registry (Phase 1).
 
-The *operation* rung of LLM routing (``docs/proposals/llm-operation-routing.md``),
+The *operation* rung of LLM routing,
 sitting between the per-**tier** default (:func:`~precis.utils.llm.router.resolve_model`)
 and a call-site ``req.model`` pin. An *operation* is one LLM call site, identified
 by its ``req.source`` tag (``reading_brief``, ``meditation``, …). This module owns

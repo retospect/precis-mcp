@@ -450,7 +450,7 @@ class DraftHandler(Handler):
     ) -> Response:
         if project is not None:
             # Reverse lookup (paper-writing pipeline rung 4,
-            # docs/design/paper-writing-pipeline.md §Gap-analysis —
+            # docs/backlog/paper-writing-pipeline.md §Gap-analysis —
             # backlog_draft_by_project): the draft(s) bound to a project
             # todo via the ``draft-of`` link create_draft() mints.
             if id is not None:
@@ -527,22 +527,22 @@ class DraftHandler(Handler):
 
             return render_links_view(self.store, ref, sense="draft")
         if view == "integration":
-            # Paper-writing pipeline rung 2 (docs/design/
-            # paper-writing-pipeline.md §"The integration ledger") — a topic
+            # Paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md
+            # §"The integration ledger") — a topic
             # dossier's woven-in papers (INTEGRATED) vs its topic:-tagged
             # papers with no disposition edge yet (PENDING).
             from precis.handlers._integration_view import render_integration_view
 
             return render_integration_view(self.store, ref)
         if view == "review":
-            # Paper-writing pipeline rung 3 (docs/design/
-            # paper-writing-pipeline.md §"Review — the memoized approval
+            # Paper-writing pipeline rung 3 (docs/backlog/paper-writing-pipeline.md
+            # §"Review — the memoized approval
             # ledger") — per-chunk checker status, dirty-for-human flagged.
             from precis.handlers._review_view import render_review_view
 
             return render_review_view(self.store, ref)
         if view == "citations":
-            # docs/proposals/taproot-draft-citation-view.md — the draft's
+            # The draft-citation lifecycle view — the draft's
             # paper/claim citations partitioned into to-fetch /
             # to-re-ground / to-promote / done. Purely derived (token kind
             # + paper block-count), read-only.
@@ -789,7 +789,7 @@ class DraftHandler(Handler):
         a ``s/find/replace/flags`` string — into ``(find, replace, flags)``.
         Pure parsing, no scope/chunk involved; shared by the whole-draft/
         subtree substitute (:meth:`_substitute`) and the table cell-level
-        find-replace (:meth:`_edit_table`, docs/proposals/draft-table-editing.md
+        find-replace (:meth:`_edit_table`, docs/backlog/draft-table-editing.md
         item 1)."""
         if isinstance(sub, str):
             return draft_regex.parse_sed(sub)
@@ -1490,7 +1490,7 @@ class DraftHandler(Handler):
                 body=f"auto-author {'ON' if on else 'OFF'} for {ref.slug or ref.id}"
             )
         # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
-        # docs/design/paper-writing-pipeline.md §"Document classes"): lays
+        # docs/backlog/paper-writing-pipeline.md §"Document classes"): lays
         # down a genre's standard section skeleton (ADR 0037 step 4), the
         # same table the web ``/drafts/new`` picker uses — id is the slug
         # (or any handle in the draft), not a single chunk.
@@ -1531,7 +1531,7 @@ class DraftHandler(Handler):
                 )
             # A ``sub=`` addressed straight at a chunk_kind='table' chunk (not
             # a slug/subtree scope) is the regex cell-level find-replace from
-            # docs/proposals/draft-table-editing.md item 1 — fall through to
+            # docs/backlog/draft-table-editing.md item 1 — fall through to
             # the normal handle/_base resolution below so the ``is_table``
             # branch routes it to ``_edit_table``. Otherwise (a slug, a
             # subtree, or a non-table chunk) keep the original multi-chunk
@@ -1568,8 +1568,8 @@ class DraftHandler(Handler):
         ):
             _reject_dry_run("structural")
         if review is not None:
-            # Review ledger (paper-writing pipeline rung 3, docs/design/
-            # paper-writing-pipeline.md §"Review — the memoized approval
+            # Review ledger (rung 3, docs/backlog/paper-writing-pipeline.md
+            # §"Review — the memoized approval
             # ledger"): records that `review=` (the checker, e.g. 'human',
             # 'cites', 'flow') evaluated this chunk at its *current*
             # content_sha, with `verdict=` (free text, default 'approved').
@@ -2187,8 +2187,7 @@ class DraftHandler(Handler):
         sub: dict[str, Any] | str | None = None,
         base_sha: str | None,
     ) -> Response:
-        """Edit a chunk_kind='table' chunk — precedence (docs/proposals/
-        draft-table-editing.md item 1): (1) ``table=`` replaces the whole
+        """Edit a chunk_kind='table' chunk — precedence (docs/backlog/draft-table-editing.md item 1): (1) ``table=`` replaces the whole
         canonical structure; (2) ``cell=`` (A1 string or ``{row,col}``, 1-based,
         row 1 = header) + ``text=`` sets ONE field via :func:`set_cell`; (3)
         ``find=`` (literal, paired with ``text=`` as the replacement) or
@@ -2722,7 +2721,7 @@ class DraftHandler(Handler):
         debt, not this edit's regression, so they are excluded.
 
         This is the shared core of the inline-editor validation gate
-        (``docs/design/draft-inline-editor.md``): the web editor turns the same
+        (``docs/backlog/draft-inline-editor.md``): the web editor turns the same
         old-vs-new diff into a **hard** save-block ("comes back at you if you
         broke something serious"), while the MCP/CLI edit path
         (`_dangling_edit_hint`) surfaces it as a **non-blocking** ⚠ so an

@@ -10,7 +10,7 @@ pass was supposed to fill in. It exists so that check happens on a cadence
 instead of only when something breaks loudly enough to notice.
 
 The **catalog** (which contexts to sample, why each matters) and the **six-dimension
-rubric** used to judge them live in `docs/design/context-quality-eval.md` — that
+rubric** used to judge them live in `docs/backlog/context-quality-eval.md` — that
 document is the source of truth; this directory is only the runnable half.
 
 ## How to run

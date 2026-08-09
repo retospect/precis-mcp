@@ -7,7 +7,7 @@ silently blow up the context every connecting agent eats on the
 first message.
 
 Two budgets, both lifted from
-``docs/design/mcp-cold-start-token-budget.md`` Phase 6 step 1:
+``docs/backlog/mcp-cold-start-token-budget.md`` Phase 6 step 1:
 
 - ``tools/list`` JSON      < 15 KB (measured baseline ~14.5 KB)
 - per-verb description     <  1 KB (description-only, schema excluded)
@@ -105,19 +105,19 @@ def test_tools_list_under_byte_budget() -> None:
 
     2026-07-05: cap raised from 16 KB → 17 KB to absorb the cross-kind
     source-search kwargs on ``search`` (``sort`` / ``since`` / ``until``,
-    unified-item-view Slice 2): ~330 B of irreducible input-schema for
+    the source-search primitive): ~330 B of irreducible input-schema for
     three new optional params. The verb description was left unchanged
     (the new detail rides in the param comments, not the docstring), so
     this is schema-side growth only — same as the 06-28 bump.
 
     2026-07-24: cap raised from 17 KB → 18 KB to absorb the paper-writing
-    pipeline rung 4 kwargs (``docs/design/paper-writing-pipeline.md``
+    pipeline rung 4 kwargs (``docs/backlog/paper-writing-pipeline.md``
     §"Document classes"/§Gap-analysis): ``scaffold=`` on ``edit`` and
     ``project=`` on ``get`` (draft only), each with a short param-level
     comment. Schema-side growth only — same shape as the prior bumps.
 
     2026-07-29: cap raised from 18 KB → 19 KB to absorb the ``material``
-    kind kwargs (docs/proposals/materials-handbook-kind.md): ``property=``/
+    kind kwargs (``materials-handbook-kind`` (git-only)): ``property=``/
     ``value=``/``unit=``/``conditions=``/``maturity=``/``source=``/``chunk=``
     on ``put`` and ``property=``/``min=``/``max=``/``maturity=`` on
     ``search``, each with a short param-level comment. Schema-side growth

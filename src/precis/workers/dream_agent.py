@@ -403,7 +403,7 @@ def _recent_draft_cited_paper_ids(store: Store, limit: int) -> list[int]:
     handles in the prose, so this rides an existing graph — no new plumbing.
     Feeding these into the dream fisheye lets a wandering re-read of the draft
     you are *actively* writing spot a paragraph that drifted from its own cited
-    evidence (``docs/design/dreaming.md`` names exactly this as the payoff).
+    evidence (``docs/backlog/dreaming.md`` names exactly this as the payoff).
     Ordered by the most-recent citing draft; deleted papers excluded."""
     if limit <= 0:
         return []

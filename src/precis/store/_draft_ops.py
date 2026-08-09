@@ -28,8 +28,8 @@ from precis.utils import handle_registry
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
 
-#: Re-exported so review-fanout/rollup code (item 2, docs/proposals/
-#: smartdraft-review-status-ui.md) imports it off the store module rather
+#: Re-exported so review-fanout/rollup code (the lens × chunk-kind
+#: mapping) imports it off the store module rather
 #: than reaching into ``utils.wordcount`` — but ``wordcount.py`` stays the
 #: one place the set is *defined* (it must stay store-independent), so this
 #: is the single source of truth, not a second drifting copy.

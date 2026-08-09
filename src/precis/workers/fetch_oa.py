@@ -125,7 +125,7 @@ _SOURCE_ARXIV = "fetcher:arxiv"
 _SOURCE_S2 = "fetcher:s2"
 _SOURCE_OPENALEX_CONTENT = "fetcher:openalex_content"
 
-# Markup-first legs (docs/design/markup-first-ingest.md). Run *before*
+# Markup-first legs (docs/backlog/markup-first-ingest.md). Run *before*
 # the PDF cascade when PRECIS_FETCH_MARKUP is set, so a structured
 # full-text source is preferred as the chunk source; the PDF cascade
 # still runs afterwards to acquire the printable.
@@ -389,8 +389,8 @@ def claim_stubs_to_fetch(
 # (expensive) download cascade — a retracted paper has nothing worth
 # chasing an OA copy for. Reuses ``precis.ingest.provenance.check_doi``
 # (the module's one public entry point) for the actual Crossref fetch +
-# severity classification — see ``docs/design/provenance-kind-plan.md``
-# — rather than a second, drifting copy of the retraction taxonomy.
+# severity classification (its ``_UPDATE_TYPE_MAP`` is the taxonomy)
+# rather than a second, drifting copy of it.
 
 _RETRACTION_GATE_SOURCE = "fetch_oa"
 
@@ -1685,7 +1685,7 @@ def _markup_fetch_enabled() -> bool:
     """Whether the markup-first pass runs. Gated by ``PRECIS_FETCH_MARKUP``.
 
     Default-off: markup ingest is new; opt in per-host once the stub
-    backlog has been exercised. See docs/design/markup-first-ingest.md.
+    backlog has been exercised. See docs/backlog/markup-first-ingest.md.
     """
     return os.environ.get("PRECIS_FETCH_MARKUP", "0").strip().lower() in (
         "1",

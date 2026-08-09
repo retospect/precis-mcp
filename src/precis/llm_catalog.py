@@ -1,4 +1,4 @@
-"""The `llm` catalog writer + capability vocabulary (docs/proposals/llm-catalog.md).
+"""The `llm` catalog writer + capability vocabulary (``llm-catalog`` (git-only)).
 
 One writer for the model-card upsert, shared by the :class:`~precis.handlers.llm.LlmHandler`
 (the MCP surface) and :mod:`precis.workers.llm_reconcile` (the reconcile pass) — the
@@ -320,7 +320,7 @@ REVIEW_KIND = "llm_review"
 
 #: Evidence bands, each with a distinct *provenance*: a vendor benchmark, your
 #: own golden-set accuracy, aggregated telemetry, and a subjective agent note are
-#: NOT the same evidence and must not blend (docs/proposals/llm-catalog.md).
+#: NOT the same evidence and must not blend (``llm-catalog`` (git-only)).
 REVIEW_TYPES: frozenset[str] = frozenset(
     {
         "published-benchmark",
@@ -960,7 +960,7 @@ def seed_frontier_cards(store: Store) -> list[tuple[str, int, bool]]:
 
 def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
     """Mint (or refresh) a card per model precis actually runs — the ``Tier``
-    table's resolved models (docs/proposals/llm-catalog.md, slice 1 seed).
+    table's resolved models (``llm-catalog`` (git-only), slice 1 seed).
 
     Facts are seed-grade: the tool-using transport for the tier, price from
     ``PRICE_TABLE`` when known (else provider-reported / free), and the tier as

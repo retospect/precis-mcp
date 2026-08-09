@@ -2,7 +2,7 @@
 
 Resolves directives of the form ``{{include <source>:<slug>[#<section>]}}``
 at ingest time, before chunking. Two sources defined in v1 (see
-``docs/design/docs-and-skills-redesign.md`` decision 10):
+``docs/backlog/docs-and-skills-redesign.md`` decision 10):
 
 - ``{{include doc:precis-common#address-grammar}}`` — content include
   from another shipped skill file. The section selector (``#…``) is

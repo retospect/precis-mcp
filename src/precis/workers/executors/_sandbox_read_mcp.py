@@ -1,12 +1,12 @@
 """sandbox_run read-only MCP callback — the ``precis_access:read`` dial.
 
-Slice 3 of the ``sandbox_run`` design (``docs/design/sandbox-run.md``,
-"Precis access: `none`|`read` dial"). Called by
+Slice 3 of ``sandbox_run`` (the ``precis_access`` ``none``|``read``
+dial). Called by
 :mod:`precis.workers.executors.claude_docker` only for a ``mode:build``
 job whose ``params.precis_access == "read"`` (gated at submit/launch time
 by ``sandbox_run.semantic_rejection`` on ``PRECIS_SANDBOX_READ_MCP``;
 ``mode:run`` never reaches this module at all — it gets no ``mcp.json``
-ever, per the design).
+ever).
 
 **The trust boundary stays the same as always**: the sandboxed container
 NEVER gets a DB DSN, a write-capable role, or the daemon's own secrets —

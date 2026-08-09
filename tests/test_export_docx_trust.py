@@ -1,5 +1,4 @@
-"""Trust surfaces — docx export marking (docs/proposals/finding-trust-
-surfaces.md, stage a). End-to-end via ``export_docx`` against real
+"""Trust surfaces — docx export marking (the trust-surfaces export marking, stage a). End-to-end via ``export_docx`` against real
 Postgres (the ``hub`` fixture), mirroring ``tests/test_export_docx.py``'s
 hub/finding coverage."""
 

@@ -1,5 +1,5 @@
 """Rung 3a/3b of the paper-writing pipeline
-(docs/design/paper-writing-pipeline.md §"Review — the memoized approval
+(docs/backlog/paper-writing-pipeline.md §"Review — the memoized approval
 ledger"):
 
 - 3a — :func:`precis.quest.review_fanout.mint_review_fanout`, the
@@ -277,7 +277,7 @@ class TestMintReviewFanout:
 
 
 # ---------------------------------------------------------------------------
-# smartdraft-review-status-ui item 1 — only_dirty (incremental re-check)
+# review-status incremental re-check — only_dirty
 # ---------------------------------------------------------------------------
 
 
@@ -319,7 +319,7 @@ class TestOnlyDirty:
 
 
 # ---------------------------------------------------------------------------
-# smartdraft-review-status-ui item 1 — scope (subtree / single chunk)
+# review-status incremental re-check — scope (subtree / single chunk)
 # ---------------------------------------------------------------------------
 
 
@@ -389,7 +389,7 @@ class TestScope:
 
 
 # ---------------------------------------------------------------------------
-# smartdraft-review-status-ui item 1 — skip-unsettled (open change request)
+# review-status incremental re-check — skip-unsettled (open change request)
 # ---------------------------------------------------------------------------
 
 
@@ -428,7 +428,7 @@ class TestSkipUnsettled:
 
 
 # ---------------------------------------------------------------------------
-# smartdraft-review-status-ui item 2 — lens x chunk-kind mapping
+# review-fanout lens x chunk-kind mapping
 # ---------------------------------------------------------------------------
 
 
@@ -470,7 +470,7 @@ class TestLensKindMapping:
 
 
 # ---------------------------------------------------------------------------
-# smartdraft-review-status-ui item 10 — the toc document-altitude lens
+# the toc document-altitude lens
 # ---------------------------------------------------------------------------
 
 

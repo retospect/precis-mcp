@@ -1,5 +1,5 @@
 """Contract tests for :class:`precis.handlers.material.MaterialHandler`
-(docs/proposals/materials-handbook-kind.md acceptance criteria).
+(``materials-handbook-kind`` (git-only) acceptance criteria).
 """
 
 from __future__ import annotations

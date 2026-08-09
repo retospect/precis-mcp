@@ -255,8 +255,8 @@ Every link touching the paper, both directions — outbound
 ## Does this specific claim actually check out against what it cites?
 
 Cluster-side only (`inbound_chase` service, default off — flip with
-`precis service prio '*' inbound_chase <n>` or `/categorizers`; see
-`docs/design/citation-chunk-grounding.md`): once a paper has been read
+`precis service prio '*' inbound_chase <n>` or `/categorizers`): once
+a paper has been read
 at least once, a background pass exhaustively resolves *who cites it*
 at chunk granularity, using an LLM to verify support
 (yes/partial/no + caveats) — the inverse of the `finding`-chase
@@ -316,7 +316,7 @@ bibliography (`- [126] ...`) into `paper_bib_entries` rows — one per
 marker, with `authors`/`journal`/`year`/`volume`/`first_page` extracted
 and a `doi` resolved where possible (local `s2_neighbors` DOI-exact
 match, else a Crossref bibliographic query; `held_ref_id` set when we
-hold the cited paper). `docs/proposals/citation-bib-parse.md` is the
+hold the cited paper). `citation-bib-parse` (git-only) is the
 base slice that produces the table; it still has **no `get`/`search`
 MCP surface** — the web reader's paper **Sources tab** is the one
 consumer today (`citation-sources-tab.md`): a matched row's positional

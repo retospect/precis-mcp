@@ -1,6 +1,6 @@
 """Budget guardrails — a lightweight spend backstop.
 
-Two deliverables (see ``docs/design/budget-guardrails.md``):
+Two deliverables (see ``docs/backlog/budget-guardrails.md``):
 
 * **A "sense" of cost** — :mod:`precis.budget.bands` maps every router
   :class:`~precis.utils.llm.router.Tier` (and any dollar figure) to a

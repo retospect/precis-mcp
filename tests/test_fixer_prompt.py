@@ -33,15 +33,16 @@ def test_compose_prompt_enforces_same_commit_map_freshness() -> None:
     # Names the norm and at least the two required maps.
     assert "same commit" in prompt.lower()
     assert "CLAUDE.md" in prompt
-    assert "docs/decisions/README.md" in prompt
+    assert "package `__init__.py` docstring" in prompt
 
 
 def test_compose_prompt_names_the_do_not_force_update_set() -> None:
     prompt = _compose_prompt(_item())
-    # Archival prose / schema SVG / sealed ADRs are NOT force-updated.
-    assert "docs/design/" in prompt
+    # Schema SVG / sealed migrations / unrelated backlog items are NOT
+    # force-updated.
+    assert "docs/backlog" in prompt
     assert "SVG" in prompt
-    assert "append-only" in prompt
+    assert "sealed migrations" in prompt
 
 
 def test_compose_prompt_instructs_delegation_to_named_subagents() -> None:

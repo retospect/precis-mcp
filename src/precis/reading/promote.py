@@ -11,7 +11,7 @@ conservative default); embedding-similarity dedup is a later refinement (it woul
 couple promotion to the async embedder). Cohort membership is ``meta.cohorts`` (a
 **list** — a deduped concept can serve several cohorts). No graph edges here
 (``has-prerequisite`` etc. land in slice 2d/3) and no cards yet. Provenance is a
-``concept --derived-from--> paper`` link. See docs/design/reading-prep-loop.md.
+``concept --derived-from--> paper`` link. See docs/backlog/reading-prep-loop.md.
 """
 
 from __future__ import annotations

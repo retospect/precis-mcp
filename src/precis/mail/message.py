@@ -5,7 +5,7 @@ fetch. Every SELECT is ``readonly=True`` and every FETCH uses ``BODY.PEEK`` so
 browsing NEVER sets the ``\\Seen`` flag — reading mail in precis must not mark
 it read in the real mailbox.
 
-No persistence: IMAP is the source of truth (docs/design/email-kind.md). These
+No persistence: IMAP is the source of truth (docs/backlog/email-kind.md). These
 helpers fetch live each call; the summarization path (later slice) is what
 promotes a chosen body into the chunk pipeline.
 """

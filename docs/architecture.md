@@ -72,13 +72,13 @@ thing) + append-only `chunks` (body blocks) + a unified `tags` /
 `chunk_summaries`, `chunks.keywords`) filled lazily by workers.
 
 - **Generated, always-current diagram:**
-  [`docs/design/schema.md`](./design/schema.md) — a Mermaid ER diagram
+  [`docs/reference/schema.md`](./reference/schema.md) — a Mermaid ER diagram
   produced from the **live database** by `precis schema-doc`
   (`scripts/gen-schema`). It can't drift; regenerate rather than
-  hand-edit. (The older [`schema-v2.puml`](./design/schema-v2.puml) is
+  hand-edit. (The older [`schema-v2.puml`](./reference/schema-v2.puml) is
   the hand-drawn *conceptual* sketch and carries a drift note.)
 - **Prose + rationale:**
-  [`docs/design/storage-v2.md`](./design/storage-v2.md).
+  the migration chain (`src/precis/migrations/`, baseline snapshot).
 - **Discovery layer (F20):** per-chunk KeyBERT keywords on
   `chunks.keywords` / `keywords_meta` (the dropped `ref_segments`
   tables' successor). Policy:
@@ -93,9 +93,9 @@ subtask), with `meta.auto_check` wait-leaves, recurring schedules,
 review tiers (`nursery` / `structural` / `deep_review`) write memory
 digests. The present-tense detail lives in
 [`CLAUDE.md`](../CLAUDE.md); the deep designs are
-[`todo-tree-plan.md`](./design/todo-tree-plan.md),
-[`finding-chase.md`](./design/finding-chase.md), and
-[`dreaming.md`](./design/dreaming.md). Agent-facing:
+[`todo-tree-plan.md`](./backlog/todo-tree-plan.md),
+[`finding-chase.md`](./backlog/finding-chase.md), and
+[`dreaming.md`](./backlog/dreaming.md). Agent-facing:
 [`precis-tasks-help`](../src/precis/data/skills/precis-tasks-help.md),
 [`precis-job-help`](../src/precis/data/skills/precis-job-help.md).
 
@@ -123,7 +123,7 @@ Substantive trade-offs are recorded as ADRs, never deleted (obsolete
 ones are superseded). Start at the index:
 [`docs/decisions/README.md`](./decisions/README.md). Design plans (one
 per non-trivial change, kept for history) live in
-[`docs/design/`](./design/). The dated change story is the **git
+[`docs/backlog/`](./backlog/). The dated change story is the **git
 history** (`git log` — there is no CHANGELOG file); the active backlog
 is [`docs/backlog/`](backlog/README.md).
 

@@ -1,4 +1,4 @@
-"""watch_poll — citation-forward corpus growth (docs/design/watching.md).
+"""watch_poll — citation-forward corpus growth.
 
 The *watcher* is the second "attention actor" over the salience field the
 dreamer already maintains. It grows the corpus along the citation graph
@@ -27,7 +27,7 @@ does OA-gated acquisition — an open-access copy is fetched, a paywalled
 one stays a discovered stub ("get only if automatically gettable,
 otherwise auto-discovered; fetch on demand"). The relevance gate is a
 per-seed cap for v1; the embedding-similarity gate
-(docs/design/watching.md, §Relevance) is a follow-up since it needs
+is a follow-up since it needs
 on-the-fly embedding of external abstracts.
 """
 

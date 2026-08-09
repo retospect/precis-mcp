@@ -142,7 +142,7 @@ class FakeStore(_FakeStoreBase):
         #: (ref_id, ord, kind). Tests populate it to exercise the
         #: console resolver's chunk-handle branch (``pc…``).
         self.chunk_handles: dict[int, tuple[int, int, str]] = {}
-        # ── Sources/Cited tabs (paper-viewer-nav slice 3) ──────────────
+        # ── Sources/Cited tabs (the paper viewer's S2 neighbour tabs) ──
         #: Canned S2 neighbour rows the /papers/{id}/refs/{direction}
         #: fragment reads: {(ref_id, 'cites'|'cited_by'): [row, ...]},
         #: each row a SimpleNamespace carrying s2_id/doi/title/year/
@@ -681,7 +681,7 @@ class FakeStore(_FakeStoreBase):
         return []
 
     def review_rollup_for_draft(self, ref_id: int) -> dict[str, int]:
-        # The toolbar N/M rollup badge (smartdraft-review-status-ui item 8).
+        # The toolbar N/M review-rollup badge.
         # Generic default derived from `review_status_for_draft`'s rows —
         # mirrors `Store.review_rollup_for_draft`'s own logic (prose-only
         # denominator; done = 'human' approved at the current sha) — so a

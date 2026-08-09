@@ -1,7 +1,7 @@
 """``precis resolve-metadata`` — PDF-free re-resolution of the triage backlog.
 
-Bucket B of the duplicate/metadata plan
-(``docs/design/duplicate-paper-handling.md``): resolve canonical metadata
+Bucket B of the duplicate/metadata plan (the merge half lives in
+``ingest/dedup.py``): resolve canonical metadata
 for ``needs-triage`` papers from what we already hold — Crossref by the
 stored DOI, or a Semantic Scholar title search that recovers a DOI for the
 id-less ones. Auto-applies only the high-confidence verdicts; the review
