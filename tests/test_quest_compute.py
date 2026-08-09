@@ -1887,8 +1887,8 @@ class TestTierConfigMapping:
     """:func:`compute._apply_tier_config` — the tier→catpath-config overlay
     (pure, no store): screening = relax-only ranking (``search.screening``
     + ``template=parked``), verify = the same NEB search over
-    ``template=coadsorbed``, neb = identity (today's default, byte-
-    identical — the ladder-off legacy path)."""
+    ``template=coadsorbed``, neb = frontier-first NEB scheduling overlay
+    (``search.neb_schedule=best_first``) unless the caller pinned a schedule."""
 
     _CFG = {"substrate": "NO", "target": "NH3", "search": {"seeds": [0, 1, 2]}}
 
@@ -1910,14 +1910,26 @@ class TestTierConfigMapping:
         assert out["template"] == "coadsorbed"
         assert out["search"] == self._CFG["search"]
 
-    def test_neb_tier_is_the_ladder_off_legacy_identity_path(self) -> None:
+    def test_neb_tier_overlays_best_first_schedule(self) -> None:
         out = compute_mod._apply_tier_config(self._CFG, compute_mod._TIER_NEB)
-        assert out is self._CFG  # same object — no overlay, no copy
+        assert out["search"]["neb_schedule"] == "best_first"
+        # other search keys survive the overlay; no template pinned
+        assert out["search"]["seeds"] == [0, 1, 2]
         assert "template" not in out
 
-    def test_unrecognized_tier_falls_back_to_the_neb_identity_path(self) -> None:
+    def test_neb_tier_does_not_mutate_the_caller_dict(self) -> None:
+        cfg = {"search": {"seeds": [0]}}
+        compute_mod._apply_tier_config(cfg, compute_mod._TIER_NEB)
+        assert cfg == {"search": {"seeds": [0]}}
+
+    def test_explicit_neb_schedule_wins_over_the_tier_default(self) -> None:
+        cfg = {"search": {"neb_schedule": "all", "seeds": [0]}}
+        out = compute_mod._apply_tier_config(cfg, compute_mod._TIER_NEB)
+        assert out is cfg  # caller pinned a schedule — no overlay, no copy
+
+    def test_unrecognized_tier_also_overlays_best_first(self) -> None:
         out = compute_mod._apply_tier_config(self._CFG, "bogus-tier")
-        assert out is self._CFG
+        assert out["search"]["neb_schedule"] == "best_first"
 
 
 class TestDispatchAutocatpath:
@@ -2041,9 +2053,12 @@ class TestDispatchAutocatpath:
         assert len(seed_jobs) == 3
         for _job_id, jmeta in seed_jobs:
             params = jmeta.get("params") or {}
-            # the exported slab rides along and the reaction config is
-            # carried verbatim on every seed unit
-            assert params["config"] == self._RX
+            # the exported slab rides along and the reaction config (neb tier,
+            # best_first overlay) is carried on every seed unit
+            assert params["config"] == {
+                **self._RX,
+                "search": {"neb_schedule": "best_first"},
+            }
             assert (
                 isinstance(params["slab_extxyz"], str)
                 and "Lattice=" in (params["slab_extxyz"])
@@ -2076,8 +2091,11 @@ class TestDispatchAutocatpath:
         compute_mod.dispatch_autocatpath(store, sid, self._RX)  # no tier= given
         seed_jobs = self._seed_jobs(store, sid)
         assert seed_jobs
+        # the neb tier overlays frontier-first NEB scheduling; the rest of the
+        # reaction config is carried through untouched.
+        expected = {**self._RX, "search": {"neb_schedule": "best_first"}}
         for _jid, jmeta in seed_jobs:
-            assert jmeta["params"]["config"] == self._RX  # byte-identical, no overlay
+            assert jmeta["params"]["config"] == expected
         (agg_id,) = self._agg_todo_ids(store, sid)
         agg_params = (store.fetch_refs_by_ids({agg_id})[agg_id].meta or {}).get(
             "params"
@@ -2265,9 +2283,10 @@ class TestDispatchAutocatpath:
         assert compute_mod._fresh_autocatpath_jobs(store, sid, 0) == []
 
     def test_routed_job_pins_cuda_device(self, store: Any, monkeypatch: Any) -> None:
-        """A GPU-routed autocatpath job gets ``mlip.device=cuda`` injected (autocatpath
-        defaults to cpu → the GPU sits idle otherwise); the caller's config dict
-        is not mutated and its other keys are preserved."""
+        """A GPU-routed autocatpath job gets ``mlip.device=cuda`` and
+        ``mlip.dtype=mixed`` injected (autocatpath defaults to cpu/float64 → the
+        GPU sits idle and every eval runs full float64 otherwise); the caller's
+        config dict is not mutated and its other keys are preserved."""
         monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
@@ -2275,6 +2294,7 @@ class TestDispatchAutocatpath:
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
         cfg = (jmeta.get("params") or {})["config"]
         assert cfg["mlip"]["device"] == "cuda"
+        assert cfg["mlip"]["dtype"] == "mixed"
         assert cfg["substrate"] == "NO"  # original keys ride along
         assert "mlip" not in self._RX  # caller's dict untouched
 
@@ -2301,14 +2321,17 @@ class TestDispatchAutocatpath:
     def test_unrouted_job_leaves_device_unset(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """Without a route node there's no GPU to pin — the config is passed
-        through verbatim (in-process EMT demo path)."""
+        """Without a route node there's no GPU to pin — no mlip.device/dtype is
+        added (in-process EMT demo path). The neb-tier best_first overlay is
+        node-independent, so it's still present."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
-        assert (jmeta.get("params") or {})["config"] == self._RX  # unchanged
+        cfg = (jmeta.get("params") or {})["config"]
+        assert "mlip" not in cfg  # no GPU pin
+        assert cfg["search"]["neb_schedule"] == "best_first"
 
     # ── gr172886: capability-map route resolution + null-route guard ───────
 

@@ -1,50 +1,67 @@
 # autocatpath_seed genuine overruns — reduce cost, checkpoint
 
-26 of 108 failures cluster at the runner's ~3 h deadline; the 5400 s compute
-budget fired once, so it is not the binding constraint. Decided constraint: do
-NOT tighten `fmax` — at 0.1 eV/Å (`neb_fmax` 0.15) it is already 2× looser
-than the ASE/OC20 norm.
+Seeds overrun the runner's ~3 h `ssh_node` wall by a wide margin, not a
+sliver: on the prod DB only 4 seeds have ever completed (all 2026-08-03),
+taking **8.5–13 h each**, and a seed still running on 2026-08-09 (`auj_2t19`,
+old 0.4.x engine) was at **~10.5 h wall / ~289 CPU-h and no `result.json`**.
+So the binding constraint is per-seed compute cost, 3–4× over budget — NOT
+`fmax`: at 0.1 eV/Å (`neb_fmax` 0.15) it is already 2× looser than the
+ASE/OC20 norm; do NOT tighten it. The 5400 s compute budget fired once, also
+not the binding constraint.
 
-Status 2026-08-08:
+Status 2026-08-09:
 
-- **cuequivariance accel — shipped + deployed 2026-08-08.** Wired into `roles/autocatpath`
-  (install + import-verify, gated to the ML-backend host) and installed on
-  spark via playbook 44. Fast path confirmed engaged on a real seed — no
-  "Cuequivariance acceleration will be disabled" banner in `stdout.log`.
-  Necessary but **not sufficient**: a post-install seed (`6abglq07`) still ran
-  >106 min because MACE is still in float64 (`Using float64 for
-  MACECalculator, which is slower but more accurate`).
-- **Precision levers landed in `autocatpath` 0.6.0** (commit `44aa165`,
-  2026-08-08) — the remaining per-eval speedup, and the critical path for the
-  overrun:
-  - `mlip.cueq` (auto|on|off), **default `auto`** — cuEquivariance kernels used
-    whenever `cuequivariance-torch` is installed. Already installed on spark,
-    so cueq is *already* engaged (even on the deployed 0.4.x — MACE picks the
-    lib up itself); no precis config needed.
-  - `mlip.dtype` **still defaults to `float64`** — so the float32 win is OFF
-    until precis sets it. `mixed` = float32 coarse descent to `max(3·fmax,
-    0.15)` then float64 refine to `fmax`; **NEB always float64** (barrier tops,
-    which is exactly what qu164903 measures), reported energies from the
-    float64 stage. So `mixed` is the accuracy-safe speedup; plain `float32` is
-    faster but noisier near `fmax`.
-  - **Next-rev precis-side wiring** (deferred by decision, not in the cueq
-    pass): (1) bump the pin `autocatpath>=0.4` → `>=0.6` in `pyproject.toml`
-    (`catalyst` + `catalyst-gpu`); (2) **bump `_AUTOCATPATH_CACHE_EPOCH`
-    `0.4.0` → `0.6.0`** in `quest/compute.py` — mandatory, else new-engine
-    re-runs dedup-pin onto stale jobs ([[catpath-barrier-trust]]); (3) default
-    `mlip.dtype: mixed` on the precis side — a `setdefault("dtype","mixed")`
-    beside the existing `setdefault("device","cuda")` at `compute.py`'s
-    run-config assembly; (4) apply the autocatpath role
-    (`ansible-playbook playbooks/44-autocatpath.yml`, `--refresh-package
-    autocatpath` pulls 0.6.0) — note `scripts/deploy`/`redeploy-precis.yml`
-    does NOT include the autocatpath play, so the standalone playbook is
-    required.
-- **`pose_count` is dead — removed in 0.6.0.** It was never consumed by the
-  engine (pose diversity comes from `search.seeds` + `bind_reseat_attempts`);
-  old configs carrying it still parse. Do not chase it as a lever.
-- Still open regardless of per-eval speed: incremental checkpointing so a
+- **cuequivariance accel — shipped + deployed 2026-08-08.** Wired into
+  `roles/autocatpath` (install + import-verify, gated to the ML-backend host)
+  and installed on spark via playbook 44. Fast path confirmed engaged (no
+  "Cuequivariance acceleration will be disabled" banner). Necessary but
+  **not sufficient**: seeds still run float64 and blow the wall by 3–4×.
+
+- **autocatpath 0.7 precision + scheduling levers WIRED into precis** (this
+  rev — `quest/compute.py` + `pyproject.toml`). Two independent per-seed cost
+  cuts, both accuracy-safe:
+  - **`mlip.dtype: mixed`** (autocatpath 0.6) — float32 coarse relax to
+    `max(3·fmax, 0.15)` then float64 refine to `fmax`; **NEB tops stay
+    float64**, so reported barriers keep float64 accuracy (qu164903 measures
+    barrier tops) while the descent runs at ~float32 speed. Injected via
+    `setdefault("dtype","mixed")` beside the existing `device=cuda` on the
+    GPU-routed run-config.
+  - **`search.neb_schedule: best_first`** (autocatpath 0.7) — the big NEB-cost
+    lever on a bushy network: relax every endpoint first, then run NEBs
+    frontier-first on the lowest-optimistic-span route and prune any route
+    whose *optimistic* span (an unrefined edge = its thermodynamic climb, a
+    strict **lower bound** on its true TS) can't come within `neb_margin`
+    (0.2 eV default) of the best refined span. Pruning is provably safe — it
+    can only skip work, never hide a competitive route — so it buys back the
+    NEB cost of the far-uphill side-product forks (NH2OH branch, N2/N2O
+    coupling, …). Overlaid on the **neb tier only** (`_apply_tier_config`); the
+    **verify tier stays exhaustive** so the final answer on the winning
+    candidate carries no honest-absence caveat. An explicit
+    `search.neb_schedule` in the reaction config wins.
+  - Pin bumped `autocatpath>=0.4` → `>=0.7` (`catalyst` + `catalyst-gpu`);
+    **`_AUTOCATPATH_CACHE_EPOCH` `0.4.0` → `0.7.0`** (mandatory — re-keys every
+    candidate so the 234 unreaped stale-engine seeds re-dispatch clean on 0.7,
+    [[catpath-barrier-trust]]).
+
+- **Deploy is the remaining precis-side step** (NOT done by `/land`;
+  prod-mutating, needs a user go): `scripts/deploy` reinstalls the worker venv
+  from `main` but `redeploy-precis.yml` does **not** include the autocatpath
+  play — the engine bump to 0.7 needs the standalone
+  `ansible-playbook playbooks/44-autocatpath.yml` (`--refresh-package
+  autocatpath` pulls 0.7 into the worker venv). After deploy, confirm a fresh
+  seed lands `result.json` under the wall and check `results.json.neb_schedule`
+  (refined vs skipped) to see the prune actually firing.
+
+- **`pose_count` is dead — removed in 0.6.0.** Never consumed by the engine
+  (pose diversity comes from `search.seeds` + `bind_reseat_attempts`); old
+  configs carrying it still parse. Not a lever.
+
+- **Still open regardless of per-eval speed:** incremental checkpointing so a
   wall-kill degrades instead of annihilating a seed's work, then sharding
-  per-intermediate/edge.
+  per-intermediate/edge. Also operational: 234 seeds have accumulated unreaped
+  over 5 days with no terminal event — verify the wall-timeout path records a
+  reaped failure (a wall-killed seed that leaves no reaped row is invisible to
+  the harvest/promotion loop).
 
 Owner `src/precis_pathway/runner.py` + `src/precis/quest/compute.py`. Needs
-design.
+design (checkpointing/sharding); the speedup levers are wired, pending deploy.

@@ -73,11 +73,19 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       barrier scalar at all (never special-cased here — the harvest side
       just sees an empty/thermo-only summary and lets that flow, see
       :func:`_autocatpath_measures_from_job`).
-    * ``neb`` — today's default config, unchanged (identity — same object,
-      not even a copy, so a ladder-off dispatch is byte-identical to before
-      this feature existed).
-    * ``verify`` — the same NEB search, but ``template="coadsorbed"``
-      (drops the fragment-parking approximation).
+    * ``neb`` — the straight-to-NEB refine tier, overlaid with autocatpath
+      0.7's ``search.neb_schedule="best_first"``: relax every endpoint first,
+      then run NEBs frontier-first on the lowest-optimistic-span route and
+      prune any route whose optimistic span (a thermodynamic *lower bound* on
+      its true TS) can't come within ``neb_margin`` of the best refined span.
+      Pruning is provably safe — it can only skip work, never hide a
+      competitive route — so it buys back the NEB cost of far-uphill
+      side-product forks (the seed-wall-overrun lever). An explicit
+      ``search.neb_schedule`` in the caller config wins.
+    * ``verify`` — the same NEB search, but ``template="coadsorbed"`` (drops
+      the fragment-parking approximation) AND left exhaustive (no best_first
+      overlay): the authoritative final pass re-refines every step, removing
+      best_first's honest-absence caveats on the winning candidate.
 
     The overlay folds into :func:`_autocatpath_content_key` automatically
     (the changed dict), so each tier of the same candidate+reaction content-
@@ -90,7 +98,12 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
         return cfg
     if tier == _TIER_VERIFY:
         return {**config, "template": "coadsorbed"}
-    return config  # neb (or an unrecognized tier) — today's default, unchanged
+    # neb (or an unrecognized tier): frontier-first NEB scheduling unless the
+    # caller pinned a schedule explicitly.
+    search = config.get("search") or {}
+    if "neb_schedule" in search:
+        return config
+    return {**config, "search": {**search, "neb_schedule": "best_first"}}
 
 
 @dataclass(frozen=True)
@@ -413,7 +426,7 @@ def _autocatpath_wall_seconds() -> int:
 #: docs/backlog/autocatpath-060-selectivity-objectives.md for the wiring
 #: residual).
 _AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"
-_AUTOCATPATH_CACHE_EPOCH = "0.6.0"
+_AUTOCATPATH_CACHE_EPOCH = "0.7.0"
 
 
 def _autocatpath_engine_token() -> str:
@@ -733,6 +746,11 @@ def dispatch_autocatpath(
     if node:
         run_config = {**config, "mlip": {**(config.get("mlip") or {})}}
         run_config["mlip"].setdefault("device", "cuda")
+        # dtype=mixed (autocatpath 0.6): float32 coarse relax → float64 refine to
+        # fmax; NEB tops stay float64, so reported barriers keep float64 accuracy
+        # while the per-eval descent runs at ~float32 speed. The seed-wall-overrun
+        # lever (paired with best_first NEB scheduling below). Explicit override wins.
+        run_config["mlip"].setdefault("dtype", "mixed")
     key = _autocatpath_content_key(run_config, slab_extxyz)
     pslug = f"{ref.slug}-rx-{key[:10]}"
 

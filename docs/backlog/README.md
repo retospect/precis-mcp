@@ -15,7 +15,7 @@
 - [`autocatpath-dead-seed-escalation`](./autocatpath-dead-seed-escalation.md) **idea** — A seed job that exhausts its attempt cap leaves its seed todo's
 - [`autocatpath-lease-churn`](./autocatpath-lease-churn.md) **idea** — PRECIS_AUTOCATPATH_WALL_SECONDS wiring is confirmed correct end-to-end
 - [`autocatpath-seed-failure-diagnosis`](./autocatpath-seed-failure-diagnosis.md) **idea** — Diagnosis pass; evidence exists only since the `80e562a6` deploy (unbuffered
-- [`autocatpath-seed-wall-overruns`](./autocatpath-seed-wall-overruns.md) **idea** — 26 of 108 failures cluster at the runner's ~3 h deadline; the 5400 s compute
+- [`autocatpath-seed-wall-overruns`](./autocatpath-seed-wall-overruns.md) **idea** — Seeds overrun the runner's ~3 h `ssh_node` wall by a wide margin, not a
 - [`backlog-groomer-items-half`](./backlog-groomer-items-half.md) **idea** — The gripe → fix_gripe-todo groomer shipped (`src/precis/workers/
 - [`breaker-gate-resolved-cost`](./breaker-gate-resolved-cost.md) **idea** — `bands._TIER_BANDS[SMALL]=FREE`, so `breaker.gate_tier` never gates SMALL —
 - [`briefing-combine-verify`](./briefing-combine-verify.md) **idea** — The dispatch brake shipped (a succeeded child job blocks re-dispatch of a
