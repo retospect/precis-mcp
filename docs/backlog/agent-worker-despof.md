@@ -10,3 +10,16 @@ llama.cpp weight off the agent host (or drop `--mlock`) so jetsam stops
 targeting the worker. Durable north star: the sandbox_run/claude_docker
 substrate (docs/proposals/sandbox-run-substrate.md) subsumes both. See also
 spark-agent-worker for the local-lane offload.
+
+Update 2026-08-09 (dispatch-stall incident, alert 199905): redundancy is
+confirmed **zero** — `service_config` has `job_claude_inproc` prio=0 on
+spark since 2026-07-18, so melchior is the sole claude-lane executor
+fleet-wide. Same incident exposed the deeper decoupling: `resource_slots`
+advertising (heartbeat auto-probe, no flag) and executor provisioning
+(profile + `service_config`) have no coherence check — a model served only
+on a non-executor host (qwen3-235b on caspar) plus the plan_tick `llm:`
+affinity stamp stalled the lane for 16 h. Mitigated by the 10-min
+claim-side affinity fallback (`LLM_AFFINITY_GRACE_MIN`,
+`executors/_common.py`); the structural gap (nothing connects "who serves
+a model" to "who can run jobs that want it") is still open and belongs to
+whichever de-SPOF lever gets picked.
