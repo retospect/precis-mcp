@@ -16,6 +16,13 @@ This runner drives that force-reingest over every ``epo_ops`` patent ref
 respecting the same rolling 7-day fair-use cap the watch runner uses. It
 is an **operator backfill**, invoked once by hand:
 
+Simple-family stubs (``refs.meta['family_stub']``, the
+patent-evidence-parity family mechanism — a family member stored with
+biblio meta only, linked ``same-family-as`` its ingested representative
+to avoid refetching duplicate family text) are skipped by default, even
+when named explicitly via ``--slug``; pass ``--include-stubs`` to force
+them through too.
+
     precis jobs reingest-patents --dry-run     # list what would refetch
     precis jobs reingest-patents               # do it
 
@@ -32,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from precis.handlers._patent_ingest import ingest_patent
+from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY, ingest_patent
 from precis.handlers._patent_ops import OpsClientProto
 from precis.handlers._patent_slug import parse_docdb_id
 from precis.jobs.patent_watch import (
@@ -67,6 +74,7 @@ class ReingestOutcome:
     bytes_fetched: int = 0
     error: str | None = None
     skipped_dry_run: bool = False
+    skipped_stub: bool = False
 
 
 @dataclass(slots=True)
@@ -129,6 +137,7 @@ def run_reingest_pass(
     limit: int | None = None,
     dry_run: bool = False,
     fair_use_limit_gb: float = DEFAULT_FAIR_USE_LIMIT_GB,
+    include_stubs: bool = False,
 ) -> ReingestSummary:
     """Force-reingest existing patents so their claims carry markers.
 
@@ -145,6 +154,13 @@ def run_reingest_pass(
             ``created_at``), so it does not itself inflate the window,
             but we still refuse to start a fresh fetch storm when the
             cluster is already over budget from live ingests.
+        include_stubs: also re-ingest simple-family stub refs
+            (``meta.family_stub``). Default off — a stub is a
+            deliberate choice not to fetch that family member's own
+            description/claims, and a bulk backfill must not silently
+            undo it and burn the fair-use budget the mechanism exists
+            to conserve. Applies even to a slug named explicitly via
+            ``only_slugs``.
     """
     summary = ReingestSummary()
     summary.fair_use_limit_bytes = _gb_to_bytes(fair_use_limit_gb)
@@ -164,20 +180,21 @@ def run_reingest_pass(
 
     for slug in slugs:
         outcome = ReingestOutcome(slug=slug)
+        try:
+            ref = store.get_ref(kind="patent", id=slug)
+            outcome.blocks_before = store.count_blocks(ref.id) if ref is not None else 0
+        except Exception:  # pragma: no cover — best-effort lookup/count
+            ref = None
+        is_stub = bool(ref is not None and (ref.meta or {}).get(FAMILY_STUB_META_KEY))
+        if is_stub and not include_stubs:
+            outcome.skipped_stub = True
+            summary.outcomes.append(outcome)
+            continue
         if dry_run:
-            try:
-                ref = store.get_ref(kind="patent", id=slug)
-                outcome.blocks_before = (
-                    store.count_blocks(ref.id) if ref is not None else 0
-                )
-            except Exception:  # pragma: no cover — best-effort count
-                outcome.blocks_before = 0
             outcome.skipped_dry_run = True
             summary.outcomes.append(outcome)
             continue
         try:
-            ref = store.get_ref(kind="patent", id=slug)
-            outcome.blocks_before = store.count_blocks(ref.id) if ref is not None else 0
             # Normalise via the slug parser so an odd stored slug still
             # resolves to a DOCDB id the OPS client accepts.
             docdb = parse_docdb_id(slug)

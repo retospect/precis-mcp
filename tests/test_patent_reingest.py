@@ -160,6 +160,91 @@ def test_force_reingest_backfills_null_year(
     assert ref.year == 2020
 
 
+def _mark_family_stub(store: Store, ref_id: int) -> None:
+    """Flip an existing ref's ``meta.family_stub`` to True, as the
+    patent-evidence-parity family mechanism does at ingest time."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || '{\"family_stub\": true}'::jsonb "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
+
+
+def test_family_stub_skipped_by_default(
+    store: Store, fake_ops: FakeOpsClient, raw_root: Path
+) -> None:
+    ref_id = _ingest_then_unmark(store, fake_ops, raw_root)
+    _mark_family_stub(store, ref_id)
+    calls_before = len(fake_ops.calls)
+    summary = run_reingest_pass(
+        store=store,
+        ops=fake_ops,
+        embedder=MockEmbedder(dim=store.embedding_dim()),
+        raw_root=raw_root,
+    )
+    assert len(summary.outcomes) == 1
+    o = summary.outcomes[0]
+    assert o.skipped_stub is True
+    assert o.error is None
+    # No new OPS fetch was attempted for the stub.
+    assert len(fake_ops.calls) == calls_before
+
+
+def test_include_stubs_reingests_stub(
+    store: Store, fake_ops: FakeOpsClient, raw_root: Path
+) -> None:
+    ref_id = _ingest_then_unmark(store, fake_ops, raw_root)
+    _mark_family_stub(store, ref_id)
+    summary = run_reingest_pass(
+        store=store,
+        ops=fake_ops,
+        embedder=MockEmbedder(dim=store.embedding_dim()),
+        raw_root=raw_root,
+        include_stubs=True,
+    )
+    assert len(summary.outcomes) == 1
+    o = summary.outcomes[0]
+    assert o.skipped_stub is False
+    assert o.error is None
+    assert o.blocks_after == 7
+
+
+def test_dry_run_marks_stub_skipped_not_dry_run(
+    store: Store, fake_ops: FakeOpsClient, raw_root: Path
+) -> None:
+    ref_id = _ingest_then_unmark(store, fake_ops, raw_root)
+    _mark_family_stub(store, ref_id)
+    summary = run_reingest_pass(
+        store=store,
+        ops=fake_ops,
+        embedder=MockEmbedder(dim=store.embedding_dim()),
+        raw_root=raw_root,
+        dry_run=True,
+    )
+    assert len(summary.outcomes) == 1
+    o = summary.outcomes[0]
+    assert o.skipped_stub is True
+    assert o.skipped_dry_run is False
+
+
+def test_only_slugs_naming_a_stub_still_skips_it(
+    store: Store, fake_ops: FakeOpsClient, raw_root: Path
+) -> None:
+    ref_id = _ingest_then_unmark(store, fake_ops, raw_root)
+    _mark_family_stub(store, ref_id)
+    summary = run_reingest_pass(
+        store=store,
+        ops=fake_ops,
+        embedder=MockEmbedder(dim=store.embedding_dim()),
+        raw_root=raw_root,
+        only_slugs=["ep1234567b1"],
+    )
+    assert len(summary.outcomes) == 1
+    assert summary.outcomes[0].skipped_stub is True
+
+
 def test_limit_caps_attempts(
     store: Store, fake_ops: FakeOpsClient, raw_root: Path
 ) -> None:

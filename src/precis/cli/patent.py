@@ -255,6 +255,14 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
             "or PRECIS_PATENT_FAIR_USE_LIMIT_GB env var)."
         ),
     )
+    ri.add_argument(
+        "--include-stubs",
+        action="store_true",
+        help=(
+            "Also re-ingest family-stub refs (refetches duplicate family "
+            "text; normally excluded)."
+        ),
+    )
     ri.add_argument("--database-url", default=None)
 
 
@@ -656,6 +664,7 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
             limit=args.limit,
             dry_run=args.dry_run,
             fair_use_limit_gb=fair_use_limit_gb,
+            include_stubs=args.include_stubs,
         )
 
         if summary.paused_global:
@@ -674,6 +683,11 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
             if o.error is not None:
                 failed += 1
                 print(f"  fail  {o.slug}  - {o.error}")
+                continue
+            if o.skipped_stub:
+                print(
+                    f"  stub  {o.slug}  (family stub, skipped — --include-stubs to force)"
+                )
                 continue
             if o.skipped_dry_run:
                 print(f"  dry   {o.slug}  ({o.blocks_before} blocks now)")
