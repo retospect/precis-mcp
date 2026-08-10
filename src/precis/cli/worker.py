@@ -248,6 +248,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_chase_trigger_pass": PassBand.BACKGROUND,
     "_fetch_pass": PassBand.BACKGROUND,
     "_gp_fetch_pass": PassBand.BACKGROUND,
+    "_stub_rank_pass": PassBand.BACKGROUND,
     "_llm_summarize_pass": PassBand.BACKGROUND,
     "_classify_pass": PassBand.BACKGROUND,
     "_llm_reconcile_pass": PassBand.BACKGROUND,
@@ -364,6 +365,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "chase",
             "fetch",
             "gp_fetch",
+            "stub_rank",
             "tag_embeddings",
             "job_claude_inproc",
             "job_ssh_node",
@@ -2070,6 +2072,44 @@ def run(args: argparse.Namespace) -> None:
                 return run_openalex_enrich_pass(store, limit=None)
 
             ref_passes.append(_openalex_enrich_pass)
+
+        # Stub rank — S2-enrich + embed + anchor-similarity re-rank paper
+        # stubs (title/abstract only, no PDF yet) so fetch_oa's claim
+        # query and the stub-backlog surfaces float the relevant ones
+        # instead of draining newest-first. See workers/stub_rank.py's
+        # module docstring for the three-step (enrich/embed/rank) shape.
+        # Embedder resolution mirrors `chase`'s degrade-on-failure
+        # pattern just above (never crash-loop the whole worker over a
+        # down/unconfigured embedder) — the embed step alone no-ops
+        # without one; enrich + rank still run.
+        if _register("stub_rank"):
+            from precis.workers.runner import BatchResult as _BatchResult
+            from precis.workers.stub_rank import run_stub_rank_pass
+
+            try:
+                _stub_rank_embedder = _resolve_embedder(args, store)
+            except Exception:
+                log.warning(
+                    "stub_rank: embedder unavailable -- embed step will "
+                    "no-op until it recovers",
+                    exc_info=True,
+                )
+                _stub_rank_embedder = None
+
+            def _stub_rank_pass(batch_size: int) -> _BatchResult:
+                # limit=None (not batch_size): mirrors openalex_enrich /
+                # paper_reconcile just above — this pass owns its own
+                # default (PRECIS_STUB_RANK_ENRICH_BATCH, 500), independent
+                # of the generic per-tick chunk batch size (32).
+                r = run_stub_rank_pass(store, limit=None, embedder=_stub_rank_embedder)
+                return _BatchResult(
+                    handler="stub_rank",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_stub_rank_pass)
 
         # Quota-check pass — refresh the Claude.ai OAuth utilisation
         # snapshot via one 1-token `claude -p "quota" --output-format

@@ -41,6 +41,9 @@ Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
   `chunks.keywords` (KeyBERT, F20). To "update" a chunk's text you DELETE +
   INSERT so that cascade re-runs — an in-place UPDATE strands the derived
   rows. This is the single most load-bearing invariant in the codebase.
+  (Body-less stubs have no chunks to cascade from; the `stub_rank` pass
+  embeds title+abstract into `ref_embeddings`, keyed on `refs`, to rank
+  the acquisition queue via `refs.prio` — 1=hottest.)
 
 Schema evolves **forward-only** (dual-track baseline; see `store/migrate.py`): new
 `migrations/NNNN_<slug>.sql`, never edit a sealed file; a fresh DB loads the

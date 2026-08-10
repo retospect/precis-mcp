@@ -26,6 +26,11 @@ runtime — no direct SQL, no surface drift.
   non-empty).
 * ``POST /drive/item/{kind}/{id}/delete`` — per-row delete (any kind).
 * ``POST /drive/item/{kind}/{id}/tag``    — per-row tag-add (any kind).
+* ``POST /drive/requeue-stubs``           — "Fetch next N": jump the top
+  never-tried DOI stubs to the front of the ``fetch_oa`` claim order.
+* ``POST /drive/fetch-next-batch``        — "Fetch next batch": run one
+  bounded ``fetch_oa`` cascade pass in-request instead of waiting for
+  the worker's next pass tick.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
+from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
 from precis_web.item_view import artifact_kinds, display_title
 from precis_web.routes.drafts import _DOC_TYPES, _draft_ref
@@ -301,6 +307,8 @@ async def index(
     page: int = 1,
     submitted: str = "",
     requeued: int = 0,
+    fetch_claimed: int = 0,
+    fetch_failed: int = 0,
 ) -> HTMLResponse:
     """The merged Drive surface: Items' cross-kind search/facet engine
     plus Drive's folder-tree sidebar, per-row quick actions, a "show
@@ -330,7 +338,10 @@ async def index(
     stamped-count round-trip from the "Fetch next N" button
     (``POST /drive/requeue-stubs``) — a redirect-only query param, not a
     facet, so it renders one notice banner and doesn't otherwise change
-    the page.
+    the page. ``fetch_claimed=``/``fetch_failed=`` are the same kind of
+    redirect-only round-trip from the "Fetch next batch" button
+    (``POST /drive/fetch-next-batch``), which runs an actual bounded
+    ``fetch_oa`` pass in-request rather than just reordering the queue.
 
     Kind selection persists in an ``items_kinds`` cookie (unchanged
     name — pre-dates the merge, no reason to churn a cookie key): an
@@ -591,15 +602,23 @@ async def index(
     crumbs = _breadcrumb(store, folder_id) if current and folder_id else []
     # A stale bookmark to a deleted folder shouldn't dead-end the operator
     # — fall back to the unfiltered landing with a soft notice. The
-    # "Fetch next N" round-trip (``requeued=``) is the other notice
-    # source; a bad folder bookmark wins if somehow both fire at once
-    # (folder resolution failing is the more actionable thing to surface).
+    # "Fetch next N" / "Fetch next batch" round-trips (``requeued=`` /
+    # ``fetch_claimed=``) are the other notice sources; a bad folder
+    # bookmark wins if somehow more than one fires at once (folder
+    # resolution failing is the more actionable thing to surface).
     if folder_raw and current is None:
         notice = f"folder #{folder_id} not found (deleted?)"
     elif requeued > 0:
         stub = "stub" if requeued == 1 else "stubs"
         notice = (
             f"queued {requeued} {stub} for fetch — fetch_oa will pick them up next pass"
+        )
+    elif fetch_claimed > 0:
+        stub = "stub" if fetch_claimed == 1 else "stubs"
+        failed_txt = f", {fetch_failed} failed" if fetch_failed else ""
+        notice = (
+            f"fetch pass ran on {fetch_claimed} claimed {stub}{failed_txt} "
+            "— refresh to see any landed PDFs"
         )
     else:
         notice = None
@@ -931,6 +950,60 @@ async def requeue_stubs(
     redirect = _safe_local_redirect(back, "/drive?state=stub")
     sep = "&" if "?" in redirect else "?"
     return RedirectResponse(url=f"{redirect}{sep}requeued={stamped}", status_code=303)
+
+
+#: Cap on the "Fetch next batch" button — the same blast-radius floor as
+#: ``_REQUEUE_STUBS_MAX``, but on an actual in-request ``fetch_oa`` cascade
+#: run rather than a queue-order stamp, so it matters even more here.
+_FETCH_NEXT_BATCH_MAX = 25
+
+
+@router.post("/fetch-next-batch")
+async def fetch_next_batch(
+    request: Request,
+    limit: int = Form(_FETCH_NEXT_BATCH_MAX),
+    back: str = Form("/drive?state=stub"),
+) -> Response:
+    """ "Fetch next batch" — run one bounded ``fetch_oa`` cascade pass
+    in-request, instead of waiting for the worker's next pass tick.
+
+    Calls :func:`precis.workers.fetch_oa.run_oa_fetch_pass` directly via
+    ``asyncio.to_thread`` (same shape as ``requeue_stubs`` above) rather
+    than minting a ``job`` row: the cascade is single-host env-gated
+    (``PRECIS_OA_FETCH`` + ``PRECIS_WATCH_INBOX`` — see that function's
+    docstring) to whichever node can write the shared watch inbox, which
+    is deploy-known to be *this* web host — not an arbitrary
+    ``job_inproc`` claimant. Routing it through a job_type would need a
+    ``requires``-based host-pin reservation (a ``registry.py``
+    ``ServiceSpec`` change, mirroring ``embed_batch``'s
+    ``requires={'embedder'}``) to land reliably instead of silently
+    no-op'ing on the wrong node; that's out of scope here, so this stays
+    a direct in-request call like the sibling ``requeue-stubs`` button.
+    Off-host (or with ``PRECIS_OA_FETCH`` unset) the pass itself degrades
+    to a no-op (``claimed=ok=failed=0``) rather than erroring — the same
+    thing a worker-pass tick would see, so a misrouted deploy just looks
+    like an empty batch, not a 500.
+
+    ``limit`` is clamped to ``_FETCH_NEXT_BATCH_MAX`` even though the
+    button's own form always posts that value — a floor against a
+    hand-crafted request, doubly so here since a real cascade (network
+    fetches, disk writes) runs synchronously in the request instead of a
+    cheap queue-order stamp. Redirects back with
+    ``fetch_claimed=<claimed>&fetch_failed=<failed>`` so the landing page
+    can flash it.
+    """
+    store = get_store(request)
+    n = max(1, min(int(limit), _FETCH_NEXT_BATCH_MAX))
+    result = await asyncio.to_thread(run_oa_fetch_pass, store, limit=n)
+    redirect = _safe_local_redirect(back, "/drive?state=stub")
+    sep = "&" if "?" in redirect else "?"
+    qs = urlencode(
+        {
+            "fetch_claimed": result.get("claimed", 0),
+            "fetch_failed": result.get("failed", 0),
+        }
+    )
+    return RedirectResponse(url=f"{redirect}{sep}{qs}", status_code=303)
 
 
 @downloads_router.post("/downloads/mark-tried")

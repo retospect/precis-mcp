@@ -24,8 +24,11 @@ search(kind="paper", view="stubs", n=50)  # default 25
 
 Each row shows the ref id, the best external identifier, the cite key,
 and a one-line state (`awaiting fetch`, `no OA version available`,
-`PDF downloaded; awaiting watcher ingest`, …). Newest stub first.
-`q=` is ignored — the view *is* the filter.
+`PDF downloaded; awaiting watcher ingest`, …), with `prio N` appended
+once the `stub_rank` pass has scored it (1=hottest..10=coldest —
+relevant-first; unranked stubs carry no `prio` suffix and sort last).
+Ties fall back to oldest-request-first. `q=` is ignored — the view *is*
+the filter.
 
 ## What should I go find a PDF for right now?
 ## Just the DOI stubs nobody has tried fetching yet
@@ -36,10 +39,11 @@ search(kind="paper", view="chase-queue", n=50)  # default 25
 ```
 
 A tighter slice of the same backlog: DOI-only (the identifier kind the
-`fetch_oa` cascade covers most reliably), ordered never-tried-first
-rather than oldest-request-first. Use `view='stubs'` for the full
-backlog (every id kind, longest-waiting first); use `view='chase-queue'`
-when you want the next thing worth chasing down manually.
+`fetch_oa` cascade covers most reliably), `prio`-first same as
+`view='stubs'`, ties falling to never-tried-first rather than
+oldest-request-first. Use `view='stubs'` for the full backlog (every id
+kind); use `view='chase-queue'` when you want the next thing worth
+chasing down manually.
 
 ## See just the papers a dream decided to chase
 

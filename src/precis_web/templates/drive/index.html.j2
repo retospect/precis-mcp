@@ -639,14 +639,30 @@
            Only on the stub queue itself — the button's DOI-only, never-tried
            selection is meaningless on any other state/facet. #}
         {% if state == 'stub' %}
-        <form method="post" action="/drive/requeue-stubs" class="shrink-0">
-          <input type="hidden" name="back" value="/drive?state=stub" />
-          <button type="submit"
-                  class="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700"
-                  title="Jump the top 25 never-tried DOI stubs to the front of the fetch queue.">
-            Fetch next 25 ↑
-          </button>
-        </form>
+        <div class="flex items-center gap-2">
+          <form method="post" action="/drive/requeue-stubs" class="shrink-0">
+            <input type="hidden" name="back" value="/drive?state=stub" />
+            <button type="submit"
+                    class="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700"
+                    title="Jump the top 25 never-tried DOI stubs to the front of the fetch queue.">
+              Fetch next 25 ↑
+            </button>
+          </form>
+          {# "Fetch next batch" — runs a bounded fetch_oa cascade pass
+             right now (in-request), instead of waiting for the worker's
+             next pass tick (POST /drive/fetch-next-batch). Sibling of
+             "Fetch next 25 ↑" above: that one reorders the queue, this
+             one actually works it. Non-destructive (a bounded read/fetch
+             pass), so no confirm(). #}
+          <form method="post" action="/drive/fetch-next-batch" class="shrink-0">
+            <input type="hidden" name="back" value="/drive?state=stub" />
+            <button type="submit"
+                    class="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                    title="Run one fetch_oa cascade pass now on the top 25 claimed stubs.">
+              Fetch next batch
+            </button>
+          </form>
+        </div>
         {% endif %}
       </div>
       {% if cited_by %}

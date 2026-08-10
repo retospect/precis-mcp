@@ -65,6 +65,98 @@ def search_s2_papers(
     return [_normalize(paper) for paper in results.items[:limit]]
 
 
+#: S2's batch endpoint (``POST /paper/batch``) caps at 500 ids per call
+#: (the underlying ``semanticscholar`` lib raises ``ValueError`` above
+#: this) — :func:`get_papers_batch` chunks any longer ``ids`` list.
+_BATCH_CHUNK_SIZE = 500
+
+
+def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] | None]:
+    """Batch-resolve S2 metadata for ``ids``, one slot per input id.
+
+    ``ids`` may mix S2 paper-id shas with the lib's prefixed forms
+    (``DOI:10.1234/...``, ``ARXIV:2401.12345``, ``CorpusId:...``, ...) —
+    see :meth:`semanticscholar.SemanticScholar.get_papers`'s own
+    docstring for the full id vocabulary. Chunks internally at
+    :data:`_BATCH_CHUNK_SIZE` (the API's per-call cap) so a caller can
+    hand this an arbitrarily long list.
+
+    Returns a list the same length as ``ids``, same order: each slot is
+    a normalized metadata dict (see :func:`_normalize`) for a resolved
+    id, or ``None`` for one S2 couldn't resolve — mirroring
+    :func:`get_paper_by_id`'s graceful-degrade-to-None contract so a
+    caller enriching many stubs at once doesn't lose the whole batch to
+    one bad id, and a whole-chunk API failure (network blip, exhausted
+    retry budget) degrades every id in that chunk to ``None`` rather
+    than raising.
+
+    S2's batch response is a JSON array positionally aligned with the
+    request, with ``null`` for an unresolved id — the ``semanticscholar``
+    lib's ``get_papers`` already drops those nulls (so the returned
+    ``Paper`` list can be *shorter* than the request), and separately
+    reports which ids didn't resolve via ``return_not_found=True``. That
+    leaves matching each surviving ``Paper`` back to *which* requested id
+    it answers — a paper resolved via ``DOI:...`` doesn't carry that
+    string as its ``paperId``. We build a lookup keyed on every identifier
+    form a ``Paper`` actually carries (its ``paperId`` plus each
+    ``"<prefix>:<value>"`` in ``externalIds``, all lower-cased) and probe
+    it with each requested id lower-cased — the same identifier space the
+    lib itself matches against (see its private ``_get_not_found_ids``).
+    """
+    if not ids:
+        return []
+    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    out: list[dict[str, Any] | None] = []
+    for start in range(0, len(ids), _BATCH_CHUNK_SIZE):
+        chunk = ids[start : start + _BATCH_CHUNK_SIZE]
+        try:
+            papers, _not_found = _get_papers_with_retry(sch, chunk)
+        except Exception:
+            out.extend([None] * len(chunk))
+            continue
+        lookup: dict[str, Any] = {}
+        for paper in papers:
+            for key in _id_keys_for_paper(paper):
+                lookup.setdefault(key, paper)
+        for raw_id in chunk:
+            paper = lookup.get(raw_id.strip().lower())
+            out.append(_normalize(paper) if paper is not None else None)
+    return out
+
+
+@retry(
+    wait=wait_exponential(min=1, max=60),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+def _get_papers_with_retry(
+    sch: SemanticScholar, paper_ids: list[str]
+) -> tuple[list[Any], list[str]]:
+    """Batch-get with exponential backoff on 429."""
+    return sch.get_papers(paper_ids, return_not_found=True)
+
+
+def _id_keys_for_paper(paper: Any) -> set[str]:
+    """Every lower-cased identifier form ``paper`` can be looked up by.
+
+    Includes the bare ``paperId`` plus one ``"<prefix>:<value>"`` key per
+    ``externalIds`` entry (``DOI``, ``ArXiv``, ``PubMed``, ...) — matching
+    the lower-cased-prefix form :func:`get_papers_batch` probes with, so
+    a request id like ``"DOI:10.1234/x"`` or ``"ARXIV:2401.12345"``
+    round-trips regardless of the case S2 echoes the prefix back in.
+    """
+    keys: set[str] = set()
+    paper_id = getattr(paper, "paperId", None)
+    if paper_id:
+        keys.add(str(paper_id).lower())
+    external = getattr(paper, "externalIds", None) or {}
+    for prefix, value in external.items():
+        if prefix and value is not None:
+            keys.add(f"{prefix}:{value}".lower())
+    return keys
+
+
 def get_paper_by_id(paper_id: str, api_key: str = "") -> dict[str, Any] | None:
     """Fetch a single paper by S2 paper ID, DOI, or arxiv ID."""
     sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
@@ -127,4 +219,36 @@ def _normalize(paper: Any) -> dict[str, Any]:
         "abstract": getattr(paper, "abstract", "") or "",
         "entry_type": "article",
         "source": "s2",
+        # Additive (stub_rank enrich, docs/backlog): S2's field-of-study
+        # classification, deduped. ``s2FieldsOfStudy`` (structured,
+        # ``[{"category": ..., "source": ...}]``) is preferred — it's the
+        # model-scored classification, vs. the legacy ``fieldsOfStudy``
+        # (a bare category list, often sparser); we fold in both so a
+        # paper carrying only the legacy field still gets a non-empty
+        # list. Order is stable (first-seen wins) so a caller diffing
+        # across enrich passes sees a deterministic list, not set-order
+        # churn.
+        "fields": _dedup_fields(paper),
+        # Citation count rides along free (already in the default
+        # ``SEARCH_FIELDS`` fetched by every call in this module) — the
+        # stub_rank pass wants it without a second S2 round-trip.
+        "citation_count": getattr(paper, "citationCount", None),
     }
+
+
+def _dedup_fields(paper: Any) -> list[str]:
+    """Deduped field-of-study category strings for ``paper``, order-stable."""
+    seen: set[str] = set()
+    out: list[str] = []
+    s2_fields = getattr(paper, "s2FieldsOfStudy", None) or []
+    for entry in s2_fields:
+        category = entry.get("category") if isinstance(entry, dict) else None
+        if category and category not in seen:
+            seen.add(category)
+            out.append(category)
+    legacy_fields = getattr(paper, "fieldsOfStudy", None) or []
+    for category in legacy_fields:
+        if category and category not in seen:
+            seen.add(category)
+            out.append(category)
+    return out

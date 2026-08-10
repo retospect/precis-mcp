@@ -189,7 +189,10 @@ class TestAcquisitionReweight:
         newer = _seed_paper_stub(store, cite_key="newer2024", doi="10.2/newer")
         store.add_link(src_ref_id=served, dst_ref_id=q, relation="serves")
         with store.pool.connection() as conn:
-            stubs = claim_stubs_to_fetch(conn, limit=10)
+            # explore_fraction=0.0: this test is about the quest-weight
+            # tiebreak order; the random exploration slice would otherwise
+            # claim one stub out of order.
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
             conn.commit()
         order = [s.ref_id for s in stubs]
         assert order.index(served) < order.index(newer)

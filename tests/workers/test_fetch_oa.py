@@ -319,7 +319,11 @@ class TestClaimStubs:
         first = _seed_paper_stub(store, cite_key="a2024", doi="10.1/a")
         second = _seed_paper_stub(store, cite_key="b2024", doi="10.1/b")
         with store.pool.connection() as conn:
-            stubs = claim_stubs_to_fetch(conn, limit=10)
+            # explore_fraction=0.0: this test is about the tiebreak order,
+            # not the exploration slice — disable it so the assertion below
+            # is deterministic (the default fraction would otherwise route
+            # one of the two stubs through the random leg).
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
             conn.commit()
         # ORDER BY r.ref_id DESC — newest first.
         assert [s.ref_id for s in stubs] == [second, first]
@@ -338,10 +342,104 @@ class TestClaimStubs:
             )
             conn.commit()
         with store.pool.connection() as conn:
-            stubs = claim_stubs_to_fetch(conn, limit=10)
+            # explore_fraction=0.0 — see test_orders_newest_first.
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
             conn.commit()
         # Re-queued `old` first, then the newer `new` — priority beats recency.
         assert [s.ref_id for s in stubs] == [old, new]
+
+    def test_orders_by_prio_ascending(self, store: Store) -> None:
+        # 1=hottest .. 10=coldest — ascending prio outranks the re-queue /
+        # newest-first tiebreak entirely.
+        cold = _seed_paper_stub(store, cite_key="cold2024", doi="10.1/cold")
+        hot = _seed_paper_stub(store, cite_key="hot2024", doi="10.1/hot")
+        mid = _seed_paper_stub(store, cite_key="mid2024", doi="10.1/mid")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET prio = 9 WHERE ref_id = %s", (cold,))
+            conn.execute("UPDATE refs SET prio = 1 WHERE ref_id = %s", (hot,))
+            conn.execute("UPDATE refs SET prio = 5 WHERE ref_id = %s", (mid,))
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [hot, mid, cold]
+
+    def test_prio_ranked_sorts_ahead_of_unranked(self, store: Store) -> None:
+        # An unranked (NULL prio) stub — the state every stub starts in,
+        # before stub_rank has scored it — must not starve behind a lower-
+        # priority *ranked* stub; NULL always sorts after any explicit rank.
+        unranked = _seed_paper_stub(store, cite_key="unranked2024", doi="10.1/unranked")
+        ranked = _seed_paper_stub(store, cite_key="ranked2024", doi="10.1/ranked")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET prio = 10 WHERE ref_id = %s", (ranked,))
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ranked, unranked]
+
+    def test_explore_fraction_zero_is_pure_prio_order(self, store: Store) -> None:
+        # fraction<=0 disables the exploration slice outright — repeated
+        # calls must reproduce the exact same (deterministic) prio order.
+        a = _seed_paper_stub(store, cite_key="ez_a2024", doi="10.1/eza")
+        b = _seed_paper_stub(store, cite_key="ez_b2024", doi="10.1/ezb")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET prio = 2 WHERE ref_id = %s", (a,))
+            conn.execute("UPDATE refs SET prio = 4 WHERE ref_id = %s", (b,))
+            conn.commit()
+        for _ in range(5):
+            with store.pool.connection() as conn:
+                stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+                # claim writes nothing — commit just ends the transaction and
+                # releases the FOR UPDATE lock for the next iteration.
+                conn.commit()
+            assert [s.ref_id for s in stubs] == [a, b]
+
+    def test_explore_slice_excludes_duplicate_claims(self, store: Store) -> None:
+        # The prio-ordered leg excludes whatever the random leg already
+        # locked — the combined batch must never double-claim a ref.
+        for i in range(6):
+            _seed_paper_stub(store, cite_key=f"dedup{i}2024", doi=f"10.1/dedup{i}")
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=4, explore_fraction=0.5)
+            conn.commit()
+        ref_ids = [s.ref_id for s in stubs]
+        assert len(ref_ids) == len(set(ref_ids)) == 4
+
+    def test_explore_fraction_default_claims_at_least_one_random(
+        self, store: Store
+    ) -> None:
+        # With n>=2, the default fraction (0.1) still floors up to
+        # max(1, floor(n*fraction)) = 1 random claim — the first element
+        # of the returned batch is that exploration pick (see
+        # ``claim_stubs_to_fetch``: ``rows = explored_rows + main_rows``).
+        # Over repeated independent trials (claim never writes anything, so
+        # every stub stays eligible) a genuinely random pick must surface
+        # more than one distinct ref among the three candidates — pure prio
+        # order would pick the same ref (the lowest-prio one) every time.
+        low = _seed_paper_stub(store, cite_key="rand_low2024", doi="10.1/randlow")
+        mid = _seed_paper_stub(store, cite_key="rand_mid2024", doi="10.1/randmid")
+        high = _seed_paper_stub(store, cite_key="rand_high2024", doi="10.1/randhigh")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET prio = 1 WHERE ref_id = %s", (low,))
+            conn.execute("UPDATE refs SET prio = 5 WHERE ref_id = %s", (mid,))
+            conn.execute("UPDATE refs SET prio = 9 WHERE ref_id = %s", (high,))
+            conn.commit()
+
+        explored_picks: set[int] = set()
+        for _ in range(20):
+            with store.pool.connection() as conn:
+                stubs = claim_stubs_to_fetch(conn, limit=2)  # default fraction
+                # claim writes nothing — commit just ends the transaction and
+                # releases the FOR UPDATE lock for the next iteration.
+                conn.commit()
+            explored_picks.add(stubs[0].ref_id)
+        assert explored_picks & {low, mid, high} == explored_picks  # sanity
+        assert len(explored_picks) > 1, (
+            "expected the exploration slice to surface more than one "
+            f"distinct ref over 20 trials, got {explored_picks!r} — "
+            "looks like it's falling back to pure prio order"
+        )
 
 
 # ---------------------------------------------------------------------------

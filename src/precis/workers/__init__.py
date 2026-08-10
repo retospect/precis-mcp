@@ -38,7 +38,8 @@ Three pass shapes share the one ``run_loop`` rotation (``runner.py``):
   ``refs`` (sibling-worker shape): ``classify``, ``bib_parse``,
   ``bib_mark``, ``chase``, ``fetch``, ``hub_refine``, ``nursery``,
   ``sweeper``, ``heartbeat``, ``corpus_reconcile``, ``paper_reconcile``,
-  ``openalex_enrich``, ``llm_summarize``, … (roster: ``registry.py``).
+  ``openalex_enrich``, ``stub_rank``, ``llm_summarize``, … (roster:
+  ``registry.py``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
   The ``dispatch`` pass is the intent→compute bridge: it walks
   open todos with ``meta.executor`` and mints one child ``kind='job'``
@@ -172,6 +173,13 @@ Notable pass mechanics
   ``paper_reconcile`` (standing dedup + hygiene heals), and
   ``openalex_enrich`` (abstract fill + card rebuild) each self-throttle
   via an ``app_state`` marker + a single-runner advisory lock.
+* ``stub_rank`` S2-enriches + ``bge-m3``-embeds (into ``ref_embeddings``)
+  every pending paper stub, then scores each against active-quest and
+  recently-opened-paper anchor vectors to write ``refs.prio``
+  (1=hottest..10=coldest); ``fetch``'s claim query and the
+  ``stubs``/``chase-queue`` backlog views both sort on that prio, floating
+  the relevant stubs instead of draining newest-first. Three-step pass —
+  see :mod:`.stub_rank`'s own docstring.
 * ``cast_audio`` narrates the two daily casts (morning ``reading`` brief,
   evening ``nidra`` meditation) via a produce→narrate→publish spine;
   compose runs as ``claude_inproc`` job_types on ``Tier.BIG`` (an

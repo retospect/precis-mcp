@@ -494,6 +494,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         "cadence (self-healing).",
         doc_skill="precis-overview",
     ),
+    ServiceSpec(
+        # Stub-ranking pipeline (docs/backlog): S2-enrich + embed + anchor-
+        # similarity re-rank paper stubs (title/abstract only, no PDF yet) so
+        # `fetch_oa`'s claim query and the stub-backlog surfaces float the
+        # relevant ones instead of draining newest-first. Same shape as
+        # `fetch`/`openalex_enrich` just above — system profile, no
+        # `enable_env` (§L control cutover: a `service_config` row is the
+        # live gate; no named flag to seed on deploy — see workers/
+        # stub_rank.py's module docstring for the three-step pass).
+        name="stub_rank",
+        label="Stub rank (S2-enrich + embed + prioritize)",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        uses_external=("s2",),
+        one_line="S2-enrich + embed + anchor-similarity re-rank paper "
+        "stubs so acquisition chases the relevant ones first.",
+        doc_skill="precis-overview",
+    ),
     # ── Agent-worker passes (melchior / OAuth) ──────────────────────
     ServiceSpec(
         # gr192752: cadence-fired via the `structural` scheduler lease

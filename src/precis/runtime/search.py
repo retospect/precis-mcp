@@ -34,6 +34,17 @@ from precis.utils.search_merge import (
 log = logging.getLogger(__name__)
 
 
+def _stub_state_line(row: dict[str, Any]) -> str:
+    """The per-stub state line, with ``prio N`` appended when ranked.
+
+    ``row['prio']`` is ``None`` for an unranked stub (the ``stub_rank``
+    pass hasn't scored it yet, or the whole pass is disabled) — omit the
+    suffix entirely rather than rendering a noisy ``prio None``.
+    """
+    prio = row.get("prio")
+    return row["state"] if prio is None else f"{row['state']}  prio {prio}"
+
+
 class SearchMixin(RuntimeShape):
     """Cross-kind fan-out, tags-only sweep, folder scope, source search."""
 
@@ -49,7 +60,8 @@ class SearchMixin(RuntimeShape):
         get" queue the chase worker and the dream ``acquire`` tool both
         feed (the stub surfaces). Paper-only; ``q=`` is
         ignored (the view *is* the filter). ``n=`` / ``page_size=`` cap
-        the row count; newest stub first. Read-only — surfacing the
+        the row count; ``prio``-ranked first (1=hottest, unranked
+        last), oldest request the tiebreak. Read-only — surfacing the
         backlog does not touch salience or the fetch pipeline.
         """
         from precis.utils.next_block import render_next_section
@@ -76,7 +88,7 @@ class SearchMixin(RuntimeShape):
             ident = r["identifier"] or "(no external id)"
             cite = r["cite_key"] or f"ref {r['ref_id']}"
             lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
-            lines.append(f"      {r['state']}")
+            lines.append(f"      {_stub_state_line(r)}")
         body = "\n".join(lines)
         body += render_next_section(
             [
@@ -134,7 +146,7 @@ class SearchMixin(RuntimeShape):
             ident = r["identifier"] or "(no external id)"
             cite = r["cite_key"] or f"ref {r['ref_id']}"
             lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
-            lines.append(f"      {r['state']}")
+            lines.append(f"      {_stub_state_line(r)}")
         body = "\n".join(lines)
         body += render_next_section(
             [

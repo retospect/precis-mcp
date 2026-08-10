@@ -82,6 +82,13 @@ def _acquire_flag(store: Store, ref_id: int, value: str) -> None:
     store.add_tag(ref_id, Tag.open(value))
 
 
+def _set_prio(store: Store, ref_id: int, prio: int) -> None:
+    """Stamp ``refs.prio`` directly (as the ``stub_rank`` pass would)."""
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET prio = %s WHERE ref_id = %s", (prio, ref_id))
+        conn.commit()
+
+
 # ── store engine: stub_backlog ──────────────────────────────────────
 
 
@@ -306,6 +313,49 @@ def test_stub_backlog_sort_default_unchanged(store: Store) -> None:
     assert [r["ref_id"] for r in store.stub_backlog()] == [a, b]
 
 
+# ── store engine: prio ordering (stub_rank consumers) ────────────────
+
+
+def test_stub_backlog_row_carries_prio(store: Store) -> None:
+    rid = _stub(store, cite_key="prio2024", doi="10.1/prio")
+    assert store.stub_backlog()[0]["prio"] is None
+    _set_prio(store, rid, 3)
+    assert store.stub_backlog()[0]["prio"] == 3
+
+
+def test_stub_backlog_orders_by_prio_ascending(store: Store) -> None:
+    # 1=hottest .. 10=coldest — beats the default oldest-request tiebreak.
+    cold = _stub(store, cite_key="prio_cold2024", doi="10.1/priocold")
+    hot = _stub(store, cite_key="prio_hot2024", doi="10.1/priohot")
+    mid = _stub(store, cite_key="prio_mid2024", doi="10.1/priomid")
+    _set_prio(store, cold, 9)
+    _set_prio(store, hot, 1)
+    _set_prio(store, mid, 5)
+    order = [r["ref_id"] for r in store.stub_backlog()]
+    assert order == [hot, mid, cold]
+
+
+def test_stub_backlog_prio_ranked_sorts_ahead_of_unranked(store: Store) -> None:
+    # Unranked (NULL) sorts after any explicit rank, even one made after
+    # the unranked stub's creation — prio, not recency, drives the order.
+    unranked = _stub(store, cite_key="prio_unranked2024", doi="10.1/prioun")
+    ranked = _stub(store, cite_key="prio_ranked2024", doi="10.1/prioranked")
+    _set_prio(store, ranked, 10)
+    order = [r["ref_id"] for r in store.stub_backlog()]
+    assert order == [ranked, unranked]
+
+
+def test_stub_backlog_prio_outranks_chase_queue_tiebreak(store: Store) -> None:
+    # sort='last-tried' (the chase-queue sort) still defers to prio first.
+    tried_hot = _stub(store, cite_key="prio_tried_hot2024", doi="10.1/priotriedhot")
+    never_cold = _stub(store, cite_key="prio_never_cold2024", doi="10.1/prionevercold")
+    _fetch_event(store, tried_hot, "no_oa_version", hours_ago=1)
+    _set_prio(store, tried_hot, 1)
+    _set_prio(store, never_cold, 9)
+    order = [r["ref_id"] for r in store.stub_backlog(sort="last-tried")]
+    assert order == [tried_hot, never_cold]
+
+
 # ── dispatch: search(view='stubs') ──────────────────────────────────
 
 
@@ -324,6 +374,25 @@ def test_view_stubs_lists_backlog(runtime_with_store: PrecisRuntime) -> None:
     assert f"ref {rid}" in out
     assert "10.1/needit" in out
     assert "DREAM:acquire" in out  # the Next: block points at the tag view
+
+
+def test_view_stubs_shows_prio_when_ranked(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _stub(store, cite_key="ranked2024x", doi="10.1/rankedx")
+    _set_prio(store, rid, 2)
+
+    out = runtime_with_store.dispatch("search", {"view": "stubs"})
+    assert "prio 2" in out
+
+
+def test_view_stubs_omits_prio_when_unranked(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    _stub(store, cite_key="unranked2024x", doi="10.1/unrankedx")
+
+    out = runtime_with_store.dispatch("search", {"view": "stubs"})
+    assert "prio" not in out
 
 
 def test_view_stubs_ignores_q(runtime_with_store: PrecisRuntime) -> None:
@@ -377,6 +446,18 @@ def test_view_chase_queue_ignores_q(runtime_with_store: PrecisRuntime) -> None:
         "search", {"view": "chase-queue", "q": "totally unrelated query"}
     )
     assert f"ref {rid}" in out
+
+
+def test_view_chase_queue_shows_prio_when_ranked(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _stub(store, cite_key="cq_ranked2024", doi="10.1/cqranked")
+    _set_prio(store, rid, 7)
+
+    out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
+    assert "prio 7" in out
 
 
 # ── store engine: requeue_stubs_for_fetch (Part 3) ───────────────────

@@ -83,6 +83,7 @@ dir, no DB writes); both can coexist.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import time
@@ -207,6 +208,13 @@ _RETRY_BACKOFF_MAX_HOURS = 720
 # manual resolution elsewhere).
 _STAGING_GC_MAX_AGE_HOURS = 6.0
 
+# Fraction of each claim batch drawn at random rather than by ``prio``
+# (see :func:`_fetch_explore_fraction`). Ranking must never harden into a
+# hard filter — a mis-ranked or freshly-registered (unranked) stub still
+# needs a chance to surface, so a slice of every claim ignores prio
+# entirely.
+_FETCH_EXPLORE_FRACTION_DEFAULT = 0.1
+
 # DOI shape validation. Loose but rejects obviously-broken inputs
 # before paying for an HTTP roundtrip.
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
@@ -258,12 +266,35 @@ class StubRef:
     retraction_status: str | None = None
 
 
+def _fetch_explore_fraction() -> float:
+    """Fraction of each claim batch drawn at random rather than by ``prio``.
+
+    Configurable via ``PRECIS_FETCH_EXPLORE_FRACTION`` (default
+    :data:`_FETCH_EXPLORE_FRACTION_DEFAULT` = 0.1). A value ``<= 0``
+    disables the exploration slice entirely — the claim then reduces to
+    pure ``prio`` order. Tolerant of a non-numeric override (same
+    fallback shape as ``_openalex_min_credits``): logs and falls back to
+    the default rather than raising and taking the pass down.
+    """
+    raw = os.environ.get("PRECIS_FETCH_EXPLORE_FRACTION", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            log.warning(
+                "fetch_oa: ignoring non-numeric PRECIS_FETCH_EXPLORE_FRACTION=%r",
+                raw,
+            )
+    return _FETCH_EXPLORE_FRACTION_DEFAULT
+
+
 def claim_stubs_to_fetch(
     conn: Connection,
     *,
     limit: int,
     retry_after_hours: int = _RETRY_WINDOW_HOURS,
     backoff_max_hours: int = _RETRY_BACKOFF_MAX_HOURS,
+    explore_fraction: float | None = None,
 ) -> list[StubRef]:
     """Lock and return up to ``limit`` stubs needing an OA fetch attempt.
 
@@ -291,7 +322,12 @@ def claim_stubs_to_fetch(
     the backlog separately, at ingest dedup time (see
     ``precis.ingest.add``), so they don't even reach the cap.
 
-    Ordering: **explicitly re-queued stubs first**
+    Ordering: **``prio`` ascending, NULLs last** — the ``stub_rank``
+    pass writes ``refs.prio`` (1=hottest .. 10=coldest, ``NULL`` =
+    unranked) and the fetcher spends its claim budget on the hottest
+    stubs first. Ties (including every unranked stub, which all sort
+    to the bottom of the ``prio`` order together) fall back to the
+    pre-``prio`` ordering: **explicitly re-queued stubs first**
     (``meta.oa_requeued``), then newest-stub-first (``ref_id DESC``).
     A re-queue — from the ``requeue_stranded_fetches`` heal or an
     operator — is a "try this again *now*" signal; without the
@@ -301,17 +337,30 @@ def claim_stubs_to_fetch(
     Among non-re-queued stubs, newest-first still surfaces a chase
     bottleneck promptly when a chain creates many stubs. ``FOR UPDATE
     OF r SKIP LOCKED`` lets multiple fetcher workers run in parallel.
+
+    **Exploration slice.** ``prio`` must never harden into a hard
+    filter — a freshly-registered (unranked) or mis-ranked stub still
+    needs a chance to surface, so ``explore_fraction`` (default from
+    :func:`_fetch_explore_fraction`, env ``PRECIS_FETCH_EXPLORE_FRACTION``)
+    carves off ``max(1, floor(limit * explore_fraction))`` of the batch
+    and claims it at random (``ORDER BY random()``) from the same
+    eligible set, *before* the ``prio``-ordered claim runs for the
+    remainder (excluding whatever the random slice already locked). A
+    fraction ``<= 0`` disables the slice — the claim then reduces to
+    pure ``prio`` order. Both legs keep ``FOR UPDATE OF r SKIP LOCKED``.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    rows = conn.execute(
-        f"""
-        -- ``min(id_value)`` (not a bare scalar subquery): a ref can carry
-        -- more than one identifier of the same kind (two DOIs / cite_keys
-        -- from a dedup-merge or messy metadata), and a bare scalar subquery
-        -- returning >1 row raises CardinalityViolation, taking the whole
-        -- pass down every tick. An aggregate returns exactly one row (NULL
-        -- if none) and picks a stable representative — any valid id fetches.
+    if explore_fraction is None:
+        explore_fraction = _fetch_explore_fraction()
+
+    # ``min(id_value)`` (not a bare scalar subquery): a ref can carry
+    # more than one identifier of the same kind (two DOIs / cite_keys
+    # from a dedup-merge or messy metadata), and a bare scalar subquery
+    # returning >1 row raises CardinalityViolation, taking the whole
+    # pass down every tick. An aggregate returns exactly one row (NULL
+    # if none) and picks a stable representative — any valid id fetches.
+    select_cols = """
         SELECT r.ref_id,
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'doi')      AS doi,
@@ -322,6 +371,8 @@ def claim_stubs_to_fetch(
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
                r.retraction_status                                 AS retraction_status
+    """
+    from_where = f"""
           FROM refs r
           LEFT JOIN LATERAL (
                 SELECT count(*) AS attempts, max(e.ts) AS last_ts
@@ -353,24 +404,69 @@ def claim_stubs_to_fetch(
                  fe.last_ts IS NULL
                  OR fe.last_ts < now() - (
                       LEAST(
-                        %s::double precision
+                        %(retry_after)s::double precision
                           * POWER(2, GREATEST(fe.attempts - 1, 0)),
-                        %s::double precision
+                        %(backoff_max)s::double precision
                       ) * INTERVAL '1 hour'
                  )
            )
+    """
+    params: dict[str, Any] = {
+        "retry_after": float(retry_after_hours),
+        "backoff_max": float(backoff_max_hours),
+    }
+
+    explore_n = 0
+    if explore_fraction > 0:
+        explore_n = min(max(1, math.floor(limit * explore_fraction)), limit)
+
+    explored_rows: list[Any] = []
+    if explore_n:
+        explore_sql = (
+            select_cols
+            + from_where
+            + " ORDER BY random() LIMIT %(explore_n)s FOR UPDATE OF r SKIP LOCKED"
+        )
+        explored_rows = conn.execute(
+            explore_sql, {**params, "explore_n": explore_n}
+        ).fetchall()
+
+    remaining = limit - len(explored_rows)
+    main_rows: list[Any] = []
+    if remaining > 0:
+        exclude_sql = (
+            " AND r.ref_id <> ALL(%(explored_ids)s::bigint[])" if explored_rows else ""
+        )
+        main_sql = (
+            select_cols
+            + from_where
+            + exclude_sql
+            + """
          -- jsonb_exists(...) not the `?` operator: `?` collides with the
          -- param placeholder scan in a parameterised query.
          -- Quest striving weight (slice 2) tiers between the re-queue signal
          -- and newest-first: a stub serving a hot active quest jumps ahead.
-         ORDER BY jsonb_exists(r.meta, 'oa_requeued') DESC,
+         -- `prio` (stub_rank pass; 1=hottest..10=coldest, NULL=unranked)
+         -- outranks both — the fetcher spends its budget on the hottest
+         -- stubs first, falling back to the pre-prio tiebreak within ties.
+         ORDER BY r.prio ASC NULLS LAST,
+                  jsonb_exists(r.meta, 'oa_requeued') DESC,
                   COALESCE(qb.qw, 0) DESC,
                   r.ref_id DESC
-         LIMIT %s
+         LIMIT %(remaining)s
            FOR UPDATE OF r SKIP LOCKED
-        """,
-        (float(retry_after_hours), float(backoff_max_hours), limit),
-    ).fetchall()
+            """
+        )
+        main_rows = conn.execute(
+            main_sql,
+            {
+                **params,
+                "explored_ids": [int(r[0]) for r in explored_rows],
+                "remaining": remaining,
+            },
+        ).fetchall()
+
+    rows = explored_rows + main_rows
     return [
         StubRef(
             ref_id=int(r[0]),

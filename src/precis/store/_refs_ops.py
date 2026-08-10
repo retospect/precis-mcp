@@ -563,7 +563,10 @@ class RefsMixin:
         :func:`precis.store._stub_predicate.stub_predicate_sql` so it
         can't become a SQL-injection seam.
 
-        ``sort`` picks the ordering within the non-deprioritized bucket:
+        ``sort`` picks the ordering within the non-deprioritized bucket —
+        in both modes, ``prio`` (the ``stub_rank`` pass's 1=hottest ..
+        10=coldest ranking, ``NULL`` = unranked) sorts first, ascending
+        with unranked stubs last; ties fall back to:
 
         - ``'oldest-request'`` (default) — ``created_at ASC, ref_id
           ASC``, so the longest-waiting stubs — the ones most overdue
@@ -589,12 +592,17 @@ class RefsMixin:
         try on its next pass: never attempted, or attempted >24h ago
         and not yet ``fetch_ok``.
         """
-        order_sql = {
+        tiebreak_sql = {
             "oldest-request": "s.created_at ASC, s.ref_id ASC",
             "last-tried": "le.ts ASC NULLS FIRST, s.ref_id ASC",
         }.get(sort)
-        if order_sql is None:
+        if tiebreak_sql is None:
             raise ValueError(f"stub_backlog: unknown sort {sort!r}")
+        # `prio` (stub_rank pass; 1=hottest..10=coldest, NULL=unranked)
+        # outranks the sort-specific tiebreak — every unranked stub sorts
+        # to the bottom of the prio order together, where the existing
+        # tiebreak still applies among them.
+        order_sql = f"s.prio ASC NULLS LAST, {tiebreak_sql}"
         sql = f"""
             WITH stubs AS (
                 SELECT r.ref_id,
@@ -612,7 +620,8 @@ class RefsMixin:
                            WHERE ref_id = r.ref_id AND id_kind = 's2')
                        ) AS identifier,
                        r.created_at,
-                       r.meta->>'set_by' AS requested_by
+                       r.meta->>'set_by' AS requested_by,
+                       r.prio AS prio
                   FROM refs r
                  WHERE {stub_predicate_sql("r", id_kinds)}
             ),
@@ -663,7 +672,7 @@ class RefsMixin:
                    le.ts, le.source, le.event,
                    s.created_at, s.requested_by,
                    COALESCE(fs.attempts, 0) AS attempts,
-                   le.payload
+                   le.payload, s.prio
               FROM stubs s
               LEFT JOIN latest_event le ON le.ref_id = s.ref_id
               LEFT JOIN fetch_stats fs ON fs.ref_id = s.ref_id
@@ -694,6 +703,7 @@ class RefsMixin:
                     "created_at": row[6].isoformat() if row[6] is not None else "",
                     "requested_by": row[7] or "",
                     "attempts": int(row[8]),
+                    "prio": int(row[10]) if row[10] is not None else None,
                 }
             )
         return out

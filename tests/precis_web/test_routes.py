@@ -540,6 +540,79 @@ def test_requeue_stubs_notice_renders_on_redirect_target(client) -> None:
     assert "queued 3 stubs for fetch" in resp.text
 
 
+def test_drive_stub_state_shows_fetch_next_batch_button(client) -> None:
+    """The stub queue also offers the "Fetch next batch" button
+    (POST /drive/fetch-next-batch), alongside "Fetch next N"; both are
+    absent off the stub queue."""
+    resp = client.get("/drive?state=stub")
+    assert resp.status_code == 200
+    assert 'action="/drive/fetch-next-batch"' in resp.text
+    assert "Fetch next batch" in resp.text
+
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert 'action="/drive/fetch-next-batch"' not in resp.text
+
+
+def test_fetch_next_batch_redirects_with_claimed_and_failed_counts(
+    monkeypatch, client
+) -> None:
+    """POST /drive/fetch-next-batch runs a bounded fetch_oa pass
+    (in-thread, via run_oa_fetch_pass) and redirects back carrying the
+    claimed/failed counts for the notice banner."""
+    calls = []
+
+    def fake_run_oa_fetch_pass(store, *, limit):
+        calls.append(limit)
+        return {"claimed": 4, "ok": 3, "failed": 1}
+
+    monkeypatch.setattr(
+        "precis_web.routes.drive.run_oa_fetch_pass", fake_run_oa_fetch_pass
+    )
+    resp = client.post(
+        "/drive/fetch-next-batch",
+        data={"back": "/drive?state=stub"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/drive?state=stub")
+    assert "fetch_claimed=4" in location
+    assert "fetch_failed=1" in location
+    assert calls == [25]  # the button's own limit, clamped to the default cap
+
+
+def test_fetch_next_batch_clamps_limit_to_max(monkeypatch, client) -> None:
+    """A hand-crafted request posting a huge ``limit`` is clamped to
+    ``_FETCH_NEXT_BATCH_MAX`` before it reaches ``run_oa_fetch_pass`` — a
+    real cascade run, unlike the cheap requeue-stubs stamp."""
+    calls = []
+
+    def fake_run_oa_fetch_pass(store, *, limit):
+        calls.append(limit)
+        return {"claimed": 0, "ok": 0, "failed": 0}
+
+    monkeypatch.setattr(
+        "precis_web.routes.drive.run_oa_fetch_pass", fake_run_oa_fetch_pass
+    )
+    resp = client.post(
+        "/drive/fetch-next-batch",
+        data={"limit": "9999", "back": "/drive?state=stub"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert calls == [25]
+
+
+def test_fetch_next_batch_notice_renders_on_redirect_target(client) -> None:
+    """Following the redirect, the landing page flashes the claimed/failed
+    counts via the shared ``notice`` banner."""
+    resp = client.get("/drive?state=stub&fetch_claimed=4&fetch_failed=1")
+    assert resp.status_code == 200
+    assert "fetch pass ran on 4 claimed stubs" in resp.text
+    assert "1 failed" in resp.text
+
+
 def test_drive_paper_chunks_without_also_defaults_to_untried_sort(
     runtime, client
 ) -> None:
