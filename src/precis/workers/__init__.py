@@ -106,6 +106,9 @@ worker runs the ``scheduler`` pass, claiming a due cadence is an atomic
 conditional advance on ``scheduler_leases`` — exactly-once lives in
 Postgres, not a singleton node. ``CADENCES``: ``cron_tick`` (60s),
 ``watch_poll`` (1h), ``health_digest`` (1h), ``materialize`` (300s),
+``draft_refresh_scan`` (~4h — stalest-section pick over
+``meta.draft_refresh``-opted drafts, mints one bounded ``draft_refresh``
+job per draft; clock = min ``created_at`` over live direct paragraphs),
 ``structural`` / ``deep_review`` (env-gated eligibility, fleet-wide — a
 wedged rotation on one host can't starve a review), ``dream_agent`` /
 ``anki_sync`` (host-pinned + ``eligible()``-gated; a pinned cadence

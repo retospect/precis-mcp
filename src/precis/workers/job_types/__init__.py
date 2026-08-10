@@ -171,6 +171,15 @@ def _load_taproot_backfill() -> JobTypeSpec:
     return taproot_backfill.SPEC
 
 
+def _load_draft_refresh() -> JobTypeSpec:
+    # One bounded, section-scoped refresh of a living draft (critique +
+    # rewrite against corpus + research-arm evidence, growth-gated apply).
+    # Runs via plugin dispatch under claude_inproc.
+    from precis.workers.job_types import draft_refresh
+
+    return draft_refresh.SPEC
+
+
 def _load_remarkable_send() -> JobTypeSpec:
     # Deterministic reMarkable-mode export + upload (runs via plugin dispatch).
     from precis.workers.job_types import remarkable_send
@@ -438,6 +447,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "taproot_backfill":
         _REGISTRY["taproot_backfill"] = _load_taproot_backfill()
         return _REGISTRY["taproot_backfill"]
+    if name == "draft_refresh":
+        _REGISTRY["draft_refresh"] = _load_draft_refresh()
+        return _REGISTRY["draft_refresh"]
     if name == "remarkable_send":
         _REGISTRY["remarkable_send"] = _load_remarkable_send()
         return _REGISTRY["remarkable_send"]
@@ -503,6 +515,7 @@ def known_job_types() -> list[str]:
         "plan_tick",
         "draft_export",
         "taproot_backfill",
+        "draft_refresh",
         "remarkable_send",
         "news_poll",
         "briefing",

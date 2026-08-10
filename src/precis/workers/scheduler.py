@@ -137,6 +137,25 @@ def _run_dream_agent(store: Any, batch_size: int) -> None:
     )
 
 
+def _run_draft_refresh_scan(store: Any, batch_size: int) -> None:
+    """One draft_refresh scan tick (docs/backlog/draft-refresh.md Part 2),
+    fired from the host-agnostic ``draft_refresh_scan`` cadence — any live
+    worker can win it, same as ``health_digest``/``materialize``.
+    ``batch_size`` caps how many jobs get minted this fire (defensive;
+    opted-in drafts are few). Minting itself is free (no LLM call — the
+    spend lives in the ``draft_refresh`` job it mints), so ``spends`` is
+    unset, same reasoning as ``cron_tick`` only spawning child todos."""
+    from precis.workers.draft_refresh_scan import run_draft_refresh_scan
+
+    result = run_draft_refresh_scan(store, batch_size)
+    log.info(
+        "scheduler: draft_refresh_scan inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_anki_sync(store: Any, batch_size: int) -> None:
     """One AnkiWeb sync tick, fired from the melchior-pinned ``anki_sync``
     cadence (§A) instead of the retired standalone 30-min launchd timer.
@@ -406,6 +425,17 @@ CADENCES: tuple[Cadence, ...] = (
         run=_run_anki_sync,
         host_affinity="melchior",
         eligible=_anki_sync_eligible,
+    ),
+    # docs/backlog/draft-refresh.md Part 2: the living-draft staleness
+    # scanner. Host-agnostic like health_digest/materialize — the lease
+    # IS the fleet-singleton throttle. Off the exact hour (4h7m) so it
+    # doesn't pile onto the same tick as the hourly cadences above.
+    # spends=False: minting is free; the LLM spend lives in the
+    # draft_refresh job this cadence mints, gated there at dispatch.
+    Cadence(
+        name="draft_refresh_scan",
+        interval_s=4 * 3600 + 7 * 60,
+        run=_run_draft_refresh_scan,
     ),
 )
 
