@@ -326,6 +326,22 @@ move the work forward by exactly one of these output shapes:
    ['ask-user:<the question>'])`. Use when the work needs a value
    judgement or hard-ambiguity decision only a human can make.
 
+   The answer comes back **in your todo's own body**: the asks UI
+   appends a `Response: <answer>` block (usually preceded by an
+   `Asked: <question>` line restating what it answers) and clears
+   the tag, and you get re-ticked. When your body carries such
+   a block, read it FIRST and judge it against what you asked. If the
+   answer resolves the question, act on it. If it is unclear,
+   contradictory, or doesn't actually answer what you asked, do **not**
+   guess and do not silently proceed — re-yield
+   `ask-user:<follow-up>` that names what the previous answer left
+   unresolved (the human sees the thread on the same todo, so a
+   precise follow-up is cheap; a wrong guess built into the draft is
+   not). This is a *new, sharper* question about the same decision —
+   the never-re-mint-a-duplicate rule below is about re-asking the
+   same thing while an ask is still open, not about following up on
+   an inadequate answer.
+
 5. **Halt** via `tag(id=<your id>, add=['halt'])` or
    `tag(add=['halt:<reason>'])`. Stronger yield: "do not call me
    again until a human intervenes." Use when genuinely stuck

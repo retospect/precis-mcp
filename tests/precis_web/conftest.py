@@ -741,6 +741,10 @@ class FakeStore(_FakeStoreBase):
     ):
         return [(r, 1.0) for r in self._for_kind(kind)[:limit]]
 
+    def resolve_ask_question(self, ref_id: int, value: str) -> str:
+        """Echo the literal ask value — no tag-overflow chunks in the fake."""
+        return value
+
     def fetch_refs_by_ids(self, ids, *, include_deleted: bool = False):
         pool = {
             r.id: r

@@ -16,53 +16,7 @@
 {% else %}
 <ul class="space-y-3">
   {% for a in asks %}
-  {% set first_line = (a.title or '').split('\n', 1)[0] %}
-  <li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
-    <div class="flex items-baseline gap-2">
-      <span class="text-xs text-slate-400 w-12 shrink-0 font-mono">#{{ a.id }}</span>
-      <a href="/r/todo/{{ a.id }}" class="min-w-0 flex-1 text-sm font-medium text-slate-800 hover:text-emerald-700 break-words">
-        {{ first_line | linkify_refs }}
-      </a>
-      {# The source object this ask is about — the todo itself, hover-previewable. #}
-      {{ a.source_link }}
-      {# X — dismiss the ask: close the todo (won't-do) and drop it
-         from the queue without answering. #}
-      <form method="post" action="/asks/{{ a.id }}/terminate" class="shrink-0"
-            onsubmit="return confirm('Dismiss this ask and close the todo (won’t-do)?')">
-        {% for tag in a.tags %}
-        <input type="hidden" name="remove" value="{{ tag }}"/>
-        {% endfor %}
-        <button class="text-slate-300 hover:text-rose-600 leading-none text-lg"
-                title="dismiss — close this todo without answering">&times;</button>
-      </form>
-    </div>
-    {% if a.questions %}
-    <div class="mt-2 ml-14 space-y-2">
-      {% for q in a.questions %}
-      <div class="text-sm text-slate-700 bg-amber-50 border-l-4 border-amber-300 px-3 py-2 rounded whitespace-pre-line break-words">
-        {{ q | linkify_refs }}
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="mt-2 ml-14 text-xs text-slate-400">
-      tagged <span class="font-mono">ask-user</span> (no question text)
-    </div>
-    {% endif %}
-    <form method="post" action="/asks/{{ a.id }}/answer" class="mt-3 ml-14">
-      {% for tag in a.tags %}
-      <input type="hidden" name="remove" value="{{ tag }}"/>
-      {% endfor %}
-      <textarea name="response" required rows="3"
-                placeholder="Type your answer to unlock this todo…"
-                class="w-full rounded-md border border-slate-300 text-sm px-3 py-2 font-mono"></textarea>
-      <div class="mt-2 flex justify-end">
-        <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-1.5 hover:bg-emerald-700">
-          Answer &amp; unlock
-        </button>
-      </div>
-    </form>
-  </li>
+  {% include "asks/_row.html.j2" %}
   {% endfor %}
 </ul>
 

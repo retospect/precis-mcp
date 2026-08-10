@@ -5095,6 +5095,175 @@ def test_answer_edit_failure_skips_tag_remove(client, runtime) -> None:
     assert "tag" not in verbs
 
 
+# ── asks context + follow-up thread ────────────────────────────────
+
+
+def test_qa_history_parses_rounds() -> None:
+    """The body's appended Q/A blocks parse back into a thread — legacy
+    Response-only entries and the newer Asked+Response form."""
+    from precis_web.routes.asks import _qa_history
+
+    body = (
+        "Write the intro\n\nSome planner notes.\n\n"
+        "---\nResponse: legacy answer only\n\n"
+        "---\nAsked: which venue?\nResponse: NeurIPS\nsecond line"
+    )
+    base, hist = _qa_history(body)
+    assert base.startswith("Write the intro")
+    assert "legacy answer" not in base
+    assert hist == [
+        {"question": "", "answer": "legacy answer only"},
+        {"question": "which venue?", "answer": "NeurIPS\nsecond line"},
+    ]
+
+
+def test_qa_history_ignores_plain_rules() -> None:
+    """A --- divider not followed by Asked:/Response: is body text, not
+    a Q/A round."""
+    from precis_web.routes.asks import _qa_history
+
+    base, hist = _qa_history("plain todo body\n---\nnot a QA block")
+    assert hist == []
+    assert base == "plain todo body\n---\nnot a QA block"
+
+
+def _ctx_chunk(cid: int, text: str, *, kind: str = "paragraph", parent=None):
+    from precis.store._draft_ops import DraftChunk
+
+    return DraftChunk(
+        chunk_id=cid,
+        ref_id=5,
+        handle=f"h{cid}",
+        chunk_kind=kind,
+        text=text,
+        pos="a",
+        parent_chunk_id=parent,
+        depth=0,
+    )
+
+
+class _CtxStore:
+    """Just the three reads _chunk_context makes, over a canned draft."""
+
+    def __init__(self) -> None:
+        self.chunks = {
+            2: _ctx_chunk(2, "Methods", kind="heading"),
+            10: _ctx_chunk(10, "before text", parent=2),
+            11: _ctx_chunk(11, "the focus passage", parent=2),
+            12: _ctx_chunk(12, "after text", parent=2),
+        }
+
+    def get_draft_chunk(self, handle: str, *, kind: str = "draft"):
+        assert kind == "draft"
+        return self.chunks.get(int(handle.removeprefix("dc")))
+
+    def draft_relative_chunk_ids(self, addr: str, *, kind: str = "draft"):
+        assert addr == "dc11-1..1"
+        return [10, 11, 12]
+
+    def fetch_refs_by_ids(self, ids):
+        from types import SimpleNamespace
+
+        return {5: SimpleNamespace(slug="my-draft", title="My Draft\nsubtitle")}
+
+
+def test_chunk_context_resolves_anchor_window() -> None:
+    """meta.anchor → focus chunk + ±1 sibling window + section heading +
+    a ?focus= deep link into the smartdraft reader."""
+    from precis_web.routes.asks import _chunk_context
+
+    ctx = _chunk_context(_CtxStore(), anchor="dc11", prose="")
+    assert ctx is not None
+    assert ctx["draft"] == {
+        "title": "My Draft",
+        "url": "/smartdraft/my-draft?focus=dc11",
+    }
+    assert ctx["section"] == "Methods"
+    assert ctx["handle"] == "dc11"
+    assert ctx["before"] == "before text"
+    assert ctx["focus"] == "the focus passage"
+    assert ctx["after"] == "after text"
+
+
+def test_chunk_context_falls_back_to_prose_handle() -> None:
+    """No meta.anchor — the first dc-handle named in the ask prose is
+    the focus."""
+    from precis_web.routes.asks import _chunk_context
+
+    ctx = _chunk_context(
+        _CtxStore(), anchor="", prose="should dc11 keep both derivations?"
+    )
+    assert ctx is not None and ctx["focus"] == "the focus passage"
+
+
+def test_chunk_context_none_when_nothing_named() -> None:
+    from precis_web.routes.asks import _chunk_context
+
+    assert _chunk_context(_CtxStore(), anchor="", prose="no handles here") is None
+
+
+def test_asks_page_renders_context_and_history(client, monkeypatch) -> None:
+    """A row with reading context + prior rounds renders the draft deep
+    link, the passage window, the crumb, and the follow-up thread."""
+    from precis_web.routes import asks as asks_mod
+
+    monkeypatch.setattr(
+        asks_mod,
+        "_load_asks",
+        lambda store, **kw: [
+            {
+                "id": 7,
+                "title": "Refine the methods section",
+                "created_at": None,
+                "questions": ["keep both derivations?"],
+                "tags": ["ask-user:keep both derivations?"],
+                "context": {
+                    "draft": {
+                        "title": "NOx pathways",
+                        "url": "/smartdraft/nox?focus=dc11",
+                    },
+                    "section": "Methods",
+                    "handle": "dc11",
+                    "before": "prior para",
+                    "focus": "focus para",
+                    "after": "next para",
+                },
+                "crumb": [{"id": 3, "kind": "todo", "title": "NOx paper"}],
+                "history": [{"question": "earlier q", "answer": "earlier a"}],
+            }
+        ],
+    )
+    resp = client.get("/asks")
+    assert resp.status_code == 200
+    assert "/smartdraft/nox?focus=dc11" in resp.text
+    assert "NOx pathways" in resp.text
+    assert "Methods" in resp.text
+    assert "prior para" in resp.text
+    assert "focus para" in resp.text
+    assert "next para" in resp.text
+    assert "/r/todo/3" in resp.text  # crumb link
+    # The prior round renders and the row badges as a follow-up.
+    assert "follow-up #2" in resp.text
+    assert "earlier q" in resp.text
+    assert "earlier a" in resp.text
+
+
+def test_answer_records_asked_question(client, runtime) -> None:
+    """The unlock edit appends Asked: alongside Response: so the thread
+    survives the tag strip."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos.append(make_ref(id=42, kind="todo", title="Need input"))
+    resp = client.post(
+        "/asks/42/answer",
+        data={"response": "option B", "remove": ["ask-user:A or B?"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    edit_args = runtime.calls[-2][1]
+    assert "Asked: A or B?\nResponse: option B" in edit_args["text"]
+
+
 # ── refs title preview ─────────────────────────────────────────────
 
 
