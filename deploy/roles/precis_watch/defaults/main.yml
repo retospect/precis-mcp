@@ -3,6 +3,11 @@
 # Reuses the /opt/precis/venv from the precis_worker role (already has
 # precis-mcp[paper] installed).
 
+# Enforced exclusion switch: false actively unloads the daemon and removes
+# the plist/unit on that host (tasks/main.yml teardown block), so a host
+# pulled from the watcher set can't drift back in via a stale plist.
+precis_watch_enabled: true
+
 precis_watch_venv: /opt/precis/venv
 
 # Same DSN as precis_worker — both pull/push to precis_prod via pgbouncer.

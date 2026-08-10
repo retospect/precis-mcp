@@ -24,12 +24,18 @@
   # models resident + a polling core mostly to LOSE the advisory-lock race
   # to better-placed hosts. The advisory-lock design means the remaining
   # watchers — gateway + inference (the GPU node with ample RAM) — still
-  # cover the inbox: we lose Marker parallelism, not correctness. Re-add a
-  # group here (and bootstrap com.precis.watch there) if it later gets
-  # headroom or sheds a role.
+  # cover the inbox: we lose Marker parallelism, not correctness. To re-add
+  # a host, flip its `precis_watch_enabled` host_var to true.
+  #
+  # scheduler + data are in the hosts list so their exclusion is ENFORCED:
+  # `precis_watch_enabled: false` (host_vars) makes the role tear the
+  # daemon down there on every deploy, instead of relying on the one-off
+  # plist-move + hosts-list omission.
   hosts:
     - gateway
     - inference
+    - scheduler
+    - data
   become: true
   roles:
     - precis_watch

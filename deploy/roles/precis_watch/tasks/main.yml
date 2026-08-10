@@ -5,7 +5,49 @@
 #
 # Assumes precis_worker role has already provisioned /opt/precis/venv
 # with precis-mcp[paper]. We don't reinstall it here.
+#
+# `precis_watch_enabled: false` (host_vars) actively tears the watcher
+# down — daemon unloaded, plist/unit removed — so exclusion of a host
+# (e.g. the scheduler/data nodes, both 32G) is enforced on every deploy
+# rather than relying on a one-off plist-move + hosts-list omission.
 
+# ── Teardown (precis_watch_enabled: false) ──
+- name: Unload precis-watch LaunchDaemon (macOS — disabled host)
+  when: os_family == "darwin" and not (precis_watch_enabled | bool)
+  ansible.builtin.command: launchctl bootout system/com.precis.watch
+  become: true
+  register: watch_bootout
+  changed_when: watch_bootout.rc == 0
+  failed_when: false
+
+- name: Remove precis-watch plist (macOS — disabled host)
+  when: os_family == "darwin" and not (precis_watch_enabled | bool)
+  ansible.builtin.file:
+    path: /Library/LaunchDaemons/com.precis.watch.plist
+    state: absent
+  become: true
+
+- name: Stop + disable precis-watch (Linux — disabled host)
+  when: os_family == "linux" and not (precis_watch_enabled | bool)
+  ansible.builtin.systemd:
+    name: precis-watch
+    enabled: false
+    state: stopped
+  become: true
+  failed_when: false
+
+- name: Remove precis-watch systemd unit (Linux — disabled host)
+  when: os_family == "linux" and not (precis_watch_enabled | bool)
+  ansible.builtin.file:
+    path: /etc/systemd/system/precis-watch.service
+    state: absent
+  become: true
+
+- name: End play for disabled host
+  when: not (precis_watch_enabled | bool)
+  ansible.builtin.meta: end_host
+
+# ── Install (precis_watch_enabled: true) ──
 - name: Verify /opt/precis/venv exists (precis_worker should have created it)
   ansible.builtin.stat:
     path: "{{ precis_watch_venv }}/bin/precis"

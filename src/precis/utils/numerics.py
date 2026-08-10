@@ -134,10 +134,13 @@ def extract_numerics(text: str) -> list[str]:
     ordered by first occurrence. Empty input → ``[]``.
 
     The output is suitable for direct inclusion in a ``TEXT[]``
-    column with a GIN index — query side does ``WHERE numerics @>
-    ARRAY['1.523 eV']``. For approximate matching the agent issues
-    multiple parallel queries (``"1.5 eV"``, ``"1.52 eV"``, …);
-    that's the path-2 ergonomics tradeoff we accepted for v1.
+    column — the intended query side was ``WHERE numerics @>
+    ARRAY['1.523 eV']`` with a GIN index, but that read path never
+    materialized, so the unused index was dropped (migration 0118);
+    recreate it if a predicate consumer ever lands. For approximate
+    matching the agent issues multiple parallel queries (``"1.5 eV"``,
+    ``"1.52 eV"``, …); that's the path-2 ergonomics tradeoff we
+    accepted for v1.
     """
     if not text:
         return []
