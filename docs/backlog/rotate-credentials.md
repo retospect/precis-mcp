@@ -11,5 +11,9 @@ zero-outage) — do it independently. The vaulted Claude OAuth token is the
 same one exposed on disk since July; the vault is now the single rotation
 point. Ops (Reto).
 
+Evidence gr186753: cleartext DB + 3rd-party creds outside §L pgpass —
+sortie renders a literal DB password; `asa_bot`/`asa_slack`/`extract_watch`
+env.
+
 test: `scripts/prod-psql "SELECT current_user"` succeeds post-rotation with
 no pgbouncer auth loop.

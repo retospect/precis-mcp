@@ -2,7 +2,9 @@
 
 The fleet-wide anthropic/openai binary switch must be hand-synced with each
 tier's PRECIS_MODEL_* id — nothing enforces the pairing (already produced one
-real bug). Reto: "it should all go to the router." Grep-confirmed:
+real bug). Evidence gr171782: a fleet-wide backend flip broke two call-site
+classes, live-tested 2026-07-25, auto-reverted. Reto: "it should all go to
+the router." Grep-confirmed:
 `resolve_backend`/`Backend` are consumed only inside `select_transport` +
 `dispatch()`'s base-url coercion; a resolved model id already determines its
 transport, so infer transport from the model id and drop Backend +

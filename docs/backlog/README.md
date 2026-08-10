@@ -8,6 +8,7 @@
 - [`agent-worker-silent-outage`](./agent-worker-silent-outage.md) **idea** — melchior `com.precis.worker-agent` was SIGKILL'd and stayed dead ~4 days
 - [`anchored-edit-abstraction`](./anchored-edit-abstraction.md) **idea** — Corrected premise (2026-07-23): only plaintext.py and python.py implement
 - [`anki-card-quality`](./anki-card-quality.md) **idea** — Dedup definitional clozes across cards — one combined cloze per concept (the
+- [`april-corpus-nas-migration`](./april-corpus-nas-migration.md) **idea** — 5,335 PDFs + extracts from `caspar:/opt/nfs/shared/data/papers` (citekey
 - [`argument-graph`](./argument-graph.md) **idea** — Slice of record for ADR 0054 (git-only ADR).
 - [`artifact-kinds-orphan-tables`](./artifact-kinds-orphan-tables.md) **idea** — Both exist in the baseline schema (and `artifact_kinds` is in
 - [`asa-oauth-cutover`](./asa-oauth-cutover.md) **idea** — asa_bot's vault fallback shipped (mirrors precis's `utils/claude_oauth`); the
@@ -43,6 +44,7 @@
 - [`claude-claim-capability-gate`](./claude-claim-capability-gate.md) **idea** — `claude binary not found` errors (177/day at peak; still seen 08-07): work
 - [`cli-bind-store-audit`](./cli-bind-store-audit.md) **idea** — `precis cast run` never bound the process store, so every `live_config`
 - [`cluster-daemon-user-model`](./cluster-daemon-user-model.md) **idea** — hermes (OAuth/~/.claude state) vs deploy (owns /opt/homebrew + the colima
+- [`cluster-mount-namespace`](./cluster-mount-namespace.md) **ready** — No uniform namespace for shared storage: the same logical content sits at
 - [`cluster-ops-sweeps`](./cluster-ops-sweeps.md) **idea** — Small mechanical ops chores, batched to run in one pass.
 - [`cluster-scheduling`](./cluster-scheduling.md) **draft** — **Three cluster-wide singletons** — Postgres (caspar), web (gateway), asa
 - [`component-followons`](./component-followons.md) **idea** — Feature extensions to the shipped component kind (ADR 0071/0072).
@@ -107,6 +109,7 @@
 - [`improve-test-coverage-gaps`](./improve-test-coverage-gaps.md) **idea** — From the 2026-08-02 review: (a) `asa_bot` — 6/13 modules untested incl.
 - [`latex-speech-narration`](./latex-speech-narration.md) **idea** — `speakable()` skips math (a spoken "equation" cue, drops inline $…$) — weak
 - [`lint-and-except-debt`](./lint-and-except-debt.md) **idea** — Tighten broad `except Exception` (317 across 141 files; many hide spin
+- [`llamacpp-model-convergence`](./llamacpp-model-convergence.md) **idea** — The role's design is sound — caspar downloads canonically into NFS
 - [`llm-backend-removal`](./llm-backend-removal.md) **idea** — The fleet-wide anthropic/openai binary switch must be hand-synced with each
 - [`llm-catalog-wire-policy`](./llm-catalog-wire-policy.md) **idea** — `src/precis/utils/llm/requirement.py::choose_model` and
 - [`llm-summarize-throughput`](./llm-summarize-throughput.md) **idea** — Sustained slot contention between the two melchior workers is benign (the

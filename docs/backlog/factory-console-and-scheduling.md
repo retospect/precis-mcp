@@ -72,6 +72,10 @@ Editable prio slider + enable/disable (STATUS active↔dormant), both
 reusing the existing quest handler; render the `serves` DAG. The
 read-only panel (`_quests` in `routes/factory.py`) is live.
 
+### Console v2
+
+Evidence gr162694: console v2 enhancement requests (slices 3-4).
+
 ### 11b — model-eval surface
 
 The web "compare" button on the model picker; wire the heavy-axis

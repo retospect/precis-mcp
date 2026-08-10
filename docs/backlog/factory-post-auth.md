@@ -5,3 +5,5 @@ No auth middleware on any /factory write; sharpest for `POST
 now that the base URL + key are deployed. Mitigated by tailnet-only exposure
 (*.ts.net) — tailnet-trust is currently accepted; gate it or accept
 consciously. Owner `src/precis_web/routes/factory.py` / `app.py`.
+
+Duplicate field report gr171512 folded here.

@@ -9,6 +9,9 @@ model: opus
 ## Motivation / why
 
 Review findings (2026-08-08), plus the operator's stated allocation policy.
+Evidence: gr191337 (taproot_backfill monopolizes the claude_inproc lane for
+hours), gr191125 (band-5 starves behind re-minted band-2 cron), gr200375
+(fetch_oa monopolizes the serial melchior loop).
 
 **Fairness defects in the dispatch lane** (`src/precis/workers/dispatch.py`):
 
