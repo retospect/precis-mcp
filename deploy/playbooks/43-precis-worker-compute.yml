@@ -57,6 +57,26 @@
 # precis-worker-compute.service with the rest (its `precis-*.service` glob),
 # so it never runs stale code after a venv refresh; site.yml has no such
 # blanket bounce, so the final task below covers that path (see its comment).
+#
+# VENV-READINESS RACE (gr199339). This playbook rides 20b's venv (see SCOPE /
+# DEPENDENCIES above) but the two aren't atomic: a deploy can (re)start this
+# unit while /opt/precis/venv still holds the PRIOR precis-mcp build. If that
+# prior build's `precis worker --only` argparse `choices=` predates a pass
+# name this playbook's ExecStart hard-codes (e.g. job_ssh_node landed after
+# the installed build), argparse rejects it — a hard exit 2, every single
+# start, crash-looping the unit (observed ~45 restarts). The lane itself is
+# healthy; this is pure deploy-ordering — 20b's `uv pip install` finishing
+# a few seconds after this play starts the unit. Fixed two ways, combined:
+#   1. an ExecStartPre gate (below) that polls the INSTALLED venv's own
+#      argparse choices and only lets ExecStart run once `job_ssh_node` is
+#      actually present — self-checks the real failure surface instead of
+#      guessing at a fixed sleep;
+#   2. StartLimitIntervalSec/Burst (service_unit's systemd-only knobs) so
+#      any OTHER residual crash-loop cause degrades to a bounded number of
+#      attempts and a clearly "failed" unit, instead of restarting forever
+#      (systemd's own default IntervalSec=10s is shorter than this unit's
+#      RestartSec=30s throttle, so it never actually trips — the previous
+#      45-restart storm ran with no limiter effectively active).
 
 - name: Deploy the dedicated GPU/compute worker lane (job_ssh_node only)
   hosts: inference
@@ -68,7 +88,74 @@
     # the same one every precis-* worker template builds).
     _compute_venv: /opt/precis/venv
     _compute_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    # gr199339 gate window: 40 attempts * 15s = 10 minutes. TimeoutStartSec
+    # below is set past this (see comment there) so the poll's own bound
+    # decides the outcome, not systemd's start timeout racing it.
+    _compute_gate_script: /opt/precis/bin/wait-for-job-ssh-node.sh
+    _compute_gate_max_attempts: 40
+    _compute_gate_interval_sec: 15
   tasks:
+    - name: "gr199339: ensure the gate script's directory exists"
+      # /opt/precis itself is created by roles/precis_worker/tasks/provision.yml
+      # (20b, this playbook's dependency — see SCOPE header above); this is
+      # just the one subdirectory under it, harmless if 20b hasn't run yet
+      # since the copy task right after this one is what actually needs it.
+      ansible.builtin.file:
+        path: "{{ _compute_gate_script | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "gr199339: render the venv-readiness ExecStartPre gate script"
+      # A dedicated script file, not an inline ExecStartPre shell one-liner —
+      # systemd's Exec= line is tokenized by systemd's own parser, not POSIX
+      # shell, so nesting a `python -c "<multi-statement script>"` there is a
+      # quoting trap. A file sidesteps it entirely and is plain to read/test.
+      # Checks the INSTALLED venv's actual `precis worker --only` argparse
+      # choices (the literal failure surface below) rather than some proxy —
+      # see src/precis/cli/worker.py `add_parser`'s `--only` choices=.
+      ansible.builtin.copy:
+        dest: "{{ _compute_gate_script }}"
+        mode: "0755"
+        owner: root
+        group: root
+        content: |
+          #!/bin/sh
+          # {{ ansible_managed }}
+          # wait-for-job-ssh-node.sh — ExecStartPre gate for
+          # precis-worker-compute.service (gr199339): blocks ExecStart until
+          # the installed venv's `precis worker --only` argparse choices
+          # include job_ssh_node, so a deploy that (re)starts this unit
+          # against a stale pre-job_ssh_node build waits for 20b's venv
+          # refresh instead of crash-looping on argparse's exit 2.
+          set -eu
+
+          venv="{{ _compute_venv }}"
+          max_attempts={{ _compute_gate_max_attempts }}
+          interval={{ _compute_gate_interval_sec }}
+          attempt=0
+
+          # One-liner (semicolon-joined simple statements), deliberately —
+          # a multi-line `python -c "..."` body inside a shell double-quoted
+          # string comes out through this YAML block with this task's own
+          # indentation baked in as leading whitespace on every line, which
+          # Python then rejects as an IndentationError (top-level statements
+          # must start at column 0). A single logical line sidesteps it.
+          check="import argparse, sys; from precis.cli import worker as w; p = argparse.ArgumentParser(); s = p.add_subparsers(); w.add_parser(s); a = next(x for x in s.choices['worker']._actions if x.dest == 'only'); sys.exit(0 if 'job_ssh_node' in (a.choices or ()) else 1)"
+
+          while true; do
+            if "$venv/bin/python" -c "$check"; then
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "wait-for-job-ssh-node: $venv still lacks the job_ssh_node pass after $((max_attempts * interval))s, giving up" >&2
+              exit 1
+            fi
+            sleep "$interval"
+          done
+
     - name: render + load the compute worker lane unit
       ansible.builtin.import_role:
         name: service_unit
@@ -78,6 +165,26 @@
         service_unit_working_dir: /tmp
         service_unit_schedule:
           mode: keepalive
+        # gr199339: block ExecStart until the installed venv's argparse
+        # choices actually accept `--only job_ssh_node` (script rendered
+        # above). TimeoutStartSec covers ExecStartPre too, so it must clear
+        # the gate's own 40*15s=600s bound with room to spare, or systemd's
+        # start-timeout would race the gate's own "giving up" exit and win
+        # first on a slow node.
+        service_unit_exec_start_pre:
+          - "{{ _compute_gate_script }}"
+        service_unit_timeout_start_sec: 660
+        # Belt-and-braces restart-storm breaker for any OTHER residual start
+        # failure (the gate above only covers the ONE known argparse-choices
+        # race). service_unit_throttle_seconds stays at the role default
+        # (30s, i.e. RestartSec=30) — with these bounds, 8 failed starts
+        # 30s apart (240s) trips well inside a 600s window, so a genuine
+        # crash loop degrades to systemd marking the unit "failed" after
+        # ~8 attempts instead of the unbounded ~45-restart storm gr199339
+        # observed (the previous default IntervalSec=10s < RestartSec=30s
+        # meant the burst window always reset before it could ever trip).
+        service_unit_start_limit_interval_sec: 600
+        service_unit_start_limit_burst: 8
         # --only job_ssh_node: this lane runs exactly one pass, the submit/poll
         # executor. --batch-size 1: one NEW claim per tick (the gpu slot
         # capacity=1 caps concurrent compute regardless); the step-0 poll of

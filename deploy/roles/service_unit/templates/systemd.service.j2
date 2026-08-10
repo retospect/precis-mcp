@@ -7,6 +7,12 @@
 Description={{ service_unit_description }}
 After=network-online.target
 Wants=network-online.target
+{% if service_unit_start_limit_interval_sec %}
+StartLimitIntervalSec={{ service_unit_start_limit_interval_sec }}
+{% endif %}
+{% if service_unit_start_limit_burst %}
+StartLimitBurst={{ service_unit_start_limit_burst }}
+{% endif %}
 
 [Service]
 Type=simple
@@ -24,7 +30,13 @@ Environment={{ env_key }}={{ env_val }}
 EnvironmentFile=-{{ env_file }}
 {% endfor %}
 
+{% for pre_cmd in service_unit_exec_start_pre %}
+ExecStartPre={{ pre_cmd }}
+{% endfor %}
 ExecStart={{ service_unit_exec }}
+{% if service_unit_timeout_start_sec %}
+TimeoutStartSec={{ service_unit_timeout_start_sec }}
+{% endif %}
 
 Restart=always
 RestartSec={{ service_unit_throttle_seconds }}

@@ -68,6 +68,24 @@ def test_detail_wires_pdfjs_viewer_when_pdf_on_disk(client, tmp_path) -> None:
     assert "/static/pdfjs/web/viewer.html?file=/papers/10/pdf" in resp.text
 
 
+def test_pdfjs_locale_resources_are_served(client) -> None:
+    """The vendored pdf.js viewer looks up its fluent bundle by a
+    *lowercased* language code (PDF.js's ``L10n.#fixupLangCode``), so
+    ``locale.json`` must key ``en-US`` as ``en-us`` — an uppercase key
+    silently yields zero resource bundles (console warning flood + an
+    unhandled promise rejection in the viewer, gr193900). Also guards that
+    the locale directory is actually reachable through the ``/static``
+    mount, not just present on disk."""
+    locale_json = client.get("/static/pdfjs/web/locale/locale.json")
+    assert locale_json.status_code == 200
+    paths = locale_json.json()
+    assert paths.get("en-us") == "en-US/viewer.ftl"
+
+    ftl = client.get("/static/pdfjs/web/locale/en-US/viewer.ftl")
+    assert ftl.status_code == 200
+    assert "pdfjs-previous-button" in ftl.text
+
+
 def test_detail_finds_pdf_filed_under_nondisplay_alias(client, tmp_path) -> None:
     """A paper whose PDF is filed under a *non-display* cite_key alias still
     resolves. Paper 11's display slug is ``jones2025`` but the fake gives it a

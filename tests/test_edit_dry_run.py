@@ -105,13 +105,27 @@ def test_cfp_edit_dry_run_reuses_papers_preview(hub: Hub) -> None:
     """``CfpHandler`` doesn't override ``edit`` — it inherits
     ``PaperHandler.edit`` verbatim (see ``test_cfp_subclasses_paper_for_dry_reuse``
     in ``test_cfp_handler.py``), so the dry_run preview proven above for
-    paper applies to cfp unchanged. (A live DB round-trip through
-    ``insert_ref(kind='cfp', ...)`` isn't exercised here: the local test-DB
-    baseline schema is missing the ``cfp`` row present in prod's ``kinds``
-    table — filed as a gripe, out of scope for td48769.)"""
+    paper applies to cfp unchanged."""
     assert CfpHandler.edit is PaperHandler.edit
     h = CfpHandler(hub=hub)
     assert h.spec.kind == "cfp"
+
+
+def test_cfp_insert_ref_round_trips_on_fresh_db(hub: Hub) -> None:
+    """``insert_ref(kind='cfp', ...)`` must succeed against a DB built
+    from the migration chain — regression for gr194088, where the
+    baseline snapshot's ``kinds`` COPY block was missing the ``cfp`` row
+    (never migration-seeded; only upserted at boot via
+    ``precis.store._kinds_ops.upsert_kinds``), so a fresh/test DB raised
+    ``BadInput: unknown kind: 'cfp'`` on the very first live cfp ref even
+    though ``CfpHandler`` was fully wired. See
+    ``test_cfp_edit_dry_run_reuses_papers_preview`` above for the
+    dry-run-only workaround this replaces."""
+    ref_id = _seed_paper_ref(hub, kind="cfp", slug="nsf-2026-call")
+
+    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    assert ref.kind == "cfp"
+    assert ref.title == "Original title"
 
 
 def test_datasheet_edit_dry_run_previews_meta_patch_and_does_not_write(

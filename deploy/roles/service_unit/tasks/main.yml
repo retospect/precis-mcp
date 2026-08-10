@@ -40,6 +40,28 @@
     quiet: true
   when: os_family == "darwin"
 
+# service_unit_exec_start_pre / _timeout_start_sec / _start_limit_* render
+# to systemd Exec=/Unit= directives with no launchd equivalent (a launchd
+# start-gate belongs in the wrapped ExecStart command itself, e.g. a `while`
+# loop inside the `bash -c` launchd already wraps ExecStart in — see
+# service_unit_exec's docstring above). Same silent-drop bug class as
+# env_files above, so fail loudly instead. No darwin consumer sets these
+# today (defaults are empty).
+- name: "service_unit[{{ service_unit_name }}]: start-gate knobs are systemd-only"
+  ansible.builtin.assert:
+    that:
+      - (service_unit_exec_start_pre | length) == 0
+      - not service_unit_timeout_start_sec
+      - not service_unit_start_limit_interval_sec
+      - not service_unit_start_limit_burst
+    fail_msg: >-
+      service_unit_exec_start_pre / _timeout_start_sec /
+      _start_limit_interval_sec / _start_limit_burst are Linux/systemd only
+      (no launchd equivalent) — fold a darwin readiness wait into
+      service_unit_exec's own `bash -c` wrapper instead.
+    quiet: true
+  when: os_family == "darwin"
+
 # ── macOS: LaunchDaemon ──────────────────────────────────────────────────
 # launchd hits EX_CONFIG (78) when StandardOutPath can't be created; /var/log
 # is root-only on modern macOS, so pre-create the log deploy-owned.

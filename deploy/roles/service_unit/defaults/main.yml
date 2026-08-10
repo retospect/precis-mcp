@@ -74,3 +74,37 @@ service_unit_throttle_seconds: 30 #  crash-loop guard (keepalive only)
 # "Interactive" raises the macOS jetsam band toward foreground so a
 # RAM-pressured host culls this daemon last, not first. Empty = default band.
 service_unit_process_type: ""
+
+# ── systemd-only start-gate knobs (Linux) ───────────────────────────────
+# A deploy can start a unit before its dependency (a venv install, a
+# provisioning role) has actually landed — e.g. this unit's
+# ExecStart references a venv another play refreshes concurrently. Rather
+# than every capability role hand-rolling its own readiness wait, a caller
+# can supply one or more ABSOLUTE-PATH commands here; each renders as its
+# own `ExecStartPre=` line, run in order before ExecStart, and a non-zero
+# exit blocks the start (systemd counts that toward the unit's restart
+# limit like any other start failure — gr199339). Each entry must already
+# be a fully-resolved command (no shell wrapping done here) since systemd's
+# own Exec= tokenizer, not POSIX shell, parses these lines — nest a
+# `/bin/sh -c '...'` yourself only if you also hand-verify the quoting
+# survives systemd's tokenizer; a rendered script file (own template +
+# `mode: "0755"`) sidesteps that entirely and is the recommended shape.
+service_unit_exec_start_pre: [] # list[str] of absolute-path commands
+# Raise past the default 90s when service_unit_exec_start_pre includes a
+# bounded poll-wait — TimeoutStartSec covers ExecStartPre too, so a wait
+# window that legitimately runs long fails the start on a timeout instead
+# of letting the poll's own bound decide. Empty = systemd default (no
+# TimeoutStartSec= line rendered).
+service_unit_timeout_start_sec: ""
+# StartLimitIntervalSec / StartLimitBurst — systemd's built-in restart-
+# storm breaker: after `_burst` failed starts within `_interval_sec`, the
+# unit is marked failed and Restart= no longer fires (a `systemctl reset-
+# failed` + restart is needed to recover). Belt-and-braces alongside
+# service_unit_throttle_seconds (RestartSec, the per-attempt delay): the
+# two combine to bound both how FAST and how MANY times a wedged unit
+# retries before systemd gives up and stops burning cycles. Empty (either)
+# = systemd default (StartLimitIntervalSec=10s / StartLimitBurst=5), which
+# is punishingly tight for a unit whose ExecStartPre legitimately polls for
+# minutes — set both explicitly whenever service_unit_exec_start_pre does.
+service_unit_start_limit_interval_sec: ""
+service_unit_start_limit_burst: ""
