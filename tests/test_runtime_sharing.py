@@ -24,7 +24,7 @@ def test_set_runtime_is_reused_without_rebuilding(monkeypatch):
 
     monkeypatch.setattr(core, "_runtime", None)
     monkeypatch.setattr("precis.runtime.build_runtime", _boom)
-    core.set_runtime(sentinel)
+    core.set_runtime(sentinel)  # type: ignore[arg-type]  # plain sentinel; only identity matters here
     assert core._get_runtime() is sentinel
 
 

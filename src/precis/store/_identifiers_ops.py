@@ -245,14 +245,16 @@ class IdentifiersMixin:
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING"
         )
+
+        def _do(c: Connection) -> int:
+            with c.cursor() as cur:
+                cur.executemany(sql, rows)
+                return cur.rowcount or 0
+
         if conn is not None:
-            cur = conn.cursor()
-            cur.executemany(sql, rows)
-            return cur.rowcount or 0
+            return _do(conn)
         with self.pool.connection() as c:
-            cur = c.cursor()
-            cur.executemany(sql, rows)
-            return cur.rowcount or 0
+            return _do(c)
 
     def set_ref_identifier(
         self,

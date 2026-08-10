@@ -233,6 +233,9 @@ def _parse_first_float(text: str) -> float | None:
 def _temp_from_cmd(cmd: str) -> float | None:
     """Run ``cmd`` and parse the first float in stdout as °C."""
     try:
+        # shell=True is safe here: cmd is PRECIS_TEMP_CMD, an operator-set
+        # deploy-time env var (launchd/systemd-timer plist) — never derived
+        # from agent/request input.
         res = subprocess.run(
             cmd,
             shell=True,

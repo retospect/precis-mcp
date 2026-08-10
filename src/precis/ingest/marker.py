@@ -22,7 +22,7 @@ import unicodedata
 from collections.abc import Callable
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import ftfy
 
@@ -239,9 +239,6 @@ def _release_marker_caches() -> None:
     gc.collect()
 
 
-_R = TypeVar("_R")
-
-
 def _spawn_child_target(
     conn: Connection,
     fn: Callable[..., Any],
@@ -304,14 +301,14 @@ def _recv_bounded(conn: Connection, deadline: float) -> Any | None:
     return box[0]
 
 
-def _run_in_subprocess_with_timeout(
-    fn: Callable[..., _R],
+def _run_in_subprocess_with_timeout[R](
+    fn: Callable[..., R],
     args: tuple[Any, ...] = (),
     kwargs: dict[str, Any] | None = None,
     *,
     timeout_s: float,
     label: str = "subprocess call",
-) -> _R:
+) -> R:
     """Run ``fn(*args, **kwargs)`` in a spawned child process, killing it
     if it exceeds ``timeout_s``.
 

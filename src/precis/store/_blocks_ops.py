@@ -332,15 +332,19 @@ class BlocksMixin:
         """Replace a ref's single ``card_combined`` search chunk (delete +
         insert, so the embed/summary cascade re-runs). The shared write for
         the keystone kinds' summary cards (cad / structure / pcb)."""
-        conn.execute(
-            "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
-            (ref_id,),
-        )
-        conn.execute(
-            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
-            "VALUES (%s, 'agent', -1, 'card_combined', %s, %s)",
-            (ref_id, card_text, Jsonb({})),
-        )
+        # Explicit for auditability — every caller already runs this inside
+        # ``self.tx()``, so this nests as a savepoint rather than opening a
+        # fresh transaction; either way the DELETE+INSERT pair is atomic.
+        with conn.transaction():
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
+                (ref_id,),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 'agent', -1, 'card_combined', %s, %s)",
+                (ref_id, card_text, Jsonb({})),
+            )
 
     def _default_embedder_name(self, conn: Connection) -> str:
         """Resolve the registered default embedder name (FK target).
@@ -1678,16 +1682,21 @@ class BlocksMixin:
         """
 
         def _do(c: Connection) -> int:
-            c.execute(
-                "DELETE FROM chunks WHERE ref_id = %s AND ord = -1",
-                (ref_id,),
-            )
-            row = c.execute(
-                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
-                "VALUES (%s, -1, 'card_combined', %s, '{}'::jsonb) "
-                "RETURNING chunk_id",
-                (ref_id, text),
-            ).fetchone()
+            # Explicit for auditability. When a caller passes its own
+            # ``conn`` (already inside a transaction) this nests as a
+            # savepoint; on the self-managed pool connection it's the
+            # real transaction — either way the DELETE+INSERT is atomic.
+            with c.transaction():
+                c.execute(
+                    "DELETE FROM chunks WHERE ref_id = %s AND ord = -1",
+                    (ref_id,),
+                )
+                row = c.execute(
+                    "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                    "VALUES (%s, -1, 'card_combined', %s, '{}'::jsonb) "
+                    "RETURNING chunk_id",
+                    (ref_id, text),
+                ).fetchone()
             assert row is not None
             return int(row[0])
 

@@ -469,7 +469,7 @@ include = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 88
 # Don't descend into Claude Code worktrees — sibling sessions live under
 # .claude/worktrees/<name>/ (nested copies of the repo) and would

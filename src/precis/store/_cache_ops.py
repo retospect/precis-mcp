@@ -45,7 +45,7 @@ Mixin assumes the concrete Store provides:
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -65,34 +65,41 @@ class CacheMixin:
 
     pool: ConnectionPool
 
-    # Provided by the concrete Store / sibling mixins. These stubs
-    # document the dependency for readers; MRO resolves the real
-    # implementations at runtime when the mixin is composed into
-    # :class:`Store`. Calling them on a bare ``CacheMixin`` raises.
+    # Provided by the concrete Store. A runtime stub is safe here only
+    # for ``tx`` — Store defines it on the class itself, which always
+    # precedes the mixins in the MRO. Calling it on a bare ``CacheMixin``
+    # raises.
     def tx(self) -> AbstractContextManager[Connection]:
         raise NotImplementedError  # pragma: no cover — overridden by Store
 
-    def insert_ref(
-        self,
-        *,
-        kind: str,
-        slug: str | None,
-        title: str,
-        provider: str | None = None,
-        meta: dict[str, Any] | None = None,
-        conn: Connection | None = None,
-    ) -> Ref:
-        raise NotImplementedError  # pragma: no cover — overridden by RefsMixin
+    # Provided by ``RefsMixin`` / ``BlocksMixin``; declared here so the
+    # cache create-or-replace paths type-check against the cross-mixin
+    # calls. **Must be TYPE_CHECKING only** — a runtime ``def`` here
+    # shadows the real implementation for any mixin ordered after
+    # ``CacheMixin`` in ``Store.__bases__`` (the ``add_tag`` incident in
+    # ``_refs_ops.py``; gripe 202377). ``tests/test_store_mixin_guard.py``
+    # enforces this class-wide.
+    if TYPE_CHECKING:
 
-    def insert_blocks(
-        self,
-        ref_id: int,
-        blocks: list[BlockInsert],
-        *,
-        replace: bool = False,
-        conn: Connection | None = None,
-    ) -> list[Block]:
-        raise NotImplementedError  # pragma: no cover — overridden by BlocksMixin
+        def insert_ref(
+            self,
+            *,
+            kind: str,
+            slug: str | None,
+            title: str,
+            provider: str | None = None,
+            meta: dict[str, Any] | None = None,
+            conn: Connection | None = None,
+        ) -> Ref: ...
+
+        def insert_blocks(
+            self,
+            ref_id: int,
+            blocks: list[BlockInsert],
+            *,
+            replace: bool = False,
+            conn: Connection | None = None,
+        ) -> list[Block]: ...
 
     def get_cache_entry(
         self,

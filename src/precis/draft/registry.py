@@ -25,9 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import TypedDict, TypeVar
-
-T = TypeVar("T")
+from typing import TypedDict
 
 
 class TermEntry(TypedDict, total=False):
@@ -143,7 +141,7 @@ def next_insert_callout(existing: Iterable[int], policy: NumberingPolicy) -> int
     return max(vals) + policy.step
 
 
-def render_callouts(ordered: Sequence[T], policy: NumberingPolicy) -> dict[T, int]:
+def render_callouts[T](ordered: Sequence[T], policy: NumberingPolicy) -> dict[T, int]:
     """Spaced numerals derived from reading-order position for an
     ``assign="render"`` registry: the i-th item (0-based) → ``start + i*step``.
     Recomputed every render, so inserting/reordering a leaf renumbers the whole

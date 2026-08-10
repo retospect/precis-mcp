@@ -80,3 +80,12 @@ that's a gap to fix in the same change, not a follow-up.
 See also the `test_leak_hardfail` / `docker_wedge_test_creds` /
 `test_db_shared_singleton` gotchas for specific failure modes this harness
 guards against or can trip on.
+
+## Coverage posture: deliberately unmeasured
+
+No coverage tool is wired into `scripts/test`/`scripts/ship` — this is a
+decision, not an oversight. The gate is `ruff` + `mypy` + `pytest`; a
+coverage percentage is not a merge criterion and never gates a ship. The
+risk class coverage numbers are meant to proxy for — SQL paths FakeStore
+can't see — is already covered directly by the real-PG-companion-test
+policy above, which is a sharper signal than a line-coverage threshold.

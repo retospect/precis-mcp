@@ -512,12 +512,17 @@ async def cad_export(request: Request, slug: str, fmt: str) -> Response:
     if fmt == "step" and not step_available():
         return _err(request, "STEP export needs the [cad-step] extra")
 
+    # Filename stem keys on ref.slug when set, else ref.id — never the raw
+    # ``slug`` path param, which is agent/user-supplied and unvalidated
+    # (resolve_live_slug_ref accepts it as a lookup key, not a filename).
+    export_stem = ref.slug or f"cad-{ref.id}"
+
     def _build() -> bytes:
         spec, _handles = store.cad_load(ref.id)
         if fmt == "scad":
-            return to_openscad(spec, name=str(ref.slug or slug)).encode("utf-8")
+            return to_openscad(spec, name=export_stem).encode("utf-8")
         with tempfile.TemporaryDirectory() as td:
-            out = Path(td) / f"{ref.slug or slug}.{fmt}"
+            out = Path(td) / f"{export_stem}.{fmt}"
             if fmt == "step":
                 export_step(spec, out)
             else:
@@ -528,7 +533,7 @@ async def cad_export(request: Request, slug: str, fmt: str) -> Response:
         data = await asyncio.to_thread(_build)
     except ExportError as exc:
         return _err(request, str(exc))
-    filename = f"{ref.slug or slug}.{fmt}"
+    filename = f"{export_stem}.{fmt}"
     return Response(
         content=data,
         media_type=_EXPORT_MEDIA[fmt],

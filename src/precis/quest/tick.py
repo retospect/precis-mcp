@@ -1617,8 +1617,8 @@ def run_quest_tick(
                         harvested += fstep.results_harvested
                         ruled += fstep.ruled_out
                         graduated += fstep.graduated
-                        proposals_committed += len(names)
                         if fstep.sims_dispatched > 0:
+                            proposals_committed += len(names)
                             append_entry(
                                 store,
                                 quest_id,

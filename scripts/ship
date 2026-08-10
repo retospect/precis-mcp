@@ -282,13 +282,30 @@ run_gate() {
 #   2. >30-min age — fallback for when the pid check can't tell (holder file
 #                   missing/unparseable, or the lock came from a different
 #                   host where our pid can't be checked at all).
-# Released on exit via the trap below.
+# Released on exit via the trap below — armed only AFTER we hold the lock
+# (gr202363): arming it across the wait loop meant a SIGTERM while still
+# WAITING ran the trap and rm -rf'd a lock we never acquired, out from under
+# whichever sibling legitimately held it. The release itself is also
+# ownership-checked (holder pid == $$) so a sibling that steals our lock
+# after a >30-min hold doesn't get its own fresh lock rm'd by our late exit.
 LOCKDIR="$(git rev-parse --git-common-dir)/precis-ship.lock.d"
 # Safety net: also drop any gate slot still held (gr202193) — run_gate
 # releases on its own paths, but an unexpected exit mid-gate must not
 # leave the slot to age out on siblings.
-_release_ship_lock() { gate_slot_release; rm -rf "$LOCKDIR" 2>/dev/null || true; }
-trap _release_ship_lock EXIT
+_release_ship_lock() {
+    gate_slot_release
+    local holder holder_pid
+    holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
+    holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+    # Remove ONLY on a positive ownership match (holder pid == $$). A
+    # missing/unparseable holder is ambiguous — it could be ours (best-effort
+    # write failed) or a sibling mid-steal that hasn't written its holder yet
+    # — and deleting a sibling's live lock has no recovery, while leaking
+    # ours self-heals via the pid-dead/30-min steals above.
+    if [[ "$holder_pid" == "$$" ]]; then
+        rm -rf "$LOCKDIR" 2>/dev/null || true
+    fi
+}
 _waited=0
 while ! mkdir "$LOCKDIR" 2>/dev/null; do
     holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
@@ -315,6 +332,10 @@ while ! mkdir "$LOCKDIR" 2>/dev/null; do
     sleep 3
 done
 printf '%s pid=%s\n' "$WORKTREE" "$$" > "$LOCKDIR/holder" 2>/dev/null || true
+# Arm the release trap only now that we actually hold the lock (gr202363) —
+# arming it earlier meant a kill mid-wait fired the trap against a lock we
+# never acquired.
+trap _release_ship_lock EXIT
 
 # ── 4. sync → gate → ship, re-running if main moves under us ────────────
 # Hold the lock across the whole critical section so no sibling worktree can

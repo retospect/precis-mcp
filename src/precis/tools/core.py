@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.runtime import PrecisRuntime
 
 # Conditional imports for MCP types (not available in all environments)
 try:
@@ -51,7 +54,7 @@ _runtime = None
 _runtime_build_lock = threading.Lock()
 
 
-def set_runtime(runtime) -> None:
+def set_runtime(runtime: PrecisRuntime) -> None:
     """Inject a pre-built runtime so the verb funcs reuse it.
 
     ``precis serve`` builds a store-bearing runtime at boot; that build

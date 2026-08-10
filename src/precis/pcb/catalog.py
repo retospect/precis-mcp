@@ -119,7 +119,25 @@ def read_jlcparts_sqlite(path: str, *, batch: int = 5000) -> Iterator[dict[str, 
     conn = sqlite3.connect(path)
     try:
         conn.row_factory = sqlite3.Row
-        cur = conn.execute("SELECT * FROM components")
+        # Explicit column list rather than ``SELECT *`` — but derived from
+        # ``PRAGMA table_info`` (not hardcoded) so this stays tolerant of
+        # jlcparts dump schema drift: :func:`normalize_jlcparts_row`
+        # deliberately checks multiple alias column names per field
+        # (``lcsc``/``lcsc_id``/``C``, ``manufacturer``/``mfr_name``, …)
+        # because upstream's column names have moved before. A fixed list
+        # would silently drop rows (or hard-error) the moment a real dump
+        # doesn't match this file's test fixture's column set.
+        # Quote each identifier (doubling embedded ``"``): the dump is an
+        # externally-supplied file, so a reserved-word or adversarial
+        # column name must neither break the query nor splice into it.
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(components)")]
+        quoted = ", ".join('"' + c.replace('"', '""') + '"' for c in columns)
+        sql = (
+            f"SELECT {quoted} FROM components"
+            if columns
+            else "SELECT * FROM components"
+        )
+        cur = conn.execute(sql)
         while True:
             chunk = cur.fetchmany(batch)
             if not chunk:

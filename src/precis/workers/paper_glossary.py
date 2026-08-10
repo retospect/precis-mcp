@@ -263,21 +263,24 @@ def _write(
         "term_count": term_count,
     }
     with store.pool.connection() as conn:
-        conn.execute(
-            "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
-            (ref_id, CHUNK_KIND),
-        )
-        conn.execute(
-            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
-            "VALUES (%s, 'agent', %s, %s, %s, %s)",
-            (ref_id, GLOSSARY_ORD, CHUNK_KIND, text, Jsonb(meta)),
-        )
-        # Converged (whether real terms or an empty-marker write) — clear
-        # any attempt lease so a later legitimate re-trigger (a
-        # GLOSSARY_VERSION bump) is never blocked by a stale lease left
-        # over from an earlier successful run.
-        ref_lease.clear_attempt(store, ref_id, _ATTEMPT_MARKER_NS, conn=conn)
-        conn.commit()
+        # Explicit for auditability — DELETE+INSERT+lease-clear commit as
+        # one atomic unit (see ref_lease.clear_attempt's "same transaction"
+        # contract).
+        with conn.transaction():
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+                (ref_id, CHUNK_KIND),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 'agent', %s, %s, %s, %s)",
+                (ref_id, GLOSSARY_ORD, CHUNK_KIND, text, Jsonb(meta)),
+            )
+            # Converged (whether real terms or an empty-marker write) — clear
+            # any attempt lease so a later legitimate re-trigger (a
+            # GLOSSARY_VERSION bump) is never blocked by a stale lease left
+            # over from an earlier successful run.
+            ref_lease.clear_attempt(store, ref_id, _ATTEMPT_MARKER_NS, conn=conn)
 
 
 # ── the pass ───────────────────────────────────────────────────────────

@@ -228,16 +228,38 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    Say plainly whether the fleet is **solid** (only baseline noise) or has a
    **hot pass** (broken / noisy), and fold any hot-pass root cause into
    substrate 1 as a gripe.
-6. **Latent repo dev — LLM-confusion mining (the bug hunt).** The server-side
-   agent runs (`plan_tick`, dream, cad/structure propose) store their full
-   `claude -p` tool-call transcript in `refs.meta.transcript` on the
-   `kind='job'` ref. Every `[error:...]` in a transcript is the LLM getting a
-   verb wrong — a fix waiting in a skill or in the MCP surface. There is **no**
-   interactive tool-call ledger (the live `precis serve` path logs nothing), so
-   these job transcripts are the signal. Prod-hop (`agent_rw` has SELECT; see
-   CLAUDE.md "Peeking at prod"), pull the last 48h, and rank error shapes:
+6. **Latent repo dev — LLM-confusion mining (the bug hunt).** Every
+   server-side agentic run opens a `kind='agentlog'` run-attribution record
+   (`precis/agentlog.py:open_log`) — `plan_tick`, `quest_tick`, and `dream`
+   all do this; `cad`/`structure` propose don't even go this far. But
+   `agentlog` only ever carries the assembled **input** prompt
+   (`meta.prompt`) plus small run telemetry (`meta.status`/`meta.result`,
+   stamped at `finalize_log`) — it's a run *catalog*, not a transcript store,
+   so don't mine it directly (its docstring's "prompt + transcript become the
+   debugging surface" line is aspirational, not what's actually captured
+   today). The full **output** stream — every tool call/result, where
+   `[error:...]` shapes live — is captured for exactly one job_type today:
+   `plan_tick`, which stamps it onto its own `kind='job'` ref as
+   `meta.transcript` (`workers/executors/claude_inproc.py`'s
+   `_run_plan_tick`; capped 1 MiB, GC'd after
+   `PRECIS_TRANSCRIPT_RETENTION_DAYS` — 30 days by default,
+   `workers/sweeper.py:_gc_transcripts`). `quest_tick` and `dream` dispatch
+   straight to the LLM and discard the raw stream; `cad`/`structure` propose
+   keep only a truncated snippet in a `job_event` chunk on parse failure. So
+   `agentlog` outnumbering transcript-bearing `job` refs by orders of
+   magnitude in any given window is *expected*, not a sign you're querying
+   the wrong table — most runs simply have nothing full-text left to mine
+   yet (a real coverage gap; worth a gripe if you want `quest_tick`/`dream`
+   captured too, but out of scope for this mining pass). Every `[error:...]`
+   in a transcript is the LLM getting a verb wrong — a fix waiting in a
+   skill or in the MCP surface. There is **no** interactive tool-call ledger
+   (the live `precis serve` path logs nothing), so `plan_tick`'s job
+   transcripts are the signal that exists today. Prod-hop (`agent_rw` has
+   SELECT; see CLAUDE.md "Peeking at prod"), pull the last 48h, and rank
+   error shapes:
    ```sql
-   -- histogram of confusion, most-frequent first
+   -- histogram of confusion, most-frequent first (plan_tick only — the one
+   -- job_type that persists a full transcript; see prose above)
    WITH tx AS (
      SELECT meta->>'transcript' t FROM refs
      WHERE kind='job' AND meta ? 'transcript'
@@ -258,12 +280,12 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
 
    **Before you file — prove the error is live AND unfixed** (the mining's two
    false-positive traps; gr51426 hit both):
-   - **`created_at` filters the *job*, not when the error happened.** Transcripts
-     are persisted **forever** on their `kind='job'` ref, so `[error:...]` in a
-     "recent" transcript may be an *old* failure echoed or *quoted text* — most
-     insidiously a **gripe body that itself contains the error string** read back
-     into a fresh planner tick. A raw histogram over-counts. Two filters before
-     trusting a count:
+   - **`created_at` filters the *job*, not when the error happened.** A
+     transcript can carry `[error:...]` as *old* failure echoed or *quoted
+     text* — most insidiously a **gripe body that itself contains the error
+     string** read back into a fresh planner tick — even within the retention
+     window, so a raw histogram over-counts. Two filters before trusting a
+     count:
      - **Demand a real `tool_result`.** Only count a match that appears inside a
        `tool_result` block with `"is_error":true`, tied to a `tool_use.id` — not
        narration, a prior assistant message, or quoted gripe/backlog text.

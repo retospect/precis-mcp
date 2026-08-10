@@ -15,7 +15,10 @@
 # slot dirs, take any one. Two independent steals for abandoned slots, same
 # as the ship lock: holder pid dead on this host → immediate; held >45 min →
 # assume crashed/foreign-host (a gate normally finishes well inside that;
-# the age is hold time, not queue time).
+# the age is hold time, not queue time). gate_slot_release is ownership-
+# checked (holder pid == $$) before it rm -rf's, same fix as the ship lock
+# (gr202363) — otherwise a release firing after a sibling steals our slot
+# (>45-min hold, or a late EXIT trap) deletes THEIR fresh slot instead.
 #
 # PRECIS_GATE_SLOTS overrides the cap (default 2 — measured: two concurrent
 # full gates fit the ~8GB VM, three don't). Callers must arrange
@@ -65,7 +68,18 @@ gate_slot_acquire() {
 
 gate_slot_release() {
     if [[ -n "${GATE_SLOT_DIR:-}" ]]; then
-        rm -rf "$GATE_SLOT_DIR" 2>/dev/null || true
+        local holder holder_pid
+        holder="$(cat "$GATE_SLOT_DIR/holder" 2>/dev/null || true)"
+        holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+        # Remove ONLY on a positive ownership match (holder pid == $$). A
+        # missing/unparseable holder is ambiguous — ours with a failed
+        # best-effort write, or a sibling mid-steal that hasn't written its
+        # holder yet — and deleting a sibling's live slot has no recovery,
+        # while leaking ours self-heals via the pid-dead/45-min steals
+        # (gr202363).
+        if [[ "$holder_pid" == "$$" ]]; then
+            rm -rf "$GATE_SLOT_DIR" 2>/dev/null || true
+        fi
         GATE_SLOT_DIR=""
     fi
 }

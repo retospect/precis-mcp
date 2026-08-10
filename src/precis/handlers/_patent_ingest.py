@@ -16,9 +16,10 @@ Drives the fetch-as-ingest flow:
         ↓
     Store.insert_ref('patent', slug=..., title=...)
         ↓
-    Store.insert_blocks([description blocks, claim blocks])  ← FULL path only
-        ↓
-    fill_embeddings(...)  ← reuses the bundle-side helper
+    Store.insert_blocks([description blocks, claim blocks])  ← FULL path only,
+        embedding=None on every block; the embed:bge-m3 worker fills
+        chunks.embedding lazily off the derived queue (ingest never embeds
+        inline — see AGENTS.md's ingest guarantees)
         ↓
     Store.add_tag(...) for each auto-tag (cpc:, ipc:, applicant:, …)
         ↓

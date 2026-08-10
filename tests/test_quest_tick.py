@@ -1681,6 +1681,9 @@ class TestCommitReRepromptLadder:
         )  # tick 2: ladder
         assert out.status == "succeeded"
         assert out.sims_dispatched == 0
+        # The undispatched ladder proposal must NOT inflate the roll-up —
+        # `proposals` means "got dispatched" (gr202195).
+        assert out.proposals == 0
         logs = self._logs(store, qid)
         # No false "committed" claim …
         assert not any("committed after re-prompt" in (b.text or "") for b in logs)
