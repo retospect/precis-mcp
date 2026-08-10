@@ -6,8 +6,21 @@ is the consumer: an inline dispatch to that model reserves one of the host's
 local slots for the call's duration, calls localhost, releases — so the number
 of concurrent local calls to a model can never exceed what the host declared it
 can serve. It replaces litellm's load-balancer with claim-gated local
-reservation (no cross-node balancer; reservation target is always ``(me,
-resource)``).
+reservation (no cross-node balancer).
+
+**Cluster-scoped serving.** The reservation target is ``(me, resource)`` when
+this host serves the model. When it doesn't, a ``served_by`` entry on ANOTHER
+host whose ``endpoint`` is LAN-routable (not loopback) is acquirable from here
+too: the slot is reserved against *that* entry's host row — ``resource_slots``
+lives in the shared DB, so ``max_parallel`` stays one fleet-wide semaphore —
+and the reserved slot carries the remote endpoint for direct dispatch. This is
+what lets every node send ``llm.chain.big``'s local rung to the DGX-pair
+llama-server (its ``served_by`` publishes a LAN URL) instead of falling back
+to the hosted cloud endpoint; a loopback-only entry (melchior's llama-swap at
+``127.0.0.1``) stays host-private exactly as before. The ``host`` label on a
+``served_by`` entry is thus an *accounting key* (whose slot row is debited),
+not necessarily the machine the server runs on — see the deepseek card, whose
+label ``caspar`` is historical while the endpoint IP is castor.
 
 **Ships dark.** A model that is *not* served on this host — every model today,
 until ``served_by`` is populated at the Phase-2 cutover — is a no-op: dispatch
@@ -34,6 +47,7 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -92,14 +106,22 @@ class _Served:
 _endpoints: dict[str, dict[str, _Served]] = {}
 _endpoints_at: float = 0.0
 
+#: {resource -> (declared host, _Served)} — models served on OTHER hosts behind a
+#: LAN-routable endpoint (the cluster-scoped acquire path). Same TTL discipline.
+_remote: dict[str, tuple[str, _Served]] = {}
+_remote_at: float = 0.0
+
 
 def reset_cache() -> None:
     """Drop the served-resource + endpoint caches (tests + after a slot write)."""
     global _served, _served_at, _endpoints, _endpoints_at, _mismatch_warned
+    global _remote, _remote_at
     _served = {}
     _served_at = 0.0
     _endpoints = {}
     _endpoints_at = 0.0
+    _remote = {}
+    _remote_at = 0.0
     _mismatch_warned = {}
 
 
@@ -174,6 +196,67 @@ def _plausibly_served_here(model: str, served_resources: set[str]) -> bool:
     )
 
 
+def _routable(endpoint: str | None) -> bool:
+    """Whether a ``served_by`` endpoint is reachable from OTHER hosts — a real
+    address, not a loopback/wildcard bind. Loopback entries are host-private by
+    construction (melchior's llama-swap publishes ``127.0.0.1``); only a
+    routable one may be acquired cluster-wide."""
+    if not endpoint:
+        return False
+    host = urlparse(endpoint).hostname or ""
+    return host not in {"", "localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _remote_served(store: object) -> dict[str, tuple[str, _Served]]:
+    """``{resource -> (declared host, _Served)}`` for models served on another
+    host behind a LAN-routable endpoint (60s TTL, same discipline as the other
+    caches). The declared host is the ``resource_slots`` accounting key the
+    cluster-scoped acquire debits — NOT necessarily where the server runs (the
+    module docstring's caspar/castor note). Consulted only after a local-serve
+    miss, so the common all-local path pays one cached dict lookup. Any failure
+    degrades to an empty map (→ the ordinary dark no-op)."""
+    global _remote, _remote_at
+    now = time.monotonic()
+    if _remote_at == 0.0 or now - _remote_at > _CACHE_TTL_S:
+        try:
+            m: dict[str, tuple[str, _Served]] = {}
+            local = _local_host()
+            for card in store.list_refs(kind="llm", limit=1000):  # type: ignore[attr-defined]
+                meta = getattr(card, "meta", None) or {}
+                model_id = meta.get("model_id")
+                if not model_id:
+                    continue
+                for entry in _iter_served_by(meta):
+                    entry_host = entry.get("host")
+                    ep = entry.get("endpoint")
+                    if not entry_host or str(entry_host) == local:
+                        continue
+                    if not (isinstance(ep, str) and _routable(ep)):
+                        continue
+                    key = f"llm:{model_id}"
+                    # Deterministic tie-break when >1 remote host serves the
+                    # same model: lowest host name wins, so the pick can't
+                    # flip with list_refs iteration order between cache
+                    # windows. (Single-server today; matters the day a
+                    # second redundant box is added.)
+                    prior = m.get(key)
+                    if prior is not None and prior[0] <= str(entry_host):
+                        continue
+                    m[key] = (
+                        str(entry_host),
+                        _Served(
+                            endpoint=ep,
+                            served_model=str(entry.get("model") or model_id),
+                        ),
+                    )
+            _remote = m
+            _remote_at = now
+        except Exception:  # pragma: no cover — must never break dispatch
+            log.warning("local_serving: remote served_by lookup failed", exc_info=True)
+            return {}
+    return _remote
+
+
 def served_locally(model: str) -> bool:
     """Whether THIS host advertises ``llm:<model>`` — a read-only membership test
     with no slot reservation.
@@ -200,14 +283,18 @@ def acquire(model: str) -> LocalSlot | None:
     """Reserve a local serving slot for ``model`` if this host serves it.
 
     Returns ``None`` when there is nothing to reserve — no process store, or the
-    model is not served on this host (the dark case for every model today): the
-    caller proceeds unreserved, byte-identical to pre-slice-7. Otherwise returns
-    a :class:`LocalSlot` with ``reserved=True`` (proceed, then :func:`release`)
-    or ``paused=True`` (host serves it but all slots busy — back off). A host
-    that serves *other* ``llm:`` resources but not this one logs a rate-limited
-    warning (once per cache window) — that combination is a name mismatch, not
-    the ordinary dark case, and would otherwise silently degrade to the local
-    transport.
+    model is served neither on this host nor on any host behind a LAN-routable
+    endpoint (the dark case): the caller proceeds unreserved, byte-identical to
+    pre-slice-7. Otherwise returns a :class:`LocalSlot` with ``reserved=True``
+    (proceed, then :func:`release`) or ``paused=True`` (served, but every slot
+    busy — back off). A local-serve miss first tries the cluster-scoped path
+    (:func:`_remote_served`): a routable ``served_by`` entry on another host is
+    reserved against *that* host's slot row, so ``max_parallel`` stays one
+    fleet-wide cap, and the slot carries the remote endpoint. A host that
+    serves *other* ``llm:`` resources but not this one (and no remote match)
+    logs a rate-limited warning (once per cache window) — that combination is
+    a name mismatch, not the ordinary dark case, and would otherwise silently
+    degrade to the local transport.
     """
     if not model:
         return None
@@ -220,6 +307,36 @@ def acquire(model: str) -> LocalSlot | None:
     resource = f"llm:{model}"
     served_resources = _served_resources(store, host)
     if resource not in served_resources:
+        # Cluster-scoped serving: not served HERE, but a served_by entry on
+        # another host with a LAN-routable endpoint is acquirable from any
+        # node — reserve against THAT entry's host row (one shared semaphore
+        # in the DB, so max_parallel caps the fleet, not each host), and hand
+        # dispatch the remote endpoint exactly as a local slot would.
+        remote = _remote_served(store).get(resource)
+        if remote is not None:
+            remote_host, remote_served = remote
+            from precis.store._resource_slots_ops import reserve_resource_slots
+
+            try:
+                with store.pool.connection() as conn:
+                    with conn.transaction():
+                        ok = reserve_resource_slots(conn, remote_host, {resource: 1})
+            except Exception:  # pragma: no cover — must never break dispatch
+                log.warning(
+                    "local_serving: remote reserve failed for %s on %s",
+                    resource,
+                    remote_host,
+                    exc_info=True,
+                )
+                return None
+            return LocalSlot(
+                host=remote_host,
+                resource=resource,
+                reserved=ok,
+                paused=not ok,
+                endpoint=remote_served.endpoint if ok else None,
+                served_model=remote_served.served_model if ok else None,
+            )
         # A host that serves *other* llm: resources but not this one is usually a
         # served_by name mismatch worth flagging — but only when the requested
         # model *plausibly should* be served here. Two false-alarm classes are

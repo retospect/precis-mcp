@@ -8,6 +8,7 @@ the shared registry in tools/__init__.py.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 # Conditional imports for MCP types (not available in all environments)
@@ -46,6 +47,8 @@ _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error.
 
 # Runtime access - these will be imported when needed
 _runtime = None
+# Serializes first-build (see _get_runtime's thread-safety note).
+_runtime_build_lock = threading.Lock()
 
 
 def set_runtime(runtime) -> None:
@@ -182,6 +185,13 @@ def _log_tool_call(
 def _get_runtime():
     """Get the current runtime instance.
 
+    Thread-safe (double-checked lock): historically only the single MCP/CLI
+    event-loop thread reached this, but asa_bot's chain lane now warms the
+    runtime from ``asyncio.to_thread`` workers, so two first-turn
+    conversations can race here concurrently — an unguarded check-then-set
+    would build two runtimes and leak the loser's connection pool (its
+    atexit close only ever sees the winner).
+
     Registers an ``atexit`` hook on first build to close the runtime's
     store before interpreter shutdown. Without this, the psycopg
     ConnectionPool's ``__del__`` runs during finalization and tries to
@@ -193,24 +203,33 @@ def _get_runtime():
     """
     global _runtime
     if _runtime is None:
-        import atexit
-
-        from precis.runtime import build_runtime
-
-        _runtime = build_runtime()
-
-        def _close_runtime() -> None:
-            try:
-                store = getattr(_runtime, "store", None)
-                if store is not None:
-                    store.close()
-            except Exception:
-                # atexit is best-effort; swallow so nothing else
-                # blocks on a close that failed.
-                pass
-
-        atexit.register(_close_runtime)
+        with _runtime_build_lock:
+            if _runtime is not None:
+                return _runtime
+            _build_runtime_locked()
     return _runtime
+
+
+def _build_runtime_locked() -> None:
+    """Build + install the process runtime. Caller holds ``_runtime_build_lock``."""
+    global _runtime
+    import atexit
+
+    from precis.runtime import build_runtime
+
+    _runtime = build_runtime()
+
+    def _close_runtime() -> None:
+        try:
+            store = getattr(_runtime, "store", None)
+            if store is not None:
+                store.close()
+        except Exception:
+            # atexit is best-effort; swallow so nothing else
+            # blocks on a close that failed.
+            pass
+
+    atexit.register(_close_runtime)
 
 
 def _dispatch(verb: str, payload: dict[str, Any]) -> _ToolReturn:

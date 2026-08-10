@@ -11,7 +11,7 @@
 > **Reader:** an agent (or human) about to *edit this repo*. Internals —
 > table names, worker names, ADR numbers — are the payload here; name them.
 >
-> _Verified @ `7baaf3f4`._
+> _Verified @ `3a202ffe`._
 
 ## What precis is
 
@@ -86,9 +86,13 @@ product), the **CLI** (`precis …`), the **web UI** (`src/precis_web/`), the
 the **Slack bridge** (`src/asa_slack/`, `[asa-slack]` extra) — a sibling that
 routes chat turns through the ADR-0046 `dispatch()` seam (forced sonnet + a
 hard per-turn kind-allowlist). Both bridges now route through
-the router seam: Discord's `claude_invoke.invoke()` streams via `dispatch_async`
-(`Tier.FRONTIER`, `on_event` driving the live Discord progress indicator,
-router-migration Phase 3) where Slack's is one blocking `dispatch()` call.
+the router seam: Discord's `claude_invoke.invoke()` has two lanes picked by
+the effective `--model` — the `local` sentinel (deployed default) walks the
+BIG placement chain via sync `dispatch()` in a worker thread (no event
+stream, reply off the aggregated `LlmResult`), while a concrete claude id
+(`/model opus`) streams via `dispatch_async` (`Tier.FRONTIER`, `on_event`
+driving the live Discord progress indicator). Slack's is one blocking
+`dispatch()` call.
 
 ## Package map (generated)
 

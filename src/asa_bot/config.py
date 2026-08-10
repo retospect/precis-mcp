@@ -17,20 +17,21 @@ from typing import Any
 
 import yaml
 
-from precis.utils.llm.router import Tier, resolve_model
-
 
 def _default_llm_command() -> list[str]:
-    """The default argv, resolving ``--model`` through the router at
-    construction time (:func:`resolve_model`) rather than a literal baked
-    into this module — so it can't drift from the router's FRONTIER tier."""
+    """The default argv. ``--model local`` is the sentinel
+    ``claude_invoke`` maps to the router's BIG placement chain (operator
+    ``llm.chain.big``: local/OSS rung first, cloud fallback) — resolved
+    per turn, so asa follows the fleet's chain instead of pinning a
+    vendor id here. A concrete claude id (`/model opus`, or a config
+    override) still takes the ``claude -p`` streaming lane."""
     return [
         "claude",  # resolved on PATH; override in config for a pinned binary
         "-p",
         "--max-turns",
         "100",
         "--model",
-        resolve_model(Tier.FRONTIER),
+        "local",
         "--output-format",
         "stream-json",
         "--include-partial-messages",

@@ -53,6 +53,14 @@
     <string>remote</string>
     <key>PRECIS_EMBEDDER_URL</key>
     <string>http://127.0.0.1:8181</string>
+    {# Hosted-OSS backend for `--model local` turns (the BIG placement
+       chain). A chain rung whose model is NOT served on THIS host
+       (local_serving.acquire is host-scoped) dispatches to this base URL
+       with a vault-resolved key — same value the worker daemons use.
+       Without it, an un-served rung builds a client at url="" and every
+       rung of the chain fails. #}
+    <key>PRECIS_LLM_BASE_URL</key>
+    <string>https://openrouter.ai/api/v1</string>
   </dict>
 
   <key>RunAtLoad</key>

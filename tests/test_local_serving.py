@@ -258,6 +258,114 @@ def test_served_by_without_endpoint_stays_slot_only(store) -> None:
     assert slot.served_model == "qwen-noep"
 
 
+# ── cluster-scoped serving (routable served_by on another host) ────────────
+
+
+def test_remote_routable_endpoint_is_acquirable(store) -> None:
+    """A model served on ANOTHER host behind a LAN-routable endpoint is
+    acquirable from here: the slot debits the DECLARED host's row (one
+    fleet-wide semaphore) and carries the remote endpoint for direct dispatch
+    — the path that sends every node's BIG-chain local rung to the DGX-pair
+    llama-server instead of the hosted cloud fallback."""
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "otherhost",
+        "remote-big",
+        2,
+        endpoint="http://192.168.6.197:8080/v1",
+        served_model="deepseek-v4-flash-0731",
+    )
+    slot = local_serving.acquire("remote-big")
+    assert slot is not None and slot.reserved and not slot.paused
+    assert slot.host == "otherhost"
+    assert slot.endpoint == "http://192.168.6.197:8080/v1"
+    assert slot.served_model == "deepseek-v4-flash-0731"
+    free = {s.resource: s.free for s in store.resource_slots_for_host("otherhost")}
+    assert free["llm:remote-big"] == 1
+    # release refunds the REMOTE host's row (slot.host is the accounting key)
+    local_serving.release(slot)
+    free = {s.resource: s.free for s in store.resource_slots_for_host("otherhost")}
+    assert free["llm:remote-big"] == 2
+
+
+def test_remote_loopback_endpoint_stays_host_private(store) -> None:
+    """A served_by entry on another host whose endpoint is loopback
+    (melchior's llama-swap at 127.0.0.1) is NOT reachable from here — the
+    cluster-scoped path must skip it and stay dark."""
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "otherhost",
+        "remote-loopback",
+        2,
+        endpoint="http://127.0.0.1:11445/v1",
+    )
+    assert local_serving.acquire("remote-loopback") is None
+
+
+def test_remote_endpointless_served_by_stays_dark(store) -> None:
+    """A served_by on another host with NO endpoint has nothing to route to
+    from here (slot-only serving is host-private) — dark no-op."""
+    meter.bind_store(store)
+    _serve_card(store, "otherhost", "remote-noep", 2)
+    assert local_serving.acquire("remote-noep") is None
+
+
+def test_remote_acquire_pauses_when_fleet_cap_full(store) -> None:
+    """The remote host's max_parallel caps the whole fleet: when its row is
+    exhausted, a cluster-scoped acquire pauses (back off / hosted escape),
+    never oversubscribes the server."""
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "otherhost",
+        "remote-solo",
+        1,
+        endpoint="http://192.168.6.197:8080/v1",
+    )
+    first = local_serving.acquire("remote-solo")
+    assert first is not None and first.reserved
+    second = local_serving.acquire("remote-solo")
+    assert second is not None and second.paused and not second.reserved
+    assert second.endpoint is None  # a paused slot routes nowhere
+    local_serving.release(first)
+
+
+def test_local_serving_wins_over_remote(store) -> None:
+    """When THIS host serves the model too, the local entry wins — the remote
+    path is only consulted on a local-serve miss."""
+    meter.bind_store(store)
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id="both-hosts", text="both.")
+    store.update_ref(
+        rid,
+        meta_patch={
+            "served_by": [
+                {
+                    "host": "otherhost",
+                    "max_parallel": 4,
+                    "endpoint": "http://192.168.6.197:8080/v1",
+                },
+                {
+                    "host": "testnode",
+                    "max_parallel": 2,
+                    "endpoint": "http://127.0.0.1:11445/v1",
+                },
+            ]
+        },
+    )
+    store.reconcile_llm_served_slots(
+        {("otherhost", "llm:both-hosts"): 4, ("testnode", "llm:both-hosts"): 2}
+    )
+    local_serving.reset_cache()
+    slot = local_serving.acquire("both-hosts")
+    assert slot is not None and slot.reserved
+    assert slot.host == "testnode"
+    assert slot.endpoint == "http://127.0.0.1:11445/v1"
+
+
 def test_endpoint_is_host_scoped(store) -> None:
     """A card served on two hosts with different endpoints → *this* host's slot
     carries *this* host's endpoint, never the other's."""

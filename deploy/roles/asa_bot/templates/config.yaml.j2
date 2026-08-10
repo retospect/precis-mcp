@@ -7,13 +7,16 @@ llm:
     - "-p"
     - "--max-turns"
     - "100"
-    # Sonnet at the asa level — fast, cheap, good enough for chat
-    # routing and tool dispatch. Reasoning-heavy subagents
-    # (deep-researcher, improver, code-reviewer) pin themselves to
-    # opus via `model:` frontmatter in their grimoire definitions;
-    # the rest inherit sonnet.
+    # `local` = ride the router's BIG placement chain (operator
+    # `llm.chain.big`: local/OSS rung first, cloud fallback) instead of
+    # pinning a claude id onto the `claude -p` lane — asa follows the same
+    # chain the fleet's BIG-tier work uses, and an api_error/quota outage
+    # on the Anthropic lane no longer darks the bridge. `/model opus`
+    # (or any concrete claude id here) is the escape hatch back to the
+    # claude streaming lane, where reasoning-heavy subagents still pin
+    # themselves via `model:` frontmatter in their grimoire definitions.
     - "--model"
-    - "claude-sonnet-4-6"
+    - "local"
     - "--output-format"
     - "stream-json"
     - "--verbose"

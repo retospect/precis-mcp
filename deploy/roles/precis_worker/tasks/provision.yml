@@ -72,7 +72,7 @@
   # ``catalyst`` (autocatpath_plugin hosts only) pulls the light pure
   # autocatpath engine so PathwayHandler imports — the plist sets
   # PRECIS_AUTOCATPATH_ENABLED, but without the module the handler
-  # InitErrors on every pathway dispatch (seen melchior 2026-08-09).
+  # InitErrors on every pathway dispatch (seen on the agent worker 2026-08-09).
   ansible.builtin.shell: |
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \

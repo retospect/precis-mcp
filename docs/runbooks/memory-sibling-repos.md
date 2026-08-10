@@ -50,3 +50,5 @@ into a durable doc and delete the memory).
 **2026-08-01** — ✓ clean (re-verified after the catpath fix above).
 
 **2026-08-02** — ✓ clean
+
+**2026-08-10** — ✓ clean

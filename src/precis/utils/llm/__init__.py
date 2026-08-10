@@ -74,7 +74,13 @@ Resolution, per dispatch (in order)
 Local serving: a host that declares ``served_by`` for the model holds one
 of its ``resource_slots`` for the call (``local_serving.acquire``); a
 reserved slot's ``endpoint`` repoints the local wire at llama-swap
-directly. A *saturated* slot (all capacity busy) retries rung 0 against the
+directly. **Cluster-scoped:** on a local-serve miss, a ``served_by`` entry
+on *another* host whose endpoint is LAN-routable (not loopback) is
+acquirable from any node — reserved against the declared host's slot row
+(one fleet-wide semaphore; the ``host`` label is the accounting key, not
+necessarily the serving machine), so every node dispatches the BIG chain's
+local rung to the DGX-pair llama-server instead of the hosted fallback. A
+*saturated* slot (all capacity busy) retries rung 0 against the
 hosted OSS endpoint instead of the busy hardware — unless
 ``placement='local'`` pins the call, which takes the paused backoff.
 ``SMALL``'s local-only aliases remap to a hosted small model

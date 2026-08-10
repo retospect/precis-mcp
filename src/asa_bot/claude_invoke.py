@@ -1,9 +1,21 @@
-"""Invoke claude -p via the LLM router and stream the result.
+"""Invoke the LLM router per Discord turn — claude -p streaming, or the
+BIG placement chain.
 
-asa_bot spawns a fresh claude per Discord turn. Captures the final
-assistant text + per-turn metadata (stop_reason, token counts).
-Streams progress events out so the Discord progress indicator can
-update.
+Two lanes, picked by the effective ``--model`` value:
+
+* a concrete claude id (``/model opus``, a config override) → the original
+  streaming lane: ``dispatch_async`` drives ``claude -p`` and this module
+  parses its stream-json events into text + progress updates.
+* the ``local`` sentinel (the deployed default) → :func:`_invoke_via_chain`:
+  the sync ``dispatch`` walks the operator-owned ``llm.chain.big`` placement
+  chain (local/OSS rung first, cloud fallback) in a worker thread — no
+  ``claude -p``, no event stream, the reply comes off the aggregated
+  :class:`LlmResult`.
+
+asa_bot spawns a fresh turn per Discord message either way. Captures the
+final assistant text + per-turn metadata (stop_reason, token counts).
+On the streaming lane, progress events flow out so the Discord progress
+indicator can update.
 
 Phase 3 of the router-migration plan (follow-up): this used
 to hand-roll ``asyncio.create_subprocess_exec`` directly; it now builds
@@ -28,10 +40,13 @@ reconciled, or one retired, later; for now they simply coexist.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from asa_bot.config import LLMConfig
@@ -40,6 +55,7 @@ from precis.utils.llm.router import (
     LlmRequest,
     LlmResult,
     Tier,
+    dispatch,
     dispatch_async,
     resolve_model,
 )
@@ -88,6 +104,26 @@ _ASA_DISALLOWED_TOOLS: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
 )
+
+# Chain-lane turns hold a thread for the WHOLE turn (sync dispatch, up to
+# turn_timeout_seconds each) — on asyncio's shared default executor that
+# would let a handful of long conversations starve every other to_thread
+# user in the process. A dedicated small pool bounds the chain lane's
+# thread footprint instead; a 5th concurrent turn queues here (Discord
+# shows its working indicator) rather than eating the shared pool.
+_CHAIN_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="asa-chain")
+
+# The ``--model`` sentinel that routes a turn through the router's BIG
+# *placement chain* (operator-owned ``llm.chain.big``: local/OSS rung first,
+# cloud fallback) instead of pinning a claude id onto the ``claude -p``
+# streaming lane. Matches the ``local`` alias the router's
+# PLANNER_TIER_BY_ALIAS already maps to ``Tier.BIG`` ("local now pins BIG
+# directly"), so `/model local` and the deployed config default both land
+# here. Chosen over an ``llm.op.asa_bot`` registry row because
+# ``dispatch_async`` resolves its streaming decision from ``req.tier``
+# *before* the operations layer runs — an op row could never divert the
+# claude streaming path.
+_LOCAL_MODEL_SENTINEL = "local"
 
 
 class ClaudeResult:
@@ -185,6 +221,16 @@ async def invoke(
 
     result = ClaudeResult()
 
+    if model.strip().lower() == _LOCAL_MODEL_SENTINEL:
+        return await _invoke_via_chain(
+            cfg,
+            system_prompt,
+            user_message,
+            conv_slug=conv_slug,
+            result=result,
+            max_turns=max_turns,
+        )
+
     # Hooks read ASA_CONV_SLUG to attach a Stop-hook capture to the right
     # conv ref (see the module docstring — an independent mechanism from the
     # router's own llm_call_log write below).
@@ -254,6 +300,99 @@ async def invoke(
             # nothing to show gets surfaced to the user.
             result.error = llm_result.error
 
+    return result
+
+
+def _warm_runtime() -> None:
+    """Bind the in-process precis runtime before a chain dispatch.
+
+    ``dispatch``'s local-serving slot lookup and the hosted-OSS vault-key
+    resolution both read process-global stores that ``build_runtime`` binds as
+    a side effect (``adopt_process_store`` / the budget-meter store) — and the
+    OSS tool loop only builds that runtime *after* it has already resolved its
+    endpoint + key. Without this warm-up, the FIRST chain turn in a fresh
+    asa_bot process sees no local endpoint and an empty API key, fails, then
+    "heals" on turn two once the loop's own build has bound the stores. The
+    loop reuses this exact cached runtime for its in-process verb execution,
+    so this costs nothing after the first call.
+    """
+    from precis.tools.core import _get_runtime
+
+    _get_runtime()
+
+
+async def _invoke_via_chain(
+    cfg: LLMConfig,
+    system_prompt: str,
+    user_message: str,
+    *,
+    conv_slug: str,
+    result: ClaudeResult,
+    max_turns: int,
+) -> ClaudeResult:
+    """One turn on the router's BIG placement chain (``--model local``).
+
+    The chain's rungs are OSS transports (the in-process ``openai_tools``
+    loop / a hosted OpenAI-compat endpoint), none of which stream
+    ``on_event`` — so this lane trades the Discord progress ticker
+    (tool_use / first_sentence / text_partial) for operator-owned routing,
+    and the final text is lifted off the aggregated :class:`LlmResult`
+    instead of accumulated per-event. ``dispatch`` is synchronous and the
+    OSS tool loop blocks for the whole turn — it runs in a worker thread so
+    the Discord gateway heartbeat (and other queued turns' progress edits)
+    keeps running.
+
+    The claude-lane knobs (``disallowed_tools``, the OAuth ``env_overlay``,
+    ``cwd``) still ride along: the OSS transports ignore them, but
+    ``resolve_chain`` can legitimately fall back to a ``claude_agent`` rung
+    (a tool-filtered or default chain), and that rung must arrive as fully
+    equipped as the streaming lane's.
+
+    Never raises — same contract as :func:`invoke`.
+    """
+    overlay: dict[str, str] = dict(cfg.env)
+    overlay["ASA_CONV_SLUG"] = conv_slug
+    ensure_oauth_token(overlay)
+
+    req = LlmRequest(
+        tier=Tier.BIG,
+        prompt=user_message,
+        tools_needed=True,
+        system_prompt=system_prompt,
+        mcp_config=cfg.mcp_config_path,
+        max_turns=max_turns,
+        max_usd=_MAX_USD_CEILING,
+        timeout_s=float(cfg.turn_timeout_seconds),
+        disallowed_tools=_ASA_DISALLOWED_TOOLS,
+        source="asa_bot",
+        env_overlay=overlay,
+        cwd=cfg.cwd,
+        log_call=True,
+    )
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(_CHAIN_EXECUTOR, _warm_runtime)
+        llm_result: LlmResult = await loop.run_in_executor(
+            _CHAIN_EXECUTOR, partial(dispatch, req)
+        )
+    except Exception:
+        # Never raise out of invoke() — see its docstring's contract note.
+        log.exception("claude_invoke: chain dispatch raised unexpectedly")
+        result.error = "internal error dispatching to the LLM router"
+        return result
+
+    result.text = llm_result.text or ""
+    result.stop_reason = llm_result.stop_reason
+    if llm_result.duration_s is not None:
+        result.duration_ms = int(llm_result.duration_s * 1000)
+    result.input_tokens = llm_result.input_tokens
+    result.output_tokens = llm_result.output_tokens
+    result.cache_read_tokens = llm_result.cache_read_tokens
+    result.cache_creation_tokens = llm_result.cache_creation_tokens
+    if llm_result.error is not None and not result.text:
+        # Same gate as the streaming lane: a failure with SOME text is a
+        # recoverable exhaustion, surfaced only when there is nothing to show.
+        result.error = llm_result.error
     return result
 
 

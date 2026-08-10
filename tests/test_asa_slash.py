@@ -25,7 +25,17 @@ def test_resolve_model_alias_opus_matches_router_frontier() -> None:
 
 def test_resolve_model_alias_every_planner_alias_matches_router() -> None:
     for alias, tier in PLANNER_TIER_BY_ALIAS.items():
+        if alias == "local":
+            continue  # the chain sentinel — deliberately NOT resolved, below
         assert _resolve_model_alias(alias) == resolve_model(tier)
+
+
+def test_resolve_model_alias_local_is_passed_through_unresolved() -> None:
+    """``local`` must survive as the sentinel claude_invoke maps to the BIG
+    placement chain — eagerly resolving it would collapse it to the BIG
+    tier's claude default and route the turn back onto ``claude -p``."""
+    assert _resolve_model_alias("local") == "local"
+    assert _resolve_model_alias("LOCAL") == "local"
 
 
 def test_resolve_model_alias_custom_id_passes_through() -> None:

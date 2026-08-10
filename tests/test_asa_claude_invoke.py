@@ -39,7 +39,26 @@ def _sandbox_oauth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("asa_bot.secrets.reveal_secret", lambda name, **kw: None)
 
 
+# The default LLMConfig command now pins ``--model local`` — the sentinel
+# that routes a turn onto the router's BIG placement chain instead of the
+# claude -p streaming lane these tests exercise. Pin a concrete claude id
+# here so every streaming-lane test still drives the claude path; the
+# chain lane has its own tests at the bottom of this module.
+_CLAUDE_LANE_CMD = [
+    "claude",
+    "-p",
+    "--max-turns",
+    "100",
+    "--model",
+    "claude-opus-4-8",
+    "--output-format",
+    "stream-json",
+    "--include-partial-messages",
+]
+
+
 def _cfg(**overrides: Any) -> LLMConfig:
+    overrides.setdefault("command", list(_CLAUDE_LANE_CMD))
     return dataclasses.replace(LLMConfig(), **overrides)
 
 
@@ -407,3 +426,117 @@ def test_invoke_falls_back_to_router_frontier_when_no_model_flag(
     asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-8"))
 
     assert seen["model"] == resolve_model(Tier.FRONTIER)
+
+
+# ── the BIG-chain lane (`--model local`) ───────────────────────────────────
+
+
+def _chain_stubs(monkeypatch: pytest.MonkeyPatch, llm_result: Any) -> dict[str, Any]:
+    """Stub the chain lane's two seams — the runtime warm-up and the sync
+    ``dispatch`` — capturing the LlmRequest it was handed. Also booby-trap
+    the claude subprocess boundary so a chain turn that leaks onto the
+    streaming lane fails loudly."""
+    seen: dict[str, Any] = {}
+
+    def fake_dispatch(req: Any) -> Any:
+        seen["req"] = req
+        return llm_result
+
+    async def trap_run_claude_async(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+        raise AssertionError("--model local must never spawn claude -p")
+
+    monkeypatch.setattr("asa_bot.claude_invoke._warm_runtime", lambda: None)
+    monkeypatch.setattr("asa_bot.claude_invoke.dispatch", fake_dispatch)
+    monkeypatch.setattr(claude_agent, "run_claude_async", trap_run_claude_async)
+    return seen
+
+
+def _llm_result(**overrides: Any) -> Any:
+    from precis.utils.llm.router import LlmResult, Tier
+
+    defaults: dict[str, Any] = {
+        "text": "local answer",
+        "cost_usd": 0.0,
+        "turns_used": 2,
+        "model": "deepseek/deepseek-v4-flash",
+        "tier": Tier.BIG,
+        "stop_reason": "stop",
+        "duration_s": 1.5,
+    }
+    defaults.update(overrides)
+    return LlmResult(**defaults)
+
+
+def test_model_local_routes_via_chain_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--model local`` (the deployed default) takes the router's sync
+    ``dispatch`` on Tier.BIG with NO model pin — the operator chain owns the
+    model — and lifts the reply off the aggregated LlmResult (no event
+    stream on the OSS transports)."""
+    from precis.utils.llm.router import Tier
+
+    seen = _chain_stubs(monkeypatch, _llm_result())
+
+    cfg = _cfg(command=list(LLMConfig().command))  # the real default: --model local
+    result = asyncio.run(invoke(cfg, "sys prompt", "hi", conv_slug="conv-9"))
+
+    req = seen["req"]
+    assert req.tier is Tier.BIG
+    assert req.model is None
+    assert req.tools_needed is True
+    assert req.prompt == "hi"
+    assert req.system_prompt == "sys prompt"
+    assert req.mcp_config == cfg.mcp_config_path
+    assert req.source == "asa_bot"
+
+    assert result.text == "local answer"
+    assert result.stop_reason == "stop"
+    assert result.duration_ms == 1500
+    assert result.error is None
+
+
+def test_model_local_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _chain_stubs(monkeypatch, _llm_result())
+    cfg = _cfg(command=["claude", "-p", "--model", "LOCAL"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-10"))
+    assert "req" in seen
+    assert result.text == "local answer"
+
+
+def test_model_local_surfaces_error_without_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _chain_stubs(monkeypatch, _llm_result(text="", error="every rung failed"))
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-11"))
+    assert result.text == ""
+    assert result.error == "every rung failed"
+
+
+def test_model_local_swallows_error_with_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parity with the streaming lane's ``rc != 0 and not result.text`` gate:
+    a failure that still produced an answer is a silent success."""
+    _chain_stubs(monkeypatch, _llm_result(text="partial", error="max_turns exhausted"))
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-12"))
+    assert result.text == "partial"
+    assert result.error is None
+
+
+def test_model_local_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same never-raise contract as the streaming lane — bot.py has no
+    fallback reply for a raised invoke()."""
+
+    def boom(req: Any) -> Any:
+        raise RuntimeError("chain plumbing broke")
+
+    monkeypatch.setattr("asa_bot.claude_invoke._warm_runtime", lambda: None)
+    monkeypatch.setattr("asa_bot.claude_invoke.dispatch", boom)
+
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-13"))
+    assert isinstance(result, ClaudeResult)
+    assert result.error is not None

@@ -44,8 +44,18 @@ def _resolve_model_alias(target: str) -> str:
     model rather than a vendor id pinned in this file. The alias match is
     case-insensitive; anything not an alias is passed through with its
     ORIGINAL casing — some OpenAI-compatible endpoints are case-sensitive,
-    so a one-off custom model id must survive verbatim."""
-    tier = PLANNER_TIER_BY_ALIAS.get(target.lower())
+    so a one-off custom model id must survive verbatim.
+
+    ``local`` is the one alias NOT eagerly resolved: it is the sentinel
+    ``claude_invoke`` maps to the router's BIG placement chain per turn
+    (operator ``llm.chain.big``: local/OSS rung first, cloud fallback).
+    Resolving it here would collapse it to the BIG tier's *claude* default
+    (``resolve_model(Tier.BIG)``) and route the turn back onto ``claude -p``
+    — the exact lane ``/model local`` exists to leave."""
+    lowered = target.lower()
+    if lowered == "local":
+        return lowered
+    tier = PLANNER_TIER_BY_ALIAS.get(lowered)
     return resolve_model(tier) if tier is not None else target
 
 
@@ -158,7 +168,8 @@ async def cmd_help(ctx: SlashContext) -> None:
         "`/help` — this list",
         "`/show-prompt` — full preamble (system prompt + injected blocks) as attachment",
         "`/status` — record counts per kind + most-recent entry",
-        "`/model [opus|sonnet|haiku|<id>]` — show or change the LLM driving each turn",
+        "`/model [local|opus|sonnet|haiku|<id>]` — show or change the LLM driving "
+        "each turn (`local` = the router's BIG chain: local/OSS first, cloud fallback)",
         "`/agents` — list available Claude Code agent definitions",
         "`/skill <query>` — semantic search over precis skill docs",
         "`/precis <verb> key=value [...]` — direct MCP call. e.g.:",
