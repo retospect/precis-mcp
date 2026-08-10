@@ -96,11 +96,24 @@ def render_via_container(
             f"{outdir}:/work/out",
             image,
         ]
-        run(
-            argv,
-            check=True,
-            timeout=timeout,
-        )
+        try:
+            run(
+                argv,
+                check=True,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # Capture what the container printed — without this the daemon
+            # log only ever shows "exit status 1" and the real traceback is
+            # stranded inside the (already-removed, --rm) container.
+            stderr = (getattr(exc, "stderr", "") or "")[-2000:]
+            if not stderr:
+                stderr = (getattr(exc, "stdout", "") or "")[-2000:]
+            raise RuntimeError(
+                f"precis-tts container exited {exc.returncode}: {stderr}"
+            ) from exc
         # Prefer the mp3 the current image writes; fall back to an m4a from an
         # older, un-rebuilt image so a code deploy never dark-holes episodes.
         produced = next(

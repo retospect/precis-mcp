@@ -12,7 +12,7 @@ change.** So maintenance cost is proportional to *change*, not to document
 *size* — the property a perpetual living document needs.
 
 Status: design, grounded against code. Decisions in §Decisions; residual
-sub-questions at end. _Verified @ b3c2136f._
+sub-questions at end.
 
 ## Framing
 

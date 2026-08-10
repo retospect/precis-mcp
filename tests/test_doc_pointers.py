@@ -91,9 +91,16 @@ def test_orientation_doc_links_resolve(doc: str) -> None:
     doc_path = ROOT / doc
     assert doc_path.exists(), f"orientation doc missing: {doc}"
 
+    generated = {(ROOT / g).resolve() for g in _GENERATED}
     dead: list[str] = []
     for target in _local_targets(doc_path.read_text(encoding="utf-8")):
-        if not (doc_path.parent / target).resolve().exists():
+        resolved = (doc_path.parent / target).resolve()
+        # Links TO a generated index are allowed to dangle: the target is
+        # gitignored and regenerated per worktree (scripts/docs-index), so
+        # it's legitimately absent right after a merge or in a fresh clone.
+        if resolved in generated:
+            continue
+        if not resolved.exists():
             dead.append(target)
 
     assert not dead, f"{doc} has dead relative link(s): {sorted(set(dead))}"

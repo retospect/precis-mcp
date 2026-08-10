@@ -4,6 +4,7 @@ path is pure (fake podman), so it runs without a TTS toolchain."""
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -133,6 +134,32 @@ def test_render_via_container_bounds_the_run_with_a_timeout(tmp_path):
 def test_render_episode_no_backend_raises(tmp_path):
     with pytest.raises(RuntimeError, match="no TTS backend"):
         render_episode(_SEGS, tmp_path / "ep.mp3")
+
+
+def test_render_via_container_includes_stderr_tail_on_failure(tmp_path):
+    # A container failure must surface the real traceback, not just "exit
+    # status 1" — the process log otherwise strands it inside the (--rm'd)
+    # container.
+    def _boom(cmd, **kw):
+        raise subprocess.CalledProcessError(
+            1, cmd, output="stdout noise", stderr="x" * 3000 + "TAIL MARKER"
+        )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        render_via_container(_SEGS, tmp_path / "ep.mp3", image="x", run=_boom)
+    msg = str(excinfo.value)
+    assert "TAIL MARKER" in msg  # the tail, not the head, of stderr is kept
+    assert "1" in msg  # return code
+
+
+def test_render_via_container_falls_back_to_stdout_when_stderr_empty(tmp_path):
+    def _boom(cmd, **kw):
+        raise subprocess.CalledProcessError(
+            1, cmd, output="stdout tail here", stderr=""
+        )
+
+    with pytest.raises(RuntimeError, match="stdout tail here"):
+        render_via_container(_SEGS, tmp_path / "ep.mp3", image="x", run=_boom)
 
 
 def test_render_via_container_missing_output_raises(tmp_path):

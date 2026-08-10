@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,61 @@ _KOKORO_SR = 24000
 #: Kokoro to say — phonemizing it yields zero batches and
 #: ``np.concatenate`` dies with "need at least one array to concatenate".
 _HAS_VOICE = re.compile(r"[^\W_]")
+
+#: Sentence-ending punctuation followed by whitespace — the preferred split
+#: point when a batch overflows kokoro-onnx's fixed 510-phoneme/token limit
+#: (splitting mid-sentence reads worse than splitting between sentences).
+_SENTENCE_BREAK = re.compile(r"[.!?。！？]\s+")
+
+#: Any whitespace run — the fallback split point when there's no sentence
+#: boundary to use.
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _split_point(payload: str) -> int | None:
+    """The index nearest ``payload``'s midpoint to split on: a sentence
+    boundary if one exists, else any whitespace, else ``None`` (a single
+    giant token — unsplittable). A match flush against either end (e.g. a
+    trailing ". ") is excluded — it would hand ``payload`` right back
+    unshrunk on one side and recurse forever."""
+    mid = len(payload) / 2
+    for pattern in (_SENTENCE_BREAK, _WHITESPACE):
+        ends = [
+            m.end() for m in pattern.finditer(payload) if 0 < m.end() < len(payload)
+        ]
+        if ends:
+            return min(ends, key=lambda i: abs(i - mid))
+    return None
+
+
+def _create_with_split(
+    create_fn: Callable[[str], tuple[Any, int]], payload: str
+) -> tuple[Any, int]:
+    """Call ``create_fn(payload)``; on kokoro-onnx's 510-phoneme/token
+    boundary ``IndexError`` (``voice = voice[len(tokens)]`` in
+    ``_create_audio``), split ``payload`` near its midpoint and recurse on
+    each half, concatenating the resulting audio (recursion handles a half
+    that's still too long). Unsplittable input (no whitespace at all) logs a
+    warning and returns silence — matching the existing "no audio batches"
+    ``ValueError`` fallback below: one cursed segment must not kill the whole
+    episode."""
+    try:
+        return create_fn(payload)
+    except IndexError:
+        import numpy as np
+
+        split = _split_point(payload)
+        if split is None:
+            log.warning(
+                "Kokoro hit the 510-phoneme boundary on unsplittable input "
+                "%r; returning silence",
+                payload[:80],
+            )
+            return np.zeros(0, dtype=np.float32), _KOKORO_SR
+        left, sr = _create_with_split(create_fn, payload[:split])
+        right, _sr = _create_with_split(create_fn, payload[split:])
+        return np.concatenate([left, right]), sr
+
 
 #: Languages whose Kokoro voices want the misaki G2P (espeak phonemes mismatch
 #: the training set). Keyed by our espeak lang code -> (misaki submodule, class,
@@ -104,13 +160,19 @@ class KokoroSynth:
             if g2p is not None:
                 try:
                     phonemes, _tokens = g2p(text)
-                    return self._k.create(
-                        phonemes, voice=voice, speed=self._speed, is_phonemes=True
+                    return _create_with_split(
+                        lambda p: self._k.create(
+                            p, voice=voice, speed=self._speed, is_phonemes=True
+                        ),
+                        phonemes,
                     )
                 except Exception as exc:  # never fail a render on G2P trouble
                     log.warning("misaki %s G2P failed (%s); espeak fallback", lang, exc)
         try:
-            return self._k.create(text, voice=voice, speed=self._speed, lang=lang)
+            return _create_with_split(
+                lambda t: self._k.create(t, voice=voice, speed=self._speed, lang=lang),
+                text,
+            )
         except ValueError as exc:
             if "at least one array" not in str(exc):
                 raise

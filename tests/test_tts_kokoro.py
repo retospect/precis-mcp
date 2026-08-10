@@ -104,6 +104,57 @@ def test_kokoro_empty_concatenate_error_returns_silence():
     assert len(samples) == 0
 
 
+class _FakeSplitK:
+    """Raises IndexError (kokoro-onnx's 510-phoneme boundary bug) for any
+    input longer than ``max_len`` characters; otherwise returns an array
+    whose length equals the input length, so a concatenated result proves
+    every leaf actually got rendered (no dropped text)."""
+
+    def __init__(self, max_len: int) -> None:
+        self.max_len = max_len
+        self.calls: list[str] = []
+
+    def create(
+        self,
+        text: str,
+        *,
+        voice: str,
+        speed: float,
+        lang: str | None = None,
+        is_phonemes: bool = False,
+    ) -> tuple[list[float], int]:
+        self.calls.append(text)
+        if len(text) > self.max_len:
+            raise IndexError("index 510 is out of bounds for axis 0 with size 510")
+        return [1.0] * len(text), 24000
+
+
+def test_long_text_split_on_indexerror_returns_concatenated_audio():
+    s = _synth()
+    s._k = _FakeSplitK(max_len=20)  # type: ignore[assignment]
+    text = (
+        "This is sentence one. This is sentence two, which is also fairly "
+        "long and needs another split."
+    )
+    samples, sr = s.synthesize(text, voice="af_heart", lang="en-us")
+    assert sr == 24000
+    # every character of the original text made it into some leaf call — the
+    # split partitions the string exactly, nothing dropped or duplicated
+    assert len(samples) == len(text)
+    # actually split, not a single lucky call
+    assert len(s._k.calls) > 1  # type: ignore[attr-defined]
+
+
+def test_unsplittable_text_returns_silence_without_raising():
+    s = _synth()
+    s._k = _FakeSplitK(max_len=5)  # type: ignore[assignment]
+    samples, sr = s.synthesize(
+        "supercalifragilisticexpialidocious", voice="af_heart", lang="en-us"
+    )
+    assert sr == 24000
+    assert len(samples) == 0
+
+
 def test_kokoro_other_value_error_still_raises():
     s = _synth()
 
