@@ -322,6 +322,87 @@ def test_quest_hub_exploration_queue_links_to_drive_stubs(client, runtime) -> No
     )
 
 
+def _quest(**kw: Any) -> SimpleNamespace:
+    """A duck-typed quest ``Ref`` — ``deleted_at`` set explicitly since the
+    shared ``make_ref`` fixture doesn't carry it and the real
+    ``_live_servers`` (unlike this route's own defensive ``getattr``
+    reads) does a bare ``r.deleted_at is None`` check."""
+    from tests.precis_web.conftest import make_ref
+
+    kw.setdefault("deleted_at", None)
+    kw.setdefault("prio", None)
+    return make_ref(kind="quest", **kw)
+
+
+def test_quest_index_renders_tree(client, runtime) -> None:
+    """``/refs/quest`` renders a forest: a sub-quest nests under (and after)
+    the parent it serves, and an orphan quest still appears as a root."""
+    store = runtime.store
+    store.quests.append(_quest(id=200, title="Grand catalysis quest"))
+    store.quests.append(_quest(id=201, title="NH3 selectivity sub-quest"))
+    store.quests.append(_quest(id=202, title="An unrelated orphan quest"))
+    # The serves edge is child→parent: src=child(201), dst=parent(200).
+    store.serves_links.append(SimpleNamespace(src_ref_id=201, dst_ref_id=200))
+
+    resp = client.get("/refs/quest")
+    assert resp.status_code == 200
+    assert "/refs/quest/200" in resp.text
+    assert "/refs/quest/201" in resp.text
+    assert "/refs/quest/202" in resp.text
+    assert "Grand catalysis quest" in resp.text
+    assert "NH3 selectivity sub-quest" in resp.text
+    assert "An unrelated orphan quest" in resp.text
+    # The sub-quest is nested — it renders after its parent in document
+    # order (indented under it, not as a sibling root).
+    assert resp.text.index("Grand catalysis quest") < resp.text.index(
+        "NH3 selectivity sub-quest"
+    )
+
+
+def test_quest_detail_shows_lineage_both_directions(client, runtime) -> None:
+    """The child's page shows "Serves →" with the parent's handle; the
+    parent's page shows the child under "Sub-quests"."""
+    store = runtime.store
+    store.quests.append(_quest(id=200, title="Grand catalysis quest"))
+    store.quests.append(_quest(id=201, title="NH3 selectivity sub-quest"))
+    store.serves_links.append(SimpleNamespace(src_ref_id=201, dst_ref_id=200))
+
+    child_resp = client.get("/refs/quest/201")
+    assert child_resp.status_code == 200
+    assert "Serves" in child_resp.text
+    assert "qu200" in child_resp.text
+    assert "/refs/quest/200" in child_resp.text
+
+    parent_resp = client.get("/refs/quest/200")
+    assert parent_resp.status_code == 200
+    assert "Sub-quests" in parent_resp.text
+    assert "qu201" in parent_resp.text
+    assert "/refs/quest/201" in parent_resp.text
+
+
+def test_quest_index_cycle_guard_does_not_500_or_hang(client, runtime) -> None:
+    """Two quests serving each other must render, not 500 or hang — the
+    ``/refs/quest`` tree's visited-set guard (gripe 161912)."""
+    store = runtime.store
+    store.quests.append(_quest(id=210, title="Quest A"))
+    store.quests.append(_quest(id=211, title="Quest B"))
+    store.serves_links.append(SimpleNamespace(src_ref_id=210, dst_ref_id=211))
+    store.serves_links.append(SimpleNamespace(src_ref_id=211, dst_ref_id=210))
+
+    resp = client.get("/refs/quest")
+    assert resp.status_code == 200
+    # Neither cycle member qualifies as a root (each serves the other),
+    # so both ride the fallback-root promotion — the pair must stay
+    # visible, not silently vanish from the tree.
+    assert "/refs/quest/210" in resp.text
+    assert "/refs/quest/211" in resp.text
+
+    # The detail pages (whose Lineage panel reads the same edges, just
+    # non-recursively) must also render cleanly for both sides of the loop.
+    assert client.get("/refs/quest/210").status_code == 200
+    assert client.get("/refs/quest/211").status_code == 200
+
+
 def test_quest_draft_url_prefers_slug_falls_back_to_id() -> None:
     store = SimpleNamespace(
         fetch_refs_by_ids=lambda ids: {

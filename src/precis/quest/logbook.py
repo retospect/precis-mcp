@@ -66,6 +66,7 @@ def append_entry(
     by: str,
     cost: float | None = None,
     chars: int | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> int:
     """Append one logbook entry; return its 1-based entry number.
 
@@ -73,7 +74,11 @@ def append_entry(
     :data:`ENTRY_TYPES` / :data:`BY_VALUES` when it wants to *reject* bad input
     (the handler does, to surface a typo). This function is permissive — it
     stamps whatever it is given — so the autonomous tick can clamp-and-proceed
-    rather than raise.
+    rather than raise. ``extra_meta`` merges additional structured facts onto
+    the entry's ``meta`` (e.g. the narrative growth-ratchet gate's word
+    counts + reason, the dossier-hygiene design) so they're minable later
+    without parsing ``text`` — it never overwrites the keys this function
+    itself stamps (``chunk_kind``/``entry_type``/``by``/``cost``/``chars``).
     """
     entry_meta: dict[str, Any] = {
         "chunk_kind": LOG_KIND,
@@ -84,6 +89,9 @@ def append_entry(
         entry_meta["cost"] = float(cost)
     if chars is not None:
         entry_meta["chars"] = int(chars)
+    if extra_meta:
+        for k, v in extra_meta.items():
+            entry_meta.setdefault(k, v)
     # Next pos = current chunk count. list_blocks_for_ref excludes the synthetic
     # card (ord=-1), so the first logbook entry lands at pos=0.
     next_pos = len(store.list_blocks_for_ref(quest_id))

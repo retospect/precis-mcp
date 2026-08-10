@@ -66,6 +66,7 @@
 - [`draft-cite-groundwork-prepass`](./draft-cite-groundwork-prepass.md) **idea** — A cheap-model tick that reads a section's cluster-map working set + its
 - [`draft-footnotes-annotations`](./draft-footnotes-annotations.md) **idea** — Footnotes: a first-class `footnote` chunk_kind anchored to its block via
 - [`draft-inline-editor`](./draft-inline-editor.md) **idea** — Status: **design agreed, incremental build in progress.** This is the
+- [`draft-refresh`](./draft-refresh.md) **draft** — Long-lived drafts (the "big book", dr42995) should improve continuously without an operator queuing work. No todo pile: a recurring pass finds the *stalest section* of an opted-in draft every few hours and mints exactly one bounded refresh job for it. Workers do the rest.
 - [`draft-section-styles`](./draft-section-styles.md) **idea** — that section surfaces that skill as the prompt.
 - [`draft-table-editing`](./draft-table-editing.md) **draft** — Two open gripes, filed while fixing a one-character unit-label error
 - [`draft-table-structured-enrichment`](./draft-table-structured-enrichment.md) **draft** — `chunk_kind='table'` draft chunks store canonical data as

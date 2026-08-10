@@ -7,7 +7,8 @@ exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
-`explore` (tried-set summary). The perpetual loop itself is the
+`explore` (tried-set summary), `narrative_budget` (the growth-ratchet gate,
+owner-agnostic — reusable by any rolling-context rewrite). The perpetual loop itself is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
 Package-level invariants (each enforced where named):
@@ -21,6 +22,14 @@ Package-level invariants (each enforced where named):
 - **Untrusted barriers don't rank.** A pathway with NEB-not-converged /
   adsorbate-detached warnings is excluded from the frontier and can never
   graduate (``compute._pathway_quality`` → ``frontier`` → ``graduate``).
+- **The dossier can't bloat or lose its trail.** The pinned ledger is a
+  nested attempt tree mutated only via explicit ops
+  (``dossier.add_attempt``/``mark_attempt`` — exact-text addressed,
+  whitespace-normalized against node forgery); the narrative rewrite passes
+  ``narrative_budget.narrative_growth_gate`` (growth beyond 15%+50 words
+  needs same-tick progress evidence; ~2500-word ceiling tripwire; one
+  compress-retry then keep-previous + logbook entry). Word counts land in
+  logbook meta so thresholds are tuned from data.
 - **Loop existence is reconciled, not allocated.** ``loop`` guarantees one
   live coordinator per active quest (idempotent re-mint, reboot-orphan reap,
   failed-rest backoff); ``allocator`` backs only the manual

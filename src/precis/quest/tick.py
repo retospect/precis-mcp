@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
+from precis.quest import narrative_budget
 from precis.quest.logbook import (
     ENTRY_TYPES,
     LOG_KIND,
@@ -113,10 +114,11 @@ class QuestTickOutcome:
     searches_run: int = 0
     papers_linked: int = 0
     hypotheses_deduped: int = 0
-    # Dossier-owned-by-process pinned ledger — applied (non-deduped) `ledger_add` entries
-    # this tick. An engagement signal for the coordinator's punt-vs-genuine-
-    # dry split (:mod:`precis.workers.job_types.quest_tick`): a tick that only
-    # pinned a ledger direction still counted as "the model engaged".
+    # Dossier-owned-by-process pinned ledger — applied (non-deduped) `ledger_add`
+    # entries plus applied `ledger_ops` (add/mark) this tick. An engagement
+    # signal for the coordinator's punt-vs-genuine-dry split
+    # (:mod:`precis.workers.job_types.quest_tick`): a tick that only pinned/
+    # marked a ledger direction still counted as "the model engaged".
     ledger_added: int = 0
     # Cascade (rung 4c).
     escalated: bool = False
@@ -331,28 +333,18 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
 
 
 def _ledger_constraints(ledger_text: str) -> str:
-    """Bullet lines from the pinned ledger's Tried + Ruled-out sections.
+    """Bullet lines for the pinned attempt tree's tried/ruled-out directions.
 
     This is dossier-owned-by-process's structural "do not re-propose" constraint —
-    strategic *directions* the ledger has pinned as tried/dead, distinct from
-    :func:`_ruled_out_handles`'s per-candidate `structure` tags. The Open
-    section is a to-do list, not a constraint, so it's excluded.
+    strategic *directions* the ledger has pinned as tried/dead (own status, or
+    inherited from a ruled-out ancestor; a fully-dead subtree collapses to one
+    summary line), distinct from :func:`_ruled_out_handles`'s per-candidate
+    `structure` tags. An open/active direction with no ruled-out ancestor is
+    the exploration queue, not a constraint, so it's excluded — see
+    :func:`precis.quest.dossier.ledger_do_not_repropose`, which does the
+    parsing + inheritance + collapse.
     """
-    keep_headings = {
-        dossier_mod._SECTION_HEADINGS["tried"],
-        dossier_mod._SECTION_HEADINGS["ruled-out"],
-    }
-    placeholder = f"- {dossier_mod._LEDGER_PLACEHOLDER}"
-    lines: list[str] = []
-    keep = False
-    for line in ledger_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            keep = stripped in keep_headings
-            continue
-        if keep and stripped.startswith("- ") and stripped != placeholder:
-            lines.append(stripped)
-    return "\n".join(lines) if lines else "(nothing pinned yet)"
+    return dossier_mod.ledger_do_not_repropose(ledger_text)
 
 
 def _champion(
@@ -579,7 +571,7 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "`poison_verdicts` name a species, say in the dossier whether the "
         "literature considers it relevant for this chemistry — and if the "
         "literature names a poison we do NOT screen yet, record that as a "
-        "gap (`ledger_add`, section `open`).\n"
+        "gap (`ledger_ops`, an `add` op with `status: open`).\n"
     )
     return (
         "\n## Reaction R — this is a catalyst-barrier quest\n"
@@ -603,17 +595,36 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
     )
 
 
-def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
+def build_tick_prompt(
+    store: Store,
+    quest: Ref,
+    *,
+    review: bool = False,
+    narrative_override: str | None = None,
+) -> str:
     """Assemble the full rolling-context prompt for one tick.
 
     ``review=True`` builds the **frontier-review** prompt (rung 4c): the senior
     model reviews the accumulated evidence + the Pareto frontier and sets the
     next strategic directions, rather than doing one more local increment.
+
+    ``narrative_override``, when given, is used in place of the PERSISTED
+    narrative (:func:`precis.quest.dossier.read_narrative`) — the commit
+    re-prompt ladder's rebuild (:func:`_build_commit_prompt`) passes the
+    primary tick's just-proposed (not-yet-written) ``dossier_markdown``
+    through here, since the narrative write is deferred past the ladder (the
+    growth-ratchet gate needs the ladder's own harvest as progress evidence,
+    :func:`run_quest_tick`) — without this, a ladder rebuild would show the
+    model its OWN previous-tick narrative and ask it to act on stale context.
     """
     qid = quest.id
     stmt = quest.title or f"quest {qid}"
     prio = quest.prio if quest.prio is not None else "unset"
-    dossier_text = dossier_mod.read_narrative(store, qid)
+    dossier_text = (
+        narrative_override
+        if narrative_override is not None
+        else dossier_mod.read_narrative(store, qid)
+    )
     ledger_text = dossier_mod.read_ledger(store, qid)
     gaps = gaps_mod.quest_gaps(store, qid)
     momentum = gaps_mod.quest_momentum(store, qid)
@@ -668,6 +679,9 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
         reaction_context=_reaction_context(store, quest, fr=fr),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
         proposal_cap=max_proposals_per_tick(),
+        narrative_word_target=narrative_budget.config_from_meta(
+            getattr(quest, "meta", None)
+        ).target_words,
     )
 
 
@@ -721,9 +735,26 @@ When the answer lies in the literature you don't yet hold (a `no-literature` or 
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
 `searches` to go get it instead of hypothesising in a vacuum.
 
-When you rule out or complete a *direction* that must never be revisited, add \
-it to `ledger_add` (permanently preserved); `dossier_markdown` is rewritten \
-every tick, so a rule-out placed only there is forgotten.
+When you rule out or complete a *direction* that must never be revisited, pin \
+it to the ledger via `ledger_ops` (permanently preserved); `dossier_markdown` \
+is rewritten every tick, so a rule-out placed only there is forgotten.
+
+The ledger is a TREE of directions, not a flat list: a node is one durable \
+direction (`open`/`active`/`tried`/`ruled-out`), and refining a direction \
+into a variant is a CHILD node under it, not a new unrelated bullet — so \
+"tried c, then tried c-with-x and c-with-y" reads as one branch, not three \
+unconnected facts. Use `ledger_ops`, a list of ops applied in order:
+- `{{"op": "add", "text": "<direction>", "parent": "<optional: exact text of \
+the existing node this refines/varies>", "status": "<optional, default open>"}}`
+- `{{"op": "mark", "node": "<exact text of the existing node>", "status": \
+"<open|active|tried|ruled-out>", "parent": "<optional: exact text of its \
+parent, only needed when that node's text is ambiguous>"}}`
+Address a node by quoting its EXISTING text exactly (case doesn't matter) — \
+there are no ids. An op that can't resolve its node (not found, or the same \
+text in two branches with no disambiguating `parent`) is silently dropped, \
+so when in doubt add a new node rather than guess at one. Ruling out a \
+direction implicitly rules out its still-open children in what you're shown \
+next tick — you do not need to mark each child individually.
 
 Respond with EXACTLY ONE JSON object and nothing else:
 {{
@@ -734,10 +765,12 @@ Respond with EXACTLY ONE JSON object and nothing else:
 linked as servers and feed the next step>"],
   "dossier_markdown": "<the FULL rewritten dossier in markdown: current \
 understanding, best leads so far, what's ruled out, open questions>",
-  "ledger_add": [
-    {{"section": "<tried|ruled-out|open>", "text": "<one durable, \
-permanently-pinned ledger entry — a direction tried/killed/still open, not a \
-single candidate material>"}}
+  "ledger_ops": [
+    {{"op": "add", "text": "<one durable, permanently-pinned direction — a \
+strategy tried/killed/still open, not a single candidate material>",
+      "parent": "<optional>", "status": "<optional, default open>"}},
+    {{"op": "mark", "node": "<exact existing node text>", "status": \
+"<open|active|tried|ruled-out>", "parent": "<optional>"}}
   ],
   "proposals": [
     {{"name": "<candidate material>", "rationale": "<why test it>",
@@ -752,7 +785,11 @@ refining an existing one>",
 
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
-`decision` on direction are the most useful. Keep the dossier tight.
+`decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
+words in `dossier_markdown` — but that's a target, not a hard cap: growth is \
+fine when it reflects genuinely new evidence (a ruling, a result), not when \
+it's restated history. A rewrite that grows well past its previous length \
+with nothing new to show for it gets bounced back to you to compress.
 
 `proposals` (0–{proposal_cap} — the loop dispatches at most {proposal_cap} \
 per tick and waits for its sims before the next tick, so pick your best next \
@@ -905,7 +942,12 @@ def _sanitize_model_entry(entry_type: str, text: str) -> tuple[str, str]:
 
 
 def _build_commit_prompt(
-    store: Store, quest: Ref, *, stall: int, base_prompt: str | None = None
+    store: Store,
+    quest: Ref,
+    *,
+    stall: int,
+    base_prompt: str | None = None,
+    narrative_override: str | None = None,
 ) -> str:
     """The "you must propose now" re-prompt the commit ladder fires.
 
@@ -921,12 +963,19 @@ def _build_commit_prompt(
     ``build_tick_prompt(..., review=False)`` call would produce), so the
     commit ladder skips rebuilding the whole context (another frontier +
     live-candidate scan) from scratch. ``None`` (default, and every unit
-    test) builds it fresh.
+    test) builds it fresh. ``narrative_override`` (only meaningful on a fresh
+    rebuild — ``base_prompt is None``) is the primary tick's just-proposed
+    ``dossier_markdown``, threaded straight through to
+    :func:`build_tick_prompt` — the narrative write is deferred past this
+    ladder (:func:`run_quest_tick`), so without it a rebuild would show the
+    model last tick's persisted narrative instead of its own current one.
     """
     base = (
         base_prompt
         if base_prompt is not None
-        else build_tick_prompt(store, quest, review=False)
+        else build_tick_prompt(
+            store, quest, review=False, narrative_override=narrative_override
+        )
     )
     directive = (
         "\n## COMMIT NOW\n"
@@ -956,6 +1005,7 @@ def _commit_reprompt_ladder(
     disp: Callable[[Any], Any],
     by: str,
     base_prompt: str | None = None,
+    narrative_override: str | None = None,
 ) -> tuple[tuple[Any, list[str]] | None, bool]:
     """At most 2 extra LLM calls: re-prompt at ``tier``, then one tier up.
 
@@ -977,12 +1027,20 @@ def _commit_reprompt_ladder(
     The caller wraps this in a ``try/except`` — a raise here must never crash
     the tick. ``base_prompt`` (see :func:`_build_commit_prompt`) skips a
     redundant full-context rebuild when the primary tick already built the
-    identical (``review=False``) prompt this call.
+    identical (``review=False``) prompt this call; ``narrative_override``
+    (only meaningful on a rebuild) keeps that rebuild showing the model its
+    own just-proposed narrative rather than last tick's persisted one.
     """
     from precis.quest.compute import run_compute_step
     from precis.utils.llm.router import LlmRequest, Tier
 
-    prompt = _build_commit_prompt(store, quest, stall=stall, base_prompt=base_prompt)
+    prompt = _build_commit_prompt(
+        store,
+        quest,
+        stall=stall,
+        base_prompt=base_prompt,
+        narrative_override=narrative_override,
+    )
     quest_id = quest.id
 
     tiers = [tier]
@@ -1013,6 +1071,160 @@ def _commit_reprompt_ladder(
         names = [str(p.get("name") or "?") for p in proposals]
         return (step, names), any_error
     return None, any_error
+
+
+# ── narrative growth-ratchet gate (dossier-hygiene design) ─────────────
+#
+# The dossier's design intent is a whole-rewritten narrative that stays
+# BOUNDED (the tick reads it as rolling context instead of replaying the
+# logbook) — but the only compactness pressure used to be the prompt phrase
+# "Keep the dossier tight", no code-enforced pressure, so a model that copies
+# everything forward makes it accrete tick over tick. The pure accept/retry
+# decision lives in :mod:`precis.quest.narrative_budget` (reusable outside
+# the tick — a future `draft_refresh` job needs the same pressure); this
+# section is the tick-specific glue: what counts as "progress" here, how the
+# compress re-prompt is worded per :data:`~precis.quest.narrative_budget.
+# GateResult.reason`, and how a failed retry is logged.
+
+#: Source tag on the compress re-prompt's own LlmRequest — distinct from the
+#: primary tick's "quest_tick"/"quest_review" and the commit ladder's
+#: "quest_tick_commit" so per-quest spend stays mineable per lane (gr162130).
+_COMPRESS_SOURCE = "quest_tick_narrative_compress"
+
+
+def _narrative_compress_prompt(md: str, reason: str, *, ceiling_words: int) -> str:
+    """The compress re-prompt's instruction, worded per the gate's
+    :data:`~precis.quest.narrative_budget.GateResult.reason` — a
+    ``"ceiling"`` trip and a ``"no-progress-growth"`` trip call for different
+    asks (compress under a hard number, vs. justify NO growth at all)."""
+    if reason == "ceiling":
+        instruction = (
+            f"Your dossier rewrite is over the hard {ceiling_words}-word "
+            f"ceiling. Rewrite it to UNDER {ceiling_words} words."
+        )
+    else:
+        instruction = (
+            "No new results this tick justify this narrative's growth — "
+            "merge redundancy and return to AT MOST the previous "
+            "narrative's length."
+        )
+    return (
+        f"{instruction} Preserve every ruling (what's tried, what's ruled "
+        "out) and every open question — cut restated background and "
+        "repetition, not conclusions. Respond with ONLY the compressed "
+        "dossier markdown, nothing else.\n\n"
+        f"{md}"
+    )
+
+
+def _reprompt_narrative_compress(
+    store: Store,
+    quest_id: int,
+    tier: Any,
+    disp: Callable[[Any], Any],
+    md: str,
+    reason: str,
+    *,
+    ceiling_words: int,
+) -> str:
+    """One compress re-prompt for a narrative the growth gate flagged.
+
+    Returns the model's reply text (the caller re-checks it against the
+    gate — a compress reply is not trusted blindly), or ``""`` on any
+    transport trouble / empty reply. Mirrors the commit ladder's own
+    degrade-don't-crash convention: a raise here must never crash the tick.
+    """
+    from precis.utils.llm.router import LlmRequest
+
+    try:
+        res = disp(
+            LlmRequest(
+                tier=tier,
+                prompt=_narrative_compress_prompt(
+                    md, reason, ceiling_words=ceiling_words
+                ),
+                source=_COMPRESS_SOURCE,
+                ref_id=quest_id,
+            )
+        )
+    except Exception:
+        log.exception(
+            "run_quest_tick: narrative-compress re-prompt raised for quest %s",
+            quest_id,
+        )
+        return ""
+    if res is None or getattr(res, "error", None) or getattr(res, "paused", False):
+        return ""
+    data = getattr(res, "data", None)
+    if isinstance(data, dict) and str(data.get("dossier_markdown") or "").strip():
+        return str(data["dossier_markdown"]).strip()
+    return str(getattr(res, "text", "") or "").strip()
+
+
+def _apply_narrative_gate(
+    store: Store,
+    quest: Ref,
+    quest_id: int,
+    md: str,
+    *,
+    progress_evidence: bool,
+    tier: Any,
+    disp: Callable[[Any], Any],
+) -> str | None:
+    """Run the growth-ratchet gate on a proposed `dossier_markdown`; return
+    the markdown to actually write, or ``None`` when even the compress
+    retry is rejected — the caller must then keep the previous narrative
+    unrewritten. A rejected-then-accepted retry writes nothing to the
+    logbook (silent success); a rejected-then-still-rejected retry appends
+    ONE `observation` entry (`by=MEASURED_BY` — a system-enforced fact, not
+    model narration) carrying the reason + word counts in ``meta`` (never
+    just prose) so the ratchet's thresholds are tunable from data later —
+    the dossier-hygiene design.
+    """
+    prev_words = len(dossier_mod.read_narrative(store, quest_id).split())
+    new_words = len(md.split())
+    cfg = narrative_budget.config_from_meta(getattr(quest, "meta", None))
+    gate = narrative_budget.narrative_growth_gate(
+        prev_words, new_words, progress_evidence, cfg
+    )
+    if gate.ok:
+        return md
+
+    reason = gate.reason or "no-progress-growth"
+    retry_md = _reprompt_narrative_compress(
+        store, quest_id, tier, disp, md, reason, ceiling_words=cfg.ceiling_words
+    )
+    retry_words = len(retry_md.split()) if retry_md else 0
+    if retry_md:
+        retry_gate = narrative_budget.narrative_growth_gate(
+            prev_words, retry_words, progress_evidence, cfg
+        )
+        if retry_gate.ok:
+            return retry_md
+
+    append_entry(
+        store,
+        quest_id,
+        text=(
+            f"dossier narrative rewrite refused ({reason}): {prev_words} → "
+            f"{new_words} words"
+            + (
+                f"; retry {retry_words} words"
+                if retry_md
+                else "; retry produced nothing usable"
+            )
+            + " — kept the previous narrative"
+        ),
+        entry_type="observation",
+        by=MEASURED_BY,
+        extra_meta={
+            "gate_reason": reason,
+            "prev_words": prev_words,
+            "new_words": new_words,
+            "retry_words": retry_words,
+        },
+    )
+    return None
 
 
 # ── the tick ──────────────────────────────────────────────────────────
@@ -1183,12 +1395,60 @@ def run_quest_tick(
         if dossier_mod.append_ledger_entry(store, quest_id, section, text):
             ledger_added += 1
 
-    # Rewrite the dossier (the rolling context) if the model produced one.
-    md = str(payload.get("dossier_markdown") or "").strip()
+    # ledger_ops (dossier-hygiene design) — the tree-capable successor to
+    # `ledger_add` above: `add` a node (optionally under `parent`) or `mark`
+    # an existing one's status. Applied in order, same BEFORE-the-rewrite
+    # placement as `ledger_add` for the same reason. Each op degrades
+    # silently on a bad shape / an ambiguous or unmatched node — that's
+    # `add_attempt`/`mark_attempt`'s own no-op contract (never a guess) — but
+    # logged here so a persistently-malformed model payload is diagnosable;
+    # a raise from either call must never crash the tick (mirrors the
+    # compute-step / commit-ladder degrade-don't-crash convention below).
+    for op in payload.get("ledger_ops") or []:
+        if not isinstance(op, dict):
+            continue
+        kind = str(op.get("op") or "").strip()
+        raw_parent = op.get("parent")
+        parent = str(raw_parent).strip() if raw_parent else None
+        try:
+            if kind == "add":
+                text = str(op.get("text") or "").strip()
+                status = str(op.get("status") or "open").strip() or "open"
+                applied = dossier_mod.add_attempt(
+                    store, quest_id, text, parent=parent, status=status
+                )
+            elif kind == "mark":
+                node = str(op.get("node") or "").strip()
+                status = str(op.get("status") or "").strip()
+                applied = dossier_mod.mark_attempt(
+                    store, quest_id, node, status, parent=parent
+                )
+            else:
+                applied = False
+        except Exception:
+            log.exception(
+                "run_quest_tick: ledger_ops entry raised for quest %s: %r",
+                quest_id,
+                op,
+            )
+            applied = False
+        if applied:
+            ledger_added += 1
+        else:
+            log.info(
+                "run_quest_tick: ledger_ops entry for quest %s not applied "
+                "(bad shape / ambiguous / unmatched): %r",
+                quest_id,
+                op,
+            )
+
+    # The proposed narrative rewrite — captured here, but NOT yet gated or
+    # written: the growth-ratchet gate (dossier-hygiene design) needs this
+    # tick's full "progress" fact (the ledger ops already applied above, plus
+    # any harvest/paper-link the compute+search steps below still produce),
+    # so the gate+write is deferred to just before `update_cascade_state`.
+    narrative_md = str(payload.get("dossier_markdown") or "").strip()
     rewritten = False
-    if md:
-        dossier_mod.rewrite_dossier(store, quest_id, md)
-        rewritten = True
 
     # Proposals — log each candidate as a hypothesis (WORM), then optionally
     # materialise + dispatch them as `structure` sims (rung 4b).
@@ -1327,6 +1587,13 @@ def run_quest_tick(
                         disp=disp,
                         by=by,
                         base_prompt=prompt if reuse_prompt else None,
+                        # The narrative write is deferred past this ladder
+                        # (the growth-ratchet gate needs the ladder's own
+                        # harvest as progress evidence) — a rebuild must see
+                        # THIS tick's just-proposed narrative, not last
+                        # tick's persisted one. Irrelevant when reuse_prompt
+                        # is True (no rebuild happens).
+                        narrative_override=narrative_md or None,
                     )
                 except Exception as exc:  # defensive — a ladder bug must not
                     # crash the tick; see the docstring above.
@@ -1429,6 +1696,39 @@ def run_quest_tick(
         except Exception:
             log.exception(
                 "run_quest_tick: frontier-tree regen failed for quest %s", quest_id
+            )
+
+    # Narrative growth-ratchet gate (dossier-hygiene design) — deferred to
+    # HERE (see the capture point above) so `progress_evidence` reflects this
+    # tick's FULL outcome: an applied ledger op, a harvest (`frontier
+    # update`), or a linked paper (this loop's stand-in for "citation mint" —
+    # `precis.quest.citation_mint` itself is the paper-writing weave's own
+    # minter, not called from here). The ledger tree is never gated — see
+    # the module banner above. Defensive: a gate/rewrite bug must not crash
+    # the tick (mirrors the frontier-tree regen / commit-ladder / compute-step
+    # try/except convention above) — on a raise, the previous narrative
+    # simply survives untouched.
+    if narrative_md:
+        try:
+            progress_evidence = (
+                bool(ledger_added) or bool(harvested) or bool(papers_linked)
+            )
+            accepted_md = _apply_narrative_gate(
+                store,
+                qref,
+                quest_id,
+                narrative_md,
+                progress_evidence=progress_evidence,
+                tier=resolved_tier,
+                disp=disp,
+            )
+            if accepted_md is not None:
+                dossier_mod.rewrite_dossier(store, quest_id, accepted_md)
+                rewritten = True
+        except Exception:
+            log.exception(
+                "run_quest_tick: narrative growth-ratchet gate failed for quest %s",
+                quest_id,
             )
 
     # Advance the cascade counters + recompute `promise` (rung 4d reads it).

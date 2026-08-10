@@ -1,0 +1,44 @@
+{% extends "base.html.j2" %}
+{% block title %}Quests{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-3">{{ kind_label }}</h1>
+
+{% macro status_chip(status) %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+  {% if status == 'active' %}bg-emerald-100 text-emerald-800
+  {% elif status == 'dormant' %}bg-amber-100 text-amber-800
+  {% else %}bg-slate-200 text-slate-700{% endif %}">
+  STATUS:{{ status }}
+</span>
+{% endmacro %}
+
+{% macro quest_row(node, depth) %}
+<li class="px-4 py-2 flex items-start gap-3" style="padding-left: {{ 1 + depth * 1.5 }}rem;">
+  <span class="font-mono text-xs text-slate-400 w-14 shrink-0 pt-0.5">qu{{ node.id }}</span>
+  <a href="/refs/quest/{{ node.id }}"
+     class="text-sm font-medium text-sky-700 hover:underline flex-1 break-words">
+    {{ node.headline }}
+  </a>
+  {{ status_chip(node.status) }}
+  {% if node.prio is not none %}
+  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+    PRIO:{{ node.prio }}
+  </span>
+  {% endif %}
+  <span class="text-xs text-slate-400 w-32 shrink-0 text-right pt-0.5">{{ node.updated }}</span>
+</li>
+{% for child in node.children %}
+{{ quest_row(child, depth + 1) }}
+{% endfor %}
+{% endmacro %}
+
+{% if not forest %}
+<p class="text-sm text-slate-500">No quests yet.</p>
+{% else %}
+<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+  {% for root in forest %}
+  {{ quest_row(root, 0) }}
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

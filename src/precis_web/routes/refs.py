@@ -432,6 +432,39 @@ def _tag_chips(raw_tags: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _quest_status_from_tags(raw_tags: Any) -> str:
+    """``STATUS:<value>`` closed tag off a quest's tag list, defaulting to
+    ``active`` — the same derivation the hub header used inline, factored
+    out so the Lineage panel and the ``/refs/quest`` tree (each reading a
+    *different* quest's tags than the one being rendered) share it."""
+    status = "active"
+    for t in raw_tags:
+        if (
+            getattr(t, "namespace", None) == "closed"
+            and getattr(t, "prefix", None) == "STATUS"
+        ):
+            status = t.value
+    return status
+
+
+def _quest_headline(title: str | None, qid: int) -> str:
+    """First line of a quest's striving statement (the second line, when
+    present, is the "Rubric:" criteria — dropped here)."""
+    lines = (title or "").split("\n", 1)
+    return lines[0] if lines else f"quest {qid}"
+
+
+def _quest_lineage_row(store: Any, ref: Any) -> dict[str, Any]:
+    """One quest→quest ``serves`` edge's display shape — shared by the hub
+    dashboard's Lineage panel (``_quest_detail``) and the ``/refs/quest``
+    tree (``_quest_index``)."""
+    return {
+        "id": ref.id,
+        "headline": _quest_headline(ref.title, ref.id),
+        "status": _quest_status_from_tags(store.tags_for(ref.id)),
+    }
+
+
 def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
     """``/smartdraft/<ident>`` for a draft ref id — slug when the draft has
     one (the human-legible address), else the numeric id (the reader
@@ -485,13 +518,7 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     qid = int(ref.id)
     quest_tag = quest_tag_value(qid, store)
     raw_tags = store.tags_for(qid)
-    status = "active"
-    for t in raw_tags:
-        if (
-            getattr(t, "namespace", None) == "closed"
-            and getattr(t, "prefix", None) == "STATUS"
-        ):
-            status = t.value
+    status = _quest_status_from_tags(raw_tags)
     tags = _tag_chips(raw_tags)
 
     title_lines = (ref.title or "").split("\n", 1)
@@ -499,6 +526,31 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     criteria = title_lines[1].strip() if len(title_lines) > 1 else ""
 
     live_servers = _live_servers(store, qid)
+
+    # Lineage — the `serves` DAG one hop each way. Children are the
+    # already-fetched live servers narrowed to kind='quest' (no extra
+    # query); parents are the outbound edge, resolved + narrowed the
+    # same way `_live_servers` narrows its inbound one (live + kind
+    # check) since `links_for` alone can't tell a dangling/non-quest
+    # dst from a real parent.
+    lineage_children = [
+        _quest_lineage_row(store, s) for s in live_servers if s.kind == "quest"
+    ]
+    parent_ids: list[int] = []
+    seen_parent_ids: set[int] = set()
+    for ln in store.links_for(qid, direction="out", relation="serves"):
+        pid = ln.dst_ref_id
+        if pid not in seen_parent_ids:
+            seen_parent_ids.add(pid)
+            parent_ids.append(pid)
+    parent_refs = store.fetch_refs_by_ids(set(parent_ids)) if parent_ids else {}
+    lineage_parents = [
+        _quest_lineage_row(store, pref)
+        for pid in parent_ids
+        if (pref := parent_refs.get(pid)) is not None
+        and getattr(pref, "deleted_at", None) is None
+        and pref.kind == "quest"
+    ]
 
     entries = [
         b
@@ -627,6 +679,8 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
             "criteria": criteria,
             "status": status,
             "tags": tags,
+            "lineage_parents": lineage_parents,
+            "lineage_children": lineage_children,
             "momentum": momentum,
             "tote": tote,
             "log_entry_count": len(entries),
@@ -2183,6 +2237,87 @@ def _consolidated_ref_url(kind: str, ref_id: int) -> str:
     return template.format(kind=kind, id=ref_id)
 
 
+async def _quest_index(request: Request, store: Any) -> HTMLResponse:
+    """Tree view for ``kind='quest'`` — the ``serves`` DAG among quests.
+
+    Replaces the generic flat ``refs/index.html.j2`` list (which had no
+    notion of which quest serves which) with a forest render: a quest is a
+    *root* iff it has no outbound ``serves`` edge to another live quest;
+    every other live quest hangs under each live quest it serves (a DAG —
+    a sub-quest serving two parents renders under both). Outbound is
+    derived as the inverse of the inbound map (any id that shows up as
+    someone's child has an outbound edge) rather than a second per-quest
+    query — quest counts are tiny, but there's no reason to double the
+    round-trips.
+
+    A visited-set threaded down each root-to-node path guards against a
+    backwards edge (two quests serving each other, or a longer cycle)
+    turning into infinite recursion or a quest listing itself as its own
+    server (gripe 161912) — a child id already on the current path is
+    simply dropped from that branch.
+    """
+    refs = store.list_refs(kind="quest", order_by="updated_desc", limit=500)
+    live_ids = {r.id for r in refs}
+    ref_by_id = {r.id: r for r in refs}
+    statuses = {r.id: _quest_status_from_tags(store.tags_for(r.id)) for r in refs}
+
+    children: dict[int, list[int]] = {}
+    has_parent: set[int] = set()
+    for r in refs:
+        links = store.links_for(r.id, direction="in", relation="serves")
+        kids = sorted({ln.src_ref_id for ln in links} & live_ids)
+        if kids:
+            children[r.id] = kids
+            has_parent.update(kids)
+
+    def sort_key(qid: int) -> tuple[int, float, float]:
+        r = ref_by_id[qid]
+        prio = getattr(r, "prio", None)
+        updated = getattr(r, "updated_at", None)
+        return (
+            0 if statuses[qid] == "active" else 1,
+            float(prio) if prio is not None else float("inf"),
+            -(updated.timestamp() if updated else 0.0),
+        )
+
+    rendered: set[int] = set()
+
+    def build_node(qid: int, ancestors: frozenset[int]) -> dict[str, Any]:
+        r = ref_by_id[qid]
+        rendered.add(qid)
+        path = ancestors | {qid}
+        kid_ids = sorted(
+            (k for k in children.get(qid, []) if k not in path), key=sort_key
+        )
+        updated = getattr(r, "updated_at", None)
+        return {
+            "id": qid,
+            "headline": _quest_headline(r.title, qid),
+            "status": statuses[qid],
+            "prio": getattr(r, "prio", None),
+            "updated": updated.strftime("%Y-%m-%d %H:%M") if updated else "",
+            "children": [build_node(k, path) for k in kid_ids],
+        }
+
+    root_ids = sorted((r.id for r in refs if r.id not in has_parent), key=sort_key)
+    forest = [build_node(rid, frozenset()) for rid in root_ids]
+    # A cycle with no outside parent (every member is in `has_parent`, so
+    # none qualifies as a root) would otherwise vanish from the page —
+    # promote its members to fallback roots so bad data stays visible.
+    while orphaned := sorted(live_ids - rendered, key=sort_key):
+        forest.append(build_node(orphaned[0], frozenset()))
+
+    return templates.TemplateResponse(
+        request,
+        "refs/quest_index.html.j2",
+        {
+            "active_tab": "refs:quest",
+            "kind_label": _REF_KIND_LABEL.get("quest", "Quest"),
+            "forest": forest,
+        },
+    )
+
+
 #: Per-kind lists folded into a Drive kind-facet preset (WS1b decision
 #: D2) — Oracle's "roll the dice" mint-a-new-reading affordance and
 #: Patents' OPS remote-search live in the MCP/CLI surface, not a web
@@ -2209,6 +2344,11 @@ async def index(
         return RedirectResponse(url="/drive?" + urlencode(params))
     _require_kind(kind)
     store = get_store(request)
+
+    # Quests get a dedicated tree view (the `serves` DAG) instead of the
+    # generic flat list — see `_quest_index`.
+    if kind == "quest":
+        return await _quest_index(request, store)
 
     tags = _parse_tags(tag)
     since = since if since in _DATE_DELTA else "any"

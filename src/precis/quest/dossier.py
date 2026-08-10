@@ -20,22 +20,44 @@ logbook, so context stays bounded.
 
 Dossier-owned-by-process splits the dossier body into **two chunks**: a **narrative**
 paragraph (the whole-rewritten prose synthesis, ``edit_text``'d in place each
-tick, stable handle, ``prev_text`` history for free) and one **pinned ledger**
-paragraph (``meta.pinned='ledger'``, set via ``patch_chunk_meta`` — the
-persona-threads plan-marker precedent, no new chunk_kind, no migration) that survives every
-whole-rewrite untouched, mutated only by explicit :func:`append_ledger_entry`
-calls. The ledger holds the *strategic* tried/ruled-out/open ledger (a whole
-abandoned *direction*, not a single ruled-out structure — that per-candidate
-ledger already lives on ``structure`` tags, see ``tick.py``'s
-``_ruled_out_handles``) so the loop can't silently lose its own trail on a
-rewrite that drops a rule-out from the free prose (the autocatpath dead-3-days
-spin). :func:`read_dossier` still joins the whole body (the ``view='dossier'``
-handler + history rely on it); only the tick *prompt* separates narrative from
-ledger (:func:`read_narrative`, :func:`read_ledger`).
+tick, stable handle, ``prev_text`` history for free, and — since the
+attempt-tree ledger (dossier-hygiene design — quest package docstring) — held to a
+code-enforced growth ratchet, not a fixed cap: a rewrite may only outgrow the
+previous narrative by more than ~15%+50 words when the tick shows visible
+progress, see :mod:`precis.quest.narrative_budget` and ``tick.py``'s
+``_apply_narrative_gate``) and one **pinned ledger** paragraph
+(``meta.pinned='ledger'``, set via
+``patch_chunk_meta`` — the persona-threads plan-marker precedent, no new
+chunk_kind, no migration) that survives every whole-rewrite untouched,
+mutated only by explicit :func:`add_attempt` / :func:`mark_attempt` calls
+(:func:`append_ledger_entry` is the pre-tree three-section entry point, kept
+for its existing callers — it now adds a depth-0 tree node under the
+mapped status). The ledger holds the *strategic* attempt tree — one node per
+tried/abandoned/open *direction* (a whole direction, not a single ruled-out
+structure — that per-candidate ledger already lives on ``structure`` tags,
+see ``tick.py``'s ``_ruled_out_handles``), children as refinements/variants
+of their parent, each carrying a status (``open`` / ``active`` / ``tried`` /
+``ruled-out``) — so the loop can't silently lose its own trail on a rewrite
+that drops a rule-out from the free prose (the autocatpath dead-3-days spin),
+and so a whole abandoned branch (try a, then b, then c-with-x and c-with-y)
+reads as a subtree, not an ambiguous flat list. Ruling out a node is a
+*stored*, per-node fact only — an open/active descendant's own stored status
+is never overwritten; a ruled-out ancestor's shadow over it, and the
+collapse of a subtree that is entirely tried/ruled-out to one summary line,
+are both **rendering-level** (:func:`ledger_do_not_repropose`), so the raw
+pinned chunk always round-trips exactly for a human editor or a later
+:func:`add_attempt`/:func:`mark_attempt` node-text match. A legacy
+three-section ledger (``## Tried`` / ``## Ruled out`` / ``## Open``) still
+parses — each bullet becomes a depth-0 node, status = its section — so no
+migration/backfill is needed. :func:`read_dossier` still joins the whole body
+(the ``view='dossier'`` handler + history rely on it); only the tick *prompt*
+separates narrative from ledger (:func:`read_narrative`, :func:`read_ledger`).
 """
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -59,56 +81,253 @@ _SEED = (
     "the best leads so far, what's been ruled out, and the open questions.)_"
 )
 
-#: Ledger section keys → their markdown heading. Order here is the ledger's
-#: rendered order (:func:`_render_ledger`) and `append_ledger_entry`'s clamp
-#: target for an unrecognised ``section`` is ``"open"``.
-_SECTION_HEADINGS: dict[str, str] = {
-    "tried": "## Tried",
-    "ruled-out": "## Ruled out",
-    "open": "## Open",
+#: The pinned ledger's node statuses (dossier-hygiene design). ``open`` is
+#: the default for a freshly added node; ``active`` marks a direction
+#: currently being pursued; ``tried``/``ruled-out`` are both "do not
+#: re-propose" — the model-safe vocabulary, and every clamp target for a
+#: caller-supplied status that doesn't match falls back to ``"open"``.
+_STATUSES: tuple[str, ...] = ("open", "active", "tried", "ruled-out")
+#: Statuses that mean "don't re-propose this direction" — both an own status
+#: and (rendering-level, see :func:`ledger_do_not_repropose`) an inherited one.
+_DEAD_STATUSES = frozenset({"tried", "ruled-out"})
+
+#: The single heading for the nested attempt tree, replacing the old
+#: three-section ledger (still parsed for backward compatibility, below).
+_ATTEMPTS_HEADING = "## Attempts"
+#: Legacy three-section ledger headings → the status a bullet under them
+#: becomes (depth-0 node, no tree structure — pre-attempt-tree ledgers, and
+#: still `append_ledger_entry`'s own vocabulary).
+_LEGACY_HEADINGS: dict[str, str] = {
+    "## Tried": "tried",
+    "## Ruled out": "ruled-out",
+    "## Open": "open",
 }
-_SECTION_ORDER = ("tried", "ruled-out", "open")
 _LEDGER_PLACEHOLDER = "(none yet)"
+#: A node bullet's optional status prefix, e.g. ``[ruled-out] c with x``.
+_STATUS_PREFIX_RE = re.compile(r"^\[(?P<status>[a-z-]+)\]\s*")
+#: Spaces of indentation per tree depth (nested bullets under ``## Attempts``).
+_INDENT_WIDTH = 2
 
 
-def _parse_ledger(text: str) -> dict[str, list[str]]:
-    """Parse the pinned ledger chunk's markdown into ``{section: [bullet]}``.
+@dataclass
+class AttemptNode:
+    """One node of the pinned ledger's attempt tree.
+
+    ``status`` is always the node's own STORED fact — never overwritten by a
+    ruled-out ancestor (that shadowing, plus the dead-subtree collapse, is
+    rendering-level only, see :func:`ledger_do_not_repropose`). ``children``
+    are refinements/variants of this direction.
+    """
+
+    text: str
+    status: str
+    children: list[AttemptNode] = field(default_factory=list)
+
+
+def _parse_ledger(text: str) -> list[AttemptNode]:
+    """Parse the pinned ledger chunk's markdown into a forest of root nodes.
 
     Tolerant of the placeholder line and of anything outside a recognised
-    ``## `` heading (dropped) — a human editing the ledger by hand only needs
-    to keep the three headings for their edits to round-trip.
+    heading (dropped) — a human editing the ledger by hand only needs to keep
+    a heading for their edits to round-trip. Two formats parse:
+
+    * the current nested tree under ``## Attempts`` — ``- [status] text``,
+      2 spaces of indentation per depth (:data:`_INDENT_WIDTH`), a missing/
+      unrecognised status clamps to ``"open"``;
+    * the legacy flat ``## Tried`` / ``## Ruled out`` / ``## Open`` ledger —
+      each bullet (no status prefix) becomes a depth-0 node whose status is
+      that heading's — so a pre-attempt-tree ledger parses without loss and
+      needs no migration.
     """
-    sections: dict[str, list[str]] = {k: [] for k in _SECTION_ORDER}
-    heading_to_key = {v: k for k, v in _SECTION_HEADINGS.items()}
-    current: str | None = None
+    roots: list[AttemptNode] = []
+    mode: str | None = None  # "tree" | a legacy status | None (unrecognised)
+    stack: list[tuple[int, AttemptNode]] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped in heading_to_key:
-            current = heading_to_key[stripped]
+        if stripped == _ATTEMPTS_HEADING:
+            mode, stack = "tree", []
             continue
-        if current is None or not stripped.startswith("- "):
+        if stripped in _LEGACY_HEADINGS:
+            mode = _LEGACY_HEADINGS[stripped]
+            continue
+        if stripped.startswith("## "):
+            mode = None  # an unrecognised heading — drop until a known one
+            continue
+        if mode is None or not stripped.startswith("- "):
             continue
         bullet = stripped[2:].strip()
-        if bullet and bullet != _LEDGER_PLACEHOLDER:
-            sections[current].append(bullet)
-    return sections
+        if not bullet or bullet == _LEDGER_PLACEHOLDER:
+            continue
+        if mode == "tree":
+            m = _STATUS_PREFIX_RE.match(bullet)
+            status = m.group("status") if m else "open"
+            if status not in _STATUSES:
+                status = "open"
+            node_text = bullet[m.end() :].strip() if m else bullet
+            if not node_text:
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            depth = indent // _INDENT_WIDTH
+            node = AttemptNode(text=node_text, status=status, children=[])
+            while stack and stack[-1][0] >= depth:
+                stack.pop()
+            (stack[-1][1].children if stack else roots).append(node)
+            stack.append((depth, node))
+        else:
+            roots.append(AttemptNode(text=bullet, status=mode, children=[]))
+    return roots
 
 
-def _render_ledger(sections: dict[str, list[str]]) -> str:
-    """Serialize ``{section: [bullet]}`` back to the ledger's markdown."""
-    parts = []
-    for key in _SECTION_ORDER:
-        bullets = sections.get(key) or []
-        body = (
-            "\n".join(f"- {b}" for b in bullets)
-            if bullets
-            else f"- {_LEDGER_PLACEHOLDER}"
+def _render_ledger(roots: list[AttemptNode]) -> str:
+    """Serialize a forest of :class:`AttemptNode` back to the ledger's
+    markdown — one ``## Attempts`` heading, nested ``- [status] text``
+    bullets, :data:`_INDENT_WIDTH` spaces per depth. Always the node's own
+    STORED status — no inheritance/collapse (that's rendering-level, see
+    :func:`ledger_do_not_repropose`), so this round-trips exactly through
+    :func:`_parse_ledger`."""
+    lines = [_ATTEMPTS_HEADING]
+
+    def walk(nodes: list[AttemptNode], depth: int) -> None:
+        indent = " " * (_INDENT_WIDTH * depth)
+        for n in nodes:
+            lines.append(f"{indent}- [{n.status}] {n.text}")
+            walk(n.children, depth + 1)
+
+    if roots:
+        walk(roots, 0)
+    else:
+        lines.append(f"- {_LEDGER_PLACEHOLDER}")
+    return "\n".join(lines) + "\n"
+
+
+_LEDGER_SEED = _render_ledger([])
+
+
+def _flatten_with_parent(
+    roots: list[AttemptNode],
+) -> list[tuple[AttemptNode, AttemptNode | None]]:
+    """Every node in the forest paired with its immediate parent (``None``
+    for a root) — the shared traversal behind node addressing."""
+    out: list[tuple[AttemptNode, AttemptNode | None]] = []
+
+    def walk(nodes: list[AttemptNode], parent: AttemptNode | None) -> None:
+        for n in nodes:
+            out.append((n, parent))
+            walk(n.children, n)
+
+    walk(roots, None)
+    return out
+
+
+def _normalize_node_text(text: str) -> str:
+    """Trim AND collapse all internal whitespace — including embedded
+    newlines — to single spaces.
+
+    ``add_attempt``/``mark_attempt``'s ``text``/``node``/``parent`` arrive as
+    raw, untrusted model JSON (the tick's ``ledger_ops`` payload op). A plain
+    ``.strip()`` leaves an embedded newline alone, and :func:`_render_ledger`
+    writes a node's text verbatim after its ``- [status] `` prefix — so an
+    embedded ``"\\n- [ruled-out] fabricated"`` would render as an EXTRA
+    physical bullet line and re-parse (:func:`_parse_ledger`) as a
+    fabricated sibling node next read. Collapsing here, at both the storage
+    boundary (:func:`add_attempt`'s stored text) and the match boundary
+    (:func:`_match_nodes`, used by both functions' node/parent lookups),
+    keeps storage and matching consistent — a node's stored text can never
+    contain a newline to begin with.
+    """
+    return " ".join(text.split())
+
+
+def _match_nodes(
+    roots: list[AttemptNode], text: str, parent: str | None = None
+) -> list[AttemptNode]:
+    """Nodes whose text matches ``text`` — trimmed, whitespace-collapsed,
+    case-insensitive (the addressing rule: exact
+    node text, no id bookkeeping, because the model sees the ledger in its
+    prompt and can quote it exactly; :func:`_normalize_node_text` guards
+    against an embedded newline forging a bullet-line match). ``parent``
+    narrows to nodes whose immediate parent's text also matches, the
+    documented disambiguator when the same text appears in two branches.
+    Zero or >1 matches is the caller's cue to no-op (ambiguous/unmatched —
+    never a guess)."""
+    target = _normalize_node_text(text).casefold()
+    pairs = _flatten_with_parent(roots)
+    matches = [
+        (n, p) for n, p in pairs if _normalize_node_text(n.text).casefold() == target
+    ]
+    if parent is not None:
+        ptarget = _normalize_node_text(parent).casefold()
+        matches = [
+            (n, p)
+            for n, p in matches
+            if p is not None and _normalize_node_text(p.text).casefold() == ptarget
+        ]
+    return [n for n, _p in matches]
+
+
+def _subtree_all_dead(node: AttemptNode) -> bool:
+    """True when ``node`` and every descendant is ``tried``/``ruled-out`` —
+    the dead-subtree collapse trigger."""
+    return node.status in _DEAD_STATUSES and all(
+        _subtree_all_dead(c) for c in node.children
+    )
+
+
+def _subtree_size(node: AttemptNode) -> int:
+    """Node count of ``node``'s subtree, itself included."""
+    return 1 + sum(_subtree_size(c) for c in node.children)
+
+
+def _do_not_repropose_lines(
+    nodes: list[AttemptNode], *, ancestor_ruled_out: bool = False
+) -> list[str]:
+    """The "do not re-propose" bullet lines for ``nodes`` — RENDER-level
+    inheritance + dead-subtree collapse (never mutates a node's own stored
+    status, see :class:`AttemptNode`).
+
+    A node's *effective* status is ``ruled-out`` when its own stored status
+    is ``ruled-out`` OR an ancestor's is — so an open/active descendant of a
+    ruled-out direction still reads as ruled out here, though its own stored
+    status is untouched (:func:`mark_attempt` never rewrites a descendant). A
+    subtree that is entirely ``tried``/``ruled-out`` collapses to its root
+    line plus a variant count (e.g. ``… (4 variants, all ruled out)``) — the
+    full per-node detail survives in the pinned chunk's edit history
+    (``prev_text``) and the logbook, just not repeated here every tick.
+    """
+    lines: list[str] = []
+    for n in nodes:
+        effective_ruled_out = ancestor_ruled_out or n.status == "ruled-out"
+        if _subtree_all_dead(n):
+            count = _subtree_size(n)
+            label = "ruled-out" if effective_ruled_out else "tried"
+            plural = "" if count == 1 else "s"
+            lines.append(
+                f"- [{label}] {n.text} … ({count} variant{plural}, all ruled out)"
+            )
+            continue
+        own_dead = n.status in _DEAD_STATUSES
+        if own_dead or (ancestor_ruled_out and n.status in ("open", "active")):
+            label = "ruled-out" if effective_ruled_out else n.status
+            lines.append(f"- [{label}] {n.text}")
+        lines.extend(
+            _do_not_repropose_lines(n.children, ancestor_ruled_out=effective_ruled_out)
         )
-        parts.append(f"{_SECTION_HEADINGS[key]}\n{body}")
-    return "\n\n".join(parts) + "\n"
+    return lines
 
 
-_LEDGER_SEED = _render_ledger({k: [] for k in _SECTION_ORDER})
+def ledger_do_not_repropose(ledger_text: str) -> str:
+    """The pinned ledger's "do NOT re-propose these directions" prompt block
+    — tried/ruled-out nodes (own or inherited from a ruled-out ancestor),
+    with a fully-dead subtree collapsed to one summary line (see
+    :func:`_do_not_repropose_lines`). ``open``/``active`` directions with no
+    ruled-out ancestor are excluded — those are the exploration queue, not a
+    constraint. Feeds the tick prompt (:mod:`precis.quest.tick`'s
+    ``_ledger_constraints``); ``"(nothing pinned yet)"`` when nothing
+    qualifies.
+    """
+    lines = _do_not_repropose_lines(_parse_ledger(ledger_text))
+    return "\n".join(lines) if lines else "(nothing pinned yet)"
+
 
 #: The second pinned chunk (Slice 4c-4): the candidate lineage tree. Unlike
 #: the ledger (model-authored, additive), this one is entirely CODE-
@@ -351,31 +570,119 @@ def read_ledger(store: Store, owner_id: int) -> str:
     return ""  # pragma: no cover - handle was just resolved above
 
 
-def append_ledger_entry(store: Store, owner_id: int, section: str, text: str) -> bool:
-    """Append one bullet under ``section``'s heading in the pinned ledger.
-
-    ``section`` is one of ``tried`` / ``ruled-out`` / ``open``; an
-    unrecognised value clamps to ``open``. A blank ``text`` is a no-op.
-    Idempotent: a byte-identical bullet already under that heading is
-    skipped, not duplicated — this is what dedups the re-propose loop across
-    ticks. Heals a pre-A dossier lacking a ledger chunk on the way in
-    (:func:`ensure_ledger_chunk`). Returns ``True`` iff a new bullet was
-    appended.
-    """
-    stripped_text = text.strip()
-    if not stripped_text:
-        return False
-    key = section if section in _SECTION_HEADINGS else "open"
+def _ledger_roots(store: Store, owner_id: int) -> tuple[str, int, list[AttemptNode]]:
+    """``(handle, dossier_id, roots)`` of the owner's pinned ledger, parsed —
+    the shared read-modify-write preamble for :func:`add_attempt` /
+    :func:`mark_attempt` / :func:`append_ledger_entry`. Heals a pre-A dossier
+    lacking a ledger chunk on the way in (:func:`ensure_ledger_chunk`)."""
     handle = ensure_ledger_chunk(store, owner_id)
     did = dossier_ref_id(store, owner_id)
     assert did is not None  # ensure_ledger_chunk just guaranteed a dossier
     chunk = next(c for c in store.reading_order(did) if c.handle == handle)
-    sections = _parse_ledger(chunk.text)
-    if any(existing == stripped_text for existing in sections[key]):
+    return handle, did, _parse_ledger(chunk.text)
+
+
+def add_attempt(
+    store: Store,
+    owner_id: int,
+    text: str,
+    parent: str | None = None,
+    status: str = "open",
+) -> bool:
+    """Add one node to the pinned attempt tree; return ``True`` iff added.
+
+    A blank ``text`` is a no-op. ``status`` is clamped to ``"open"`` when it
+    isn't one of :data:`_STATUSES`. ``parent`` (optional) is the exact text of
+    an existing node the new one becomes a child of — matched trimmed +
+    case-insensitive (:func:`_match_nodes`); zero or >1 matches is a no-op
+    (ambiguous/unmatched, never a guess). ``parent=None`` adds a new root
+    (depth-0) node. Idempotent: a node with byte-identical text AND status
+    already among the target's children is skipped, not duplicated — the
+    tree generalization of :func:`append_ledger_entry`'s existing dedup.
+    ``text`` is whitespace-normalized (:func:`_normalize_node_text`) before
+    storage — an embedded newline (raw, untrusted model JSON via the tick's
+    ``ledger_ops``) would otherwise render as an extra physical bullet line
+    and re-parse as a fabricated sibling node. Heals a pre-A dossier lacking
+    a ledger chunk on the way in.
+    """
+    stripped_text = _normalize_node_text(text)
+    if not stripped_text:
         return False
-    sections[key].append(stripped_text)
-    store.edit_text(handle, _render_ledger(sections), source={"reason": "quest-ledger"})
+    st = status if status in _STATUSES else "open"
+    handle, _did, roots = _ledger_roots(store, owner_id)
+    if parent is not None:
+        matches = _match_nodes(roots, parent)
+        if len(matches) != 1:
+            return False
+        target_children = matches[0].children
+    else:
+        target_children = roots
+    if any(n.text == stripped_text and n.status == st for n in target_children):
+        return False
+    target_children.append(AttemptNode(text=stripped_text, status=st, children=[]))
+    store.edit_text(handle, _render_ledger(roots), source={"reason": "quest-ledger"})
     return True
+
+
+def mark_attempt(
+    store: Store,
+    owner_id: int,
+    node: str,
+    status: str,
+    parent: str | None = None,
+) -> bool:
+    """Set an existing attempt node's status; return ``True`` iff applied.
+
+    ``node`` is matched by exact text — trimmed, whitespace-normalized
+    (:func:`_normalize_node_text`), case-insensitive (:func:`_match_nodes`);
+    ``parent`` disambiguates when the same text appears in two branches
+    (also normalized before matching). Zero or >1 matches, or a ``status``
+    outside :data:`_STATUSES`, is a no-op — degrade-don't-crash, never a
+    guess. Only the matched node's own stored status changes; a descendant's
+    status is untouched (an inherited-ruled-out shadow, and a dead-subtree
+    collapse, are both rendering-level — see :func:`ledger_do_not_repropose`).
+    Heals a pre-A dossier lacking a ledger chunk on the way in.
+    """
+    if status not in _STATUSES:
+        return False
+    node_text = _normalize_node_text(node or "")
+    if not node_text:
+        return False
+    handle, _did, roots = _ledger_roots(store, owner_id)
+    matches = _match_nodes(roots, node_text, parent)
+    if len(matches) != 1:
+        return False
+    matches[0].status = status
+    store.edit_text(handle, _render_ledger(roots), source={"reason": "quest-ledger"})
+    return True
+
+
+#: `append_ledger_entry`'s legacy ``section`` vocabulary → the attempt-tree
+#: status it maps to (identity today, kept as an explicit table since the two
+#: vocabularies are allowed to diverge later). An unrecognised section clamps
+#: to ``"open"`` — unchanged behavior from the pre-tree ledger.
+_SECTION_TO_STATUS: dict[str, str] = {
+    "tried": "tried",
+    "ruled-out": "ruled-out",
+    "open": "open",
+}
+
+
+def append_ledger_entry(store: Store, owner_id: int, section: str, text: str) -> bool:
+    """Add one depth-0 attempt node under ``section``'s status.
+
+    The pre-attempt-tree entry point, kept for its existing callers (the
+    tick's ``ledger_add`` payload op): ``section`` is one of ``tried`` /
+    ``ruled-out`` / ``open``, an unrecognised value clamps to ``open``, and
+    this is exactly :func:`add_attempt` with ``parent=None`` and
+    ``status=<mapped section>`` — same dedup, same blank-text no-op, same
+    healing. New callers should reach for :func:`add_attempt` /
+    :func:`mark_attempt` directly when they need a child node or a status
+    change on an existing one.
+    """
+    return add_attempt(
+        store, owner_id, text, status=_SECTION_TO_STATUS.get(section, "open")
+    )
 
 
 def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
@@ -404,10 +711,14 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
 
 
 __all__ = [
+    "AttemptNode",
+    "add_attempt",
     "append_ledger_entry",
     "dossier_ref_id",
     "ensure_dossier",
     "ensure_ledger_chunk",
+    "ledger_do_not_repropose",
+    "mark_attempt",
     "paper_ref_id",
     "read_dossier",
     "read_ledger",

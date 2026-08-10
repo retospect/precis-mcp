@@ -21,10 +21,12 @@ from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
 from precis.quest import tick as tick_mod
 from precis.quest.dossier import (
+    add_attempt,
     append_ledger_entry,
     dossier_ref_id,
     ensure_dossier,
     ensure_ledger_chunk,
+    mark_attempt,
     paper_ref_id,
     read_dossier,
     read_ledger,
@@ -109,9 +111,8 @@ class TestDossierLedger:
         chunks = store.reading_order(did)
         ledger_chunks = [c for c in chunks if (c.meta or {}).get("pinned") == "ledger"]
         assert len(ledger_chunks) == 1
-        assert "## Tried" in ledger_chunks[0].text
-        assert "## Ruled out" in ledger_chunks[0].text
-        assert "## Open" in ledger_chunks[0].text
+        assert "## Attempts" in ledger_chunks[0].text
+        assert "(none yet)" in ledger_chunks[0].text
 
     def test_rewrite_dossier_leaves_ledger_byte_identical(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -181,7 +182,7 @@ class TestDossierLedger:
             append_ledger_entry(store, qid, "tried", "Fe–N4 single-atom sites") is True
         )
         ledger = read_ledger(store, qid)
-        assert "## Tried\n- Fe–N4 single-atom sites" in ledger
+        assert "## Attempts\n- [tried] Fe–N4 single-atom sites" in ledger
         # a byte-identical bullet under the same heading is deduped
         assert (
             append_ledger_entry(store, qid, "tried", "Fe–N4 single-atom sites") is False
@@ -194,12 +195,236 @@ class TestDossierLedger:
         qid = _mk_quest(store, "A striving")
         assert append_ledger_entry(store, qid, "bogus", "clamped entry") is True
         ledger = read_ledger(store, qid)
-        open_block = ledger.split("## Open", 1)[1]
-        assert "clamped entry" in open_block
+        assert "- [open] clamped entry" in ledger
 
     def test_append_ledger_entry_skips_blank_text(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         assert append_ledger_entry(store, qid, "open", "   ") is False
+
+
+class TestAttemptTree:
+    """``add_attempt``/``mark_attempt`` — the nested attempt tree
+    (dossier-hygiene design — quest package docstring), replacing the flat
+    Tried/Ruled-out/Open ledger with parent/child directions."""
+
+    def test_add_child_and_mark_survive_a_narrative_rewrite_byte_identically(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "dope with a transition metal") is True
+        assert (
+            add_attempt(
+                store, qid, "Cu single-atom", parent="dope with a transition metal"
+            )
+            is True
+        )
+        assert mark_attempt(store, qid, "Cu single-atom", "ruled-out") is True
+        before = read_ledger(store, qid)
+        assert "## Attempts" in before
+        assert "- [open] dope with a transition metal" in before
+        assert "  - [ruled-out] Cu single-atom" in before  # nested one level
+
+        rewrite_dossier(store, qid, "# Understanding\n\nFresh synthesis.")
+        rewrite_dossier(store, qid, "# Understanding v2\n\nAnother pass entirely.")
+        after = read_ledger(store, qid)
+        assert after == before  # untouched by two whole-rewrites
+
+    def test_add_attempt_collapses_embedded_newlines_no_fabricated_sibling(
+        self, store: Any
+    ) -> None:
+        # An embedded "\n- [status] ..." in raw model JSON must not render as
+        # an extra physical bullet line that re-parses as a fabricated
+        # sibling node (or truncate the stored text at the first newline).
+        from precis.quest.dossier import _parse_ledger
+
+        qid = _mk_quest(store, "A striving")
+        assert (
+            add_attempt(
+                store, qid, "a real direction\n- [ruled-out] fabricated", status="open"
+            )
+            is True
+        )
+        ledger = read_ledger(store, qid)
+        # exactly one physical bullet line — no fabricated sibling line
+        lines = [line for line in ledger.splitlines() if line.strip()]
+        assert lines == [
+            "## Attempts",
+            "- [open] a real direction - [ruled-out] fabricated",
+        ]
+        roots = _parse_ledger(ledger)
+        assert len(roots) == 1  # no fabricated sibling node on re-parse
+        assert roots[0].text == "a real direction - [ruled-out] fabricated"
+        assert roots[0].status == "open"
+
+    def test_mark_attempt_node_lookup_collapses_embedded_newlines(
+        self, store: Any
+    ) -> None:
+        from precis.quest.dossier import _parse_ledger
+
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "a real direction\nwith a wrapped line") is True
+        assert (
+            mark_attempt(
+                store, qid, "a real direction\nwith a   wrapped line", "ruled-out"
+            )
+            is True
+        )
+        roots = _parse_ledger(read_ledger(store, qid))
+        assert len(roots) == 1
+        assert roots[0].status == "ruled-out"
+
+    def test_add_attempt_parent_lookup_is_case_insensitive_and_trimmed(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "  Explore MOF linkers  ") is True
+        assert (
+            add_attempt(store, qid, "with a Zn node", parent="explore mof linkers")
+            is True
+        )
+        ledger = read_ledger(store, qid)
+        assert "  - [open] with a Zn node" in ledger
+
+    def test_add_attempt_unmatched_parent_is_a_noop(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert (
+            add_attempt(store, qid, "a variant", parent="nothing named this") is False
+        )
+        assert read_ledger(store, qid).strip().endswith("(none yet)")
+
+    def test_add_attempt_blank_text_is_a_noop(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "   ") is False
+
+    def test_add_attempt_clamps_unknown_status_to_open(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "a direction", status="bogus") is True
+        assert "- [open] a direction" in read_ledger(store, qid)
+
+    def test_add_attempt_dedups_same_text_and_status(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert (
+            add_attempt(store, qid, "Fe–N4 single-atom sites", status="tried") is True
+        )
+        assert (
+            add_attempt(store, qid, "Fe–N4 single-atom sites", status="tried") is False
+        )
+        assert read_ledger(store, qid).count("Fe–N4 single-atom sites") == 1
+
+    def test_mark_attempt_ambiguous_node_without_parent_is_a_noop(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "path 1")
+        add_attempt(store, qid, "path 2")
+        add_attempt(store, qid, "c", parent="path 1")
+        add_attempt(store, qid, "c", parent="path 2")
+        before = read_ledger(store, qid)
+        # "c" appears under two different parents — no disambiguator given
+        assert mark_attempt(store, qid, "c", "ruled-out") is False
+        assert read_ledger(store, qid) == before  # untouched
+
+    def test_mark_attempt_parent_disambiguates_ambiguous_node(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "path 1")
+        add_attempt(store, qid, "path 2")
+        add_attempt(store, qid, "c", parent="path 1")
+        add_attempt(store, qid, "c", parent="path 2")
+        assert mark_attempt(store, qid, "c", "ruled-out", parent="path 1") is True
+        ledger = read_ledger(store, qid)
+        # only path 1's "c" is marked ruled-out; path 2's "c" stays open
+        p1_block, p2_block = ledger.split("- [open] path 2")
+        assert "[ruled-out] c" in p1_block
+        assert "[open] c" in p2_block
+
+    def test_mark_attempt_unknown_status_is_a_noop(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "a direction")
+        assert mark_attempt(store, qid, "a direction", "bogus") is False
+        assert "[open] a direction" in read_ledger(store, qid)
+
+    def test_mark_attempt_unmatched_node_is_a_noop(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert mark_attempt(store, qid, "nothing named this", "tried") is False
+
+    def test_legacy_flat_ledger_parses_as_depth_zero_nodes(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving with a pre-attempt-tree ledger")
+        handle = ensure_ledger_chunk(store, qid)
+        legacy = (
+            "## Tried\n- Fe-N4 single atom sites\n\n"
+            "## Ruled out\n- Pd(111) bare — beaten on barrier\n\n"
+            "## Open\n- Does co-adsorbed H help?\n"
+        )
+        store.edit_text(handle, legacy, source={"reason": "test-seed-legacy"})
+        assert read_ledger(store, qid) == legacy  # human-edited, round-trips raw
+
+        # a code mutation re-renders it into the new tree format — no data lost
+        assert add_attempt(store, qid, "a fresh direction") is True
+        rendered = read_ledger(store, qid)
+        assert "## Attempts" in rendered
+        assert "- [tried] Fe-N4 single atom sites" in rendered
+        assert "- [ruled-out] Pd(111) bare — beaten on barrier" in rendered
+        assert "- [open] Does co-adsorbed H help?" in rendered
+        assert "- [open] a fresh direction" in rendered
+
+        # and mark_attempt can address a node that came from the legacy ledger
+        assert mark_attempt(store, qid, "Fe-N4 single atom sites", "ruled-out") is True
+        assert "- [ruled-out] Fe-N4 single atom sites" in read_ledger(store, qid)
+
+    def test_ledger_do_not_repropose_inherits_ruled_out_over_open_descendants(
+        self, store: Any
+    ) -> None:
+        from precis.quest.dossier import ledger_do_not_repropose
+
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "explore doping direction c", status="ruled-out")
+        add_attempt(
+            store, qid, "c with x", parent="explore doping direction c", status="open"
+        )
+        ledger = read_ledger(store, qid)
+        # the raw pinned chunk keeps the child's OWN stored status untouched
+        assert "  - [open] c with x" in ledger
+
+        text = ledger_do_not_repropose(ledger)
+        assert "- [ruled-out] explore doping direction c" in text
+        # inherited: shown as ruled-out to the model even though its own
+        # stored status is still "open"
+        assert "[ruled-out] c with x" in text
+
+    def test_ledger_do_not_repropose_collapses_a_fully_dead_subtree(
+        self, store: Any
+    ) -> None:
+        from precis.quest.dossier import ledger_do_not_repropose
+
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "dead direction d", status="ruled-out")
+        add_attempt(
+            store, qid, "d variant 1", parent="dead direction d", status="tried"
+        )
+        add_attempt(
+            store, qid, "d variant 2", parent="dead direction d", status="ruled-out"
+        )
+        ledger = read_ledger(store, qid)
+        # full per-node detail still lives in the raw pinned chunk
+        assert "d variant 1" in ledger and "d variant 2" in ledger
+
+        text = ledger_do_not_repropose(ledger)
+        assert "dead direction d" in text
+        assert "(3 variants, all ruled out)" in text
+        # the collapsed summary does NOT repeat the individual variants
+        assert "d variant 1" not in text
+        assert "d variant 2" not in text
+
+    def test_ledger_do_not_repropose_excludes_open_directions_with_no_dead_ancestor(
+        self, store: Any
+    ) -> None:
+        from precis.quest.dossier import ledger_do_not_repropose
+
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "an untried lead", status="open")
+        text = ledger_do_not_repropose(read_ledger(store, qid))
+        assert "an untried lead" not in text
+        assert text == "(nothing pinned yet)"
 
 
 # ── owner generalization ──────────────────────────────────
@@ -442,6 +667,299 @@ class TestQuestTick:
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch({"logbook": []}))
         assert out.status == "succeeded"
         assert out.ledger_added == 0
+
+    def test_ledger_ops_add_and_mark_apply_in_order(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "ledger_ops": [
+                {"op": "add", "text": "dope with a transition metal"},
+                {
+                    "op": "add",
+                    "text": "Cu single-atom",
+                    "parent": "dope with a transition metal",
+                },
+                {"op": "mark", "node": "Cu single-atom", "status": "ruled-out"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert out.ledger_added == 3
+        ledger = read_ledger(store, qid)
+        assert "- [open] dope with a transition metal" in ledger
+        assert "  - [ruled-out] Cu single-atom" in ledger
+
+    def test_ledger_ops_unmatched_mark_is_skipped_not_counted(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "ledger_ops": [
+                {"op": "mark", "node": "nothing named this", "status": "tried"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert out.ledger_added == 0
+
+    def test_ledger_ops_bad_shape_never_crashes_the_tick(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "ledger_ops": ["not a dict", {"op": "bogus"}, {"op": "add"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert out.ledger_added == 0
+
+
+class TestNarrativeGrowthGate:
+    """``narrative_budget.narrative_growth_gate`` — the pure accept/retry
+    decision behind the narrative compaction pressure (the dossier-hygiene design).
+    No DB — this is a plain function of word counts + a config."""
+
+    def test_growth_within_the_ratchet_is_accepted_without_progress(self) -> None:
+        from precis.quest.narrative_budget import narrative_growth_gate
+
+        # 100 -> 130 is +30%, within the default 15%+50 words allowance (=165)
+        gate = narrative_growth_gate(100, 130, progress_evidence=False)
+        assert gate.ok
+
+    def test_growth_beyond_the_ratchet_without_progress_is_rejected(self) -> None:
+        from precis.quest.narrative_budget import narrative_growth_gate
+
+        # 100 -> 300 blows well past 100*1.15+50=165
+        gate = narrative_growth_gate(100, 300, progress_evidence=False)
+        assert not gate.ok
+        assert gate.reason == "no-progress-growth"
+
+    def test_growth_beyond_the_ratchet_with_progress_is_accepted(self) -> None:
+        from precis.quest.narrative_budget import narrative_growth_gate
+
+        gate = narrative_growth_gate(100, 300, progress_evidence=True)
+        assert gate.ok
+
+    def test_shrinking_or_flat_is_always_accepted(self) -> None:
+        from precis.quest.narrative_budget import narrative_growth_gate
+
+        assert narrative_growth_gate(500, 500, progress_evidence=False).ok
+        assert narrative_growth_gate(500, 10, progress_evidence=False).ok
+
+    def test_no_prior_narrative_skips_the_ratchet(self) -> None:
+        from precis.quest.narrative_budget import narrative_growth_gate
+
+        # a fresh dossier's first-ever rewrite has nothing to have accreted
+        # from — only the ceiling below still applies.
+        gate = narrative_growth_gate(0, 1000, progress_evidence=False)
+        assert gate.ok
+
+    def test_ceiling_trips_regardless_of_progress(self) -> None:
+        from precis.quest.narrative_budget import (
+            NarrativeBudgetConfig,
+            narrative_growth_gate,
+        )
+
+        cfg = NarrativeBudgetConfig(ceiling_words=200)
+        gate = narrative_growth_gate(100, 250, progress_evidence=True)
+        assert (
+            narrative_growth_gate(100, 250, progress_evidence=True, config=cfg).ok
+            is False
+        )
+        assert (
+            narrative_growth_gate(100, 250, progress_evidence=True, config=cfg).reason
+            == "ceiling"
+        )
+        # the default ceiling (2500) doesn't trip at 250 words
+        assert gate.ok
+
+    def test_config_from_meta_uses_defaults_when_absent(self) -> None:
+        from precis.quest.narrative_budget import (
+            NarrativeBudgetConfig,
+            config_from_meta,
+        )
+
+        cfg = config_from_meta(None)
+        assert cfg == NarrativeBudgetConfig()
+        cfg2 = config_from_meta({"dossier": "not a dict"})
+        assert cfg2 == NarrativeBudgetConfig()
+
+    def test_config_from_meta_honors_per_owner_overrides(self) -> None:
+        from precis.quest.narrative_budget import config_from_meta
+
+        cfg = config_from_meta(
+            {
+                "dossier": {
+                    "narrative_word_target": 400,
+                    "narrative_word_ceiling": 1200,
+                }
+            }
+        )
+        assert cfg.target_words == 400
+        assert cfg.ceiling_words == 1200
+
+    def test_config_from_meta_ignores_malformed_overrides(self) -> None:
+        from precis.quest.narrative_budget import (
+            NarrativeBudgetConfig,
+            config_from_meta,
+        )
+
+        cfg = config_from_meta(
+            {
+                "dossier": {
+                    "narrative_word_target": "not a number",
+                    "narrative_word_ceiling": -5,
+                }
+            }
+        )
+        assert cfg == NarrativeBudgetConfig()
+
+
+class TestNarrativeGateIntegration:
+    """The growth ratchet wired into ``run_quest_tick`` — a stubbed LLM that
+    returns a DIFFERENT payload per call so the compress re-prompt (a SECOND
+    dispatch) is distinguishable from the primary tick call."""
+
+    def _seq_dispatch(self, payloads: list[dict[str, Any]]) -> Any:
+        calls: list[Any] = []
+
+        def _d(req: Any) -> Any:
+            calls.append(req)
+            idx = min(len(calls) - 1, len(payloads) - 1)
+            p = payloads[idx]
+            return SimpleNamespace(
+                data=p.get("data"),
+                text=p.get("text", ""),
+                error=p.get("error"),
+                cost_usd=p.get("cost", 0.01),
+                paused=p.get("paused", False),
+            )
+
+        _d.calls = calls  # type: ignore[attr-defined]
+        return _d
+
+    def test_no_progress_growth_is_rejected_then_kept_previous_after_failed_retry(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        rewrite_dossier(store, qid, "Short prior synthesis, ten words long right here.")
+        big_words = " ".join(f"word{i}" for i in range(200))
+        still_big_words = " ".join(f"retry{i}" for i in range(200))
+        dispatch = self._seq_dispatch(
+            [
+                {"data": {"logbook": [], "dossier_markdown": big_words}},
+                {"data": {"dossier_markdown": still_big_words}},
+            ]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=dispatch)
+        assert out.status == "succeeded"
+        assert out.dossier_rewritten is False
+        assert len(dispatch.calls) == 2  # primary tick + one compress retry
+        narrative = read_narrative(store, qid)
+        assert "Short prior synthesis" in narrative  # unchanged
+        assert "word0" not in narrative
+
+        # the refusal is logged with structured word counts + reason
+        entries = [
+            b
+            for b in store.list_blocks_for_ref(qid)
+            if (b.meta or {}).get("entry_type") == "observation"
+            and "narrative rewrite refused" in (b.text or "")
+        ]
+        assert len(entries) == 1
+        meta = entries[0].meta or {}
+        assert meta.get("gate_reason") == "no-progress-growth"
+        assert meta.get("new_words") == 200
+        assert meta.get("retry_words") == 200
+
+    def test_no_progress_growth_accepted_after_a_successful_compress_retry(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        rewrite_dossier(store, qid, "Short prior synthesis, ten words long right here.")
+        big_words = " ".join(f"word{i}" for i in range(200))
+        compressed = "A much shorter compressed synthesis."
+        dispatch = self._seq_dispatch(
+            [
+                {"data": {"logbook": [], "dossier_markdown": big_words}},
+                {"data": {"dossier_markdown": compressed}},
+            ]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=dispatch)
+        assert out.status == "succeeded"
+        assert out.dossier_rewritten is True
+        assert read_narrative(store, qid) == compressed
+
+    def test_growth_with_this_tick_progress_is_accepted_without_a_retry(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        rewrite_dossier(store, qid, "Short prior synthesis, ten words long right here.")
+        big_words = " ".join(f"word{i}" for i in range(200))
+        payload = {
+            "logbook": [],
+            "dossier_markdown": big_words,
+            "ledger_ops": [{"op": "add", "text": "a new direction worth trying"}],
+        }
+        dispatch = self._seq_dispatch([{"data": payload}])
+        out = run_quest_tick(store, qid, dispatch_fn=dispatch)
+        assert out.status == "succeeded"
+        assert out.dossier_rewritten is True
+        assert (
+            len(dispatch.calls) == 1
+        )  # no compress retry — progress excused the growth
+        assert read_narrative(store, qid) == big_words
+
+    def test_ceiling_trips_even_with_progress_this_tick(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        rewrite_dossier(store, qid, "Short prior synthesis, ten words long right here.")
+        # progress this tick, but the rewrite itself blows past the hard
+        # ceiling — the ratchet's progress excuse does not apply to it.
+        store.stamp_ref_meta(qid, {"dossier": {"narrative_word_ceiling": 50}})
+        over_ceiling = " ".join(f"word{i}" for i in range(80))
+        still_over = " ".join(f"retry{i}" for i in range(80))
+        payload = {
+            "logbook": [],
+            "dossier_markdown": over_ceiling,
+            "ledger_ops": [{"op": "add", "text": "a new direction worth trying"}],
+        }
+        dispatch = self._seq_dispatch(
+            [{"data": payload}, {"data": {"dossier_markdown": still_over}}]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=dispatch)
+        assert out.status == "succeeded"
+        assert out.dossier_rewritten is False
+        assert len(dispatch.calls) == 2
+        entries = [
+            b
+            for b in store.list_blocks_for_ref(qid)
+            if (b.meta or {}).get("gate_reason") == "ceiling"
+        ]
+        assert len(entries) == 1
+
+    def test_gate_exception_degrades_gracefully_and_never_crashes_the_tick(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # A bug in the growth-ratchet gate/rewrite path (here: `edit_text`
+        # itself raising, simulated via `rewrite_dossier`) must not crash the
+        # tick — mirrors the frontier-tree regen / commit-ladder / compute-step
+        # degrade-don't-crash convention (tick.py wraps the gate+write block
+        # in the same try/except).
+        from precis.quest import dossier as dossier_mod
+
+        qid = _mk_quest(store, "A striving")
+        rewrite_dossier(store, qid, "Prior narrative, unchanged if the gate blows up.")
+
+        def _boom(*_a: Any, **_kw: Any) -> int:
+            raise RuntimeError("storage boom")
+
+        monkeypatch.setattr(dossier_mod, "rewrite_dossier", _boom)
+        payload = {"logbook": [], "dossier_markdown": "A fresh short narrative."}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"  # never raises
+        assert out.dossier_rewritten is False
+        assert (
+            read_narrative(store, qid)
+            == "Prior narrative, unchanged if the gate blows up."
+        )
 
 
 class TestQuestTickAgentlog:
@@ -1312,6 +1830,42 @@ class TestCommitReRepromptLadder:
             "commit re-prompt ladder errored" in (b.text or "")
             for b in self._logs(store, qid)
         )
+
+    def test_ladder_rebuild_shows_this_ticks_new_narrative_not_the_previous_one(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # dossier-hygiene review fix: the narrative write is now
+        # deferred past the ladder (the growth-ratchet gate needs the
+        # ladder's own harvest as progress evidence), so a ladder REBUILD
+        # (review tick, or created>0 — forced here via review=True) must
+        # show the model ITS OWN just-proposed narrative, not last tick's
+        # persisted one.
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        tick1 = {
+            "logbook": [],
+            "dossier_markdown": "OLD PERSISTED NARRATIVE from tick one.",
+            "proposals": [],
+        }
+        tick2 = {
+            "logbook": [],
+            "dossier_markdown": "BRAND NEW TICK-TWO NARRATIVE nobody has seen yet.",
+            "proposals": [],
+        }
+        disp, reqs = _sequenced_dispatch([tick1, tick2, self._proposal()])
+        # tick 1: dry, persists the OLD narrative (review=True forced both ticks
+        # to the same FRONTIER tier, so the ladder never escalates further).
+        run_quest_tick(store, qid, dispatch_fn=disp, compute=True, review=True)
+        # tick 2: dry again (stall reaches the force-every threshold) — the
+        # ladder rebuilds (review => reuse_prompt is always False) and its
+        # first rung succeeds.
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True, review=True)
+        assert out.status == "succeeded"
+        assert len(reqs) == 3  # tick 1 + tick 2 + one successful ladder rung
+        assert len(calls) == 3
+        ladder_prompt = reqs[-1].prompt
+        assert "BRAND NEW TICK-TWO NARRATIVE" in ladder_prompt
+        assert "OLD PERSISTED NARRATIVE from tick one" not in ladder_prompt
 
 
 class TestWipCap:
