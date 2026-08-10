@@ -19,9 +19,21 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+#: kokoro-onnx's fixed output sample rate (24 kHz) — used for the empty-audio
+#: fallback tuple so a skipped/failed segment still matches the
+#: :class:`~precis.export.audio.Synthesizer` return shape.
+_KOKORO_SR = 24000
+
+#: Any Unicode letter or digit. Text with none of these (a "---" rule, bare
+#: punctuation left after narrate.py's markup stripping) has nothing for
+#: Kokoro to say — phonemizing it yields zero batches and
+#: ``np.concatenate`` dies with "need at least one array to concatenate".
+_HAS_VOICE = re.compile(r"[^\W_]")
 
 #: Languages whose Kokoro voices want the misaki G2P (espeak phonemes mismatch
 #: the training set). Keyed by our espeak lang code -> (misaki submodule, class,
@@ -82,6 +94,11 @@ class KokoroSynth:
         return g2p
 
     def synthesize(self, text: str, *, voice: str, lang: str) -> tuple[Any, int]:
+        import numpy as np
+
+        if not _HAS_VOICE.search(text):
+            log.warning("synthesize() got unspeakable text %r; returning silence", text)
+            return np.zeros(0, dtype=np.float32), _KOKORO_SR
         if lang in _MISAKI_LANGS:
             g2p = self._misaki_g2p(lang)
             if g2p is not None:
@@ -92,4 +109,13 @@ class KokoroSynth:
                     )
                 except Exception as exc:  # never fail a render on G2P trouble
                     log.warning("misaki %s G2P failed (%s); espeak fallback", lang, exc)
-        return self._k.create(text, voice=voice, speed=self._speed, lang=lang)
+        try:
+            return self._k.create(text, voice=voice, speed=self._speed, lang=lang)
+        except ValueError as exc:
+            if "at least one array" not in str(exc):
+                raise
+            log.warning(
+                "Kokoro produced no audio batches for %r; returning silence",
+                text[:80],
+            )
+            return np.zeros(0, dtype=np.float32), _KOKORO_SR

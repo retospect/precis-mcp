@@ -68,6 +68,14 @@ _BARE_URL = re.compile(r"https?://\S+")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 _BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
 
+# Any Unicode letter or digit (\w minus underscore — covers CJK/kana too via
+# Python's re). A block/segment with none of these has nothing for a voice to
+# say — punctuation-only markup like a "---" horizontal rule, once stripped,
+# phonemizes to zero batches and crashes Kokoro's np.concatenate (the
+# cast_audio crash-loop this guards). Used everywhere "empty" was previously
+# the only drop condition.
+_HAS_VOICE = re.compile(r"[^\W_]")
+
 
 @dataclass(frozen=True, slots=True)
 class NarrationSegment:
@@ -281,10 +289,12 @@ def markdown_segments(
     Blocks split on blank lines; a block whose first line is a heading (``#``)
     becomes a ``heading`` segment (longer leading pause), the rest ``para``.
     Markup is stripped via :func:`speakable_markdown` and the lexicon applied;
-    empty blocks drop out. Single-voice base (no per-chunk meta, unlike a
-    draft), but a block mixing scripts is split by :func:`split_by_script` so a
-    Japanese span inside an English cast is voiced natively — the news-briefing
-    producer and the Japanese reading cast both render through this."""
+    empty blocks and blocks with nothing speakable (no letter/digit left after
+    stripping — e.g. a ``---`` horizontal rule) drop out. Single-voice base (no
+    per-chunk meta, unlike a draft), but a block mixing scripts is split by
+    :func:`split_by_script` so a Japanese span inside an English cast is voiced
+    natively — the news-briefing producer and the Japanese reading cast both
+    render through this."""
     segments: list[NarrationSegment] = []
     for raw in re.split(r"\n\s*\n", text.strip()):
         block = raw.strip()
@@ -292,7 +302,7 @@ def markdown_segments(
             continue
         kind = "heading" if block.lstrip().startswith("#") else "para"
         spoken = apply_lexicon(speakable_markdown(block), lexicon)
-        if not spoken:
+        if not _HAS_VOICE.search(spoken):
             continue
         for seg_text, seg_voice, seg_lang in split_by_script(
             spoken,
@@ -303,6 +313,8 @@ def markdown_segments(
             kana_voice=kana_voice,
         ):
             seg_text = verbalize_numbers(seg_text, lang=seg_lang)
+            if not _HAS_VOICE.search(seg_text):
+                continue
             segments.append(
                 NarrationSegment(
                     text=seg_text, voice=seg_voice, lang=seg_lang, kind=kind
@@ -373,15 +385,17 @@ def render_narration(
     """Walk a draft in reading order → the voice score.
 
     Per-chunk ``meta.voice`` / ``meta.lang`` win over the defaults; empty /
-    skipped chunks drop out. A draft-level default can be threaded via the
-    ``default_*`` args (e.g. from doc-class defaults or the draft's own meta).
+    skipped chunks and chunks with nothing speakable (no letter/digit left
+    after stripping — e.g. a ``---`` horizontal-rule chunk) drop out. A
+    draft-level default can be threaded via the ``default_*`` args (e.g. from
+    doc-class defaults or the draft's own meta).
     """
     segments: list[NarrationSegment] = []
     for c in store.reading_order(ref.id):
         if c.chunk_kind in _SKIP_KINDS:
             continue
         spoken = apply_lexicon(speakable(c.text or ""), lexicon)
-        if not spoken:
+        if not _HAS_VOICE.search(spoken):
             continue
         meta = c.meta or {}
         for seg_text, seg_voice, seg_lang in split_by_script(
@@ -393,6 +407,8 @@ def render_narration(
             kana_voice=meta.get("kana_voice"),
         ):
             seg_text = verbalize_numbers(seg_text, lang=seg_lang)
+            if not _HAS_VOICE.search(seg_text):
+                continue
             segments.append(
                 NarrationSegment(
                     text=seg_text,

@@ -153,6 +153,22 @@ def test_skips_structural_and_empty_chunks():
     assert kinds == [("heading", "Introduction"), ("paragraph", "Real prose.")]
 
 
+def test_render_narration_drops_unspeakable_chunk():
+    # A "---" chunk (draft horizontal-rule paragraph) has nothing speakable
+    # after markup stripping — regression for the cast_audio crash-loop.
+    store = _Store(
+        [
+            _Chunk("paragraph", "First para."),
+            _Chunk("paragraph", "---"),
+            _Chunk("paragraph", "Second para."),
+        ]
+    )
+    segs = render_narration(
+        store, _Ref(), default_voice="af_heart", default_lang="en-us"
+    )
+    assert [s.text for s in segs] == ["First para.", "Second para."]
+
+
 def test_lexicon_applied_during_render():
     store = _Store([_Chunk("paragraph", "precis rocks")])
     segs = render_narration(
@@ -203,6 +219,22 @@ def test_markdown_segments_applies_lexicon_and_drops_empties():
         text, voice="af_heart", lang="en-us", lexicon={"precis": "pray-see"}
     )
     assert [s.text for s in segs] == ["pray-see", "plain"]
+
+
+def test_markdown_segments_drops_horizontal_rule():
+    # A "---" block has nothing speakable after markup stripping — it used to
+    # survive as its own segment and crash Kokoro (np.concatenate on zero
+    # phoneme batches). Regression for the cast_audio crash-loop.
+    text = "First para.\n\n---\n\nSecond para."
+    segs = markdown_segments(text, voice="af_heart", lang="en-us")
+    assert [s.text for s in segs] == ["First para.", "Second para."]
+
+
+def test_markdown_segments_keeps_cjk_only_block():
+    # A CJK-only block has letters/digits (via \w) and must survive the filter.
+    segs = markdown_segments("こんにちは", voice="af_heart", lang="en-us")
+    assert len(segs) == 1
+    assert segs[0].text == "こんにちは"
 
 
 # ── mixed-script narration (the "unknown Japanese character" fix) ─────

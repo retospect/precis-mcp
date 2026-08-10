@@ -73,3 +73,46 @@ def test_g2p_error_falls_back_never_raises(monkeypatch):
     s.synthesize("こんにちは", voice="jf_alpha", lang="ja")  # must not raise
     c = s._k.calls[0]  # type: ignore[attr-defined]
     assert c["lang"] == "ja" and c["is_phonemes"] is False  # espeak fallback
+
+
+def test_unspeakable_text_returns_silence_without_calling_create():
+    # A "---" block (or other punctuation-only text that slipped through
+    # narrate.py's filter) has nothing for Kokoro to say — return silence
+    # instead of handing it to the model, where it phonemizes to zero
+    # batches and np.concatenate dies (the cast_audio crash-loop).
+    s = _synth()
+    samples, sr = s.synthesize("---", voice="af_heart", lang="en-us")
+    assert sr == 24000
+    assert len(samples) == 0
+    assert s._k.calls == []  # type: ignore[attr-defined]
+
+
+def test_kokoro_empty_concatenate_error_returns_silence():
+    # The model itself raises this ValueError for text it can't phonemize —
+    # the belt-and-suspenders case for text that passes the pre-check (has a
+    # letter/digit) but kokoro-onnx still can't produce a batch for
+    # (np.concatenate on zero batches). The synth must return empty audio
+    # instead of propagating the crash.
+    s = _synth()
+
+    def _boom(*_a, **_kw):
+        raise ValueError("need at least one array to concatenate")
+
+    s._k.create = _boom  # type: ignore[method-assign]
+    samples, sr = s.synthesize("hello", voice="af_heart", lang="en-us")
+    assert sr == 24000
+    assert len(samples) == 0
+
+
+def test_kokoro_other_value_error_still_raises():
+    s = _synth()
+
+    def _boom(*_a, **_kw):
+        raise ValueError("some other kokoro failure")
+
+    s._k.create = _boom  # type: ignore[method-assign]
+    try:
+        s.synthesize("hello", voice="af_heart", lang="en-us")
+        raise AssertionError("expected ValueError to propagate")
+    except ValueError as exc:
+        assert "some other kokoro failure" in str(exc)
