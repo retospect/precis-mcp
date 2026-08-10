@@ -994,6 +994,70 @@ def test_content_failure_latches_immediately_and_stays_blocked_past_infra_window
     assert rid not in _candidate_parent_ids(store, limit=50)
 
 
+# ── infra:child-killed (parked-leaf-recovery) ──────────────────────
+
+
+def test_infra_child_killed_does_not_latch_under_the_retry_cap(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``infra:child-killed`` failure — the subprocess-exit
+    misclassification fix (docs/backlog/parked-leaf-recovery.md) — is
+    treated exactly like ``swept:claim-orphaned``: under
+    ``ORPHAN_RETRY_CAP`` it does NOT latch ``child-failed:`` on the
+    parent. Mirrors
+    ``test_infra_retry_bump_commits_with_callers_transaction``."""
+    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.store.types import Tag
+
+    r = handler.put(text="parent")
+    rid = id_of(r.body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="child-killed", meta={}, parent_id=rid
+    )
+    store.add_tag(job.id, Tag.open("infra:child-killed"), set_by="system")
+
+    with store.pool.connection() as conn:
+        bubble_job_failure(store, job.id, conn=conn)
+
+    with store.pool.connection() as check_conn:
+        row = check_conn.execute(
+            "SELECT meta->'orphan_retry_count' FROM refs WHERE ref_id = %s", (rid,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job.id}" not in parent_tags  # under the retry cap
+
+
+def test_infra_child_killed_latches_past_the_cap(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Repeated ``infra:child-killed`` failures on the same parent, past
+    ``ORPHAN_RETRY_CAP``, DO latch — the existing orphan-retry cap is the
+    single bound, regardless of which infra tag triggered it."""
+    from precis.handlers._job_bubble import ORPHAN_RETRY_CAP, bubble_job_failure
+    from precis.store.types import Tag
+
+    r = handler.put(text="repeatedly child-killed parent")
+    rid = id_of(r.body)
+
+    last_job_id: int | None = None
+    for i in range(ORPHAN_RETRY_CAP):
+        job = store.insert_ref(
+            kind="job", slug=None, title="child-killed", meta={}, parent_id=rid
+        )
+        last_job_id = int(job.id)
+        store.add_tag(job.id, Tag.open("infra:child-killed"), set_by="system")
+        bubble_job_failure(store, job.id)
+        if i < ORPHAN_RETRY_CAP - 1:
+            parent_tags = {str(t) for t in store.tags_for(rid)}
+            assert f"child-failed:{last_job_id}" not in parent_tags
+
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{last_job_id}" in parent_tags
+    assert "halt:orphan-retry-cap" in parent_tags
+
+
 # ── concurrency ──────────────────────────────────────────────────
 
 

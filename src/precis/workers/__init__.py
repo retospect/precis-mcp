@@ -119,10 +119,11 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
   health, one ``kind='alert'`` per condition (detector catalogue +
   thresholds: ``nursery.py``). The ``critical`` categories
   (worker-restart, dead-worker, dispatch-stall, orphaned-coordinator,
-  nas-denied, host-dark) page once via ``alerts.notify_critical_alert``
-  on first sighting — a dead/stalled worker stalls the planner
-  cluster-wide. Alerts replaced a per-minute memory digest that spun on
-  its own churning fingerprint (>2000 near-dup memories/day).
+  nas-denied, host-dark, embed-lane-stalled) page once via
+  ``alerts.notify_critical_alert`` on first sighting — a dead/stalled
+  worker stalls the planner cluster-wide. Alerts replaced a per-minute
+  memory digest that spun on its own churning fingerprint (>2000 near-dup
+  memories/day).
 * ``health_digest`` — the slow-rot sibling (hourly cadence, SQL-only):
   curated outcome checks (backlog ones idle-aware via
   ``precis.health_checks``), derived cadence staleness (every overdue
@@ -163,7 +164,10 @@ Notable pass mechanics
   ``PRECIS_STUCK_JOB_HOURS`` — except the three lease-owning executors,
   which self-heal via boot-epoch reclaim (see :mod:`.executors`);
   ``coordinator`` deliberately keeps this wall-clock backstop as its only
-  crash recovery.
+  crash recovery. It also runs an ``unpark`` phase every pass: a parent
+  latched behind a ``child-failed:*`` bubble (:mod:`precis.handlers._job_bubble`)
+  gets up to ``UNPARK_CAP`` autonomous, cool-down-gated re-arms before
+  latching the terminal ``child-failed-final`` tag.
 * ``corpus_reconcile`` (per-host ``pdf_locations`` presence ledger),
   ``paper_reconcile`` (standing dedup + hygiene heals), and
   ``openalex_enrich`` (abstract fill + card rebuild) each self-throttle

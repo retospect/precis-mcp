@@ -147,7 +147,10 @@ class TestParser:
         parser = _build_parser()
         args = parser.parse_args(["worker"])
         assert args.embedder_url is None
-        assert args.embedder_timeout == 30.0
+        # embedder-wedge-hardening.md §5: 300s, not the old 30s — a
+        # CPU-host embed batch can legitimately run past 30s, and a
+        # client that hangs up first just amplifies the retry storm.
+        assert args.embedder_timeout == 300.0
         assert args.embedder_max_retries == 3
 
     def test_worker_format_flag_defaults_to_none(self):

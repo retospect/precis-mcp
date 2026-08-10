@@ -71,7 +71,13 @@ class DispatchContext:
     #: ``failure_class=`` keyword (e.g. ``"infra"`` vs
     #: ``"non-convergence"``) stamps ``refs.meta.failure_class`` so a
     #: downstream harvest can tell "the executor died" apart from
-    #: "the compute ran and genuinely failed" — see
+    #: "the compute ran and genuinely failed"; optional ``open_tag=``
+    #: keyword (parked-leaf-recovery, docs/backlog/
+    #: parked-leaf-recovery.md) stamps an ``OPEN:<open_tag>`` tag on the
+    #: job before it's marked failed — a plugin that classified a
+    #: subprocess death (killed by signal / exited without its result
+    #: file) passes ``open_tag="infra:child-killed"`` to get the same
+    #: bounded auto-retry a lease-expiry orphan gets — see
     #: :func:`precis.workers.executors._common.record_failure`.
     record_failure: Callable[..., None]
     #: Cooperative cancel check. Returns ``True`` when a

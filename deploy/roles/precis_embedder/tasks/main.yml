@@ -131,6 +131,41 @@
     mode: "0755"
   become: true
 
+# ── Offline-first load warm-up (embedder-wedge-hardening.md §1) ──
+# The daemon env sets HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 (below) so
+# `precis serve-embeddings` startup NEVER dials HuggingFace Hub — the
+# 2026-08-08→10 embedder-node wedge was exactly that dial hanging indefinitely
+# against a slow/rate-limited hub, even with weights already cached
+# (SentenceTransformer still does a HEAD/GET revision check unless told
+# not to). That means the cache has to be pre-seeded HERE, while online,
+# at deploy time — gated on cache absence so a warm host's redeploy is a
+# no-op stat check, not a re-download. Runs as the `deploy` user (matches
+# the HF cache dir's ownership above, and the daemon's own UserName) so
+# the files it writes are readable/writable by the daemon later.
+- name: Check whether the bge-m3 HF cache is already warm
+  ansible.builtin.stat:
+    path: "{{ precis_embedder_hf_home }}/hub/models--BAAI--bge-m3"
+  register: precis_embedder_hf_cache_stat
+
+- name: Warm the bge-m3 HF cache (online, deploy-time only)
+  when: not precis_embedder_hf_cache_stat.stat.exists
+  environment:
+    HF_HOME: "{{ precis_embedder_hf_home }}"
+  ansible.builtin.command:
+    cmd: >-
+      {{ precis_embedder_venv }}/bin/huggingface-cli download BAAI/bge-m3
+      {{ '--revision ' ~ precis_embedder_hf_revision if precis_embedder_hf_revision else '' }}
+  become: true
+  become_user: deploy
+  register: precis_embedder_hf_warm
+  # A cold ~2.3 GB pull can hiccup on a slow/flaky link — retry so a
+  # transient blip doesn't fail the whole redeploy (mirrors the
+  # precis-mcp[embed] install task's retry policy above).
+  retries: 3
+  delay: 10
+  until: precis_embedder_hf_warm.rc == 0
+  changed_when: true
+
 # launchd hits EX_CONFIG (78) when StandardOutPath can't be created.
 # /var/log on modern macOS only allows root writes — pre-create with
 # deploy ownership so the daemon can append.
@@ -192,10 +227,11 @@
 
 # ── Verification ──
 # Give a fresh service a moment to bind, then probe /healthz. We do NOT
-# wait for /readyz — first boot downloads bge-m3 (~2.3 GB) and warms the
-# model, which can take minutes; /healthz proves the listener is up and
-# the deploy succeeded. The worker tolerates a warming embedder (retries
-# with backoff), so readiness is not a deploy gate.
+# wait for /readyz — even with the HF cache pre-warmed above, loading the
+# weights into MPS/CUDA and JIT-compiling kernels can take a while, and
+# /healthz proves the listener is up and the deploy succeeded. The worker
+# tolerates a warming embedder (retries with backoff), so readiness is
+# not a deploy gate.
 - name: Probe precis-embedder /healthz
   ansible.builtin.uri:
     url: "http://{{ precis_embedder_host }}:{{ precis_embedder_port }}/healthz"

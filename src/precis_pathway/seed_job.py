@@ -148,6 +148,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         if timeout_s > 0:
             kw["timeout"] = timeout_s
         result = runner.run_seed_partial_subprocess(config, seed, model_index, **kw)
+    except runner.ChildKilledError as exc:
+        # INFRA-class (parked-leaf-recovery, docs/backlog/
+        # parked-leaf-recovery.md): the child died by signal (SIGKILL/OOM)
+        # or exited without writing its result envelope — the compute
+        # never ran. Tag at this generic call site (not per job_type) so
+        # the bounded infra-retry in ``_job_bubble.bubble_job_failure``
+        # applies instead of an immediate content-class latch.
+        log.warning("autocatpath_seed: run failed (child killed)", exc_info=True)
+        ctx.record_failure(
+            f"autocatpath_seed: run failed: {exc}", open_tag="infra:child-killed"
+        )
+        return
     except Exception as exc:  # pragma: no cover - env/compute dependent
         log.warning("autocatpath_seed: run failed", exc_info=True)
         ctx.record_failure(f"autocatpath_seed: run failed: {exc}")
@@ -247,7 +259,14 @@ def _poll(ctx: Any, handle: Any) -> bool:
         reason = f"autocatpath_seed: run failed: {status.get('error')}"
         if tail:
             reason = f"{reason}\n--- tail ---\n{tail}"
-        ctx.record_failure(reason)
+        # INFRA-class (parked-leaf-recovery, docs/backlog/
+        # parked-leaf-recovery.md): ``poll_seed_partial_detached`` sets
+        # ``"infra"`` only on its no-envelope branch (the child exited
+        # without writing result.json) — mirrors the blocking dispatch
+        # path's ``ChildKilledError`` above, just observed from the
+        # detached side where a returncode was never captured.
+        open_tag = "infra:child-killed" if status.get("infra") else None
+        ctx.record_failure(reason, open_tag=open_tag)
         return True
 
     # state == "done"

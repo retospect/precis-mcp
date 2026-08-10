@@ -32,6 +32,7 @@ from precis.workers.nursery import (
     DEAD_WORKER_LOOKBACK_DAYS,
     DEAD_WORKER_SILENCE_MIN,
     DISPATCH_STALL_MINUTES,
+    EMBED_LANE_STALL_WINDOW_MIN,
     HOST_DARK_LOOKBACK_DAYS,
     HOST_DARK_SILENCE_MIN,
     LONG_WAIT_DAYS,
@@ -44,9 +45,11 @@ from precis.workers.nursery import (
     WORKER_CONTINUOUS_PROCESSES,
     WORKER_RESTART_STORM_1H,
     _dead_worker_detail,
+    _detect_child_failed_final,
     _detect_child_failed_parked,
     _detect_dead_workers,
     _detect_dispatch_stalls,
+    _detect_embed_lane_stalled,
     _detect_host_dark,
     _detect_long_waits,
     _detect_nas_denied,
@@ -369,6 +372,64 @@ def test_child_failed_parked_detector_dedups_multiple_bubbles(
     assert len(findings) == 1
     # Reports the oldest bubble — the parent has been parked ~5h, not ~1h.
     assert "child-failed:111" in findings[0].detail
+
+
+def test_child_failed_parked_detector_excludes_child_failed_final(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Acceptance (parked-leaf-recovery, docs/backlog/parked-leaf-
+    recovery.md): a leaf that hit the sweeper's unpark cap and carries
+    ``child-failed-final`` is excluded from the per-leaf stream — it's
+    reported instead, in aggregate, by :func:`_detect_child_failed_final`."""
+    r = handler.put(text="Terminally parked")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    _backdate_tag(store, rid, "child-failed:999", CHILD_FAILED_PARKED_HOURS + 1)
+    store.add_tag(rid, Tag.open("child-failed-final"), set_by="system")
+
+    findings = _detect_child_failed_parked(store)
+    ids = {f.ref_id for f in findings}
+    assert rid not in ids
+
+
+# ── child-failed-final (aggregate) ──────────────────────────────────
+
+
+def test_child_failed_final_detector_emits_one_aggregate_finding(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Acceptance: N leaves at ``child-failed-final`` produce ONE finding
+    (not per-leaf) carrying the count."""
+    for i in range(3):
+        r = handler.put(text=f"terminally parked {i}")
+        rid = _id_of(r.body)
+        store.add_tag(rid, Tag.open(f"child-failed:{900 + i}"), set_by="system")
+        store.add_tag(rid, Tag.open("child-failed-final"), set_by="system")
+
+    findings = _detect_child_failed_final(store)
+    assert len(findings) == 1
+    assert findings[0].ref_id is None
+    assert findings[0].fingerprint_key == "child-failed-final:aggregate"
+    assert "3" in findings[0].title or "3" in findings[0].detail
+
+
+def test_child_failed_final_detector_empty_when_none(store: Store) -> None:
+    assert _detect_child_failed_final(store) == []
+
+
+def test_child_failed_final_detector_ignores_done_leaf(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A leaf that reached ``child-failed-final`` but was later closed
+    (STATUS:done, e.g. a human resolved it manually) drops out of the
+    count."""
+    r = handler.put(text="terminally parked but closed")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    store.add_tag(rid, Tag.open("child-failed-final"), set_by="system")
+    handler.tag(id=rid, add=["STATUS:done"])
+
+    assert _detect_child_failed_final(store) == []
 
 
 # ── stalled recurrings ────────────────────────────────────────────
@@ -1386,6 +1447,98 @@ def test_run_nursery_pass_raises_critical_for_dispatch_stall(store: Store) -> No
 
     alerts = list_open_alerts(store)
     mine = [a for a in alerts if a["source"] == "nursery:dispatch-stall"]
+    assert len(mine) == 1
+    assert mine[0]["severity"] == "critical"
+
+
+# ── embed-lane-stalled (embedder-wedge-hardening.md §4) ─────────────
+
+
+def _mint_embed_batch_job(
+    store: Store, *, status: str, status_age_minutes: float = 0.0
+) -> int:
+    """Mint an ``embed_batch`` job with a ``STATUS`` tag, optionally
+    backdating the TAG's ``created_at`` (not the ref's) — the detector
+    reads ``STATUS:succeeded`` transition recency from
+    ``ref_tags.created_at``, mirroring ``health_digest.py``'s own
+    embed_batch status-window query."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="embed_batch job",
+        meta={"job_type": "embed_batch"},
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent")
+    if status_age_minutes:
+        _backdate_status_tag(store, ref.id, status_age_minutes / 60.0)
+    return ref.id
+
+
+# Comfortably past the succeeded-transition window.
+_EMBED_STALL_M = EMBED_LANE_STALL_WINDOW_MIN + 5
+
+
+def test_embed_lane_stalled_flags_queued_with_no_recent_successes(
+    store: Store,
+) -> None:
+    """A queued embed_batch job with zero STATUS:succeeded transitions in
+    the window is the wedge pattern (embedder alive, /readyz can even
+    look fine, but nothing is actually completing) → one critical
+    finding."""
+    _mint_embed_batch_job(store, status="queued")
+
+    findings = _detect_embed_lane_stalled(store)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.category == "embed-lane-stalled"
+    assert f.ref_id is None  # a cluster-wide condition, not per-job
+    assert f.fingerprint_key == "embed-lane-stalled"
+    assert "queued" in f.detail
+
+
+def test_embed_lane_stalled_ignores_when_a_recent_success_exists(
+    store: Store,
+) -> None:
+    """A queued backlog behind a lane that's actually draining (a recent
+    STATUS:succeeded transition) is healthy, not stalled."""
+    _mint_embed_batch_job(store, status="queued")
+    _mint_embed_batch_job(store, status="succeeded", status_age_minutes=5)
+
+    assert _detect_embed_lane_stalled(store) == []
+
+
+def test_embed_lane_stalled_ignores_stale_success_outside_window(
+    store: Store,
+) -> None:
+    """A success from BEFORE the window doesn't count — the lane must be
+    draining recently, not merely have drained once in the past."""
+    _mint_embed_batch_job(store, status="queued")
+    _mint_embed_batch_job(store, status="succeeded", status_age_minutes=_EMBED_STALL_M)
+
+    findings = _detect_embed_lane_stalled(store)
+    assert len(findings) == 1
+
+
+def test_embed_lane_stalled_ignores_no_queued_jobs(store: Store) -> None:
+    """Nothing queued means nothing is waiting on the lane — a terminal
+    success/failure with no queue backlog must not alarm."""
+    _mint_embed_batch_job(store, status="succeeded")
+    _mint_embed_batch_job(store, status="failed")
+
+    assert _detect_embed_lane_stalled(store) == []
+
+
+def test_run_nursery_pass_raises_critical_for_embed_lane_stalled(
+    store: Store,
+) -> None:
+    """End to end: an embed-lane-stalled finding becomes an open
+    ``critical`` alert under the ``nursery:embed-lane-stalled`` source."""
+    _mint_embed_batch_job(store, status="queued")
+
+    run_nursery_pass(store)
+
+    alerts = list_open_alerts(store)
+    mine = [a for a in alerts if a["source"] == "nursery:embed-lane-stalled"]
     assert len(mine) == 1
     assert mine[0]["severity"] == "critical"
 

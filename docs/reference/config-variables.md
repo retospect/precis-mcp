@@ -98,6 +98,7 @@ filesystem-scoping choice) and `PRECIS_ROOT`→markdown/plaintext/tex.
 | `PRECIS_EMBED_BATCH_MAX_JOBS` | Max `embed_batch` jobs `materialize` mints in one tick (`min(ceil(backlog/limit), this)`). | `4` | |
 | `PRECIS_EMBEDDER_SLOTS` | `embedder` `resource_slots` capacity override (`capability_probe.py`) — bypasses the `/readyz` probe entirely, same as `PRECIS_GPU_COUNT`/`PRECIS_PODMAN_SLOTS`. | `1` when `/readyz` answers, else `0` | Additive — advertises regardless of `PRECIS_MATERIALIZE_EMBED`; only consumed once a `requires={'embedder'}` job_type (`embed_batch`) actually claims. `/readyz` answers 200 both `loaded` and `idle`, so idle-unload never retracts the slot. |
 | `PRECIS_EMBEDDER_IDLE_S` | Idle-unload window (seconds) for `precis serve-embeddings` (`embedder_service.py`) — release the model's weights after this long with no `POST /embed`, reloading lazily on the next one. `0` disables (never unload). Ansible: `precis_embedder_idle_s` (`deploy/roles/precis_embedder/defaults/main.yml`), passed as `--idle-s`. | `1800` | The daemon (+ watchdog) stays standing; only model residency is elastic. An interactive-search host may want a longer value or `0` — the first query after idle pays a cold load. |
+| `PRECIS_EMBEDDER_LOAD_DEADLINE_S` | Hard wall-clock deadline (seconds) on `BgeM3Embedder`'s model load (`embedder.py::_load_with_deadline`) — a hung load (e.g. `SentenceTransformer` dialing a slow/rate-limited HuggingFace Hub for revision metadata even with weights cached) exits the whole process (`os._exit(1)`) instead of leaving `/readyz` unready forever. | `600` | embedder-wedge-hardening.md §2. A restart-based watchdog can't fix a load hung on a remote service; the process has to notice and exit so launchd `KeepAlive` / systemd `Restart=always` own the retry. |
 | `PRECIS_JOB_INPROC_LEASE_S` | Claim lease window (seconds) for the `job_inproc` executor (`workers/executors/job_inproc.py`) — must outlive the bounded work order. | `1800` | |
 
 ---
@@ -192,7 +193,10 @@ still set as env are the Anki login (`PRECIS_ANKI_USER` /
 Override only with a measured reason (see
 [`thresholds.md`](../conventions/thresholds.md)).
 
-`PRECIS_DB_CONNECT_RETRY_SECONDS` (30), `PRECIS_EMBEDDER_TIMEOUT` (30),
+`PRECIS_DB_CONNECT_RETRY_SECONDS` (30), `PRECIS_EMBEDDER_TIMEOUT` (300 —
+raised from 30 2026-08-10, embedder-wedge-hardening.md §5: a CPU-host
+embed batch can legitimately run past 30s, and a client timeout shorter
+than that hangs up on a still-computing batch, amplifying retries),
 `PRECIS_EMBEDDER_MAX_RETRIES` (5/3), `PRECIS_EMBEDDER_MAX_INFLIGHT` (4),
 `PRECIS_STARTUP_SKILLS_CAP_KB` (50), `PRECIS_INPROC_CONCURRENCY` (1),
 `PRECIS_CLUSTER_INTERVAL_HOURS` (20), good-search knobs

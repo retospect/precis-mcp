@@ -96,10 +96,14 @@ class PrecisConfig(BaseSettings):
     ``embedder="remote"``.
     """
 
-    embedder_timeout: float = 30.0
+    embedder_timeout: float = 300.0
     """Per-call HTTP deadline (seconds) for ``embedder="remote"``.
 
-    Set via ``PRECIS_EMBEDDER_TIMEOUT`` in the env.
+    300s (not the old 30s, embedder-wedge-hardening.md §5): the
+    2026-08-10 caspar/balthazar incident was the embedder finishing a
+    slow CPU-host batch while a 30s client timeout had already hung up
+    and retried, recomputing (and re-timing-out on) the same batch
+    forever. Set via ``PRECIS_EMBEDDER_TIMEOUT`` in the env.
     """
 
     embedder_max_retries: int = 5

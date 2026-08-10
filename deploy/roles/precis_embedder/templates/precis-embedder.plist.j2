@@ -51,6 +51,17 @@
     <string>{{ precis_embedder_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HF_HOME</key>
     <string>{{ precis_embedder_hf_home }}</string>
+    {# Offline-first load (embedder-wedge-hardening.md §1): startup must
+       never dial HuggingFace Hub. The "warm cache" task in this role's
+       tasks/main.yml pre-seeds HF_HOME while online (deploy time), so a
+       cache hit here is guaranteed; without these two vars,
+       SentenceTransformer still does a HEAD/GET revision check against
+       the hub even with weights cached, and a slow/rate-limited hub
+       hangs the load indefinitely (the 2026-08-08→10 embedder-node wedge). #}
+    <key>HF_HUB_OFFLINE</key>
+    <string>1</string>
+    <key>TRANSFORMERS_OFFLINE</key>
+    <string>1</string>
     <key>TOKENIZERS_PARALLELISM</key>
     <string>false</string>
   </dict>

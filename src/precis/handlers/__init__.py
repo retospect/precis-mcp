@@ -57,9 +57,14 @@ parent until ``auto_check`` flips it done
 (``dispatch._job_blocks_dispatch_sql``) — the brake against daily re-mint
 storms. On **failure** the parent gets a ``child-failed:<job_id>`` open tag
 (``handlers/_job_bubble.py``) and leaves the doable view; infra-class
-failures (``INFRA_FAILURE_TAGS``) get a bounded auto-retry
+failures (``INFRA_FAILURE_TAGS`` — a lease-expiry orphan sweep or a
+signal-killed/result-less compute child) get a bounded auto-retry
 (``ORPHAN_RETRY_CAP`` 3 per 6h window) before latching, content-class
-failures latch immediately.
+failures latch immediately. A latched bubble isn't necessarily terminal
+either: the sweeper's ``unpark`` phase (``workers/sweeper.py``) gives a
+parked parent up to ``UNPARK_CAP`` (3) autonomous, cool-down-gated
+re-arms before giving up and stamping the terminal ``child-failed-final``
+tag a human has to clear.
 
 **Planner coroutines.** A ``meta.llm_tier`` todo runs ``plan_tick``: each
 tick is a job that may mint children or yield (``ask-user:``) and still

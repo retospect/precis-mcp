@@ -57,7 +57,18 @@ finding rows):
   guardrail (tier 2) resolves most of these in one tick, so a parent
   still parked past the threshold means auto-recovery already gave up
   (a hard crash/infra error, or a repeat streak-exhaustion after the one
-  decompose attempt) and a human needs to look.
+  decompose attempt) and a human needs to look. **Excludes**
+  ``child-failed-final`` leaves (2026-08-10, parked-leaf-recovery, docs/
+  backlog/parked-leaf-recovery.md) — those have already exhausted the
+  sweeper's ``unpark`` phase's bounded autonomous retries
+  (:data:`precis.workers.sweeper.UNPARK_CAP`) and are reported instead by
+  **child-failed-final** below, one aggregate finding rather than N
+  per-leaf ones (repeated per-leaf noise for a condition only a human can
+  now resolve adds nothing).
+* **child-failed-final** — the count of leaves that hit the ``unpark``
+  phase's cap and will never be auto-retried again; ONE finding (not
+  per-leaf) with the count in its detail, so a growing terminal-park
+  backlog is visible without flooding ``/alerts``.
 
 Worker-health detectors (daemon liveness / work flow, not the todo
 graph) — all ``critical``, so a *new* one pages once via
@@ -92,6 +103,18 @@ graph) — all ``critical``, so a *new* one pages once via
   host is down. ``host-dark`` is the one alert that case still needs: any
   *surviving* worker elsewhere in the fleet runs nursery too, so it reports
   the dark host.
+* **embed-lane-stalled** — at least one ``embed_batch`` job sits
+  ``STATUS:queued`` while zero ``embed_batch`` jobs have transitioned to
+  ``STATUS:succeeded`` in the last :data:`EMBED_LANE_STALL_WINDOW_MIN`
+  minutes (``docs/backlog/embedder-wedge-hardening.md``). Motivated by the
+  2026-08-08→10 caspar incident: ``serve-embeddings`` startup wedged
+  dialing HuggingFace Hub for revision metadata (weights already cached),
+  the process stayed alive and its ``/readyz`` even looked plausible for
+  stretches, and the restart-based watchdog dutifully kept kicking it into
+  the same hang — ~2 days, ~5000 chunks unembedded, log-silent. Job
+  *outcomes* (``STATUS:*`` tags, never ``meta->>'last_status'``) are the
+  only truthful probe for this class of wedge; process/``/readyz`` checks
+  pass right through it.
 
 Each finding becomes an ``alert`` under ``alert_source =
 nursery:<category>``, deduped on ``fingerprint = "<category>:<ref_id>"``
@@ -247,6 +270,16 @@ HOST_DARK_LOOKBACK_DAYS = 30
 #: worker that never started — which has no log rows for dead-worker to age.
 DISPATCH_STALL_MINUTES = 15
 
+#: A window with at least one ``embed_batch`` job ``STATUS:queued`` and
+#: zero ``STATUS:succeeded`` transitions is a stalled embed lane —
+#: ``embedder-wedge-hardening.md``. ``embed_batch`` jobs are bounded
+#: (minutes each, not hours), so a healthy lane drains a queued backlog
+#: well inside an hour; this is a job-outcome probe, deliberately
+#: independent of the embedder process's own ``/readyz`` (which the
+#: motivating 2026-08-08→10 wedge proved can lie — HF-Hub-dial hangs read
+#: as "alive" for stretches while nothing was actually completing).
+EMBED_LANE_STALL_WINDOW_MIN = 60
+
 #: Per-category alert severity (drives sort + colour on the /alerts
 #: tab, and — for ``critical`` — a one-shot Discord push via
 #: :func:`notify_critical_alert`). Spin loops and stuck claims/recurrings
@@ -264,6 +297,7 @@ _SEVERITY: dict[str, str] = {
     "long-wait": "info",
     "stuck-doable": "info",
     "child-failed-parked": "warn",
+    "child-failed-final": "warn",
     "stalled-recurring": "warn",
     "worker-restart": "critical",
     "dead-worker": "critical",
@@ -271,6 +305,7 @@ _SEVERITY: dict[str, str] = {
     "orphaned-coordinator": "critical",
     "nas-denied": "critical",
     "host-dark": "critical",
+    "embed-lane-stalled": "critical",
 }
 
 
@@ -305,12 +340,14 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("long-wait", lambda s: _detect_long_waits(s)),
     ("stuck-doable", lambda s: _detect_stuck_doable(s)),
     ("child-failed-parked", lambda s: _detect_child_failed_parked(s)),
+    ("child-failed-final", lambda s: _detect_child_failed_final(s)),
     ("stalled-recurring", lambda s: _detect_stalled_recurrings(s)),
     ("worker-restart", lambda s: _detect_worker_restart_storms(s)),
     ("dead-worker", lambda s: _detect_dead_workers(s)),
     ("nas-denied", lambda s: _detect_nas_denied(s)),
     ("host-dark", lambda s: _detect_host_dark(s)),
     ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
+    ("embed-lane-stalled", lambda s: _detect_embed_lane_stalled(s)),
 )
 
 
@@ -619,10 +656,18 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
 
     ``bubble_job_failure`` (:mod:`precis.handlers._job_bubble`) tags the
     parent and pulls it out of dispatch/doable rotation on any job
-    failure; nothing else automated ever clears it. A parent can carry
-    more than one ``child-failed:<job_id>`` tag over time (each failed
-    child job adds its own), so this groups by ``ref_id`` and reports the
-    *oldest* one — how long the parent has been parked overall.
+    failure; nothing else automated ever clears it (except, since
+    2026-08-10, the sweeper's bounded ``unpark`` phase — see
+    :mod:`precis.workers.sweeper`). A parent can carry more than one
+    ``child-failed:<job_id>`` tag over time (each failed child job adds
+    its own), so this groups by ``ref_id`` and reports the *oldest* one —
+    how long the parent has been parked overall.
+
+    **Excludes ``child-failed-final`` leaves** (parked-leaf-recovery, docs/
+    backlog/parked-leaf-recovery.md) — those have exhausted the unpark
+    phase's bounded retries and are surfaced instead, in aggregate, by
+    :func:`_detect_child_failed_final` — repeating them here too would be
+    per-leaf noise for a condition the sweep will never touch again.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -641,6 +686,12 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt3 JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                      WHERE rt3.ref_id = r.ref_id
+                        AND t3.namespace = 'OPEN'
+                        AND t3.value = 'child-failed-final'
+                   )
              ORDER BY r.ref_id, rt.created_at ASC
              LIMIT 50
             """,
@@ -666,6 +717,53 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
             )
         )
     return out
+
+
+def _detect_child_failed_final(store: Store) -> list[Finding]:
+    """ONE aggregate finding for every live todo carrying an open
+    ``child-failed-final`` tag (parked-leaf-recovery, docs/backlog/
+    parked-leaf-recovery.md) — not per-leaf, since a terminal park is a
+    condition only a human can now clear (the sweeper's ``unpark`` phase
+    never touches it again) and per-leaf findings would just repeat the
+    same "go look" message N times. ``ref_id=None`` + an explicit
+    ``fingerprint_key`` (mirrors the worker-health detectors) since this
+    finding isn't scoped to any one ref. Returns ``[]`` (no alert) when
+    the count is zero — the ordinary "cleared" case.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*)
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value = 'child-failed-final'
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+            """
+        ).fetchone()
+    count = int(row[0]) if row else 0
+    if count == 0:
+        return []
+    return [
+        Finding(
+            category="child-failed-final",
+            ref_id=None,
+            title=f"{count} leaf/leaves stuck at child-failed-final",
+            detail=(
+                f"{count} todo(s) exhausted the sweeper's unpark phase "
+                f"(bounded autonomous retry) and are terminally parked — "
+                f"only a human `tag(remove=…)` unparks these now; see "
+                f"search(kind='todo', tags=['child-failed-final']) for the list"
+            ),
+            fingerprint_key="child-failed-final:aggregate",
+        )
+    ]
 
 
 # ── stalled recurrings ────────────────────────────────────────────
@@ -1462,6 +1560,75 @@ def _detect_dispatch_stalls(store: Store) -> list[Finding]:
                 "system/com.precis.worker.agent`) + `claude` OAuth; longer term, "
                 "run the agent profile on a second host or wire local-model "
                 "tool-calling so execution isn't single-homed."
+            ),
+        )
+    ]
+
+
+def _detect_embed_lane_stalled(store: Store) -> list[Finding]:
+    """``embed_batch`` jobs queued with nothing completing — the embed
+    lane is down (``docs/backlog/embedder-wedge-hardening.md``).
+
+    The 2026-08-08→10 caspar incident: ``serve-embeddings`` startup dials
+    HuggingFace Hub for revision metadata even with weights cached; when
+    HF is slow/rate-limited the load hangs forever, and the process stays
+    alive throughout — a restart-based watchdog just kicks it into the
+    same hang again. Process-exists and even ``/readyz`` checks can pass
+    right through this class of wedge, so job *outcomes* are the only
+    truthful probe. State is read from ``STATUS:*`` ``ref_tags`` (never
+    ``meta->>'last_status'`` — that's a compat mirror, not the source of
+    truth).
+
+    Fire iff **work is waiting and nothing is completing**: at least one
+    ``embed_batch`` job ``STATUS:queued`` while zero ``embed_batch`` jobs
+    transitioned to ``STATUS:succeeded`` in the last
+    :data:`EMBED_LANE_STALL_WINDOW_MIN` minutes. ``embed_batch`` jobs are
+    bounded (minutes each), so a healthy lane drains a queued backlog well
+    inside the window — this does not fire on a merely deep-but-draining
+    queue. A single non-ref-scoped critical alert (one page, not one per
+    stuck job); auto-resolves the moment a job succeeds.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                count(*) FILTER (WHERE t.value = 'queued')::int AS n_queued,
+                count(*) FILTER (
+                    WHERE t.value = 'succeeded'
+                      AND rt.created_at > now() - (%(mins)s || ' minutes')::interval
+                )::int AS n_recent_succeeded
+              FROM refs j
+              JOIN ref_tags rt ON rt.ref_id = j.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE j.kind = 'job'
+               AND j.deleted_at IS NULL
+               AND j.meta->>'job_type' = 'embed_batch'
+               AND t.namespace = 'STATUS'
+            """,
+            {"mins": EMBED_LANE_STALL_WINDOW_MIN},
+        ).fetchone()
+
+    if row is None:
+        return []
+    n_queued, n_recent_succeeded = int(row[0]), int(row[1])
+    if n_queued == 0 or n_recent_succeeded > 0:
+        return []
+    return [
+        Finding(
+            category="embed-lane-stalled",
+            ref_id=None,
+            fingerprint_key="embed-lane-stalled",
+            title=f"embed lane stalled — {n_queued} embed_batch job(s) queued, 0 succeeded",
+            detail=(
+                f"{n_queued} embed_batch job(s) STATUS:queued with zero "
+                f"STATUS:succeeded transitions in the last "
+                f"{EMBED_LANE_STALL_WINDOW_MIN} minutes — the embed lane is "
+                "down even though the embedder process (and possibly "
+                "/readyz) can look fine, e.g. a load wedged dialing "
+                "HuggingFace Hub. Check com.precis.embedder / "
+                "precis-embedder's recent logs for a hung model load; "
+                "restart alone may not clear it if the network condition "
+                "persists."
             ),
         )
     ]

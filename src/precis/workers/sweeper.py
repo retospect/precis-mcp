@@ -92,6 +92,27 @@ The transition is what wakes the cascade — the operator sees the
 stuck parent in the nursery's "child-failed" surfacing and can
 re-tick.
 
+**``unpark`` phase (2026-08-10, parked-leaf-recovery, docs/backlog/
+parked-leaf-recovery.md).** A ``child-failed:<job_id>`` bubble
+(``handlers/_job_bubble.py``) latches a parent todo and nothing else
+automated ever clears it — a human has to read the nursery alert and
+remove the tag. This phase is a bounded, cool-down-gated autonomous
+second look: every live (non-terminal) todo carrying an open
+``child-failed:*`` tag is a candidate. ``meta.unpark_attempts`` /
+``meta.last_parked_at`` drive an escalating cool-down (12h · 2ᴺ for
+attempt N — 12h, 24h, 48h): under :data:`UNPARK_CAP` (3), once the
+cool-down has elapsed, every open ``child-failed:*`` tag (plus
+``halt:orphan-retry-cap`` if present) is removed — the parent falls
+straight back into the dispatch candidate set and the dispatcher mints
+a fresh child, exactly as a human unpark does today — and
+``unpark_attempts`` bumps. At the cap the leaf gets one open
+``child-failed-final`` tag and is never touched again by this phase (a
+human remains the only unpark for those; see
+:func:`precis.workers.nursery._detect_child_failed_parked`'s aggregate
+finding for the ones stuck there). A manual human unpark (removing the
+tag by hand) resets nothing — ``unpark_attempts`` only ever advances via
+this phase.
+
 Configuration:
 
 * ``PRECIS_STUCK_JOB_HOURS`` — float, default ``1.0``. Set higher for
@@ -116,7 +137,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from precis.alerts import raise_alert
-from precis.handlers._job_bubble import bubble_job_failure
+from precis.handlers._job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
@@ -157,6 +178,20 @@ def _stuck_job_hours() -> float:
 
 
 STUCK_JOB_HOURS = _stuck_job_hours()
+
+#: Bounded-retry knobs for the ``unpark`` phase (parked-leaf-recovery,
+#: docs/backlog/parked-leaf-recovery.md) — mirrors ``_job_bubble``'s
+#: ``ORPHAN_RETRY_CAP``/``ORPHAN_RETRY_WINDOW_HOURS`` shape. A parent may
+#: be autonomously unparked this many times before the phase gives up and
+#: latches ``child-failed-final`` instead — bounds wasted re-dispatch on a
+#: leaf whose child keeps failing for a genuinely non-transient reason.
+UNPARK_CAP = 3
+#: Base cool-down (hours) before the FIRST (attempt 0) autonomous unpark;
+#: doubles per subsequent attempt (12h, 24h, 48h for attempts 0/1/2).
+_UNPARK_BASE_COOLDOWN_HOURS = 12
+#: Same terminal-status exclusion set ``nursery._detect_child_failed_parked``
+#: uses — a todo already closed (by any means) is not a candidate.
+_UNPARK_TERMINAL_STATUSES = ("done", "won't-do", "auto-timeout")
 
 #: The chunk-embedding model whose transient failures the sweeper re-opens.
 _EMBED_MODEL = "bge-m3"
@@ -668,6 +703,17 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # ``_enumerate_orphans``). Runs every pass, fleet-wide, not gated behind
     # any dark-launch flag.
     _reap_dead_node_orphans(store, limit=limit)
+    # ``unpark`` phase (parked-leaf-recovery) — a DISTINCT pass over
+    # ``child-failed:*``-latched todos, unconditional and fleet-wide like
+    # the dead-node reap above; called before the generic orphan sweep's
+    # early return (below) so an otherwise-empty pass still drains it.
+    unparked = _run_unpark_pass(store, limit=limit)
+    if unparked:
+        log.warning(
+            "sweeper: autonomously unparked %d child-failed leaf/leaves "
+            "(bounded retry, cool-down elapsed)",
+            unparked,
+        )
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
     if not candidates:
@@ -1025,6 +1071,211 @@ def _reap_stale_dft_containers() -> int:
         return 0
 
 
+# ── unpark phase (parked-leaf-recovery, docs/backlog/
+#    parked-leaf-recovery.md) ─────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _ParkedLeaf:
+    """One ``child-failed:*``-latched todo candidate for the ``unpark``
+    phase, identified before the locked re-verify + transition."""
+
+    ref_id: int
+
+
+def _enumerate_parked_leaves(store: Store, *, limit: int) -> list[_ParkedLeaf]:
+    """Find live todos carrying an open ``child-failed:*`` tag that are
+    eligible for the ``unpark`` phase — same non-terminal-status exclusion
+    as ``nursery._detect_child_failed_parked``, minus any leaf already
+    carrying ``child-failed-final`` (a terminal park this phase never
+    revisits — see the module docstring)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+             WHERE r.kind = 'todo'
+               AND r.deleted_at IS NULL
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'OPEN'
+                        AND t.value LIKE 'child-failed:%%'
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'OPEN'
+                        AND t.value = 'child-failed-final'
+                   )
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
+             ORDER BY r.ref_id
+             LIMIT %s
+            """,
+            (list(_UNPARK_TERMINAL_STATUSES), limit),
+        ).fetchall()
+    return [_ParkedLeaf(ref_id=int(r[0])) for r in rows]
+
+
+#: Initializes ``meta.last_parked_at`` to ``now()`` the first time the
+#: phase sees this leaf without one already tracked — "refreshed when the
+#: pass first sees a new park" (see the module docstring): a successful
+#: unpark clears the key (below) so the NEXT park re-initializes it fresh
+#: rather than measuring cool-down against a stale prior park.
+_INIT_LAST_PARKED_SQL = """
+    UPDATE refs
+       SET meta = jsonb_set(
+             COALESCE(meta, '{}'::jsonb), '{last_parked_at}', to_jsonb(now()), true
+           )
+     WHERE ref_id = %s
+       AND NOT (meta ? 'last_parked_at')
+"""
+
+#: Atomic bump of ``meta.unpark_attempts`` + clear of ``last_parked_at``
+#: (the just-completed park cycle is over) — mirrors ``_job_bubble.
+#: _bump_orphan_retry_count``'s single ``UPDATE … RETURNING`` shape.
+_BUMP_UNPARK_ATTEMPTS_SQL = """
+    UPDATE refs
+       SET meta = (meta - 'last_parked_at') || jsonb_build_object(
+             'unpark_attempts', COALESCE((meta->>'unpark_attempts')::int, 0) + 1
+           )
+     WHERE ref_id = %s
+ RETURNING (meta->>'unpark_attempts')::int
+"""
+
+
+def _unpark_cooldown_hours(attempts: int) -> float:
+    """12h · 2ᴺ for attempt N — 12h, 24h, 48h for attempts 0/1/2 (the only
+    values that matter: attempts >= :data:`UNPARK_CAP` never reach this,
+    the leaf latches ``child-failed-final`` instead)."""
+    return _UNPARK_BASE_COOLDOWN_HOURS * (2**attempts)
+
+
+def _transition_unpark(store: Store, ref_id: int) -> str:
+    """Lock one parked leaf, re-verify eligibility, and either unpark it,
+    latch it terminal, or leave it (still cooling down / lost the race).
+
+    Returns ``"unparked"`` (tags cleared, ``unpark_attempts`` bumped),
+    ``"final"`` (hit :data:`UNPARK_CAP`, ``child-failed-final`` latched),
+    ``"cooldown"`` (eligible but the escalating window hasn't elapsed),
+    or ``"raced"`` (another worker already handled it, or the leaf no
+    longer matches — status changed, tags cleared by a human, etc., between
+    enumeration and lock).
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+              FROM refs r
+             WHERE r.ref_id = %s
+               AND r.kind = 'todo'
+               AND r.deleted_at IS NULL
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'OPEN'
+                        AND t.value LIKE 'child-failed:%%'
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'OPEN'
+                        AND t.value = 'child-failed-final'
+                   )
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
+             FOR UPDATE OF r SKIP LOCKED
+            """,
+            (ref_id, list(_UNPARK_TERMINAL_STATUSES)),
+        ).fetchone()
+        if row is None:
+            return "raced"
+
+        conn.execute(_INIT_LAST_PARKED_SQL, (ref_id,))
+        meta_row = conn.execute(
+            "SELECT (meta->>'last_parked_at')::timestamptz, "
+            "       COALESCE((meta->>'unpark_attempts')::int, 0) "
+            "  FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        # The row is FOR-UPDATE-locked by the SELECT above (confirmed to
+        # exist there) — this same-tx re-select against the same ref_id can
+        # never come back empty; the assert is for mypy, not runtime safety.
+        assert meta_row is not None
+        last_parked_at, attempts = meta_row[0], int(meta_row[1])
+
+        if attempts >= UNPARK_CAP:
+            store.add_tag(
+                ref_id, Tag.open("child-failed-final"), set_by="system", conn=conn
+            )
+            store.append_event(
+                ref_id,
+                source="sweeper",
+                event="unpark-final",
+                payload={"unpark_attempts": attempts, "cap": UNPARK_CAP},
+                conn=conn,
+            )
+            return "final"
+
+        cooldown_hours = _unpark_cooldown_hours(attempts)
+        if last_parked_at is None or datetime.now(UTC) - last_parked_at < timedelta(
+            hours=cooldown_hours
+        ):
+            return "cooldown"
+
+        remove_child_failed_tags(store, ref_id, conn=conn)
+        store.remove_tag(ref_id, Tag.open("halt:orphan-retry-cap"), conn=conn)
+        new_attempts_row = conn.execute(_BUMP_UNPARK_ATTEMPTS_SQL, (ref_id,)).fetchone()
+        new_attempts = int(new_attempts_row[0]) if new_attempts_row else attempts + 1
+        store.append_event(
+            ref_id,
+            source="sweeper",
+            event="unparked",
+            payload={"unpark_attempts": new_attempts, "cooldown_hours": cooldown_hours},
+            conn=conn,
+        )
+    return "unparked"
+
+
+def _run_unpark_pass(store: Store, *, limit: int) -> int:
+    """Run the ``unpark`` phase over up to ``limit`` candidates.
+
+    Per-leaf wrapped so one leaf raising (a genuinely unexpected bug, not
+    a lost race — that's the ordinary ``"raced"`` return) can't abort the
+    rest of the sweep, mirroring :func:`_reap_dead_node_orphans`. Returns
+    the count actually unparked (``"final"``/``"cooldown"``/``"raced"``
+    outcomes are not counted — only a genuine autonomous re-arm is).
+    """
+    candidates = _enumerate_parked_leaves(store, limit=limit)
+    n = 0
+    for leaf in candidates:
+        try:
+            outcome = _transition_unpark(store, leaf.ref_id)
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "sweeper: unpark for todo #%d raised", leaf.ref_id, exc_info=True
+            )
+            continue
+        if outcome == "unparked":
+            n += 1
+            log.info("sweeper: todo #%d autonomously unparked", leaf.ref_id)
+        elif outcome == "final":
+            log.warning(
+                "sweeper: todo #%d hit unpark cap %d — latched "
+                "child-failed-final, human unpark required",
+                leaf.ref_id,
+                UNPARK_CAP,
+            )
+    return n
+
+
 def _transition_to_failed(
     store: Store, orphan: _Orphan, threshold_hours: float
 ) -> bool:
@@ -1109,4 +1360,4 @@ def _transition_to_failed(
     return True
 
 
-__all__ = ["STUCK_JOB_HOURS", "run_sweeper_pass"]
+__all__ = ["STUCK_JOB_HOURS", "UNPARK_CAP", "run_sweeper_pass"]

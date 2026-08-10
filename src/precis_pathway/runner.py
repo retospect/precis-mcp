@@ -40,6 +40,37 @@ from autocatpath.pipeline import Results, run
 log = logging.getLogger(__name__)
 
 
+class ChildKilledError(RuntimeError):
+    """The compute child died by signal (SIGKILL/OOM, a negative
+    ``returncode``) or exited without producing its expected
+    ``result.json`` — an INFRA-class failure (the environment killed the
+    process; the compute never actually ran), never a content-class one.
+
+    Raised only by :func:`run_seed_partial_subprocess` (the blocking
+    legacy-dispatch path); the detached submit/poll path
+    (:func:`poll_seed_partial_detached`) can't capture a returncode at all
+    (nothing keeps the ``Popen`` handle to wait on) so it signals the same
+    condition via the returned state dict's ``"infra"`` key instead — see
+    its docstring. Both feed
+    ``precis_pathway.seed_job``'s ``ctx.record_failure(...,
+    open_tag="infra:child-killed")`` call
+    (docs/backlog/parked-leaf-recovery.md), the generic layer that stamps
+    the tag :data:`precis.handlers._job_bubble.INFRA_FAILURE_TAGS` reads to
+    bound-retry instead of latching the parent immediately. A plain
+    positive nonzero ``returncode`` WITH the result file present (an
+    unhandled-but-non-fatal child exception, distinct from an environment
+    kill) still raises a bare ``RuntimeError`` — content-class, unchanged.
+    """
+
+
+#: A ``subprocess`` ``returncode`` is negative-N when the child was
+#: terminated by signal N (Python's own convention, mirroring the raw
+#: POSIX wait status) — never true of a child that exited normally, even
+#: with a nonzero exit code.
+def _died_by_signal(returncode: int) -> bool:
+    return returncode < 0
+
+
 def network_topology(config: dict[str, Any]) -> dict[str, Any]:
     """Build the reaction network **cheaply** (rule-based, NO ML) and return its
     structure as plain data: intermediates (with composition), atom-conserving
@@ -473,10 +504,20 @@ def run_seed_partial_subprocess(
 
         if proc.returncode != 0 or not os.path.exists(out_path):
             tail = (proc.stderr or proc.stdout or "<no output>")[-2000:]
-            raise RuntimeError(
+            msg = (
                 f"autocatpath_seed subprocess failed (rc={proc.returncode}, "
                 f"seed={seed} model_index={model_index}); last output: {tail!r}"
             )
+            # INFRA-class: the child was signal-killed (SIGKILL/OOM, a
+            # negative returncode) or exited without writing its result
+            # envelope at all — the compute never ran. A positive nonzero
+            # returncode WITH the envelope present (an unhandled-but-non-
+            # fatal child exception that still exited normally) is the one
+            # case that reaches this branch (via the OR's first arm) without
+            # being infra-classifiable — stays a bare RuntimeError.
+            if _died_by_signal(proc.returncode) or not os.path.exists(out_path):
+                raise ChildKilledError(msg)
+            raise RuntimeError(msg)
 
         with open(out_path, encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -750,8 +791,9 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
 
     Returns one of ``{"state": "running"}``,
     ``{"state": "done", "result": <run_seed_partial output>, "tail": ...}``,
-    or ``{"state": "failed", "error": ..., "tail": ...}``. Terminal states
-    remove the scratch dir (best-effort) after extracting what they need.
+    or ``{"state": "failed", "error": ..., "tail": ..., "infra": <bool, only
+    on the no-envelope branch>}``. Terminal states remove the scratch dir
+    (best-effort) after extracting what they need.
     """
     import json as _json
     import os
@@ -770,7 +812,14 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
             # unreadable file -> a genuine infra failure.
             if _process_alive(pid):
                 return {"state": "running"}
-            result = {
+            # Annotated (not just the terminal no-envelope branch below):
+            # every other ``result =`` rebinding in this function is a bare
+            # reassignment of the SAME name, and mypy only allows one
+            # explicit annotation per name per function — so this one decl
+            # widens the inferred type for all of them, letting the
+            # no-envelope branch's extra ``"infra": bool`` key coexist with
+            # the ``str``-only dicts the other branches build.
+            result: dict[str, Any] = {
                 "state": "failed",
                 "error": f"result.json unreadable: {exc}",
                 "tail": _tail_logs(scratch),
@@ -811,10 +860,17 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
 
     # _process_alive already reaped it (if it was ours to reap) as part of
     # determining "dead" — no separate _reap_zombie call needed here.
+    # INFRA-class (parked-leaf-recovery, docs/backlog/
+    # parked-leaf-recovery.md): the child exited without writing its result
+    # envelope at all — the ``ChildKilledError`` condition, just observed
+    # from the detached (no captured returncode) side rather than raised —
+    # ``"infra": True`` tells ``seed_job._poll`` to pass
+    # ``open_tag="infra:child-killed"`` through to ``ctx.record_failure``.
     result = {
         "state": "failed",
         "error": "child process exited without writing result.json",
         "tail": _tail_logs(scratch),
+        "infra": True,
     }
     _cleanup_detached(scratch, failed=True)
     return result

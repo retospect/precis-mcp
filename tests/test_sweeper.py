@@ -28,6 +28,7 @@ from precis.store.types import Tag
 from precis.workers.sweeper import (
     _REOPEN_MAX_ATTEMPTS,
     _WORKER_LOG_GC_LOCK,
+    UNPARK_CAP,
     _gc_worker_logs,
     _reopen_transient_failed_embeds,
     _reopen_transient_failed_summaries,
@@ -909,3 +910,190 @@ def test_dead_node_orphan_not_reaped_when_host_heartbeat_fresh(
     job_tags = {str(t) for t in store.tags_for(job_id)}
     assert "STATUS:running" in job_tags
     assert "STATUS:failed" not in job_tags
+
+
+# ── unpark phase (parked-leaf-recovery, docs/backlog/
+#    parked-leaf-recovery.md) ─────────────────────────────────────────
+
+
+def _park_leaf(
+    store: Store,
+    rid: int,
+    *,
+    job_id: int,
+    parked_hours_ago: float | None = None,
+    unpark_attempts: int | None = None,
+    also_halt_tag: bool = False,
+) -> None:
+    """Latch ``child-failed:<job_id>`` on ``rid`` (mirrors what
+    ``bubble_job_failure`` itself writes) and optionally seed
+    ``meta.last_parked_at`` / ``meta.unpark_attempts`` directly.
+
+    The unpark phase measures cool-down against ``meta.last_parked_at``
+    (initialized to ``now()`` the first time the phase sees a leaf without
+    one — see the sweeper module docstring), not the tag's own
+    ``created_at`` — so a test wanting "already parked N hours" seeds it
+    explicitly, exactly like a park that predates this feature's deploy
+    looks after its first sweep pass.
+    """
+    store.add_tag(rid, Tag.open(f"child-failed:{job_id}"), set_by="system")
+    if also_halt_tag:
+        store.add_tag(rid, Tag.open("halt:orphan-retry-cap"), set_by="system")
+    if parked_hours_ago is None and unpark_attempts is None:
+        return
+    with store.pool.connection() as conn:
+        if parked_hours_ago is not None:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'last_parked_at', now() - %s::interval"
+                ") WHERE ref_id = %s",
+                (f"{parked_hours_ago} hours", rid),
+            )
+        if unpark_attempts is not None:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'unpark_attempts', %s::int"
+                ") WHERE ref_id = %s",
+                (unpark_attempts, rid),
+            )
+        conn.commit()
+
+
+def _unpark_attempts_of(store: Store, rid: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE((meta->>'unpark_attempts')::int, 0) "
+            "FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_unpark_leaves_a_freshly_parked_leaf_alone(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A leaf the phase sees parked for the FIRST time initializes
+    ``meta.last_parked_at`` to ``now()`` — the cool-down hasn't elapsed yet,
+    so this pass must not touch its tags or bump the counter."""
+    r = handler.put(text="freshly parked")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed:999" in tags
+    assert "child-failed-final" not in tags
+    assert _unpark_attempts_of(store, rid) == 0
+
+
+def test_unpark_after_cooldown_clears_tags_and_bumps_attempts(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Acceptance: a todo parked >12h with ``unpark_attempts=0`` gets its
+    ``child-failed:*`` tags removed by one sweeper run and
+    ``unpark_attempts=1``."""
+    r = handler.put(text="cooled down")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999, parked_hours_ago=13)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed:999" not in tags
+    assert _unpark_attempts_of(store, rid) == 1
+
+
+def test_unpark_cooldown_escalates_with_attempts(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Acceptance: cool-down is enforced — a 13h-parked todo with
+    ``unpark_attempts=1`` is NOT unparked before 24h (12h · 2¹)."""
+    r = handler.put(text="escalated cooldown, not yet")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999, parked_hours_ago=13, unpark_attempts=1)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed:999" in tags  # not unparked — still cooling down
+    assert _unpark_attempts_of(store, rid) == 1
+
+
+def test_unpark_cooldown_fires_once_the_escalated_window_elapses(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The positive case of the escalation test above: past 24h at
+    ``unpark_attempts=1``, the leaf DOES unpark and the counter bumps to 2."""
+    r = handler.put(text="escalated cooldown, elapsed")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999, parked_hours_ago=25, unpark_attempts=1)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed:999" not in tags
+    assert _unpark_attempts_of(store, rid) == 2
+
+
+def test_unpark_removes_halt_orphan_retry_cap_tag_too(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A successful unpark also clears ``halt:orphan-retry-cap`` (the
+    infra-retry-cap latch) if present — same rearm as a human unpark."""
+    r = handler.put(text="also halted")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999, parked_hours_ago=13, also_halt_tag=True)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed:999" not in tags
+    assert "halt:orphan-retry-cap" not in tags
+
+
+def test_unpark_at_cap_latches_child_failed_final_and_stops(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Acceptance: a todo at ``unpark_attempts=3`` (== UNPARK_CAP) gets
+    ``child-failed-final`` and is never touched again — its
+    ``child-failed:*`` tags are left alone (not removed) and the attempts
+    counter does not advance past the cap, even across repeated sweeps."""
+    r = handler.put(text="exhausted")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999, parked_hours_ago=100, unpark_attempts=UNPARK_CAP)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed-final" in tags
+    assert "child-failed:999" in tags  # left alone, not removed
+    assert _unpark_attempts_of(store, rid) == UNPARK_CAP
+
+    # A second pass must be a complete no-op — the candidate query excludes
+    # any leaf already carrying child-failed-final.
+    run_sweeper_pass(store, limit=10)
+    tags_again = {str(t) for t in store.tags_for(rid)}
+    assert tags_again == tags
+    assert _unpark_attempts_of(store, rid) == UNPARK_CAP
+
+
+def test_unpark_skips_a_leaf_with_terminal_status(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A leaf whose STATUS is already terminal (``done``) is not a
+    candidate at all — mirrors ``nursery._detect_child_failed_parked``'s
+    own exclusion set."""
+    r = handler.put(text="already done")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999, parked_hours_ago=13)
+    store.add_tag(
+        rid, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed:999" in tags  # untouched
+    assert _unpark_attempts_of(store, rid) == 0

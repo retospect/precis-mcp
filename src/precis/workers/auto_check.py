@@ -208,6 +208,26 @@ def _process_one(store: Store, ref_id: int, spec: dict[str, Any]) -> str:
     if verdict is True:
         _flip_status(store, ref_id, to="done", event="auto-resolved")
         log.info("auto_check: todo id=%d → STATUS:done (auto-resolved)", ref_id)
+        if type_name == "child_job_succeeded":
+            # Success clears stale bubbles (parked-leaf-recovery, docs/
+            # backlog/parked-leaf-recovery.md): a parent can carry
+            # ``child-failed:<job_id>`` tags from EARLIER failed siblings
+            # even though the child that just resolved this leaf
+            # succeeded — without this the row survives done-but-parked-
+            # looking. Only this evaluator's own success path clears them;
+            # a leaf resolved some other way (e.g. ``tag_present``) leaves
+            # the bubble alone, since that resolution says nothing about
+            # whether the earlier failure was ever actually addressed.
+            from precis.handlers._job_bubble import remove_child_failed_tags
+
+            removed = remove_child_failed_tags(store, ref_id)
+            if removed:
+                log.info(
+                    "auto_check: todo id=%d cleared %d stale child-failed "
+                    "tag(s) on resolve",
+                    ref_id,
+                    removed,
+                )
         return "done"
     return "pending"
 

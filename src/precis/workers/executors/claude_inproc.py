@@ -364,13 +364,23 @@ def _build_dispatch_context(
             _set_meta(conn, ref_id, **fields)
             conn.commit()
 
-    def _ctx_record_failure(reason: str, *, failure_class: str | None = None) -> None:
+    def _ctx_record_failure(
+        reason: str,
+        *,
+        failure_class: str | None = None,
+        open_tag: str | None = None,
+    ) -> None:
         # ``gripe_rollback=None`` — plugin dispatchers don't have
         # the fix_gripe gripe-link convention. Plugins that DO
         # need a side-effect rollback can do it explicitly via
         # set_status against the linked ref.
         _record_failure(
-            store, ref_id, reason, gripe_rollback=None, failure_class=failure_class
+            store,
+            ref_id,
+            reason,
+            gripe_rollback=None,
+            failure_class=failure_class,
+            open_tag=open_tag,
         )
 
     def _ctx_is_cancel_requested() -> bool:

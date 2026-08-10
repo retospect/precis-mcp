@@ -34,8 +34,11 @@ dropdb -U "${PG_USER}" --if-exists "${TEST_DB}"
 createdb -U "${PG_USER}" "${TEST_DB}"
 
 # Restore. --no-owner/--no-privileges keep a throwaway restore from choking on
-# role grants; -j4 parallelises (works for both -Fd and -Fc archives).
-pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges -j4 "${LATEST_DUMP}"
+# role grants. Single-job + no parallel index workers: the pg host is a 32 GB
+# box also serving precis_prod, and a -j4 restore with parallel index builds
+# drove it ~11 GB into swap (2026-08-10) — correctness proof, not a race.
+export PGOPTIONS="-c max_parallel_maintenance_workers=0 -c maintenance_work_mem=256MB"
+nice -n 19 pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges -j1 "${LATEST_DUMP}"
 
 # Basic sanity check — a healthy precis_prod restore has hundreds of tables.
 TABLE_COUNT=$(psql -U "${PG_USER}" -d "${TEST_DB}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")

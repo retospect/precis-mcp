@@ -38,6 +38,21 @@ stops spinning instead of retrying forever. The content path is
 byte-identical to before: every consumer of ``child-failed:<job_id>``
 (the exclusion registry, ``_detect_child_failed_parked``, …) is
 untouched.
+
+**Subprocess-death misclassification (2026-08-10, autocatpath-recovery,
+docs/backlog/parked-leaf-recovery.md).** A child's process dying by
+signal (SIGKILL/OOM) or exiting without producing its expected result
+file used to land as a bare content-class failure — the compute never
+actually ran, but the bubble had no way to tell that apart from a
+genuine task error. The generic subprocess-exit layer
+(``executors/_common.record_failure``'s ``open_tag=`` parameter, wired
+from ``precis_pathway.seed_job``) now stamps
+``infra:child-killed`` on the job before it's marked failed, and that
+value joins :data:`INFRA_FAILURE_TAGS` — so a subprocess death gets the
+same bounded auto-retry as a lease-expiry orphan instead of latching
+immediately. See :mod:`precis.workers.sweeper`'s ``unpark`` phase for the
+complementary autonomous recovery once a bubble DOES latch (bounded,
+cool-down-gated, terminal past ``UNPARK_CAP``).
 """
 
 from __future__ import annotations
@@ -62,7 +77,12 @@ log = logging.getLogger(__name__)
 #: bounded auto-retry is safe: the classification is provably "the worker
 #: died", never "the worker is still running and about to finish".
 #: Extensible — a future infra-detectable failure mode appends here.
-INFRA_FAILURE_TAGS = frozenset({"swept:claim-orphaned"})
+#: ``infra:child-killed`` (2026-08-10) is written by the generic
+#: subprocess-exit layer (``executors/_common.record_failure``'s
+#: ``open_tag=``) — synchronously, by the worker that owned the job,
+#: before it marks the job failed — so the same "no live worker can
+#: still be running it" safety argument applies.
+INFRA_FAILURE_TAGS = frozenset({"swept:claim-orphaned", "infra:child-killed"})
 
 #: Bounded-retry knobs for the infra-class path. A parent may re-arm this
 #: many infra failures inside the trailing window before the bubble gives
@@ -159,6 +179,46 @@ def bubble_job_failure(
         targets,
         tag,
     )
+
+
+def remove_child_failed_tags(
+    store: Store, ref_id: int, *, conn: Connection | None = None
+) -> int:
+    """Remove every open ``child-failed:<job_id>`` tag on ``ref_id``.
+
+    A todo can accumulate more than one such tag over time (one per
+    failed child — see the module docstring), so this is a bulk
+    ``LIKE``-scoped delete rather than a single :meth:`Store.remove_tag`
+    call. Shared by two consumers (parked-leaf-recovery,
+    docs/backlog/parked-leaf-recovery.md):
+
+    * the ``child_job_succeeded`` auto_check evaluator, when a fresh
+      child success flips the parent — clears stale bubbles left by
+      earlier failed siblings instead of leaving a done-but-parked-
+      looking row;
+    * :mod:`precis.workers.sweeper`'s ``unpark`` phase, when a bounded
+      autonomous retry re-arms a parked leaf.
+
+    Returns the number of tags removed (0 = none were present, a
+    harmless no-op either way). ``conn`` threads exactly like
+    :func:`_apply_tags` — shares the caller's transaction when given,
+    else opens (and commits) its own.
+    """
+    sql = (
+        "DELETE FROM ref_tags rt "
+        "USING tags t "
+        "WHERE rt.tag_id = t.tag_id "
+        "  AND rt.ref_id = %s "
+        "  AND t.namespace = 'OPEN' "
+        "  AND t.value LIKE 'child-failed:%%'"
+    )
+    if conn is not None:
+        cur = conn.execute(sql, (ref_id,))
+        return cur.rowcount or 0
+    with store.pool.connection() as c:
+        cur = c.execute(sql, (ref_id,))
+        c.commit()
+        return cur.rowcount or 0
 
 
 def _apply_tags(
@@ -309,4 +369,4 @@ def _requester_todos(
     return [int(r[0]) for r in rows]
 
 
-__all__ = ["bubble_job_failure"]
+__all__ = ["bubble_job_failure", "remove_child_failed_tags"]

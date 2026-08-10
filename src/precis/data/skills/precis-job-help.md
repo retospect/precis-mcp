@@ -32,11 +32,17 @@ Not cron. Not celery. Not a subprocess you wait on.
   mints the job under it. Direct `put(kind='job', parent_id=N,
   ...)` works for ad-hoc submits but skips the auto_check
   injection — see `precis-dispatch-help` for the full pattern.
-* **A failed job tags its parent.** When a job hits
-  `STATUS:failed`, the parent todo gets an open tag
-  `child-failed:<job_id>`. The nursery digest surfaces this; the
-  parent's owner decides next move (retry / switch executor /
-  ask user). **The substrate does NOT auto-retry.**
+* **A failed job tags its parent — with bounded self-healing.**
+  Infra-class failures (`swept:claim-orphaned`, `infra:child-killed`
+  — lease orphan / compute child died by signal or without a result
+  file) do NOT park the parent: the dispatcher re-mints a fresh
+  attempt, capped (3 per 6 h). Content-class failures tag the parent
+  `child-failed:<job_id>`; the sweeper's `unpark` phase then retries
+  it autonomously on an escalating cool-down (12 h / 24 h / 48 h,
+  cap 3) before latching the terminal `child-failed-final` tag —
+  only *that* tag means the substrate has given up and a human (or
+  the parent's owner) must decide. The nursery surfaces
+  still-recoverable parks per-leaf and finals as one aggregate.
 
 ## What is a job in precis
 ## How do jobs differ from regular tool calls?
@@ -207,8 +213,9 @@ tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 
 When a job fails, its parent todo gets `child-failed:<job_id>`
 tagged. The doable view excludes parents with that tag so they
-don't keep getting re-picked. The retry decision belongs to the
-parent's owner:
+don't keep getting re-picked. The sweeper auto-unparks bounded
+(see above), so manual retry is for *now* rather than *eventually*
+— and mandatory only once `child-failed-final` is latched:
 
 ```python
 # Option A (preferred): the retry verb. One call clears the bubble

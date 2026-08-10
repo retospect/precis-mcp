@@ -33,7 +33,7 @@ from precis.store._resource_slots_ops import (
     release_resource_slots,
     reserve_resource_slots,
 )
-from precis.store.types import BlockInsert
+from precis.store.types import BlockInsert, Tag
 from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import reserve_active
 
@@ -1008,6 +1008,7 @@ def record_failure(
     *,
     gripe_rollback: int | None,
     failure_class: str | None = None,
+    open_tag: str | None = None,
 ) -> None:
     """Tag a job ``STATUS:failed`` with a reason event chunk.
 
@@ -1018,8 +1019,24 @@ def record_failure(
     physical/numeric failure) — stamped onto ``refs.meta.failure_class`` so a
     downstream harvest can tell "couldn't run" apart from "ran and failed"
     instead of laundering both into the same bare ``STATUS:failed``.
+
+    ``open_tag`` (optional, parked-leaf-recovery,
+    docs/backlog/parked-leaf-recovery.md) stamps an ``OPEN:<open_tag>`` tag
+    on the job BEFORE it's marked failed — the generic layer a caller that
+    observed a classifiable infra condition (e.g. a compute-executor
+    subprocess dying by signal, or exiting without its expected result
+    file — ``precis_pathway.seed_job``'s ``infra:child-killed``) reaches for
+    instead of duplicating the tag-then-fail dance itself. Written inside
+    the SAME transaction that drives ``STATUS:failed`` and calls
+    :func:`~precis.handlers._job_bubble.bubble_job_failure` below, so a tag
+    value that's also a member of
+    ``precis.handlers._job_bubble.INFRA_FAILURE_TAGS`` is guaranteed visible
+    to the bubble's infra-classification read — enabling the same bounded
+    auto-retry a lease-expiry orphan gets, rather than an immediate latch.
     """
     with store.pool.connection() as conn:
+        if open_tag is not None:
+            store.add_tag(ref_id, Tag.open(open_tag), set_by="system", conn=conn)
         append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
         set_status(store, ref_id, FAILED, conn=conn)
         if failure_class is not None:

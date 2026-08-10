@@ -439,9 +439,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--embedder-timeout",
         type=float,
-        default=float(os.environ.get("PRECIS_EMBEDDER_TIMEOUT", "30.0")),
+        default=float(os.environ.get("PRECIS_EMBEDDER_TIMEOUT", "300.0")),
         help="Per-call HTTP deadline in seconds for --embedder remote "
-        "(default: PRECIS_EMBEDDER_TIMEOUT env, else 30.0).",
+        "(default: PRECIS_EMBEDDER_TIMEOUT env, else 300.0 — a CPU-host "
+        "batch can legitimately take longer than 30s; a client timeout "
+        "shorter than the server's compute time just amplifies retries, "
+        "see embedder-wedge-hardening.md §5).",
     )
     p.add_argument(
         "--embedder-max-retries",
@@ -2265,7 +2268,7 @@ def _resolve_embedder(
         args.embedder,
         dim=store.embedding_dim() if store is not None else 1024,
         url=getattr(args, "embedder_url", None),
-        timeout=getattr(args, "embedder_timeout", 30.0),
+        timeout=getattr(args, "embedder_timeout", 300.0),
         max_retries=getattr(args, "embedder_max_retries", 3),
     )
 

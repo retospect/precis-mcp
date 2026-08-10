@@ -519,6 +519,43 @@ def test_pass_resolves_via_child_job_succeeded(
     assert "STATUS:done" in tags
 
 
+def test_pass_resolves_via_child_job_succeeded_clears_stale_bubbles(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Acceptance (parked-leaf-recovery, docs/backlog/parked-leaf-
+    recovery.md): a parent can carry ``child-failed:<job_id>`` tags from
+    EARLIER failed siblings even though the child that resolves this leaf
+    succeeded — the ``child_job_succeeded`` resolve path must clear them
+    instead of leaving a done-but-parked-looking row."""
+    from precis.store.types import Tag
+
+    r = handler.put(
+        text="dispatch me, retried after an earlier failure",
+        meta={"auto_check": {"type": "child_job_succeeded"}},
+    )
+    rid = _id_of(r.body)
+    failed_job = store.insert_ref(
+        kind="job", slug=None, title="earlier failure", meta={}, parent_id=rid
+    )
+    store.add_tag(rid, Tag.open(f"child-failed:{failed_job.id}"), set_by="system")
+    ok_job = store.insert_ref(
+        kind="job", slug=None, title="ok retry", meta={}, parent_id=rid
+    )
+    store.add_tag(
+        ok_job.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+
+    result = run_auto_check_pass(store, limit=50)
+
+    assert result.ok >= 1
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:done" in tags
+    assert f"child-failed:{failed_job.id}" not in tags
+
+
 # ── poll pass ──────────────────────────────────────────────────────
 
 

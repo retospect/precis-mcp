@@ -14,8 +14,13 @@ unix_socket_directories = '/tmp'
 # Memory — sized for the data node (32 GB RAM, NVMe SSD, single primary).
 # Old values (256MB / 1GB) were tiny-VM defaults and biased the planner toward
 # seq scans; effective_cache_size especially is just a planner hint (no alloc).
-shared_buffers = '8GB'
-effective_cache_size = '20GB'
+# 8GB shared_buffers statically over-subscribed the box (postgres + pgbouncer
+# + bge-m3 embedder + worker + macOS ≈ 32GB): the 2026-08-10 restore incident
+# pushed 11GB into swap and the embedder was jetsam-killed, failing every
+# fleet embed_batch for 2 days. 6GB buys back real headroom; the OS page
+# cache absorbs most of the hit.
+shared_buffers = '6GB'
+effective_cache_size = '18GB'
 work_mem = '64MB'
 maintenance_work_mem = '512MB'
 
@@ -36,7 +41,8 @@ track_io_timing = on
 # longer timeout let checkpoints coalesce; wal_compression cuts WAL volume
 # (fewer checkpoints, smaller nightly B2 sync); a more aggressive bgwriter
 # absorbs eviction so backends don't. None of these allocate extra RAM — the
-# data node co-hosts the bge-m3 embedder + workers, so shared_buffers stays 8GB.
+# data node co-hosts the bge-m3 embedder + workers, so shared_buffers stays
+# modest (6GB — see the memory block above).
 wal_level = replica
 max_wal_senders = 3
 max_wal_size = '4GB'

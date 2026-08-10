@@ -11,6 +11,7 @@ from precis.embedder import (
     BgeM3Embedder,
     Embedder,
     MockEmbedder,
+    RemoteEmbedder,
     make_embedder,
 )
 
@@ -82,6 +83,34 @@ class TestMakeEmbedder:
         # ``BAAI/bge-m3`` is an internal constant the embedder uses
         # only when actually loading weights.
         assert e.model == "bge-m3"
+
+    def test_remote_default_timeout_is_300s(self, monkeypatch) -> None:
+        # embedder-wedge-hardening.md §5: the 2026-08-10 caspar/balthazar
+        # incident was a client timeout (30s) shorter than a real CPU-host
+        # batch's compute time — the embedder finished, the client had
+        # already hung up, and every retry recomputed (and re-timed-out
+        # on) the same batch. 300s is the new floor.
+        monkeypatch.delenv("PRECIS_EMBEDDER_TIMEOUT", raising=False)
+        e = make_embedder("remote", url="http://127.0.0.1:8181")
+        assert isinstance(e, RemoteEmbedder)
+        assert e._timeout == 300.0
+
+    def test_remote_timeout_env_override_reaches_remote_embedder(
+        self, monkeypatch
+    ) -> None:
+        # The factory-level env fallback (used by bare `make_embedder(...)`
+        # call sites that don't thread PrecisConfig.embedder_timeout
+        # through explicitly).
+        monkeypatch.setenv("PRECIS_EMBEDDER_TIMEOUT", "45")
+        e = make_embedder("remote", url="http://127.0.0.1:8181")
+        assert isinstance(e, RemoteEmbedder)
+        assert e._timeout == 45.0
+
+    def test_remote_explicit_timeout_wins_over_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("PRECIS_EMBEDDER_TIMEOUT", "45")
+        e = make_embedder("remote", url="http://127.0.0.1:8181", timeout=12.0)
+        assert isinstance(e, RemoteEmbedder)
+        assert e._timeout == 12.0
 
     def test_bge_m3_clear_error_on_missing_dep(self) -> None:
         # When the optional backend is missing, the agent must get a
@@ -185,6 +214,84 @@ class TestBgeM3CharTruncation:
         # for slim test environments without sentence-transformers.
         e = BgeM3Embedder()
         assert e.embed([]) == []
+
+
+class TestLoadDeadline:
+    """embedder-wedge-hardening.md §2 — a hung model load must EXIT, not
+    hang forever behind a watchdog that just restarts into the same hang.
+
+    ``_exit_process`` is monkeypatched so the test never actually kills
+    the test process — it records the call instead. The stubbed loader
+    genuinely never returns (blocks on an ``Event`` with no timeout), so
+    ``_load_with_deadline`` runs on a background daemon thread; the test
+    waits on the exit call rather than on the (never-returning) call
+    itself.
+    """
+
+    def test_hung_loader_triggers_exit_within_deadline(self, monkeypatch) -> None:
+        import threading
+
+        from precis import embedder as embedder_mod
+
+        exited = threading.Event()
+        codes: list[int] = []
+
+        def fake_exit(code: int) -> None:
+            codes.append(code)
+            exited.set()
+
+        monkeypatch.setattr(embedder_mod, "_exit_process", fake_exit)
+
+        def hanging_loader() -> object:
+            threading.Event().wait()  # never returns
+            return None  # pragma: no cover - unreachable
+
+        t = threading.Thread(
+            target=embedder_mod._load_with_deadline,
+            args=(hanging_loader,),
+            kwargs={"deadline_s": 0.05, "what": "test-loader"},
+            daemon=True,
+        )
+        t.start()
+
+        assert exited.wait(timeout=5.0), "deadline watchdog never fired"
+        assert codes == [1]
+
+    def test_fast_loader_never_triggers_exit(self, monkeypatch) -> None:
+        from precis import embedder as embedder_mod
+
+        calls: list[int] = []
+        monkeypatch.setattr(embedder_mod, "_exit_process", calls.append)
+
+        result = embedder_mod._load_with_deadline(
+            lambda: "loaded", deadline_s=5.0, what="test-loader"
+        )
+        assert result == "loaded"
+        assert calls == []
+
+    def test_load_deadline_env_override(self, monkeypatch) -> None:
+        from precis import embedder as embedder_mod
+
+        monkeypatch.setenv(embedder_mod.PRECIS_EMBEDDER_LOAD_DEADLINE_ENV, "42")
+        assert embedder_mod._load_deadline_s() == 42.0
+
+    def test_load_deadline_default(self, monkeypatch) -> None:
+        from precis import embedder as embedder_mod
+
+        monkeypatch.delenv(
+            embedder_mod.PRECIS_EMBEDDER_LOAD_DEADLINE_ENV, raising=False
+        )
+        assert embedder_mod._load_deadline_s() == 600.0
+
+    def test_load_deadline_malformed_env_falls_back_to_default(
+        self, monkeypatch
+    ) -> None:
+        from precis import embedder as embedder_mod
+
+        monkeypatch.setenv(
+            embedder_mod.PRECIS_EMBEDDER_LOAD_DEADLINE_ENV, "not-a-number"
+        )
+        assert embedder_mod._load_deadline_s() == 600.0
 
 
 class TestProtocol:

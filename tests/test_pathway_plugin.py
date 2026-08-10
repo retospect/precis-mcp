@@ -114,10 +114,12 @@ class _FakeCtx:
         self.failure: str | None = None
         self.chunks: list[tuple[str, str]] = []
         self.meta_updates: dict[str, Any] = {}
+        self.open_tag: str | None = None
 
-    def record_failure(self, reason: str) -> None:
+    def record_failure(self, reason: str, *, open_tag: str | None = None) -> None:
         self.failure = reason
         self.status = "failed"
+        self.open_tag = open_tag
 
     def set_status(self, value: str) -> None:
         self.status = value
@@ -874,6 +876,122 @@ def test_seed_job_dispatch_sizes_timeout_from_wall_seconds(
     assert seen["timeout"] == 1234  # the declared wall budget, not the default
 
 
+def test_seed_job_dispatch_child_killed_error_tags_infra_child_killed(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_dispatch`` catches ``runner.ChildKilledError`` specifically and
+    passes ``open_tag="infra:child-killed"`` through to ``ctx.record_
+    failure`` — the generic layer that stamps the tag before marking the
+    job failed (parked-leaf-recovery, docs/backlog/parked-leaf-
+    recovery.md), so the bubble's bounded infra-retry applies instead of
+    an immediate content-class latch."""
+    from precis_pathway import seed_job
+
+    def _fake_sub(*a: Any, **k: Any) -> Any:
+        raise runner.ChildKilledError("autocatpath_seed subprocess failed (rc=-9, …)")
+
+    monkeypatch.setattr(runner, "run_seed_partial_subprocess", _fake_sub)
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "config": _yaml_dict(FANOUT),
+            "seed": 0,
+            "model_index": 0,
+        },
+    )
+    seed_job._dispatch(ctx, seed_job.SPEC)
+
+    assert ctx.status == "failed"
+    assert ctx.open_tag == "infra:child-killed"
+    assert "rc=-9" in (ctx.failure or "")
+
+
+def test_seed_job_dispatch_generic_error_does_not_tag_infra_child_killed(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plain (non-``ChildKilledError``) exception from the subprocess
+    call — the pre-existing content-class path — leaves ``open_tag``
+    unset, unchanged from before this feature."""
+    from precis_pathway import seed_job
+
+    def _fake_sub(*a: Any, **k: Any) -> Any:
+        raise RuntimeError("autocatpath_seed compute error: bad backend")
+
+    monkeypatch.setattr(runner, "run_seed_partial_subprocess", _fake_sub)
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "config": _yaml_dict(FANOUT),
+            "seed": 0,
+            "model_index": 0,
+        },
+    )
+    seed_job._dispatch(ctx, seed_job.SPEC)
+
+    assert ctx.status == "failed"
+    assert ctx.open_tag is None
+
+
+def test_seed_job_poll_infra_failure_tags_infra_child_killed(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_poll`` reads ``status["infra"]`` (set by ``poll_seed_partial_
+    detached`` on its no-envelope branch) and passes the same
+    ``open_tag="infra:child-killed"`` through."""
+    from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {
+            "state": "failed",
+            "error": "child process exited without writing result.json",
+            "tail": "",
+            "infra": True,
+        },
+    )
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"seed": 0, "model_index": 0},
+    )
+    terminal = seed_job._poll(ctx, {"pid": 1})
+
+    assert terminal is True
+    assert ctx.status == "failed"
+    assert ctx.open_tag == "infra:child-killed"
+
+
+def test_seed_job_poll_non_infra_failure_does_not_tag_infra_child_killed(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed poll WITHOUT the ``infra`` marker (e.g. the child's own
+    in-band error envelope, ``ok=False``) leaves ``open_tag`` unset."""
+    from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {
+            "state": "failed",
+            "error": "ValueError: bad backend",
+            "tail": "",
+        },
+    )
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"seed": 0, "model_index": 0},
+    )
+    terminal = seed_job._poll(ctx, {"pid": 1})
+
+    assert terminal is True
+    assert ctx.status == "failed"
+    assert ctx.open_tag is None
+
+
 def test_run_seed_partial_subprocess_end_to_end_emt() -> None:
     """The real out-of-process boundary: a fresh child runs one EMT seed and the
     parent parses back the JSON-serialisable partial. Proves the subprocess round
@@ -919,6 +1037,65 @@ def test_run_seed_partial_subprocess_child_error_surfaces(
     monkeypatch.setattr("subprocess.run", _fake_run)
     with pytest.raises(RuntimeError, match="compute error.*bad backend"):
         runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
+
+
+# ── ChildKilledError classification (parked-leaf-recovery,
+#    docs/backlog/parked-leaf-recovery.md) ──────────────────────────
+
+
+def test_run_seed_partial_subprocess_signal_death_raises_child_killed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative returncode (killed by signal — SIGKILL/OOM) raises the
+    dedicated :class:`~precis_pathway.runner.ChildKilledError`, not a bare
+    ``RuntimeError`` — the generic layer (``seed_job._dispatch``) reads this
+    to classify the failure as infra."""
+    import subprocess
+
+    def _fake_run(cmd: list[str], **kw: Any) -> Any:
+        return subprocess.CompletedProcess(cmd, -9, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    with pytest.raises(runner.ChildKilledError, match="rc=-9"):
+        runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
+
+
+def test_run_seed_partial_subprocess_no_result_file_raises_child_killed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exit with rc=0 but no result envelope written is ALSO infra-class
+    (the child died/was killed before it could write anything) even though
+    the returncode itself isn't negative."""
+    import subprocess
+
+    def _fake_run(cmd: list[str], **kw: Any) -> Any:
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    with pytest.raises(runner.ChildKilledError, match="rc=0"):
+        runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
+
+
+def test_run_seed_partial_subprocess_positive_rc_with_envelope_stays_generic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A positive nonzero returncode WITH the result envelope present (an
+    unhandled-but-non-fatal child exception that still exited normally) is
+    NOT infra-classifiable — a bare ``RuntimeError``, unchanged from before
+    this feature."""
+    import json as _json
+    import subprocess
+
+    def _fake_run(cmd: list[str], **kw: Any) -> Any:
+        out_path = cmd[-1]
+        with open(out_path, "w", encoding="utf-8") as fh:
+            _json.dump({"ok": True, "result": {}}, fh)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="weird exit")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    with pytest.raises(RuntimeError) as exc_info:
+        runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
+    assert not isinstance(exc_info.value, runner.ChildKilledError)
 
 
 # ────────── §H piece 4: detached submit/poll/kill (gr187627) ──────────
@@ -1153,7 +1330,10 @@ def test_poll_seed_partial_detached_failed_child_no_result(
 ) -> None:
     """A child that exits non-zero without ever writing ``result.json``
     (rc != 0, no envelope) is folded into a failed state carrying the
-    stderr tail — not polled forever."""
+    stderr tail — not polled forever. INFRA-class (parked-leaf-recovery,
+    docs/backlog/parked-leaf-recovery.md): the compute never ran, so the
+    state dict carries ``"infra": True`` — ``seed_job._poll`` reads this to
+    stamp ``open_tag="infra:child-killed"`` on the job."""
     import os
 
     script = _write_stub(tmp_path, _STUB_FAILS_LOUDLY)
@@ -1165,6 +1345,7 @@ def test_poll_seed_partial_detached_failed_child_no_result(
     assert status["state"] == "failed"
     assert "result.json" in status["error"]
     assert "boom stub failure" in status["tail"]
+    assert status["infra"] is True
     assert not os.path.exists(handle["dir"])
 
 

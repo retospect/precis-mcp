@@ -274,6 +274,7 @@ class TestDispatchContextClosures:
             *,
             gripe_rollback: Any,
             failure_class: str | None = None,
+            open_tag: str | None = None,
         ) -> None:
             calls.append((ref_id, reason))
 
@@ -301,6 +302,7 @@ class TestDispatchContextClosures:
             *,
             gripe_rollback: Any,
             failure_class: str | None = None,
+            open_tag: str | None = None,
         ) -> None:
             calls.append((ref_id, reason, failure_class))
 
@@ -311,6 +313,35 @@ class TestDispatchContextClosures:
         ctx.record_failure("container died", failure_class="infra")
 
         assert calls == [(9, "container died", "infra")]
+
+    def test_record_failure_threads_open_tag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``ctx.record_failure(reason, open_tag=...)`` must reach the
+        ``_common.record_failure`` helper — the seam
+        ``precis_pathway.seed_job`` relies on to stamp
+        ``infra:child-killed`` before the job is marked failed (parked-leaf-
+        recovery, docs/backlog/parked-leaf-recovery.md)."""
+        calls: list[tuple[int, str, str | None]] = []
+
+        def _spy(
+            store: Any,
+            ref_id: int,
+            reason: str,
+            *,
+            gripe_rollback: Any,
+            failure_class: str | None = None,
+            open_tag: str | None = None,
+        ) -> None:
+            calls.append((ref_id, reason, open_tag))
+
+        monkeypatch.setattr(claude_inproc, "_record_failure", _spy)
+
+        store = _FakeStore()
+        ctx = claude_inproc._build_dispatch_context(store, ref_id=9, title="t", meta={})
+        ctx.record_failure("child killed", open_tag="infra:child-killed")
+
+        assert calls == [(9, "child killed", "infra:child-killed")]
 
     def test_is_cancel_requested_uses_helper(
         self, monkeypatch: pytest.MonkeyPatch

@@ -93,6 +93,46 @@ class TestEmbedHandlerPure:
         assert len(vec) == 1024
 
 
+class TestResolveEmbedderTimeout:
+    """``resolve_embedder`` (embed_batch's own construction path, per its
+    docstring — the job dispatch ``embed_batch.py`` calls this directly,
+    not ``cli/worker.py``'s ``_resolve_embedder``) must thread
+    ``PrecisConfig.embedder_timeout`` / ``PRECIS_EMBEDDER_TIMEOUT`` through
+    to ``RemoteEmbedder._timeout``. Regression for the 2026-08-10
+    caspar/balthazar incident (embedder-wedge-hardening.md §5): a client
+    timeout shorter than a real CPU-host batch's compute time hangs up on
+    an embedder that's still working, and the retry recomputes (and
+    re-times-out on) the same batch forever.
+    """
+
+    def test_default_reaches_remote_embedder_as_300s(self, monkeypatch) -> None:
+        from precis.embedder import RemoteEmbedder
+        from precis.workers.embed import resolve_embedder
+
+        monkeypatch.delenv("PRECIS_EMBEDDER_TIMEOUT", raising=False)
+        emb = resolve_embedder(name="remote", url="http://127.0.0.1:8181")
+        assert isinstance(emb, RemoteEmbedder)
+        assert emb._timeout == 300.0
+
+    def test_env_override_reaches_remote_embedder(self, monkeypatch) -> None:
+        from precis.embedder import RemoteEmbedder
+        from precis.workers.embed import resolve_embedder
+
+        monkeypatch.setenv("PRECIS_EMBEDDER_TIMEOUT", "77")
+        emb = resolve_embedder(name="remote", url="http://127.0.0.1:8181")
+        assert isinstance(emb, RemoteEmbedder)
+        assert emb._timeout == 77.0
+
+    def test_explicit_timeout_kwarg_wins_over_config(self, monkeypatch) -> None:
+        from precis.embedder import RemoteEmbedder
+        from precis.workers.embed import resolve_embedder
+
+        monkeypatch.setenv("PRECIS_EMBEDDER_TIMEOUT", "77")
+        emb = resolve_embedder(name="remote", url="http://127.0.0.1:8181", timeout=9.0)
+        assert isinstance(emb, RemoteEmbedder)
+        assert emb._timeout == 9.0
+
+
 # ---------------------------------------------------------------------------
 # Integration — write_ok / write_failed against real Postgres
 # ---------------------------------------------------------------------------

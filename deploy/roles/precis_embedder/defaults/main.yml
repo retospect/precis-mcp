@@ -48,6 +48,20 @@ precis_embedder_max_inflight: 4
 # value (or 0) there trades idle RAM for latency.
 precis_embedder_idle_s: 1800
 
+
 # Shared HF cache with precis_worker on the same host — local disk, off
 # NFS/NAS, so bge-m3 isn't dragged over the network on each load.
 precis_embedder_hf_home: "{{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}"
+
+# Pin the HF revision the deploy-time cache-warm task downloads (empty =
+# latest at warm time). Offline-first load (embedder-wedge-hardening.md
+# §1) means the daemon never re-resolves "latest" against the hub after
+# boot, so leaving this empty is safe (whatever the warm task pulled is
+# what's served) — but pinning makes a redeploy's warmed cache fully
+# reproducible across hosts/runs instead of depending on "whatever HEAD
+# was at warm time on this particular host". Set to a bge-m3 commit SHA
+# to opt in. CAVEAT: the warm task is gated on the model dir existing, so
+# setting a pin on an already-warmed host does NOT re-download — wipe
+# $HF_HOME/hub/models--BAAI--bge-m3 first (or the pinned snapshot may be
+# absent and the offline daemon will fail to load).
+precis_embedder_hf_revision: ""

@@ -16,8 +16,10 @@ import hashlib
 import json
 import logging
 import math
+import os
 import random
 import struct
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -187,6 +189,97 @@ _BGE_M3_REGISTRY_KEY = "bge-m3"
 # source so retrieval boundaries stay meaningful.
 _BGE_M3_MAX_CHARS = 16_000
 
+# ---------------------------------------------------------------------------
+# Load deadline (embedder-wedge-hardening.md §2) — a hung model load must
+# EXIT, not hang.
+#
+# The 2026-08-08→10 caspar incident: ``SentenceTransformer(...)`` dials
+# HuggingFace Hub for revision metadata even with weights already cached;
+# when HF is slow/rate-limited that dial hangs indefinitely (plain socket
+# I/O the Python level can't interrupt), ``/readyz`` stays unready
+# forever, and a restart-based watchdog dutifully kicks the daemon into
+# the exact same hang — an infinite, log-silent loop. A restart-based
+# auto-clear cannot fix a load path that depends on a remote service; the
+# process has to notice its OWN load is stuck and exit so launchd
+# ``KeepAlive`` / systemd ``Restart=always`` own the retry instead.
+# ---------------------------------------------------------------------------
+
+#: Env override for the load deadline (seconds). Wide default — a cold
+#: bge-m3 pull over a slow link is legitimately minutes, not seconds; this
+#: bounds a GENUINELY wedged load (the HF-dial-hangs-forever class), not a
+#: merely slow one.
+PRECIS_EMBEDDER_LOAD_DEADLINE_ENV = "PRECIS_EMBEDDER_LOAD_DEADLINE_S"
+_LOAD_DEADLINE_DEFAULT_S = 600.0
+
+
+def _load_deadline_s() -> float:
+    """Read :data:`PRECIS_EMBEDDER_LOAD_DEADLINE_ENV`, else the default.
+
+    A malformed override degrades to the default rather than raising —
+    a typo'd env var must not itself become a boot-time crash.
+    """
+    raw = os.environ.get(PRECIS_EMBEDDER_LOAD_DEADLINE_ENV)
+    if raw is None:
+        return _LOAD_DEADLINE_DEFAULT_S
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(
+            "%s=%r is not a number; using default %.0fs",
+            PRECIS_EMBEDDER_LOAD_DEADLINE_ENV,
+            raw,
+            _LOAD_DEADLINE_DEFAULT_S,
+        )
+        return _LOAD_DEADLINE_DEFAULT_S
+
+
+def _exit_process(code: int) -> None:  # pragma: no cover - see test's monkeypatch
+    """Terminate the WHOLE process immediately. Not ``sys.exit`` — the
+    load can be running on a background thread (the embedder service's
+    warm thread), and ``sys.exit`` there only unwinds that one thread,
+    leaving the process (and its hung load) running. ``os._exit`` skips
+    cleanup/atexit — deliberately: a thread stuck in blocking C-level I/O
+    can't be asked nicely to unwind, and this path only runs because
+    something is already wedged. Split into its own function so tests can
+    monkeypatch it instead of actually killing the test process."""
+    os._exit(code)
+
+
+def _load_with_deadline(
+    loader: Callable[[], object], *, deadline_s: float, what: str
+) -> object:
+    """Run ``loader()`` (blocking) with a hard wall-clock deadline.
+
+    A watchdog ``threading.Timer`` is the only reliable bound here: the
+    load can hang inside blocking socket I/O that the calling thread
+    can't be interrupted out of. If ``loader`` hasn't returned by
+    ``deadline_s``, the timer fires on ITS OWN thread and calls
+    :func:`_exit_process` — logging the cause first so the daemon's log
+    tells the story instead of just going silent.
+    """
+    timer = threading.Timer(
+        deadline_s, _on_load_deadline_exceeded, args=(what, deadline_s)
+    )
+    timer.daemon = True
+    timer.start()
+    try:
+        return loader()
+    finally:
+        timer.cancel()
+
+
+def _on_load_deadline_exceeded(what: str, deadline_s: float) -> None:
+    log.error(
+        "embedder load deadline exceeded: %s did not return within %.0fs — "
+        "exiting so the process supervisor (launchd KeepAlive / systemd "
+        "Restart=always) restarts us; a hang here usually means a network "
+        "dial (e.g. HuggingFace Hub) is stuck. Override with %s.",
+        what,
+        deadline_s,
+        PRECIS_EMBEDDER_LOAD_DEADLINE_ENV,
+    )
+    _exit_process(1)
+
 
 class BgeM3Embedder:
     """``BAAI/bge-m3`` via sentence-transformers. Optional dep.
@@ -235,6 +328,14 @@ class BgeM3Embedder:
         Raises a clear ``ImportError`` if the optional dep is missing
         — this is the first time we actually need it, so failing here
         is the correct surface.
+
+        The actual construction runs under :func:`_load_with_deadline`
+        (embedder-wedge-hardening.md §2) — ``SentenceTransformer(...)``
+        dials HuggingFace Hub for revision metadata even with weights
+        cached, and that dial can hang indefinitely against a slow/
+        rate-limited hub. A hung load here breaches the deadline and
+        exits the process rather than leaving ``/readyz`` unready forever
+        behind a watchdog that just keeps restarting into the same hang.
         """
         if self._st is None:
             try:
@@ -248,7 +349,11 @@ class BgeM3Embedder:
             # Always load from the HF id — that's what the hub serves.
             # ``self._model_name`` is the registry key and is **not**
             # what ``SentenceTransformer`` resolves against.
-            self._st = SentenceTransformer(_BGE_M3_HF_ID)
+            self._st = _load_with_deadline(
+                lambda: SentenceTransformer(_BGE_M3_HF_ID),
+                deadline_s=_load_deadline_s(),
+                what=f"SentenceTransformer({_BGE_M3_HF_ID!r})",
+            )
         return self._st
 
     def is_ready(self) -> bool:
@@ -424,6 +529,17 @@ class RemoteEmbedder:
     model's ``dim`` matches — the boundary check that turns a
     wrong/upgraded model into a loud failure instead of silent vector
     corruption.
+
+    ``timeout`` default (300s, embedder-wedge-hardening.md §5): the
+    2026-08-10 post-restart caspar/balthazar incident was NOT a load
+    wedge — the embedder finished computing a batch, but a 30s client
+    timeout hung up first (worker: "embedder unavailable", embedder log:
+    ``BrokenPipeError`` writing the response the client had already
+    abandoned). A CPU-host batch legitimately takes longer than 30s, so
+    every retry recomputed the whole batch server-side and timed out
+    again — the retry loop amplified the very overload it was meant to
+    ride out. 300s comfortably covers a slow CPU batch; per-call
+    override via ``PrecisConfig.embedder_timeout`` / ``PRECIS_EMBEDDER_TIMEOUT``.
     """
 
     def __init__(
@@ -431,7 +547,7 @@ class RemoteEmbedder:
         url: str,
         *,
         expected_dim: int | None = None,
-        timeout: float = 30.0,
+        timeout: float = 300.0,
         max_retries: int = 5,
         backoff_base: float = 0.5,
         backoff_max: float = 15.0,
@@ -562,12 +678,26 @@ class RemoteEmbedder:
 # ---------------------------------------------------------------------------
 
 
+#: Fallback ``RemoteEmbedder`` timeout (seconds) used by :func:`make_embedder`
+#: when the caller passes no explicit ``timeout`` — e.g. the bare
+#: ``make_embedder(cfg.embedder, dim=...)`` call sites (``cli/ingest.py``,
+#: ``cli/patent.py``, ``cli/sim.py``, ``cli/perplexity.py``) that don't
+#: thread ``PrecisConfig.embedder_timeout`` through. Read at call time (not
+#: baked into the signature default) so a test/daemon setting the env after
+#: import still takes effect. embedder-wedge-hardening.md §5: 300s, not the
+#: old 30s — a CPU-host embed batch legitimately takes longer than 30s, and
+#: a client that hangs up on a still-computing batch just amplifies the
+#: retry storm (the 2026-08-10 caspar/balthazar incident).
+_EMBEDDER_TIMEOUT_ENV = "PRECIS_EMBEDDER_TIMEOUT"
+_EMBEDDER_TIMEOUT_DEFAULT_S = 300.0
+
+
 def make_embedder(
     name: str,
     *,
     dim: int = 1024,
     url: str | None = None,
-    timeout: float = 30.0,
+    timeout: float | None = None,
     max_retries: int = 3,
 ) -> Embedder:
     """Return an `Embedder` for the given config name.
@@ -577,7 +707,12 @@ def make_embedder(
     - ``"remote"``  → ``RemoteEmbedder(url, expected_dim=dim)`` (HTTP
       client to a ``precis serve-embeddings`` service; requires ``url``)
 
-    ``timeout`` / ``max_retries`` apply only to ``"remote"``.
+    ``timeout`` / ``max_retries`` apply only to ``"remote"``. ``timeout=None``
+    (the default) falls back to the ``PRECIS_EMBEDDER_TIMEOUT`` env, else
+    :data:`_EMBEDDER_TIMEOUT_DEFAULT_S` (300s) — the same knob
+    ``PrecisConfig.embedder_timeout`` / ``cli worker --embedder-timeout``
+    read, so a bare call site that forgets to thread it through still gets
+    a sane default instead of silently reverting to a too-short one.
 
     Raises ``ValueError`` for unknown names or a missing remote URL.
     """
@@ -590,8 +725,15 @@ def make_embedder(
             raise ValueError(
                 "embedder 'remote' requires a URL (set PRECIS_EMBEDDER_URL)"
             )
+        eff_timeout = (
+            timeout
+            if timeout is not None
+            else float(
+                os.environ.get(_EMBEDDER_TIMEOUT_ENV, str(_EMBEDDER_TIMEOUT_DEFAULT_S))
+            )
+        )
         return RemoteEmbedder(
-            url, expected_dim=dim, timeout=timeout, max_retries=max_retries
+            url, expected_dim=dim, timeout=eff_timeout, max_retries=max_retries
         )
     raise ValueError(
         f"unknown embedder name: {name!r} - expected 'mock', 'bge-m3', or 'remote'"
