@@ -41,9 +41,10 @@ One fire (:func:`run_health_digest_pass`) does four things:
      there.
    * **Layer-2 coherence** (:func:`_layer2_checks`, derived) — every
      registered ``PASS`` + ``ref_pass`` :class:`~precis.workers.registry.ServiceSpec`
-     that resolves enabled (structural default_profiles/enable_env, or a
-     live ``service_config`` prio override) with zero ``worker_logs`` rows
-     in 24h reads "intended-on but silent". Derived straight from the
+     that resolves enabled (structural ``default_profiles``, or a live
+     ``service_config`` prio override — ``enable_env`` alone no longer
+     defaults a pass on, per §L) with zero ``worker_logs`` rows in 24h
+     reads "intended-on but silent". Derived straight from the
      registry + ``service_config`` + ``worker_logs`` — a new pass needs
      **zero** edits here (``tests/workers/test_health_digest.py`` proves it
      by minting a fake spec).
@@ -910,10 +911,13 @@ def _resolve_enabled_somewhere(
     structural default) without needing a specific host in hand: an exact
     ``prio > 0`` row on ANY host means "enabled somewhere"; otherwise the
     ``*`` wildcard row (if any) decides; otherwise fall back to the
-    structural default (``default_profiles`` non-empty, or ``enable_env``
-    set — the same condition ``cli/worker.py::_should_register`` uses).
+    structural default, which mirrors the live gate
+    ``cli/worker.py::_profile_default_on`` — profile membership
+    (``default_profiles`` non-empty and on this host's profile). §L retired
+    ``enable_env`` as a default source: an ``enable_env``-only spec defaults
+    OFF absent an explicit ``service_config`` row.
     """
-    structural = {s.name: bool(s.default_profiles) or bool(s.enable_env) for s in specs}
+    structural = {s.name: bool(s.default_profiles) for s in specs}
     if not structural:
         return {}
     try:

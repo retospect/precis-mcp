@@ -323,9 +323,26 @@ def test_layer2_ignores_a_disabled_spec(store) -> None:
         category="test",
         kind=ServiceKind.PASS,
         ref_pass=True,
-        # no default_profiles, no enable_env → not structurally enabled,
-        # and (barring a service_config override, absent here) not
-        # "enabled somewhere" — must not appear as a finding.
+        # no default_profiles → not structurally enabled, and (barring a
+        # service_config override, absent here) not "enabled somewhere" —
+        # must not appear as a finding.
+    )
+    results = _layer2_checks(store, specs=[fake])
+    assert results == []
+
+
+def test_layer2_ignores_an_enable_env_only_spec(store) -> None:
+    """§L retired ``enable_env`` as a default source: a pass gated only by
+    an env var (no ``default_profiles``, no ``service_config`` row) defaults
+    OFF, mirroring ``cli/worker.py::_profile_default_on`` — it must not read
+    as "intended-on but silent"."""
+    fake = ServiceSpec(
+        name=f"fake-envonly-{id(object())}",
+        label="Fake env-gated pass",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_FAKE_ENABLED",
     )
     results = _layer2_checks(store, specs=[fake])
     assert results == []

@@ -17,9 +17,14 @@ dead-man's-switch (`docs/runbooks/dead-mans-switch.md`). Present-state:
 the module docstring. Full original design (Layer-1 outcome tables, router
 class matrix): git history of `docs/backlog/health-watchdog.md`.
 
-Evidence (2026-08-10) gr202275: `health_digest_router` has never logged a
-run (auto-closer dark) and 13 coherence/discovery passes read stale — the
-§D blind spot gr194430 describes, now observed live.
+Corrected evidence (2026-08-10) gr202275: the watchdog itself was healthy
+(cadence firing hourly, router filing gripes) — "health_digest_router
+never ran" was a verification against a nonexistent pass name. The real
+defect: `_resolve_enabled_somewhere`'s structural default still counted
+`enable_env` as intended-on post-§L, so 10 enable_env-only default-OFF
+passes were flagged "intended-on but silent" every cycle (false
+positives; fixed this ship). The discovery-group flags are Layer-1
+checks, a separate bucket.
 
 SLA framing (kept — it shapes everything): "never really urgent — just
 don't let it linger and rot for days." Nursery owns real-time critical;
