@@ -122,7 +122,9 @@
         group: root
         content: |
           #!/bin/sh
-          # {{ ansible_managed }}
+          # Managed by ansible (deploy/playbooks/43-precis-worker-compute.yml)
+          # — `ansible_managed` is template-module-only; copy:content leaves
+          # it undefined, which hard-fails the task.
           # wait-for-job-ssh-node.sh — ExecStartPre gate for
           # precis-worker-compute.service (gr199339): blocks ExecStart until
           # the installed venv's `precis worker --only` argparse choices
