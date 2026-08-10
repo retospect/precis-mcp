@@ -7,3 +7,6 @@ untested web routes, ops-facing `gripes.py` + `clusters.py` first;
 spot-check handler/utils modules with no test-name match
 (`_todo_guards.py`, `conversation.py`, `compile_guard.py`,
 `_claude_subprocess.py` stand out). Sonnet-shaped, slice it.
+
+Related: improve-route-sql-tests.md (focused SQL companions for the raw-SQL
+web routes).

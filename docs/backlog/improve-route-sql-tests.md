@@ -9,3 +9,6 @@ preview, clusters, categorizers, cad (6 each), factory (5), drafts (3),
 agentlogs (2 — do first despite rank), then the 5 single-query modules
 (refs, papers, gripes, asks, alerts). Each test executes every raw query
 once incl. adversarial `%`/`_` input. Sonnet-shaped, batchable.
+
+Related: improve-test-coverage-gaps.md (route-sql-tests is the sharper
+real-PG version of its untested-web-routes slice).

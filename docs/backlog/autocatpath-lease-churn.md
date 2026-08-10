@@ -5,3 +5,5 @@ PRECIS_AUTOCATPATH_WALL_SECONDS wiring is confirmed correct end-to-end
 is NOT a dropped value. Get live cluster-log evidence (contention? runs
 genuinely outliving a correctly-applied 2.5 h lease?) before raising the
 default — don't guess a new number.
+
+Related: autocatpath-seed-wall-overruns.md.

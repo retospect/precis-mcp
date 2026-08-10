@@ -7,3 +7,6 @@ now that the base URL + key are deployed. Mitigated by tailnet-only exposure
 consciously. Owner `src/precis_web/routes/factory.py` / `app.py`.
 
 Duplicate field report gr171512 folded here.
+
+Related: factory-console-and-scheduling.md (same owner `routes/factory.py`;
+auth is not in the console item's open scope).

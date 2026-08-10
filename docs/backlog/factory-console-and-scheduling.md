@@ -113,3 +113,5 @@ single-capability unit routes; a monolithic one parks.
   domains) — console rows with start/stop, not `prio`.
 - `target_node` survives as node gate + advisory cache-affinity hint,
   not as the routing mechanism.
+
+Related: factory-post-auth.md (write-route auth gap on the same file).

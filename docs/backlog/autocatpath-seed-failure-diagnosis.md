@@ -13,3 +13,6 @@ or unset after), and decide spark's nightly-reboot.timer + enabled apt-daily
 timers (gr50907) — a node rebooting under a 3 h job may be the whole answer.
 Also unexplained: job ref 187387 has zero chunks where every sibling has
 diagnostics. Owner `src/precis_pathway/runner.py` diagnostics.
+
+Related: autocatpath-seed-wall-overruns.md (the slow-compute sibling
+population).

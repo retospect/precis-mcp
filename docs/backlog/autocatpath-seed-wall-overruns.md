@@ -226,3 +226,6 @@ Status 2026-08-09:
 
 Owner `src/precis_pathway/runner.py` + `src/precis/quest/compute.py`. Needs
 design (checkpointing/sharding); the speedup levers are wired, pending deploy.
+
+Related: autocatpath-seed-failure-diagnosis.md (slow-overrun vs fast rc=-15
+crash population), autocatpath-lease-churn.md (re-lease churn duration).

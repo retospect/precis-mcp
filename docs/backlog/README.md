@@ -35,7 +35,6 @@
 - [`catpath-desorption-link-kind`](./catpath-desorption-link-kind.md) **idea** — Desorption edges are bookkept like H-reservoir supply edges (ΔE = 0), but a
 - [`centralize-env-vars`](./centralize-env-vars.md) **idea** — 381 unique PRECIS_ strings; PrecisConfig declares 19. Replace ad-hoc
 - [`chem-tools-integration`](./chem-tools-integration.md) **idea** — Shipped portion: see the `precis_chem` and `precis_bio` package
-- [`chem-tools-slices`](./chem-tools-slices.md) **idea** — route/protein shipped; deploy, verification, and new-kind slices remain.
 - [`citation-sources-tab`](./citation-sources-tab.md) **draft** — Consumer slice of the citation-resolution work; requires
 - [`citation-taproot-resolve`](./citation-taproot-resolve.md) **draft** — Consumer slice of the citation-resolution work; requires
 - [`classifier-cite-gap-analysis`](./classifier-cite-gap-analysis.md) **idea** — Review the classifier system (should it be hierarchical?). Then the

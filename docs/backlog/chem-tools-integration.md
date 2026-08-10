@@ -32,7 +32,9 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
   `PRECIS_CHEM_ENABLED`. Until then the stub inline path is the only
   live engine.
 - **LinChemIn (2):** rebuild the image on the node
-  (`aizynth_build_image=true`).
+  (`aizynth_build_image=true`, `playbooks/43-aizynth.yml`) so the shim
+  emits `route.json`; `scripts/deploy` for the precis-side
+  `parse_syngraph` / `view='metrics'` step.
 - **ASKCOS (3):** stand up an ASKCOS v2 deployment, set
   `PRECIS_ASKCOS_URL`, build the normalizer image, and **verify the
   Tree-Builder request/response schema against the instance's
@@ -50,11 +52,17 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
 - **4c — `structure` convergence:** `cif → ASE → Scene.from_ase`
   (ADR 0043) for a 3D viewer / graph probes; a ColabFold MSA-mode
   engine for real accuracy.
-- **5 — sequence design:** a `sequence` kind
-  (ProteinMPNN/RFdiffusion), another `job_type`, GPU on spark.
+- **5 — sequence design:** a `sequence` kind, engines decided —
+  Boltz-2 + LigandMPNN, torch-cuda base proven on GB10 — build as
+  adapters + `roles/*` mirrors of `roles/alphafold`, another
+  `job_type`, GPU on spark.
 - **Dedicated chem/bio `plan_tick` executor** that auto-drives the
   research loop end-to-end — deferred; the `precis-lab-help` skill
   already lets the generic planner do it.
+- **MCP-surface design review** over route/protein/structure/sequence:
+  `view=` naming, dark/plugin-kind discovery, and the CLI/repl `put`
+  arg-allowlist gap that rejects plugin kwargs (only
+  `runtime.dispatch` / MCP JSON-RPC works).
 
 ### Known limitations / follow-ups
 
