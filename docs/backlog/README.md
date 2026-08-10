@@ -35,7 +35,6 @@
 - [`centralize-env-vars`](./centralize-env-vars.md) **idea** — 381 unique PRECIS_ strings; PrecisConfig declares 19. Replace ad-hoc
 - [`chem-tools-integration`](./chem-tools-integration.md) **idea** — Shipped portion: see the `precis_chem` and `precis_bio` package
 - [`chem-tools-slices`](./chem-tools-slices.md) **idea** — route/protein shipped; deploy, verification, and new-kind slices remain.
-- [`child-job-failure-terminal-state`](./child-job-failure-terminal-state.md) **idea** — `src/precis/workers/auto_check_evaluators/child_job_succeeded.py::evaluate`
 - [`citation-sources-tab`](./citation-sources-tab.md) **draft** — Consumer slice of the citation-resolution work; requires
 - [`citation-taproot-resolve`](./citation-taproot-resolve.md) **draft** — Consumer slice of the citation-resolution work; requires
 - [`classifier-cite-gap-analysis`](./classifier-cite-gap-analysis.md) **idea** — Review the classifier system (should it be hierarchical?). Then the
@@ -87,6 +86,7 @@
 - [`fisheye-affordance-generalize`](./fisheye-affordance-generalize.md) **idea** — The `→ view='fisheye'` footer exists only in `DraftHandler._render_chunk`;
 - [`fisheye-level2-focus-verb`](./fisheye-level2-focus-verb.md) **idea** — Level 1 (policy-chosen eyes) is live on planner + dreams; reviewers stay
 - [`fixer-salvage-failed-builds`](./fixer-salvage-failed-builds.md) **draft** — In report mode, `run_tick` only `git push`es the build branch on the OK path
+- [`fleet-watching-agent`](./fleet-watching-agent.md) **draft** — The 2026-08-10 manual utilization watch (8 samples, ssh fan-out + Opus
 - [`friction-reflection-enable`](./friction-reflection-enable.md) **idea** — Part A (end-of-run friction footer, `src/precis/utils/friction_reflect.py`)
 - [`goal-kind-plan`](./goal-kind-plan.md) **idea** — Status: **queued** — plan captured for a future implementation slice.
 - [`good-search-coordinator`](./good-search-coordinator.md) **idea** — Shipped portion: see the `workers/job_types/good_search.py` module
