@@ -433,11 +433,13 @@ def _render_detail(
         "is_reviewed": bool(verified_at),
         "reviewed_at": verified_at.strftime("%Y-%m-%d") if verified_at else "",
         "reviewed_by": getattr(ref, "human_verified_by", None) or "",
-        # "Can't get it" — the author's unacquirable-source declaration on
-        # this paper (meta.unacquirable_override {mode,note,by,at}). Set from
-        # the Meta tab; read through by taproot.trust so every claim resting
-        # on this paper renders Ⓐ (abstract-only) / ✍ (author-vouched)
-        # instead of ⚠. ``None`` when unset.
+        # "Can't get it" — the acquirability FACT declared on this paper
+        # (meta.unacquirable_override {note,by,at}, no mode). Set from the
+        # Meta tab; read through by taproot.trust to harden a clean claim
+        # hub grounded only on unacquirable papers, and to enrich an
+        # unverified lifecycle finding's note — never to soften a claim to
+        # Ⓐ/✍ (that's a separate, claim-level declaration). ``None`` when
+        # unset.
         "unacquirable": (ref.meta or {}).get("unacquirable_override"),
         # "Who links here" — held incoming edges (drafts / findings / dreams /
         # papers) into this ref, grouped by (kind, relation), each clickable to
@@ -2007,15 +2009,21 @@ async def unacquirable(
     return_to: str = Form(""),
 ) -> Response:
     """Set / clear this paper's unacquirable-source declaration (Meta tab
-    "Can't get it").
+    "Can't get it") — a pure **acquirability fact**, not a claim-backing
+    assertion: "I tried hard to obtain this and could not; the metadata is
+    correct."
 
-    Writes ``meta.unacquirable_override = {mode, note, by, at}`` — the
-    read-through :mod:`precis.taproot.trust` consults so every claim whose
-    blocking source is this paper renders the calm ``Ⓐ`` (abstract-only,
-    ``mode='abstract'``) / ``✍`` (author-vouched, ``mode='vouched'``) mark
-    instead of the ``⚠`` emergency triangle — never all the way to clean
-    (no one read the full text). ``mode`` empty or ``'clear'`` drops the
-    override (set to JSON null; ``trust`` treats a non-dict value as unset).
+    Writes ``meta.unacquirable_override = {note, by, at}`` (no ``mode`` —
+    it never softens any claim's trust label). :mod:`precis.taproot.trust`
+    reads it two ways: it *hardens* a clean claim hub whose every
+    print-visible grounding paper carries one down to ``unverified``, and
+    it *enriches* the note on an unverified lifecycle finding blocked on
+    this paper — never the calm ``Ⓐ``/``✍`` marks (that door lives on the
+    claim itself: the paper Meta tab's Ⓐ/✍ buttons were removed —
+    declare a claim-level override via ``edit(kind='finding',
+    unacquirable_note=…)`` or ``POST /claim/<head>/unacquirable``).
+    ``mode=''``/``'clear'`` drops the override (set to JSON null;
+    ``trust`` treats a non-dict value as unset); any other value is a 400.
 
     A direct store op like ``/reviewed`` — a ref-meta stamp, not a
     handler-owned kind; ``by`` is the web write identity (``web:owner``).
@@ -2033,7 +2041,7 @@ async def unacquirable(
     if mode in ("", "clear"):
         store.update_ref(ref_id, meta_patch={"unacquirable_override": None})
         return RedirectResponse(url=redirect, status_code=303)
-    if mode not in ("abstract", "vouched"):
+    if mode != "set":
         return _paper_error(
             request, "Unacquirable error", f"unknown mode {mode!r}", 400
         )
@@ -2045,7 +2053,6 @@ async def unacquirable(
             400,
         )
     override = {
-        "mode": mode,
         "note": note.strip(),
         "by": cfg.source,
         "at": datetime.now(UTC).isoformat(),

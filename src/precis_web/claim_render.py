@@ -130,8 +130,9 @@ def hub_cite_heads(store: Any, texts: Iterable[str]) -> frozenset[str]:
 
 def _unacq_map(paper_refs: dict[int, Any] | None) -> dict[int, dict[str, Any]]:
     """``{paper_ref_id: unacquirable_override}`` for the supporter papers that
-    carry a Meta-tab unacquirable declaration — the per-row twin of the
-    claim-level :func:`~precis.taproot.trust._hub_supporter_override`. Read
+    carry a Meta-tab (paper-level) unacquirable declaration — the per-row
+    twin of the hub-harden check in
+    :func:`~precis.taproot.trust._hub_grounding_unacquirable`. Read
     from the already-batched ``paper_refs`` so no extra fetch. Empty when
     ``paper_refs`` is ``None`` (a caller that didn't batch them)."""
     out: dict[int, dict[str, Any]] = {}
@@ -165,10 +166,13 @@ def _edge_row(
     and bulk paths enrich the identical id set — a contradictor is always
     facts-only, keeping ``render_claims_evidence`` == per-head equality.
 
-    ``unacq`` (this paper's ``unacquirable_override``, else ``None``) names
-    THIS row as the unobtainable source behind a calm-marked hub — the
-    per-supporter twin of the claim-level reflection banner: mode
-    ``abstract`` → Ⓐ, else ✍."""
+    ``unacq`` (this paper's paper-level ``unacquirable_override``, else
+    ``None``) names THIS row as a source declared unobtainable — the
+    acquirability FACT, mode-less, that (via :func:`~precis.taproot.trust.
+    claim_trust`'s harden rule) can push an otherwise-clean hub back to
+    unverified when EVERY grounding paper carries one. Rendered as a plain
+    "⊘ unacquirable" chip, never Ⓐ/✍ (those are claim-level, not a
+    property of this paper row)."""
     parsed = handle_registry.parse(edge.source_handle) if edge.source_handle else None
     handle = handle_registry.format_handle("paper", edge.paper_ref_id)
     if paper_ref is not None:
@@ -189,11 +193,6 @@ def _edge_row(
         "role": edge.derived_role,
         "starred": starred,
         "unacquirable": isinstance(unacq, dict),
-        "unacq_mode": (
-            ("abstract" if unacq.get("mode") == "abstract" else "vouched")
-            if isinstance(unacq, dict)
-            else None
-        ),
         "unacq_note": unacq.get("note") if isinstance(unacq, dict) else None,
     }
 
@@ -563,11 +562,15 @@ def _render_one(
         "hub_ref_id": ref_id,
         "claim": claim,
         "status": status,
-        # Reflection of a supporter paper's Meta-tab unacquirable declaration
-        # (claim_trust softened clean → Ⓐ/✍): the claim page explains WHY the
-        # badge is calm-marked rather than clean. `None` unless overridden.
+        # `trust_overridden` — True iff an author declared a claim-level
+        # (Ⓐ/✍) softener HERE, on this hub. `trust_note` is always threaded
+        # through (not gated on `trust_overridden`): it also carries the
+        # harden rule's "grounded only on sources declared unacquirable"
+        # explanation when `status` is 'unverified' for that reason (clean
+        # was downgraded, but no author assertion was made — see
+        # `precis.taproot.trust.claim_trust`).
         "trust_overridden": trust.overridden,
-        "trust_note": trust.note if trust.overridden else None,
+        "trust_note": trust.note,
         "originators": originators,
         "corroborators": corroborators,
         "contradictors": contradictors,

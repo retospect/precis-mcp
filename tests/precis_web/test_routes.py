@@ -1855,35 +1855,40 @@ def test_paper_reviewed_unknown_ref_404s(client) -> None:
     assert resp.status_code == 404
 
 
-def test_paper_unacquirable_sets_vouched_override(client, runtime) -> None:
-    """POST /papers/{id}/unacquirable mode=vouched stamps
-    meta.unacquirable_override {mode,note,by,at} — identity is the web write
-    source; a direct store op like /reviewed. taproot.trust reads it through
-    so claims resting on this paper render ✍ instead of ⚠."""
+def test_paper_unacquirable_sets_modeless_fact(client, runtime) -> None:
+    """POST /papers/{id}/unacquirable mode=set stamps a mode-less
+    meta.unacquirable_override {note,by,at} — a pure acquirability FACT,
+    identity the web write source (a direct store op like /reviewed). It
+    never softens a claim by itself (see taproot.trust)."""
     store = runtime.store
     resp = client.post(
         "/papers/10/unacquirable",
-        data={"mode": "vouched", "note": "paywalled; UoL + ILL exhausted"},
+        data={"mode": "set", "note": "paywalled; UoL + ILL exhausted"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/papers/10?tab=Meta"
     ov = store.fetch_refs_by_ids([10])[10].meta["unacquirable_override"]
-    assert ov["mode"] == "vouched"
+    assert "mode" not in ov
     assert ov["note"] == "paywalled; UoL + ILL exhausted"
     assert ov["by"] == "web:owner"
     assert ov["at"]
 
 
-def test_paper_unacquirable_abstract_mode(client, runtime) -> None:
-    resp = client.post(
-        "/papers/10/unacquirable",
-        data={"mode": "abstract", "note": "abstract states it outright"},
-        follow_redirects=False,
+def test_paper_unacquirable_legacy_abstract_vouched_mode_400s(client, runtime) -> None:
+    """The old Ⓐ/✍ mode buttons are gone from the paper surface — those
+    ``mode`` values are no longer accepted here (the softener lives on the
+    claim now, ``POST /claim/<head>/unacquirable``)."""
+    for mode in ("abstract", "vouched"):
+        resp = client.post(
+            "/papers/10/unacquirable",
+            data={"mode": mode, "note": "abstract states it outright"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 400
+    assert "unacquirable_override" not in (
+        runtime.store.fetch_refs_by_ids([10])[10].meta or {}
     )
-    assert resp.status_code == 303
-    ov = runtime.store.fetch_refs_by_ids([10])[10].meta["unacquirable_override"]
-    assert ov["mode"] == "abstract"
 
 
 def test_paper_unacquirable_requires_note(client, runtime) -> None:
@@ -1891,7 +1896,7 @@ def test_paper_unacquirable_requires_note(client, runtime) -> None:
     400s and writes nothing."""
     resp = client.post(
         "/papers/10/unacquirable",
-        data={"mode": "vouched", "note": "   "},
+        data={"mode": "set", "note": "   "},
         follow_redirects=False,
     )
     assert resp.status_code == 400
@@ -1902,9 +1907,7 @@ def test_paper_unacquirable_requires_note(client, runtime) -> None:
 
 def test_paper_unacquirable_clear_drops_override(client, runtime) -> None:
     store = runtime.store
-    store.update_ref(
-        10, meta_patch={"unacquirable_override": {"mode": "vouched", "note": "x"}}
-    )
+    store.update_ref(10, meta_patch={"unacquirable_override": {"note": "x"}})
     resp = client.post(
         "/papers/10/unacquirable", data={"mode": "clear"}, follow_redirects=False
     )
@@ -1915,7 +1918,7 @@ def test_paper_unacquirable_clear_drops_override(client, runtime) -> None:
 def test_paper_unacquirable_unknown_ref_404s(client) -> None:
     resp = client.post(
         "/papers/999999/unacquirable",
-        data={"mode": "vouched", "note": "x"},
+        data={"mode": "set", "note": "x"},
         follow_redirects=False,
     )
     assert resp.status_code == 404

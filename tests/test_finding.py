@@ -1462,6 +1462,36 @@ class TestUnacquirableOverride:
         assert override["note"] == "print-only 1962 monograph"
         assert override["by"] == "agent"
         assert override["at"]  # server-stamped, non-empty
+        # omitted unacquirable_mode defaults to 'vouched' (✍) — matches how
+        # a legacy no-mode override reads on the way in.
+        assert override["mode"] == "vouched"
+
+    def test_mode_abstract_sets_mode(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        out = h.edit(
+            id=finding_id,
+            unacquirable_note="abstract states the figure",
+            unacquirable_mode="abstract",
+        )
+        assert "Ⓐ" in out.body
+        ref = store.get_ref(kind="finding", id=finding_id)
+        override = (ref.meta or {}).get("unacquirable_override")
+        assert override is not None
+        assert override["mode"] == "abstract"
+        assert override["note"] == "abstract states the figure"
+
+    def test_invalid_mode_rejected(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="unacquirable_mode"):
+            h.edit(id=finding_id, unacquirable_note="why", unacquirable_mode="bogus")
+
+    def test_mode_without_note_rejected(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="unacquirable_note"):
+            h.edit(id=finding_id, unacquirable_mode="abstract")
 
     def test_settable_on_any_status_preemptively(self, store) -> None:
         """Still STATUS:tracing (the chase hasn't given up yet) — the

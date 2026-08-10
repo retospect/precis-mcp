@@ -63,11 +63,12 @@ def test_render_claim_evidence_status_clean_with_print_visible_supporter(
 
 
 def test_render_claim_evidence_reflects_unacquirable_supporter(hub: Hub) -> None:
-    """When the hub's sole grounding supporter is declared unacquirable on its
-    own Meta tab, ``claim_trust`` softens clean → Ⓐ/✍ and the render exposes
-    ``trust_overridden``/``trust_note`` so the claim page can explain the calm
-    badge (gap-1 per-claim reflection) — AND the specific supporter row is
-    itself marked (1-residual: name WHICH paper, not just the mode+note)."""
+    """When the hub's sole grounding supporter declares itself unacquirable
+    on its own Meta tab (a paper-level FACT, no mode), ``claim_trust``
+    *hardens* clean → unverified (never straight to Ⓐ/✍ — that would
+    fabricate a claim-backing assertion nobody made) and the render exposes
+    the harden note via ``trust_note`` — AND the specific supporter row is
+    itself marked (1-residual: name WHICH paper, not just the note)."""
     store = hub.store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
@@ -80,7 +81,6 @@ def test_render_claim_evidence_reflects_unacquirable_supporter(hub: Hub) -> None
         supporter,
         meta_patch={
             "unacquirable_override": {
-                "mode": "abstract",
                 "by": "web:owner",
                 "at": "2026-08-06T00:00:00+00:00",
                 "note": "paywalled; abstract states the result",
@@ -92,15 +92,51 @@ def test_render_claim_evidence_reflects_unacquirable_supporter(hub: Hub) -> None
     data = render_claim_evidence(store, head)
 
     assert data is not None
-    assert data["status"] == "abstract"
-    assert data["trust_overridden"] is True
-    assert data["trust_note"] == "paywalled; abstract states the result"
+    assert data["status"] == "unverified"
+    assert data["trust_overridden"] is False
+    assert data["trust_note"] == "grounded only on sources declared unacquirable"
     # 1-residual: the supporter row that IS the unacquirable source is marked.
     row = data["corroborators"][0]
     assert row["paper_ref_id"] == supporter
     assert row["unacquirable"] is True
-    assert row["unacq_mode"] == "abstract"
     assert row["unacq_note"] == "paywalled; abstract states the result"
+
+
+def test_render_claim_evidence_claim_level_override_softens_and_reflects(
+    hub: Hub,
+) -> None:
+    """A claim-level declaration made ON THE HUB itself softens the (possibly
+    hardened) label and IS reflected as ``trust_overridden``."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    supporter = store.insert_ref(
+        kind="paper", slug="unacq-supporter2", title="A paywalled paper"
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=supporter, role="corroborates"
+    )
+    store.update_ref(
+        supporter, meta_patch={"unacquirable_override": {"note": "paywalled"}}
+    )
+    store.update_ref(
+        claim_hub,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "abstract",
+                "by": "web:owner",
+                "at": "2026-08-06T00:00:00+00:00",
+                "note": "abstract states the result",
+            }
+        },
+    )
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    assert data["status"] == "abstract"
+    assert data["trust_overridden"] is True
+    assert data["trust_note"] == "abstract states the result"
 
 
 def test_render_claim_evidence_acquirable_supporter_row_unmarked(hub: Hub) -> None:
@@ -121,7 +157,6 @@ def test_render_claim_evidence_acquirable_supporter_row_unmarked(hub: Hub) -> No
     assert data is not None
     row = data["corroborators"][0]
     assert row["unacquirable"] is False
-    assert row["unacq_mode"] is None
 
 
 # ---------------------------------------------------------------------------

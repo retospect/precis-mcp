@@ -1279,6 +1279,7 @@ class FindingHandler(NumericRefHandler):
         pick_candidate: str | int | None = None,
         title: str | None = None,
         unacquirable_note: str | None = None,
+        unacquirable_mode: str | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
@@ -1322,13 +1323,25 @@ class FindingHandler(NumericRefHandler):
         **Unacquirable override.** A print-only / undigitized source is
         legitimately citeable even when no digital copy is obtainable.
         Recording that intent suppresses the trust surfaces' "unverified"
-        mark on this claim (the trust-surfaces override door;
-        never the "unsupported" mark — a negative terminal verification
-        always outranks the override, the paper was read):
+        mark on this claim (the trust-surfaces override door; this is a
+        **claim-level** declaration about THIS finding, never inherited
+        from its source paper — a paper's own Meta-tab "can't get it" is a
+        plain acquirability fact and never softens a claim by itself, see
+        ``precis-taproot-help``. Never applies to the "unsupported" mark —
+        a negative terminal verification always outranks the override, the
+        paper was read):
 
             edit(kind='finding', id=N, unacquirable_note='print-only 1962 monograph')
+            edit(kind='finding', id=N, unacquirable_note='abstract states the figure',
+                 unacquirable_mode='abstract')
 
-        Sets ``meta.unacquirable_override = {by, at, note}``. Settable
+        Sets ``meta.unacquirable_override = {mode, by, at, note}``.
+        ``unacquirable_mode`` picks the trust state: ``'abstract'`` → Ⓐ
+        (the abstract on file backs THIS claim, full text unread) vs
+        ``'vouched'`` (✍ — author vouches, source unobtainable), the
+        default when omitted (also how a legacy no-``mode`` override reads
+        on the way in). Only meaningful alongside ``unacquirable_note``;
+        supplying it without a note is a ``BadInput``. Settable
         pre-emptively on ANY lifecycle state — not gated to
         ``STATUS:dead_chain(reason=unacquirable)``, since the author may
         know a source is print-only before the chase ever attempts
@@ -1336,7 +1349,7 @@ class FindingHandler(NumericRefHandler):
         silent override defeats the audit purpose); ``at`` is
         server-stamped; ``by`` is ``'agent'`` today (no caller-identity
         channel exists yet for a handler to read one from). Idempotent —
-        re-setting just overwrites the prior ``by``/``at``/``note``.
+        re-setting just overwrites the prior ``mode``/``by``/``at``/``note``.
 
         No op here supports ``dry_run`` (see below).
         """
@@ -1357,6 +1370,15 @@ class FindingHandler(NumericRefHandler):
                     "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
                     "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
                     "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
+                ),
+            )
+        if unacquirable_mode is not None and unacquirable_note is None:
+            raise BadInput(
+                "edit(kind='finding') requires unacquirable_note when "
+                "unacquirable_mode is given",
+                next=(
+                    "edit(kind='finding', id=<N>, unacquirable_note='<why>', "
+                    "unacquirable_mode='abstract')"
                 ),
             )
         if title is not None:
@@ -1390,7 +1412,9 @@ class FindingHandler(NumericRefHandler):
                 ),
             )
         if unacquirable_note is not None:
-            return self._set_unacquirable_override(id, unacquirable_note)
+            return self._set_unacquirable_override(
+                id, unacquirable_note, mode=unacquirable_mode
+            )
         if pick_candidate is None or (
             isinstance(pick_candidate, str) and not pick_candidate.strip()
         ):
@@ -1552,12 +1576,17 @@ class FindingHandler(NumericRefHandler):
     # edit — unacquirable_note (trust-surfaces override write path)
     # ──────────────────────────────────────────────────────────────────
 
-    def _set_unacquirable_override(self, raw_id: int | str, note: str) -> Response:
+    def _set_unacquirable_override(
+        self, raw_id: int | str, note: str, *, mode: str | None = None
+    ) -> Response:
         """Write ``meta.unacquirable_override`` — the write path behind
         ``edit(kind='finding', unacquirable_note=…)``
-        (the trust-surfaces override door). ``note`` required
-        non-empty; the override is otherwise settable on any finding
-        regardless of its current lifecycle status."""
+        (the trust-surfaces override door, claim-level — never inherited
+        from the source paper). ``note`` required non-empty; the override
+        is otherwise settable on any finding regardless of its current
+        lifecycle status. ``mode`` must be ``'abstract'`` or ``'vouched'``
+        when given; ``None`` defaults to ``'vouched'`` (matches how a
+        legacy no-``mode`` override reads on the way in)."""
         if not note.strip():
             raise BadInput(
                 "edit(kind='finding') requires a non-empty unacquirable_note "
@@ -1567,8 +1596,19 @@ class FindingHandler(NumericRefHandler):
                     "unacquirable_note='<why this source cannot be digitally acquired>')"
                 ),
             )
+        if mode is not None and mode not in ("abstract", "vouched"):
+            raise BadInput(
+                f"edit(kind='finding') unacquirable_mode must be 'abstract' or "
+                f"'vouched', got {mode!r}",
+                next=(
+                    "edit(kind='finding', id=<N>, unacquirable_note='<why>', "
+                    "unacquirable_mode='abstract')"
+                ),
+            )
+        resolved_mode = mode or "vouched"
         finding_ref_id = self._resolve_finding_ref_id(raw_id)
         override = {
+            "mode": resolved_mode,
             "by": "agent",
             "at": datetime.now(UTC).isoformat(),
             "note": note.strip(),
@@ -1576,16 +1616,17 @@ class FindingHandler(NumericRefHandler):
         self.store.update_ref(
             finding_ref_id, meta_patch={"unacquirable_override": override}
         )
+        mark = (
+            "Ⓐ abstract-backs-it" if resolved_mode == "abstract" else "✍ author-vouched"
+        )
         return Response(
             body=(
                 f"recorded unacquirable override on finding id={finding_ref_id}\n"
                 f"note: {override['note']}\n"
-                "trust surfaces now render this claim ✍ author-vouched — a calm "
-                "mark, no longer the ⚠ unverified triangle, but NOT clean (the "
-                "full text was never read). A terminal verification that the "
-                "source doesn't back it still outranks the override. To mark the "
-                "abstract as backing it instead (Ⓐ), declare it on the source "
-                "paper's Meta tab."
+                f"trust surfaces now render this claim {mark} — a calm mark, no "
+                "longer the ⚠ unverified triangle, but NOT clean (the full text "
+                "was never read). A terminal verification that the source "
+                "doesn't back it still outranks the override."
             )
         )
 

@@ -297,16 +297,25 @@ run `precis worker --only fetch`.
 (above) | `title=` | `unacquirable_note=` — passing more than one errors.
 `title=` retitles a `TAPROOT:claim` hub in place (rejects a plain finding);
 see `precis-taproot-help`'s "Reword a hub in place". `unacquirable_note=`
-records that a print-only/undigitized source is legitimately citeable
-despite no digital copy being obtainable:
+records a **claim-level** declaration — an author assertion about THIS
+claim, never inherited from its source paper — that a print-only/
+undigitized source is legitimately citeable despite no digital copy being
+obtainable:
 
 ```python
 edit(kind="finding", id=42, unacquirable_note="print-only 1962 monograph")
+edit(
+    kind="finding",
+    id=42,
+    unacquirable_note="abstract states the figure",
+    unacquirable_mode="abstract",
+)
 ```
 
-This no longer folds the claim all the way to **clean** — no one read the
-full text — but to the calmer **✍ vouched** trust state (below): visible,
-not the ⚠ alarm.
+`unacquirable_mode=` picks the trust state: `'abstract'` → **Ⓐ** (the
+abstract on file backs THIS claim, full text unread) vs `'vouched'`
+(**✍**, the default when omitted) — either way it no longer folds the
+claim all the way to **clean**: no one read the full text.
 
 **Five trust states** (`taproot/trust.py`, read by the smartdraft badge +
 the exporters), least→most confident-that-something's-wrong:
@@ -316,13 +325,18 @@ author vouches) ‹ `unverified` (**⚠** — not checked yet) ‹ `unsupported`
 (**‼** — read and contradicts). A block badge takes the worst-of its
 cites; `unsupported` is never softened by any override.
 
-**Author-declared unobtainable belongs on the *paper*, not each finding.**
-Prefer marking the *source paper* unacquirable from its **Meta tab**
-(`Can't get it` → *Abstract backs it* Ⓐ / *I vouch for it* ✍ + a required
-note): `taproot.trust` reads that through from any claim whose blocking
-source is that paper, so one mark covers every claim resting on it. The
-per-finding `unacquirable_note=` above is the narrower door (this claim
-only) and still works.
+**Declaring a source paper unacquirable is a fact, not a claim-backing
+assertion — it never yields Ⓐ/✍ by itself.** The *source paper's* **Meta
+tab** (`Can't get it`) writes a plain `{note, by, at}` fact ("I tried hard
+and could not obtain this; the metadata is correct"): `taproot.trust`
+reads it two ways — it *hardens* a clean `TAPROOT:claim` hub whose every
+print-visible grounding paper carries one down to `unverified` (never
+straight to Ⓐ/✍ — that would fabricate an assertion nobody made), and it
+enriches an unverified lifecycle finding's note with why its blocking
+source can't be obtained. To actually soften a claim to Ⓐ/✍, declare it
+at the **claim level**: the per-finding `unacquirable_note=`/
+`unacquirable_mode=` above, or — for a `TAPROOT:claim` hub — the same
+control on its `/claim/<head>` web page.
 
 ## The inbound counterpart — who cites *this* paper (dark, opt-in)
 

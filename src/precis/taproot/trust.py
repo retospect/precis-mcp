@@ -2,11 +2,33 @@
 
 The acquisition-mode mint gave a claim a life *before* its evidence is verified
 (``STATUS:acquiring``, and the pre-existing ``tracing``) — this module is
-the read-time mapping from that machine state to the two human-facing
-trust labels, so a citation never quietly launders an unverified claim
-into finished prose. **Read/render-time only** — no new machine STATUS,
-no writes here (the one write path, the author's unacquirable override,
-lives in :mod:`precis.handlers.finding`).
+the read-time mapping from that machine state to the human-facing trust
+labels, so a citation never quietly launders an unverified claim into
+finished prose. **Read/render-time only** — no new machine STATUS, no
+writes here.
+
+Two DIFFERENT ``unacquirable_override`` shapes feed this module, and they
+must not be confused:
+
+* **Paper-level** (``refs.meta.unacquirable_override = {note, by, at}``,
+  written from a paper's Meta tab, :mod:`precis_web.routes.papers`) is a
+  pure *acquirability fact* — "I tried hard and could not get this; the
+  metadata is correct." It never softens a claim's label. A lifecycle
+  finding blocked on such a paper only gets its note enriched (the
+  *note-enrichment* rule below); a clean hub whose every print-visible
+  grounding paper carries one is *hardened* down to ``unverified`` (the
+  *harden* rule), never assumed to fabricate a claim-backing assertion
+  nobody made.
+* **Claim-level** (``meta.unacquirable_override = {mode, note, by, at}``
+  on the *finding itself* — ``edit(kind='finding', unacquirable_note=…)``
+  or, for a hub, ``POST /claim/<head>/unacquirable``) is the only
+  softener: an explicit author assertion that Ⓐ (``mode='abstract'``) the
+  abstract on file backs THIS claim, or ✍ (``mode='vouched'``, also the
+  legacy no-``mode`` shape) the author vouches for it. It converts an
+  otherwise-**unverified** label (including one just hardened by the
+  harden rule) to the calmer ``abstract``/``vouched`` state — never
+  ``unsupported`` (a negative terminal verification always outranks it:
+  the paper WAS read; "trust me" doesn't unread it).
 
 :func:`claim_trust` branches hub vs. lifecycle finding exactly as
 :func:`precis.taproot.cite.finding_cite_keys` does, so a caller can never
@@ -61,6 +83,13 @@ _STATUS_MULTI_CANDIDATE = "multi_candidate"
 #: A hub with no print-visible supporter — mirrors ``FindingCite.inflight``.
 _HUB_UNVERIFIED_NOTE = "claim hub has no print-visible supporter yet"
 
+#: The harden-rule note (rule 3): a clean hub whose every print-visible
+#: grounding paper is declared unacquirable overstates itself, so it's
+#: downgraded here — this is a fact-driven harden, not an author assertion
+#: (``TrustState.overridden`` stays ``False``); a claim-level override can
+#: still soften it right back down, same as any other unverified label.
+_HUB_GROUNDING_UNACQUIRABLE_NOTE = "grounded only on sources declared unacquirable"
+
 #: ``dead_chain`` reasons with a specific human note (Motivation table);
 #: any other reason renders as its own reason slug.
 _DEAD_CHAIN_NOTES = {
@@ -80,14 +109,19 @@ class TrustState:
 
     label: TrustLabel
     note: str | None
-    #: True iff an ``unacquirable_override`` (the author's, on the finding
-    #: itself, or the source paper's, set from its Meta tab) converted an
-    #: otherwise-**unverified** label to the softer ``abstract`` (Ⓐ — the
-    #: abstract backs it) or ``vouched`` (✍ — author vouches, source
-    #: unobtainable). Never true for "unsupported" (a negative terminal
-    #: verification always renders, override or not) or a label that was
-    #: already "clean". The override no longer folds all the way to clean:
-    #: no one read the full text, so the claim keeps a (calm) mark.
+    #: True iff a **claim-level** ``unacquirable_override`` — the author's
+    #: assertion made on the finding/hub itself (never inherited from a
+    #: source paper's acquirability fact) — converted an otherwise-
+    #: **unverified** label to the softer ``abstract`` (Ⓐ — the abstract
+    #: backs it) or ``vouched`` (✍ — author vouches, source unobtainable).
+    #: Never true for "unsupported" (a negative terminal verification
+    #: always renders, override or not) or a label that was already
+    #: "clean". Also never true for a paper-level-only harden (a clean hub
+    #: downgraded because every grounding paper is declared unacquirable —
+    #: a fact, not an assertion, so ``overridden`` stays False even though
+    #: the label moved off "clean"). The override no longer folds all the
+    #: way to clean: no one read the full text, so the claim keeps a
+    #: (calm) mark.
     overridden: bool
     #: The raw machine status this was derived from — ``'hub'`` for a
     #: Taproot claim hub, else the STATUS tag value (or 'tracing' when
@@ -177,12 +211,30 @@ def claim_trust(
     surface (export marking, the smartdraft badge) reads.
 
     Branches hub vs. lifecycle finding exactly as
-    :func:`precis.taproot.cite.finding_cite_keys` does. An author's
-    ``meta.unacquirable_override`` (set via ``edit(kind='finding',
-    unacquirable_note=…)``) then converts an otherwise-**unverified**
-    label to clean — never an **unsupported** one (a negative terminal
-    verification outranks the override: the paper was read; "trust me"
-    doesn't unread it).
+    :func:`precis.taproot.cite.finding_cite_keys` does. Three rules then
+    apply, in order:
+
+    1. **Hub harden.** A clean hub whose every print-visible grounding
+       paper carries a *paper-level* ``unacquirable_override`` (a pure
+       acquirability fact, set from a paper's Meta tab) overstates itself
+       — no one read any of those sources in full — so it's downgraded to
+       ``unverified`` with an explanatory note. This is a fact-driven
+       harden, not an author assertion: ``TrustState.overridden`` stays
+       ``False``.
+    2. **Lifecycle note enrichment.** An unverified lifecycle finding
+       blocked on a paper that itself carries a paper-level override gets
+       its note enriched (naming the blocking source's declared reason) —
+       the label is untouched; a paper being unobtainable is not itself a
+       claim-backing assertion.
+    3. **Claim-level softener.** The finding's/hub's OWN ``meta.
+       unacquirable_override`` (set via ``edit(kind='finding',
+       unacquirable_note=…)`` or, for a hub, ``POST /claim/<head>/
+       unacquirable``) then converts an otherwise-**unverified** label
+       (including one just hardened by rule 1) to the softer ``abstract``
+       (Ⓐ) / ``vouched`` (✍). Composes with rule 1: a hardened hub can
+       still be individually vouched for here. Never applied to an
+       **unsupported** label (a negative terminal verification outranks
+       any override: the paper was read; "trust me" doesn't unread it).
 
     ``evidence``/``cite_key_map`` thread a caller's already-derived hub
     evidence + bulk cite_key resolution straight into :func:`_hub_trust`
@@ -190,9 +242,9 @@ def claim_trust(
     ref IS a hub, so the ``is_claim_hub`` re-check is skipped too).
     ``ref`` lets a caller that already fetched the finding's ``Ref``
     (e.g. for its title) skip this function's own ``fetch_refs_by_ids``
-    call. ``paper_refs`` is the bulk twin for the supporter-paper meta the
-    hub-clean override check reads (mirrors ``cite_key_map``). All four
-    default to the old single-hub, no-cache behaviour.
+    call. ``paper_refs`` is the bulk twin for the grounding-paper meta the
+    hub-harden check reads (mirrors ``cite_key_map``). All four default to
+    the old single-hub, no-cache behaviour.
     """
     if ref is None:
         ref = store.fetch_refs_by_ids([finding_ref_id]).get(finding_ref_id)
@@ -201,8 +253,8 @@ def claim_trust(
     hub_evidence: HubEvidence | None = None
     if evidence is not None or is_claim_hub(store, finding_ref_id):
         # Resolve the hub's evidence once (thread the caller's when given) so
-        # both the label AND the supporter-override check below read the same
-        # derivation — no second derive.
+        # both the label AND the harden check below read the same derivation
+        # — no second derive.
         if evidence is None:
             evidence = finding_cite_keys(
                 store, finding_ref_id, assume_hub=True, cite_key_map=cite_key_map
@@ -214,50 +266,62 @@ def claim_trust(
     else:
         label, note, status = _lifecycle_trust(store, finding_ref_id, meta)
 
-    # An author's unacquirable declaration softens an otherwise-unverified
-    # claim (lifecycle: its own override or its blocking source paper's), and
-    # softens an otherwise-**clean** hub whose every print-visible grounding
-    # supporter is declared unacquirable (the claim rests only on sources no
-    # one read in full — 'clean' would overstate it). Never softens
-    # 'unsupported' (a negative terminal verification outranks any override:
-    # the paper WAS read; "trust me" doesn't unread it).
-    override: dict[str, Any] | None = None
+    if hub_evidence is not None and label == "clean":
+        # Rule 1 — harden: every print-visible grounding paper declared
+        # unacquirable (a fact, not an author claim-backing assertion), so
+        # 'clean' overstates it.
+        if _hub_grounding_unacquirable(store, hub_evidence, cite_key_map, paper_refs):
+            label = "unverified"
+            note = _HUB_GROUNDING_UNACQUIRABLE_NOTE
+    elif hub_evidence is None and label == "unverified":
+        # Rule 2 — a lifecycle finding's blocking source paper being
+        # declared unacquirable is a fact about acquirability, never a
+        # softener: enrich the note only, so a human knows to vouch at the
+        # claim level (rule 3) or drop the cite.
+        paper_override = _source_paper_override(store, meta)
+        paper_note = (
+            paper_override.get("note") if isinstance(paper_override, dict) else None
+        )
+        if paper_note:
+            addition = f"blocking source declared unacquirable: {paper_note}"
+            note = f"{note} — {addition}" if note else addition
+
+    # Rule 3 — the only softener: the finding's/hub's OWN claim-level
+    # declaration (never inherited from a paper). Never applied to
+    # 'unsupported' (only 'unverified' reaches here, by construction above).
     if label == "unverified":
-        override = meta.get("unacquirable_override") or _source_paper_override(
-            store, meta
-        )
-    elif hub_evidence is not None and label == "clean":
-        override = _hub_supporter_override(
-            store, hub_evidence, cite_key_map, paper_refs
-        )
-    if override:
-        # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on file
-        # backs it), anything else (incl. a legacy override with no mode) → ✍
-        # vouched (author asserts; source unobtainable). Never all the way to
-        # clean — no one read the full text.
-        soft: TrustLabel = (
-            "abstract" if override.get("mode") == "abstract" else "vouched"
-        )
-        return TrustState(
-            label=soft,
-            note=override.get("note") or note,
-            overridden=True,
-            status=status,
-        )
+        override = meta.get("unacquirable_override")
+        if isinstance(override, dict) and override:
+            # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on
+            # file backs it), anything else (incl. a legacy override with no
+            # mode) → ✍ vouched (author asserts; source unobtainable). Never
+            # all the way to clean — no one read the full text.
+            soft: TrustLabel = (
+                "abstract" if override.get("mode") == "abstract" else "vouched"
+            )
+            return TrustState(
+                label=soft,
+                note=override.get("note") or note,
+                overridden=True,
+                status=status,
+            )
     return TrustState(label=label, note=note, overridden=False, status=status)
 
 
 def _source_paper_override(store: Any, meta: dict[str, Any]) -> dict[str, Any] | None:
-    """The ``unacquirable_override`` on a lifecycle finding's *source paper*
-    — the read-through that lets an author mark a paper unobtainable from
-    its own Meta tab and have every claim resting on it render calm,
-    without editing each finding.
+    """The paper-level ``unacquirable_override`` (``{note, by, at}``, no
+    ``mode``) on a lifecycle finding's *source paper* — the read-through
+    that lets rule 2 in :func:`claim_trust` enrich an unverified finding's
+    note with WHY its blocking source can't be obtained, without editing
+    each finding. Never a softener — a paper's acquirability is a fact
+    about the paper, not an assertion about any particular claim resting
+    on it.
 
     A chased finding names its blocking paper as its chain frontier
     (``meta.chain[-1].ref_id`` — the stub whose PDF it's waiting on). A hub
-    has no such chain (its trust comes from supporters, and an unverified
-    hub simply has none), so this is a no-op there — only the finding-level
-    override applies to hubs."""
+    has no such chain (its trust comes from supporters), so this is a no-op
+    there — the hub harden rule (:func:`_hub_grounding_unacquirable`) is
+    its own, separate check."""
     chain = meta.get("chain") or []
     if not (chain and isinstance(chain[-1], dict)):
         return None
@@ -284,24 +348,21 @@ def _has_cite_key(
     return bool(aliases)
 
 
-def _hub_supporter_override(
+def _hub_grounding_unacquirable(
     store: Any,
     evidence: HubEvidence,
     cite_key_map: dict[int, list[str]] | None,
     paper_refs: dict[int, Any] | None = None,
-) -> dict[str, Any] | None:
-    """The read-through that lets a paper's own Meta-tab unacquirable
-    declaration soften a **hub** claim resting on it — the hub twin of
-    :func:`_source_paper_override` (which only follows a *lifecycle* finding's
-    chain frontier, a no-op for hubs).
+) -> bool:
+    """Whether EVERY print-visible grounding paper behind a clean hub
+    carries a paper-level ``unacquirable_override`` — rule 1 (harden) in
+    :func:`claim_trust`'s check. ``True`` means no one read any of the
+    hub's grounding sources in full, so 'clean' overstates the claim.
 
-    A clean hub grounds on its print-visible supporter papers. When EVERY
-    paper in the grounding group is declared unacquirable, 'clean' overstates
-    the claim — no one read any of those sources in full — so return the
-    softest such override (Ⓐ if any is abstract-mode, else ✍) for
-    :func:`claim_trust` to downgrade clean → Ⓐ/✍. Return ``None`` when at
-    least one grounding paper is genuinely acquirable (a real read-grounding
-    remains) or none carries a declaration — the hub stays clean.
+    Returns ``False`` when at least one grounding paper is genuinely
+    acquirable (a real read-grounding remains) or the hub has no
+    print-visible supporter at all (not actually a clean hub — defensive;
+    the caller only reaches this when ``label == 'clean'``).
 
     The grounding group mirrors :func:`~precis.taproot.cite.hub_cite_keys`:
     originators (those with a cite_key) when any exist, else corroborators —
@@ -315,20 +376,16 @@ def _hub_supporter_override(
         if grounding:
             break
     else:
-        return None  # inflight — no print-visible supporter (not a clean hub)
-    # ``paper_refs`` — a bulk caller's pre-fetched supporter-paper refs (mirrors
+        return False  # inflight — no print-visible supporter (not a clean hub)
+    # ``paper_refs`` — a bulk caller's pre-fetched grounding-paper refs (mirrors
     # ``cite_key_map``); ``None`` falls back to the per-call fetch.
     refs = paper_refs if paper_refs is not None else store.fetch_refs_by_ids(grounding)
-    overrides: list[dict[str, Any]] = []
     for pid in grounding:
         r = refs.get(pid)
         override = (getattr(r, "meta", None) or {}).get("unacquirable_override")
         if not isinstance(override, dict):
-            return None  # this grounding paper IS acquirable → hub stays clean
-        overrides.append(override)
-    # All grounding papers unacquirable → softest (Ⓐ, the quieter/better
-    # grounding, wins over ✍ when any supporter's abstract backs the claim).
-    return next((o for o in overrides if o.get("mode") == "abstract"), overrides[0])
+            return False  # this grounding paper IS acquirable → hub stays clean
+    return True
 
 
 def claim_trust_bulk(

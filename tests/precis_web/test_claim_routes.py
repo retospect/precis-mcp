@@ -82,8 +82,10 @@ def test_claim_view_by_fi_handle(claim_client: TestClient, hub: Hub) -> None:
 def test_claim_view_reflects_unacquirable_supporter(
     claim_client: TestClient, hub: Hub
 ) -> None:
-    """A hub grounded only on an unacquirable supporter renders the calm
-    reflection line (gap-1), not a bare clean badge."""
+    """A hub grounded only on a supporter that declared itself unacquirable
+    (a paper-level FACT, no mode) hardens to unverified — not Ⓐ/✍, since no
+    author asserted this claim is backed. The supporter row and the harden
+    note both surface; the claim-level softener control is offered."""
     store = hub.store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
@@ -96,7 +98,6 @@ def test_claim_view_reflects_unacquirable_supporter(
         supporter,
         meta_patch={
             "unacquirable_override": {
-                "mode": "abstract",
                 "by": "web:owner",
                 "at": "2026-08-06T00:00:00+00:00",
                 "note": "paywalled; abstract states the result",
@@ -108,8 +109,46 @@ def test_claim_view_reflects_unacquirable_supporter(
     r = claim_client.get(f"/claim/{fi_handle}")
 
     assert r.status_code == 200
-    assert "abstract-only" in r.text
+    assert "⊘ unacquirable" in r.text
     assert "paywalled; abstract states the result" in r.text
+    assert "grounded only on sources declared unacquirable" in r.text
+    # The claim-level softener control is offered (status is unverified).
+    assert f'action="/claim/{fi_handle}/unacquirable"' in r.text
+
+
+def test_claim_view_claim_level_override_softens_and_shows_undo(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A claim-level declaration made ON THE HUB itself (never inherited
+    from a paper) softens the label and renders the undo control."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    supporter = store.insert_ref(kind="paper", slug="unacq-route2", title="A paper").id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=supporter, role="corroborates"
+    )
+    store.update_ref(
+        supporter, meta_patch={"unacquirable_override": {"note": "paywalled"}}
+    )
+    store.update_ref(
+        claim_hub,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "abstract",
+                "by": "web:owner",
+                "at": "2026-08-06T00:00:00+00:00",
+                "note": "I read the abstract, it backs this",
+            }
+        },
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "I read the abstract, it backs this" in r.text
+    assert f'action="/claim/{fi_handle}/unacquirable"' in r.text
+    assert 'value="clear"' in r.text
 
 
 def test_claim_view_originator_handle_and_star(
@@ -579,3 +618,106 @@ def test_claim_view_mixed_paper_labels_contradiction_not_support(
     assert r.status_code == 200
     assert sup_text in r.text and con_text in r.text
     assert "(contradictor)" in r.text  # B attributed to contradictor, not support
+
+
+# ── POST /claim/<head>/unacquirable — the claim-level softener write door ──
+
+
+def test_claim_unacquirable_set_abstract(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/unacquirable",
+        data={"mode": "abstract", "note": "abstract backs this claim"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/claim/{fi_handle}"
+    ov = hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta[
+        "unacquirable_override"
+    ]
+    assert ov["mode"] == "abstract"
+    assert ov["note"] == "abstract backs this claim"
+    assert ov["by"] == "web:owner"
+    assert ov["at"]
+
+
+def test_claim_unacquirable_set_vouched(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/unacquirable",
+        data={"mode": "vouched", "note": "I vouch for this"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    ov = hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta[
+        "unacquirable_override"
+    ]
+    assert ov["mode"] == "vouched"
+
+
+def test_claim_unacquirable_requires_note(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/unacquirable",
+        data={"mode": "abstract", "note": "   "},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    assert "unacquirable_override" not in (
+        hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
+    )
+
+
+def test_claim_unacquirable_unknown_mode_400s(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/unacquirable",
+        data={"mode": "bogus", "note": "x"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+
+
+def test_claim_unacquirable_clear_drops_override(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    hub.store.update_ref(
+        hub_ref_id,
+        meta_patch={"unacquirable_override": {"mode": "vouched", "note": "x"}},
+    )
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.post(
+        f"/claim/{fi_handle}/unacquirable",
+        data={"mode": "clear"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    ref = hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
+    assert (ref.meta or {}).get("unacquirable_override") is None
+
+
+def test_claim_unacquirable_non_hub_head_errors(claim_client: TestClient) -> None:
+    r = claim_client.post(
+        "/claim/aaaaaa/unacquirable",
+        data={"mode": "vouched", "note": "x"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400

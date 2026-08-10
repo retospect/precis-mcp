@@ -4,21 +4,27 @@ for a Taproot claim hub (turn-taking persona threads-adjacent). Both resolve the
 when the head isn't a live ``TAPROOT:claim`` hub — rendered as a friendly
 "no claim hub" stub rather than a 404, since a stray ``[fi123]`` cite is an
 ordinary finding, not an error.
+
+``POST /claim/<head>/unacquirable`` is the **claim-level** unacquirable-
+override write door (:mod:`precis.taproot.trust`'s only softener) — the
+twin of, but semantically distinct from, ``POST /papers/<id>/unacquirable``
+(a pure acquirability fact about the paper that never softens a claim).
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis_web.claim_render import (
     claim_citers,
     claim_full_sentence,
     render_claim_evidence,
 )
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, get_web_config, templates
 from precis_web.routes.refs import _followup_discussions
 
 router = APIRouter(tags=["claim"])
@@ -62,3 +68,68 @@ async def claim_preview(request: Request, head: str) -> HTMLResponse:
         {"head": head, "missing": True} if data is None else {**data, "missing": False}
     )
     return templates.TemplateResponse(request, "claim/popover.html.j2", ctx)
+
+
+def _claim_error(
+    request: Request, title: str, detail: str, status: int
+) -> HTMLResponse:
+    """Render the shared error page for a claim-route failure — mirrors
+    ``precis_web.routes.papers._paper_error``."""
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {"title": title, "detail": detail, "status": status},
+        status_code=status,
+    )
+
+
+@router.post("/claim/{head}/unacquirable", response_model=None)
+async def claim_unacquirable(
+    request: Request,
+    head: str,
+    mode: str = Form(""),
+    note: str = Form(""),
+) -> Response:
+    """Set / clear a **claim-level** unacquirable-source declaration on this
+    hub — :mod:`precis.taproot.trust`'s only softener: an explicit author
+    assertion that Ⓐ (``mode='abstract'``) the abstract on file backs THIS
+    claim, or ✍ (``mode='vouched'``) the author vouches for it, source
+    unobtainable. Writes ``meta.unacquirable_override = {mode, note, by,
+    at}`` on the hub's own ref — distinct from, and never inherited from,
+    a source paper's Meta-tab acquirability declaration (``POST
+    /papers/<id>/unacquirable``), which never softens a claim.
+
+    ``mode`` empty or ``'clear'`` drops the override. ``note`` is required
+    when setting: a silent override defeats the audit purpose (mirrors the
+    finding handler's own guard and ``papers.unacquirable``)."""
+    store = get_store(request)
+    data = render_claim_evidence(store, head)
+    if data is None:
+        return _claim_error(
+            request, "Unacquirable error", f"no claim hub for {head!r}", 400
+        )
+    hub_ref_id = data["hub_ref_id"]
+    redirect = f"/claim/{head}"
+    mode = (mode or "").strip().lower()
+    if mode in ("", "clear"):
+        store.update_ref(hub_ref_id, meta_patch={"unacquirable_override": None})
+        return RedirectResponse(url=redirect, status_code=303)
+    if mode not in ("abstract", "vouched"):
+        return _claim_error(
+            request, "Unacquirable error", f"unknown mode {mode!r}", 400
+        )
+    if not note.strip():
+        return _claim_error(
+            request,
+            "Unacquirable error",
+            "a note is required — say why the source can't be obtained",
+            400,
+        )
+    override = {
+        "mode": mode,
+        "note": note.strip(),
+        "by": get_web_config(request).source,
+        "at": datetime.now(UTC).isoformat(),
+    }
+    store.update_ref(hub_ref_id, meta_patch={"unacquirable_override": override})
+    return RedirectResponse(url=redirect, status_code=303)

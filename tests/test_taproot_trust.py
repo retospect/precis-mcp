@@ -316,16 +316,17 @@ def test_finding_override_mode_abstract_folds_to_abstract(store: Any) -> None:
     assert result.note == "abstract states the result outright"
 
 
-def test_paper_level_override_reads_through_frontier(store: Any) -> None:
-    """The author marks the SOURCE PAPER unobtainable (from its Meta tab);
-    a lifecycle finding whose chain frontier is that paper reads through and
-    renders ✍ — without the finding itself being edited."""
+def test_paper_level_override_never_softens_only_enriches_note(store: Any) -> None:
+    """The author marks the SOURCE PAPER unacquirable (from its Meta tab) —
+    a pure acquirability FACT, ``{note, by, at}``, no ``mode``. A lifecycle
+    finding whose chain frontier is that paper stays ⚠ unverified (the
+    paper being unobtainable is not a claim-backing assertion); only its
+    note is enriched with why."""
     paper_id = _paper(store, cite_key="unob01a", title="Kroto 1985")
     store.update_ref(
         paper_id,
         meta_patch={
             "unacquirable_override": {
-                "mode": "vouched",
                 "by": "web:owner",
                 "at": "2026-08-04T00:00:00+00:00",
                 "note": "paywalled; UoL + UCSC exhausted",
@@ -337,35 +338,19 @@ def test_paper_level_override_reads_through_frontier(store: Any) -> None:
 
     result = claim_trust(store, ref_id)
 
-    assert result.label == "vouched"
-    assert result.overridden is True
-    assert result.note == "paywalled; UoL + UCSC exhausted"
+    assert result.label == "unverified"
+    assert result.overridden is False
+    assert "paywalled; UoL + UCSC exhausted" in (result.note or "")
 
 
-def test_paper_level_override_abstract_mode_reads_through(store: Any) -> None:
-    paper_id = _paper(store, cite_key="unob02a")
-    store.update_ref(
-        paper_id,
-        meta_patch={
-            "unacquirable_override": {
-                "mode": "abstract",
-                "note": "abstract backs it",
-            }
-        },
-    )
-    ref_id = _finding(store)
-    store.update_ref(ref_id, meta_patch={"chain": [{"ref_id": paper_id, "ord": 0}]})
-
-    assert claim_trust(store, ref_id).label == "abstract"
-
-
-def test_finding_override_wins_over_paper_frontier(store: Any) -> None:
-    """A finding-level override short-circuits before the paper read-through
-    — the finding's own declaration is the more specific signal."""
+def test_finding_override_softens_regardless_of_paper_frontier(store: Any) -> None:
+    """A finding-level (claim-level) override is the only softener — it
+    applies whether or not the blocking paper also carries its own
+    (never-softening) declaration."""
     paper_id = _paper(store, cite_key="unob03a")
     store.update_ref(
         paper_id,
-        meta_patch={"unacquirable_override": {"mode": "vouched", "note": "paper note"}},
+        meta_patch={"unacquirable_override": {"note": "paper note"}},
     )
     ref_id = _finding(store)
     store.update_ref(
@@ -379,12 +364,13 @@ def test_finding_override_wins_over_paper_frontier(store: Any) -> None:
     result = claim_trust(store, ref_id)
 
     assert result.label == "abstract"
+    assert result.overridden is True
     assert result.note == "finding note"
 
 
 def test_paper_frontier_without_override_stays_unverified(store: Any) -> None:
-    """A frontier paper with no declaration doesn't fold — the read-through
-    is a no-op, the claim stays ⚠."""
+    """A frontier paper with no declaration leaves the note untouched — the
+    claim stays ⚠."""
     paper_id = _paper(store, cite_key="unob04a")
     ref_id = _finding(store)
     store.update_ref(ref_id, meta_patch={"chain": [{"ref_id": paper_id, "ord": 0}]})
@@ -393,6 +379,7 @@ def test_paper_frontier_without_override_stays_unverified(store: Any) -> None:
 
     assert result.label == "unverified"
     assert result.overridden is False
+    assert result.note == "source pending"
 
 
 def test_override_does_not_convert_unsupported(store: Any) -> None:
@@ -427,27 +414,22 @@ def test_override_absent_leaves_unverified(store: Any) -> None:
     assert result.overridden is False
 
 
-# ── hub supporter override — a supporter paper's own Meta-tab unacquirable
-#    declaration softens a clean hub resting on it (the hub twin of the
-#    lifecycle frontier read-through). `_paper` creates no inter-paper cites,
-#    so every attached supporter is a corroborator → one grounding group. ──
+# ── hub harden — every print-visible grounding paper declared unacquirable
+#    (a FACT, no mode) downgrades a clean hub to unverified, never straight
+#    to Ⓐ/✍ (that would fabricate a claim-backing assertion nobody made).
+#    `_paper` creates no inter-paper cites, so every attached supporter is a
+#    corroborator → one grounding group. ──────────────────────────────────
 
 
-def _unacq(*, mode: str | None = None, note: str = "paywalled") -> dict[str, Any]:
-    ov: dict[str, Any] = {
-        "by": "web:owner",
-        "at": "2026-08-04T00:00:00+00:00",
-        "note": note,
-    }
-    if mode is not None:
-        ov["mode"] = mode
-    return ov
+def _unacq(*, note: str = "paywalled") -> dict[str, Any]:
+    return {"by": "web:owner", "at": "2026-08-04T00:00:00+00:00", "note": note}
 
 
-def test_hub_sole_supporter_unacquirable_folds_clean_to_vouched(store: Any) -> None:
-    """A clean hub whose only print-visible supporter is declared unacquirable
-    (legacy, no mode) reads ✍ vouched, not clean — the printed citation rests
-    on a source no one read in full."""
+def test_hub_sole_supporter_unacquirable_hardens_to_unverified(store: Any) -> None:
+    """A clean hub whose only print-visible supporter declared itself
+    unacquirable (a fact about the paper) hardens to ⚠ unverified, NOT
+    Ⓐ/✍ — no one asserted this claim is backed, only that the source can't
+    be obtained."""
     hub = mint_hub(store, _CLAIM)
     origin = _paper(store, cite_key="ftco01a")
     attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
@@ -458,32 +440,15 @@ def test_hub_sole_supporter_unacquirable_folds_clean_to_vouched(store: Any) -> N
 
     result = claim_trust(store, hub)
 
-    assert result.label == "vouched"
-    assert result.overridden is True
-    assert result.note == "print-only monograph"
+    assert result.label == "unverified"
+    assert result.overridden is False
+    assert result.note == "grounded only on sources declared unacquirable"
     assert result.status == "hub"
 
 
-def test_hub_supporter_unacquirable_abstract_mode_folds_to_abstract(store: Any) -> None:
-    hub = mint_hub(store, _CLAIM)
-    origin = _paper(store, cite_key="ftco02a")
-    attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
-    store.update_ref(
-        origin,
-        meta_patch={
-            "unacquirable_override": _unacq(mode="abstract", note="abstract backs it")
-        },
-    )
-
-    result = claim_trust(store, hub)
-
-    assert result.label == "abstract"
-    assert result.overridden is True
-
-
 def test_hub_stays_clean_when_one_supporter_is_acquirable(store: Any) -> None:
-    """Only when EVERY grounding supporter is unacquirable does the hub soften.
-    A readable supporter keeps a real read-grounding → clean."""
+    """Only when EVERY grounding supporter is unacquirable does the hub
+    harden. A readable supporter keeps a real read-grounding → clean."""
     hub = mint_hub(store, _CLAIM)
     unacq = _paper(store, cite_key="una01a")
     readable = _paper(store, cite_key="rd01a")
@@ -497,28 +462,44 @@ def test_hub_stays_clean_when_one_supporter_is_acquirable(store: Any) -> None:
     assert result.overridden is False
 
 
-def test_hub_all_supporters_unacquirable_abstract_wins_over_vouched(store: Any) -> None:
-    """Softest override wins: Ⓐ (abstract backs it) is better grounding than a
-    bare ✍ vouch, so one abstract-mode supporter makes the whole claim Ⓐ."""
+def test_hub_harden_composes_with_claim_level_override(store: Any) -> None:
+    """After the harden rule downgrades a clean hub to unverified, a
+    claim-level override made ON THE HUB ITSELF still softens it — the two
+    rules compose."""
     hub = mint_hub(store, _CLAIM)
     a = _paper(store, cite_key="aa01a")
     b = _paper(store, cite_key="bb01a")
     attach_evidence(store, hub_ref_id=hub, paper_ref_id=a, role="corroborates")
     attach_evidence(store, hub_ref_id=hub, paper_ref_id=b, role="corroborates")
     store.update_ref(a, meta_patch={"unacquirable_override": _unacq(note="vouch")})
+    store.update_ref(b, meta_patch={"unacquirable_override": _unacq(note="abs")})
+
+    hardened = claim_trust(store, hub)
+    assert hardened.label == "unverified"
+    assert hardened.overridden is False
+
     store.update_ref(
-        b, meta_patch={"unacquirable_override": _unacq(mode="abstract", note="abs")}
+        hub,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "abstract",
+                "note": "I read the abstract, it backs this",
+                "by": "web:owner",
+                "at": "2026-08-04T00:00:00+00:00",
+            }
+        },
     )
 
     result = claim_trust(store, hub)
 
     assert result.label == "abstract"
     assert result.overridden is True
+    assert result.note == "I read the abstract, it backs this"
 
 
-def test_hub_inflight_ignores_supporter_override_path(store: Any) -> None:
+def test_hub_inflight_ignores_grounding_unacquirable_path(store: Any) -> None:
     """An inflight hub (no print-visible supporter) stays unverified — there's
-    no grounding group to read a paper override through."""
+    no grounding group to check for a paper-level declaration."""
     hub = mint_hub(store, _CLAIM)
 
     result = claim_trust(store, hub)

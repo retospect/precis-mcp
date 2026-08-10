@@ -20,19 +20,47 @@
 </p>
 {% endif %}
 
-{# Reflection of a supporter paper's Meta-tab unacquirable declaration —
-   claim_trust softened this hub's badge from clean to Ⓐ/✍ because its
-   grounding source(s) can't be read in full. The declaration control lives on
-   the paper (declare once, ripples to every citing claim); this is the calm
-   read-side echo of it, not a second control. #}
+{# A claim-level declaration made HERE (Ⓐ/✍, `trust_overridden`) softens an
+   otherwise-unverified label; a plain 'unverified' with a note may instead be
+   the harden rule (a clean hub grounded only on sources declared unacquirable
+   on their OWN Meta tab — a fact, not an assertion, so composing a claim-level
+   declaration below still applies). #}
 {% if trust_overridden %}
 <p class="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
-  {% if status == 'abstract' %}Ⓐ Grounded on an unacquirable source — reading
-  <strong>abstract-only</strong>, full text not verified.{% else %}✍ Grounded on
-  an unacquirable source — <strong>author-vouched</strong>, source unobtainable.{% endif %}
+  {% if status == 'abstract' %}Ⓐ Abstract backs it — declared here, full text
+  not verified.{% else %}✍ Author-vouched — declared here, source
+  unobtainable.{% endif %}
   {% if trust_note %}<span class="text-amber-700">— {{ trust_note }}</span>{% endif %}
-  <span class="block text-[11px] text-amber-600 mt-0.5">Declared on the source paper's Meta tab; see the grounding supporter(s) below.</span>
+  <form method="post" action="/claim/{{ head }}/unacquirable" class="mt-1">
+    <input type="hidden" name="mode" value="clear" />
+    <button type="submit" class="text-amber-700 hover:text-rose-600 underline decoration-dotted"
+            title="clear this claim-level declaration">undo</button>
+  </form>
 </p>
+{% elif status == 'unverified' and trust_note %}
+<p class="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+  ⚠ {{ trust_note }}
+</p>
+{% endif %}
+
+{% if status == 'unverified' %}
+{# The claim-level softener control — an author assertion made HERE, about
+   THIS claim, never inherited from a source paper's Meta-tab acquirability
+   fact (declaring a paper unacquirable there never softens a claim). #}
+<form method="post" action="/claim/{{ head }}/unacquirable" class="mt-3 space-y-1 rounded-md border border-slate-200 bg-white px-3 py-2">
+  <p class="text-xs text-slate-400">Can't get a source but the claim is still good? Vouch for it here.</p>
+  <input name="note" required autocomplete="off"
+         placeholder="why — e.g. abstract confirms the number; source is print-only"
+         class="w-full rounded border border-slate-300 px-1.5 py-0.5 text-[11px]" />
+  <div class="flex flex-wrap gap-2">
+    <button type="submit" name="mode" value="abstract"
+            class="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800 hover:bg-amber-100"
+            title="the abstract on file backs THIS claim — full text not read">Ⓐ Abstract backs it</button>
+    <button type="submit" name="mode" value="vouched"
+            class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-slate-700 hover:bg-slate-100"
+            title="I assert this source makes this claim; source unobtainable">✍ I vouch for it</button>
+  </div>
+</form>
 {% endif %}
 
 {% macro evidence_row(row) %}
@@ -49,10 +77,10 @@
   {{ ph.paper_head(row.head, compact=true) }}
   {% if row.source_handle %}<span class="text-slate-400">· grounded at {% if row.source_is_chunk %}{{ ('[' ~ row.source_handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono">{{ row.source_handle }}</span>{% endif %}</span>{% endif %}
   {% if row.unacquirable %}
-  {# This specific supporter is the unobtainable source the claim-level banner
-     above refers to — Ⓐ abstract-only vs ✍ author-vouched (row.unacq_mode). #}
+  {# This paper declared itself unacquirable on its OWN Meta tab — a fact,
+     mode-less, that can contribute to the hub-harden rule above. #}
   <span class="text-[11px] rounded bg-amber-100 text-amber-700 px-1.5 py-0.5"
-        title="{% if row.unacq_note %}{{ row.unacq_note }}{% else %}source declared unacquirable on its Meta tab{% endif %}">{% if row.unacq_mode == 'abstract' %}Ⓐ abstract-only{% else %}✍ author-vouched{% endif %}</span>
+        title="{% if row.unacq_note %}{{ row.unacq_note }}{% else %}source declared unacquirable on its Meta tab{% endif %}">⊘ unacquirable</span>
   {% endif %}
   {% if row.integrity != 'clean' %}
   <span class="text-[11px] rounded bg-rose-100 text-rose-700 px-1.5 py-0.5">⚠ {{ row.integrity }}</span>
