@@ -20,7 +20,11 @@
   hosts:
     - gateway
     - scheduler
-    - data
+    # `data` (the DB node) is intentionally excluded: it hosts prod postgres on
+    # a memory-constrained box, and a co-located worker + bge-m3 embedder
+    # starved the DB into swap. The derived queues are pool-consumed
+    # cluster-wide, so scheduler + inference absorb its share with no
+    # throughput loss.
     - inference
   become: true
   roles:

@@ -32,7 +32,8 @@
   hosts:
     - gateway
     - scheduler
-    - data
+    # `data` (the DB node) excluded to match 20-precis-worker.yml — it runs no
+    # local worker, so it needs no local embedder. See that playbook's note.
     - inference
   become: true
   roles:
