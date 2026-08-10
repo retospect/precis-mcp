@@ -175,6 +175,7 @@
 - [`spark-agent-worker`](./spark-agent-worker.md) **idea** — The claude_inproc pin to melchior is obsolete for operations steered onto the
 - [`spark-dockerhub-egress`](./spark-dockerhub-egress.md) **idea** — TLS handshake to Docker Hub/ECR (AWS-hosted) stalls from spark; ghcr.io
 - [`spark-nvidia-runtime-ansible`](./spark-nvidia-runtime-ansible.md) **idea** — The live fix (`nvidia-ctk runtime configure --runtime=docker` + docker
+- [`spark-pair-larger-model`](./spark-pair-larger-model.md) **idea** — Measured 2026-08-10 with DeepSeek-V4-Flash UD-Q8_K_XL (151G, RPC-sharded)
 - [`store-module-splits`](./store-module-splits.md) **idea** — `src/precis/store/_blocks_ops.py` + `_draft_ops.py` (72 functions) by concern
 - [`structure-design-ops`](./structure-design-ops.md) **idea** — Widen the proposer's design knobs beyond surface substitution: `remove_atom`
 - [`structure-import-atomicity`](./structure-import-atomicity.md) **idea** — `structure_save` commits its own tx, then a second tx writes
