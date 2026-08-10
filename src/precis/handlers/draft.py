@@ -794,8 +794,8 @@ class DraftHandler(Handler):
         a ``s/find/replace/flags`` string — into ``(find, replace, flags)``.
         Pure parsing, no scope/chunk involved; shared by the whole-draft/
         subtree substitute (:meth:`_substitute`) and the table cell-level
-        find-replace (:meth:`_edit_table`, docs/backlog/draft-table-editing.md
-        item 1)."""
+        find-replace (:meth:`_edit_table`, the shipped draft-table-editing
+        proposal item 1, git history)."""
         if isinstance(sub, str):
             return draft_regex.parse_sed(sub)
         if isinstance(sub, dict):
@@ -1535,7 +1535,8 @@ class DraftHandler(Handler):
                 )
             # A ``sub=`` addressed straight at a chunk_kind='table' chunk (not
             # a slug/subtree scope) is the regex cell-level find-replace from
-            # docs/backlog/draft-table-editing.md item 1 — fall through to
+            # the shipped draft-table-editing proposal (item 1, git
+            # history) — fall through to
             # the normal handle/_base resolution below so the ``is_table``
             # branch routes it to ``_edit_table``. Otherwise (a slug, a
             # subtree, or a non-table chunk) keep the original multi-chunk
@@ -2191,7 +2192,7 @@ class DraftHandler(Handler):
         sub: dict[str, Any] | str | None = None,
         base_sha: str | None,
     ) -> Response:
-        """Edit a chunk_kind='table' chunk — precedence (docs/backlog/draft-table-editing.md item 1): (1) ``table=`` replaces the whole
+        """Edit a chunk_kind='table' chunk — precedence (the shipped draft-table-editing proposal item 1, git history): (1) ``table=`` replaces the whole
         canonical structure; (2) ``cell=`` (A1 string or ``{row,col}``, 1-based,
         row 1 = header) + ``text=`` sets ONE field via :func:`set_cell`; (3)
         ``find=`` (literal, paired with ``text=`` as the replacement) or

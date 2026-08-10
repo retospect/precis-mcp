@@ -1,4 +1,4 @@
-# De-SPOF the melchior agent worker
+# De-SPOF the melchior agent worker (incl. the silent-outage thread)
 
 plan_tick and the whole claude lane run on one melchior claude_inproc worker;
 a hang stalls the lane cluster-wide (observed: a 100-deep plan_tick queue
@@ -27,3 +27,11 @@ claim-side affinity fallback (`LLM_AFFINITY_GRACE_MIN`,
 `executors/_common.py`); the structural gap (nothing connects "who serves
 a model" to "who can run jobs that want it") is still open and belongs to
 whichever de-SPOF lever gets picked.
+
+Silent-outage thread (merged from agent-worker-silent-outage): melchior
+`com.precis.worker-agent` was SIGKILL'd and stayed dead ~4 days
+(2026-07-26→30), silently stalling all agent-profile work. Root-cause the -9
+(jetsam/OOM/crashloop — the mlock'd llama.cpp weight above is the prime
+suspect) so it can't recur silently; the deferred H1/H3/H4 reliability track
+(memory `worker-agent-silent-outage`) is the same thread. Related watchdog:
+verify the nursery dispatch-stall detector fires on expired-lease job refs.

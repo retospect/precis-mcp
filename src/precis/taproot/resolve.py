@@ -1,5 +1,5 @@
 """resolve_citation — taproot's one shared inline-marker resolution API
-(docs/backlog/citation-taproot-resolve.md).
+(the shipped citation-taproot-resolve proposal, git history).
 
 Given a body chunk and one of its inline citation markers (``[126]``),
 resolve it to the bibliographic identity it refers to: the parsed

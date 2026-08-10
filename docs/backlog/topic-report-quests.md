@@ -114,8 +114,8 @@ Four slices, each standalone-useful, in dependency order.
 
 - **No new kind.** Reports are quests + dossier drafts; the publish tail is
   tick output.
-- Migrating existing hand-authored `citation`s to hubs (that's the separate
-  `taproot-draft-pa-arm` / backfill lifecycle).
+- Migrating existing hand-authored `citation`s to hubs (that's the shipped
+  taproot `[pa]`-arm / backfill lifecycle, `taproot/backfill.py`).
 - The quiet daily-brief quest lane (`briefing_cast._lane_quest`, td161129).
 - Rung 8's contradiction-driven re-org / split-prune deep tier — the
   appendix *surfaces* contradictions; acting on them stays design-of-record.
@@ -195,3 +195,15 @@ Four slices, each standalone-useful, in dependency order.
   matches `hub.py`'s `_DEFAULT_ROLE`), or let the weave assert
   `contradicts` directly when a paper disputes a hub? Leaning: allow
   `contradicts` (it's in `HUB_ROLES` and is the appendix's alert signal).
+
+## Residuals folded in from topic-dossiers.md (merged here)
+
+- Quiet **daily-brief lane** ("N papers classified today" / "topic X
+  integrated Y papers", Reto-only) — out of slice D's scope; tracked as
+  td161129 (`briefing_cast._lane_quest`).
+- Weave v1 refinements: multi-place (top-1 only today); review-todos
+  parented on the quest lack a `level:strategic` ancestor. (The planned
+  claim-clustering dedup is superseded by canon-hub dedup, slice B.)
+- Whether `noxrr` adopts the synthesis tick body alongside its
+  propose-experiment body or stays active-search-driven (ADR 0060
+  §"Open questions").

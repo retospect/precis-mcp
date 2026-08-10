@@ -20,7 +20,8 @@ a blind periodic rescan (the incremental-trigger design,
    ``last_refined_at`` next, ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass`
    — mirrors ``workers/inbound_chase.py``'s claim-query shape.
 2. **Discover** — TWO sources merged into one per-hub candidate list
-   (docs/backlog/citation-taproot-resolve.md), citation candidates first
+   (the shipped citation-taproot-resolve proposal, git history), citation
+   candidates first
    so they win the shared per-source dedup slot:
    (a) a semantic (embedding-ANN) search over paper **and patent** body
        chunks for the claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``
@@ -151,7 +152,7 @@ _ROLE = "corroborates"
 _META_LAST_REFINED_AT = "last_refined_at"
 _META_LAST_REFINED_SHA = "last_refined_sha"
 _META_REJECTED = "taproot_rejected"
-#: Citation-following (docs/backlog/citation-taproot-resolve.md): a
+#: Citation-following (citation-taproot-resolve, shipped — git history): a
 #: ``supports=no`` verdict against a paper reached by *following a claim's
 #: own inline citation* is recorded here as ``{marker, cited_ref,
 #: from_chunk}`` — the queryable "we read the cited paper and the claimed
@@ -471,7 +472,7 @@ def _citation_candidates(
     claim_sentence: str,
     query_vec: list[float],
 ) -> tuple[list[_Candidate], list[dict[str, Any]]]:
-    """The **second** discover source (docs/backlog/citation-taproot-resolve.md): follow this hub's *own* evidence citations.
+    """The **second** discover source (citation-taproot-resolve, shipped — git history): follow this hub's *own* evidence citations.
 
     For each grounding chunk of the hub's existing evidence edges
     (``links.src_chunk_id``), read ``chunk_citations`` → ``resolve_citation``

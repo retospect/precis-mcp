@@ -252,8 +252,8 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
 catalyst = ["autocatpath>=0.11.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
-# chem's container). Kept out of `all` — see wrinkle 2 in
-# docs/proposals/bundle-pathway-in-tree-plugin.md (mutually-exclusive ML
+# chem's container). Kept out of `all` — see wrinkle 2 in the shipped
+# bundle-pathway-in-tree-plugin proposal (git history; mutually-exclusive ML
 # backends + this repo's own dormant `dft-ml` torch extra targeting the same
 # GPU node). `cuequivariance-torch` makes the engine's `mlip.cueq: auto`
 # actually engage (same math, faster CUDA kernels) — upstream keeps its

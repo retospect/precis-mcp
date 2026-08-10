@@ -710,7 +710,8 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_bib_parse_pass)
 
         # bib_mark — inline citation-marker extraction into chunk_citations
-        # (docs/backlog/citation-taproot-resolve.md). Default-ON like
+        # (the shipped citation-taproot-resolve proposal, git
+        # history). Default-ON like
         # bib_parse above and drains the same way (a BIBMARK:<version> chunk
         # tag done-marker converges, so normal cadence drains the backlog;
         # `--only bib_mark` is the fast-path burst). Pure regex over body

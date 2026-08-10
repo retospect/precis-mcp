@@ -580,7 +580,7 @@ def _render_one(
 
 def _citation_miss_rows(hub_ref: Any) -> list[dict[str, Any]]:
     """The hub's ``meta.citation_misses`` (hub_refine's citation-following
-    red flag, docs/backlog/citation-taproot-resolve.md) shaped for the
+    red flag; citation-taproot-resolve, shipped — git history) shaped for the
     claim page: "we read the paper this claim cites and the content isn't
     there". Each record is ``{marker, cited_ref, from_chunk}``; the template
     renders a red line per miss, linking the cited paper by ref_id."""

@@ -51,7 +51,8 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
 
 - **4c — `structure` convergence:** `cif → ASE → Scene.from_ase`
   (ADR 0043) for a 3D viewer / graph probes; a ColabFold MSA-mode
-  engine for real accuracy.
+  engine for real accuracy (needs-decision: containerize + pick the
+  MSA source; de-novo single-seq accuracy is low).
 - **5 — sequence design:** a `sequence` kind, engines decided —
   Boltz-2 + LigandMPNN, torch-cuda base proven on GB10 — build as
   adapters + `roles/*` mirrors of `roles/alphafold`, another

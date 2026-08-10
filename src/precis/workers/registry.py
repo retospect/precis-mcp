@@ -222,7 +222,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        # docs/backlog/citation-taproot-resolve.md: extracts inline
+        # citation-taproot-resolve (shipped, git history): extracts inline
         # citation markers ([126], [129,130], <sup>-wrapped) from paper
         # body chunks into `chunk_citations`, keyed to the parsed
         # `paper_bib_entries` marker (false-positive guarded — only real

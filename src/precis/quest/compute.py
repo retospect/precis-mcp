@@ -470,8 +470,9 @@ def _autocatpath_wall_seconds() -> int:
 #: dist metadata (:func:`_autocatpath_pinned_version`), because every engine
 #: adoption already bumps that pin in the same commit — one lever, no
 #: separate hand-bump to forget (the 0.4.0/0.6.0/0.7.0 adoptions each had to
-#: remember this constant; see
-#: docs/backlog/autocatpath-060-selectivity-objectives.md). The env var stays
+#: remember this constant; see the shipped
+#: autocatpath-060-selectivity-objectives proposal, git history). The env
+#: var stays
 #: as an ops escape hatch (force a re-key without a ship); the constant is a
 #: last-resort fallback for a venv with no precis dist metadata. Remaining
 #: caveat (unchanged from before): the token tracks the *pin*, not what

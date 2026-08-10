@@ -1028,8 +1028,8 @@ def edit(
     lang: str | None = None,
     # draft data/table chunk (chunk_kind='table'): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
-    # (regen=); the markdown text re-derives. Field-level edits (docs/
-    # proposals/draft-table-editing.md item 1) instead of resending the
+    # (regen=); the markdown text re-derives. Field-level edits (the shipped
+    # draft-table-editing proposal, git history) instead of resending the
     # whole grid: find=/text= (or sub=) find-replace across cells, or
     # cell='B2' (A1, row 1 = header) / cell={'row':,'col':} (1-based) +
     # text= sets one field — both keep backslash-safe LaTeX cell content

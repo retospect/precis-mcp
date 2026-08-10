@@ -7,7 +7,8 @@ Two citation forms are backfilled, from the two grammars in the draft prose:
 * **``[pc<id>]``** (paper-**chunk**) — the legacy grounded cite. Runs the full
   cascade and rewrites ``[pc]`` → ``[fi<hub>]`` (the original arm).
 * **``[pa<id>]``** (whole-**paper**) — the ``[pa]`` arm
-  (``docs/backlog/taproot-draft-pa-arm.md``). A ``[pa]`` cite is one of two
+  (the shipped taproot-draft-pa-arm proposal, git history). A ``[pa]`` cite
+  is one of two
   states, classified by the cited paper's body-block count:
   - **stub** (0 blocks, un-fetched) — **skipped** ("fetch first"): an evidence
     edge would be ungroundable, and citing an unread paper as evidence is

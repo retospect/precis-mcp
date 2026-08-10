@@ -47,10 +47,4 @@ the concrete enablement steps and gotchas).
   blocker cleared; CHASETRIG_VERSION 2 re-sweeps cold-index chunks.
 - Before enabling: re-run the full slice_refine_eval on the deployed v2
   rubric — hub 176363 drops its contradicting partials, 176272/176360 keep.
-- Attach true contradictors as `contradicts` edges (ADR 0073) instead of
-  dropping them — lights the living cite's contradictor list and feeds the
-  Phase-4 "your claim broke" alert.
-- Make the `taproot_rejected` memo write conflict-safe (defence-in-depth).
-- Grounding-depth policy (Reto, fi189527): abstract-only grounding is fine
-  for definition/existence claims; measurement/mechanism claims want a
-  body-passage corroborator — fold into the refine design.
+  (The remaining bullets are the Follow-ons above.)

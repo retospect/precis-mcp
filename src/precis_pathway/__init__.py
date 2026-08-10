@@ -1,5 +1,5 @@
-"""precis-pathway — the reaction-pathway tool-pack (bundle-pathway-in-tree
-proposal, docs/backlog/bundle-pathway-in-tree-plugin.md).
+"""precis-pathway — the reaction-pathway tool-pack (the shipped
+bundle-pathway-in-tree-plugin proposal, git history).
 
 The catalyst sibling of ``precis_bio``/``precis_chem``: a first-party
 **plugin** on the precis substrate. It snaps in through the three plugin

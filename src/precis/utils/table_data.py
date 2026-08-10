@@ -214,7 +214,8 @@ def set_cell(
     table: dict[str, Any], cell: str | dict[str, Any], value_str: str
 ) -> dict[str, Any]:
     """Return a NEW normalised table with one field set — the coordinate
-    edit path (docs/backlog/draft-table-editing.md item 1). Row 1 (the
+    edit path (the shipped draft-table-editing proposal item 1, git
+    history). Row 1 (the
     header) coerces the value to ``str`` (a header is always a name); a
     data-row cell is type-inferred via :func:`infer_scalar` so a numeric
     edit stays a JSON number."""
@@ -233,7 +234,8 @@ def find_replace_cells(
 ) -> tuple[dict[str, Any], int]:
     """Find-replace over every STRING cell (header + body) of ``table`` —
     the cell-level counterpart of the draft's whole-chunk find/``sub``
-    (docs/backlog/draft-table-editing.md item 1). Non-string cells
+    (the shipped draft-table-editing proposal item 1, git history).
+    Non-string cells
     (numbers, bools, ``None``) are never touched, and a string cell that
     survives the replace stays a string (no re-inference — an edited
     string cell doesn't silently become a number). ``regex=False`` is a
