@@ -53,6 +53,24 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
 
 ## Log
 
+- **2026-08-10** — full sweep (issue-closer agent) over 66 open (gr197709
+  skipped — closed separately by the caller; 2 new gripes, gr202117 +
+  gr202116, filed mid-pass, landing the end count at 67). **Closed 0.** Every
+  shipped-claiming or ambiguous gripe either already carried a prior pass's
+  accurate partial-fix/leave-open comment (gr196953, gr171931, gr175799,
+  gr171782, gr180155, gr171431, gr192827, gr187627, gr191125) or turned out
+  unshipped/deploy-pending on fresh verification: gr162141 (OpenAlex balance
+  — needs a product decision, not a diff), gr55762 (draft-reader storage cost
+  — fix options never implemented since base 162d56e9), gr192371 (autocatpath
+  GPU-slot crash — code fix 47671907 shipped but explicitly deploy-pending
+  per its own comment), gr199339 (worker-compute crash-loop — none of its 3
+  fix directions landed), gr191673 (ssh_node submit/compute_handle race —
+  confirmed still non-atomic in `_run_one`), gr194088 (baseline schema
+  missing `cfp` row — confirmed absent in the current snapshot), gr171512
+  (`/factory` POST routes — confirmed still no auth middleware), gr180189
+  (pa1056 bibtex — instance fixed but stated systemic sweep still open). The
+  2026-08-07 pass already cleared the closeable backlog; this pass found
+  nothing new to close. 67 remain open.
 - **2026-07-29** — cadence established (this runbook +
   `scripts/gripe-gc-review`). Baseline: ~64 open gripes in prod, ~11
   already shipped-marked but unclosed — first real pass deferred to the
