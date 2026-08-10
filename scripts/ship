@@ -156,6 +156,10 @@ INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 # colliding on the default project `dev` (gr176375). See
 # scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
+# Gate-slot admission (gr202193): cap concurrent gate containers fleet-wide
+# so sibling gates queue instead of OOM-killing each other against the
+# shared Docker VM ceiling. Acquired/released inside run_gate.
+source "${WORKTREE}/scripts/lib/gate-slot.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
@@ -242,17 +246,26 @@ testmon_from_container() {
 # worktree mounted at /app (the map is on the mount already). NB `env UID=…` — a
 # bare `UID=…` fails (UID readonly).
 run_gate() {
+    # Hold a fleet-wide gate slot for exactly the heavyweight part (gr202193);
+    # released on every path below so a red gate's `die` doesn't keep it.
+    gate_slot_acquire
+    local rc=0
     if [[ "$GATE_MODE" == warm ]]; then
-        sync_to_container || { echo "✖ could not sync source into precis-gate" >&2; return 90; }
+        if ! sync_to_container; then
+            gate_slot_release
+            echo "✖ could not sync source into precis-gate" >&2
+            return 90
+        fi
         [[ "$IMPACTED" == 1 ]] && testmon_into_container
-        local rc=0
         compose exec -T precis-gate bash -lc "$1" || rc=$?
         sync_from_container || true
         [[ "$IMPACTED" == 1 ]] && testmon_from_container
-        return "$rc"
+    else
+        compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
+            -v "${WORKTREE}":/app precis-dev bash -lc "$1" || rc=$?
     fi
-    compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
-        -v "${WORKTREE}":/app precis-dev bash -lc "$1"
+    gate_slot_release
+    return "$rc"
 }
 
 # ── 3. acquire the ship lock (serialise ships across sibling worktrees) ──
@@ -271,7 +284,10 @@ run_gate() {
 #                   host where our pid can't be checked at all).
 # Released on exit via the trap below.
 LOCKDIR="$(git rev-parse --git-common-dir)/precis-ship.lock.d"
-_release_ship_lock() { rm -rf "$LOCKDIR" 2>/dev/null || true; }
+# Safety net: also drop any gate slot still held (gr202193) — run_gate
+# releases on its own paths, but an unexpected exit mid-gate must not
+# leave the slot to age out on siblings.
+_release_ship_lock() { gate_slot_release; rm -rf "$LOCKDIR" 2>/dev/null || true; }
 trap _release_ship_lock EXIT
 _waited=0
 while ! mkdir "$LOCKDIR" 2>/dev/null; do

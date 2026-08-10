@@ -54,6 +54,11 @@ INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 # (gr176375). See scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+# Gate-slot admission (gr202193): the test container runs against one shared
+# Docker VM ceiling with every sibling worktree's — cap concurrency so runs
+# queue briefly instead of OOM-killing each other at random (exit 137).
+source "${WORKTREE}/scripts/lib/gate-slot.sh"
+trap gate_slot_release EXIT
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
 # Co-located RAM test DB (the same service scripts/ship's gate uses). If it
@@ -83,6 +88,10 @@ if [[ "$IMPACTED" == "1" ]]; then
     TESTMON_ENV=(-e "TESTMON_DATAFILE=/app/.testmondata")
     NPROC=(-n0)
 fi
+
+# Take a fleet-wide gate slot just before the heavyweight container run (the
+# tiny tmpfs test-db above doesn't need one).
+gate_slot_acquire
 
 # --no-sync: the image already bakes the venv and installs /app editable, so
 # the bind-mounted source is live without a per-run reinstall (that reinstall

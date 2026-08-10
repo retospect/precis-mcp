@@ -206,40 +206,56 @@ def _process_one(store: Store, ref_id: int, spec: dict[str, Any]) -> str:
     # via ``**_kw``.
     verdict = evaluator(store, spec, ref_id=ref_id)
     if verdict is True:
-        _flip_status(store, ref_id, to="done", event="auto-resolved")
+        # Success clears stale bubbles (parked-leaf-recovery, docs/
+        # backlog/parked-leaf-recovery.md): a parent can carry
+        # ``child-failed:<job_id>`` tags from EARLIER failed siblings
+        # even though the child that just resolved this leaf
+        # succeeded — without this the row survives done-but-parked-
+        # looking. Only this evaluator's own success path clears them;
+        # a leaf resolved some other way (e.g. ``tag_present``) leaves
+        # the bubble alone, since that resolution says nothing about
+        # whether the earlier failure was ever actually addressed.
+        removed = _flip_status(
+            store,
+            ref_id,
+            to="done",
+            event="auto-resolved",
+            clear_child_failed=(type_name == "child_job_succeeded"),
+        )
         log.info("auto_check: todo id=%d → STATUS:done (auto-resolved)", ref_id)
-        if type_name == "child_job_succeeded":
-            # Success clears stale bubbles (parked-leaf-recovery, docs/
-            # backlog/parked-leaf-recovery.md): a parent can carry
-            # ``child-failed:<job_id>`` tags from EARLIER failed siblings
-            # even though the child that just resolved this leaf
-            # succeeded — without this the row survives done-but-parked-
-            # looking. Only this evaluator's own success path clears them;
-            # a leaf resolved some other way (e.g. ``tag_present``) leaves
-            # the bubble alone, since that resolution says nothing about
-            # whether the earlier failure was ever actually addressed.
-            from precis.handlers._job_bubble import remove_child_failed_tags
-
-            removed = remove_child_failed_tags(store, ref_id)
-            if removed:
-                log.info(
-                    "auto_check: todo id=%d cleared %d stale child-failed "
-                    "tag(s) on resolve",
-                    ref_id,
-                    removed,
-                )
+        if removed:
+            log.info(
+                "auto_check: todo id=%d cleared %d stale child-failed "
+                "tag(s) on resolve",
+                ref_id,
+                removed,
+            )
         return "done"
     return "pending"
 
 
-def _flip_status(store: Store, ref_id: int, *, to: str, event: str) -> None:
+def _flip_status(
+    store: Store,
+    ref_id: int,
+    *,
+    to: str,
+    event: str,
+    clear_child_failed: bool = False,
+) -> int:
     """Atomically replace the STATUS tag and append a ``ref_events`` row.
 
     Uses the existing closed-prefix replace semantics
     (``replace_prefix=True``) so any prior STATUS value is removed
-    in the same tx.
+    in the same tx. With ``clear_child_failed`` the stale
+    ``child-failed:*`` bubble tags are deleted in that SAME tx — a
+    crash between the flip and a separate cleanup would otherwise
+    leave a done leaf permanently carrying the tags (gr202263).
+    Returns the number of bubble tags removed (0 unless asked).
     """
+    from precis.handlers._job_bubble import remove_child_failed_tags
+
     target = Tag.closed("STATUS", to)
+    removed = 0
     with store.tx() as conn:
         store.add_tag(
             ref_id,
@@ -254,6 +270,9 @@ def _flip_status(store: Store, ref_id: int, *, to: str, event: str) -> None:
             event=event,
             conn=conn,
         )
+        if clear_child_failed:
+            removed = remove_child_failed_tags(store, ref_id, conn=conn)
+    return removed
 
 
 __all__ = ["run_auto_check_pass"]

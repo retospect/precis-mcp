@@ -32,6 +32,14 @@ crash your gate into recovery mode (gr176375). The per-worktree project is torn
 down (`docker compose -p … down -v`) when the worktree is reaped
 (`scripts/hooks/session-end-reap.sh`, backstopped by `scripts/reap-worktrees`).
 
+All gate/test containers still share **one Docker VM memory ceiling**, so
+`scripts/test` and the `scripts/ship` gate take a fleet-wide **gate slot**
+(`scripts/lib/gate-slot.sh`, default 2 concurrent, `PRECIS_GATE_SLOTS`
+overrides) before the heavyweight container run — a queued run waits with a
+message instead of OOM-killing a sibling's at random (exit 137 / silent
+pytest death mid-run, gr202193). Abandoned slots are stolen when the holder
+pid dies or after 45 min.
+
 ```
 scripts/test                         # full suite (-n6)
 scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
