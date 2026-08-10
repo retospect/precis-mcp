@@ -98,7 +98,32 @@
     or 'Updated' in (asa_pip.stdout + asa_pip.stderr)
   notify: restart asa-bot
 
+# SOUL.md and the specialist subagent sync both source from the grimoire
+# checkout, which is resolved on the CONTROLLER (copy `src:` / lookup('file')
+# both read the controller filesystem, not the remote host). Not every
+# controller/checkout has a grimoire clone at asa_bot_grimoire_dir's default
+# ($HOME/work/grimoire) — stat it first so a missing dir skips just these two
+# tasks with a visible warning instead of failing the whole role.
+- name: Check for grimoire dir on controller
+  delegate_to: localhost
+  become: false
+  ansible.builtin.stat:
+    path: "{{ asa_bot_grimoire_dir }}"
+  register: asa_bot_grimoire_stat
+
+- name: Warn when grimoire dir is missing on controller
+  when: not asa_bot_grimoire_stat.stat.exists
+  delegate_to: localhost
+  become: false
+  ansible.builtin.debug:
+    msg: >-
+      asa_bot_grimoire_dir ({{ asa_bot_grimoire_dir }}) not found on the
+      controller — skipping 'Deploy SOUL.md' and 'Sync specialist subagent
+      definitions'. Set asa_bot_grimoire_dir to the grimoire checkout path
+      if this host is expected to ship SOUL.md / specialist agents.
+
 - name: Deploy SOUL.md
+  when: asa_bot_grimoire_stat.stat.exists
   ansible.builtin.copy:
     src: "{{ asa_bot_grimoire_dir }}/agents/asa.md"
     dest: /Users/hermes/.asa/SOUL.md
@@ -159,27 +184,33 @@
   notify: restart asa-bot
 
 - name: Sync specialist subagent definitions
-  # Drops every grimoire/agents/*.md (except asa.md, which is the
-  # main SOUL, and mcp-critic.md which is a reviewer tool not a
-  # runtime profile) into ~/.claude/agents/ with a YAML
-  # frontmatter header prepended so Claude Code's Agent tool
-  # registers it.
-  ansible.builtin.copy:
-    content: |
-      ---
-      name: {{ item | basename | regex_replace('\.md$', '') }}
-      description: Specialist agent for {{ item | basename | regex_replace('\.md$', '') }} tasks (synced from grimoire/agents/).
-      ---
+  # Block-level `when` (not a per-item one) so a missing grimoire dir skips
+  # the whole block BEFORE the with_fileglob lookup runs at all — a per-item
+  # `when` still evaluates the loop's fileglob first.
+  when: asa_bot_grimoire_stat.stat.exists
+  block:
+    - name: Copy specialist subagent definition
+      # Drops every grimoire/agents/*.md (except asa.md, which is the
+      # main SOUL, and mcp-critic.md which is a reviewer tool not a
+      # runtime profile) into ~/.claude/agents/ with a YAML
+      # frontmatter header prepended so Claude Code's Agent tool
+      # registers it.
+      ansible.builtin.copy:
+        content: |
+          ---
+          name: {{ item | basename | regex_replace('\.md$', '') }}
+          description: Specialist agent for {{ item | basename | regex_replace('\.md$', '') }} tasks (synced from grimoire/agents/).
+          ---
 
-      {{ lookup('file', item) }}
-    dest: "/Users/hermes/.claude/agents/{{ item | basename }}"
-    owner: hermes
-    group: staff
-    mode: "0600"
-  with_fileglob:
-    - "{{ asa_bot_grimoire_dir }}/agents/*.md"
-  when: (item | basename) not in ['asa.md', 'mcp-critic.md']
-  become: true
+          {{ lookup('file', item) }}
+        dest: "/Users/hermes/.claude/agents/{{ item | basename }}"
+        owner: hermes
+        group: staff
+        mode: "0600"
+      with_fileglob:
+        - "{{ asa_bot_grimoire_dir }}/agents/*.md"
+      when: (item | basename) not in ['asa.md', 'mcp-critic.md']
+      become: true
 
 - name: Deploy LaunchDaemon
   when: os_family == "darwin"
