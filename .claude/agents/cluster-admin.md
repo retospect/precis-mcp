@@ -1,16 +1,6 @@
 ---
 name: cluster-admin
-description: >-
-  Sonnet-tier runbook-bounded cluster operator — the WRITE complement to
-  read-only cluster-ops. Use it to execute a documented, reversible ops procedure
-  the Opus loop has decided on: restart a wedged/jetsam-culled worker, run the
-  idempotent scripts/deploy, apply a known recovery from docs/runbooks or memory
-  (e.g. rm a stale postmaster.pid, launchctl bootstrap a booted-out daemon). It
-  SSHes, runs the runbook step, checks output, continues — but HARD-STOPS and
-  reports before anything novel, destructive, or a prod-DB data write (its one
-  permitted write is filing its own gripe, per the shared convention). For
-  read-only probing use cluster-ops instead; for genuinely novel diagnosis or
-  risky mutation, keep it on the Opus main loop.
+description: "Sonnet WRITE cluster op — runs a decided, reversible runbook; hard-stops on novel/destructive/prod-DB writes. Read-only sibling: cluster-ops."
 tools: Bash, Read, Grep, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

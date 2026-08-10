@@ -205,6 +205,50 @@ whole corpus without a manual backfill.
 Flat-inbox files (no kind dir) still ingest as paper, preserving
 back-compat with any files staged before the routing landed.
 
+## Agent sizing
+
+The main loop is Opus, so every task it does *itself* bills Opus — **delegating
+down is the primary cost lever, not an afterthought.** Pick the cheapest tier
+that fits; each agent def in `.claude/agents/` carries its own remit and
+guardrails (the Agent tool surfaces those descriptions), so this is just the map.
+
+- **Script (no model)** — a *deterministic* chore: hygiene scans (`memory-lint`,
+  `migration-check`, `backlog-lint`) and the cadence nudges that
+  only decide *when* a judgment pass is due (`token-review`, the 7-day
+  session-tightness clock).
+- **Haiku** — mechanical, needs a model: `navigator`, `extract`, `test-runner`,
+  `tidy`, `cluster-ops`, `cmd-runner` (generic one-off deterministic-command
+  runner — the long-tail sibling to `test-runner`/`tidy`), `scaffold` (mints a
+  new numbered/templated migration, backlog item, or skill file from the
+  existing convention; never invents content), `gripe-filer` (files an
+  already-decided finding at a caller-supplied target — gripe vs
+  docs/backlog/ — with a dedup check; doesn't decide the target itself).
+- **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
+  `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
+  `cluster-admin`, `forensics`, `root-cause` (read-only code-level root-cause
+  investigator — reproduces + traces symptom→true defect + flags whether the
+  obvious fix masks a deeper one; reports a dossier, doesn't fix),
+  `housekeeper` (worktree/branch GC via `/workspace-cleanup`), `ready` (the
+  backlog-readiness judge — vets a `docs/backlog/*.md` spec, not
+  yet wired into an automated gate), `issue-closer` (post-ship: closes
+  gripes/backlog items the shipped commit resolved — spawned from
+  `/land`/`/go`, background/non-blocking).
+- **Opus (main loop)** — the *what/why*: architecture; core API/schema/
+  abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
+  novel prod diagnosis; memory *reconsolidation*.
+
+Default: start cheap, hand a decided change to the sonnet tier, keep genuine
+design/domain judgment on Opus. An agent def with no `model:` line inherits the
+session model (= Opus), so a mechanical task runs expensive by accident; use the
+Agent tool's `model:` for one-off downgrades.
+
+For a build too large for one `coder` call to finish cleanly (many files, many
+test-fix cycles), `.claude/workflows/coder-chain.js` chains fresh, small
+`coder` rounds via compact handoffs instead of growing one huge transcript —
+invoke with `Workflow({name: 'coder-chain', args: {task, maxRounds}})`. Ask
+for it by name; only opt in when the task genuinely needs it (`Workflow` is
+billed multi-agent orchestration, gated on explicit opt-in).
+
 ## On-demand pointers
 
 - **Orientation** (shape / lifecycle / seams): `docs/codebase.md`

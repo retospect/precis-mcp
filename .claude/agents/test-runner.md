@@ -1,11 +1,6 @@
 ---
 name: test-runner
-description: >-
-  Cheap mechanical agent that runs the test suite and reports the result — use
-  it whenever you'd otherwise run `scripts/test` yourself, so the (often long)
-  output doesn't burn main context. Give it the pytest args (a path, `-k`
-  filter, or `--impacted`); it returns pass/fail, the failing test ids, and the
-  terse error for each. Does NOT fix code — it runs and reports.
+description: "Cheap agent — runs scripts/test with given args, reports pass/fail + failing ids. Pytest-specific sibling of cmd-runner/tidy."
 tools: Bash, Read, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

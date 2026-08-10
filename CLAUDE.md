@@ -44,181 +44,118 @@ worktree that's merged + clean + has no live session (`inflight`'s
 `safe_remove` bucket) is auto-reaped — on this session's `SessionEnd` if it's
 the one closing, and as a `SessionStart` backstop otherwise
 (`scripts/reap-worktrees`, `scripts/hooks/session-end-reap.sh`;
-`PRECIS_NO_AUTOREAP=1` opts out). The primary checkout is likewise
-auto-pinned back to `main` when it's drifted onto a merged+clean branch
+`PRECIS_NO_AUTOREAP=1` opts out). The primary checkout likewise auto-pins
+back to `main` when drifted onto a merged+clean branch
 (`scripts/hooks/heal-primary-branch.sh`, `PRECIS_NO_HEAL_PRIMARY=1` opts
-out), and a `PreToolUse` guard blocks checking out a branch there in the
-first place (`ALLOW_CHECKOUT_IN_PRIMARY=1` opts out).
+out); a `PreToolUse` guard blocks checking out a branch there first
+(`ALLOW_CHECKOUT_IN_PRIMARY=1` opts out).
 
 ## Subsystem map (detail on demand)
 
 Start at `docs/codebase.md`'s package map, then the owning package's
-`__init__.py` docstring; `precis-*-help` skills are the per-kind reference.
+`__init__.py` docstring.
 
-- **Todo tree (five slices)** — `kind='todo'` hierarchy: strategic/tactical
-  gradient, `auto_check` leaves, `level:recurring` watches, jobs (intent vs
-  compute lane), planner coroutines, views, projects.
-  → skills `precis-tasks-help`, `precis-dispatch-help`.
-- **Review tiers** — `nursery` (SQL, per-minute, only `critical` alerts:
-  worker-restart / dead-worker / dispatch-stall), `structural` +
-  `deep_review` (opus). → skill `precis-nursery-help`.
-- **Workers** — two profiles (`system` every node, `agent` on melchior),
-  four LaunchDaemons; passes (`cast_audio`, `card_forge`, `sweeper`,
-  `corpus_reconcile`, `paper_reconcile`, `fetch`/`chase` backoff);
-  `claude_agent` dispatch + switchable LLM router.
+- **Todo tree** — `kind='todo'` task graph. →
+  `precis-tasks-help`, `precis-dispatch-help`.
+- **Review tiers** — `nursery` (SQL/min) / `structural` / `deep_review`
+  (opus). → `precis-nursery-help`.
+- **Workers** — derived-queue passes, `system`/`agent` profiles. → the
+  `precis.workers` package docstring.
 - **Discovery layer (F20)** — per-chunk KeyBERT (`chunks.keywords`),
   `view='toc'`. → `docs/conventions/discovery-layer-policy.md`.
-- **Chunk-tag classifier** — cascade regex → `role3` local → optional
-  escalate; `ROLE3:own` = citation-grounding filter, default-OFF.
-  → `src/precis/workers/classify.py`.
-- **Live affordances** — `folder`, `plan`, `figure`, `mermaid`, `gripe`,
-  `anki`, `concept`, `quest`, `llm`, `alert`, `agentlog`, `job`/sandbox,
-  `structure`, `citation`, `cfp`, `email` (live IMAP browse, read-only;
-  `docs/backlog/email-kind.md`), term registry, `cad`/`pcb`, broad+deep
-  search, `precis web`, SSRF guard, ingest hygiene. → matching `precis-*-help`.
-- **Skill index** — start at `precis-toolpath-help` (call sequences) +
-  `precis-overview` (master kinds table).
+- **Chunk-tag classifier** — cascade regex → `role3`, default-OFF. →
+  `src/precis/workers/classify.py`.
+- **Live affordances** (folder, plan, figure, mermaid, gripe, concept,
+  quest, structure, citation, email, term registry, cad/pcb, search, SSRF
+  guard, ingest hygiene, …) → matching `precis-*-help`; full table:
+  `precis-overview`.
+- **Skill index** → `precis-toolpath-help` (call sequences).
 
 ## Where to find context
 
-| Task                             | Read |
-|----------------------------------|------|
-| **Orientation — read first**     | **`docs/codebase.md`** (shape, lifecycle, seams) |
+| Task | Read |
+|---|---|
+| **Orientation — read first** | **`docs/codebase.md`** (shape, lifecycle, seams) |
 | Subsystem detail (present-state + why) | the owning package's `__init__.py` docstring (map: `docs/codebase.md`) |
-| Coined / overloaded terms, project & quest aliases → files| `docs/glossary.md` |
-| To-do list / what's planned next | `docs/backlog/` (one file per item; generated README index) — open work only, delete-on-ship per `docs/README.md`; reusable forensics from an incident go to `docs/runbooks/`, never a done-log |
-| Conventions / workflow / DoD     | `AGENTS.md` |
-| Mission / pitch narrative        | `docs/mission.md` (positioning, not architecture) |
-| Master kinds table + recipes     | skills `precis-overview`, `precis-toolpath-help` |
-| Dated history                    | `git log` (no CHANGELOG) |
+| Coined / overloaded terms, project & quest aliases → files | `docs/glossary.md` |
+| To-do list / what's planned next | `docs/backlog/` (one file/item, generated README index) — open work only, delete-on-ship (`docs/README.md`); incident forensics → `docs/runbooks/`, never a done-log |
+| Conventions / workflow / DoD | `AGENTS.md` |
+| Mission / pitch narrative | `docs/mission.md` (positioning, not architecture) |
+| Master kinds table + recipes | skills `precis-overview`, `precis-toolpath-help` |
+| Dated history | `git log` (no CHANGELOG) |
 | Replicate this repo's setup elsewhere | `docs/how-to-setup-like-this.md` (portable scaffolding brief) |
-| Full schema (prose / visual)     | `docs/reference/schema.md` (generated); `docs/reference/schema-v2.svg` |
-| Worker queue pattern             | the `precis.workers` package docstring |
-| Ingest pipeline                  | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
-| Worker code                      | `src/precis/workers/` |
-| Web UI                           | `src/precis_web/` |
-| Discord bridge (asa)             | `src/asa_bot/` — `[asa]` extra; stdio to `precis serve` |
-| SSRF guard                       | `src/precis/utils/safe_fetch.py` |
+| Full schema (prose / visual) | `docs/reference/schema.md` (generated); `docs/reference/schema-v2.svg` |
+| Worker queue pattern | the `precis.workers` package docstring |
+| Ingest pipeline | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
+| Worker code | `src/precis/workers/` |
+| Web UI | `src/precis_web/` |
+| Discord bridge (asa) | `src/asa_bot/` — `[asa]` extra; stdio to `precis serve` |
+| SSRF guard | `src/precis/utils/safe_fetch.py` |
 
 ## Conventions that bite
 
-- **Forward-only migrations.** Never edit a sealed `*.sql` under
-  `src/precis/migrations/` — ship a new forward migration to fix bugs.
-  A fresh DB loads the `migrations/baseline/schema.sql` snapshot then
-  applies only the tail. Regenerate the snapshot with `scripts/bump` /
-  `precis db dump-schema` — never hand-edit it (release-time only; it's
-  checked against the files).
+- **Forward-only migrations.** Never edit a sealed `*.sql` in
+  `src/precis/migrations/` — ship a new one. Fresh DBs load
+  `migrations/baseline/schema.sql` + tail; regen via `scripts/bump`/
+  `precis db dump-schema` (release-time, checked against files) — never
+  hand-edit.
 - **`uv` for everything.** Bare `pip`/`pytest`/`mypy` aren't reproducible.
-- **Run tests via `scripts/test`, never a bare pytest.** →
-  `docs/conventions/testing.md` for the why + `--impacted` testmon details.
-
-      scripts/test                         # full suite (-n6)
-      scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
-      scripts/test --impacted              # ONLY tests your change affects (testmon)
-
-- **Never `cd` into your own worktree** — run commands bare, use an absolute
-  path to reach elsewhere. → `docs/conventions/container-ops.md`.
-- **Container-first ops.** `scripts/dev` → dev shell; `scripts/db` → psql
-  (LOCAL `precis` / `precis_test` only). → `docs/conventions/container-ops.md`.
-- **Peeking at prod.** `scripts/prod-psql "SELECT …"` — hops through a
-  cluster node (caspar/melchior) to the live `precis_prod` behind pgbouncer.
-  `agent_rw` is WRITE-capable (prefer read-only); local `scripts/db` doesn't
-  reach prod. `PRECIS_PROD_SSH_HOST=melchior` / `PRECIS_PROD_PSQL_OPTS="-At"`
-  override host / add psql flags.
-- **The session `precis` MCP writes to PROD — dogfood READ-ONLY.** The `precis`
-  MCP loaded in your dev session is the local 5th worker: its DB-backed kinds
-  (todo, gripe, quest, memory, paper, …) target `precis_prod` on caspar as
-  `agent_rw` (**write-capable** — verify with `get(kind='skill',
-  id='precis-status')`). The "Sandbox PRECIS_ROOT" banner scopes only the
-  file-kinds (markdown/plaintext/tex). So dogfood test-and-fix via the session
-  MCP with **read verbs only** (`search`/`get`/`more`); `put`/`edit`/`delete`/
-  `tag` mutate production. For write-path testing, drive a **dev-DB** precis
-  (`scripts/dev`, local test DB) — never the session MCP.
-- **`rtk` compresses noisy Bash output** transparently via a global
-  PreToolUse hook — so output you see is a filtered digest, not raw.
-  → `docs/conventions/rtk.md` (raw passthrough, CI/cluster prefixing,
-  filters, uninstall).
-- **Semantic code search — first move to orient** (repo-dev, not the product).
-  For *where-is / how-does / what-calls* questions, `search_code` (or the
-  `navigator` subagent) **before** grep/Read — one query → ranked `file:line`
-  across code+docs+tests. `claude-context` MCP over Milvus, up'd by a
-  SessionStart hook. Pass the **MAIN** repo path, not your worktree's (else no
-  hits). Index is **lazy** — code you just wrote can lag; Grep is truth there.
-- **`coderef` for exact who-calls / what-depends-on** (structural complement to
-  the fuzzy index above). Over Python, `scripts/coderef callers|deps
-  <file.py::Sym>` before grep — exact, no same-named false positives, returns the
-  *connected* code (also `imports|importers` via grimp; `-h` for verbs). A
-  PreToolUse hook nudges on bare-symbol greps. Grep stays right for text /
-  non-Python / a symbol you can't yet name; blind to dynamic dispatch.
-- **Skills are runtime docs.** Editing `src/precis/data/skills/` is the
-  agent-facing channel — the MCP server serves them via `get(kind='skill')`.
-- **Bug intake → triage via the `bug` skill** before coding a fix — masked
-  root cause (obvious fix would hide a deeper defect)? Dispatch `root-cause`
-  first, patch after.
-- **Embeddings populated by the worker, not ingest**: ingest
-  stores chunks `embedding IS NULL`; `embed:bge-m3` fills them. Don't call
-  `fill_embeddings` from the ingest path.
-- **Don't mutate body chunks.** `chunks` is append-only for body rows
-  (`ord >= 0`); only `ord < 0` card variants may be DELETE/re-INSERTed by a
-  registered synthesis pass. To "update" text, DELETE + INSERT so the
-  embedding/summary cascade re-runs — in-place UPDATE leaves stale
-  `chunk_embeddings` / `chunk_summaries`.
-- **Outbound HTTP goes through `safe_fetch`.** Any code fetching an
-  agent-supplied URL (directly or post-redirect) must use `safe_get` /
-  `safe_stream` from `src/precis/utils/safe_fetch.py`. Raw
+- **Run tests via `scripts/test`, never bare pytest** — mounts your
+  worktree + test DB; `--impacted` narrows to testmon's affected set, other
+  args passthrough. → `docs/conventions/testing.md`.
+- **Container-first; never `cd` into your worktree.** `scripts/dev` → dev
+  shell; `scripts/db` → psql (LOCAL `precis`/`precis_test` only); run
+  commands bare, absolute paths elsewhere. →
+  `docs/conventions/container-ops.md`.
+- **Peeking at prod.** `scripts/prod-psql "SELECT …"` hops via
+  caspar/melchior to `precis_prod` behind pgbouncer; `agent_rw` is
+  WRITE-capable (prefer read-only) — `scripts/db` is local-only.
+  `PRECIS_PROD_SSH_HOST`/`PRECIS_PROD_PSQL_OPTS` override host/flags.
+- **Session `precis` MCP writes to PROD — READ-ONLY dogfood.** Local 5th
+  worker; DB-backed kinds (todo, gripe, quest, memory, paper, …) target
+  `precis_prod` as **write-capable** `agent_rw` (verify:
+  `get(kind='skill', id='precis-status')`); "Sandbox PRECIS_ROOT" only
+  scopes file-kinds. Read verbs only (`search`/`get`/`more`) —
+  `put`/`edit`/`delete`/`tag` mutate production. Write-path testing →
+  **dev-DB** precis (`scripts/dev`), never this MCP.
+- **`rtk` compresses noisy Bash output** via a global PreToolUse hook — what
+  you see is a filtered digest, not raw. → `docs/conventions/rtk.md`.
+- **Semantic code search first** (repo-dev, not product): where-is/how-
+  does/what-calls → `search_code`/`navigator` before grep/Read — ranked
+  `file:line` across code+docs+tests (`claude-context`/Milvus,
+  SessionStart-indexed). **MAIN** repo path only; index is **lazy** — Grep
+  is truth for new code.
+- **`coderef`: exact who-calls/what-depends-on**, grep's structural
+  complement. `scripts/coderef callers|deps <file.py::Sym>` before grep —
+  exact, no same-name false positives (`imports|importers` via grimp, `-h`
+  verbs). PreToolUse hook nudges bare-symbol greps; Grep still right for
+  text/non-Python/unnamed symbols — blind to dynamic dispatch.
+- **Skills are runtime docs** — `src/precis/data/skills/` is the
+  agent-facing channel, served via `get(kind='skill')`.
+- **Bug intake → triage via the `bug` skill** before fixing — masked root
+  cause (obvious fix hides a deeper defect)? Dispatch `root-cause` first.
+- **Embeddings come from the worker, not ingest**: ingest stores chunks
+  `embedding IS NULL`; `embed:bge-m3` fills them — don't call
+  `fill_embeddings` from ingest.
+- **Don't mutate body chunks.** `chunks` append-only for body rows
+  (`ord >= 0`); only `ord < 0` card variants DELETE/re-INSERT via a
+  registered synthesis pass. "Update" = DELETE + INSERT so the
+  embedding/summary cascade re-runs — in-place UPDATE strands
+  `chunk_embeddings`/`chunk_summaries`.
+- **Outbound HTTP → `safe_fetch`.** Agent-supplied-URL fetches (direct or
+  post-redirect) must use `safe_get`/`safe_stream`
+  (`src/precis/utils/safe_fetch.py`); raw
   `httpx…get(url, follow_redirects=True)` is an SSRF.
-- **Cite code by durable anchor, not line, in docs/memory** — a `file.py:308`
-  rots on the next edit. → `docs/conventions/code-anchors.md` (authoring,
-  resolving, drift-checking).
+- **Cite code by durable anchor, not line, in docs/memory** — `file.py:308`
+  rots on the next edit. → `docs/conventions/code-anchors.md`.
 - If another branch left trivial drift (needs `ruff`), just fix it.
-- **Commit messages: one-line subject only, no body.** `git log` (no
-  CHANGELOG) is already the record and package docstrings carry the "why" — a
-  multi-paragraph body or bullet list is pure token overhead to draft.
-  `/land`/`/go` already ask for a "concise one-line, conventional-commit-style
-  summary"; hold to the same bar committing outside that flow too — subject
-  line plus the required Co-Authored-By/session footer only, skip the
-  1-2-sentence "why" paragraph the default git-commit protocol suggests.
+- **Commit messages: one-line subject only, no body.** `git log` is the
+  record, docstrings carry the "why" — a multi-paragraph body is pure
+  overhead. Subject + the required Co-Authored-By/session footer only,
+  even outside `/land`/`/go` (which already ask for this).
 
 ## Agent sizing
 
-The main loop is Opus, so every task it does *itself* bills Opus — **delegating
-down is the primary cost lever, not an afterthought.** Pick the cheapest tier
-that fits; each agent def in `.claude/agents/` carries its own remit and
-guardrails (the Agent tool surfaces those descriptions), so this is just the map.
-
-- **Script (no model)** — a *deterministic* chore: hygiene scans (`memory-lint`,
-  `migration-check`, `backlog-lint`) and the cadence nudges that
-  only decide *when* a judgment pass is due (`token-review`, the 7-day
-  session-tightness clock).
-- **Haiku** — mechanical, needs a model: `navigator`, `extract`, `test-runner`,
-  `tidy`, `cluster-ops`, `cmd-runner` (generic one-off deterministic-command
-  runner — the long-tail sibling to `test-runner`/`tidy`), `scaffold` (mints a
-  new numbered/templated migration, backlog item, or skill file from the
-  existing convention; never invents content), `gripe-filer` (files an
-  already-decided finding at a caller-supplied target — gripe vs
-  docs/backlog/ — with a dedup check; doesn't decide the target itself).
-- **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
-  `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
-  `cluster-admin`, `forensics`, `root-cause` (read-only code-level root-cause
-  investigator — reproduces + traces symptom→true defect + flags whether the
-  obvious fix masks a deeper one; reports a dossier, doesn't fix),
-  `housekeeper` (worktree/branch GC via `/workspace-cleanup`), `ready` (the
-  backlog-readiness judge — vets a `docs/backlog/*.md` spec, not
-  yet wired into an automated gate), `issue-closer` (post-ship: closes
-  gripes/backlog items the shipped commit resolved — spawned from
-  `/land`/`/go`, background/non-blocking).
-- **Opus (main loop)** — the *what/why*: architecture; core API/schema/
-  abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
-  novel prod diagnosis; memory *reconsolidation*.
-
-Default: start cheap, hand a decided change to the sonnet tier, keep genuine
-design/domain judgment on Opus. An agent def with no `model:` line inherits the
-session model (= Opus), so a mechanical task runs expensive by accident; use the
-Agent tool's `model:` for one-off downgrades.
-
-For a build too large for one `coder` call to finish cleanly (many files, many
-test-fix cycles), `.claude/workflows/coder-chain.js` chains fresh, small
-`coder` rounds via compact handoffs instead of growing one huge transcript —
-invoke with `Workflow({name: 'coder-chain', args: {task, maxRounds}})`. Ask
-for it by name; only opt in when the task genuinely needs it (`Workflow` is
-billed multi-agent orchestration, gated on explicit opt-in).
+Main loop is Opus, so every self-done task bills Opus — delegating down is
+the primary cost lever, start cheap. → tier map: `AGENTS.md` §Agent sizing;
+each agent def in `.claude/agents/` carries its own remit.

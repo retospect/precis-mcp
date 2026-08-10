@@ -1,14 +1,6 @@
 ---
 name: cmd-runner
-description: >-
-  Cheap mechanical agent that runs one exact, caller-specified command and
-  reports its exit code plus the relevant tail of output — the generic
-  complement to `test-runner` (pytest-specific) and `tidy` (ruff-specific) for
-  one-off deterministic checks (mypy, `gh pr checks`, `docker ps`,
-  `launchctl list`, etc.) that don't warrant their own dedicated agent. It
-  does NOT fix anything, does NOT decide what the result means, does NOT
-  retry with different arguments on its own judgment — it runs exactly what
-  it's told and reports.
+description: "Cheap agent — runs one exact caller-given command, reports exit code + tail. Sibling of test-runner (pytest) and tidy (ruff)."
 tools: Bash, Read, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

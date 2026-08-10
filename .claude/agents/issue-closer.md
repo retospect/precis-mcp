@@ -1,14 +1,6 @@
 ---
 name: issue-closer
-description: >-
-  Sonnet-tier post-ship closer — reads the commit that /land or /go just
-  shipped and checks whether it resolves any open gripe or docs/backlog/
-  item, closing only the ones it can point to a specific fix for. Spawned
-  as a background agent from /land or /go so it doesn't block or clutter the
-  parent's context; the parent just relays its final one-line note when it
-  completes. It does NOT triage new issues, edit code, or touch anything it
-  isn't confident about — a false-positive close hides a real unresolved
-  problem, which is worse than leaving it open.
+description: "Sonnet post-ship closer, backgrounded from /land or /go — closes only items the shipped commit visibly fixes. Leaves uncertain ones open."
 tools: Bash, Read, Grep, Edit, mcp__precis__search, mcp__precis__get, mcp__precis__delete, mcp__precis__put
 model: sonnet
 ---

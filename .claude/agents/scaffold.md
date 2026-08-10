@@ -1,15 +1,6 @@
 ---
 name: scaffold
-description: >-
-  Cheap mechanical agent that creates a new file of one of this repo's three
-  templated kinds — a forward migration under `src/precis/migrations/`, a
-  backlog item under `docs/backlog/`, or a skill under
-  `src/precis/data/skills/` — from the existing convention. Use it whenever
-  the next step is "mint a new numbered/templated file", not "decide what it
-  says": the caller (Opus or a sonnet agent like `coder`/`documenter`) supplies
-  the title/slug/body content; scaffold supplies correct numbering, file
-  location, and boilerplate structure. It never invents content and never
-  edits a sealed migration.
+description: "Cheap agent — mints a new file for this repo's three templated kinds (migration/backlog/skill) from convention. Never invents content."
 tools: Read, Glob, Bash, Write, Edit, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

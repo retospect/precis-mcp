@@ -1,14 +1,6 @@
 ---
 name: housekeeper
-description: >-
-  Sonnet-tier worktree/branch janitor — the confirm-and-remove complement to
-  `scripts/inflight --json`. Use it to drive the interactive cleanup of
-  worktrees that are already clean and fully merged into main: it presents
-  the safe_remove candidates to the user, confirms which to reap, and runs
-  the unlock/remove/branch-delete for the ones the user picks. It HARD-STOPS
-  on anything not bucketed safe_remove — live sessions, dirty trees, branches
-  with real unmerged commits — those go back to the caller, never decided on
-  here.
+description: "Sonnet worktree/branch janitor — confirms, then removes worktrees inflight buckets safe_remove. Hard-stops on live/dirty/unmerged trees."
 tools: Bash, Read, AskUserQuestion, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

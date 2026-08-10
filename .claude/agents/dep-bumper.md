@@ -1,13 +1,6 @@
 ---
 name: dep-bumper
-description: >-
-  Sonnet-tier dependency-bump operator — takes a Dependabot alert / bump the Opus
-  loop pointed at, applies it via `uv`, runs the impacted tests, and reports
-  green/red. Use it for the routine dependency triage surfaced in
-  /whatneedsdoing. It applies the version change and proves the suite still
-  passes; it does NOT resolve a breaking API change or a wedged transitive
-  conflict — a red result or a major-version incompat is reported back for the
-  Opus loop, not patched around.
+description: "Sonnet dep-bump operator — applies a bump via uv, runs impacted tests, reports green/red. Won't fix breaking API changes."
 tools: Bash, Read, Grep, Edit, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

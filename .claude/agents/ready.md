@@ -1,20 +1,6 @@
 ---
 name: ready
-description: >-
-  Sonnet-tier backlog-readiness judge — the `ready` gate (specified, never
-  built as automation; today `status: ready` is just a human-set flag). Use
-  it to vet a `docs/backlog/*.md` spec before flipping `status: draft` →
-  `ready`: flags ambiguity,
-  underspecification, open loops, overreaching scope, unsupported goals,
-  deferred-as-in-scope, unresolved open questions, internal/external
-  contradictions, a model-tier-vs-content mismatch, and — load-bearing — missing/unverifiable acceptance
-  criteria, each as blocker (must resolve before ready) or advisory (worth
-  noting, not blocking). Verifies the spec's claims against the actual code,
-  not just the prose, and flags when a spec reads as more than one
-  independent deliverable, suggesting a split. It does NOT write code, does
-  NOT flip `status:` itself, and does NOT invent the split's sibling files —
-  it appends structured findings to the spec's own Open Questions section
-  and reports back; the human still turns the second key.
+description: "Sonnet backlog-readiness judge — vets a docs/backlog spec against prose and code, flags blockers/advisories. Doesn't write code or flip status."
 tools: Read, Grep, Glob, Bash, Edit, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---
@@ -64,7 +50,7 @@ Check for, in the spec as written:
 - **Model tier vs. content mismatch.** If the spec declares (or defaults
   to) `model: sonnet`/`haiku` but its own Motivation/In-scope text reads as
   architecture, a new abstraction, or novel judgment-heavy work (the kind
-  CLAUDE.md's Agent-sizing table reserves for Opus) — advisory. This is what
+  AGENTS.md's Agent-sizing table reserves for Opus) — advisory. This is what
   makes a low-friction default model safe to keep instead of requiring every
   spec to state `model:` explicitly.
 - **Dangling `blocked-by`.** If the spec declares `blocked-by: <slug>`,

@@ -1,13 +1,6 @@
 ---
 name: cluster-ops
-description: >-
-  Read-only cluster/prod operations gopher. Use it for "check X on <node>",
-  "tail the worker log on melchior", "what's caspar's load", "is daemon Y
-  running", "read-only prod-DB query" — it SSHes to the node, runs the check,
-  and returns a short digest, so raw log/journal/psql dumps never hit the main
-  context. Mechanical polling only: it reads and summarizes, never deploys,
-  restarts, or edits files — its only write is filing its own `gripe` for
-  something it notices; it never mutates cluster state or the prod DB.
+description: "Read-only cluster/prod ops gopher — SSHes a node, runs a read-only prod-DB query, returns a digest. Never mutates; write sibling: cluster-admin."
 tools: Bash, Read, Grep, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

@@ -1,16 +1,6 @@
 ---
 name: gripe-filer
-description: >-
-  Haiku-tier mechanical filer — takes an already-decided finding **plus an
-  explicit target** (`kind='gripe'` or `docs/backlog/`) and writes it in the
-  standard shape for that target. It does NOT decide which target to use —
-  that's judgment, reserved for the caller (Opus or whichever agent found the
-  issue). Use it to unload the mechanical `put`/`Edit` call rather than doing
-  it inline. Create-direction sibling of `issue-closer` (which closes
-  resolved items post-ship); `gripe-filer` files new ones. Its only judgment
-  call is a dedup check — refuse and report back if an existing open
-  gripe/backlog item already covers the same issue, or if the caller
-  didn't specify a target.
+description: "Haiku mechanical filer — files a decided finding at a caller-named target (gripe/backlog) after dedup; won't pick the target. Sibling of issue-closer (closes items)."
 tools: Read, Edit, Write, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

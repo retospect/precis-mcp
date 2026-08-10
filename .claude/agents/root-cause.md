@@ -1,15 +1,6 @@
 ---
 name: root-cause
-description: >-
-  Sonnet-tier READ-ONLY code-level root-cause investigator. Given a bug or
-  gripe, it reproduces the failure (or states why it can't), traces
-  symptom→true defect through the call graph, and — load-bearing — explicitly
-  answers whether the obvious/tempting fix would mask a deeper defect. This is
-  the pre-patch step for the "masked root cause" bucket of the `bug` skill's
-  triage: dispatch it BEFORE writing a fix, not after. It returns a structured
-  dossier (root cause + evidence, blast radius, masking risk, fix strategy,
-  the regression test to hand `test-author`) and does NOT fix anything or
-  decide the fix — the caller acts on the dossier.
+description: "Sonnet read-only root-cause investigator — reproduces a bug, traces symptom to true defect, flags masking risk. Dispatch before patching."
 tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

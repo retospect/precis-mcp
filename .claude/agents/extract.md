@@ -1,12 +1,6 @@
 ---
 name: extract
-description: >-
-  Cheap read-only agent for mechanical extraction — pulling specific facts,
-  snippets, lists, or structured data out of files without reasoning about them.
-  Use it for "list every call site of X", "collect the env vars this module
-  reads", "give me the signatures in this file", "grep these patterns and table
-  the hits" — rote gathering you'd otherwise do on the main (Opus) loop. It
-  gathers and formats; it does NOT judge, design, or edit.
+description: "Cheap read-only agent — pulls facts/lists from files without judgment, formats them. Never edits or analyzes."
 tools: Read, Grep, Glob, Bash, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

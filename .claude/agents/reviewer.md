@@ -1,13 +1,6 @@
 ---
 name: reviewer
-description: >-
-  Sonnet-tier pre-ship reviewer — reads the working-tree diff and reports
-  correctness bugs and reuse/simplification/efficiency cleanups, ranked most-
-  severe first. The read-only checker that complements `coder`: use it before a
-  /land when you want a second pass lighter than `/code-review ultra`. It reports
-  findings with file:line and a concrete failure scenario; it does NOT edit code
-  or make architecture calls — a finding that needs a design decision is flagged
-  for the Opus loop, not resolved.
+description: "Sonnet pre-ship reviewer — reads the diff, ranks correctness/cleanup findings most-severe first. Read-only, lighter than /code-review ultra."
 tools: Read, Grep, Glob, Bash, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

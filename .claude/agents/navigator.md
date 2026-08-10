@@ -1,12 +1,6 @@
 ---
 name: navigator
-description: >-
-  Read-only orientation specialist for the precis-mcp CODEBASE. Use it to
-  answer "where is X", "how does Y flow work", "what calls Z", "which file
-  owns kind K" — it reads the orientation docs, runs semantic code search, and
-  returns a short answer with file:line citations, so navigation spelunking
-  doesn't burn the main context. NOT for the precis product runtime; NOT for
-  editing (it only reads).
+description: "Read-only orientation specialist for the precis-mcp codebase (not the product) — answers where/how via docs + code search, cites file:line."
 tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

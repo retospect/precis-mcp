@@ -1,13 +1,6 @@
 ---
 name: forensics
-description: >-
-  Sonnet-tier read-only log/transcript miner — reads prod worker logs and agent
-  job transcripts and returns a structured findings summary (candidate bugs,
-  tool-call confusion, recurring errors), so raw dumps never hit the main loop.
-  This is the confusion-log-mining pass from /whatneedsdoing. It reads and
-  synthesizes, and may file its own gripe for something it surfaces — but it
-  does NOT otherwise write to prod, edit code, or decide what gets fixed; the
-  caller still acts on the ranked summary.
+description: "Sonnet read-only log miner — mines prod logs/job transcripts into a ranked findings summary. Read-only besides its own gripe."
 tools: Bash, Read, Grep, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

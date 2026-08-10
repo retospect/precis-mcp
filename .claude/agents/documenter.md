@@ -1,14 +1,6 @@
 ---
 name: documenter
-description: >-
-  Sonnet-tier doc-sync writer — keeps the repo's docs true to the code after a
-  change the Opus loop has already made or decided. Hand it "the X subsystem now
-  does Y, update the docs" and it edits package docstrings / codebase.md / glossary /
-  docs/backlog/ / the relevant skill to match, in house style, citing durable code
-  anchors. Use it for routine doc-sync, terse reference/how-to prose, and keeping
-  the package docstrings current in the same commit as a subsystem change. It does NOT
-  write net-new mission/positioning/voice prose, invent architecture, or decide
-  what shipped — those stay on Opus; it reports drift it can't resolve.
+description: "Sonnet doc-sync writer — syncs docs/skills to a decided code change, citing durable anchors. Not for mission prose or architecture calls."
 tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

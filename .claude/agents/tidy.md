@@ -1,11 +1,6 @@
 ---
 name: tidy
-description: >-
-  Cheap mechanical agent for lint/format cleanup — use it to run `ruff --fix` +
-  `ruff format` over changed files and report what's left, instead of doing the
-  rote fixing on the main (Opus) loop. It applies the autofixable stuff and
-  reports residual lint / type errors it did NOT touch. It does NOT make logic
-  changes or design decisions — mechanical tidy only.
+description: "Cheap agent — runs ruff --fix + format, reports residual issues left for judgment. Ruff-specific sibling of cmd-runner/test-runner."
 tools: Bash, Read, Edit, mcp__precis__search, mcp__precis__put
 model: haiku
 ---
