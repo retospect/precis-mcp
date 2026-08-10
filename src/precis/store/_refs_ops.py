@@ -412,6 +412,7 @@ class RefsMixin:
         title: str | None = None,
         year: int | None = None,
         set_by: str = "dream",
+        s2_meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
     ) -> tuple[int, bool]:
         """Idempotently find-or-mint a stub paper ref by identifier-collapse.
@@ -430,6 +431,18 @@ class RefsMixin:
         ``paper`` ref with a freshly-minted ``cite_key`` slug and
         ``meta.set_by=<set_by>``, registers every identifier, and
         returns ``created=True``.
+
+        ``s2_meta`` (keyword-only): the mint-time S2 metadata patch — see
+        :func:`~precis.ingest.semantic_scholar.s2_stub_meta` — merged
+        into the initial ``refs.meta`` ONLY when this call mints a NEW
+        ref (``set_by`` wins any key collision, though there is none in
+        practice). A collapse hit onto an EXISTING ref never gets this
+        patch — this is a mint-time convenience, not a retroactive patch
+        path; an existing stub still gets caught by ``stub_rank``'s own
+        enrich pass. Stamping ``s2_meta`` at mint means the freshly-minted
+        stub already carries ``meta.s2_enriched_at``, so ``stub_rank``'s
+        ``_claim_enrich_candidates`` skips it and it's immediately
+        eligible for embedding.
 
         Mirrors the chase worker's stub path
         (``workers/chase._resolve_or_create_stub``) but takes explicit
@@ -508,12 +521,13 @@ class RefsMixin:
             taken = {str(r[0]) for r in taken_rows}
             cite_key = make_cite_key(authors, year, taken=taken)
 
+            initial_meta: dict[str, Any] = {**(s2_meta or {}), "set_by": set_by}
             new_ref = self.insert_ref(
                 kind="paper",
                 slug=cite_key,
                 title=title or "(no title)",
                 year=year,
-                meta={"set_by": set_by},
+                meta=initial_meta,
                 conn=c,
             )
             for id_kind, id_value in norm:
@@ -556,6 +570,11 @@ class RefsMixin:
         *passes* have run — one fetch pass writes one ``fetcher:%``
         event *per cascade leg*, so raw event count over-reports;
         collapsing to distinct minute-buckets recovers the pass count).
+        ``llm_label`` / ``llm_reason`` surface the ``stub_rank`` pass's
+        Tier-2 LLM band judgment (``meta.llm_label`` /
+        ``meta.llm_reason`` — see ``workers/stub_rank.py``), empty
+        strings when the stub hasn't been through that step (unranked,
+        outside the uncertain band, or the LLM step is disabled).
 
         ``id_kinds`` narrows the eligible external-identifier kinds
         (default ``('doi', 'arxiv', 's2')``, matching every prior
@@ -621,7 +640,9 @@ class RefsMixin:
                        ) AS identifier,
                        r.created_at,
                        r.meta->>'set_by' AS requested_by,
-                       r.prio AS prio
+                       r.prio AS prio,
+                       r.meta->>'llm_label' AS llm_label,
+                       r.meta->>'llm_reason' AS llm_reason
                   FROM refs r
                  WHERE {stub_predicate_sql("r", id_kinds)}
             ),
@@ -672,7 +693,7 @@ class RefsMixin:
                    le.ts, le.source, le.event,
                    s.created_at, s.requested_by,
                    COALESCE(fs.attempts, 0) AS attempts,
-                   le.payload, s.prio
+                   le.payload, s.prio, s.llm_label, s.llm_reason
               FROM stubs s
               LEFT JOIN latest_event le ON le.ref_id = s.ref_id
               LEFT JOIN fetch_stats fs ON fs.ref_id = s.ref_id
@@ -704,6 +725,8 @@ class RefsMixin:
                     "requested_by": row[7] or "",
                     "attempts": int(row[8]),
                     "prio": int(row[10]) if row[10] is not None else None,
+                    "llm_label": row[11] or "",
+                    "llm_reason": row[12] or "",
                 }
             )
         return out

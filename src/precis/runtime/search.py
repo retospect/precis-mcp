@@ -35,14 +35,21 @@ log = logging.getLogger(__name__)
 
 
 def _stub_state_line(row: dict[str, Any]) -> str:
-    """The per-stub state line, with ``prio N`` appended when ranked.
+    """The per-stub state line, with ``prio N`` and (when the ``stub_rank``
+    pass's Tier-2 LLM band has labeled this stub) `` · <label>`` appended.
 
     ``row['prio']`` is ``None`` for an unranked stub (the ``stub_rank``
     pass hasn't scored it yet, or the whole pass is disabled) — omit the
-    suffix entirely rather than rendering a noisy ``prio None``.
+    suffix entirely rather than rendering a noisy ``prio None``. Likewise
+    ``row['llm_label']`` is empty for a stub outside the uncertain band
+    (or the LLM step is disabled/hasn't reached it yet).
     """
     prio = row.get("prio")
-    return row["state"] if prio is None else f"{row['state']}  prio {prio}"
+    line = row["state"] if prio is None else f"{row['state']}  prio {prio}"
+    label = row.get("llm_label")
+    if label:
+        line = f"{line}  · {label}"
+    return line
 
 
 class SearchMixin(RuntimeShape):
@@ -89,6 +96,11 @@ class SearchMixin(RuntimeShape):
             cite = r["cite_key"] or f"ref {r['ref_id']}"
             lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
             lines.append(f"      {_stub_state_line(r)}")
+            reason = (r.get("llm_reason") or "").strip()
+            if reason:
+                if len(reason) > 80:
+                    reason = reason[:79].rstrip() + "…"
+                lines.append(f"      {reason}")
         body = "\n".join(lines)
         body += render_next_section(
             [

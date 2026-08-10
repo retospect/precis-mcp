@@ -7,6 +7,7 @@ is monkeypatched, matching the style of ``test_quest_search_acquire.py``.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -140,3 +141,86 @@ class TestNormalizeFieldsAndCitationCount:
         del paper.citationCount
         out = s2mod._normalize(paper)
         assert out["citation_count"] is None
+
+
+class TestS2StubMeta:
+    """:func:`~precis.ingest.semantic_scholar.s2_stub_meta` — the mint-time
+    twin of ``stub_rank._merge_enrich_meta``'s resolved-case patch."""
+
+    _NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def test_includes_abstract_when_present(self) -> None:
+        resolved = {
+            "abstract": "a real abstract",
+            "fields": ["Computer Science"],
+            "citation_count": 7,
+        }
+        patch = s2mod.s2_stub_meta(resolved, now=self._NOW)
+        assert patch == {
+            "s2_enriched_at": self._NOW.isoformat(),
+            "s2_fields": ["Computer Science"],
+            "s2_citation_count": 7,
+            "abstract": "a real abstract",
+        }
+
+    def test_omits_abstract_when_blank_or_missing(self) -> None:
+        for resolved in ({"abstract": ""}, {"abstract": "   "}, {}):
+            patch = s2mod.s2_stub_meta(resolved, now=self._NOW)
+            assert "abstract" not in patch
+
+    def test_fields_default_empty_list(self) -> None:
+        patch = s2mod.s2_stub_meta({}, now=self._NOW)
+        assert patch["s2_fields"] == []
+        assert patch["s2_citation_count"] is None
+
+    def test_stamps_s2_enriched_at(self) -> None:
+        patch = s2mod.s2_stub_meta({}, now=self._NOW)
+        assert patch["s2_enriched_at"] == self._NOW.isoformat()
+
+
+class TestS2StubMetaIfPresent:
+    """:func:`~precis.ingest.semantic_scholar.s2_stub_meta_if_present` — the
+    shared guard that keeps a narrow-shape S2 response (e.g. the citations
+    fetch, called with a deliberately narrow ``fields=``) from stamping
+    ``s2_enriched_at`` on empty data, which would permanently skip the
+    real enrich pass for that stub."""
+
+    _NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def test_none_on_bare_title_doi_year_shape(self) -> None:
+        resolved = {"title": "A paper", "doi": "10.1/x", "year": 2020, "s2_id": "abc"}
+        assert s2mod.s2_stub_meta_if_present(resolved, now=self._NOW) is None
+
+    def test_none_on_empty_dict(self) -> None:
+        assert s2mod.s2_stub_meta_if_present({}, now=self._NOW) is None
+
+    def test_none_on_blank_abstract_only(self) -> None:
+        resolved = {"abstract": "   "}
+        assert s2mod.s2_stub_meta_if_present(resolved, now=self._NOW) is None
+
+    def test_patch_on_non_empty_abstract(self) -> None:
+        resolved = {"title": "A paper", "abstract": "a real abstract"}
+        patch = s2mod.s2_stub_meta_if_present(resolved, now=self._NOW)
+        assert patch == s2mod.s2_stub_meta(resolved, now=self._NOW)
+        assert patch is not None and patch["abstract"] == "a real abstract"
+
+    def test_patch_on_truthy_fields(self) -> None:
+        resolved = {"fields": ["Chemistry"]}
+        patch = s2mod.s2_stub_meta_if_present(resolved, now=self._NOW)
+        assert patch == s2mod.s2_stub_meta(resolved, now=self._NOW)
+
+    def test_none_on_empty_fields_list(self) -> None:
+        resolved: dict[str, Any] = {"fields": []}
+        assert s2mod.s2_stub_meta_if_present(resolved, now=self._NOW) is None
+
+    def test_patch_on_citation_count_zero(self) -> None:
+        # citation_count == 0 is a real (falsy-but-present) value -- the
+        # guard checks ``is not None``, not truthiness.
+        resolved = {"citation_count": 0}
+        patch = s2mod.s2_stub_meta_if_present(resolved, now=self._NOW)
+        assert patch == s2mod.s2_stub_meta(resolved, now=self._NOW)
+        assert patch is not None and patch["s2_citation_count"] == 0
+
+    def test_none_on_citation_count_none(self) -> None:
+        resolved = {"citation_count": None}
+        assert s2mod.s2_stub_meta_if_present(resolved, now=self._NOW) is None

@@ -99,6 +99,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import Connection
@@ -363,11 +364,26 @@ def _resolve_or_ingest_citer(
     title = (citing.get("title") or "").strip() or None
     year = citing.get("year")
     year_int = int(year) if isinstance(year, int) else None
+    # ``citing`` is one ``cited_by`` entry from ``ingest.citations._get_
+    # citations`` — a narrower shape than the ``_normalize()``-produced
+    # dict (title/doi/year/s2_id only, no abstract/fields/citation_count:
+    # that endpoint is called with a deliberately narrow ``fields=``).
+    # ``s2_stub_meta_if_present`` only builds (and stamps) the mint-time
+    # S2 patch when ``citing`` actually carries something beyond that bare
+    # shape — otherwise stamping ``s2_enriched_at`` here would permanently
+    # skip stub_rank's real enrich pass on an empty patch. Lazy import
+    # mirrors ``load_s2_citation_graph``'s own: this module is on the
+    # always-on ``get(kind='paper')`` read path and must work in venvs
+    # without the ``[paper]`` extra.
+    from precis.ingest.semantic_scholar import s2_stub_meta_if_present
+
+    s2_meta = s2_stub_meta_if_present(citing, now=datetime.now(UTC))
     ref_id, _created = store.upsert_stub_paper(
         identifiers=identifiers,
         title=title,
         year=year_int,
         set_by="system",
+        s2_meta=s2_meta,
         conn=conn,
     )
     return int(ref_id)

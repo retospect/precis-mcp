@@ -136,6 +136,44 @@ def test_state_no_pdf_badge_for_non_pipeline_kind() -> None:
     assert not any(b["label"] == "pdf" for b in badges)
 
 
+def test_state_adds_llm_label_badge_when_meta_carries_one() -> None:
+    ref = _ref(
+        kind="paper",
+        pdf_sha256=None,
+        meta={"llm_label": "core", "llm_reason": "fits the quest"},
+    )
+    p = ItemPresenter("paper")
+    badges = p.state(ref, has_chunks=False)
+    label_badges = [b for b in badges if b["label"] == "core"]
+    assert len(label_badges) == 1
+    assert label_badges[0]["cls"] == "bg-emerald-100 text-emerald-700"
+    assert label_badges[0]["title"] == "fits the quest"
+
+
+def test_state_llm_label_badge_falls_back_to_label_without_reason() -> None:
+    ref = _ref(kind="paper", pdf_sha256=None, meta={"llm_label": "off"})
+    p = ItemPresenter("paper")
+    badges = p.state(ref, has_chunks=False)
+    label_badges = [b for b in badges if b["label"] == "off"]
+    assert len(label_badges) == 1
+    assert label_badges[0]["cls"] == "bg-slate-200 text-slate-500"
+    assert label_badges[0]["title"] == "off"
+
+
+def test_state_ignores_unknown_llm_label_value() -> None:
+    ref = _ref(kind="paper", pdf_sha256=None, meta={"llm_label": "bogus"})
+    p = ItemPresenter("paper")
+    badges = p.state(ref, has_chunks=False)
+    assert not any(b["label"] == "bogus" for b in badges)
+
+
+def test_state_no_llm_label_badge_for_non_pipeline_kind() -> None:
+    ref = _ref(kind="web", meta={"llm_label": "core"})
+    p = ItemPresenter("web")
+    badges = p.state(ref, has_chunks=False)
+    assert badges == []
+
+
 def test_default_thumbnail_is_empty_actions_are_universal() -> None:
     """No default thumbnail, but the universal move/delete/tag quick
     actions (WS1a) are always present, keyed to the ref's own kind + id

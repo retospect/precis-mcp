@@ -24,6 +24,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -440,9 +441,17 @@ class PaperHandler(Handler):
         stub_title = title.strip() if title and title.strip() else None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
+        s2_meta: dict[str, Any] | None = None
         if id_pair is not None:
             meta = _lookup_acquire_metadata(*id_pair)
             if meta:
+                # Lazy import mirrors ``_lookup_acquire_metadata`` above —
+                # ``semanticscholar`` is gated behind the ``[paper]``
+                # extra, and a successful ``meta`` here already proves
+                # the module imported cleanly in that call.
+                from precis.ingest.semantic_scholar import s2_stub_meta
+
+                s2_meta = s2_stub_meta(meta, now=datetime.now(UTC))
                 stub_title = stub_title or (meta.get("title") or None)
                 raw_year = meta.get("year")
                 year = int(raw_year) if isinstance(raw_year, int) else year
@@ -493,6 +502,7 @@ class PaperHandler(Handler):
                 title=stub_title,
                 year=year,
                 set_by="dream",
+                s2_meta=s2_meta,
                 conn=conn,
             )
             # Tag the provenance only on a fresh stub — never slap

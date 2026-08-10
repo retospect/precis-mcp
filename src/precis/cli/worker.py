@@ -2076,13 +2076,16 @@ def run(args: argparse.Namespace) -> None:
         # Stub rank — S2-enrich + embed + anchor-similarity re-rank paper
         # stubs (title/abstract only, no PDF yet) so fetch_oa's claim
         # query and the stub-backlog surfaces float the relevant ones
-        # instead of draining newest-first. See workers/stub_rank.py's
-        # module docstring for the three-step (enrich/embed/rank) shape.
-        # Embedder resolution mirrors `chase`'s degrade-on-failure
-        # pattern just above (never crash-loop the whole worker over a
-        # down/unconfigured embedder) — the embed step alone no-ops
-        # without one; enrich + rank still run.
+        # instead of draining newest-first, plus a Tier-2 SMALL-tier LLM
+        # band label for the uncertain middle of the score distribution.
+        # See workers/stub_rank.py's module docstring for the four-step
+        # (enrich/embed/rank/band) shape. Embedder resolution mirrors
+        # `chase`'s degrade-on-failure pattern just above (never crash-loop
+        # the whole worker over a down/unconfigured embedder) — the embed
+        # step alone no-ops without one; enrich/rank/band still run.
         if _register("stub_rank"):
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.stub_rank import run_stub_rank_pass
 
@@ -2096,12 +2099,32 @@ def run(args: argparse.Namespace) -> None:
                 )
                 _stub_rank_embedder = None
 
+            # SMALL-tier band client (like classify's `_cls_client` above) —
+            # a lite route-log row (log_call=True, log_blobs=False) so the
+            # per-stub cost/tokens land in llm_call_log without a per-call
+            # blob explosion at corpus batch scale.
+            _stub_rank_band_client = _DispatchClient(
+                tier=_Tier.SMALL,
+                model=os.environ.get("PRECIS_STUB_RANK_LLM_MODEL") or None,
+                source="stub_rank",
+                log_call=True,
+                log_blobs=False,
+            )
+
             def _stub_rank_pass(batch_size: int) -> _BatchResult:
                 # limit=None (not batch_size): mirrors openalex_enrich /
                 # paper_reconcile just above — this pass owns its own
                 # default (PRECIS_STUB_RANK_ENRICH_BATCH, 500), independent
-                # of the generic per-tick chunk batch size (32).
-                r = run_stub_rank_pass(store, limit=None, embedder=_stub_rank_embedder)
+                # of the generic per-tick chunk batch size (32). Same for
+                # band_limit=None -- PRECIS_STUB_RANK_LLM_BATCH is its own
+                # cost guard.
+                r = run_stub_rank_pass(
+                    store,
+                    limit=None,
+                    embedder=_stub_rank_embedder,
+                    band_client=_stub_rank_band_client,
+                    band_limit=None,
+                )
                 return _BatchResult(
                     handler="stub_rank",
                     claimed=r["claimed"],

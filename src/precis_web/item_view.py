@@ -97,6 +97,16 @@ _PIPELINE_KINDS: frozenset[str] = frozenset(
     {"paper", "patent", "datasheet", "cfp", "pres"}
 )
 
+#: Badge color per ``stub_rank`` Tier-2 LLM band label (``refs.meta.
+#: llm_label`` — see ``workers/stub_rank.py``). ``core`` is the warmest
+#: (directly serves a current interest), ``off`` the coldest (unrelated).
+_LLM_LABEL_BADGE_CLS: dict[str, str] = {
+    "core": "bg-emerald-100 text-emerald-700",
+    "adjacent": "bg-sky-100 text-sky-700",
+    "explore": "bg-amber-100 text-amber-700",
+    "off": "bg-slate-200 text-slate-500",
+}
+
 #: Namespaces hidden from the per-row tag chips — machine/control tags
 #: the operator doesn't browse by.
 _TAG_HIDE_NS: frozenset[str] = frozenset(
@@ -213,8 +223,11 @@ class ItemPresenter:
         """Pipeline-state badges for the row (paper-family kinds only).
 
         ``stub`` — a corpus doc still awaiting the fetcher (no PDF yet);
-        ``chunks`` — ingested, has body chunks (searchable). Mirrors the
-        Papers-tab vocabulary. Non-pipeline kinds get no badges.
+        ``chunks`` — ingested, has body chunks (searchable); a fourth
+        badge (the ``stub_rank`` pass's Tier-2 LLM band label — see
+        ``workers/stub_rank.py``) appears when ``ref.meta.llm_label`` is
+        set, regardless of the stub/chunks state. Mirrors the Papers-tab
+        vocabulary. Non-pipeline kinds get no badges.
         """
         if self.kind not in _PIPELINE_KINDS:
             return []
@@ -241,6 +254,16 @@ class ItemPresenter:
                     "label": "chunks",
                     "cls": "bg-sky-100 text-sky-700",
                     "title": "ingested — has body chunks",
+                }
+            )
+        meta = getattr(ref, "meta", None) or {}
+        llm_label = meta.get("llm_label")
+        if llm_label in _LLM_LABEL_BADGE_CLS:
+            badges.append(
+                {
+                    "label": llm_label,
+                    "cls": _LLM_LABEL_BADGE_CLS[llm_label],
+                    "title": meta.get("llm_reason") or llm_label,
                 }
             )
         return badges

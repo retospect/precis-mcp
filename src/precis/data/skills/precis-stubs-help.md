@@ -30,6 +30,14 @@ relevant-first; unranked stubs carry no `prio` suffix and sort last).
 Ties fall back to oldest-request-first. `q=` is ignored — the view *is*
 the filter.
 
+Stubs scoring in the uncertain middle of the ranking additionally carry
+a one-time LLM triage label — `· core|adjacent|explore|off` on the
+state line, with its one-line reason below. The label nudges `prio`
+(core hotter, explore/off colder) on every re-rank; explicit signals
+(a dream/quest acquisition request, a cite-cold pin) always win over
+it. Query labeled stubs directly: `refs.meta->>'llm_label'` (reason in
+`llm_reason`, decision metadata in `llm_band`).
+
 ## What should I go find a PDF for right now?
 ## Just the DOI stubs nobody has tried fetching yet
 

@@ -167,6 +167,73 @@ def test_sweep_stub_citer_links_paper_level_only(store) -> None:
     assert links[0].src_pos is None  # ref-level, no chunks to resolve yet
 
 
+def test_sweep_minted_citer_has_no_s2_enriched_stamp_without_extra_s2_fields(
+    store,
+) -> None:
+    """``ingest.citations._get_citations``'s ``cited_by`` entries are the
+    narrow doi/s2_id/title/year shape (no abstract/fields/citation_count)
+    — ``_resolve_or_ingest_citer`` must NOT stamp ``s2_enriched_at`` on a
+    mint from that shape alone, or ``stub_rank``'s real enrich pass would
+    be permanently skipped for an empty patch."""
+    y = _seed_paper(store, cite_key="y2020b", identifiers=[("doi", "10.1/y2020b")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+
+    citers = [{"title": "A bare citing paper", "doi": "10.1/citer-bare", "year": 2022}]
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False)
+
+    citer_ref_id = _ref_id_by_doi(store, "10.1/citer-bare")
+    assert citer_ref_id is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (citer_ref_id,)
+        ).fetchone()
+    assert row is not None
+    meta = dict(row[0] or {})
+    assert "s2_enriched_at" not in meta
+
+
+def test_sweep_minted_citer_carries_s2_meta_when_source_dict_has_it(store) -> None:
+    """When the ``cited_by`` entry DOES carry abstract/fields/citation_count
+    (a richer S2 shape than ``ingest.citations`` produces today, or a
+    future extension of it), the mint writes ``s2_enriched_at`` + the
+    abstract so ``stub_rank`` skips the redundant round-trip."""
+    y = _seed_paper(store, cite_key="y2020c", identifiers=[("doi", "10.1/y2020c")])
+    store.add_tag(y, Tag.closed("INBOUND", "pending"), set_by="system")
+
+    citers = [
+        {
+            "title": "A richly-described citing paper",
+            "doi": "10.1/citer-rich",
+            "year": 2022,
+            "abstract": "the citer's abstract",
+            "fields": ["Computer Science"],
+            "citation_count": 5,
+        }
+    ]
+    with patch(
+        "precis.workers.inbound_chase.load_s2_citation_graph",
+        return_value={"references": [], "cited_by": citers},
+    ):
+        run_inbound_chase_pass(store, limit=10, with_llm=False)
+
+    citer_ref_id = _ref_id_by_doi(store, "10.1/citer-rich")
+    assert citer_ref_id is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (citer_ref_id,)
+        ).fetchone()
+    assert row is not None
+    meta = dict(row[0] or {})
+    assert meta.get("s2_enriched_at") is not None
+    assert meta.get("abstract") == "the citer's abstract"
+    assert meta.get("s2_fields") == ["Computer Science"]
+    assert meta.get("s2_citation_count") == 5
+
+
 def test_sweep_resolves_chunk_level_when_citer_already_has_chunks(store) -> None:
     """A citer already in corpus (real chunks) gets resolved to a
     chunk-scoped ``cites`` link in the same sweep pass — deterministic

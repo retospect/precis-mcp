@@ -118,7 +118,7 @@ code change; env overrides exist for per-host divergence.
 | `PRECIS_MODEL_HAIKU` | MEDIUM model id | `claude-haiku-4-5-20251001` | |
 | `PRECIS_LOCAL_BIG_MODEL` | ~~LOCAL_BIG tier alias~~ **RETIRED** | `qwen-heavy` | ADR 0066 Phase C deleted the `LOCAL_BIG` tier and its `_TIER_MODEL` row — nothing in `src/` reads this var anymore. Safe to drop from any host env. |
 | `PRECIS_SUMMARIZE_MODEL` | Summarize LLM alias | `summarizer` | |
-| Per-pass model overrides | `PRECIS_FIXER_CLAUDE_MODEL` (`claude-sonnet-5`), `PRECIS_FIX_CLAUDE_MODEL`, `PRECIS_{CLASSIFY,PAPER_GLOSSARY,STRUCTURAL,DEEP_REVIEW,STRUCTURE_PROPOSE,CAD_PROPOSE,CAD_DISCUSS,DREAM_AGENT,FIGURE,MERMAID,BRIEFING,MEDITATION,READING_BRIEF,CARD_FORGE,FOLLOWUP}_MODEL` | mostly none ⇒ tier resolver | Unset ⇒ each falls to its tier default. Set only to pin a specific pass. |
+| Per-pass model overrides | `PRECIS_FIXER_CLAUDE_MODEL` (`claude-sonnet-5`), `PRECIS_FIX_CLAUDE_MODEL`, `PRECIS_{CLASSIFY,PAPER_GLOSSARY,STRUCTURAL,DEEP_REVIEW,STRUCTURE_PROPOSE,CAD_PROPOSE,CAD_DISCUSS,DREAM_AGENT,FIGURE,MERMAID,BRIEFING,MEDITATION,READING_BRIEF,CARD_FORGE,FOLLOWUP,STUB_RANK_LLM}_MODEL` | mostly none ⇒ tier resolver | Unset ⇒ each falls to its tier default. Set only to pin a specific pass. `PRECIS_STUB_RANK_LLM_MODEL` pins the `stub_rank` pass's Tier-2 band client (SMALL tier); see §9. |
 | `PRECIS_EMBEDDER` | `mock`/`bge-m3`/`remote` | `mock` (config) / `bge-m3` (worker) | `remote` points at a `serve-embeddings` endpoint (`PRECIS_EMBEDDER_URL`, §8); workers can also pass this via CLI args. |
 | `PRECIS_EMBEDDER_BACKEND` | serve-embeddings backend | `bge-m3` | |
 
@@ -212,8 +212,13 @@ than that hangs up on a still-computing batch, amplifying retries),
 (`PRECIS_TRANSCRIPT_RETENTION_DAYS`, `PRECIS_AGENTLOG_RETENTION_DAYS`,
 `PRECIS_LLM_LOG_RETENTION_DAYS`), reconcile refresh windows
 (`PRECIS_PAPER_RECONCILE_REFRESH_HOURS`,
-`PRECIS_CORPUS_RECONCILE_REFRESH_HOURS`), and the log-handler batching
-(`PRECIS_LOG_MAX_BUFFER` 50, `PRECIS_LOG_MAX_INTERVAL_SECONDS` 5).
+`PRECIS_CORPUS_RECONCILE_REFRESH_HOURS`), the log-handler batching
+(`PRECIS_LOG_MAX_BUFFER` 50, `PRECIS_LOG_MAX_INTERVAL_SECONDS` 5), and
+`stub_rank`'s Tier-2 LLM band (`PRECIS_STUB_RANK_BAND_LO` 0.30 /
+`PRECIS_STUB_RANK_BAND_HI` 0.70 — the "uncertain middle" percentile
+window the LLM judges; `PRECIS_STUB_RANK_LLM_BATCH` 25 — max LLM calls
+per pass, the cost guard; `0` disables step (d) entirely; model override
+`PRECIS_STUB_RANK_LLM_MODEL`, §4).
 
 Gotcha: `PRECIS_QUEST_WEEKLY_CHARS` (no default) **must** be set before
 flipping `PRECIS_QUEST_LOOP_ENABLED` — the meter is character-count, not

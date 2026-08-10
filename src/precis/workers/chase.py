@@ -39,6 +39,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import Connection
@@ -1174,6 +1175,12 @@ class _NextHopTarget:
     s2_id: str | None
     title: str
     year: int | None
+    #: Mint-time S2 metadata patch (see :func:`~precis.ingest.
+    #: semantic_scholar.s2_stub_meta`) — set only when the source S2 ref
+    #: dict carried abstract/fields/citation_count beyond the bare
+    #: doi/arxiv/s2_id/title/year narrowed above; merged into a freshly
+    #: minted stub's ``refs.meta`` by :func:`_resolve_or_create_stub`.
+    s2_meta: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1232,12 +1239,20 @@ def _pick_next_hop(
 
 
 def _ref_to_target(s2_ref: dict[str, Any]) -> _NextHopTarget:
+    # ``s2_ref`` is a ``_load_s2_references`` entry — usually the narrow
+    # doi/s2_id/title/year shape from ``ingest.citations._get_references``,
+    # but build the mint-time S2 patch whenever it happens to carry more
+    # (abstract/fields/citation_count) rather than assuming it never does.
+    from precis.ingest.semantic_scholar import s2_stub_meta_if_present
+
+    s2_meta = s2_stub_meta_if_present(s2_ref, now=datetime.now(UTC))
     return _NextHopTarget(
         doi=(s2_ref.get("doi") or None) or None,
         arxiv=None,
         s2_id=(s2_ref.get("s2_id") or None) or None,
         title=str(s2_ref.get("title") or ""),
         year=s2_ref.get("year"),
+        s2_meta=s2_meta,
     )
 
 
@@ -1341,11 +1356,12 @@ def _resolve_or_create_stub(
         taken=set(),  # collision resolution deferred to a follow-up
     )
     title = target.title or "(no title)"
+    stub_meta: dict[str, Any] = {**(target.s2_meta or {}), "set_by": "chase"}
     new_ref = store.insert_ref(
         kind="paper",
         slug=cite_key,
         title=title,
-        meta={"set_by": "chase"},
+        meta=stub_meta,
         conn=conn,
     )
     # Register every external ID we have, plus the chase-actor row.

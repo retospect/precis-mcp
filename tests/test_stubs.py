@@ -356,6 +356,28 @@ def test_stub_backlog_prio_outranks_chase_queue_tiebreak(store: Store) -> None:
     assert order == [tried_hot, never_cold]
 
 
+# ── store engine: llm_label / llm_reason (stub_rank Tier-2 band) ─────
+
+
+def test_stub_backlog_row_llm_label_defaults_empty(store: Store) -> None:
+    _stub(store, cite_key="unlabeled2024", doi="10.1/unlabeled")
+    row = store.stub_backlog()[0]
+    assert row["llm_label"] == ""
+    assert row["llm_reason"] == ""
+
+
+def test_stub_backlog_row_carries_llm_label_and_reason(store: Store) -> None:
+    rid = _stub(store, cite_key="labeled2024", doi="10.1/labeled")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            ('{"llm_label": "core", "llm_reason": "fits the quest"}', rid),
+        )
+    row = store.stub_backlog()[0]
+    assert row["llm_label"] == "core"
+    assert row["llm_reason"] == "fits the quest"
+
+
 # ── dispatch: search(view='stubs') ──────────────────────────────────
 
 
@@ -393,6 +415,35 @@ def test_view_stubs_omits_prio_when_unranked(runtime_with_store: PrecisRuntime) 
 
     out = runtime_with_store.dispatch("search", {"view": "stubs"})
     assert "prio" not in out
+
+
+def test_view_stubs_shows_llm_label_and_reason_line(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _stub(store, cite_key="labeled2024x", doi="10.1/labeledx")
+    _set_prio(store, rid, 2)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            ('{"llm_label": "core", "llm_reason": "fits the quest"}', rid),
+        )
+
+    out = runtime_with_store.dispatch("search", {"view": "stubs"})
+    assert "prio 2  · core" in out
+    assert "fits the quest" in out
+
+
+def test_view_stubs_omits_reason_line_without_a_label(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    _stub(store, cite_key="nolabel2024x", doi="10.1/nolabelx")
+
+    out = runtime_with_store.dispatch("search", {"view": "stubs"})
+    assert "·" not in out
 
 
 def test_view_stubs_ignores_q(runtime_with_store: PrecisRuntime) -> None:

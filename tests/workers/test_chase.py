@@ -490,6 +490,53 @@ def test_hop_advances_chain_by_one_and_adds_link(store) -> None:
     assert any(l.dst_ref_id == int(new_id[0]) for l in links)
 
 
+def test_hop_mint_carries_s2_meta_when_reference_dict_has_it(store) -> None:
+    """When the S2 reference dict carries abstract/fields/citation_count
+    (beyond ``_load_s2_references``'s usual doi/title/year shape), the
+    freshly-minted next-hop stub's ``refs.meta`` gets the mint-time S2
+    patch (``s2_enriched_at`` + abstract) — so ``stub_rank`` skips the
+    redundant enrich round-trip for it."""
+    _seed_paper(
+        store,
+        cite_key="frontier2",
+        blocks=["The device was held at 2.4 kV [1]."],
+        identifiers=[("doi", "10.1/frontier2")],
+    )
+    fid = _seed_finding(store, cite_key="frontier2")
+
+    s2_refs = [
+        {
+            "doi": "10.1/primary-rich",
+            "title": "Primary measurement, richly described",
+            "year": 2010,
+            "abstract": "the primary's abstract",
+            "fields": ["Physics"],
+            "citation_count": 12,
+        }
+    ]
+    with patch(
+        "precis.workers.chase._load_s2_references",
+        return_value=s2_refs,
+    ):
+        result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.meta FROM refs r JOIN ref_identifiers ri "
+            "ON ri.ref_id = r.ref_id "
+            "WHERE ri.id_kind = 'doi' AND ri.id_value = %s",
+            ("10.1/primary-rich",),
+        ).fetchone()
+    assert row is not None
+    meta = dict(row[0] or {})
+    assert meta.get("s2_enriched_at") is not None
+    assert meta.get("abstract") == "the primary's abstract"
+    assert meta.get("s2_fields") == ["Physics"]
+    assert meta.get("s2_citation_count") == 12
+    assert meta.get("set_by") == "chase"
+
+
 # ── cycle: next-hop would revisit an earlier chain entry ────────────
 
 

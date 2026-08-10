@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from semanticscholar import SemanticScholar
@@ -234,6 +235,62 @@ def _normalize(paper: Any) -> dict[str, Any]:
         # stub_rank pass wants it without a second S2 round-trip.
         "citation_count": getattr(paper, "citationCount", None),
     }
+
+
+def s2_stub_meta(resolved: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    """The ``refs.meta`` patch to write at MINT time for a stub that already
+    holds a normalized S2 dict (this module's :func:`_normalize` shape).
+
+    This is the mint-time twin of ``stub_rank._merge_enrich_meta``'s
+    resolved-case patch: stamping ``s2_enriched_at`` here is what makes
+    ``stub_rank._claim_enrich_candidates``'s ``meta->>'s2_enriched_at' IS
+    NULL`` predicate skip this stub — a caller that already paid for an
+    S2 round-trip at mint time shouldn't force ``stub_rank`` to pay for a
+    second one later. Includes ``abstract`` only when ``resolved`` carries
+    a non-empty one (a caller merging this into a fresh mint's meta has no
+    "existing abstract" to protect, unlike ``stub_rank``'s never-clobber
+    merge).
+    """
+    patch: dict[str, Any] = {
+        "s2_enriched_at": now.isoformat(),
+        "s2_fields": resolved.get("fields") or [],
+        "s2_citation_count": resolved.get("citation_count"),
+    }
+    abstract = resolved.get("abstract")
+    if isinstance(abstract, str) and abstract.strip():
+        patch["abstract"] = abstract
+    return patch
+
+
+def s2_stub_meta_if_present(
+    resolved: dict[str, Any], *, now: datetime
+) -> dict[str, Any] | None:
+    """:func:`s2_stub_meta`, but only when ``resolved`` actually carries
+    something beyond the bare title/doi/year/s2_id shape.
+
+    Some S2 call sites (e.g. the citations endpoint, called with a
+    deliberately narrow ``fields=``) hand back a dict with no
+    ``abstract``/``fields``/``citation_count`` at all. Building (and
+    stamping) the mint-time S2 patch from such a dict would set
+    ``s2_enriched_at`` on empty data — which would permanently skip
+    ``stub_rank``'s real enrich pass for that stub (its ``meta->>
+    's2_enriched_at' IS NULL`` claim predicate would never fire again).
+    This guard is the shared home for that check — was hand-copied at
+    ``workers/chase.py::_ref_to_target`` and ``workers/inbound_chase.py::
+    _resolve_or_ingest_citer`` before this helper existed. Returns
+    ``None`` when ``resolved`` has no non-empty ``abstract``, no truthy
+    ``fields``, and ``citation_count is None``; otherwise the same patch
+    :func:`s2_stub_meta` would build.
+    """
+    abstract = resolved.get("abstract")
+    has_abstract = isinstance(abstract, str) and bool(abstract.strip())
+    if not (
+        has_abstract
+        or resolved.get("fields")
+        or resolved.get("citation_count") is not None
+    ):
+        return None
+    return s2_stub_meta(resolved, now=now)
 
 
 def _dedup_fields(paper: Any) -> list[str]:
