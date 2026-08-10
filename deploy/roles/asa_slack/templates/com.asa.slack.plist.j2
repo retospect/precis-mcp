@@ -43,6 +43,13 @@
     <string>remote</string>
     <key>PRECIS_EMBEDDER_URL</key>
     <string>http://127.0.0.1:8181</string>
+    {# Hosted-OSS backend for the BIG placement chain's cloud rungs (and any
+       rung whose served_by endpoint isn't acquirable). Dispatches to this
+       base URL with a vault-resolved key — same value the worker daemons
+       use. Without it, an un-served rung builds a client at url="" and
+       that rung of the chain fails. Same var as asa_bot's plist. #}
+    <key>PRECIS_LLM_BASE_URL</key>
+    <string>https://openrouter.ai/api/v1</string>
   </dict>
 
   <key>RunAtLoad</key>

@@ -109,7 +109,6 @@
 - [`lint-and-except-debt`](./lint-and-except-debt.md) **idea** — Tighten broad `except Exception` (317 across 141 files; many hide spin
 - [`llm-backend-removal`](./llm-backend-removal.md) **idea** — The fleet-wide anthropic/openai binary switch must be hand-synced with each
 - [`llm-catalog-wire-policy`](./llm-catalog-wire-policy.md) **idea** — `src/precis/utils/llm/requirement.py::choose_model` and
-- [`llm-routing-vs-serving-split`](./llm-routing-vs-serving-split.md) **idea** — Local BIG (Qwen3-235B on castor+pollux) is unreachable from melchior, where
 - [`llm-summarize-throughput`](./llm-summarize-throughput.md) **idea** — Sustained slot contention between the two melchior workers is benign (the
 - [`llm-tag-vocab`](./llm-tag-vocab.md) **idea** — plan_tick always passes tools_needed=True, so `LLM:small`/`LLM:medium` todo
 - [`local-backup-pickup`](./local-backup-pickup.md) **idea** — Make the file-server backup land on this laptop, where Backblaze picks it

@@ -6,10 +6,11 @@ no public endpoint needed, same always-on-daemon shape as the Discord
 bridge). Every conversation is a thread from message 1: asa never posts to
 a channel root, always ``thread_ts = incoming.thread_ts or incoming.ts``.
 
-Unlike the Discord bridge (which streams via ``dispatch_async`` at
-``Tier.FRONTIER``), asa-slack makes one blocking
+Unlike the Discord bridge (whose default ``local`` lane also walks the BIG
+chain, but whose ``/model opus`` escape streams via ``dispatch_async``),
+asa-slack makes one blocking
 ``precis.utils.llm.router.dispatch()`` call per turn, forced to
-``Tier.BIG`` (sonnet) with a hard kind-allowlist
+``Tier.BIG`` (the operator's placement chain — OSS-first) with a hard kind-allowlist
 (``asa_slack.kind_policy``) baked in via ``env_overlay`` — Slack is a
 semi-trusted, multi-user surface, and this is the router's governance
 (budget breaker, route-log, per-turn cost/turn caps) for free.
@@ -46,12 +47,13 @@ from slack_bolt.app.async_app import AsyncApp
 from slack_sdk.errors import SlackApiError
 
 from asa_bot import preamble
+from asa_bot.claude_invoke import _warm_runtime
 from asa_bot.precis_client import PrecisClient, health_loop
 from asa_slack import identity as identity_check
 from asa_slack.config import Config, load_slack_tokens
 from asa_slack.conv_slug import compute_slug
 from asa_slack.kind_policy import slack_kinds_disabled
-from precis.utils.llm.router import LlmRequest, Tier, dispatch
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch
 from precis.utils.msgsplit import split_message
 
 log = logging.getLogger(__name__)
@@ -74,6 +76,20 @@ _IGNORED_SUBTYPES = frozenset(
         "thread_broadcast",
     }
 )
+
+
+def _dispatch_warm(req: LlmRequest) -> LlmResult:
+    """``dispatch`` with the in-process precis runtime bound first.
+
+    Without the warm-up this process has no bound store, so
+    ``live_config.chain_override`` reads dark and every turn falls back to
+    the default (claude) chain — the same first-turn ordering bug asa_bot's
+    ``local`` lane fixed; here it's every-turn, since nothing else in
+    asa-slack ever binds a store. Runs on the ``to_thread`` worker, off the
+    event loop; cached after the first call.
+    """
+    _warm_runtime()
+    return dispatch(req)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -277,7 +293,7 @@ class AsaSlack:
             env_overlay={"PRECIS_KINDS_DISABLED": slack_kinds_disabled()},
             source="asa-slack",
         )
-        result = await asyncio.to_thread(dispatch, req)
+        result = await asyncio.to_thread(_dispatch_warm, req)
 
         # 5. Reply.
         body = (result.text or "").strip()
