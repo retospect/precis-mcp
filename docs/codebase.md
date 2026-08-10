@@ -11,7 +11,7 @@
 > **Reader:** an agent (or human) about to *edit this repo*. Internals —
 > table names, worker names, ADR numbers — are the payload here; name them.
 >
-> _Verified @ `3a202ffe`._
+> _Verified @ `0edd67f7`._
 
 ## What precis is
 
@@ -84,8 +84,8 @@ Surfaces on top: the **MCP server** (`precis serve`, the 7 verbs — the
 product), the **CLI** (`precis …`), the **web UI** (`src/precis_web/`), the
 **Discord bridge** (`src/asa_bot/`, `[asa]` extra, stdio to the server), and
 the **Slack bridge** (`src/asa_slack/`, `[asa-slack]` extra) — a sibling that
-routes chat turns through the ADR-0046 `dispatch()` seam (forced sonnet + a
-hard per-turn kind-allowlist). Both bridges now route through
+routes chat turns through the ADR-0046 `dispatch()` seam (forced `Tier.BIG` +
+a hard per-turn kind-allowlist). Both bridges now route through
 the router seam: Discord's `claude_invoke.invoke()` has two lanes picked by
 the effective `--model` — the `local` sentinel (deployed default) walks the
 BIG placement chain via sync `dispatch()` in a worker thread (no event
