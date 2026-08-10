@@ -16,9 +16,11 @@ from typing import Any
 import pytest
 
 import precis.workers.bib_parse as bib_parse_mod
+from precis.workers import ref_lease
 from precis.workers.bib_parse import (
     BIB_PARSE_VERSION,
     _chunk_is_bibliography,
+    _claim,
     _collect_paper_entries,
     _extract_acs_fields,
     _extract_doi_from_text,
@@ -508,6 +510,85 @@ class TestConvergence:
         assert journal == "Nature"
         assert parse_version == BIB_PARSE_VERSION + 1
         assert match_conf is None  # reset -- the stale row was deleted + reinserted
+
+
+# ── claim-time attempt lease (gripe 202116 -- cross-host double-claim) ──
+
+
+class TestClaimLease:
+    def test_second_claimer_skips_a_lease_held_row(self, store: Any) -> None:
+        """Mirrors ``run_bib_parse_pass``'s claim step: SELECT ... FOR
+        UPDATE, stamp the attempt lease, commit -- all in one transaction.
+        A sibling host's ``_claim`` (a fresh transaction, after the first
+        one committed and released its row lock) must not re-select the
+        same paper while the lease is still live, even though nothing
+        holds the row lock anymore."""
+        ref_id = seed_ref(store, title="a bibliography paper")
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            chunk_kind="paragraph",
+            text="- [1] A. One, B. Two, Nature 2018, 5, 100.",
+        )
+
+        # Host A's claim transaction.
+        with store.pool.connection() as conn:
+            first_claim = _claim(conn, limit=10, ref_ids=[ref_id])
+            assert first_claim == [(ref_id, "a bibliography paper")]
+            for rid, _title in first_claim:
+                ref_lease.stamp_attempt(store, rid, bib_parse_mod._LEASE_NS, conn=conn)
+            conn.commit()
+
+        # Host B's claim -- the row lock from host A's transaction is long
+        # gone (it committed), but the durable ref_tags lease still excludes
+        # this still-processing paper.
+        with store.pool.connection() as conn:
+            second_claim = _claim(conn, limit=10, ref_ids=[ref_id])
+        assert second_claim == []
+
+    def test_expired_lease_is_reclaimable(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crashed/wedged worker's claim must self-heal once its lease's
+        TTL expires -- not strand the paper forever."""
+        monkeypatch.setattr(bib_parse_mod, "_crossref_query", lambda *a, **k: [])
+        ref_id = seed_ref(store, title="an ordinary paper")
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            chunk_kind="paragraph",
+            text="Just an ordinary paragraph with no citations in it at all.",
+        )
+
+        with store.pool.connection() as conn:
+            claimed = _claim(conn, limit=10, ref_ids=[ref_id])
+            assert claimed == [(ref_id, "an ordinary paper")]
+            for rid, _title in claimed:
+                ref_lease.stamp_attempt(store, rid, bib_parse_mod._LEASE_NS, conn=conn)
+            conn.commit()
+
+        # Still leased -- a normal sweep (real run_bib_parse_pass) does not
+        # re-select this paper.
+        with store.pool.connection() as conn:
+            assert _claim(conn, limit=10, ref_ids=[ref_id]) == []
+        result = run_bib_parse_pass(store, client=_FakeClient("{}"), ref_ids=[ref_id])
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+
+        # Expire the lease (simulated here rather than waiting out the real
+        # cooldown, mirroring axis_pass's equivalent test).
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE ref_tags SET expires_at = now() - interval '1 minute' "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            conn.commit()
+
+        retried = run_bib_parse_pass(store, client=_FakeClient("{}"), ref_ids=[ref_id])
+        assert retried == {"claimed": 1, "ok": 1, "failed": 0}
+        assert _meta_version(store, ref_id) == BIB_PARSE_VERSION
 
 
 # ── matcher (AC 3 — mocked Crossref, memoization, safe_get-only) ───────

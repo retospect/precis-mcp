@@ -59,6 +59,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
+from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,21 @@ BIB_PARSE_VERSION = 1
 #: Key stamped onto ``refs.meta`` (paper-level convergence marker — see
 #: module docstring).
 _META_VERSION_KEY = "bib_parse_version"
+
+#: Claim-time attempt-lease namespace (:mod:`precis.workers.ref_lease`,
+#: gripe 202116): ``_claim``'s ``FOR UPDATE OF r SKIP LOCKED`` only holds
+#: the row lock for the duration of the claim SELECT — ``run_bib_parse_pass``
+#: commits that transaction immediately after, long before the multi-minute
+#: parse/Crossref/LLM work that follows. A durable ``ref_tags`` lease,
+#: stamped in the SAME claim transaction before it commits, is what a
+#: sibling host's ``_claim`` actually respects; the row lock alone let two
+#: hosts race the same still-unstamped paper (double LLM/Crossref cost, one
+#: side dying on a ``paper_bib_entries`` lock timeout). Cleared on success
+#: so a legitimate re-trigger (a ``BIB_PARSE_VERSION`` bump) isn't blocked
+#: by a stale lease; left in place on failure so a crashed/wedged worker's
+#: claim self-heals after :data:`ref_lease.ATTEMPT_COOLDOWN_MIN` instead of
+#: stranding the paper forever.
+_LEASE_NS = "BIBPARSE"
 
 # ── content-based bibliography detection + entry splitting ────────────
 
@@ -610,11 +626,16 @@ def _claim(
     the sweep (targeted backfill / tests); ``None`` sweeps the corpus.
 
     ``FOR UPDATE OF r SKIP LOCKED`` (mirrors ``hub_refine._claim_hubs_due_
-    for_refine``): this pass is ``_SYS`` (every node) and each claimed
-    paper costs many external Crossref/LLM calls before it's stamped, so
-    two nodes racing the same unstamped batch would double that cost —
-    a concurrent claim already holding one of these rows drops it from
-    this call's returned set.
+    for_refine``) drops a row a concurrent claim already holds — but only
+    for the instant both SELECTs overlap; the caller commits this
+    transaction right after the SELECT, well before the multi-minute
+    parse/Crossref work runs, so the row lock alone doesn't stop a sibling
+    host's *later* claim from re-selecting the same still-unstamped paper.
+    The additional :func:`ref_lease.exclude_clause` check is what actually
+    closes that window — it excludes a ref currently under an unexpired
+    claim-time attempt lease (:data:`_LEASE_NS`, stamped by the caller in
+    the same transaction as this SELECT, see ``run_bib_parse_pass`` —
+    gripe 202116).
     """
     ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
     sql = f"""
@@ -630,6 +651,7 @@ def _claim(
             NOT (r.meta ? %(mk)s)
             OR COALESCE((r.meta->>%(mk)s)::int, 0) < %(ver)s
           )
+          {ref_lease.exclude_clause("r.ref_id", "attempt_ns")}
         ORDER BY r.ref_id
         LIMIT %(limit)s
         FOR UPDATE OF r SKIP LOCKED
@@ -637,6 +659,7 @@ def _claim(
     params: dict[str, Any] = {
         "mk": _META_VERSION_KEY,
         "ver": BIB_PARSE_VERSION,
+        "attempt_ns": ref_lease.attempt_ns(_LEASE_NS),
         "limit": limit,
     }
     if ref_ids:
@@ -726,6 +749,14 @@ def run_bib_parse_pass(
     """
     with store.pool.connection() as conn:
         rows = _claim(conn, limit=batch_size, ref_ids=ref_ids)
+        # Stamp the claim-time attempt lease for every claimed paper in the
+        # SAME transaction as the claim SELECT, before it commits (see
+        # ``_claim``'s docstring / gripe 202116) — that's what makes the
+        # claim durable across the multi-minute processing window below,
+        # not the ``FOR UPDATE`` row lock alone (which is released the
+        # instant this transaction commits).
+        for ref_id, _title in rows:
+            ref_lease.stamp_attempt(store, ref_id, _LEASE_NS, conn=conn)
         conn.commit()
     if not rows:
         return {"claimed": 0, "ok": 0, "failed": 0}
@@ -755,9 +786,19 @@ def run_bib_parse_pass(
 
             with store.pool.connection() as conn:
                 _stamp_paper_version(conn, ref_id)
+                # Success — clear the attempt lease in the same transaction
+                # so a legitimate re-trigger (a BIB_PARSE_VERSION bump)
+                # isn't blocked by a stale lease left over from this run.
+                ref_lease.clear_attempt(store, ref_id, _LEASE_NS, conn=conn)
                 conn.commit()
             ok += 1
         except Exception:
+            # Deliberately do NOT clear the attempt lease here — it stays
+            # in place, braking this paper from immediate re-claim (by
+            # this host or a sibling) for ref_lease.ATTEMPT_COOLDOWN_MIN
+            # instead of re-billing Crossref/LLM every sweep. A crashed
+            # worker (never reaches this except at all) still self-heals
+            # once the lease's TTL expires.
             log.exception("bib_parse: failed ref_id=%s", ref_id)
             failed += 1
     return {"claimed": len(rows), "ok": ok, "failed": failed}
