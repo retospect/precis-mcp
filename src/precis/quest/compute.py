@@ -335,9 +335,28 @@ def _ensure_candidate_detail(
     try:
         StructureHandler(hub=hub).put(id=slug, text=json.dumps(spec), title=name)
     except Exception:
+        log.warning(
+            "ensure_candidate: StructureHandler.put raised for quest %s slug %s "
+            "— candidate not created",
+            quest_id,
+            slug,
+            exc_info=True,
+        )
         return None, False, None
     ref = store.get_ref(kind="structure", id=slug)
-    if ref is None:  # pragma: no cover - put just created it
+    if ref is None:  # pragma: no cover - insert_ref cite_key reclaim prevents this
+        # put reported success but the slug still won't resolve to a live ref.
+        # The cite_key reclaim in insert_ref (gr201814) closes the known path
+        # here; reaching this now means a *different* orphaning bug. Never
+        # silent — an uncounted candidate is exactly the invisible stall
+        # gr201814 chased. Warn loudly and skip (don't raise: one bad candidate
+        # must not discard the whole compute step's harvest).
+        log.warning(
+            "ensure_candidate: put succeeded but slug %s did not resolve to a "
+            "live structure for quest %s — candidate orphaned, skipping wire",
+            slug,
+            quest_id,
+        )
         return None, False, None
     with store.tx() as conn:
         store.add_link(

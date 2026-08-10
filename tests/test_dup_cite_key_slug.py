@@ -40,3 +40,48 @@ def test_duplicate_cite_keys_resolve_to_one_slug(store: Store) -> None:
 
     hits = store.search_refs_lexical(q="Dup", kind="paper", limit=10)
     assert any(r.id == ref.id for r, _ in hits)
+
+
+def test_soft_deleted_slug_is_reclaimed_by_new_ref(store: Store) -> None:
+    """Soft-delete must not orphan a later same-slug re-creation (gr201814).
+
+    Soft-delete only stamps ``deleted_at``; it does not release the
+    ``ref_identifiers`` cite_key row. Before the fix, a re-created same-slug
+    ref got NO cite_key (``ON CONFLICT DO NOTHING``) and ``get_ref(slug)``
+    resolved the slug to the dead ref → filtered by ``deleted_at`` → ``None``,
+    silently orphaning the new ref. ``insert_ref`` now reclaims a slug bound to
+    a soft-deleted owner.
+    """
+    first = store.insert_ref(kind="paper", slug="recycle99", title="First")
+    store.soft_delete_ref(first.id)
+    # The slug now points at a soft-deleted ref → live lookup is None.
+    assert store.get_ref(kind="paper", id="recycle99") is None
+
+    # A new ref reusing the same (content-addressed) slug reclaims it.
+    second = store.insert_ref(kind="paper", slug="recycle99", title="Second")
+    assert second.id != first.id
+    assert second.slug == "recycle99"
+
+    got = store.get_ref(kind="paper", id="recycle99")
+    assert got is not None
+    assert got.id == second.id  # the live ref, not the dead one
+    assert got.title == "Second"
+
+
+def test_live_slug_is_not_stolen_by_a_second_insert(store: Store) -> None:
+    """The reclaim steals only from *soft-deleted* owners — a slug held by a
+    LIVE ref is never reassigned by a later same-slug insert (the
+    one-live-ref-per-slug invariant; the conflict still no-ops)."""
+    first = store.insert_ref(kind="paper", slug="held42", title="Holder")
+    second = store.insert_ref(kind="paper", slug="held42", title="Interloper")
+
+    # The interloper did not grab the slug; it still resolves to the holder.
+    got = store.get_ref(kind="paper", id="held42")
+    assert got is not None
+    assert got.id == first.id
+    assert got.title == "Holder"
+    # The interloper row exists (reachable by numeric id) but carries no
+    # cite_key — a live conflict is left untouched.
+    assert second.id != first.id
+    by_num = store.get_ref(kind="paper", id=second.id)
+    assert by_num is not None and by_num.title == "Interloper"

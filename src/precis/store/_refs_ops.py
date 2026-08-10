@@ -204,11 +204,29 @@ class RefsMixin:
                 # kind uses id_kind='cite_key' uniformly so the
                 # correlated subquery in ``_REFS_COLS`` resolves with a
                 # single predicate.
+                #
+                # Reclaim-on-conflict: a slug's cite_key row is NOT released
+                # when its ref is soft-deleted (soft-delete only stamps
+                # ``deleted_at``). A plain ``DO NOTHING`` would then leave a
+                # re-created same-slug ref with NO cite_key, and ``get_ref``
+                # (which filters ``deleted_at IS NULL`` *after* resolving the
+                # slug→ref_id) would resolve the slug to the dead ref → None —
+                # silently orphaning the new ref (gr201814, seen across every
+                # content-addressed kind, e.g. quest candidate structures). So
+                # steal the slug from a *soft-deleted* owner; a conflict with a
+                # LIVE ref still no-ops (the WHERE fails), preserving the
+                # one-live-ref-per-slug invariant.
                 c.execute(
                     "INSERT INTO ref_identifiers "
                     "(id_kind, id_value, ref_id, source) "
                     "VALUES (%s, %s, %s, %s) "
-                    "ON CONFLICT (id_kind, id_value) DO NOTHING",
+                    "ON CONFLICT (id_kind, id_value) DO UPDATE "
+                    "  SET ref_id = EXCLUDED.ref_id, source = EXCLUDED.source "
+                    "  WHERE EXISTS ("
+                    "    SELECT 1 FROM refs r "
+                    "    WHERE r.ref_id = ref_identifiers.ref_id "
+                    "      AND r.deleted_at IS NOT NULL"
+                    "  )",
                     ("cite_key", slug, ref_id, provider),
                 )
             # Re-fetch the row with the full _REFS_COLS projection so

@@ -1351,18 +1351,42 @@ def run_quest_tick(
                         ruled += fstep.ruled_out
                         graduated += fstep.graduated
                         proposals_committed += len(names)
-                        append_entry(
-                            store,
-                            quest_id,
-                            text=(
-                                f"committed after re-prompt: {', '.join(names)} — "
-                                f"model stalled {stall} tick(s) with no experiment"
-                            ),
-                            entry_type="decision",
-                            by=by,
-                        )
-                        added += 1
-                        stall = 0
+                        if fstep.sims_dispatched > 0:
+                            append_entry(
+                                store,
+                                quest_id,
+                                text=(
+                                    f"committed after re-prompt: {', '.join(names)} — "
+                                    f"model stalled {stall} tick(s) with no experiment"
+                                ),
+                                entry_type="decision",
+                                by=by,
+                            )
+                            added += 1
+                            stall = 0
+                        else:
+                            # The ladder returned a proposal but nothing reached
+                            # simulation (e.g. a candidate materialised without
+                            # wiring/dispatch — gr201814). Report the truth,
+                            # carrying the step notes, so the logbook is
+                            # self-diagnosing rather than claiming a commit that
+                            # never happened — and leave ``stall`` advanced so
+                            # the next tick keeps pressing.
+                            detail = (
+                                "; ".join(n for n in fstep.notes if n) or "no dispatch"
+                            )
+                            append_entry(
+                                store,
+                                quest_id,
+                                text=(
+                                    f"re-prompt proposed {', '.join(names)} but 0 "
+                                    f"sims dispatched ({detail}) — still stalled "
+                                    f"{stall} tick(s)"
+                                ),
+                                entry_type="observation",
+                                by=by,
+                            )
+                            added += 1
                     elif ladder_had_error:
                         # LLM transport/breaker/quota trouble, not a genuine
                         # decline — distinct from the branch below so the

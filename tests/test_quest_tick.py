@@ -1122,6 +1122,59 @@ class TestCommitReRepromptLadder:
             for b in self._logs(store, qid)
         )
 
+    def _stub_zero_dispatch(self, monkeypatch: Any, *, note: str) -> None:
+        """A fake ``run_compute_step`` that materialises NOTHING — even a
+        non-empty proposals list dispatches 0 sims (the gr201814 orphan case:
+        the candidate was created but never wired/dispatched)."""
+
+        def _fake(
+            _store: Any,
+            _quest_id: int,
+            proposals: list[dict[str, Any]],
+            *,
+            hub: Any = None,
+            dispatch: bool = True,
+            by: str = "agent",
+        ) -> Any:
+            return compute_mod.ComputeStep(
+                candidates_created=0,
+                sims_dispatched=0,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[note] if proposals else [],
+                graduated=0,
+            )
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _fake)
+
+    def test_reprompt_that_dispatches_nothing_is_reported_honestly(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # The model proposes on the ladder, but compute dispatches 0 sims
+        # (candidate orphaned — gr201814). The logbook must NOT claim a commit
+        # that never happened: it reports the truth (carrying the step notes)
+        # and leaves the stall counter advanced.
+        self._stub_zero_dispatch(monkeypatch, note="candidate orphaned")
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([self._EMPTY, self._EMPTY, self._proposal()])
+        run_quest_tick(store, qid, dispatch_fn=disp, compute=True)  # tick 1: dry
+        out = run_quest_tick(
+            store, qid, dispatch_fn=disp, compute=True
+        )  # tick 2: ladder
+        assert out.status == "succeeded"
+        assert out.sims_dispatched == 0
+        logs = self._logs(store, qid)
+        # No false "committed" claim …
+        assert not any("committed after re-prompt" in (b.text or "") for b in logs)
+        # … but an honest 0-dispatch observation that surfaces the step notes.
+        honest = [b for b in logs if "0 sims dispatched" in (b.text or "")]
+        assert honest, "expected an honest 0-dispatch observation in the logbook"
+        assert "candidate orphaned" in (honest[-1].text or "")
+        # Stall NOT reset — nothing actually reached simulation.
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 2
+
     def test_empty_reprompt_escalates_one_tier_then_succeeds(
         self, store: Any, monkeypatch: Any
     ) -> None:
