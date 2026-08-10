@@ -158,6 +158,13 @@
        minted `autocatpath_explore` job at the GPU node; unset → it force-EMTs
        and the job never reaches the GPU node's MACE. Mirrors the precis-web plist,
        which sets the same var for the pathway-kind MCP surface. #}
+    {% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %}
+    {# Without ENABLED the worker's PathwayHandler InitErrors on every dispatch
+       load ("pathway kind is off") — the web plist sets it, the worker must
+       too; same autocatpath_plugin gate. #}
+    <key>PRECIS_AUTOCATPATH_ENABLED</key>
+    <string>1</string>
+    {% endif %}
     {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
     <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
     <string>{{ precis_capabilities.autocatpath | first }}</string>
