@@ -68,11 +68,16 @@
   #
   # The ``mermaid`` extra (mermaidx, pure wheels) backs the diagram_propose
   # tick's mermaid render/validate (ADR 0057) on the agent worker.
+  #
+  # ``catalyst`` (autocatpath_plugin hosts only) pulls the light pure
+  # autocatpath engine so PathwayHandler imports — the plist sets
+  # PRECIS_AUTOCATPATH_ENABLED, but without the module the handler
+  # InitErrors on every pathway dispatch (seen melchior 2026-08-09).
   ansible.builtin.shell: |
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[paper,patent,external,mermaid] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
+      'precis-mcp[paper,patent,external,mermaid{% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true
   register: precis_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
