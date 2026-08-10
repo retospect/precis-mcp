@@ -8,6 +8,13 @@ Mixin on :class:`precis.store.Store`. Backs slice 6 of
 6b's only writer is :meth:`sync_host_resource_slots`, called by the
 ``heartbeat`` reporter with the self-probe's verdict. The atomic
 reserve/release helpers slice 6c adds land here too; 6b is upsert + read.
+
+``resource_slot_holds`` (migration ``0118_resource_slot_holds.sql``) is a
+TTL lease alongside the bare ``free`` counter, closing the crash-leak gap a
+2026-08-10 fleet-wide outage exposed: a holder killed between reserve and
+release never refunds. :func:`insert_slot_hold`/:func:`delete_slot_hold`
+bracket a reservation's lifetime; :func:`reclaim_expired_slot_holds` (swept
+by the heartbeat pass) deletes expired holds and refunds their units.
 """
 
 from __future__ import annotations
@@ -23,8 +30,9 @@ from psycopg import Connection
 class ResourceSlot:
     """One row from ``resource_slots``.
 
-    ``free`` is the live slot count (``capacity - Σ reservations``); until
-    slice 6c wires reserve-at-claim it always equals ``capacity``.
+    ``free`` is the live slot count (``capacity - Σ reservations``). Each
+    reservation is backed by a TTL ``resource_slot_holds`` row so a crashed
+    holder's unit is reclaimed (refunded) rather than leaked forever.
     """
 
     host: str
@@ -142,6 +150,76 @@ def release_resource_slots(
     """Refund a prior reservation on ``host`` (``free += units``, capped)."""
     for resource, units in requirements.items():
         conn.execute(_RELEASE_ONE, (int(units), host, resource))
+
+
+# ── Crash-safe reclaim (holds ledger, 0118) ───────────────────────────────
+#
+# Every reservation the local-serving path takes also opens a TTL hold row
+# here; the heartbeat pass sweeps expired ones and refunds their units, so a
+# holder killed before release() self-heals within one TTL instead of
+# leaking `free` forever (2026-08-10 fleet-wide outage).
+
+_INSERT_HOLD = (
+    "INSERT INTO resource_slot_holds (host, resource, units, holder, expires_at) "
+    "VALUES (%s, %s, %s, %s, now() + make_interval(secs => %s)) "
+    "RETURNING id"
+)
+
+_DELETE_HOLD = "DELETE FROM resource_slot_holds WHERE id = %s RETURNING id"
+
+# CTE: delete every expired hold, group its units by (host, resource), and
+# refund each group in one UPDATE — capped at capacity, same discipline as
+# `_RELEASE_ONE`, so a hold whose refund already happened via a normal
+# release (this sweep runs first) can't inflate `free` past the ceiling.
+# `resource_slots` may lack the row entirely (deleted/reseeded by the
+# capability probe) — the join drops those groups, nothing to refund, but
+# the hold is still deleted and still counted. The final SELECT references
+# both writable CTEs (via scalar subqueries) so both always execute and the
+# returned count is unconditional — independent of whether any refund UPDATE
+# actually matched a row.
+_RECLAIM_EXPIRED_HOLDS = (
+    "WITH expired AS ("
+    "  DELETE FROM resource_slot_holds WHERE expires_at < now() "
+    "  RETURNING host, resource, units"
+    "), grouped AS ("
+    "  SELECT host, resource, SUM(units) AS units_sum FROM expired "
+    "  GROUP BY host, resource"
+    "), refunded AS ("
+    "  UPDATE resource_slots s SET free = LEAST(s.capacity, s.free + g.units_sum) "
+    "  FROM grouped g "
+    "  WHERE s.host = g.host AND s.resource = g.resource "
+    "  RETURNING s.host"
+    ") "
+    "SELECT (SELECT COUNT(*) FROM expired), (SELECT COUNT(*) FROM refunded)"
+)
+
+
+def insert_slot_hold(
+    conn: Connection, host: str, resource: str, units: int, holder: str, ttl_s: float
+) -> int:
+    """Open a TTL hold bracketing a reservation. ``holder`` is a free-text
+    identity (``host:pid``) for operator debugging only — reclaim doesn't
+    consult it. Returns the new hold's id."""
+    row = conn.execute(
+        _INSERT_HOLD, (host, resource, int(units), holder, float(ttl_s))
+    ).fetchone()
+    assert row is not None  # INSERT ... RETURNING always yields a row
+    return int(row[0])
+
+
+def delete_slot_hold(conn: Connection, hold_id: int) -> bool:
+    """Close a hold on normal release. ``True`` iff a row was deleted — a
+    miss means the sweep already reclaimed it (the refund already
+    happened), so the caller must NOT refund again."""
+    return conn.execute(_DELETE_HOLD, (hold_id,)).fetchone() is not None
+
+
+def reclaim_expired_slot_holds(conn: Connection) -> int:
+    """Delete every expired hold and refund its units back to
+    ``resource_slots.free`` (grouped + capped at capacity in one
+    statement). Returns the number of expired holds deleted."""
+    row = conn.execute(_RECLAIM_EXPIRED_HOLDS).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 class ResourceSlotsMixin:
@@ -294,10 +372,20 @@ class ResourceSlotsMixin:
                         deleted += 1
         return len(desired), deleted
 
+    def reclaim_expired_slot_holds(self) -> int:
+        """Sweep expired ``resource_slot_holds`` and refund their units
+        (heartbeat pass, best-effort self-heal for a crashed holder)."""
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                return reclaim_expired_slot_holds(conn)
+
 
 __all__ = [
     "ResourceSlot",
     "ResourceSlotsMixin",
+    "delete_slot_hold",
+    "insert_slot_hold",
+    "reclaim_expired_slot_holds",
     "release_resource_slots",
     "reserve_resource_slots",
 ]

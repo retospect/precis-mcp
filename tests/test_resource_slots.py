@@ -137,3 +137,91 @@ def test_delete_soft_signal_spares_hard_namesake(store) -> None:
     store.delete_soft_signal("dh2", "podman")  # wrong-kind delete is a no-op
     rows = {s.resource: s for s in store.resource_slots_for_host("dh2")}
     assert rows["podman"].kind == "hard" and rows["podman"].capacity == 3
+
+
+# ── crash-safe reclaim (resource_slot_holds, migration 0118) ───────────────
+
+
+def _insert_hold(store, host, resource, units, *, ttl_s: float, holder="t:1") -> int:
+    from precis.store._resource_slots_ops import insert_slot_hold
+
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            return insert_slot_hold(conn, host, resource, units, holder, ttl_s)
+
+
+def test_insert_delete_hold_round_trip(store) -> None:
+    from precis.store._resource_slots_ops import delete_slot_hold
+
+    hold_id = _insert_hold(store, "hh", "llm:x", 1, ttl_s=60.0)
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            assert delete_slot_hold(conn, hold_id) is True
+            # a second delete of the same id finds nothing
+            assert delete_slot_hold(conn, hold_id) is False
+
+
+def test_reclaim_refunds_only_expired_holds(store) -> None:
+    store.sync_host_resource_slots("hh1", {"llm:x": 2})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slots SET free = 0 WHERE host = 'hh1' AND resource = 'llm:x'"
+        )
+        conn.commit()
+    _insert_hold(store, "hh1", "llm:x", 1, ttl_s=-1.0)  # already expired
+    live_id = _insert_hold(store, "hh1", "llm:x", 1, ttl_s=3600.0)  # not expired
+
+    n = store.reclaim_expired_slot_holds()
+    assert n == 1
+    free = {s.resource: s.free for s in store.resource_slots_for_host("hh1")}
+    assert free["llm:x"] == 1  # only the expired hold's unit refunded
+
+    # the live hold is still present (not swept)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM resource_slot_holds WHERE id = %s", (live_id,)
+        ).fetchone()
+    assert row is not None
+
+
+def test_reclaim_sums_multiple_expired_holds(store) -> None:
+    store.sync_host_resource_slots("hh2", {"llm:x": 4})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slots SET free = 0 WHERE host = 'hh2' AND resource = 'llm:x'"
+        )
+        conn.commit()
+    _insert_hold(store, "hh2", "llm:x", 1, ttl_s=-1.0)
+    _insert_hold(store, "hh2", "llm:x", 2, ttl_s=-1.0)
+
+    n = store.reclaim_expired_slot_holds()
+    assert n == 2
+    free = {s.resource: s.free for s in store.resource_slots_for_host("hh2")}
+    assert free["llm:x"] == 3
+
+
+def test_reclaim_caps_at_capacity(store) -> None:
+    """A hold's refund never pushes ``free`` past ``capacity`` (belt and
+    suspenders alongside the ordinary release path's cap)."""
+    store.sync_host_resource_slots("hh3", {"llm:x": 1})
+    _insert_hold(store, "hh3", "llm:x", 1, ttl_s=-1.0)  # free already == capacity
+
+    n = store.reclaim_expired_slot_holds()
+    assert n == 1
+    free = {s.resource: s.free for s in store.resource_slots_for_host("hh3")}
+    assert free["llm:x"] == 1  # not 2 — clamped
+
+
+def test_reclaim_ignores_missing_slot_row(store) -> None:
+    """A hold whose ``resource_slots`` row is gone (reseeded/deleted by the
+    capability probe) is still swept + counted; there's simply nothing to
+    refund."""
+    _insert_hold(store, "ghost-host", "llm:gone", 1, ttl_s=-1.0)
+    n = store.reclaim_expired_slot_holds()
+    assert n == 1
+    assert store.resource_slots_for_host("ghost-host") == []
+
+
+def test_reclaim_returns_zero_when_nothing_expired(store) -> None:
+    _insert_hold(store, "hh4", "llm:x", 1, ttl_s=3600.0)
+    assert store.reclaim_expired_slot_holds() == 0

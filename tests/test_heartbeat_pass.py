@@ -48,6 +48,42 @@ def test_heartbeat_pass_touches_no_scheduler_lease_row(store, monkeypatch) -> No
     assert before == after
 
 
+# ── crash-safe reclaim (resource_slot_holds sweep, 0118) ───────────────────
+
+
+def test_report_resource_slots_sweeps_expired_holds_and_warns(store, caplog) -> None:
+    """A resource NOT in the real self-probe's vocabulary (``llm:*``, mirroring
+    slice-7 local serving) so the probe/sync half of the pass can't clobber the
+    row this test seeds — only the reclaim sweep should touch it."""
+    from precis.store._resource_slots_ops import insert_slot_hold
+
+    store.sync_host_resource_slots("test-host-4", {"llm:heartbeat-test": 2})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slots SET free = 1 "
+            "WHERE host = 'test-host-4' AND resource = 'llm:heartbeat-test'"
+        )
+        conn.commit()
+        with conn.transaction():
+            insert_slot_hold(conn, "test-host-4", "llm:heartbeat-test", 1, "t:1", -1.0)
+
+    with caplog.at_level("WARNING", logger="precis.workers.heartbeat"):
+        hb._report_resource_slots(store, "test-host-4")
+
+    free = {s.resource: s.free for s in store.resource_slots_for_host("test-host-4")}
+    assert free["llm:heartbeat-test"] == 2  # the leaked unit was reclaimed
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("reclaimed 1 expired resource-slot hold" in m for m in msgs)
+
+
+def test_report_resource_slots_no_warning_when_nothing_expired(store, caplog) -> None:
+    store.sync_host_resource_slots("test-host-5", {"llm:heartbeat-test-2": 1})
+    with caplog.at_level("WARNING", logger="precis.workers.heartbeat"):
+        hb._report_resource_slots(store, "test-host-5")
+    msgs = [r.getMessage() for r in caplog.records]
+    assert not any("reclaimed" in m for m in msgs)
+
+
 def test_heartbeat_registered_as_a_system_profile_pass() -> None:
     from precis.workers.registry import SERVICES_BY_NAME
 

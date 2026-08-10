@@ -157,7 +157,13 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   `resource_slots` row; seed `llm:` rows from the host's real llama-swap
   model ids; residency is hysteretic (spin-up earned by a pile crossing
   high-water, released below low-water — never load/unload per call; a lone
-  big call rides the cloud rung instead).
+  big call rides the cloud rung instead). Crash-safe reclaim shipped
+  2026-08-10: `resource_slot_holds` TTL ledger + heartbeat sweep refunds a
+  `local_serving` reservation a killed holder never released, fixing the
+  fleet-wide `llm:*` `free=0` outage that day. Still open: the job-claim
+  path (`workers/executors/_common.py` resource reservation) reserves
+  without a hold, so a crashed job holder leaks its slot the same way —
+  extend holds there or accept the gap.
 - **§C — GPU topology fuse/split — gated, likely shelved.** One Spark's
   ~119 GB already serves ~120 B @ 8-bit / ~200 B @ 4-bit; fusion pays only
   for a frontier model that cannot quantize onto one unit, and RDMA makes a

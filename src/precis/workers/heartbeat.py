@@ -502,6 +502,20 @@ def _report_resource_slots(store: object, host: str) -> str:
     except Exception:
         log.warning("heartbeat: resource-slot probe/sync failed", exc_info=True)
         return "n/a"
+    # Crash-safe reclaim (0118): sweep any resource_slot_holds a killed process
+    # left expired, refunding the leaked units — the 2026-08-10 fleet-wide
+    # llm:* outage's fix. Separate try so a sweep hiccup never blocks the
+    # probe/sync above or the advertise below.
+    try:
+        n = store.reclaim_expired_slot_holds()  # type: ignore[attr-defined]
+        if n:
+            log.warning(
+                "heartbeat: reclaimed %d expired resource-slot hold(s) "
+                "(leaked reservations)",
+                n,
+            )
+    except Exception:
+        log.warning("heartbeat: expired-hold reclaim failed", exc_info=True)
     # Advertise this host's local llama-swap models as served_by cards + llm: slots
     # so the router routes to them directly (self-gating: no local server ⇒ no-op).
     # Best-effort + separate try so a catalog blip never fails the heartbeat.

@@ -397,3 +397,85 @@ def test_endpoint_is_host_scoped(store) -> None:
     slot = local_serving.acquire("qwen-multi")
     assert slot is not None and slot.reserved
     assert slot.endpoint == "http://127.0.0.1:11445/v1"
+
+
+# ── crash-safe reclaim (resource_slot_holds, migration 0118) ───────────────
+
+
+def test_acquire_creates_a_hold_carried_on_the_slot(store) -> None:
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    slot = local_serving.acquire("qwen")
+    assert slot is not None and slot.reserved
+    assert slot.hold_id is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT host, resource, units FROM resource_slot_holds WHERE id = %s",
+            (slot.hold_id,),
+        ).fetchone()
+    assert row == ("testnode", "llm:qwen", 1)
+
+
+def test_release_deletes_the_hold_and_refunds(store) -> None:
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    slot = local_serving.acquire("qwen")
+    assert slot is not None and slot.hold_id is not None
+    local_serving.release(slot)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM resource_slot_holds WHERE id = %s", (slot.hold_id,)
+        ).fetchone()
+    assert row is None  # hold closed
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 2  # refunded
+
+
+def test_release_after_sweep_already_reclaimed_does_not_double_refund(store) -> None:
+    """The heartbeat sweep beats a late ``release`` to an expired hold — the
+    refund already happened, so ``release`` must not refund a second time.
+
+    Capacity (5) deliberately stays above the reservation count so a stray
+    double refund is NOT masked by the ``LEAST(capacity, ...)`` clamp — it
+    would show up as an extra unit of ``free``."""
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 5)
+    first = local_serving.acquire("qwen")
+    second = local_serving.acquire("qwen")
+    third = local_serving.acquire("qwen")
+    assert first and second and third
+    assert first.hold_id is not None and second.hold_id is not None
+
+    # backdate only `second`'s hold so the sweep treats it as expired
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slot_holds SET expires_at = now() - interval '1 second' "
+            "WHERE id = %s",
+            (second.hold_id,),
+        )
+        conn.commit()
+    n = store.reclaim_expired_slot_holds()
+    assert n == 1
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 3  # 5 - 3 reserved + 1 (second's unit) refunded
+
+    # the "leaked" process finally calls release — must be a no-op, not a
+    # second refund (which would push free to 4, headroom that isn't real).
+    local_serving.release(second)
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 3  # unchanged
+
+    local_serving.release(first)
+    local_serving.release(third)
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 5  # everything legitimately released lands at full
+
+
+def test_paused_acquire_creates_no_hold(store) -> None:
+    meter.bind_store(store)
+    _serve(store, "testnode", "solo", 1)
+    first = local_serving.acquire("solo")
+    assert first is not None and first.reserved
+    second = local_serving.acquire("solo")
+    assert second is not None and second.paused and second.hold_id is None
+    local_serving.release(first)

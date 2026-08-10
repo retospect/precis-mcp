@@ -37,6 +37,14 @@ return ``None`` (allow) whenever the machinery has nothing to say.
 A host that serves *some* local models but not the one requested (a naming
 mismatch, distinct from serving nothing) logs a rate-limited ``log.warning`` —
 still returns ``None`` (fully dark to the caller), purely for operator visibility.
+
+**Crash-safe reclaim.** Every successful reserve also opens a TTL
+``resource_slot_holds`` row (:data:`_HOLD_TTL_S`, migration 0118) in the same
+transaction; :func:`release` closes it and refunds only if the close won the
+race against the heartbeat sweep (:meth:`Store.reclaim_expired_slot_holds`).
+So a process killed mid-call — the 2026-08-10 fleet-wide ``llm:*`` outage,
+every host wedged at ``free = 0`` — self-heals within one TTL instead of
+leaking the unit forever.
 """
 
 from __future__ import annotations
@@ -50,6 +58,27 @@ from typing import Any
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
+
+#: Default TTL (seconds) for a reservation's crash-reclaim hold
+#: (``resource_slot_holds``, migration 0118) — overridable via
+#: ``PRECIS_SLOT_HOLD_TTL_S``. An LLM call outlasting 30 minutes is already
+#: dead by its own timeouts, so this is comfortably above any legitimate
+#: call duration while still bounding how long a crashed holder's unit can
+#: stay leaked.
+_HOLD_TTL_S = 1800.0
+
+
+def _hold_ttl_s() -> float:
+    raw = os.environ.get("PRECIS_SLOT_HOLD_TTL_S")
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _HOLD_TTL_S
+
 
 #: TTL for the per-host served-resource set. The set changes only when
 #: ``served_by`` is added/removed on a card (reconcile, ~daily), so a minute is
@@ -89,6 +118,11 @@ class LocalSlot:
     paused: bool
     endpoint: str | None = None
     served_model: str | None = None
+    #: id of the crash-reclaim hold opened alongside a successful reserve
+    #: (``None`` for a paused/unreserved outcome). :func:`release` closes it
+    #: and only refunds if the close actually deleted a row — a miss means
+    #: the heartbeat sweep already reclaimed it (and already refunded).
+    hold_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,12 +349,25 @@ def acquire(model: str) -> LocalSlot | None:
         remote = _remote_served(store).get(resource)
         if remote is not None:
             remote_host, remote_served = remote
-            from precis.store._resource_slots_ops import reserve_resource_slots
+            from precis.store._resource_slots_ops import (
+                insert_slot_hold,
+                reserve_resource_slots,
+            )
 
+            hold_id: int | None = None
             try:
                 with store.pool.connection() as conn:
                     with conn.transaction():
                         ok = reserve_resource_slots(conn, remote_host, {resource: 1})
+                        if ok:
+                            hold_id = insert_slot_hold(
+                                conn,
+                                remote_host,
+                                resource,
+                                1,
+                                f"{_local_host()}:{os.getpid()}",
+                                _hold_ttl_s(),
+                            )
             except Exception:  # pragma: no cover — must never break dispatch
                 log.warning(
                     "local_serving: remote reserve failed for %s on %s",
@@ -336,6 +383,7 @@ def acquire(model: str) -> LocalSlot | None:
                 paused=not ok,
                 endpoint=remote_served.endpoint if ok else None,
                 served_model=remote_served.served_model if ok else None,
+                hold_id=hold_id,
             )
         # A host that serves *other* llm: resources but not this one is usually a
         # served_by name mismatch worth flagging — but only when the requested
@@ -369,12 +417,25 @@ def acquire(model: str) -> LocalSlot | None:
                     resource,
                 )
         return None  # not served here — dark no-op, no DB hit
-    from precis.store._resource_slots_ops import reserve_resource_slots
+    from precis.store._resource_slots_ops import (
+        insert_slot_hold,
+        reserve_resource_slots,
+    )
 
+    hold_id = None
     try:
         with store.pool.connection() as conn:
             with conn.transaction():
                 ok = reserve_resource_slots(conn, host, {resource: 1})
+                if ok:
+                    hold_id = insert_slot_hold(
+                        conn,
+                        host,
+                        resource,
+                        1,
+                        f"{_local_host()}:{os.getpid()}",
+                        _hold_ttl_s(),
+                    )
     except Exception:  # pragma: no cover — reservation must never break dispatch
         log.warning("local_serving: reserve failed for %s", resource, exc_info=True)
         return None
@@ -395,6 +456,7 @@ def acquire(model: str) -> LocalSlot | None:
         paused=not ok,
         endpoint=endpoint,
         served_model=served_model,
+        hold_id=hold_id,
     )
 
 
@@ -435,7 +497,17 @@ def _served_endpoints(store: object, host: str) -> dict[str, _Served]:
 
 def release(slot: LocalSlot | None) -> None:
     """Refund a slot reserved by :func:`acquire`. No-op for ``None`` / a slot
-    that was never reserved (the paused or dark outcomes)."""
+    that was never reserved (the paused or dark outcomes).
+
+    When the reservation carries a crash-reclaim hold (:attr:`LocalSlot.hold_id`
+    — the normal case), the hold is closed first and the refund only fires if
+    that close actually deleted a row: a miss means the heartbeat sweep
+    already reclaimed the (expired) hold and already refunded it, so
+    refunding again here would double-count (the ``LEAST`` cap masks it at
+    full capacity but corrupts accounting below it). A ``None`` hold_id
+    (legacy/job-path callers of the module-level helpers directly) keeps
+    today's unconditional refund.
+    """
     if slot is None or not slot.reserved:
         return
     from precis.budget import meter
@@ -443,12 +515,20 @@ def release(slot: LocalSlot | None) -> None:
     store = meter.active_store()
     if store is None:
         return
-    from precis.store._resource_slots_ops import release_resource_slots
+    from precis.store._resource_slots_ops import (
+        delete_slot_hold,
+        release_resource_slots,
+    )
 
     try:
         with store.pool.connection() as conn:
             with conn.transaction():
-                release_resource_slots(conn, slot.host, {slot.resource: 1})
+                if slot.hold_id is not None:
+                    if delete_slot_hold(conn, slot.hold_id):
+                        release_resource_slots(conn, slot.host, {slot.resource: 1})
+                    # else: sweep already reclaimed + refunded this hold.
+                else:
+                    release_resource_slots(conn, slot.host, {slot.resource: 1})
     except Exception:  # pragma: no cover — release must never break the caller
         log.warning(
             "local_serving: release failed for %s", slot.resource, exc_info=True
