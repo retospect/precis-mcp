@@ -10,7 +10,7 @@
 > bite, pointers. **The doc system — where truth lives, how to keep it
 > true — is defined once, in `docs/README.md`; defer to it.** Reading order:
 > `docs/codebase.md` → the owning package's `__init__.py` docstring →
-> `docs/glossary.md` → `docs/backlog/README.md`.
+> `docs/glossary.md` → `docs/backlog/INDEX.md` (generated).
 > `AGENTS.md` = conventions/workflow/DoD. This file changes only when the
 > workflow, a convention, or the subsystem *set* changes.
 > Prose house-style: `docs/conventions/llm-facing-prose.md`.
@@ -78,7 +78,7 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 | **Orientation — read first** | **`docs/codebase.md`** (shape, lifecycle, seams) |
 | Subsystem detail (present-state + why) | the owning package's `__init__.py` docstring (map: `docs/codebase.md`) |
 | Coined / overloaded terms, project & quest aliases → files | `docs/glossary.md` |
-| To-do list / what's planned next | `docs/backlog/` (one file/item, generated README index) — open work only, delete-on-ship (`docs/README.md`); incident forensics → `docs/runbooks/`, never a done-log |
+| To-do list / what's planned next | `docs/backlog/` (one file/item, gitignored generated `INDEX.md`) — open work only, delete-on-ship (`docs/README.md`); incident forensics → `docs/runbooks/`, never a done-log |
 | Conventions / workflow / DoD | `AGENTS.md` |
 | Mission / pitch narrative | `docs/mission.md` (positioning, not architecture) |
 | Master kinds table + recipes | skills `precis-overview`, `precis-toolpath-help` |

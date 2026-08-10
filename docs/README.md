@@ -30,7 +30,7 @@ package docstrings (present truth + rationale), or git history (past).
 1. `docs/codebase.md` — shape, lifecycle, seams, package map.
 2. The owning package's `__init__.py` docstring — subsystem detail.
 3. `docs/glossary.md` — when a term is unfamiliar or overloaded.
-4. `docs/backlog/README.md` — what's planned (index is generated).
+4. `docs/backlog/INDEX.md` — what's planned (generated; see below).
 
 ## Rules that keep it true
 
@@ -55,13 +55,14 @@ package docstrings (present truth + rationale), or git history (past).
 
 ## Generated indexes
 
-`scripts/docs-index` rewrites the blocks between `<!-- docs-index:begin -->`
-/ `<!-- docs-index:end -->` markers; `scripts/ship` runs it before the WIP
-commit (same pattern as the Tailwind prebuild). Never hand-edit inside the
-markers.
+`scripts/docs-index` (stdlib-only, bare `python3`) writes three standalone
+**gitignored** files; a SessionStart hook regenerates them per-worktree, so
+they are never committed, never churn, never conflict. Never hand-edit them —
+each tracked doc that links to one carries a "run `python3 scripts/docs-index`
+if missing/stale" note for readers outside a hooked session.
 
-- `docs/backlog/README.md` — slug, `status:`, first prose line.
-- `docs/runbooks/README.md` — slug, first prose line.
-- `docs/codebase.md` package map — import path + docstring first line
+- `docs/backlog/INDEX.md` — slug, `status:`, first prose line.
+- `docs/runbooks/INDEX.md` — slug, first prose line.
+- `docs/codebase-map.md` — import path + docstring first line
   (PEP 257). A package listed as *(no package docstring yet)* is the nudge
   to write one.

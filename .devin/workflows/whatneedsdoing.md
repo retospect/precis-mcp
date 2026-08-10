@@ -19,10 +19,10 @@ suggests needs the user's explicit go-ahead first.
 
 ## Procedure
 
-1. **Repo dev — backlog.** Read the generated `docs/backlog/README.md` index
-   (one line per item with status):
+1. **Repo dev — backlog.** Read the generated `docs/backlog/INDEX.md` index
+   (one line per item with status; gitignored — the first command regenerates it):
 // turbo
-   `grep -vE '^(<!--|\s*$)' docs/backlog/README.md | head -60`
+   `scripts/docs-index >/dev/null; grep -vE '^(<!--|#|\s*$)' docs/backlog/INDEX.md | head -60`
    Skip items whose front-matter `snooze-until: YYYY-MM-DD` date is still in
    the future. Run `scripts/backlog-lint` — for each done-marker title it
    flags, confirm the work is on `main`, then **delete the item's file** (git
@@ -51,8 +51,9 @@ suggests needs the user's explicit go-ahead first.
    `scripts/migration-check --quiet; echo '— anchors —'; scripts/coderef check docs | tail -6; echo '— memory —'; scripts/memory-lint; echo '— backlog —'; scripts/backlog-lint | head -1; echo '— tokens —'; scripts/token-review; echo '— db-thrash —'; scripts/db-thrash-review; echo '— nightly —'; scripts/nightly --check`
    - **Migration collisions** — renumber the *unshipped* file above main's max.
    - **Backlog gunk** — done-marked items: candidates for the `docs-triage`
-     skill (verify shipped, then delete). Stale generated indexes
-     (backlog/runbooks READMEs, codebase package map) → `scripts/docs-index`.
+     skill (verify shipped, then delete). Generated indexes (`INDEX.md`
+     files, `docs/codebase-map.md`) are gitignored — regenerate via
+     `scripts/docs-index`, never stale-in-git.
    - **Code anchors** — each `✗` = a doc cites a `file.py::Qual.name` that no
      longer resolves; fix the anchor (or leave if the code was removed).
    - **Memory index** — broken links/landed threads are quick fixes; on

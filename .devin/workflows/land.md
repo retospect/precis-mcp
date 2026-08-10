@@ -26,8 +26,8 @@ The user may pass a ship message after the command; otherwise write one.
    section, the `docs/codebase.md` invariants, and any affected product skill
    under `src/precis/data/skills/`; update in place — terse, per
    `docs/conventions/llm-facing-prose.md` — **only where the change altered
-   the contract or shape**. Bump `docs/codebase.md`'s `_Verified @ <sha>._`
-   stamp. These edits ride the same ship commit (the script auto-commits WIP).
+   the contract or shape**. These edits ride the same ship commit (the
+   script auto-commits WIP).
 
 4. **Run the script** (idempotent — re-running after a fix resumes cleanly):
    ```

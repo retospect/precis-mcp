@@ -34,7 +34,8 @@ Stop and report back — do not file anything — if:
      open/triaged/ready_for_fix/in_review results (skip `wontfix` — a closed
      decision, not a live duplicate) for one describing the same symptom.
    - Target `docs/backlog/`: scan the dir's filenames and `Read` the
-     generated `docs/backlog/README.md` index for the same topic.
+     generated `docs/backlog/INDEX.md` index for the same topic (run
+     `python3 scripts/docs-index` if it's missing).
    - If found, stop and report the match (handle/slug) instead of
      filing.
 3. **File in the target's standard shape**:
@@ -48,7 +49,7 @@ Stop and report back — do not file anything — if:
      `docs/README.md` §Backlog lifecycle — a `# title` plus a few lines:
      what/why, owner anchor (where the fix lives), `test:` (the regression
      that pins it, or "n/a" with a one-clause reason). Do NOT hand-edit
-     `docs/backlog/README.md` — the index is generated.
+     `docs/backlog/INDEX.md` — the index is generated (and gitignored).
      Use the caller-supplied owner/test values verbatim if given; if either
      is missing, ask rather than inventing one — these fields carry real
      triage weight for whoever picks the item up next.

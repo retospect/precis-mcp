@@ -117,26 +117,20 @@ fi
 # tracks whatever classes this branch added (the app serves this file, not the
 # Play CDN). Best-effort: a network/npx hiccup WARNs rather than blocking a code
 # ship — the committed CSS is used as-is until the next successful rebuild.
+# Deliberately NOT --minify: the file is tracked, and one-line minified output
+# turns every concurrent web-touching ship into an unmergeable conflict;
+# unminified is line-per-rule and auto-merges (internal app — gzip covers size).
 if command -v npx >/dev/null 2>&1; then
     say "rebuilding Tailwind CSS (static production build)"
     if npx --yes tailwindcss@3 -c tailwind.config.js \
          -i src/precis_web/static/tailwind.src.css \
-         -o src/precis_web/static/tailwind.css --minify >/dev/null 2>&1; then
+         -o src/precis_web/static/tailwind.css >/dev/null 2>&1; then
         echo "→ src/precis_web/static/tailwind.css"
     else
         echo "WARNING: tailwind rebuild failed — shipping the committed CSS unchanged"
     fi
 else
     echo "WARNING: npx not found — skipping tailwind rebuild (committed CSS unchanged)"
-fi
-
-# ── 1c. regenerate doc indexes ───────────────────────────────────────────
-# Backlog/runbook README index blocks + the codebase.md package map derive
-# from the files themselves (docs/README.md §Generated indexes). Best-effort,
-# same policy as the Tailwind prebuild.
-if command -v uv >/dev/null 2>&1; then
-    say "regenerating doc indexes"
-    uv run python scripts/docs-index || echo "WARNING: docs-index failed — shipping committed indexes unchanged"
 fi
 
 # ── 2. commit WIP ───────────────────────────────────────────────────────

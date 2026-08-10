@@ -24,8 +24,8 @@ history; `docs/backlog/` is the present. Contract: `docs/README.md`
 
 Advisory (never deletes, never fails a build); it surfaces candidates by
 title-level done-markers only. You apply the judgment it can't. The
-generated index (`docs/backlog/README.md`, rewritten by `scripts/docs-index`
-at ship) is the one-line-per-item view.
+generated index (`docs/backlog/INDEX.md`, gitignored, rewritten by
+`scripts/docs-index` at session start) is the one-line-per-item view.
 
 ## The per-item verdict
 

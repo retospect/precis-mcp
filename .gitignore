@@ -101,3 +101,9 @@ memory/
 
 # code-index: indexer deps (cached, reproducible via scripts/code-index)
 scripts/code-search/node_modules/
+
+# generated doc indexes: regenerated per-worktree by scripts/docs-index
+# (SessionStart hook) — see docs/README.md §Generated indexes
+docs/backlog/INDEX.md
+docs/runbooks/INDEX.md
+docs/codebase-map.md

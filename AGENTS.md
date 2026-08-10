@@ -10,7 +10,7 @@ Read this before substantive changes.
 > map. (3) the owning package `__init__.py` docstrings — present-tense
 > subsystem truth + why. Deep per-kind reference is on demand via skills
 > (`get(kind='skill', id='precis-overview')` for the master kinds table +
-> index). Backlog: [`docs/backlog/`](docs/backlog/README.md).
+> index). Backlog: `docs/backlog/` (generated index: `INDEX.md`).
 
 ## Identity
 
@@ -122,8 +122,7 @@ precis-mcp/
 - [ ] Docs an LLM reads are refreshed in the same commit, terse per
       `docs/conventions/llm-facing-prose.md`: the relevant
       owning package docstring, and — if the *shape* changed —
-      `docs/codebase.md` (bump its `_Verified @ <sha>._` stamp) plus any
-      affected product skill.
+      `docs/codebase.md` plus any affected product skill.
 - [ ] If CLI surface changed: subcommand has `--help`, an integration
       test, and a line in the README.
 
@@ -257,6 +256,6 @@ billed multi-agent orchestration, gated on explicit opt-in).
   (start with `thresholds.md`; LLM-facing docs → `llm-facing-prose.md`)
 - **Decisions**: the owning package docstring's "why" lines
   (history + superseded alternatives: `git log`)
-- **Plans / specs**: `docs/backlog/` (index: `docs/backlog/README.md`) —
+- **Plans / specs**: `docs/backlog/` (index: `docs/backlog/INDEX.md`, generated) —
   one file per item, spec grows in the same file, **delete on ship**
   (lifecycle: `docs/README.md`; triage: the `docs-triage` skill)

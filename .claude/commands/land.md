@@ -36,8 +36,7 @@ Optional ship message from the user: `$ARGUMENTS`
    section, the `docs/codebase.md` invariants, and any affected product
    skill under `src/precis/data/skills/`; update in place — terse, per
    `docs/conventions/llm-facing-prose.md` — **only where the change altered
-   the contract or shape**, not for every edit. Bump `docs/codebase.md`'s
-   `_Verified @ <sha>._` stamp to the tip you're shipping. These edits ride
+   the contract or shape**, not for every edit. These edits ride
    the same ship commit (the script auto-commits WIP).
 
 3. **Review risky diffs before shipping (size/risk-gated, blocking).** Check

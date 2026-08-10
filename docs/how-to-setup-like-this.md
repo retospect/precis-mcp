@@ -28,7 +28,7 @@ link. Duplication = N rot sites for one fact.
 | File | Altitude | Holds |
 |---|---|---|
 | `CLAUDE.md` | router (loaded every session) | what-before-first-tool-call + where everything is; changes only when the workflow/conventions/subsystem-set change |
-| `docs/codebase.md` | orientation | invariants, lifecycle, subsystem map, seams — the shape that survives refactors. Carries a `_Verified @ <sha>_` stamp; bump on re-verify |
+| `docs/codebase.md` | orientation | invariants, lifecycle, subsystem map, seams — the shape that survives refactors |
 | package `__init__.py` docstrings | present-state | per-subsystem truth + why (map: `docs/codebase.md`) |
 | package `__init__.py` "why" lines | rationale | why a decision, what was rejected — lives beside the code it justifies; git is the history |
 | `docs/glossary.md` | vocabulary | coined/overloaded term → best entry-point file |
@@ -81,7 +81,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/db` | psql to the LOCAL dev DB | container-first |
 | `scripts/prod-psql "SELECT …"` | read prod through a bastion hop | prefer read-only; local `db` never reaches prod |
 | `scripts/code-index` | seed/refresh the semantic code-search index | reproducible from shell, no MCP session needed |
-| `scripts/docs-index` | regenerate backlog/runbook indexes + the codebase package map | wired into ship |
+| `scripts/docs-index` | regenerate the gitignored backlog/runbook indexes + codebase package map | SessionStart hook, per-worktree; never committed |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
 | `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal | advisory; `/whatneedsdoing` |
 | `scripts/backlog-lint` | flag done-marked items still sitting in `docs/backlog/` | advisory in ship when the diff touches it; `/whatneedsdoing` |

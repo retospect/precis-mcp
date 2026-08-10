@@ -44,6 +44,10 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-nudge.sh\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/docs-index\" || true"
           }
         ]
       }

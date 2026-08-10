@@ -17,7 +17,8 @@ justify against the diff.
    base — don't go spelunking through unrelated history.
 2. List candidates: `search(kind='gripe', status='open')` plus `triaged` /
    `ready_for_fix` / `in_review` (skip `wontfix` — already a closed decision,
-   not a fix target). Read the `docs/backlog/README.md` index for items
+   not a fix target). Read the `docs/backlog/INDEX.md` index for items
+   (generated; run `python3 scripts/docs-index` if missing)
    (skip one whose `snooze-until` date is still in the future — a deliberate
    park, not something an incidental diff should close).
 3. For each candidate, `get(kind='gripe', id=N)` or read the backlog item's

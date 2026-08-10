@@ -64,8 +64,8 @@ invariants rots slowly; one pinned to status rots on the next commit.
 ## Freshness contract
 
 - **Update in the same commit** that changes what the doc describes.
-- Orientation/reference docs carry a `_Verified @ <sha>._` stamp; bump it
-  when you re-verify against the tip.
+  Freshness is `git log <doc>` — no verified-at stamps; a sha embedded in
+  a doc is a churn line that conflicts across concurrent worktrees.
 - `/land` and `/go` re-check touched-subsystem docs before shipping;
   the `map-staleness-reminder` hook nudges on the paths that usually drift.
 - **Terse is a freshness mechanism**: a short doc gets re-read and

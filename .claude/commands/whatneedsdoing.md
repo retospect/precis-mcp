@@ -1,5 +1,5 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · backlog lint · generated-index freshness · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · backlog lint · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
 allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
@@ -26,8 +26,8 @@ filed yet (step 5, the bug-hunt). Every recurring tool-call error is a fix
 waiting in a skill or the MCP surface; mining it feeds new items into
 substrate 1 (as gripes).
 
-Live backlog index (generated `docs/backlog/README.md` — one line per item with status):
-!`grep -vE '^(<!--|\s*$)' docs/backlog/README.md 2>/dev/null | head -60`
+Live backlog index (generated `docs/backlog/INDEX.md` — one line per item with status):
+!`scripts/docs-index >/dev/null 2>&1; grep -vE '^(<!--|#|\s*$)' docs/backlog/INDEX.md 2>/dev/null | head -60`
 
 Live GitHub — open PRs:
 !`gh pr list --state open 2>/dev/null || echo '(gh unavailable or no open PRs)'`
@@ -40,7 +40,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
 
 ## Procedure
 
-1. **Repo dev — backlog.** Read the generated `docs/backlog/README.md` index
+1. **Repo dev — backlog.** Read the generated `docs/backlog/INDEX.md` index
    (one line per item with status). Skip any item whose front-matter
    `snooze-until: YYYY-MM-DD` date is still in the future — a deliberate park,
    not open work. **Prune done gunk as you go** (same as closing a fixed gripe
@@ -90,9 +90,9 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      main's max. (Known live case: the `email` worktree's `0074`.)
    - **Backlog gunk** (`scripts/backlog-lint`) — done-marked items are
      candidates for the `docs-triage` skill: verify shipped, then delete.
-     Generated indexes (`docs/backlog/README.md`, `docs/runbooks/README.md`,
-     the `docs/codebase.md` package map) regenerate via `scripts/docs-index`
-     at ship — run it if an index looks stale.
+     Generated indexes (`docs/backlog/INDEX.md`, `docs/runbooks/INDEX.md`,
+     `docs/codebase-map.md`) are gitignored and regenerate via
+     `python3 scripts/docs-index` at session start — never stale-in-git.
    - **Code anchors** (`scripts/coderef check docs`, drift-only) — each `✗` = a
      doc cites a `file.py::Qual.name` whose symbol no longer resolves (renamed/
      removed → fix the anchor, or if the code was deliberately removed leave it).

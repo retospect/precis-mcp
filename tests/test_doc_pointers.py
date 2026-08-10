@@ -28,8 +28,20 @@ _FROZEN_DIRS: tuple[str, ...] = ()
 _FROZEN_EXEMPT: set[str] = set()
 
 
+# Gitignored derived files (scripts/docs-index output): regenerated per
+# worktree at session start, so a copy on disk can be transiently stale
+# (e.g. mid-ship, after merging main) — link-checking it is checking a
+# cache, not a doc.
+_GENERATED = (
+    "docs/backlog/INDEX.md",
+    "docs/runbooks/INDEX.md",
+    "docs/codebase-map.md",
+)
+
+
 def _live_docs() -> list[str]:
-    """Every current-state markdown doc, minus the frozen-historical dirs."""
+    """Every current-state markdown doc, minus frozen-historical dirs and
+    gitignored generated indexes."""
     globs = [
         ROOT.glob("*.md"),
         ROOT.glob("docs/**/*.md"),
@@ -41,7 +53,7 @@ def _live_docs() -> list[str]:
             if rel in _FROZEN_EXEMPT:
                 out.add(rel)
                 continue
-            if rel.startswith(_FROZEN_DIRS):
+            if rel.startswith(_FROZEN_DIRS) or rel in _GENERATED:
                 continue
             out.add(rel)
     return sorted(out)
