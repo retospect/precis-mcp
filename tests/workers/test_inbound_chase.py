@@ -474,3 +474,32 @@ def test_dst_pos_never_attempted_without_llm(store) -> None:
     links = _cites_links(store, src=citer_ref_id, dst=y)
     chunk_link = next(lk for lk in links if lk.src_pos is not None)
     assert chunk_link.dst_pos is None
+
+
+# ── import-time dependency guard ────────────────────────────────────
+
+
+def test_importable_without_semanticscholar() -> None:
+    """``semanticscholar`` ships in the ``[paper]`` extra, but this module
+    is on the ``get(kind='paper')`` read path via ``mark_paper_active`` —
+    it must import in venvs without that extra (asa's /opt/asa). Guards
+    against a module-level import creeping back into the
+    ``inbound_chase`` → ``chase`` chain.
+    """
+    import subprocess
+    import sys
+
+    script = (
+        "import builtins\n"
+        "_real = builtins.__import__\n"
+        "def _guard(name, *a, **k):\n"
+        "    if name.split('.')[0] == 'semanticscholar':\n"
+        "        raise ModuleNotFoundError(name)\n"
+        "    return _real(name, *a, **k)\n"
+        "builtins.__import__ = _guard\n"
+        "import precis.workers.inbound_chase\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr

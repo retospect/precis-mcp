@@ -44,7 +44,6 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from precis.ingest.citations import citations as fetch_s2_citations
 from precis.taproot.canon import (
     TAPROOT_CLAIM,
     TAPROOT_NAMESPACE,
@@ -1267,6 +1266,13 @@ def load_s2_citation_graph(identifiers: dict[str, Any]) -> dict[str, Any] | None
     identifier) — callers treat this as "can't resolve" and retry next
     pass.
     """
+    # Lazy import: ``semanticscholar`` ships in the ``[paper]`` extra, but
+    # this module is on the ``get(kind='paper')`` read path (via
+    # ``inbound_chase.mark_paper_active``), which must work in venvs
+    # without that extra (asa's /opt/asa). Same pattern as
+    # ``watch_poll.py`` / ``backfill/citation_lens.py``.
+    from precis.ingest.citations import citations as fetch_s2_citations
+
     paper_id = _s2_paper_id(identifiers)
     if paper_id is None:
         return None
