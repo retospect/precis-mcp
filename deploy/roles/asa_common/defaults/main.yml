@@ -1,0 +1,35 @@
+---
+# asa_common — vars-only role (no tasks): the launchd environment shared by
+# BOTH chat-bridge daemons (asa_bot / com.asa.bot, asa_slack / com.asa.slack).
+# Each bridge's plist template renders this dict verbatim, then appends its
+# role-specific keys — so an env var added for one bridge can never silently
+# miss the other (2026-08-10: asa-slack lacked PRECIS_LLM_BASE_URL for a
+# whole ship because the plists were hand-maintained copies).
+#
+# Declared as a meta dependency of asa_bot and asa_slack; being defaults,
+# inventory/host vars can still override any key.
+asa_common_env:
+  # UTC logging fleet-wide — see 00a-timezone.yml.
+  TZ: UTC
+  HOME: /Users/hermes
+  PATH: /opt/asa/venv/bin:/opt/homebrew/bin:/opt/mcps/venv/bin:/usr/local/bin:/usr/bin:/bin
+  # Bot/app tokens are NOT set here — each bridge resolves its own from the
+  # precis DB vault (ADR 0055) via env→vault→file order, revealing over this
+  # DSN. §L (gr171431 §1): password-free — the pgpass role also drops
+  # ~hermes/.pgpass on the gateway matching this host:port:database:agent_rw
+  # tuple.
+  PRECIS_DATABASE_URL: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  # Route the spawned precis MCP subprocess at the always-hot embedding
+  # service (precis_embedder role, loopback 8181) so skill / cross-kind
+  # semantic search lands instantly instead of waiting on a ~30s bge-m3
+  # cold load per process.
+  PRECIS_EMBEDDER: remote
+  PRECIS_EMBEDDER_URL: http://127.0.0.1:8181
+  # Hosted-OSS backend for BIG placement-chain turns (Discord's `--model
+  # local` lane, every asa-slack turn). A chain rung whose model has no
+  # acquirable served_by slot (local_serving.acquire is cluster-scoped: any
+  # routable endpoint's host row, then loopback on this host) dispatches to
+  # this base URL with a vault-resolved key — same value the worker daemons
+  # use. Without it, an un-served rung builds a client at url="" and that
+  # rung of the chain fails.
+  PRECIS_LLM_BASE_URL: https://openrouter.ai/api/v1

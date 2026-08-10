@@ -25,7 +25,7 @@ def test_dispatch_warm_binds_runtime_before_dispatch(monkeypatch):
         calls.append("dispatch")
         return sentinel_result
 
-    monkeypatch.setattr(bot, "_warm_runtime", fake_warm)
+    monkeypatch.setattr(bot, "warm_runtime", fake_warm)
     monkeypatch.setattr(bot, "dispatch", fake_dispatch)
 
     assert bot._dispatch_warm(sentinel_req) is sentinel_result

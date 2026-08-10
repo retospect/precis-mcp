@@ -19,22 +19,14 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    {# UTC logging fleet-wide — see 00a-timezone.yml. #}
-    <key>TZ</key>
-    <string>UTC</string>
-    <key>HOME</key>
-    <string>/Users/hermes</string>
-    <key>PATH</key>
-    <string>/opt/asa/venv/bin:/opt/homebrew/bin:/opt/mcps/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    {# Shared bridge env — one source for both chat daemons; the whys live
+       on the keys in roles/asa_common/defaults/main.yml. #}
+{% for env_key, env_value in asa_common_env.items() %}
+    <key>{{ env_key }}</key>
+    <string>{{ env_value }}</string>
+{% endfor %}
     <key>ASA_CONFIG</key>
     <string>/Users/hermes/.asa/config.yaml</string>
-    {# ASA_DISCORD_TOKEN removed — asa now resolves it from the precis DB vault
-       (secrets vault, ADR 0055) via load_discord_token's env→vault→file order,
-       revealing over PRECIS_DATABASE_URL below. §L (gr171431 §1): password-free
-       — the pgpass role now also drops ~hermes/.pgpass on the gateway,
-       matching this exact host:port:database:agent_rw tuple. #}
-    <key>PRECIS_DATABASE_URL</key>
-    <string>postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
     {# LISTEN/NOTIFY needs a *direct* postgres session — it does not survive
        transaction-pooled pgbouncer (notifies are dropped). Point the
        listener at the local 5433 tunnel → the data node:5432 (see
@@ -42,26 +34,10 @@
        NOT converted to pgpass (§L, gr171431 §1): this is a distinct
        host:port tuple (127.0.0.1:5433) the shared pgpass file doesn't carry
        an entry for — left as a documented deferral rather than widen the
-       pgpass matrix for one direct-tunnel consumer. #}
+       pgpass matrix for one direct-tunnel consumer. Discord-only: asa-slack
+       has no message-queue LISTEN. #}
     <key>PRECIS_NOTIFY_DATABASE_URL</key>
     <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@127.0.0.1:5433/precis_prod</string>
-    {# Route the spawned precis MCP subprocess at the always-hot
-       embedding service (precis_embedder role, loopback 8181) so
-       skill / cross-kind semantic search lands instantly instead of
-       waiting on a ~30s bge-m3 cold load per process. #}
-    <key>PRECIS_EMBEDDER</key>
-    <string>remote</string>
-    <key>PRECIS_EMBEDDER_URL</key>
-    <string>http://127.0.0.1:8181</string>
-    {# Hosted-OSS backend for `--model local` turns (the BIG placement
-       chain). A chain rung whose model has no acquirable served_by slot
-       (local_serving.acquire is cluster-scoped: any routable endpoint's
-       host row, then loopback on this host) dispatches to this base URL
-       with a vault-resolved key — same value the worker daemons use.
-       Without it, an un-served rung builds a client at url="" and every
-       rung of the chain fails. #}
-    <key>PRECIS_LLM_BASE_URL</key>
-    <string>https://openrouter.ai/api/v1</string>
   </dict>
 
   <key>RunAtLoad</key>

@@ -50,6 +50,7 @@ from functools import partial
 from typing import Any
 
 from asa_bot.config import LLMConfig
+from asa_bot.llm_runtime import warm_runtime
 from asa_bot.oauth import ensure_oauth_token
 from precis.utils.llm.router import (
     LlmRequest,
@@ -303,24 +304,6 @@ async def invoke(
     return result
 
 
-def _warm_runtime() -> None:
-    """Bind the in-process precis runtime before a chain dispatch.
-
-    ``dispatch``'s local-serving slot lookup and the hosted-OSS vault-key
-    resolution both read process-global stores that ``build_runtime`` binds as
-    a side effect (``adopt_process_store`` / the budget-meter store) — and the
-    OSS tool loop only builds that runtime *after* it has already resolved its
-    endpoint + key. Without this warm-up, the FIRST chain turn in a fresh
-    asa_bot process sees no local endpoint and an empty API key, fails, then
-    "heals" on turn two once the loop's own build has bound the stores. The
-    loop reuses this exact cached runtime for its in-process verb execution,
-    so this costs nothing after the first call.
-    """
-    from precis.tools.core import _get_runtime
-
-    _get_runtime()
-
-
 async def _invoke_via_chain(
     cfg: LLMConfig,
     system_prompt: str,
@@ -371,7 +354,7 @@ async def _invoke_via_chain(
     )
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(_CHAIN_EXECUTOR, _warm_runtime)
+        await loop.run_in_executor(_CHAIN_EXECUTOR, warm_runtime)
         llm_result: LlmResult = await loop.run_in_executor(
             _CHAIN_EXECUTOR, partial(dispatch, req)
         )

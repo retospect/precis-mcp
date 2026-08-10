@@ -1,0 +1,4 @@
+---
+dependencies:
+  # Vars-only: the launchd env block shared with asa_bot (asa_common_env).
+  - role: asa_common

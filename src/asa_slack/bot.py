@@ -47,7 +47,7 @@ from slack_bolt.app.async_app import AsyncApp
 from slack_sdk.errors import SlackApiError
 
 from asa_bot import preamble
-from asa_bot.claude_invoke import _warm_runtime
+from asa_bot.llm_runtime import warm_runtime
 from asa_bot.precis_client import PrecisClient, health_loop
 from asa_slack import identity as identity_check
 from asa_slack.config import Config, load_slack_tokens
@@ -88,7 +88,7 @@ def _dispatch_warm(req: LlmRequest) -> LlmResult:
     asa-slack ever binds a store. Runs on the ``to_thread`` worker, off the
     event loop; cached after the first call.
     """
-    _warm_runtime()
+    warm_runtime()
     return dispatch(req)
 
 

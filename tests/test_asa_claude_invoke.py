@@ -445,7 +445,7 @@ def _chain_stubs(monkeypatch: pytest.MonkeyPatch, llm_result: Any) -> dict[str, 
     async def trap_run_claude_async(argv: list[str], **kwargs: Any) -> SimpleNamespace:
         raise AssertionError("--model local must never spawn claude -p")
 
-    monkeypatch.setattr("asa_bot.claude_invoke._warm_runtime", lambda: None)
+    monkeypatch.setattr("asa_bot.claude_invoke.warm_runtime", lambda: None)
     monkeypatch.setattr("asa_bot.claude_invoke.dispatch", fake_dispatch)
     monkeypatch.setattr(claude_agent, "run_claude_async", trap_run_claude_async)
     return seen
@@ -533,7 +533,7 @@ def test_model_local_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(req: Any) -> Any:
         raise RuntimeError("chain plumbing broke")
 
-    monkeypatch.setattr("asa_bot.claude_invoke._warm_runtime", lambda: None)
+    monkeypatch.setattr("asa_bot.claude_invoke.warm_runtime", lambda: None)
     monkeypatch.setattr("asa_bot.claude_invoke.dispatch", boom)
 
     cfg = _cfg(command=["claude", "-p", "--model", "local"])
