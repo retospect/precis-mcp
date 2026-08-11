@@ -25,6 +25,12 @@ mount. The precis worker never needs the `[tts]` extra — it shells out.
 `PRECIS_REF` pins the precis-mcp version installed into the image; tag the image
 with the same sha (the digest is the natural cache key, per the aizynth pattern).
 
+Normally you never run this by hand: `redeploy-precis.yml` imports
+`playbooks/45-tts.yml` with `tts_precis_ref` pinned to the deploy sha, so every
+`scripts/deploy` rebuilds the image in lockstep with the venvs. The Dockerfile
+keeps everything sha-independent (deps, misaki dicts, models) in layers above
+the pinned install, so that per-deploy rebuild is one pip install.
+
 ## Run (one-shot per episode)
 
     podman run --rm \

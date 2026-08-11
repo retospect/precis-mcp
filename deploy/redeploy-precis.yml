@@ -294,6 +294,20 @@
 - name: "Compute worker lane            (inference, job_ssh_node only)"
   ansible.builtin.import_playbook: playbooks/43-precis-worker-compute.yml
 
+# precis-tts render image (topology: precis_capabilities.tts_render, i.e. the
+# GPU node) — the render engine is BAKED into the image, not a venv, so a venv
+# refresh alone leaves audio rendering on stale code (bit us 2026-08-10: the
+# kokoro 510-phoneme fix shipped but episodes kept failing until a manual
+# 45-tts.yml run). Rebuilding here, pinned to the deploy sha, keeps the image
+# in lockstep with the venvs. Cheap when nothing moved: the Dockerfile keeps
+# everything sha-independent (deps, dicts, models) in layers ABOVE the pinned
+# install, so a rebuild at a new sha re-runs one pip install and a same-sha
+# redeploy is a full cache hit.
+- name: "Rebuild precis-tts render image  (sha-pinned; layer-cached)"
+  ansible.builtin.import_playbook: playbooks/45-tts.yml
+  vars:
+    tts_precis_ref: "{{ precis_target_sha | default('main') }}"
+
 # §L: the standalone heartbeat timer (role `precis_heartbeat`, playbook
 # 40-precis-heartbeat.yml) is RETIRED — heartbeat is a per-host `heartbeat`
 # worker pass since §A (workers/heartbeat.py), and retire-thin-timers.yml

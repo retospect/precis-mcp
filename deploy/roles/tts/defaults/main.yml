@@ -22,8 +22,11 @@ tts_container_cmd: docker
 # 3.11-slim), so `image inspect` short-circuits the flaky the GPU node→Docker Hub pull.
 # Keep in sync with the FROM in docker/tts/Dockerfile (>=3.11 is all precis needs).
 tts_base_image: "python:3.11-slim-bookworm"
-# The precis-mcp ref installed INTO the image (the --build-arg). Pin to a sha for
-# a reproducible render engine; `main` tracks tip.
+# The precis-mcp ref installed INTO the image (the --build-arg). redeploy-precis.yml
+# passes the deploy's pinned sha, so the image tracks the venvs automatically.
+# Standalone 45-tts.yml runs should pass -e tts_precis_ref=<sha> too: the bare
+# `main` default hits the layer cache (same arg value → cached install) and
+# will NOT pick up new code.
 tts_precis_ref: main
 
 # The worker runs as this user; it must be able to run the container.
@@ -35,8 +38,10 @@ tts_worker_user: deploy
 #   ansible-playbook playbooks/45-tts.yml -e tts_build_image=false
 tts_build_image: true
 # The build context is precis-mcp's docker/tts (Dockerfile + shim), on the
-# ansible controller (this laptop), copied to the node.
-tts_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-mcp/docker/tts"
+# ansible controller, copied to the node. Resolved relative to this role so it
+# tracks whichever checkout/worktree ansible runs from (scripts/deploy renders
+# from the local tree) — a hardcoded controller path rots when checkouts move.
+tts_src_dir: "{{ role_path }}/../../../docker/tts"
 
 # Where the produced episodes land — the shared NAS podcast dir as mounted on
 # this node (the gateway serves it at /podcast/feed.xml). Matches roles/precis_web.

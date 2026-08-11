@@ -11,14 +11,17 @@
 # rendering to another Linux box by editing that one line.
 #
 # Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
-# this drops the EnvironmentFile it reads, then restarts it). Not in site.yml —
-# run explicitly:
+# this drops the EnvironmentFile it reads, then restarts it). Imported by
+# redeploy-precis.yml with tts_precis_ref pinned to the deploy sha, so every
+# scripts/deploy rebuilds the image in lockstep with the venvs (layer-cached:
+# one pip install when the sha moved, full cache hit when it didn't). Standalone
+# runs (first-time provision, debugging):
 #
-#   ansible-playbook playbooks/45-tts.yml
+#   # pin the render engine to a sha (REQUIRED to pick up new code — the bare
+#   # `main` default hits the layer cache and rebuilds nothing):
+#   ansible-playbook playbooks/45-tts.yml -e tts_precis_ref=<sha>
 #   # skip the heavy first-time image build once present:
 #   ansible-playbook playbooks/45-tts.yml -e tts_build_image=false
-#   # pin the render engine to a sha instead of tip:
-#   ansible-playbook playbooks/45-tts.yml -e tts_precis_ref=<sha>
 #
 # NOTE: the first run is heavy — it `docker build`s the precis-tts image
 # (pip-installs precis-mcp[tts] + misaki, downloads the ~330 MB Kokoro models,
