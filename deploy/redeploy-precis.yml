@@ -338,11 +338,19 @@
 # competing agent daemon alongside the collapsed unit.
 
 # ── 2. Force-bounce every precis daemon so fresh code is in memory ──
+# `data` (the DB node) is deliberately NOT bounced (excluded 2026-08-11): it
+# runs NO precis daemon (worker 20b, embedder 19a, watchdog 41 all exclude it
+# — DB node, RAM pressure). This play `find`s and bootstraps *any* leftover
+# `com.precis.*.plist`, which used to RESURRECT orphaned worker/embedder/
+# watchdog plists on the DB node every deploy (undoing the manual disable —
+# the whack-a-mole). Excluding it here is the durable fix; it also skips the
+# ~4 min embedder-/healthz wait this play would otherwise burn on a node with
+# no embedder. Do not re-add `data` unless the DB node is meant to run a
+# precis daemon.
 - name: "Bounce all precis daemons"
   hosts:
     - gateway
     - scheduler
-    - data
     - inference
   become: true
   tasks:

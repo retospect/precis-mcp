@@ -95,7 +95,11 @@
   hosts:
     - gateway
     - scheduler
-    - data
+    # `data` (the DB node) excluded 2026-08-11: it is the DB node (postgres +
+    # pgbouncer + NFS on a 32 GB box) and a co-located worker starved the DB
+    # for RAM (2026-08-10 fleet memory-pressure incident). Its queue load is
+    # pool-absorbed by gateway/scheduler/inference. Matches 19a-precis-embedder
+    # (also data-excluded) — the DB node runs NO precis daemon. Do not re-add.
     - inference
   become: true
   vars:
