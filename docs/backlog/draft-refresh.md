@@ -37,6 +37,28 @@ Remaining open work:
   auto-expiring them after N days.
 - **Pre-materialize citation-lens off the model host (warm-cache), and batch
   the S2 fetch.**
+  - **Status (2026-08-11).** Two of the three pieces shipped; the warm-cache
+    job is **deliberately deferred**.
+    - ✅ **Batch the S2 fetch — SHIPPED.** `citation_lens.py::materialize_citation_edges`
+      now resolves every cold paper's S2 id up front and issues one
+      `POST /paper/batch` via the `fetch_citations_batch` seam
+      (`ingest/citations.py::citations_batch`), per-paper write/commit/retry
+      semantics unchanged.
+    - ✅ **S2 no longer hammered — SHIPPED (the shared rate limiter, c487bd43,
+      `docs/backlog/shared-rate-limiter.md`).** Every S2 call — including this
+      inline citation-lens fetch — now coordinates cluster-wide through one
+      token-bucket row, so the "angers S2" motivation below is resolved.
+    - ⏸️ **Warm-cache job — DEFERRED.** With the fetch batched *and*
+      rate-coordinated, the warm job's only remaining benefit is unblocking
+      the serial `claude_inproc` lane while the (now one-shot, coordinated)
+      fetch runs — a secondary optimization. The self-healing design needs
+      `draft_refresh` **converted into a coordinator phase-machine**
+      (`spawn_child` + `Yield`/`WakeWhen` park/resume + `UNPARK_CAP` degrade —
+      feasible, mirrors `job_types/good_search.py`, but a real hot-path
+      rewrite). Revisit *only* if the model-host lane blocking actually bites
+      post-limiter; the lighter alternative if so is scan-orchestrated (scan
+      mints a `draft_refresh_warm` job_inproc job at higher priority alongside
+      the real job; real job reads warm cache or falls back to inline).
   - **Problem.** `job_types/draft_refresh.py::_dispatch` →
     `::_evidence_digest` → `backfill/workspace.py::assemble` →
     `backfill/citation_lens.py::materialize_citation_edges` fetches each

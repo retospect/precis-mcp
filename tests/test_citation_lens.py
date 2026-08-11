@@ -1,10 +1,11 @@
 """source-backfill slice 3 — the citation-graph lens.
 
-Builds a small held corpus with external ids, monkeypatches the S2 fetch seam
-(``citation_lens.fetch_citations``) so the tests never need the ``[paper]``
-extra, and checks: edges materialise corpus-internally in the right direction,
-non-held / body-less neighbours are handled correctly, the neighbour query ranks
-+ excludes, and the merge into the text lens badges agreement.
+Builds a small held corpus with external ids, monkeypatches the batched S2
+fetch seam (``citation_lens.fetch_citations_batch``) so the tests never need
+the ``[paper]`` extra, and checks: edges materialise corpus-internally in the
+right direction, non-held / body-less neighbours are handled correctly, the
+neighbour query ranks + excludes, the merge into the text lens badges
+agreement, and the cold-paper fetch really is one batched call.
 """
 
 from __future__ import annotations
@@ -58,26 +59,32 @@ def _build_graph(store) -> dict[str, int]:
     _add_id(store, c, "doi", "10.1/ccc")  # stored normalised (lowercase)
     _add_id(store, e, "s2", "S2E")
 
-    def fake_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
-        assert paper_id == "S2A"  # A is s2-addressed
+    def fake_fetch_batch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
+        assert paper_ids == ["S2A"]  # A is s2-addressed, the only cold paper
         return {
-            "references": [
-                {"s2_id": "S2B", "title": "Kumar"},
-                {"s2_id": "S2E", "title": "Stub"},
-                {"s2_id": "S2D", "title": "Not held"},  # D — not in corpus
-            ],
-            "cited_by": [{"doi": "10.1/CCC", "title": "Li"}],  # upper → normalises
+            "S2A": {
+                "references": [
+                    {"s2_id": "S2B", "title": "Kumar"},
+                    {"s2_id": "S2E", "title": "Stub"},
+                    {"s2_id": "S2D", "title": "Not held"},  # D — not in corpus
+                ],
+                "cited_by": [{"doi": "10.1/CCC", "title": "Li"}],  # upper → normalises
+            }
         }
 
-    cl.fetch_citations = fake_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = fake_fetch_batch  # type: ignore[assignment]
     return {"a": a, "b": b, "c": c, "e": e}
 
 
 @pytest.fixture(autouse=True)
 def _restore_fetch() -> object:
     original = cl.fetch_citations
+    original_batch = cl.fetch_citations_batch
     yield
     cl.fetch_citations = original
+    cl.fetch_citations_batch = original_batch
 
 
 def test_materialize_writes_corpus_internal_edges_both_directions(hub: Hub) -> None:
@@ -102,14 +109,75 @@ def test_materialize_skips_when_fresh(hub: Hub) -> None:
 
     calls = {"n": 0}
 
-    def counting_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+    def counting_fetch_batch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
         calls["n"] += 1
-        return {"references": [], "cited_by": []}
+        return {pid: {"references": [], "cited_by": []} for pid in paper_ids}
 
-    cl.fetch_citations = counting_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = counting_fetch_batch  # type: ignore[assignment]
     written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
     assert written == 0
     assert calls["n"] == 0  # fresh → S2 not re-hit
+
+
+def test_materialize_batches_across_multiple_cold_papers(hub: Hub) -> None:
+    """Two cold papers in one call → ONE ``fetch_citations_batch`` call
+    carrying both qids, not two per-paper calls; a paper that's already
+    fresh is excluded from the batch; the edges a batched result produces
+    match exactly what the old per-paper loop produced for the same
+    input (co-citation degree, direction, s2_neighbors row count)."""
+    g = _build_graph(hub.store)  # seeds A (s2 S2A) + B/C/E, D not held
+
+    # A second, independent seed paper F with its own held reference G.
+    f = _paper(hub.store, "feng")
+    guo = _paper(hub.store, "guo")
+    _add_id(hub.store, f, "s2", "S2F")
+    _add_id(hub.store, guo, "s2", "S2G")
+
+    calls: list[list[str]] = []
+
+    def batch_fetch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
+        calls.append(list(paper_ids))
+        return {
+            "S2A": {
+                "references": [
+                    {"s2_id": "S2B", "title": "Kumar"},
+                    {"s2_id": "S2E", "title": "Stub"},
+                    {"s2_id": "S2D", "title": "Not held"},
+                ],
+                "cited_by": [{"doi": "10.1/CCC", "title": "Li"}],
+            },
+            "S2F": {
+                "references": [{"s2_id": "S2G", "title": "Guo"}],
+                "cited_by": [],
+            },
+        }
+
+    cl.fetch_citations_batch = batch_fetch  # type: ignore[assignment]
+
+    # Materialise F on its own first, so it's already fresh by the time the
+    # combined call below runs — the single-paper path here is exactly what
+    # the old per-paper loop did, and doubles as the "matches per-paper
+    # writes" baseline (b): 1 held edge, one s2_neighbors row, degree 1.
+    written_f = cl.materialize_citation_edges(hub.store, {f}, ttl_days=30)
+    assert written_f == 1
+    assert calls == [["S2F"]]
+    assert (f, guo) in _cites_edges(hub.store)
+    assert [n.s2_id for n in hub.store.list_s2_neighbors(f, "cites")] == ["S2G"]
+
+    written = cl.materialize_citation_edges(hub.store, {g["a"], f}, ttl_days=30)
+    # F is fresh → excluded; only A's qid goes into the (single) new call.
+    assert calls == [["S2F"], ["S2A"]]
+    assert written == 3  # A's 3 held edges; F untouched (already materialised)
+
+    edges = _cites_edges(hub.store)
+    assert (g["a"], g["b"]) in edges
+    assert (g["a"], g["e"]) in edges
+    assert (g["c"], g["a"]) in edges
+    assert (f, guo) in edges  # unchanged from the earlier fresh materialise
 
 
 def test_neighbor_degrees_excludes_cited_and_bodyless(hub: Hub) -> None:
@@ -166,10 +234,15 @@ def test_materialize_refresh_replaces_s2_neighbors(hub: Hub) -> None:
     cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
     assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
 
-    def shrunk_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
-        return {"references": [{"s2_id": "S2B", "title": "Kumar"}], "cited_by": []}
+    def shrunk_fetch_batch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
+        return {
+            pid: {"references": [{"s2_id": "S2B", "title": "Kumar"}], "cited_by": []}
+            for pid in paper_ids
+        }
 
-    cl.fetch_citations = shrunk_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = shrunk_fetch_batch  # type: ignore[assignment]
     cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=0)  # force re-fetch
 
     cites = hub.store.list_s2_neighbors(g["a"], "cites")
@@ -180,13 +253,15 @@ def test_materialize_refresh_replaces_s2_neighbors(hub: Hub) -> None:
 def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> None:
     g = _build_graph(hub.store)
     calls = {"n": 0}
-    base_fetch = cl.fetch_citations
+    base_fetch_batch = cl.fetch_citations_batch
 
-    def counting_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+    def counting_fetch_batch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
         calls["n"] += 1
-        return base_fetch(paper_id)
+        return base_fetch_batch(paper_ids)
 
-    cl.fetch_citations = counting_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = counting_fetch_batch  # type: ignore[assignment]
 
     assert hub.store.s2_neighbors_fresh(g["a"]) is False
     fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
@@ -202,23 +277,25 @@ def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> Non
 
 
 def test_materialize_fetch_failure_leaves_unstamped_and_retries(hub: Hub) -> None:
-    """An S2 failure (``fetch_citations`` raises, e.g. the references call
+    """An S2 failure (``fetch_citations_batch`` raises, e.g. the batch call
     dying after its retry budget) must persist NOTHING and stamp NOTHING —
     a partial result stored as truth would freeze an empty bibliography for
     a whole TTL. The next call retries and succeeds."""
     g = _build_graph(hub.store)
-    good_fetch = cl.fetch_citations
+    good_fetch_batch = cl.fetch_citations_batch
 
-    def failing_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+    def failing_fetch_batch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
         raise RuntimeError("s2 down")
 
-    cl.fetch_citations = failing_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = failing_fetch_batch  # type: ignore[assignment]
     written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
     assert written == 0
     assert hub.store.events_for(g["a"], source="citation_edges") == []
     assert hub.store.s2_neighbors_fresh(g["a"]) is False
 
-    cl.fetch_citations = good_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = good_fetch_batch  # type: ignore[assignment]
     assert cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30) is True
     assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
 
@@ -235,13 +312,15 @@ def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> Non
     assert hub.store.s2_neighbors_fresh(g["a"]) is False
 
     calls = {"n": 0}
-    base_fetch = cl.fetch_citations
+    base_fetch_batch = cl.fetch_citations_batch
 
-    def counting_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+    def counting_fetch_batch(
+        paper_ids: list[str],
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
         calls["n"] += 1
-        return base_fetch(paper_id)
+        return base_fetch_batch(paper_ids)
 
-    cl.fetch_citations = counting_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = counting_fetch_batch  # type: ignore[assignment]
 
     fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
     assert fetched is True

@@ -68,9 +68,33 @@ def _default_fetch(paper_id: str) -> dict[str, list[dict[str, Any]]]:
     return citations(paper_id)
 
 
-#: Module-level seam for the S2 fetch. Prod uses :func:`_default_fetch`; tests
-#: monkeypatch this to a fake so they exercise the graph without the extra.
+#: Module-level seam for the single-paper S2 fetch. Prod uses
+#: :func:`_default_fetch`; tests monkeypatch this to a fake so they exercise
+#: the graph without the extra. :func:`materialize_citation_edges` no longer
+#: calls this directly (see :data:`fetch_citations_batch`) — it survives for
+#: :func:`ensure_s2_neighbors` callers/tests that still address one paper.
 fetch_citations: Callable[[str], dict[str, list[dict[str, Any]]]] = _default_fetch
+
+
+def _default_fetch_batch(
+    paper_ids: list[str],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """The real batched S2 fetch — imported lazily so a host without the
+    ``[paper]`` extra (no ``semanticscholar``) doesn't fail at import; the
+    lens just no-ops."""
+    from precis.ingest.citations import citations_batch
+
+    return citations_batch(paper_ids)
+
+
+#: Module-level seam for the batched S2 fetch — one ``POST /paper/batch``
+#: call for every cold paper a :func:`materialize_citation_edges` run needs,
+#: instead of a per-paper round-trip. Prod uses :func:`_default_fetch_batch`;
+#: tests monkeypatch this to a fake so they exercise the graph without the
+#: extra.
+fetch_citations_batch: Callable[
+    [list[str]], dict[str, dict[str, list[dict[str, Any]]]]
+] = _default_fetch_batch
 
 
 def _citation_lens_enabled() -> bool:
@@ -173,22 +197,69 @@ def materialize_citation_edges(
 ) -> int:
     """Ensure the corpus-internal ``cites`` edges for every cited paper are
     materialised, fetching from S2 only for papers whose edges are missing/stale.
-    Writes an edge **only** when a neighbour resolves to a held ref. Returns the
-    number of edges written this call. Never raises — an S2/extra failure on one
-    paper is logged and skipped (freshness un-stamped so it retries)."""
+    The S2 fetch itself is **batched**: every cold paper's S2 query id is
+    resolved up front and handed to :data:`fetch_citations_batch` as one
+    ``POST /paper/batch`` call, instead of a per-paper round-trip — but the
+    per-paper write/commit/retry semantics below are unchanged, so a failure
+    on one paper (or a batch-wide S2 failure, treated the same way) is logged
+    and skipped without touching another paper's edges. Writes an edge
+    **only** when a neighbour resolves to a held ref. Returns the number of
+    edges written this call. Never raises — an S2/extra failure on one paper
+    is logged and skipped (freshness un-stamped so it retries)."""
     ttl = ttl_days if ttl_days is not None else _ttl_days()
     written = 0
-    for rid in sorted(cited_ref_ids):
-        # Fresh stamp alone isn't enough: a pre-0106 fetch stamped the ref
-        # while persisting no s2_neighbors rows — re-fetch until rows exist.
-        if _is_fresh(store, rid, ttl) and store.s2_neighbors_fresh(rid):
-            continue
-        try:
-            with store.pool.connection() as conn:
+
+    # Fresh stamp alone isn't enough: a pre-0106 fetch stamped the ref while
+    # persisting no s2_neighbors rows — re-fetch until rows exist. Same skip
+    # predicate as before, just computed up front so the cold set can be
+    # resolved and fetched together.
+    cold_ids = [
+        rid
+        for rid in sorted(cited_ref_ids)
+        if not (_is_fresh(store, rid, ttl) and store.s2_neighbors_fresh(rid))
+    ]
+    if not cold_ids:
+        return 0
+
+    # Resolve every cold ref to its S2 query id up front (one short-lived
+    # connection), so the fetch below is a single batched request rather than
+    # N per-paper ones. A ref with no S2-addressable id is skipped here, same
+    # as the old inline `continue` — never stamped, so it isn't retried into
+    # a permanent no-op.
+    qid_by_rid: dict[int, str] = {}
+    with store.pool.connection() as conn:
+        for rid in cold_ids:
+            # Per-ref try so id resolution keeps the "never raises" contract
+            # the old inline loop had (it resolved qid inside each paper's
+            # try/except): a malformed identifier / DB hiccup on one ref is
+            # logged and skipped — never stamped — not propagated out of a
+            # function ensure_s2_neighbors' web caller treats as non-raising.
+            try:
                 qid = _s2_query_id(_fetch_identifiers(conn, rid))
-                if qid is None:
-                    continue  # no S2-addressable id → can't query; don't stamp
-                result = fetch_citations(qid)
+            except Exception as exc:  # pragma: no cover — defensive
+                log.debug("citation_lens: id resolve failed for ref %s: %s", rid, exc)
+                continue
+            if qid is not None:
+                qid_by_rid[rid] = qid
+    if not qid_by_rid:
+        return 0
+
+    batch: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    batch_error: Exception | None = None
+    try:
+        batch = fetch_citations_batch(list(qid_by_rid.values()))
+    except Exception as exc:  # pragma: no cover — defensive; a batch-wide S2
+        # failure must behave exactly like every paper's own fetch failing
+        # below: no writes, no stamp, retried next run — never a partial
+        # empty-result treated as a real (and then TTL-frozen) answer.
+        batch_error = exc
+
+    for rid, qid in qid_by_rid.items():
+        try:
+            if batch_error is not None:
+                raise batch_error
+            with store.pool.connection() as conn:
+                result = batch.get(qid) or {}
                 refs = result.get("references") or []
                 cby = result.get("cited_by") or []
                 edges = 0
