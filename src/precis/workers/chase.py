@@ -54,7 +54,11 @@ from precis.taproot.canon import (
     dedup_judge,
     place,
 )
-from precis.taproot.hub import apply_placement, attach_evidence
+from precis.taproot.hub import (
+    apply_placement,
+    attach_evidence,
+    run_retraction_checks,
+)
 from precis.workers._chase_llm import (
     _disambiguate_candidates,
     _locate_chunk_in_target,
@@ -1629,6 +1633,12 @@ def _taproot_bridge(
             store, claim, placement, finding_ref_id=finding.ref_id
         )
 
+    # Trigger-1 retraction checks collected during the write and run after
+    # it commits — they do Crossref HTTP and open their own connections, so
+    # they must never happen inside this transaction (see
+    # ``taproot.hub.attach_evidence``).
+    pending_checks: list[int] = []
+    hub_ref_id = None
     try:
         with conn.transaction():  # savepoint: isolate a taproot write failure
             hub_ref_id = apply_placement(
@@ -1640,6 +1650,7 @@ def _taproot_bridge(
                 todo_fn=_todo_fn,
                 set_by="chase",
                 conn=conn,
+                pending_checks=pending_checks,
             )
             if hub_ref_id is not None:  # None only on needs_review (no hub)
                 _attach_intermediate_corroborators(
@@ -1648,6 +1659,7 @@ def _taproot_bridge(
                     chain=chain,
                     hub_ref_id=hub_ref_id,
                     terminal_ref_id=paper_ref_id,
+                    pending_checks=pending_checks,
                 )
     except Exception:
         log.warning(
@@ -1655,6 +1667,9 @@ def _taproot_bridge(
             finding.ref_id,
             exc_info=True,
         )
+        return
+
+    run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
 
 
 def _attach_intermediate_corroborators(
@@ -1664,6 +1679,7 @@ def _attach_intermediate_corroborators(
     chain: list[dict[str, Any]],
     hub_ref_id: int,
     terminal_ref_id: int,
+    pending_checks: list[int] | None = None,
 ) -> None:
     """Phase-3 W2: attach every INTERMEDIATE chain hop (every entry but
     the terminal ``chain[-1]``, which the caller already attached per W1)
@@ -1727,6 +1743,7 @@ def _attach_intermediate_corroborators(
             meta=hop_meta,
             set_by="chase",
             conn=conn,
+            pending_checks=pending_checks,
         )
 
 

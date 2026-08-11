@@ -917,6 +917,245 @@ def test_export_pdf_falls_back_to_draft_ref_when_no_project(tmp_path) -> None:
     assert args["parent_id"] == 500  # the draft ref itself
 
 
+# ── retraction gate (docs/backlog/retraction-status-downstream.md items 2/3) ──
+# The gate consumes ``precis.export.retraction.draft_retraction_report`` /
+# ``cited_paper_refs`` — stubbed here rather than exercised end-to-end
+# (that module's own tests own the walk itself; a real run would need a DB
+# and, for ``check=True``, a live Crossref call, which must never happen in
+# a test). Stubbing at the ``precis.export.retraction`` module attribute
+# works because ``routes/drafts.py`` imports these names locally inside
+# each route body, so the patched binding is picked up fresh per request.
+
+import precis.export.retraction as retraction_mod
+from precis.export.retraction import CitedPaper, DraftRetractionReport
+
+
+def _cited(slug: str, status: str | None, *, checked_at: object = None) -> CitedPaper:
+    return CitedPaper(
+        ref_id=10,
+        slug=slug,
+        title=f"Paper {slug}",
+        status=status,
+        checked_at=checked_at,
+    )
+
+
+def test_export_docx_blocked_when_cite_retracted(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """A ``retracted`` cite hard-blocks the docx download (409), naming the
+    offending paper, and the block is a pure read — no network, so the fake
+    ``draft_retraction_report`` here need not (and must not) touch Crossref."""
+
+    def fake_report(store, ref, **kw):
+        assert kw.get("check", False) is False  # export never live-checks
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.get("/drafts/nt/export.docx")
+    assert r.status_code == 409
+    assert "smith2024" in r.text
+    assert "retracted" in r.text.lower()
+    assert "ignore_retractions" in r.text  # tells the user the override name
+
+
+def test_export_docx_override_bypasses_block(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """``?ignore_retractions=1`` overrides the block and the export proceeds
+    — a deliberate, explicit act, never a default."""
+    import precis.export.docx as docx_mod
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
+        )
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    r = draft_client.get("/drafts/nt/export.docx?ignore_retractions=1")
+    assert r.status_code == 200
+    assert r.content.startswith(b"PK")
+
+
+def test_export_docx_soft_status_does_not_block(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """``corrected`` / ``expression_of_concern`` annotate but never block —
+    the export proceeds with no override needed."""
+    import precis.export.docx as docx_mod
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "corrected", checked_at="2026-01-01")],
+        )
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    r = draft_client.get("/drafts/nt/export.docx")
+    assert r.status_code == 200
+
+
+def test_export_docx_unchecked_does_not_block(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """A cite nobody has ever checked (``checked_at is None``) is a warning,
+    never a block — most cites live here under the sparse trigger model."""
+    import precis.export.docx as docx_mod
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", None, checked_at=None)]
+        )
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    r = draft_client.get("/drafts/nt/export.docx")
+    assert r.status_code == 200
+
+
+def test_export_pdf_blocked_when_cite_retracted(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """The PDF-job POST gates the same way: blocked, and — since the block
+    fires before dispatch — no job is enqueued."""
+
+    def fake_report(store, ref, **kw):
+        assert kw.get("check", False) is False
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.post("/drafts/nt/export.pdf", follow_redirects=False)
+    assert r.status_code == 409
+    assert "smith2024" in r.text
+    assert draft_runtime.calls == []  # never reached the dispatch
+
+
+def test_export_pdf_override_dispatches_job(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """The ``ignore_retractions`` form field overrides the block and the
+    ``draft_export`` job is enqueued as usual."""
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.post(
+        "/drafts/nt/export.pdf",
+        data={"ignore_retractions": "1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "draft_export"
+
+
+def test_retraction_status_route_reads_only_no_network(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The passive status route is a pure read (``check=False``) — backs the
+    export pane's "N of M never checked" warning without ever touching
+    Crossref."""
+
+    def fake_report(store, ref, **kw):
+        assert "check" not in kw or kw["check"] is False
+        return DraftRetractionReport(
+            papers=[
+                _cited("smith2024", "retracted", checked_at="2026-01-01"),
+                _cited("ghost404", None, checked_at=None),
+            ],
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.get("/drafts/nt/retraction-status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["blocks_export"] is True
+    assert data["total"] == 2
+    assert [p["slug"] for p in data["retracted"]] == ["smith2024"]
+    assert [p["slug"] for p in data["unchecked"]] == ["ghost404"]
+
+
+def test_retraction_check_route_reports_per_paper_status(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The watch button's route: per-paper status back as JSON. The check
+    walk itself is stubbed — this test is about the route's contract, not
+    Crossref (which the retraction-module's own tests cover)."""
+
+    def fake_cited_paper_refs(store, ref, **kw):
+        return (
+            [
+                SimpleNamespace(ref_id=1, slug="smith2024"),
+                SimpleNamespace(ref_id=2, slug="corrected-paper"),
+            ],
+            [],
+        )
+
+    def fake_report(store, ref, *, cited_slugs=None, check=False, force=False, **kw):
+        assert check is True  # the button DOES live-check
+        return DraftRetractionReport(
+            papers=[
+                _cited("smith2024", "retracted", checked_at="2026-01-01"),
+                _cited("corrected-paper", "corrected", checked_at="2026-01-01"),
+            ],
+            checked=True,
+        )
+
+    monkeypatch.setattr(retraction_mod, "cited_paper_refs", fake_cited_paper_refs)
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.post("/drafts/nt/retraction-check")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["checked"] is True
+    assert [p["slug"] for p in data["retracted"]] == ["smith2024"]
+    assert [p["slug"] for p in data["soft"]] == ["corrected-paper"]
+    assert data["truncated"] is False
+
+
+def test_retraction_check_route_force_flag_passed_through(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """``force=1`` reaches ``draft_retraction_report`` — otherwise pressing
+    the button twice in a day is a silent no-op (TTL short-circuit)."""
+    seen = {}
+
+    def fake_cited_paper_refs(store, ref, **kw):
+        return ([SimpleNamespace(ref_id=1, slug="smith2024")], [])
+
+    def fake_report(store, ref, *, cited_slugs=None, check=False, force=False, **kw):
+        seen["force"] = force
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", None, checked_at="2026-01-01")], checked=True
+        )
+
+    monkeypatch.setattr(retraction_mod, "cited_paper_refs", fake_cited_paper_refs)
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    draft_client.post("/drafts/nt/retraction-check", data={"force": "1"})
+    assert seen["force"] is True
+
+
 def test_remarkable_send_falls_back_to_draft_ref_when_no_project(
     tmp_path, monkeypatch
 ) -> None:

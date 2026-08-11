@@ -377,6 +377,165 @@ def test_keywords_shape_renders_compact_table() -> None:
     assert "don't surface this" not in body
 
 
+# ---------------------------------------------------------------------------
+# Retraction status: RRF downrank + annotation
+# ---------------------------------------------------------------------------
+
+
+def test_rrf_retracted_hit_ranks_below_clean_equivalent() -> None:
+    """A retracted paper matching at the same rank as a clean paper
+    must sink below it — the hard-downrank half of the severity
+    split."""
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="paper",
+            title="T",
+            preview="P",
+            slug="retracted-one",
+            dedupe_key="paper:r",
+            retraction_status="retracted",
+        ),
+        _hit(slug="clean-one", dedupe_key="paper:c", score=0.8),
+    ]
+    out = merge_and_render([s1], page_size=10, mode="rrf")
+    body = out.body
+    r_idx = body.find("retracted-one")
+    c_idx = body.find("clean-one")
+    assert r_idx != -1 and c_idx != -1
+    assert c_idx < r_idx  # clean paper renders first
+
+
+def test_rrf_soft_status_barely_moves_rank() -> None:
+    """``corrected`` / ``expression_of_concern`` are a mild nudge only.
+
+    A paper with a *dominant* fused signal (rank 1 across three
+    streams) keeps its rank ahead of a weak single-stream competitor
+    even after the soft 0.85 penalty — contrast
+    ``test_rrf_retracted_hit_ranks_below_clean_equivalent``, where the
+    hard 0.02 penalty buries the same-strength signal. RRF's own
+    per-rank gaps are tiny (``1/(60+r)`` barely differs between
+    adjacent ranks), so "barely moves" is demonstrated relative to the
+    hard case, not by pinning an exact adjacent-rank tie — any
+    non-trivial penalty flips *that*, hard or soft alike.
+    """
+    strong = SearchHit(
+        score=0.9,
+        kind="paper",
+        title="T",
+        preview="P",
+        slug="strong-corrected",
+        dedupe_key="paper:strong",
+        retraction_status="corrected",
+    )
+    streams = [[strong] for _ in range(3)]  # rank 1 in three streams
+    streams.append([_hit(slug="weak-clean", dedupe_key="paper:weak", score=0.1)])
+    out = merge_and_render(streams, page_size=10, mode="rrf")
+    body = out.body
+    assert body.find("strong-corrected") < body.find("weak-clean")
+
+
+def test_rrf_null_status_is_a_complete_no_op() -> None:
+    """Regression guard: the overwhelming majority of the corpus has
+    ``retraction_status IS NULL`` — ranking for those hits must be
+    byte-for-byte identical to a build with no retraction feature at
+    all (factor exactly 1.0, not "close to" 1.0)."""
+    s1 = [_hit(slug="x", dedupe_key="paper:x", score=0.9)]
+    s2 = [_hit(slug="x", dedupe_key="paper:x", score=0.5)]
+    s3 = [_hit(slug="y", dedupe_key="paper:y", score=0.6)]
+    out = merge_and_render([s1, s2, s3], page_size=10, mode="rrf")
+    assert "1. x" in out.body
+
+
+def test_render_hit_annotates_retracted() -> None:
+    s1 = [
+        SearchHit(
+            score=0.5,
+            kind="paper",
+            title="A retracted paper",
+            preview="P",
+            slug="bad",
+            retraction_status="retracted",
+        )
+    ]
+    out = merge_and_render([s1], page_size=10, mode="priority")
+    assert "RETRACTED" in out.body
+
+
+def test_render_hit_annotates_soft_statuses() -> None:
+    for status, label in (
+        ("corrected", "CORRECTED"),
+        ("expression_of_concern", "EXPRESSION OF CONCERN"),
+    ):
+        s1 = [
+            SearchHit(
+                score=0.5,
+                kind="paper",
+                title="T",
+                preview="P",
+                slug="soft",
+                retraction_status=status,
+            )
+        ]
+        out = merge_and_render([s1], page_size=10, mode="priority")
+        assert label in out.body
+
+
+def test_render_hit_no_annotation_when_status_unset() -> None:
+    s1 = [_hit(slug="clean", title="Clean paper")]
+    out = merge_and_render([s1], page_size=10, mode="priority")
+    assert "⚠" not in out.body
+    assert "RETRACTED" not in out.body
+
+
+def test_toon_table_annotates_retracted_in_summary_cell() -> None:
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="paper",
+            title="A retracted paper",
+            preview="p",
+            slug="bad",
+            retraction_status="retracted",
+        )
+    ]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "RETRACTED" in out.body
+
+
+def test_block_helper_populates_retraction_status_from_ref() -> None:
+    @dataclass
+    class RetractedRef:
+        title: str
+        slug: str
+        id: int = 1
+        retraction_status: str | None = "retracted"
+
+    triples = [(FakeBlock("body", 0), RetractedRef("t", "abc"), 0.5)]
+    [hit] = block_hits_to_search_hits(triples, kind="paper")
+    assert hit.retraction_status == "retracted"
+
+
+def test_block_helper_defaults_retraction_status_none() -> None:
+    triples = [(FakeBlock("body", 0), FakeRef("title", "abc"), 0.5)]
+    [hit] = block_hits_to_search_hits(triples, kind="paper")
+    assert hit.retraction_status is None
+
+
+def test_ref_helper_populates_retraction_status_from_ref() -> None:
+    @dataclass
+    class RetractedRef:
+        title: str
+        slug: str
+        id: int = 1
+        retraction_status: str | None = "corrected"
+
+    [hit] = ref_hits_to_search_hits([(RetractedRef("t", "abc"), 0.5)], kind="oracle")
+    assert hit.retraction_status == "corrected"
+
+
 def test_keywords_shape_renders_empty_cell_when_no_keywords() -> None:
     """A hit with no keywords still surfaces in the table (the agent
     sees the ref exists) but the keywords cell is empty."""

@@ -406,6 +406,18 @@ def enrich_paper(
             store.set_retraction_status(
                 ref_id, status=status, reason=reason, url=url, conn=conn
             )
+        elif msg is not None:
+            # Crossref answered and carried no ``update-to`` notice: that is
+            # a real "checked, clean" reading, so record it. Without this the
+            # column only ever fills for *flagged* papers, "clean" is
+            # indistinguishable from "never looked", and the TTL gate in
+            # ``ingest/provenance.py`` re-fetches every paper forever.
+            #
+            # Timestamp only — never ``set_retraction_status(status=None)``,
+            # which would clear a Retraction-Watch-only flag that Crossref
+            # has no knowledge of. A DOI-less ref, or one whose fetch raised,
+            # is deliberately left unstamped: we did not check it.
+            store.touch_retraction_checked(ref_id, conn=conn)
 
     if link_orcid and orcid_authors:
         outcome.orcid_links = _mint_and_link_orcid_authors(store, ref_id, orcid_authors)

@@ -26,6 +26,16 @@ from ``paper.py`` (mirroring the existing lazy import of
 ``submit_good_search``) so this module can import paper.py's shared
 helpers (``_maybe_resolve_doi``, ``_DOI_RE``, ``_suggest_paper_slugs``,
 …) without a circular top-level import.
+
+Retraction status (docs/backlog/retraction-status-downstream.md item
+1) is handled entirely in this module, not the store: ``refs.
+retraction_status`` is already selected on every ``Ref`` row, so
+:func:`_apply_retraction_downrank` (called from
+:meth:`FusedBlockSearch.run`) re-sorts the already-fetched hits
+in-process, and :func:`_retraction_flag` (used by
+:class:`PaperSearchResultRenderer`) turns it into a row annotation.
+See those functions' docstrings for the severity split and the
+multiplicative-penalty reasoning.
 """
 
 from __future__ import annotations
@@ -52,6 +62,89 @@ from precis.utils.search_header import format_search_headline
 #: ``PaperHandler.search()`` can apply the same cap before dispatching
 #: here (the ``good=True`` deep-search leg shares the same limit).
 _BROAD_LEG_CAP = 8
+
+# Multiplicative penalty applied to a hit's fused ``score`` (the
+# store's ts_rank/cosine-distance blend), keyed by
+# ``refs.retraction_status``. See docs/backlog/retraction-status-
+# downstream.md item 1 for the severity split this encodes: hard
+# downrank for ``retracted`` (never excluded — a retracted paper is
+# often exactly what a search is looking for; silent exclusion would
+# be indistinguishable from a broken index), mild for the soft
+# statuses (``corrected`` / ``expression_of_concern`` — the science is
+# usually still sound). ``None`` — the vast majority of the sparsely-
+# checked corpus — maps to no entry, i.e. factor 1.0 via ``.get(...,
+# 1.0)``: a completely unaffected sort order, which is the regression
+# risk this feature must not touch.
+#
+# Multiplicative rather than additive: ``score`` here is a raw
+# ts_rank/distance blend whose scale is query-dependent (a specific
+# multi-term lexical hit can score an order of magnitude higher than
+# a loose semantic-only match) — the same reasoning
+# ``search_merge._merge_rrf`` uses for its RRF totals. A fixed
+# additive penalty tuned for one query's scale would either vanish
+# against a strong hit or blow away the ranking of unrelated hits on
+# a weak one; scaling proportionally to the hit's own score keeps the
+# penalty "N% of this hit's relevance" regardless of scale.
+_RETRACTION_SCORE_FACTOR: dict[str, float] = {
+    "retracted": 0.02,
+    "corrected": 0.85,
+    "expression_of_concern": 0.85,
+}
+
+#: One-line ``⚠`` labels for the paper-search TOON row annotation —
+#: mirrors ``search_merge._RETRACTION_LABELS`` / ``paper.py``'s own
+#: ``_RETRACTION_LABELS``. Kept local (not imported) for the same
+#: reason ``search_merge.py`` keeps its own copy: three tiny
+#: string constants aren't worth a cross-module dependency.
+_RETRACTION_LABELS: dict[str, str] = {
+    "retracted": "RETRACTED",
+    "corrected": "CORRECTED",
+    "expression_of_concern": "EXPRESSION OF CONCERN",
+}
+
+
+def _retraction_flag(ref: Any) -> str:
+    """``⚠ LABEL`` prefix for a hit's TOON row, ``""`` when unset.
+
+    ``""`` for the common (unchecked) case so the caller can splice
+    it in unconditionally without an ``if``.
+    """
+    status = (getattr(ref, "retraction_status", None) or "").strip().lower()
+    label = _RETRACTION_LABELS.get(status)
+    return f"⚠ {label}" if label else ""
+
+
+def _apply_retraction_downrank(
+    hits: list[tuple[Any, Any, float]],
+) -> list[tuple[Any, Any, float]]:
+    """Stable-resort ``(block, ref, score)`` triples so a retracted /
+    corrected / EoC paper ranks appropriately below an otherwise-
+    equivalent clean hit — without excluding it (see the module-level
+    ``_RETRACTION_SCORE_FACTOR`` docstring for the policy + the
+    multiplicative-vs-additive reasoning).
+
+    ``hits`` arrives already sorted best-first by the store's fused
+    rank; Python's ``sorted`` is stable, so hits sharing a penalized
+    score (the overwhelming majority — everything with
+    ``retraction_status IS NULL`` keeps factor 1.0) retain their
+    incoming relative order exactly. That's what makes this a no-op
+    on the sparse-coverage common case rather than a full re-rank.
+
+    Called *before* the title-introducer promotion
+    (:meth:`FusedBlockSearch._inject_title_matches`), which stamps a
+    ``float('inf')`` sentinel score — multiplying infinity by a
+    fractional factor is still infinity, so running this pass after
+    injection would silently fail to downrank an injected retracted
+    title match. Running before keeps the two passes independent.
+    """
+    if not hits:
+        return hits
+
+    def _factor(ref: Any) -> float:
+        status = (getattr(ref, "retraction_status", None) or "").strip().lower()
+        return _RETRACTION_SCORE_FACTOR.get(status, 1.0)
+
+    return sorted(hits, key=lambda triple: -(triple[2] * _factor(triple[1])))
 
 
 def _coerce_search_year(value: int | str | None, param: str) -> int | None:
@@ -589,6 +682,11 @@ class FusedBlockSearch:
                 card_kinds=("card_combined",),
             )
         hits = _dedup_card_hits(hits)
+        # Retraction downrank — must run before title injection below,
+        # which stamps a float('inf') sentinel score that a
+        # multiplicative penalty can't touch (see
+        # ``_apply_retraction_downrank``'s docstring).
+        hits = _apply_retraction_downrank(hits)
 
         # Title introducer: a query that *is* a paper's title
         # ("attention is all you need") gets stripped by FTS to its
@@ -821,6 +919,18 @@ class PaperSearchResultRenderer:
             else:
                 chunk_text = _scrub_block_text(block.text)
                 kw_display = _chunk_keywords_or_caption(chunk_text)
+            # Prefix, not a third column: the flag is rare (most
+            # papers are unchecked) so a dedicated column would render
+            # an empty cell on ~every row for no benefit — pure token
+            # cost against precis's terse-table convention throughout
+            # this renderer (see the round-2-picky note above pruning
+            # this table to two columns already). ``handle`` itself
+            # stays untouched — it's the literal string the agent
+            # pastes into ``get(id=...)``; prefixing it would corrupt
+            # that contract.
+            flag = _retraction_flag(ref)
+            if flag:
+                kw_display = f"{flag} — {kw_display}" if kw_display else flag
             table_rows.append(
                 {
                     "handle": handle,
@@ -985,6 +1095,8 @@ __all__ = [
     "BylineSearch",
     "FusedBlockSearch",
     "PaperSearchResultRenderer",
+    "_apply_retraction_downrank",
     "_dedup_card_hits",
     "_normalise_exclude_slug",
+    "_retraction_flag",
 ]

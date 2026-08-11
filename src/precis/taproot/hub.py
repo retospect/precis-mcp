@@ -47,6 +47,7 @@ from psycopg.errors import UniqueViolation
 from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
+from precis.ingest.provenance import check_ref_retraction
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import (
     TAPROOT_CLAIM,
@@ -539,6 +540,30 @@ def refine_claim_sentence(
         return _do(c)
 
 
+def run_retraction_checks(
+    store: Any, paper_ref_ids: list[int], *, hub_ref_id: int | None = None
+) -> None:
+    """Drain deferred trigger-1 checks. **Call only outside a transaction.**
+
+    The companion to :func:`attach_evidence`'s ``pending_checks`` sink:
+    workers that hand us their own ``conn`` collect the ref ids during the
+    write and drain them here once committed. Failures are logged and
+    swallowed — the evidence edges are already durable, and an
+    opportunistic integrity check must never be able to undo them.
+    """
+    for paper_ref_id in paper_ref_ids:
+        try:
+            check_ref_retraction(store, paper_ref_id)
+        except Exception:
+            log.warning(
+                "taproot: retraction check failed for paper_ref_id=%s "
+                "(evidence edge%s already written)",
+                paper_ref_id,
+                f" to hub_ref_id={hub_ref_id}" if hub_ref_id is not None else "",
+                exc_info=True,
+            )
+
+
 def attach_evidence(
     store: Any,
     *,
@@ -548,6 +573,8 @@ def attach_evidence(
     meta: dict[str, Any] | None = None,
     set_by: str = "agent",
     conn: Any = None,
+    check_retraction: bool = True,
+    pending_checks: list[int] | None = None,
 ) -> None:
     """Write one ``paper --role--> hub`` evidence edge.
 
@@ -560,6 +587,32 @@ def attach_evidence(
     ``links_for(direction='in', relation=role)``. ``meta`` carries the chase
     verdict (``support``/``support_reason``/``caveats``/``char_offset``/
     ``source_handle``), populated in Phase 3.
+
+    **Trigger 1 of the demand-driven retraction model**
+    (``docs/backlog/retraction-check-triggers.md``): a paper entering the
+    claim graph is the moment its integrity starts to matter, so a
+    ``paper`` source (a patent has no DOI to check) gets checked via
+    :func:`precis.ingest.provenance.check_ref_retraction`. The check is
+    TTL-gated (30 days), so a chase pass re-attaching over an
+    already-checked paper set costs no network, and any failure is
+    swallowed and logged — it must never fail or roll back the edge,
+    which is the durable thing here.
+
+    **The check never runs inside an open transaction.** It does a
+    Crossref HTTP round-trip *and* opens its own connections; holding a
+    pgbouncer'd Postgres transaction across that risks pool-exhaustion
+    deadlock under load. So:
+
+    * ``conn=None`` — we own the write, and the check runs after our
+      ``store.tx()`` commits.
+    * ``conn=<caller's>`` — the caller's transaction is still open when
+      we return, so we cannot check here. Pass ``pending_checks=[]`` and
+      drain it with :func:`run_retraction_checks` after committing.
+      Without that list the check is silently skipped, which is why
+      every worker call site threads one through.
+
+    ``check_retraction=False`` is the opt-out for bulk/backfill callers
+    and tests that must not touch the network.
     """
     if role not in HUB_ROLES:
         raise BadInput(
@@ -569,6 +622,11 @@ def attach_evidence(
         )
     # FK/vocab pre-flight (raises BadInput on an unregistered slug).
     validated = validate_relation(role, store=store)
+
+    # Box for the source ref's kind, set inside ``_do`` and read after the
+    # transaction closes — see the retraction-check call below, which must
+    # run outside the write-door transaction.
+    src_kind_box: dict[str, str] = {}
 
     def _do(c: Any) -> None:
         if not _is_claim_hub(store, hub_ref_id, conn=c):
@@ -589,6 +647,7 @@ def attach_evidence(
                 "paper/patent",
                 next="evidence edges attach only from a paper/patent source ref",
             )
+        src_kind_box["kind"] = src.kind
         # Ground the edge at the specific supporting passage when the
         # verdict/spec named one (meta.source_handle → src_chunk_id), so the
         # edge is pc<id>-granular. Falls back to a ref-level (pa<id>) edge
@@ -626,6 +685,22 @@ def attach_evidence(
     else:
         with store.tx() as c:
             _do(c)
+
+    # Trigger 1 (docs/backlog/retraction-check-triggers.md). Patents have no
+    # DOI to check Crossref against, so only a paper source qualifies.
+    if not (check_retraction and src_kind_box.get("kind") == "paper"):
+        return
+
+    if conn is None:
+        # We owned the transaction and it has committed. Safe to check here.
+        run_retraction_checks(store, [paper_ref_id], hub_ref_id=hub_ref_id)
+    elif pending_checks is not None:
+        # The CALLER owns the transaction and it is still open — doing HTTP
+        # here would hold a pgbouncer'd server connection across a network
+        # round-trip, and check_ref_retraction opens its own connections on
+        # top of that (a pool-exhaustion deadlock under load). Hand the ref
+        # back instead; the caller drains after its commit.
+        pending_checks.append(paper_ref_id)
 
 
 def link_claims(
@@ -718,6 +793,7 @@ def apply_placement(
     todo_fn: Callable[[CanonicalClaim, Placement], Any] | None = None,
     set_by: str = "agent",
     conn: Any = None,
+    pending_checks: list[int] | None = None,
 ) -> int | None:
     """Persist a canonicalizer :class:`Placement` through the write door.
 
@@ -748,9 +824,18 @@ def apply_placement(
     the evidence write ``conn`` exists to bundle.
     """
     action = placement.action
+    # Trigger-1 sink (see attach_evidence): a check can never run inside an
+    # open transaction. When the caller owns ``conn`` we pass their list
+    # upward and they drain it post-commit; when we own the transaction we
+    # collect locally and drain it ourselves below.
+    owned_checks: list[int] = []
+    sink = pending_checks if conn is not None else owned_checks
+
     if action == "attach":
         if placement.hub_ref_id is None:
             raise BadInput("attach placement has no hub_ref_id")
+        # conn=None here means attach_evidence owns (and commits) its own
+        # transaction, so it runs the check itself and the sink stays empty.
         attach_evidence(
             store,
             hub_ref_id=placement.hub_ref_id,
@@ -759,6 +844,7 @@ def apply_placement(
             meta=meta,
             set_by=set_by,
             conn=conn,
+            pending_checks=sink,
         )
         return placement.hub_ref_id
 
@@ -774,6 +860,7 @@ def apply_placement(
                 meta=meta,
                 set_by=set_by,
                 conn=c,
+                pending_checks=sink,
             )
             if action == "new_contradicts":
                 if placement.contradicts_hub_ref_id is None:
@@ -794,7 +881,10 @@ def apply_placement(
         if conn is not None:
             return _do(conn)
         with store.tx() as c:
-            return _do(c)
+            hub_id = _do(c)
+        # Transaction committed — now it is safe to reach the network.
+        run_retraction_checks(store, owned_checks, hub_ref_id=hub_id)
+        return hub_id
 
     if action == "needs_review":
         if todo_fn is not None:

@@ -31,10 +31,10 @@ URL and ``doi:`` prefixes stripped.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from precis.errors import Upstream
@@ -1441,13 +1441,161 @@ def check_dois(
     return [r for r in results if r is not None]
 
 
+# ---------------------------------------------------------------------------
+# TTL-gated single-ref check — the demand-driven trigger surface
+# ---------------------------------------------------------------------------
+#
+# Retraction coverage is sparse *by design*: we check where the answer is
+# load-bearing (a paper entering the taproot claim graph, a draft the user
+# is about to publish) rather than sweeping the corpus. Both triggers call
+# through here so the freshness rule lives in one place.
+
+#: Default freshness window. A ref checked within this many days is not
+#: re-fetched — matches the edge-recheck TTL assumed by the taproot design.
+RETRACTION_TTL_DAYS = 30
+
+#: What a check actually did. ``fresh`` = TTL short-circuit (no network).
+#: ``checked`` = we asked upstream and got an answer. ``no_doi`` /
+#: ``unchecked`` / ``missing`` = we could not form an opinion, and callers
+#: must not read them as "clean".
+CheckOutcome = Literal["fresh", "checked", "no_doi", "unchecked", "missing"]
+
+
+@dataclass(frozen=True, slots=True)
+class RetractionCheck:
+    """What one :func:`check_ref_retraction` call did, and what it found."""
+
+    ref_id: int
+    outcome: CheckOutcome
+    status: RetractionStatus | None = None
+    checked_at: datetime | None = None
+    error: str | None = None
+
+    @property
+    def flagged(self) -> bool:
+        """True when this ref carries any retraction status."""
+        return self.status is not None
+
+    @property
+    def known_clean(self) -> bool:
+        """True only when we have an actual clean answer.
+
+        ``no_doi`` / ``unchecked`` / ``missing`` are *not* clean — the
+        whole point of the sparse model is that "we never looked" stays
+        distinguishable from "we looked and it was fine".
+        """
+        return self.status is None and self.outcome in ("fresh", "checked")
+
+
+def check_ref_retraction(
+    store: Store,
+    ref_id: int,
+    *,
+    force: bool = False,
+    ttl_days: int = RETRACTION_TTL_DAYS,
+    mailto: str | None = None,
+) -> RetractionCheck:
+    """Check one ref for retraction, skipping refs checked within the TTL.
+
+    Wraps :func:`check_doi` (which folds in both Crossref and the local
+    Retraction Watch cache, and write-throughs any notices it finds) with
+    the freshness gate and the clean-stamp that make repeated calls cheap:
+
+    * inside the TTL and not ``force`` → ``fresh``, no network at all;
+    * upstream answered with notices → ``checked``, status write-through
+      already done by ``check_doi``;
+    * upstream answered clean → ``checked``, and we move
+      ``retraction_checked_at`` forward via
+      :meth:`Store.touch_retraction_checked` so the next call
+      short-circuits. Without this stamp "clean" is indistinguishable
+      from "never looked" and every trigger re-fetches forever.
+
+    A ref with no DOI, or one where Crossref *and* the RW cache both came
+    up empty, is reported honestly (``no_doi`` / ``unchecked``) and is
+    **not** stamped — pretending we checked would poison the TTL.
+    """
+    ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    if ref is None:
+        return RetractionCheck(ref_id=ref_id, outcome="missing")
+
+    checked_at = getattr(ref, "retraction_checked_at", None)
+    current: RetractionStatus | None = getattr(ref, "retraction_status", None)
+    if not force and checked_at is not None:
+        age = datetime.now(UTC) - checked_at
+        if age < timedelta(days=ttl_days):
+            return RetractionCheck(
+                ref_id=ref_id,
+                outcome="fresh",
+                status=current,
+                checked_at=checked_at,
+            )
+
+    doi = store.dois_for_refs([ref_id]).get(ref_id)
+    if not doi:
+        return RetractionCheck(
+            ref_id=ref_id, outcome="no_doi", status=current, checked_at=checked_at
+        )
+
+    result = check_doi(doi, store=store, mailto=mailto)
+    if result.status != "ok":
+        return RetractionCheck(
+            ref_id=ref_id,
+            outcome="unchecked",
+            status=current,
+            checked_at=checked_at,
+            error=result.error or result.status,
+        )
+
+    if result.applied_status is None:
+        # Clean read. Stamp only the timestamp — never rewrite the status
+        # columns, or a Crossref-clean answer would clear a flag that only
+        # Retraction Watch (or a human) knew about.
+        store.touch_retraction_checked(ref_id)
+    return RetractionCheck(
+        ref_id=ref_id,
+        outcome="checked",
+        # A clean upstream read does not overturn an existing flag.
+        status=result.applied_status or current,
+        checked_at=datetime.now(UTC),
+    )
+
+
+def check_refs_retraction(
+    store: Store,
+    ref_ids: Sequence[int],
+    *,
+    force: bool = False,
+    ttl_days: int = RETRACTION_TTL_DAYS,
+    mailto: str | None = None,
+) -> list[RetractionCheck]:
+    """:func:`check_ref_retraction` over a list, in order, deduped.
+
+    Sequential on purpose: the fetches are Crossref-rate-limited and the
+    TTL means a second pass over the same paper set is nearly free.
+    """
+    seen: set[int] = set()
+    out: list[RetractionCheck] = []
+    for ref_id in ref_ids:
+        if ref_id in seen:
+            continue
+        seen.add(ref_id)
+        out.append(
+            check_ref_retraction(
+                store, ref_id, force=force, ttl_days=ttl_days, mailto=mailto
+            )
+        )
+    return out
+
+
 __all__ = [
+    "RETRACTION_TTL_DAYS",
     "BibEntry",
     "CandidateMatch",
     "LinkRelation",
     "MetadataVerification",
     "Notice",
     "ProvenanceResult",
+    "RetractionCheck",
     "RetractionStatus",
     "Severity",
     "TransitiveCiteFinding",
@@ -1455,6 +1603,8 @@ __all__ = [
     "candidate_search",
     "check_doi",
     "check_dois",
+    "check_ref_retraction",
+    "check_refs_retraction",
     "classify_update_type",
     "dominant_status",
     "make_notice_slug",

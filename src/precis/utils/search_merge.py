@@ -50,6 +50,63 @@ from precis.utils.search_header import format_search_headline
 # implicitly already pay for.
 _RRF_K: int = 60
 
+# Multiplicative penalty applied to a document's fused RRF total,
+# keyed by ``refs.retraction_status``. See docs/backlog/retraction-
+# status-downstream.md item 1 for the policy this encodes:
+#
+# - ``retracted`` is HARD: sink it toward the bottom of the page, but
+#   never exclude it — a retracted paper is frequently exactly what a
+#   search is looking for (checking whether something was retracted),
+#   and silent exclusion is indistinguishable from a broken index.
+# - ``corrected`` / ``expression_of_concern`` are SOFT: the underlying
+#   science is usually still sound, so only a mild nudge.
+# - anything else (``None`` — the vast majority of the sparsely-
+#   checked corpus) gets factor 1.0, i.e. no change at all. This is
+#   the regression-risk case: an unchecked paper must rank exactly as
+#   it did before this feature existed.
+#
+# Multiplicative, not additive: an RRF total is a sum of
+# ``1/(60+rank)`` contributions, so its scale shrinks as rank worsens
+# and grows with the number of streams a document appears in
+# (roughly 0.008..0.016 per contributing stream, more streams ⇒
+# bigger raw number). A fixed additive penalty would have to be
+# calibrated against that shifting scale — too small and a retracted
+# top-of-every-stream hit barely moves, too big and it starts
+# clobbering the *relative* ordering of unrelated, non-retracted
+# hits whose totals happen to sit near the penalty's magnitude.
+# Scaling the total proportionally sidesteps that: the penalty is
+# always "N% of this document's own fused relevance", so it demotes
+# consistently regardless of how many streams voted for it.
+_RETRACTION_SCORE_FACTOR: dict[str, float] = {
+    "retracted": 0.02,
+    "corrected": 0.85,
+    "expression_of_concern": 0.85,
+}
+
+# Human-facing one-line labels, keyed by ``refs.retraction_status``.
+# Mirrors ``handlers/paper.py::_RETRACTION_LABELS`` (that module isn't
+# imported here to avoid a handlers→utils dependency inversion; the
+# two small dicts are cheap enough to keep in sync by hand).
+_RETRACTION_LABELS: dict[str, str] = {
+    "retracted": "RETRACTED",
+    "corrected": "CORRECTED",
+    "expression_of_concern": "EXPRESSION OF CONCERN",
+}
+
+
+def _retraction_note(status: str | None) -> str | None:
+    """One-line ``⚠ LABEL`` annotation for a hit's retraction status.
+
+    Returns ``None`` for the unset/unknown case so callers can `if
+    note:` without a second lookup. Deliberately terse (no reason/date
+    — that detail lives on the paper record itself) since this renders
+    inline in a ranked list, not a dedicated banner.
+    """
+    if not status:
+        return None
+    label = _RETRACTION_LABELS.get(status.strip().lower())
+    return f"⚠ {label}" if label else None
+
 
 _MergeMode = Literal["priority", "rrf"]
 
@@ -133,6 +190,18 @@ class SearchHit:
     # Preferred over the legacy ``slug~pos`` / ``#ref_id`` form by the
     # renderers. None for a kind with no handle code.
     uhandle: str | None = None
+    # ``refs.retraction_status`` verbatim (``"retracted"`` /
+    # ``"corrected"`` / ``"expression_of_concern"`` / ``None``).
+    # Populated from the Ref producers already have on hand — no new
+    # store query. Drives two things downstream: :func:`_merge_rrf`
+    # applies a severity-scaled multiplicative penalty
+    # (``_RETRACTION_SCORE_FACTOR``) so a retracted hit sinks without
+    # being excluded, and :func:`_render_hit` /
+    # :func:`_render_toon_table` surface a ``⚠`` annotation so the
+    # downrank is never mistaken for a missing/broken result. ``None``
+    # (the overwhelming majority — checking is opt-in and sparse) is a
+    # complete no-op on both paths.
+    retraction_status: str | None = None
 
     @property
     def handle(self) -> str:
@@ -282,6 +351,13 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
     raw ``score`` desc.  We return one ``SearchHit`` per document
     — the first one encountered when iterating streams in order
     — so consumers see consistent metadata.
+
+    Retracted / corrected / EoC documents get their *total*
+    multiplied by :data:`_RETRACTION_SCORE_FACTOR` after fusion (see
+    that constant's docstring for why multiplicative) — applied once
+    per document using the representative hit's
+    ``retraction_status``, not per-stream-contribution, so a paper
+    that surfaces across multiple streams is penalised exactly once.
     """
     # group_id is either the dedupe_key string or a synthetic
     # ``"_:{stream}:{idx}"`` token for hits without a key. Using a
@@ -301,6 +377,12 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
             if key not in representatives:
                 representatives[key] = hit
                 insertion_order.append(key)
+
+    for key, hit in representatives.items():
+        status = (hit.retraction_status or "").strip().lower()
+        factor = _RETRACTION_SCORE_FACTOR.get(status)
+        if factor is not None:
+            totals[key] *= factor
 
     # Sort by RRF total desc, break ties by raw score desc, then
     # by insertion order for determinism.
@@ -370,6 +452,15 @@ def _render_toon_table(hits: list[SearchHit]) -> str:
     rows: list[dict[str, str]] = []
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
+        note = _retraction_note(hit.retraction_status)
+        if note:
+            # Prefix rather than a dedicated column: the flag is rare
+            # (most refs are unchecked) so a column would render an
+            # empty cell on ~every row — pure token waste for the
+            # common case. The handle/id cell stays untouched
+            # (agents paste it verbatim into get()); the summary cell
+            # is prose already, so a prefix reads naturally there.
+            summary = f"{note} — {summary}" if summary else note
         if hit.uhandle:
             ident = hit.uhandle  # universal handle when backfilled
         elif hit.slug:
@@ -440,6 +531,9 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     parts = [f"\n## {rank}. {ident}{label}"]
     if hit.title:
         parts.append(f"_{hit.title}_")
+    note = _retraction_note(hit.retraction_status)
+    if note:
+        parts.append(note)
     parts.extend(hit.extra_lines)
     if hit.preview:
         parts.append(hit.preview)
@@ -539,6 +633,10 @@ def block_hits_to_search_hits(
                 uhandle=handle_registry.try_format(
                     kind, getattr(block, "id", None), chunk=True
                 ),
+                # ``getattr`` — most producers pass a real ``Ref``
+                # (always carries the column, ``None`` when unchecked),
+                # but the block-level fakes used in some tests don't.
+                retraction_status=getattr(ref, "retraction_status", None),
             )
         )
     return out
@@ -602,6 +700,7 @@ def ref_hits_to_search_hits(
                 # the record handle is computed from
                 # ``(kind, ref_id)``.
                 uhandle=handle_registry.try_format(kind, ref_id, chunk=False),
+                retraction_status=getattr(ref, "retraction_status", None),
             )
         )
     return out

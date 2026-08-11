@@ -827,22 +827,107 @@
         </template>
       </div>
 
-      {# ── Export: docx/pdf downloads, PDF→project job, papers zip, reMarkable.
-           `withSources` toggles the include-referenced-sources appendix (docx
-           returns a zip; PDF a pdfpages appendix) — same semantics as classic. #}
-      <div x-show="tool === 'export'" x-cloak class="space-y-1.5 p-2 text-xs" x-data="{ withSources: false }">
+      {# ── Export: docx/pdf downloads, PDF→project job, papers zip, reMarkable,
+           + the retraction watch (docs/backlog/retraction-status-downstream.md
+           items 2/3). `withSources` toggles the include-referenced-sources
+           appendix (docx returns a zip; PDF a pdfpages appendix) — same
+           semantics as classic. The retraction state is fetched read-only
+           (no network) on pane load so the "N of M never checked" warning is
+           visible before anyone presses "check retractions"; that button is
+           the one thing here that DOES hit the network (Crossref, TTL-gated). #}
+      <div x-show="tool === 'export'" x-cloak class="space-y-1.5 p-2 text-xs"
+           x-data="{
+             withSources: false,
+             overrideRetraction: false,
+             forceRecheck: false,
+             retraction: null,
+             retractionChecking: false,
+             retractionError: null,
+             async loadRetraction() {
+               try {
+                 const r = await fetch('/drafts/{{ ident }}/retraction-status');
+                 this.retraction = await r.json();
+               } catch (e) { /* best-effort — export still works without this */ }
+             },
+             async checkRetraction() {
+               this.retractionChecking = true;
+               this.retractionError = null;
+               try {
+                 const body = new URLSearchParams();
+                 if (this.forceRecheck) body.set('force', '1');
+                 const r = await fetch('/drafts/{{ ident }}/retraction-check', { method: 'POST', body });
+                 const data = await r.json();
+                 if (data.ok === false) { this.retractionError = data.error || 'check failed'; }
+                 else { this.retraction = data; }
+               } catch (e) {
+                 this.retractionError = String(e);
+               } finally {
+                 this.retractionChecking = false;
+               }
+             },
+             docxQuery() {
+               const p = new URLSearchParams();
+               if (this.withSources) p.set('sources', '1');
+               if (this.overrideRetraction) p.set('ignore_retractions', '1');
+               const q = p.toString();
+               return q ? '?' + q : '';
+             }
+           }"
+           x-init="loadRetraction()">
         <label class="flex items-center gap-1 text-slate-500"
                title="include the referenced papers & datasheets in the export">
           <input type="checkbox" x-model="withSources" class="h-3 w-3"><span>+ sources</span>
         </label>
+
+        {# Retraction watch: passive warning (read-only, no network) + the
+           blocking notice + override once a cite is known-retracted. #}
+        <template x-if="retraction && retraction.total > 0">
+          <div class="space-y-1">
+            <p class="text-slate-400" x-text="retraction.summary"></p>
+            <template x-if="retraction.blocks_export">
+              <div class="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-rose-700">
+                <p class="font-semibold">
+                  ⚠ export blocked — retracted citation(s):
+                  <span x-text="retraction.retracted.map(p => p.slug).join(', ')"></span>
+                </p>
+                <label class="mt-1 flex items-center gap-1">
+                  <input type="checkbox" x-model="overrideRetraction" class="h-3 w-3">
+                  <span>I've reviewed it — export anyway</span>
+                </label>
+              </div>
+            </template>
+            <template x-if="!retraction.blocks_export && retraction.unchecked.length > 0">
+              <p class="text-amber-600">
+                <span x-text="retraction.unchecked.length"></span> of
+                <span x-text="retraction.total"></span> cited papers have never been
+                checked for retraction —
+                <a href="#" @click.prevent="checkRetraction()" class="underline">check now</a>.
+              </p>
+            </template>
+          </div>
+        </template>
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <button type="button" @click="checkRetraction()" :disabled="retractionChecking"
+                  class="text-slate-500 underline hover:text-slate-800 disabled:opacity-50"
+                  title="live-check every cited paper against Crossref for retraction/correction notices (TTL-gated)">
+            <span x-text="retractionChecking ? 'checking…' : 'check retractions'"></span>
+          </button>
+          <label class="flex items-center gap-1 text-slate-400"
+                 title="ignore the 30-day cache and re-check every cite now">
+            <input type="checkbox" x-model="forceRecheck" class="h-3 w-3"><span>force</span>
+          </label>
+          <span x-show="retractionError" x-text="retractionError" class="text-rose-600"></span>
+        </div>
+
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <a :href="'/drafts/{{ ident }}/export.docx' + (withSources ? '?sources=1' : '')"
+          <a :href="'/drafts/{{ ident }}/export.docx' + docxQuery()"
              class="text-slate-500 underline hover:text-slate-800"
              x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
           <a :href="'/drafts/{{ ident }}/pdf' + (withSources ? '?sources=1' : '')"
              class="text-slate-500 underline hover:text-slate-800">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
+            <input type="hidden" name="ignore_retractions" :value="overrideRetraction ? '1' : ''">
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="start a background job that persists the PDF into the project workspace">export →project</button>
           </form>

@@ -126,7 +126,7 @@ from psycopg import Connection
 
 from precis.store.types import Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
-from precis.taproot.hub import HUB_ROLES, attach_evidence
+from precis.taproot.hub import HUB_ROLES, attach_evidence, run_retraction_checks
 from precis.taproot.resolve import resolve_citation
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
@@ -576,6 +576,7 @@ def _refine_one_hub(
     embedder: Any,
     topk: int,
     min_sim: float | None,
+    pending_checks: list[int] | None = None,
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
@@ -738,6 +739,7 @@ def _refine_one_hub(
                     },
                     set_by="system",
                     conn=conn,
+                    pending_checks=pending_checks,
                 )
             elif supports in ("partial", "no"):
                 # "no", or a contradicting "partial" — judged once, memoed.
@@ -849,6 +851,11 @@ def run_hub_refine_pass(
 
     for hub_ref_id in hub_ids:
         try:
+            # Trigger-1 checks do Crossref HTTP and open their own
+            # connections, so they are collected during the write and run
+            # only after the commit below — never inside the transaction
+            # (see ``taproot.hub.attach_evidence``).
+            pending_checks: list[int] = []
             with store.pool.connection() as conn:
                 _refine_one_hub(
                     conn,
@@ -857,8 +864,10 @@ def run_hub_refine_pass(
                     embedder=embedder,
                     topk=resolved_topk,
                     min_sim=resolved_min_sim,
+                    pending_checks=pending_checks,
                 )
                 conn.commit()
+            run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
             ok += 1
         except Exception:  # pragma: no cover — defensive, mirrors inbound_chase.py
             log.warning(

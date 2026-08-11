@@ -1339,6 +1339,50 @@ class RefsMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def touch_retraction_checked(
+        self, ref_id: int, *, conn: Connection | None = None
+    ) -> None:
+        """Record that we asked upstream about ``ref_id`` and it came back clean.
+
+        Deliberately narrower than :meth:`set_retraction_status` with
+        ``status=None``, which *rewrites* the status columns and so would
+        silently clear a flag some other source already found: Crossref
+        knows nothing about a Retraction-Watch-only notice, so a
+        Crossref-clean read must never un-retract a paper. This moves
+        ``retraction_checked_at`` forward and nothing else, which is all
+        the TTL gate in ``ingest/provenance.py`` needs.
+
+        ``updated_at`` is deliberately left alone — "we looked again and
+        nothing had changed" is not a change to the ref.
+        """
+        sql = (
+            "UPDATE refs SET retraction_checked_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        if conn is not None:
+            conn.execute(sql, (ref_id,))
+            return
+        with self.pool.connection() as c:
+            c.execute(sql, (ref_id,))
+
+    def dois_for_refs(self, ref_ids: list[int]) -> dict[int, str]:
+        """``{ref_id: doi}`` for those that have one — refs without are absent.
+
+        DOI-only twin of :meth:`paper_identifiers` (which falls back to
+        arXiv/S2 ids that the Crossref-backed retraction check can't use).
+        Batched so a draft-wide walk is one query, not one per cite.
+        """
+        if not ref_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, min(id_value) FROM ref_identifiers "
+                "WHERE ref_id = ANY(%s) AND id_kind = 'doi' "
+                "GROUP BY ref_id",
+                (list(ref_ids),),
+            ).fetchall()
+        return {int(rid): doi for rid, doi in rows if doi}
+
     def _propagate_retraction_to_findings(
         self,
         retracted_ref_id: int,

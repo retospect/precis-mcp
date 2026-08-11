@@ -47,6 +47,15 @@ served from here:
   ``/validate-refs``, ``/ref-search``, ``/figure…``, ``/authors``,
   ``/workspace``, ``/authoring``, ``/fork``, exports) — shared by
   smartdraft's ported editor UI.
+* ``GET /drafts/{ident}/export.docx`` / ``POST /drafts/{ident}/export.pdf``
+  — both gate on ``precis.export.retraction``: a ``retracted`` cite
+  hard-blocks (override: ``?ignore_retractions=1`` / form field), reading
+  stored state only (never a live Crossref check — see
+  ``_retraction_blocked_response``). ``GET
+  /drafts/{ident}/retraction-status`` (no-network read) and ``POST
+  /drafts/{ident}/retraction-check`` (the watch button — live re-check,
+  TTL-gated, ``force=1`` bypasses the TTL) back the export pane's
+  retraction UI; see ``docs/backlog/retraction-status-downstream.md``.
 
 Rendering is **raw source** (Tier A); the resolution pass that computes
 §-numbers / resolves cross-refs is the export engine (Tier B), shared
@@ -58,6 +67,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import re
 import tempfile
 from collections import OrderedDict
@@ -1031,6 +1041,136 @@ async def new_draft(
 
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+#: Hard cap on how many cites the retraction-watch button re-checks in one
+#: request (``retraction_check_route``) — a big draft is one Crossref
+#: round-trip per uncached cite, and this is a synchronous request a human
+#: is deliberately waiting on (docs/backlog/retraction-status-downstream.md
+#: item 3 accepts sync-with-a-cap for v1 rather than promoting to a job).
+#: Chosen so a cold-cache walk stays well under a minute; a draft with more
+#: cites than this gets a truncated, clearly-labelled check rather than an
+#: open-ended wait.
+_RETRACTION_CHECK_CAP = 40
+
+#: Overall wall-clock budget for one retraction-watch walk. habanero's
+#: per-call Crossref timeout bounds a single request, not the whole loop
+#: over ``_RETRACTION_CHECK_CAP`` cites — this is the backstop so a slow or
+#: half-dead Crossref can never pin the request (or its worker thread)
+#: open indefinitely.
+_RETRACTION_CHECK_BUDGET_S = 90.0
+
+
+def _crossref_mailto() -> str | None:
+    """Crossref polite-pool contact for a retraction re-check — the same
+    env var the metadata-enrichment sweep reads
+    (``workers/paper_meta_enrich.py``). Read fresh per call (not cached at
+    import time) so rotating it in ops doesn't need a process restart."""
+    return os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+
+
+def _retraction_paper_json(paper: Any) -> dict[str, Any]:
+    """One ``CitedPaper`` (``precis.export.retraction``) as JSON — the
+    shape both the read-only status route and the check-now route hand
+    the export pane, so the client renders off one shape regardless of
+    which one answered."""
+    checked_at = paper.checked_at
+    return {
+        "ref_id": paper.ref_id,
+        "slug": paper.slug,
+        "title": paper.title,
+        "status": paper.status,
+        "label": paper.label,
+        "blocks": paper.blocks,
+        "never_checked": paper.never_checked,
+        "checked_at": checked_at.isoformat()
+        if hasattr(checked_at, "isoformat")
+        else checked_at,
+    }
+
+
+def _retraction_report_json(report: Any) -> dict[str, Any]:
+    """JSON body for ``DraftRetractionReport`` — shared by
+    ``retraction_status_route`` (read, ``check=False``) and
+    ``retraction_check_route`` (``check=True``)."""
+    return {
+        "ok": True,
+        "checked": report.checked,
+        "summary": report.summary(),
+        "blocks_export": report.blocks_export,
+        "total": len(report.papers),
+        "retracted": [_retraction_paper_json(p) for p in report.retracted],
+        "soft": [_retraction_paper_json(p) for p in report.soft],
+        "unchecked": [_retraction_paper_json(p) for p in report.unchecked],
+        "unresolved": report.unresolved,
+    }
+
+
+def _retraction_blocked_response(request: Request, report: Any) -> Response:
+    """The shared "export blocked — retracted citation" page for both
+    export routes (the docx GET and the pdf-job POST) — one wording, so
+    the two surfaces can't drift on what they tell the user or how to get
+    past it.
+
+    Renders ``error.html.j2`` directly rather than a bare redirect: it is
+    the idiom this same file already uses for a blocking, explain-why
+    validation failure on a GET download (see the ``/pdf`` route's
+    no-latexmk / compile-error branches), and it is the only place that
+    can carry the retracted slugs and the override instructions where a
+    plain 303 to the reader cannot.
+
+    The override (``ignore_retractions=1`` / form field) is deliberate by
+    design — a retracted citation making it into a published artifact is
+    the exact failure mode this whole feature exists to catch, so the
+    default is a hard stop; bypassing it always requires an explicit,
+    separately-typed act, never a header or a default-on flag."""
+    slugs = ", ".join(p.slug for p in report.retracted)
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "title": "Export blocked — retracted citation",
+            "status": 409,
+            "detail": (
+                f"This draft cites {len(report.retracted)} retracted "
+                f"paper(s): {slugs}. Exporting a retracted citation into a "
+                "finished document is the exact failure mode this check "
+                "exists to catch, so it hard-stops by default.\n\n"
+                "To export anyway: use the override checkbox in the "
+                "export panel, or add ignore_retractions=1 to this "
+                "request (docx: query param; PDF: form field)."
+            ),
+        },
+        status_code=409,
+    )
+
+
+def _safe_retraction_report(store: Any, ref: Any, **kw: Any) -> Any | None:
+    """``draft_retraction_report`` wrapped defensively — a failure inside
+    the walk must never take down the export it's gating or the reader
+    the watch button lives on. Returns ``None`` on any exception; callers
+    treat that as "no report available" and fail OPEN (never block an
+    export on a check that itself couldn't run) — this is a best-effort
+    safety net, not a compliance gate, and the worse outcome is "every
+    export 500s", not "a rare retracted cite doesn't get flagged".
+
+    The fail-open direction is a deliberate trade and the one thing to
+    re-argue if this gate ever becomes a compliance requirement rather
+    than an integrity nudge: a walk that cannot run produces no verdict,
+    and refusing every export on an unavailable checker would wedge the
+    user for a reason they cannot act on. The failure is logged loudly
+    instead."""
+    from precis.export.retraction import draft_retraction_report
+
+    try:
+        return draft_retraction_report(store, ref, **kw)
+    except Exception:
+        log.error(
+            "drafts: retraction report failed for draft=%s — treating as "
+            "unavailable (see _safe_retraction_report's KNOWN BUG note)",
+            getattr(ref, "id", None),
+            exc_info=True,
+        )
+        return None
+
 
 @router.get("/drafts/{ident}/export.docx")
 async def export_docx_route(request: Request, ident: str) -> Response:
@@ -1046,13 +1186,44 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     ``?sources=1`` returns a ``.zip`` instead — the ``.docx`` plus a
     ``sources/`` folder of every cited paper/datasheet PDF the host holds
     (Word can't embed PDF pages inline the way the compiled-PDF path can),
-    with a ``manifest.txt`` listing anything that couldn't be located."""
+    with a ``manifest.txt`` listing anything that couldn't be located.
+
+    ``?ignore_retractions=1`` overrides a retraction block (see
+    ``_retraction_blocked_response``). The gate itself only ever *reads*
+    stored retraction state (``check=False``, no network) — a download
+    click must never turn into a minute of Crossref latency; the
+    deliberate live re-check is the watch button
+    (``retraction_check_route``) the user presses and waits on on
+    purpose. See ``precis.export.retraction``'s module docstring for the
+    read/check split this mirrors."""
     from precis.export.docx import export_docx
 
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
+
+    ignore_retractions = request.query_params.get("ignore_retractions") in (
+        "1",
+        "true",
+        "yes",
+    )
+    report = _safe_retraction_report(store, ref)
+    if report is not None and report.blocks_export:
+        if not ignore_retractions:
+            return _retraction_blocked_response(request, report)
+        # The override is deliberate and meant to be rare — leave a trace.
+        # This ideally lands in the export's sources appendix
+        # (precis.export.sources), which is outside this route's file
+        # ownership; a server log line is the interim trace — see
+        # docs/backlog/retraction-status-downstream.md item 2.
+        log.warning(
+            "drafts: export override — draft=%s (%s) retracted cites=%s",
+            ref.id,
+            ref.slug,
+            [p.slug for p in report.retracted],
+        )
+
     citations = (
         "endnote" if request.query_params.get("citations") == "endnote" else "plain"
     )
@@ -1112,13 +1283,36 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     the task page. Redirects back to the reader.
 
     A ``sources=1`` form field additionally bundles every cited
-    paper/datasheet PDF the worker holds as a ``pdfpages`` appendix."""
+    paper/datasheet PDF the worker holds as a ``pdfpages`` appendix.
+
+    A ``ignore_retractions=1`` form field overrides a retraction block —
+    see ``_retraction_blocked_response``. The gate here is the same
+    stored-state-only read (``check=False``, no network) as the docx
+    route: enqueuing a job must not itself wait on Crossref."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
     form = await request.form()
     with_sources = str(form.get("sources") or "") in ("1", "true", "yes", "on")
+    ignore_retractions = str(form.get("ignore_retractions") or "") in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+    report = _safe_retraction_report(store, ref)
+    if report is not None and report.blocks_export:
+        if not ignore_retractions:
+            return _retraction_blocked_response(request, report)
+        log.warning(
+            "drafts: export override — draft=%s (%s) retracted cites=%s",
+            ref.id,
+            ref.slug,
+            [p.slug for p in report.retracted],
+        )
+
     slug = str(ref.slug or ref.id)
     params: dict[str, Any] = {"draft": slug}
     idem = f"draft_export:{slug}"
@@ -1138,6 +1332,109 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
         redirect=f"/drafts/{ident}",
         error_title="PDF export error",
     )
+
+
+@router.get("/drafts/{ident}/retraction-status")
+async def retraction_status_route(request: Request, ident: str) -> Response:
+    """Read-only retraction state of everything this draft cites — the
+    exact same no-network read the export gate uses
+    (``draft_retraction_report(check=False)``). Backs the export pane's
+    passive "N of M cited papers have never been checked" warning: the
+    pane fetches this on load, so the warning (and the override checkbox,
+    when a cite is already known-retracted) is visible before the user
+    ever presses "check retractions"."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    report = _safe_retraction_report(store, ref)
+    if report is None:
+        return JSONResponse(
+            {"ok": False, "error": "retraction status unavailable"}, status_code=502
+        )
+    return JSONResponse(_retraction_report_json(report))
+
+
+@router.post("/drafts/{ident}/retraction-check")
+async def retraction_check_route(request: Request, ident: str) -> Response:
+    """The retraction-watch button — trigger 2 of
+    ``docs/backlog/retraction-check-triggers.md``: re-checks the draft's
+    cited papers through Crossref (TTL-gated, so a same-day re-press is
+    nearly free) and reports per-paper status. ``force=1`` ignores the
+    TTL — without it, pressing the button twice in one day is a silent
+    no-op and reads as broken.
+
+    Synchronous-with-a-cap for v1
+    (``docs/backlog/retraction-status-downstream.md`` item 3): the user
+    is deliberately waiting on this button, but a large draft is one
+    Crossref round-trip per uncached cite. The walk is capped at
+    ``_RETRACTION_CHECK_CAP`` cites and wrapped in an overall wall-clock
+    budget (``_RETRACTION_CHECK_BUDGET_S``) so neither the request nor
+    its worker thread can hang indefinitely on a slow/unreachable
+    Crossref — a truncated walk says so rather than silently
+    under-reporting."""
+    from precis.export.retraction import cited_paper_refs, draft_retraction_report
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    form = await request.form()
+    force = str(form.get("force") or "") in ("1", "true", "yes", "on")
+
+    refs, unresolved = cited_paper_refs(store, ref)
+    total = len(refs)
+    truncated = total > _RETRACTION_CHECK_CAP
+    selected = refs[:_RETRACTION_CHECK_CAP] if truncated else refs
+    cited_slugs = [r.slug for r in selected]
+
+    def _run() -> Any:
+        return draft_retraction_report(
+            store,
+            ref,
+            cited_slugs=cited_slugs,
+            check=True,
+            force=force,
+            mailto=_crossref_mailto(),
+        )
+
+    try:
+        report = await asyncio.wait_for(
+            asyncio.to_thread(_run), timeout=_RETRACTION_CHECK_BUDGET_S
+        )
+    except TimeoutError:
+        # asyncio.wait_for cancels our await, but the underlying thread
+        # keeps running to completion in the background — it just finishes
+        # unobserved. What matters here is that this request (and the
+        # event loop) doesn't wait on it.
+        log.warning("drafts: retraction-check timed out for %s", ident)
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"timed out after {_RETRACTION_CHECK_BUDGET_S:.0f}s "
+                    "waiting on Crossref — try again shortly"
+                ),
+            },
+            status_code=504,
+        )
+    except Exception:  # pragma: no cover - defensive, see _safe_retraction_report
+        log.error("drafts: retraction-check failed for %s", ident, exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "retraction check failed — see server log"},
+            status_code=502,
+        )
+
+    payload = _retraction_report_json(report)
+    payload["unresolved"] = unresolved
+    payload["truncated"] = truncated
+    if truncated:
+        payload["truncated_total"] = total
+        payload["summary"] = (
+            f"checked {len(cited_slugs)} of {total} cited papers (capped) — "
+            f"{report.summary()}"
+        )
+    return JSONResponse(payload)
 
 
 @router.post("/drafts/{ident}/remarkable")

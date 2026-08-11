@@ -246,6 +246,43 @@ class TestRetraction:
         ref = _ref(store, rid)
         assert ref.retraction_status is None
 
+    def test_clean_crossref_read_stamps_checked_at(self, store: Store) -> None:
+        """A clean answer is still an answer, and has to be recorded.
+
+        Stamping only flagged papers leaves "checked, clean" identical to
+        "never looked", so the TTL gate in ``ingest/provenance.py`` can
+        never short-circuit and every trigger re-fetches forever.
+        """
+        rid = _paper(store, slug="p7b", doi="10.1234/clean2")
+        msg = _crossref_msg(doi="10.1234/clean2")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/clean2",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        ref = _ref(store, rid)
+        assert ref.retraction_status is None
+        assert ref.retraction_checked_at is not None
+
+    def test_crossref_miss_leaves_checked_at_unset(self, store: Store) -> None:
+        """A fetch that came back empty is not a check.
+
+        Stamping it would poison the TTL: we would skip this paper for 30
+        days on the strength of a lookup that never happened.
+        """
+        rid = _paper(store, slug="p7c", doi="10.1234/miss")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/miss",
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        ref = _ref(store, rid)
+        assert ref.retraction_checked_at is None
+
 
 class TestDoiLessHeuristic:
     def test_heuristic_split_and_junk_flush(self, store: Store) -> None:
