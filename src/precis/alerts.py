@@ -51,6 +51,7 @@ from typing import Any
 from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
+from precis.utils.db_retry import retry_locked
 
 log = logging.getLogger(__name__)
 
@@ -123,108 +124,122 @@ def raise_alert(
     """
     severity = _norm_severity(severity)
     throttle = timedelta(seconds=_throttle_seconds())
-    with store.tx() as conn:
-        # Serialize concurrent raises of the SAME (source, fingerprint)
-        # across the cluster's many nursery instances. The SELECT-then-
-        # INSERT dedup below is not atomic on its own, so without this two
-        # nodes could both miss the existing open alert and both INSERT —
-        # which the partial unique index uq_alert_open_source_fingerprint
-        # (migration 0030, rebuilt off columns by 0099) would then reject
-        # with a violation. The transaction-scoped advisory lock makes the
-        # check-then-insert atomic per fingerprint; it releases at
-        # COMMIT/ROLLBACK. The two-arg (classid, objid) form hashes source
-        # and fingerprint separately, so "a"+"bc" can't alias "ab"+"c" and
-        # there's no NUL separator (PostgreSQL text rejects 0x00).
-        conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
-            (source, fingerprint),
-        )
-        # Rolling-deploy transition shim: the fleet deploys host-by-host
-        # over minutes, so an old-code node can still be inserting open
-        # alerts with alert_source/fingerprint COLUMNS NULL (it only wrote
-        # meta) while this node is already running the column-based dedup.
-        # The COALESCE fallback lets a new-code node still match that old
-        # row instead of missing it and inserting a duplicate that then
-        # never dedups or resolves. Drop the COALESCE once no open alert
-        # row has NULL alert_source/fingerprint columns.
-        existing = conn.execute(
-            """
-            SELECT r.ref_id, r.title, r.updated_at,
-                   meta->>'severity' AS severity,
-                   meta->>'detail' AS detail,
-                   (meta->>'seen_count')::int AS seen_count
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'alert'
-               AND r.deleted_at IS NULL
-               AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
-               AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
-               AND t.namespace = 'OPEN'
-               AND t.value = %s
-             ORDER BY r.created_at DESC
-             LIMIT 1
-            """,
-            (source, fingerprint, STATE_OPEN),
-        ).fetchone()
 
-        if existing is not None:
-            ref_id = int(existing[0])
-            prior_title = existing[1]
-            prior_updated_at = existing[2]
-            prior_severity = existing[3]
-            prior_detail = existing[4] or ""
-            prior_seen_count = int(existing[5] or 1)
-
-            changed = (
-                title != prior_title
-                or severity != prior_severity
-                or detail != prior_detail
+    def _do() -> tuple[int, bool]:
+        with store.tx() as conn:
+            # Serialize concurrent raises of the SAME (source, fingerprint)
+            # across the cluster's many nursery instances. The SELECT-then-
+            # INSERT dedup below is not atomic on its own, so without this two
+            # nodes could both miss the existing open alert and both INSERT —
+            # which the partial unique index uq_alert_open_source_fingerprint
+            # (migration 0030, rebuilt off columns by 0099) would then reject
+            # with a violation. The transaction-scoped advisory lock makes the
+            # check-then-insert atomic per fingerprint; it releases at
+            # COMMIT/ROLLBACK.
+            #
+            # This lock BLOCKS (unlike an ``_try`` variant) — under prod's
+            # ``lock_timeout=5s`` a burst of hosts raising the same
+            # fingerprint in the same instant (e.g. a fleet-wide spin-loop
+            # condition every nursery pass detects at once) can trip
+            # ``LockNotAvailable`` here, so the whole ``with store.tx()``
+            # block is wrapped in :func:`retry_locked` below — each retry
+            # opens a brand new transaction (the lock is transaction-scoped,
+            # so a fresh transaction is required anyway). The two-arg
+            # (classid, objid) form hashes source and fingerprint
+            # separately, so "a"+"bc" can't alias "ab"+"c" and there's no
+            # NUL separator (PostgreSQL text rejects 0x00).
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (source, fingerprint),
             )
-            first_repeat = prior_seen_count <= 1
-            stale = (datetime.now(UTC) - prior_updated_at) >= throttle
-            write = changed or first_repeat or stale
+            # Rolling-deploy transition shim: the fleet deploys host-by-host
+            # over minutes, so an old-code node can still be inserting open
+            # alerts with alert_source/fingerprint COLUMNS NULL (it only wrote
+            # meta) while this node is already running the column-based dedup.
+            # The COALESCE fallback lets a new-code node still match that old
+            # row instead of missing it and inserting a duplicate that then
+            # never dedups or resolves. Drop the COALESCE once no open alert
+            # row has NULL alert_source/fingerprint columns.
+            existing = conn.execute(
+                """
+                SELECT r.ref_id, r.title, r.updated_at,
+                       meta->>'severity' AS severity,
+                       meta->>'detail' AS detail,
+                       (meta->>'seen_count')::int AS seen_count
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'alert'
+                   AND r.deleted_at IS NULL
+                   AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
+                   AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
+                   AND t.namespace = 'OPEN'
+                   AND t.value = %s
+                 ORDER BY r.created_at DESC
+                 LIMIT 1
+                """,
+                (source, fingerprint, STATE_OPEN),
+            ).fetchone()
 
-            if write:
-                seen = prior_seen_count + 1
-                patch = {
-                    "seen_count": seen,
-                    "severity": severity,
-                    "detail": detail,
-                }
-                store.update_ref(ref_id, title=title, meta_patch=patch, conn=conn)
-                # Severity can change between sightings (a loop that gets
-                # worse); keep exactly one severity: tag.
-                _set_severity_tag(store, ref_id, severity, conn=conn)
-            return ref_id, False
+            if existing is not None:
+                ref_id = int(existing[0])
+                prior_title = existing[1]
+                prior_updated_at = existing[2]
+                prior_severity = existing[3]
+                prior_detail = existing[4] or ""
+                prior_seen_count = int(existing[5] or 1)
 
-        meta: dict[str, Any] = {
-            "alert_source": source,
-            "fingerprint": fingerprint,
-            "severity": severity,
-            "detail": detail,
-            "seen_count": 1,
-        }
-        if subject_ref_id is not None:
-            meta["subject_ref_id"] = int(subject_ref_id)
-        ref = store.insert_ref(
-            kind="alert", slug=None, title=title, meta=meta, conn=conn
-        )
-        # Dual-write the dedup identity onto the real columns (migration
-        # 0099) — the partial unique index and every subsequent dedup
-        # lookup key off these, not the meta copy above (kept for
-        # rollback safety / uniform shape).
-        conn.execute(
-            "UPDATE refs SET alert_source = %s, fingerprint = %s WHERE ref_id = %s",
-            (source, fingerprint, ref.id),
-        )
-        for tag in (
-            Tag.open(STATE_OPEN),
-            Tag.open(f"alert-source:{source}"),
-            Tag.open(f"severity:{severity}"),
-        ):
-            store.add_tag(ref.id, tag, set_by="system", conn=conn)
-        return int(ref.id), True
+                changed = (
+                    title != prior_title
+                    or severity != prior_severity
+                    or detail != prior_detail
+                )
+                first_repeat = prior_seen_count <= 1
+                stale = (datetime.now(UTC) - prior_updated_at) >= throttle
+                write = changed or first_repeat or stale
+
+                if write:
+                    seen = prior_seen_count + 1
+                    patch = {
+                        "seen_count": seen,
+                        "severity": severity,
+                        "detail": detail,
+                    }
+                    store.update_ref(ref_id, title=title, meta_patch=patch, conn=conn)
+                    # Severity can change between sightings (a loop that gets
+                    # worse); keep exactly one severity: tag.
+                    _set_severity_tag(store, ref_id, severity, conn=conn)
+                return ref_id, False
+
+            meta: dict[str, Any] = {
+                "alert_source": source,
+                "fingerprint": fingerprint,
+                "severity": severity,
+                "detail": detail,
+                "seen_count": 1,
+            }
+            if subject_ref_id is not None:
+                meta["subject_ref_id"] = int(subject_ref_id)
+            ref = store.insert_ref(
+                kind="alert", slug=None, title=title, meta=meta, conn=conn
+            )
+            # Dual-write the dedup identity onto the real columns (migration
+            # 0099) — the partial unique index and every subsequent dedup
+            # lookup key off these, not the meta copy above (kept for
+            # rollback safety / uniform shape).
+            conn.execute(
+                "UPDATE refs SET alert_source = %s, fingerprint = %s WHERE ref_id = %s",
+                (source, fingerprint, ref.id),
+            )
+            for tag in (
+                Tag.open(STATE_OPEN),
+                Tag.open(f"alert-source:{source}"),
+                Tag.open(f"severity:{severity}"),
+            ):
+                store.add_tag(ref.id, tag, set_by="system", conn=conn)
+            return int(ref.id), True
+
+    return retry_locked(_do, label=f"raise_alert source={source}")
 
 
 def open_alert_severity(store: Store, *, source: str, fingerprint: str) -> str | None:

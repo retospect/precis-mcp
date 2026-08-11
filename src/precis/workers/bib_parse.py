@@ -56,9 +56,11 @@ import re
 import time
 from typing import Any
 
+from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.types.json import Jsonb
 
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
+from precis.utils.db_retry import retry_locked
 from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
@@ -547,45 +549,41 @@ def _held_ref_for_doi(conn: Any, doi: str) -> int | None:
     return int(row[0]) if row else None
 
 
-def _match_one_entry(
-    conn: Any,
-    client: Any,
-    ref_id: int,
-    entry_id: int,
-    raw_text: str,
-    *,
-    mailto: str,
-) -> None:
-    """Match one already-unmatched entry (``match_conf IS NULL``) and
-    write the outcome. A successful attempt (local hit, a confident/
-    adjudicated Crossref match, or a genuine Crossref zero-candidate
-    answer) always leaves ``match_conf`` non-NULL — that's the
-    memoization marker a later pass checks. A Crossref *query failure*
-    (see :func:`_crossref_query`) leaves the row untouched (``match_conf``
-    stays NULL) so it's picked back up on a later attempt instead of
-    being permanently mis-memoized as unmatched."""
+def _match_entry_via_local_doi(
+    conn: Any, ref_id: int, raw_text: str
+) -> tuple[str, str | None, int | None] | None:
+    """The fast, network-free path of the matcher: local DOI-exact lookup
+    plus held-ref resolution, both plain DB reads. Returns ``(doi, s2_id,
+    held_ref_id)`` on a hit, else ``None`` (no local match at all)."""
     local = _local_doi_match(conn, ref_id, raw_text)
-    if local is not None:
-        doi, s2_id = local
-        held_ref_id = _held_ref_for_doi(conn, doi)
-        conn.execute(
-            "UPDATE paper_bib_entries SET doi = %s, s2_id = %s, "
-            "held_ref_id = %s, match_conf = %s WHERE id = %s",
-            (doi, s2_id, held_ref_id, _MATCH_CONF_LOCAL_DOI, entry_id),
-        )
-        return
+    if local is None:
+        return None
+    doi, s2_id = local
+    held_ref_id = _held_ref_for_doi(conn, doi)
+    return doi, s2_id, held_ref_id
 
-    items = _crossref_query(raw_text, mailto=mailto)
-    if items is None:
-        log.warning(
-            "bib_parse: crossref query failed for entry_id=%s -- leaving "
-            "match_conf NULL for a later retry",
-            entry_id,
-        )
-        return
 
-    matched_doi, match_conf = _resolve_crossref_candidates(client, raw_text, items)
-    held_ref_id = _held_ref_for_doi(conn, matched_doi) if matched_doi else None
+def _write_local_doi_match(
+    conn: Any,
+    entry_id: int,
+    doi: str,
+    s2_id: str | None,
+    held_ref_id: int | None,
+) -> None:
+    conn.execute(
+        "UPDATE paper_bib_entries SET doi = %s, s2_id = %s, "
+        "held_ref_id = %s, match_conf = %s WHERE id = %s",
+        (doi, s2_id, held_ref_id, _MATCH_CONF_LOCAL_DOI, entry_id),
+    )
+
+
+def _write_crossref_match(
+    conn: Any,
+    entry_id: int,
+    matched_doi: str | None,
+    held_ref_id: int | None,
+    match_conf: float,
+) -> None:
     conn.execute(
         "UPDATE paper_bib_entries SET doi = %s, held_ref_id = %s, "
         "match_conf = %s WHERE id = %s",
@@ -600,18 +598,92 @@ def run_bib_parse_match_pass(
     paper. Split out from :func:`run_bib_parse_pass` so it's independently
     idempotent/testable: a second call against the same paper makes zero
     Crossref calls (every entry already carries a non-NULL ``match_conf``
-    from the first call)."""
+    from the first call).
+
+    A successful attempt (local hit, a confident/adjudicated Crossref
+    match, or a genuine Crossref zero-candidate answer) always leaves
+    ``match_conf`` non-NULL — that's the memoization marker a later pass
+    checks. A Crossref *query failure* (see :func:`_crossref_query`)
+    leaves the row untouched (``match_conf`` stays NULL) so it's picked
+    back up on a later attempt instead of being permanently mis-memoized
+    as unmatched.
+
+    No single connection is held across the whole loop (gripe: prod's
+    ``lock_timeout=5s`` -- see ``precis.utils.db_retry``'s module
+    docstring). The unmatched-entry read below is its own short
+    transaction; each entry's Crossref query and any LLM adjudication call
+    then run with NO connection checked out (mirrors
+    :func:`run_bib_parse_pass`'s "NO connection" phase for the same
+    reason — Postgres's ``idle_in_transaction_session_timeout`` would kill
+    an idle-in-txn connection held across a slow outbound call); and each
+    entry's write is its own short transaction, wrapped in
+    :func:`retry_locked` so a sibling host's own short write against the
+    same paper (this same loop on another entry, or the parse leg's
+    delete+insert -- see :func:`run_bib_parse_pass`) can collide for an
+    instant without failing this entry outright.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT id, raw_text FROM paper_bib_entries "
             "WHERE ref_id = %s AND match_conf IS NULL",
             (ref_id,),
         ).fetchall()
-        for entry_id, raw_text in rows:
-            _match_one_entry(
-                conn, client, ref_id, int(entry_id), raw_text, mailto=mailto
-            )
         conn.commit()
+
+    for raw_entry_id, raw_text in rows:
+        entry_id = int(raw_entry_id)
+
+        # Local DOI-exact match: DB reads only, no network -- fine to hold
+        # a connection for the length of this lookup.
+        with store.pool.connection() as conn:
+            local = _match_entry_via_local_doi(conn, ref_id, raw_text)
+            conn.commit()
+
+        if local is not None:
+            doi, s2_id, held_ref_id = local
+
+            def _write_local(
+                entry_id: int = entry_id,
+                doi: str = doi,
+                s2_id: str | None = s2_id,
+                held_ref_id: int | None = held_ref_id,
+            ) -> None:
+                with store.pool.connection() as wconn:
+                    _write_local_doi_match(wconn, entry_id, doi, s2_id, held_ref_id)
+                    wconn.commit()
+
+            retry_locked(_write_local, label=f"bib_parse match entry_id={entry_id}")
+            continue
+
+        items = _crossref_query(raw_text, mailto=mailto)
+        if items is None:
+            log.warning(
+                "bib_parse: crossref query failed for entry_id=%s -- leaving "
+                "match_conf NULL for a later retry",
+                entry_id,
+            )
+            continue
+
+        matched_doi, match_conf = _resolve_crossref_candidates(client, raw_text, items)
+
+        with store.pool.connection() as conn:
+            held_ref_id = _held_ref_for_doi(conn, matched_doi) if matched_doi else None
+            conn.commit()
+
+        def _write_crossref(
+            entry_id: int = entry_id,
+            matched_doi: str | None = matched_doi,
+            held_ref_id: int | None = held_ref_id,
+            match_conf: float = match_conf,
+        ) -> None:
+            with store.pool.connection() as wconn:
+                _write_crossref_match(
+                    wconn, entry_id, matched_doi, held_ref_id, match_conf
+                )
+                wconn.commit()
+
+        retry_locked(_write_crossref, label=f"bib_parse match entry_id={entry_id}")
+
     return {"attempted": len(rows)}
 
 
@@ -775,11 +847,22 @@ def run_bib_parse_pass(
             # paper outright. Read above, parse here, write in a fresh
             # connection below.
             parsed = _parse_paper_entries(client, entries)
-            with store.pool.connection() as conn:
-                _delete_stale_entries(conn, ref_id)
-                for parsed_row in parsed:
-                    _write_parsed_entry(conn, ref_id, parsed_row)
-                conn.commit()
+
+            # The delete-stale + insert-parsed write is one short
+            # transaction, wrapped in retry_locked: a sibling host's own
+            # short write to this same paper (e.g. its match leg, above)
+            # can collide with this one for an instant under prod's
+            # lock_timeout=5s -- retry rather than fail the whole paper.
+            def _write_parsed_batch(
+                ref_id: int = ref_id, parsed: list[dict[str, Any]] = parsed
+            ) -> None:
+                with store.pool.connection() as conn:
+                    _delete_stale_entries(conn, ref_id)
+                    for parsed_row in parsed:
+                        _write_parsed_entry(conn, ref_id, parsed_row)
+                    conn.commit()
+
+            retry_locked(_write_parsed_batch, label=f"bib_parse write ref_id={ref_id}")
 
             if parsed:
                 run_bib_parse_match_pass(store, ref_id, client=client, mailto=mailto)
@@ -792,6 +875,23 @@ def run_bib_parse_pass(
                 ref_lease.clear_attempt(store, ref_id, _LEASE_NS, conn=conn)
                 conn.commit()
             ok += 1
+        except (LockNotAvailable, DeadlockDetected):
+            # Residual lock contention that outlasted retry_locked's own
+            # budget (attempts exhausted -- either error class, same as
+            # what retry_locked itself retries on). Deliberately do NOT
+            # clear the attempt lease here -- same spend-guard reasoning as
+            # the except Exception branch below applies: this paper still
+            # brakes for ref_lease.ATTEMPT_COOLDOWN_MIN rather than
+            # re-billing Crossref/LLM every sweep. But this is expected
+            # fleet contention, not a crash, so it's a warning, not an
+            # exception traceback.
+            log.warning(
+                "bib_parse: ref_id=%s hit residual lock contention after "
+                "retries -- braking for %d min",
+                ref_id,
+                ref_lease.ATTEMPT_COOLDOWN_MIN,
+            )
+            failed += 1
         except Exception:
             # Deliberately do NOT clear the attempt lease here — it stays
             # in place, braking this paper from immediate re-claim (by

@@ -249,7 +249,11 @@ def generate_baseline_sql(
         head = applied[-1][1] if applied else "(empty)"
 
         schema_ddl = _clean_dump(
-            _run_pg_dump(pg_dump_bin, scratch_dsn, ["--schema=public", "--schema-only"])
+            _run_pg_dump(
+                pg_dump_bin,
+                scratch_dsn,
+                ["--schema=public", "--schema=vault", "--schema-only"],
+            )
         )
         seed_extra = ["--data-only"]
         for t in SEED_TABLES:

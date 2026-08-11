@@ -3,7 +3,7 @@
 -- DO NOT EDIT BY HAND. Regenerate with `precis db dump-schema`
 -- (or `scripts/bump`, which does it at every version bump).
 --
--- Baked-in migration head: 0117_cfp_kind_seed
+-- Baked-in migration head: 0120_run_log_chunk_kind
 --
 -- This is the migration chain compiled to one file: a fresh
 -- `precis migrate` loads this instead of replaying every numbered
@@ -50,6 +50,13 @@ CREATE SCHEMA IF NOT EXISTS public;
 --
 
 COMMENT ON SCHEMA public IS 'standard public schema';
+
+
+--
+-- Name: vault; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA vault;
 
 
 --
@@ -147,6 +154,159 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
+$$;
+
+
+--
+-- Name: _hint(text); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault._hint(v text) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT CASE
+        WHEN v IS NULL OR length(v) = 0 THEN '(empty)'
+        WHEN length(v) < 12 THEN repeat(chr(8226), 6) || ' (' || length(v) || ')'
+        ELSE left(v, least(3, length(v) / 5)) || chr(8230)
+             || right(v, least(2, length(v) / 5))
+    END;
+$$;
+
+
+--
+-- Name: _key(); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault._key() RETURNS text
+    LANGUAGE plpgsql STABLE
+    AS $$
+DECLARE k text;
+BEGIN
+    k := current_setting('app.secret_key', true);
+    IF k IS NULL OR k = '' THEN
+        RAISE EXCEPTION 'vault: app.secret_key is not set on this server '
+            '(ALTER SYSTEM SET app.secret_key = ...; SELECT pg_reload_conf())';
+    END IF;
+    RETURN k;
+END
+$$;
+
+
+--
+-- Name: delete_secret(text); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.delete_secret(p_name text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+BEGIN
+    DELETE FROM vault.secrets WHERE name = p_name;
+    INSERT INTO vault.events(who, verb, name) VALUES (session_user, 'delete', p_name);
+END
+$$;
+
+
+--
+-- Name: gc_events(integer); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.gc_events(p_keep_days integer DEFAULT 180) RETURNS bigint
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+DECLARE n bigint;
+BEGIN
+    DELETE FROM vault.events
+     WHERE at < now() - make_interval(days => p_keep_days);
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RETURN n;
+END
+$$;
+
+
+--
+-- Name: list(); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.list() RETURNS TABLE(name text, hint text, updated_at timestamp with time zone)
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+    SELECT s.name, s.hint, s.updated_at FROM vault.secrets s ORDER BY s.name;
+$$;
+
+
+--
+-- Name: mask(text); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.mask(p_name text) RETURNS text
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+    SELECT s.hint FROM vault.secrets s WHERE s.name = p_name;
+$$;
+
+
+--
+-- Name: reveal(text); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.reveal(p_name text) RETURNS text
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+    SELECT vault.reveal(p_name, NULL::text, NULL::text,
+                        NULL::integer, NULL::integer, NULL::text);
+$$;
+
+
+--
+-- Name: reveal(text, text, text, integer, integer, text); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.reveal(p_name text, p_host text, p_os_user text, p_pid integer, p_ppid integer, p_process text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+DECLARE v text;
+BEGIN
+    SELECT pgp_sym_decrypt(s.ciphertext, vault._key())
+        INTO v FROM vault.secrets s WHERE s.name = p_name;
+    IF v IS NULL THEN
+        RETURN NULL;   -- unknown name; not an error (callers fall back)
+    END IF;
+    INSERT INTO vault.events(who, verb, name, host, os_user, pid, ppid, process)
+    VALUES (session_user, 'reveal', p_name,
+            p_host, p_os_user, p_pid, p_ppid, p_process);
+    RETURN v;
+END
+$$;
+
+
+--
+-- Name: set_secret(text, text); Type: FUNCTION; Schema: vault; Owner: -
+--
+
+CREATE FUNCTION vault.set_secret(p_name text, p_value text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'vault', 'public', 'pg_temp'
+    AS $$
+BEGIN
+    IF p_value IS NULL OR length(p_value) = 0 THEN
+        RAISE EXCEPTION 'vault: refusing to store an empty value for %', p_name;
+    END IF;
+    INSERT INTO vault.secrets(name, ciphertext, hint)
+    VALUES (p_name,
+            pgp_sym_encrypt(p_value, vault._key()),
+            vault._hint(p_value))
+    ON CONFLICT (name) DO UPDATE
+        SET ciphertext = EXCLUDED.ciphertext,
+            hint       = EXCLUDED.hint,
+            updated_at = now();
+    INSERT INTO vault.events(who, verb, name) VALUES (session_user, 'set', p_name);
+END
 $$;
 
 
@@ -1772,6 +1932,48 @@ CREATE TABLE public.relations (
 
 
 --
+-- Name: resource_slot_holds; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_slot_holds (
+    id bigint NOT NULL,
+    host text NOT NULL,
+    resource text NOT NULL,
+    units integer NOT NULL,
+    holder text NOT NULL,
+    acquired_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT resource_slot_holds_units_check CHECK ((units > 0))
+);
+
+
+--
+-- Name: TABLE resource_slot_holds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.resource_slot_holds IS 'TTL lease per resource_slots reservation. Expired holds are swept by the heartbeat pass, refunding their units to resource_slots.free — crash-safe reclaim for a holder killed before release().';
+
+
+--
+-- Name: resource_slot_holds_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.resource_slot_holds_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: resource_slot_holds_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.resource_slot_holds_id_seq OWNED BY public.resource_slot_holds.id;
+
+
+--
 -- Name: resource_slots; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2308,6 +2510,35 @@ ALTER SEQUENCE public.worker_logs_log_id_seq OWNED BY public.worker_logs.log_id;
 
 
 --
+-- Name: events; Type: TABLE; Schema: vault; Owner: -
+--
+
+CREATE TABLE vault.events (
+    at timestamp with time zone DEFAULT now() NOT NULL,
+    who text NOT NULL,
+    verb text NOT NULL,
+    name text NOT NULL,
+    host text,
+    os_user text,
+    pid integer,
+    ppid integer,
+    process text
+);
+
+
+--
+-- Name: secrets; Type: TABLE; Schema: vault; Owner: -
+--
+
+CREATE TABLE vault.secrets (
+    name text NOT NULL,
+    ciphertext bytea NOT NULL,
+    hint text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: chunk_events event_id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2361,6 +2592,13 @@ ALTER TABLE ONLY public.ref_events ALTER COLUMN event_id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.refs ALTER COLUMN ref_id SET DEFAULT nextval('public.refs_ref_id_seq'::regclass);
+
+
+--
+-- Name: resource_slot_holds id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_slot_holds ALTER COLUMN id SET DEFAULT nextval('public.resource_slot_holds_id_seq'::regclass);
 
 
 --
@@ -2962,6 +3200,14 @@ ALTER TABLE ONLY public.relations
 
 
 --
+-- Name: resource_slot_holds resource_slot_holds_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_slot_holds
+    ADD CONSTRAINT resource_slot_holds_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: resource_slots resource_slots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3079,6 +3325,14 @@ ALTER TABLE ONLY public.tags
 
 ALTER TABLE ONLY public.worker_logs
     ADD CONSTRAINT worker_logs_pkey PRIMARY KEY (log_id);
+
+
+--
+-- Name: secrets secrets_pkey; Type: CONSTRAINT; Schema: vault; Owner: -
+--
+
+ALTER TABLE ONLY vault.secrets
+    ADD CONSTRAINT secrets_pkey PRIMARY KEY (name);
 
 
 --
@@ -3201,13 +3455,6 @@ CREATE INDEX chunks_last_seen_desc_idx ON public.chunks USING btree (last_seen D
 
 
 --
--- Name: chunks_numerics_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX chunks_numerics_idx ON public.chunks USING gin (numerics);
-
-
---
 -- Name: chunks_parent_chunk_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3226,13 +3473,6 @@ CREATE INDEX chunks_reading_order_idx ON public.chunks USING btree (ref_id, pare
 --
 
 CREATE INDEX chunks_ref_id_idx ON public.chunks USING btree (ref_id);
-
-
---
--- Name: chunks_section_path_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX chunks_section_path_idx ON public.chunks USING gin (section_path);
 
 
 --
@@ -3747,6 +3987,20 @@ CREATE INDEX refs_year_idx ON public.refs USING btree (year) WHERE (year IS NOT 
 
 
 --
+-- Name: resource_slot_holds_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_slot_holds_expires_at_idx ON public.resource_slot_holds USING btree (expires_at);
+
+
+--
+-- Name: resource_slot_holds_host_resource_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_slot_holds_host_resource_idx ON public.resource_slot_holds USING btree (host, resource);
+
+
+--
 -- Name: s2_neighbors_held_ref_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3856,6 +4110,13 @@ CREATE INDEX worker_logs_level_ts_idx ON public.worker_logs USING btree (level, 
 --
 
 CREATE INDEX worker_logs_pass_ts_idx ON public.worker_logs USING btree (pass, ts DESC) WHERE (pass IS NOT NULL);
+
+
+--
+-- Name: vault_events_name_host_at_idx; Type: INDEX; Schema: vault; Owner: -
+--
+
+CREATE INDEX vault_events_name_host_at_idx ON vault.events USING btree (name, host, at DESC);
 
 
 --
@@ -4600,35 +4861,36 @@ research_report_citation	f	Research-report citation entry	\N	2026-05-21 20:06:05
 finding_body	f	Finding claim text (the measured value plus its bare conditions)	\N	2026-05-30 21:33:14.261241+00
 finding_context	f	Finding setup envelope (instrument, electrode, ambient, technique, geometry)	\N	2026-05-30 21:33:14.261241+00
 table	f	Markdown table emitted by Marker (skip RAKE).	\N	2026-06-04 19:55:50.15863+00
-gripe_comment	f	Gripe comment / append-only timeline entry	\N	2026-08-10 16:06:00.698286+00
-job_event	f	Job worker telemetry (forensics, not search)	\N	2026-08-10 16:06:00.698286+00
-job_summary	f	Job completion summary (human-readable, searchable)	\N	2026-08-10 16:06:00.698286+00
-pres_slide	f	Single slide of a deck (one chunk per slide). Distinct from ``paragraph`` so renderers can show slide numbers and so cross-kind search hits can be labelled as slides.	\N	2026-08-10 16:06:00.701613+00
-cron_payload	f	Cron entry body — the natural-language payload that becomes the synthetic prompt to Asa when the cron fires. Searchable; embed + chunk_keywords workers index it normally.	\N	2026-08-10 16:06:00.703061+00
-message_body	f	Outbound message body. The text that gets posted. Searchable so past sends can be retrieved with search(kind='message', q='...').	\N	2026-08-10 16:06:00.703061+00
+gripe_comment	f	Gripe comment / append-only timeline entry	\N	2026-08-11 10:02:57.023295+00
+job_event	f	Job worker telemetry (forensics, not search)	\N	2026-08-11 10:02:57.023295+00
+job_summary	f	Job completion summary (human-readable, searchable)	\N	2026-08-11 10:02:57.023295+00
+pres_slide	f	Single slide of a deck (one chunk per slide). Distinct from ``paragraph`` so renderers can show slide numbers and so cross-kind search hits can be labelled as slides.	\N	2026-08-11 10:02:57.026186+00
+cron_payload	f	Cron entry body — the natural-language payload that becomes the synthetic prompt to Asa when the cron fires. Searchable; embed + chunk_keywords workers index it normally.	\N	2026-08-11 10:02:57.027474+00
+message_body	f	Outbound message body. The text that gets posted. Searchable so past sends can be retrieved with search(kind='message', q='...').	\N	2026-08-11 10:02:57.027474+00
 flashcard_claim	f	Flashcard claim side	\N	2026-05-21 20:06:05.179981+00
 flashcard_evidence	f	Flashcard evidence side	\N	2026-05-21 20:06:05.179981+00
-job_result	f	Per-tick audit chunk written by the planner-coroutine when a plan_tick job finalises (verdict + summary + files). Read by the parent todo's next tick for context.	\N	2026-08-10 16:06:00.709673+00
-tag_overflow	f	Long tag-value redirect chunk: when a put attempts to land a tag value longer than 80 chars in a redirectable namespace (ask-user / halt), the full value lands here and the tag becomes ``<ns>:see-chunk-<pos>``.	\N	2026-08-10 16:06:00.709673+00
-aside	f	Draft aside / callout box (admonition; tcolorbox/mdframed on export).	\N	2026-08-10 16:06:00.719267+00
-listing	f	Draft code listing — verbatim code payload, optional caption face.	\N	2026-08-10 16:06:00.719267+00
-term	f	Glossary term — definition as face (text), {short, long, surface_forms} in meta; lives in a draft glossary subtree.	\N	2026-08-10 16:06:00.719267+00
-ulist	f	Draft unordered-list container; its children are `item` chunks (renders to itemize on export).	\N	2026-08-10 16:06:00.72465+00
-olist	f	Draft ordered-list container; its children are `item` chunks (renders to enumerate; meta may carry start/label style).	\N	2026-08-10 16:06:00.72465+00
-item	f	Draft list item — a first-class child chunk under a `ulist`/`olist` (may itself contain nested lists / sub-paragraphs).	\N	2026-08-10 16:06:00.72465+00
-edgar_section	f	One paragraph/section block of an SEC filing, labelled with its standard section via chunks.section_path + meta.item_code (e.g. Item 1A Risk Factors, 8-K Item 2.02). Distinct from ``paragraph`` so section-scoped search and the quarter-to-quarter diff can align the same section across consecutive filings.	\N	2026-08-10 16:06:00.748844+00
-figure_node	f	A figure's SVG source document — the addressable source node (fn<id>). Raw markup: minted meta.no_index=true, never embedded.	\N	2026-08-10 16:06:00.751792+00
-figure_vocab	f	A figure's shared vocabulary + drawing conventions — the negotiated ground truth ("green circles are foos"). Prose, embedded + searchable.	\N	2026-08-10 16:06:00.751792+00
-figure_turn	f	One chat turn on a figure (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-08-10 16:06:00.751792+00
-figure_notes	f	A figure's implementation notes — the model's private design log (element ids, structural scheme, conventions). Minted meta.no_index=true, never embedded; rendered behind the "Implementation notes" tab.	\N	2026-08-10 16:06:00.752537+00
-card_glossary	t	Per-paper inferred reading glossary (clustered terms + one-line definitions); derived + embeddable, written by the paper_glossary worker at ord=-1000. See docs/design/reading-prep-loop.md.	\N	2026-08-10 16:06:00.758923+00
-quest_log	f	Quest logbook entry — a WORM, dated, append-only ledger row (note / observation / hypothesis / result / decision / dead-end / milestone / reflection / cost) carrying entry_type + by + optional cost in meta. A milestone entry is a deed; a cost entry feeds the tote.	\N	2026-08-10 16:06:00.760507+00
-mermaid_node	f	A mermaid diagram's source document — the addressable source node (mn<id>). Minted meta.no_index=true, never embedded.	\N	2026-08-10 16:06:00.760934+00
-mermaid_vocab	f	A mermaid diagram's shared vocabulary + conventions — the negotiated ground truth. Prose, embedded + searchable.	\N	2026-08-10 16:06:00.760934+00
-mermaid_notes	f	A mermaid diagram's private implementation notes (node ids, structure, conventions) — the model's design log. Minted no_index, not embedded.	\N	2026-08-10 16:06:00.760934+00
-mermaid_turn	f	One chat turn on a mermaid diagram (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-08-10 16:06:00.760934+00
-llm_review	f	LLM catalog review-log entry — a WORM, dated, append-only ledger row (published-benchmark / measured-eval / observed-telemetry / agent-review) carrying entry_type + by + provenance in meta. The ledger layer of the catalog; the tote rolls up llm_call_log alongside it (slice 3).	\N	2026-08-10 16:06:00.764323+00
-claim	f	Draft claim statement — a discrete assertion under a Claims-style heading (patent claim drafting or a scientific claim list). Prose like paragraph; kept distinct so a renderer/reviewer can tell a claim from ordinary body text.	\N	2026-08-10 16:06:00.773283+00
+job_result	f	Per-tick audit chunk written by the planner-coroutine when a plan_tick job finalises (verdict + summary + files). Read by the parent todo's next tick for context.	\N	2026-08-11 10:02:57.032498+00
+tag_overflow	f	Long tag-value redirect chunk: when a put attempts to land a tag value longer than 80 chars in a redirectable namespace (ask-user / halt), the full value lands here and the tag becomes ``<ns>:see-chunk-<pos>``.	\N	2026-08-11 10:02:57.032498+00
+aside	f	Draft aside / callout box (admonition; tcolorbox/mdframed on export).	\N	2026-08-11 10:02:57.040148+00
+listing	f	Draft code listing — verbatim code payload, optional caption face.	\N	2026-08-11 10:02:57.040148+00
+term	f	Glossary term — definition as face (text), {short, long, surface_forms} in meta; lives in a draft glossary subtree.	\N	2026-08-11 10:02:57.040148+00
+ulist	f	Draft unordered-list container; its children are `item` chunks (renders to itemize on export).	\N	2026-08-11 10:02:57.044495+00
+olist	f	Draft ordered-list container; its children are `item` chunks (renders to enumerate; meta may carry start/label style).	\N	2026-08-11 10:02:57.044495+00
+item	f	Draft list item — a first-class child chunk under a `ulist`/`olist` (may itself contain nested lists / sub-paragraphs).	\N	2026-08-11 10:02:57.044495+00
+edgar_section	f	One paragraph/section block of an SEC filing, labelled with its standard section via chunks.section_path + meta.item_code (e.g. Item 1A Risk Factors, 8-K Item 2.02). Distinct from ``paragraph`` so section-scoped search and the quarter-to-quarter diff can align the same section across consecutive filings.	\N	2026-08-11 10:02:57.062537+00
+figure_node	f	A figure's SVG source document — the addressable source node (fn<id>). Raw markup: minted meta.no_index=true, never embedded.	\N	2026-08-11 10:02:57.064014+00
+figure_vocab	f	A figure's shared vocabulary + drawing conventions — the negotiated ground truth ("green circles are foos"). Prose, embedded + searchable.	\N	2026-08-11 10:02:57.064014+00
+figure_turn	f	One chat turn on a figure (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-08-11 10:02:57.064014+00
+figure_notes	f	A figure's implementation notes — the model's private design log (element ids, structural scheme, conventions). Minted meta.no_index=true, never embedded; rendered behind the "Implementation notes" tab.	\N	2026-08-11 10:02:57.064371+00
+card_glossary	t	Per-paper inferred reading glossary (clustered terms + one-line definitions); derived + embeddable, written by the paper_glossary worker at ord=-1000. See docs/design/reading-prep-loop.md.	\N	2026-08-11 10:02:57.068533+00
+quest_log	f	Quest logbook entry — a WORM, dated, append-only ledger row (note / observation / hypothesis / result / decision / dead-end / milestone / reflection / cost) carrying entry_type + by + optional cost in meta. A milestone entry is a deed; a cost entry feeds the tote.	\N	2026-08-11 10:02:57.069293+00
+mermaid_node	f	A mermaid diagram's source document — the addressable source node (mn<id>). Minted meta.no_index=true, never embedded.	\N	2026-08-11 10:02:57.069571+00
+mermaid_vocab	f	A mermaid diagram's shared vocabulary + conventions — the negotiated ground truth. Prose, embedded + searchable.	\N	2026-08-11 10:02:57.069571+00
+mermaid_notes	f	A mermaid diagram's private implementation notes (node ids, structure, conventions) — the model's design log. Minted no_index, not embedded.	\N	2026-08-11 10:02:57.069571+00
+mermaid_turn	f	One chat turn on a mermaid diagram (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-08-11 10:02:57.069571+00
+llm_review	f	LLM catalog review-log entry — a WORM, dated, append-only ledger row (published-benchmark / measured-eval / observed-telemetry / agent-review) carrying entry_type + by + provenance in meta. The ledger layer of the catalog; the tote rolls up llm_call_log alongside it (slice 3).	\N	2026-08-11 10:02:57.071261+00
+claim	f	Draft claim statement — a discrete assertion under a Claims-style heading (patent claim drafting or a scientific claim list). Prose like paragraph; kept distinct so a renderer/reviewer can tell a claim from ordinary body text.	\N	2026-08-11 10:02:57.077025+00
+run_log	f	Per-seed autocatpath run-log chunk — the tail of the compute child's captured stdout/stderr for one (model, seed) run. Forensics/provenance, not a search card (mirrors job_event / job_summary).	\N	2026-08-11 10:02:57.097382+00
 \.
 
 
@@ -4674,36 +4936,36 @@ markdown	f	Markdown file	Read / write .md / .markdown files under a configured r
 plaintext	f	Plaintext file	Read / write .txt / .org / .rst files under a configured root. The shared file-kind base; markdown and tex are subclasses. See src/precis/handlers/plaintext.py.	\N	2026-06-04 19:55:50.290874+00
 tex	f	LaTeX file	Read / write .tex files under a configured root. Inherits the plaintext file-kind machinery; adds tex-aware block parsing + input-resolution. See src/precis/handlers/tex.py.	\N	2026-06-04 19:55:50.290874+00
 websearch	f	Web search	Cached perplexity-style web search response. Slug derived from the canonical query + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00
-job	t	Job	Offline run of a task — fix this gripe, run a simulation, benchmark a commit. Addressable by numeric id; status via STATUS: tags; comment timeline via job_event + job_summary chunks.	\N	2026-08-10 16:06:00.698286+00
-pres	f	Presentation	Slide deck, unpublished writeup, or other internal document we want indexed but kept separate from the academic paper library. Slug-addressed; one block per slide (or per paragraph for writeups). Subtype carried as ``subtype:slides|writeup|notes|...`` open tag; ``venue`` and ``date`` live in meta. See ``precis-pres-help``.	\N	2026-08-10 16:06:00.701613+00
-cron	t	Cron	Scheduled wakeup. The cron-tick CLI scans due entries every 60s, fires pg_notify('precis.cron'), advances next_fire_at per recurrence + catch_up policy. Numeric-id; body lives as a ``cron_payload`` chunk. State in meta.next_fire_at, meta.recurring, meta.catch_up, meta.status. See ``precis-cron-help``.	\N	2026-08-10 16:06:00.703061+00
-message	t	Message	Proactive outbound. put(kind='message', target='discord/G/C/T', text='...') stores the ref AND fires pg_notify('precis.messages'). Delivery layer (asa_bot) LISTENs and posts. Numeric-id; one ref per send. Body as ``message_body`` chunk. State in meta.status: 'queued' → 'sent'/'failed'. See ``precis-message-help``.	\N	2026-08-10 16:06:00.703061+00
+job	t	Job	Offline run of a task — fix this gripe, run a simulation, benchmark a commit. Addressable by numeric id; status via STATUS: tags; comment timeline via job_event + job_summary chunks.	\N	2026-08-11 10:02:57.023295+00
+pres	f	Presentation	Slide deck, unpublished writeup, or other internal document we want indexed but kept separate from the academic paper library. Slug-addressed; one block per slide (or per paragraph for writeups). Subtype carried as ``subtype:slides|writeup|notes|...`` open tag; ``venue`` and ``date`` live in meta. See ``precis-pres-help``.	\N	2026-08-11 10:02:57.026186+00
+cron	t	Cron	Scheduled wakeup. The cron-tick CLI scans due entries every 60s, fires pg_notify('precis.cron'), advances next_fire_at per recurrence + catch_up policy. Numeric-id; body lives as a ``cron_payload`` chunk. State in meta.next_fire_at, meta.recurring, meta.catch_up, meta.status. See ``precis-cron-help``.	\N	2026-08-11 10:02:57.027474+00
+message	t	Message	Proactive outbound. put(kind='message', target='discord/G/C/T', text='...') stores the ref AND fires pg_notify('precis.messages'). Delivery layer (asa_bot) LISTENs and posts. Numeric-id; one ref per send. Body as ``message_body`` chunk. State in meta.status: 'queued' → 'sent'/'failed'. See ``precis-message-help``.	\N	2026-08-11 10:02:57.027474+00
 flashcard	t	Flashcard	Spaced-repetition flashcard	\N	2026-05-21 20:06:05.179981+00
 perplexity-reasoning	f	Think	Cached perplexity ``think`` (chain-of-thought) response. Slug derived from the question + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00
 perplexity-research	f	Research report	Cached perplexity ``research`` (deep-research) response. Slug derived from the prompt + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00
-wikipedia	f	Wikipedia (on-demand article fetch)	Resolve a query to the best-matching Wikipedia article via the MediaWiki search API, then fetch and cache its plain-text extract. Slug-addressed by query; cached 7 days; block-split + embedded so search(kind='wikipedia', q=...) lands hits inside fetched articles. On-demand — no bulk dump, always current. See ``precis-wikipedia-help``.	\N	2026-08-10 16:06:00.713713+00
-alert	t	Alert	Machine-detected operational / health condition — a worker spin loop, an orphaned todo, a stalled recurring, a stale claim. Addressable by numeric id; deduped on meta.fingerprint; lifecycle via STATUS: tags (open / resolved); source + severity via alert-source: / severity: open tags. Not embedded — surfaced by the /alerts web tab, not semantic search.	\N	2026-08-10 16:06:00.717975+00
-draft	f	Draft	Editable, chunk-native authored document (ADR 0032). The living source of a project's write-up; exports to LaTeX/PDF/Word with Postgres canonical. Body chunks are mutable in structure (reorder/reparent via pos + parent_chunk_id) and in text (via the edit helper + content_sha re-derive). Named ref; chunks addressed by an opaque ¶<handle>. One draft per project; freeze = snapshot. See precis-draft-help.	\N	2026-08-10 16:06:00.719267+00
-news	f	News	Multi-source news aggregation. Articles pulled from RSS/Atom feeds (the news_sources registry) by the news_poll worker, fetched + extracted + embedded like web pages, so search(kind='news', q=...) lands hits inside article bodies. URL-addressed, pinned in cache. Tagged category:news + source:<slug> for filtering. The morning briefing summarizes recent items back out. See ``precis-news-help``.	\N	2026-08-10 16:06:00.721674+00
-agentlog	t	Agent log	Run-attribution record — one per agentic run (plan_tick, operator change request, chat follow-up) that touches the corpus. Carries the full assembled prompt, model + source, and `touched` links to every chunk the run wrote or moved, so a suspicious chunk can be walked back to the run that produced it. Numeric id; deduped per run; GC'd past a retention window (links drop, chunks stay). Not embedded — surfaced by the /agentlogs web tab and chunk connections, not semantic search. See ``precis-agentlog-help``.	\N	2026-08-10 16:06:00.722841+00
-orcid	f	ORCID author	A researcher identity resolved from ORCID (https://orcid.org). Slug-addressed by iD (e.g. 'orcid:0000-0002-1825-0097'). get resolves + stores the record (names, bio, keywords, employments with ROR ids), links works already held, and reports the missing ones — fetching them is LLM-gated via args={'enqueue': N}; search runs over the embedded author card; link/tag attach authorship edges (authored / authored-by) and classification. Durable link hub — never cache-evicted. See ``precis-orcid-help``.	\N	2026-08-10 16:06:00.7259+00
-cad	f	CAD	Parametric solid-model design (ADR 0041) — a boolean DAG of placed analytic primitives (box/cyl/cone/sphere/torus/prism/pyramid) authored via the compact `config` mini-DSL (e.g. cyl:r3h12). Postgres-canonical; the agent probes the model (point/ray/arc/section) and relates whole parts (clearance/interference/translational DOF) analytically rather than meshing. OpenSCAD/STL export is a regenerable downstream view. Named ref; nodes addressed by an opaque ca<id> handle. See precis-cad-help.	\N	2026-08-10 16:06:00.726606+00
-structure	f	Structure	Atomistic cell + bond-graph design for DFT/molecular modelling (ADR 0043). A periodic cell (lattice + per-axis PBC) filled with atoms (a<El><n> labels) and an explicit bond graph (order + provenance + periodic-image offset). The agent edits the graph via typed ops and probes it analytically (neighbours, coordination, MIC distances/angles, a validator gate) in memory — never pixels. Relaxation/DFT and file export (CIF/POSCAR/XYZ) are rented backends. Postgres-canonical; st<id> handle, design-scoped atom paths st<id>#a<El><n>. See precis-structure-help.	\N	2026-08-10 16:06:00.727889+00
-pcb	f	PCB	Electronics/PCB design (ADR 0042) — a netlist + placement graph in dedicated tables, read and authored by the LLM as a traversable graph (ratsnest / measures / signal-trace), never pixels. JLCPCB-native. Postgres-canonical; Freerouting/gerbers/fab are downstream export. See precis-pcb-help.	\N	2026-08-10 16:06:00.735363+00
-part	f	Part	LCSC/JLCPCB catalog part (ADR 0042) — reference data in the `parts` table, addressed by LCSC C-number. Ingest-only (jlcparts dump); not embedded. See precis-part-select-help.	\N	2026-08-10 16:06:00.735363+00
-datasheet	f	Datasheet	Component datasheet (ADR 0042) — a thin PaperHandler sibling (corpus_role=evidence) ingested via the Marker->chunks pipeline and linked datasheet-of a part. One kind for the whole electronics-doc family (app-note/errata via a meta sub-type). See precis-datasheet-help.	\N	2026-08-10 16:06:00.735363+00
-folder	t	Folder	Organizational container (ADR 0045): single-parent placement for authored artifacts via refs.parent_id and the reserved virtual `parent` link relation (ADR 0027, generalized). Folders organize what you MAKE — corpus kinds (paper/cfp) keep their own discovery layer and stream kinds (memory/alert/job) stay out. Shallow by policy. See precis-folder-help.	\N	2026-08-10 16:06:00.744241+00
-edgar	f	SEC Filing	Read-only SEC EDGAR filing (10-K / 10-Q / 8-K / S-1 / …). Accession-slugged (e.g. 0000320193-23-000106). Search merges local + EDGAR full-text; get(id=...) fetches the submissions index + primary document and stores section-labelled blocks. get(id='cik:320193' | 'ticker:aapl') lists a company's recent filings; view='diff' shows quarter-to-quarter section changes. See ``precis-edgar-help``.	\N	2026-08-10 16:06:00.748844+00
-plan	f	Plan	A thread's reasoning outline (ADR 0051 §2b) — a hierarchical todo-list + notes on the same chunk-tree substrate as a draft, addressed by pe<chunk_id>. Rendered whole with [open]/[wip]/done: status markers + a cursor; NEVER exported as a deliverable (corpus_role=none). One plan per project (plan-of link). See precis-overview.	\N	2026-08-10 16:06:00.751089+00
-figure	f	Figure	An interactive SVG canvas you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by fg<ref>/fn<chunk>. Two model-owned documents: the SVG source (figure_node chunks) + a shared vocabulary (figure_vocab); chat persists as figure_turn. NEVER exported as a deliverable (corpus_role=none). Many per project (figure-of link). See precis-figure-help.	\N	2026-08-10 16:06:00.751792+00
-anki	t	Anki card	A spaced-repetition cloze card ({{c1::…}}) that lives in the corpus and syncs to AnkiWeb. Numeric-id ref; body is cloze markup, meta carries the generic Anki note shape (notetype/deck/fields). Anki owns scheduling — no SM-2 here. Supersedes flashcard. See precis-anki-help.	\N	2026-08-10 16:06:00.756699+00
-concept	t	Concept	A node in the learner's personal knowledge graph (reading-prep loop): a term/idea with a continuous mastery field, derived state, embeddable definition, and typed edges (prerequisite / analogy / contrast) to other concepts. Objectives are concepts, not todos. See reading-prep-loop.md.	\N	2026-08-10 16:06:00.75943+00
-quest	t	Quest	A perpetual, unachievable striving (the medieval Grail sense) that pulls subtasks and knowledge acquisition into its service. Never `done` — lifecycle is active/dormant/abandoned. Achievable goals beneath it are ordinary todos/projects marked `serves`. Progress is a ledger of deeds, not a percentage. See docs/proposals/quest-layer.md.	\N	2026-08-10 16:06:00.760507+00
-mermaid	f	Mermaid	A mermaid diagram you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by mm<ref>/mn<chunk>. Model-owned: the mermaid source (mermaid_node) + a shared vocabulary (mermaid_vocab) + private notes (mermaid_notes); chat persists as mermaid_turn. Nodes bind to the chunks they depict (ADR 0057). NEVER exported (corpus_role=none). Many per project (mermaid-of link). See precis-mermaid-help.	\N	2026-08-10 16:06:00.760934+00
-llm	t	LLM catalog	A model catalog card — one ref per model (claude-opus-4-8, qwen-heavy). Body is the capability prose (embedded, so the card is a vector); meta carries the structured facts (model_id, tier_floor, offerings, capability axes, provenance). A reconcile pass keeps the facts true against the live OpenRouter feed and flags drift. Read with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', q=…). Never exported. See docs/proposals/llm-catalog.md.	\N	2026-08-10 16:06:00.764323+00
-material	f	Material	CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property sourced values in a typed, growable property registry. v1 is canonical-units-only: a unit that is not the property's canonical unit is rejected, named. See precis-material-help.	\N	2026-08-10 16:06:00.778713+00
-component	f	Component	General procurable-part store — a slug entity (name/category/mpn/manufacturer) plus per-spec sourced values in a typed, growable, category-scoped spec registry. made-of links a component to the material it is made of. v1 is canonical-units-only, like material. See precis-component-help.	\N	2026-08-10 16:06:00.781132+00
-cfp	f	Call for Proposal	Call-for-proposal / requirements document. A read-only ingested PDF (via `precis add --as cfp` or the inbox/cfp/ watch dir) that a proposal draft must satisfy. Addressable by slug; one ref per document, blocks per chunk — gets search / TOC / keywords like a paper. Spec role: NEVER citable evidence (it is the requirements, not a source). Link it to a proposal project with link(rel='has-requirement') so the planner consults it. Use get(view='toc') to read the required sections + limits.	\N	2026-08-10 16:06:00.801334+00
+wikipedia	f	Wikipedia (on-demand article fetch)	Resolve a query to the best-matching Wikipedia article via the MediaWiki search API, then fetch and cache its plain-text extract. Slug-addressed by query; cached 7 days; block-split + embedded so search(kind='wikipedia', q=...) lands hits inside fetched articles. On-demand — no bulk dump, always current. See ``precis-wikipedia-help``.	\N	2026-08-11 10:02:57.036483+00
+alert	t	Alert	Machine-detected operational / health condition — a worker spin loop, an orphaned todo, a stalled recurring, a stale claim. Addressable by numeric id; deduped on meta.fingerprint; lifecycle via STATUS: tags (open / resolved); source + severity via alert-source: / severity: open tags. Not embedded — surfaced by the /alerts web tab, not semantic search.	\N	2026-08-11 10:02:57.039209+00
+draft	f	Draft	Editable, chunk-native authored document (ADR 0032). The living source of a project's write-up; exports to LaTeX/PDF/Word with Postgres canonical. Body chunks are mutable in structure (reorder/reparent via pos + parent_chunk_id) and in text (via the edit helper + content_sha re-derive). Named ref; chunks addressed by an opaque ¶<handle>. One draft per project; freeze = snapshot. See precis-draft-help.	\N	2026-08-11 10:02:57.040148+00
+news	f	News	Multi-source news aggregation. Articles pulled from RSS/Atom feeds (the news_sources registry) by the news_poll worker, fetched + extracted + embedded like web pages, so search(kind='news', q=...) lands hits inside article bodies. URL-addressed, pinned in cache. Tagged category:news + source:<slug> for filtering. The morning briefing summarizes recent items back out. See ``precis-news-help``.	\N	2026-08-11 10:02:57.041911+00
+agentlog	t	Agent log	Run-attribution record — one per agentic run (plan_tick, operator change request, chat follow-up) that touches the corpus. Carries the full assembled prompt, model + source, and `touched` links to every chunk the run wrote or moved, so a suspicious chunk can be walked back to the run that produced it. Numeric id; deduped per run; GC'd past a retention window (links drop, chunks stay). Not embedded — surfaced by the /agentlogs web tab and chunk connections, not semantic search. See ``precis-agentlog-help``.	\N	2026-08-11 10:02:57.042942+00
+orcid	f	ORCID author	A researcher identity resolved from ORCID (https://orcid.org). Slug-addressed by iD (e.g. 'orcid:0000-0002-1825-0097'). get resolves + stores the record (names, bio, keywords, employments with ROR ids), links works already held, and reports the missing ones — fetching them is LLM-gated via args={'enqueue': N}; search runs over the embedded author card; link/tag attach authorship edges (authored / authored-by) and classification. Durable link hub — never cache-evicted. See ``precis-orcid-help``.	\N	2026-08-11 10:02:57.045577+00
+cad	f	CAD	Parametric solid-model design (ADR 0041) — a boolean DAG of placed analytic primitives (box/cyl/cone/sphere/torus/prism/pyramid) authored via the compact `config` mini-DSL (e.g. cyl:r3h12). Postgres-canonical; the agent probes the model (point/ray/arc/section) and relates whole parts (clearance/interference/translational DOF) analytically rather than meshing. OpenSCAD/STL export is a regenerable downstream view. Named ref; nodes addressed by an opaque ca<id> handle. See precis-cad-help.	\N	2026-08-11 10:02:57.046164+00
+structure	f	Structure	Atomistic cell + bond-graph design for DFT/molecular modelling (ADR 0043). A periodic cell (lattice + per-axis PBC) filled with atoms (a<El><n> labels) and an explicit bond graph (order + provenance + periodic-image offset). The agent edits the graph via typed ops and probes it analytically (neighbours, coordination, MIC distances/angles, a validator gate) in memory — never pixels. Relaxation/DFT and file export (CIF/POSCAR/XYZ) are rented backends. Postgres-canonical; st<id> handle, design-scoped atom paths st<id>#a<El><n>. See precis-structure-help.	\N	2026-08-11 10:02:57.047197+00
+pcb	f	PCB	Electronics/PCB design (ADR 0042) — a netlist + placement graph in dedicated tables, read and authored by the LLM as a traversable graph (ratsnest / measures / signal-trace), never pixels. JLCPCB-native. Postgres-canonical; Freerouting/gerbers/fab are downstream export. See precis-pcb-help.	\N	2026-08-11 10:02:57.053213+00
+part	f	Part	LCSC/JLCPCB catalog part (ADR 0042) — reference data in the `parts` table, addressed by LCSC C-number. Ingest-only (jlcparts dump); not embedded. See precis-part-select-help.	\N	2026-08-11 10:02:57.053213+00
+datasheet	f	Datasheet	Component datasheet (ADR 0042) — a thin PaperHandler sibling (corpus_role=evidence) ingested via the Marker->chunks pipeline and linked datasheet-of a part. One kind for the whole electronics-doc family (app-note/errata via a meta sub-type). See precis-datasheet-help.	\N	2026-08-11 10:02:57.053213+00
+folder	t	Folder	Organizational container (ADR 0045): single-parent placement for authored artifacts via refs.parent_id and the reserved virtual `parent` link relation (ADR 0027, generalized). Folders organize what you MAKE — corpus kinds (paper/cfp) keep their own discovery layer and stream kinds (memory/alert/job) stay out. Shallow by policy. See precis-folder-help.	\N	2026-08-11 10:02:57.059855+00
+edgar	f	SEC Filing	Read-only SEC EDGAR filing (10-K / 10-Q / 8-K / S-1 / …). Accession-slugged (e.g. 0000320193-23-000106). Search merges local + EDGAR full-text; get(id=...) fetches the submissions index + primary document and stores section-labelled blocks. get(id='cik:320193' | 'ticker:aapl') lists a company's recent filings; view='diff' shows quarter-to-quarter section changes. See ``precis-edgar-help``.	\N	2026-08-11 10:02:57.062537+00
+plan	f	Plan	A thread's reasoning outline (ADR 0051 §2b) — a hierarchical todo-list + notes on the same chunk-tree substrate as a draft, addressed by pe<chunk_id>. Rendered whole with [open]/[wip]/done: status markers + a cursor; NEVER exported as a deliverable (corpus_role=none). One plan per project (plan-of link). See precis-overview.	\N	2026-08-11 10:02:57.063719+00
+figure	f	Figure	An interactive SVG canvas you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by fg<ref>/fn<chunk>. Two model-owned documents: the SVG source (figure_node chunks) + a shared vocabulary (figure_vocab); chat persists as figure_turn. NEVER exported as a deliverable (corpus_role=none). Many per project (figure-of link). See precis-figure-help.	\N	2026-08-11 10:02:57.064014+00
+anki	t	Anki card	A spaced-repetition cloze card ({{c1::…}}) that lives in the corpus and syncs to AnkiWeb. Numeric-id ref; body is cloze markup, meta carries the generic Anki note shape (notetype/deck/fields). Anki owns scheduling — no SM-2 here. Supersedes flashcard. See precis-anki-help.	\N	2026-08-11 10:02:57.066864+00
+concept	t	Concept	A node in the learner's personal knowledge graph (reading-prep loop): a term/idea with a continuous mastery field, derived state, embeddable definition, and typed edges (prerequisite / analogy / contrast) to other concepts. Objectives are concepts, not todos. See reading-prep-loop.md.	\N	2026-08-11 10:02:57.068779+00
+quest	t	Quest	A perpetual, unachievable striving (the medieval Grail sense) that pulls subtasks and knowledge acquisition into its service. Never `done` — lifecycle is active/dormant/abandoned. Achievable goals beneath it are ordinary todos/projects marked `serves`. Progress is a ledger of deeds, not a percentage. See docs/proposals/quest-layer.md.	\N	2026-08-11 10:02:57.069293+00
+mermaid	f	Mermaid	A mermaid diagram you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by mm<ref>/mn<chunk>. Model-owned: the mermaid source (mermaid_node) + a shared vocabulary (mermaid_vocab) + private notes (mermaid_notes); chat persists as mermaid_turn. Nodes bind to the chunks they depict (ADR 0057). NEVER exported (corpus_role=none). Many per project (mermaid-of link). See precis-mermaid-help.	\N	2026-08-11 10:02:57.069571+00
+llm	t	LLM catalog	A model catalog card — one ref per model (claude-opus-4-8, qwen-heavy). Body is the capability prose (embedded, so the card is a vector); meta carries the structured facts (model_id, tier_floor, offerings, capability axes, provenance). A reconcile pass keeps the facts true against the live OpenRouter feed and flags drift. Read with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', q=…). Never exported. See docs/proposals/llm-catalog.md.	\N	2026-08-11 10:02:57.071261+00
+material	f	Material	CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property sourced values in a typed, growable property registry. v1 is canonical-units-only: a unit that is not the property's canonical unit is rejected, named. See precis-material-help.	\N	2026-08-11 10:02:57.080598+00
+component	f	Component	General procurable-part store — a slug entity (name/category/mpn/manufacturer) plus per-spec sourced values in a typed, growable, category-scoped spec registry. made-of links a component to the material it is made of. v1 is canonical-units-only, like material. See precis-component-help.	\N	2026-08-11 10:02:57.082374+00
+cfp	f	Call for Proposal	Call-for-proposal / requirements document. A read-only ingested PDF (via `precis add --as cfp` or the inbox/cfp/ watch dir) that a proposal draft must satisfy. Addressable by slug; one ref per document, blocks per chunk — gets search / TOC / keywords like a paper. Spec role: NEVER citable evidence (it is the requirements, not a source). Link it to a proposal project with link(rel='has-requirement') so the planner consults it. Use get(view='toc') to read the required sections + limits.	\N	2026-08-11 10:02:57.095894+00
 \.
 
 
@@ -4726,12 +4988,12 @@ local	Local computation / no external source	\N	2026-05-21 20:06:05.179981+00
 retraction_watch	Retraction Watch dataset (CC-BY via Crossref)	\N	2026-05-30 16:07:11.520836+00
 web	Direct web fetch / trafilatura extraction	\N	2026-05-31 18:20:12.906601+00
 epo_ops	European Patent Office Open Patent Services REST API	\N	2026-06-04 20:02:44.133862+00
-wikipedia	Wikipedia / MediaWiki API (search + plain-text extracts)	\N	2026-08-10 16:06:00.713713+00
-news	RSS / Atom news feeds (news_sources registry)	\N	2026-08-10 16:06:00.721674+00
-orcid	ORCID Public API (https://pub.orcid.org/v3.0/) — author identity + works	\N	2026-08-10 16:06:00.7259+00
-sec_edgar	US SEC EDGAR — company filings (submissions + archive APIs)	\N	2026-08-10 16:06:00.748844+00
-sec_edgar_search	US SEC EDGAR — full-text search (efts.sec.gov)	\N	2026-08-10 16:06:00.748844+00
-markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N	2026-08-10 16:06:00.763042+00
+wikipedia	Wikipedia / MediaWiki API (search + plain-text extracts)	\N	2026-08-11 10:02:57.036483+00
+news	RSS / Atom news feeds (news_sources registry)	\N	2026-08-11 10:02:57.041911+00
+orcid	ORCID Public API (https://pub.orcid.org/v3.0/) — author identity + works	\N	2026-08-11 10:02:57.045577+00
+sec_edgar	US SEC EDGAR — company filings (submissions + archive APIs)	\N	2026-08-11 10:02:57.062537+00
+sec_edgar_search	US SEC EDGAR — full-text search (efts.sec.gov)	\N	2026-08-11 10:02:57.062537+00
+markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N	2026-08-11 10:02:57.070443+00
 \.
 
 
@@ -4764,61 +5026,61 @@ supported-by	f	supports	Source is supported by target	\N	2026-05-31 18:20:12.906
 generalises	f	specialises	Source is a generalisation of target	\N	2026-05-31 18:20:12.906601+00
 specialises	f	generalises	Source is a specialisation of target	\N	2026-05-31 18:20:12.906601+00
 see-also	f	\N	One-way "for context" pointer (no inverse)	\N	2026-05-31 18:20:12.906601+00
-fixes	f	fixed-by	Source ref offers a fix for the target ref (e.g. a fix_gripe job → its gripe)	\N	2026-08-10 16:06:00.698741+00
-fixed-by	f	fixes	Source ref is being fixed by the target ref	\N	2026-08-10 16:06:00.698741+00
-draft-of	f	has-draft	Source draft is the working document of target project (todo).	\N	2026-08-10 16:06:00.721361+00
-has-draft	f	draft-of	Source project (todo) has target draft as its working document.	\N	2026-08-10 16:06:00.721361+00
-snapshot-of	f	has-snapshot	Source frozen ref is a point-in-time snapshot of target draft.	\N	2026-08-10 16:06:00.721361+00
-has-snapshot	f	snapshot-of	Source draft has target frozen ref as a snapshot.	\N	2026-08-10 16:06:00.721361+00
-touched	t	\N	Source agent run wrote or moved target chunk (run-attribution). Symmetric for graph purposes — surfaced from either end.	\N	2026-08-10 16:06:00.722841+00
-plots	f	plotted-by	Source figure chunk renders the target data chunk — the figure plots that data. The one reactive edge: editing the data marks the figure stale (ADR 0035).	\N	2026-08-10 16:06:00.724972+00
-plotted-by	f	plots	Source data chunk is rendered by the target figure chunk (inverse of plots).	\N	2026-08-10 16:06:00.724972+00
-authored	f	authored-by	Source author node (kind=orcid) authored the target paper. Ref-level edge; meta carries best-effort author_position / n_authors when known (ADR 0039).	\N	2026-08-10 16:06:00.725606+00
-authored-by	f	authored	Source paper was authored by the target author node (inverse of authored).	\N	2026-08-10 16:06:00.725606+00
-has-requirement	f	requirement-of	Source project (todo) must satisfy target call-for-proposal (cfp).	\N	2026-08-10 16:06:00.726288+00
-requirement-of	f	has-requirement	Source call-for-proposal (cfp) is a requirement of target project.	\N	2026-08-10 16:06:00.726288+00
-requested	f	requested-by	Source todo requested target derived job and waits on it.	\N	2026-08-10 16:06:00.734821+00
-requested-by	f	requested	Source derived job was requested by target todo.	\N	2026-08-10 16:06:00.734821+00
-datasheet-of	f	has-datasheet	Source datasheet documents target part (evidence for its specs).	\N	2026-08-10 16:06:00.749608+00
-has-datasheet	f	datasheet-of	Source part is documented by target datasheet.	\N	2026-08-10 16:06:00.749608+00
-plan-of	f	has-plan	Source plan is the reasoning outline of target project (todo).	\N	2026-08-10 16:06:00.751089+00
-has-plan	f	plan-of	Source project (todo) has target plan as its reasoning outline.	\N	2026-08-10 16:06:00.751089+00
-figure-of	f	has-figure	Source figure belongs to target project (todo). Many-per-project.	\N	2026-08-10 16:06:00.751792+00
-has-figure	f	figure-of	Source project (todo) has target figure. Many-per-project.	\N	2026-08-10 16:06:00.751792+00
-has-prerequisite	f	prerequisite-of	Source concept requires target concept first (the learning DAG).	\N	2026-08-10 16:06:00.75943+00
-prerequisite-of	f	has-prerequisite	Source concept is a prerequisite of (must be learned before) target.	\N	2026-08-10 16:06:00.75943+00
-analogy-of	t	\N	Source and target concepts are analogous — teach one via the other.	\N	2026-08-10 16:06:00.75943+00
-contrasts-with	t	\N	Source and target concepts are confusably similar but distinct.	\N	2026-08-10 16:06:00.75943+00
-represents	f	represented-by	Source concept is rendered by target card (an anki/other representation).	\N	2026-08-10 16:06:00.75943+00
-represented-by	f	represents	Source card renders (is a representation of) target concept.	\N	2026-08-10 16:06:00.75943+00
-depicts	f	depicted-in	A diagram (figure/mermaid) source chunk depicts the target chunk/ref it illustrates; the depicting element id(s) live in links.meta.elements. Diagram→corpus binding (ADR 0057), the element-granular cousin of plots.	\N	2026-08-10 16:06:00.760028+00
-depicted-in	f	depicts	Source chunk/ref is depicted by the target diagram (inverse of depicts, ADR 0057).	\N	2026-08-10 16:06:00.760028+00
-serves	f	served-by	Source (project/todo/concept/paper/job/draft/structure/sub-quest) is in the service of the target quest — the striving DAG above the todo tree.	\N	2026-08-10 16:06:00.760507+00
-served-by	f	serves	Source quest is served by the target work/knowledge node.	\N	2026-08-10 16:06:00.760507+00
-mermaid-of	f	has-mermaid	Source mermaid diagram belongs to target project (todo). Many-per-project.	\N	2026-08-10 16:06:00.760934+00
-has-mermaid	f	mermaid-of	Source project (todo) has target mermaid diagram. Many-per-project.	\N	2026-08-10 16:06:00.760934+00
-dossier-of	f	has-dossier	Source draft is the research dossier of the target quest — the living synthesis rewritten each cycle, and the loop's rolling context.	\N	2026-08-10 16:06:00.761483+00
-has-dossier	f	dossier-of	Source quest has the target draft as its research dossier.	\N	2026-08-10 16:06:00.761483+00
-entails	f	entailed-by	Source inference node logically yields the target conclusion lemma (asserted, not proven).	\N	2026-08-10 16:06:00.772096+00
-entailed-by	f	entails	Source lemma is the asserted conclusion of the target inference node.	\N	2026-08-10 16:06:00.772096+00
-qualifies	f	qualified-by	Source caveat node limits/bounds the target claim (finding or lemma).	\N	2026-08-10 16:06:00.772096+00
-qualified-by	f	qualifies	Source claim is limited/bounded by the target caveat node.	\N	2026-08-10 16:06:00.772096+00
-cited-in	f	\N	Paper is woven into and cited by the document; a citation exists. src=paper, dst=dossier draft (optionally its section chunk).	\N	2026-08-10 16:06:00.774528+00
-corroborates	f	\N	Paper supports an existing point in the document, grouped with it.	\N	2026-08-10 16:06:00.774528+00
-superseded-in	f	\N	Paper is subsumed by a later or review paper already integrated; recorded, not separately woven.	\N	2026-08-10 16:06:00.774528+00
-off-topic-for	f	\N	Paper was considered for the document and rejected as out of scope.	\N	2026-08-10 16:06:00.774528+00
-copy-of	f	has-copy	Source draft is a fork/deep-copy of target draft (chunks + links copied).	\N	2026-08-10 16:06:00.776736+00
-has-copy	f	copy-of	Source draft has target draft as a fork/deep-copy of itself.	\N	2026-08-10 16:06:00.776736+00
-paper-of	f	has-paper	Source draft is the reader-facing paper projection of the target quest/process's dossier — a separate draft from the dossier itself.	\N	2026-08-10 16:06:00.777132+00
-has-paper	f	paper-of	Source quest/process has the target draft as its reader-facing paper.	\N	2026-08-10 16:06:00.777132+00
-made-of	f	used-in	Source component is made of target material.	\N	2026-08-10 16:06:00.781132+00
-used-in	f	made-of	Source material is used in target component.	\N	2026-08-10 16:06:00.781132+00
-establishes	f	\N	Source paper first showed / originated the target claim (taproot evidence edge; originator).	\N	2026-08-10 16:06:00.784288+00
-contains	f	part-of	Source component structurally contains target component (BOM edge).	\N	2026-08-10 16:06:00.784672+00
-part-of	f	contains	Source component is structurally part of target component.	\N	2026-08-10 16:06:00.784672+00
-refines	f	\N	Source claim hub is a sharper/reworded version of the target claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-08-10 16:06:00.78805+00
-awaits-evidence	f	\N	An acquisition-mode finding (STATUS:acquiring) awaits corpus evidence from the linked DREAM:acquire paper stub.	\N	2026-08-10 16:06:00.791601+00
-same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB patent family; source is typically a stub ingest, target the family's current publication-date representative.	\N	2026-08-10 16:06:00.800229+00
+fixes	f	fixed-by	Source ref offers a fix for the target ref (e.g. a fix_gripe job → its gripe)	\N	2026-08-11 10:02:57.02372+00
+fixed-by	f	fixes	Source ref is being fixed by the target ref	\N	2026-08-11 10:02:57.02372+00
+draft-of	f	has-draft	Source draft is the working document of target project (todo).	\N	2026-08-11 10:02:57.041574+00
+has-draft	f	draft-of	Source project (todo) has target draft as its working document.	\N	2026-08-11 10:02:57.041574+00
+snapshot-of	f	has-snapshot	Source frozen ref is a point-in-time snapshot of target draft.	\N	2026-08-11 10:02:57.041574+00
+has-snapshot	f	snapshot-of	Source draft has target frozen ref as a snapshot.	\N	2026-08-11 10:02:57.041574+00
+touched	t	\N	Source agent run wrote or moved target chunk (run-attribution). Symmetric for graph purposes — surfaced from either end.	\N	2026-08-11 10:02:57.042942+00
+plots	f	plotted-by	Source figure chunk renders the target data chunk — the figure plots that data. The one reactive edge: editing the data marks the figure stale (ADR 0035).	\N	2026-08-11 10:02:57.044774+00
+plotted-by	f	plots	Source data chunk is rendered by the target figure chunk (inverse of plots).	\N	2026-08-11 10:02:57.044774+00
+authored	f	authored-by	Source author node (kind=orcid) authored the target paper. Ref-level edge; meta carries best-effort author_position / n_authors when known (ADR 0039).	\N	2026-08-11 10:02:57.045318+00
+authored-by	f	authored	Source paper was authored by the target author node (inverse of authored).	\N	2026-08-11 10:02:57.045318+00
+has-requirement	f	requirement-of	Source project (todo) must satisfy target call-for-proposal (cfp).	\N	2026-08-11 10:02:57.045897+00
+requirement-of	f	has-requirement	Source call-for-proposal (cfp) is a requirement of target project.	\N	2026-08-11 10:02:57.045897+00
+requested	f	requested-by	Source todo requested target derived job and waits on it.	\N	2026-08-11 10:02:57.052949+00
+requested-by	f	requested	Source derived job was requested by target todo.	\N	2026-08-11 10:02:57.052949+00
+datasheet-of	f	has-datasheet	Source datasheet documents target part (evidence for its specs).	\N	2026-08-11 10:02:57.062994+00
+has-datasheet	f	datasheet-of	Source part is documented by target datasheet.	\N	2026-08-11 10:02:57.062994+00
+plan-of	f	has-plan	Source plan is the reasoning outline of target project (todo).	\N	2026-08-11 10:02:57.063719+00
+has-plan	f	plan-of	Source project (todo) has target plan as its reasoning outline.	\N	2026-08-11 10:02:57.063719+00
+figure-of	f	has-figure	Source figure belongs to target project (todo). Many-per-project.	\N	2026-08-11 10:02:57.064014+00
+has-figure	f	figure-of	Source project (todo) has target figure. Many-per-project.	\N	2026-08-11 10:02:57.064014+00
+has-prerequisite	f	prerequisite-of	Source concept requires target concept first (the learning DAG).	\N	2026-08-11 10:02:57.068779+00
+prerequisite-of	f	has-prerequisite	Source concept is a prerequisite of (must be learned before) target.	\N	2026-08-11 10:02:57.068779+00
+analogy-of	t	\N	Source and target concepts are analogous — teach one via the other.	\N	2026-08-11 10:02:57.068779+00
+contrasts-with	t	\N	Source and target concepts are confusably similar but distinct.	\N	2026-08-11 10:02:57.068779+00
+represents	f	represented-by	Source concept is rendered by target card (an anki/other representation).	\N	2026-08-11 10:02:57.068779+00
+represented-by	f	represents	Source card renders (is a representation of) target concept.	\N	2026-08-11 10:02:57.068779+00
+depicts	f	depicted-in	A diagram (figure/mermaid) source chunk depicts the target chunk/ref it illustrates; the depicting element id(s) live in links.meta.elements. Diagram→corpus binding (ADR 0057), the element-granular cousin of plots.	\N	2026-08-11 10:02:57.06905+00
+depicted-in	f	depicts	Source chunk/ref is depicted by the target diagram (inverse of depicts, ADR 0057).	\N	2026-08-11 10:02:57.06905+00
+serves	f	served-by	Source (project/todo/concept/paper/job/draft/structure/sub-quest) is in the service of the target quest — the striving DAG above the todo tree.	\N	2026-08-11 10:02:57.069293+00
+served-by	f	serves	Source quest is served by the target work/knowledge node.	\N	2026-08-11 10:02:57.069293+00
+mermaid-of	f	has-mermaid	Source mermaid diagram belongs to target project (todo). Many-per-project.	\N	2026-08-11 10:02:57.069571+00
+has-mermaid	f	mermaid-of	Source project (todo) has target mermaid diagram. Many-per-project.	\N	2026-08-11 10:02:57.069571+00
+dossier-of	f	has-dossier	Source draft is the research dossier of the target quest — the living synthesis rewritten each cycle, and the loop's rolling context.	\N	2026-08-11 10:02:57.069862+00
+has-dossier	f	dossier-of	Source quest has the target draft as its research dossier.	\N	2026-08-11 10:02:57.069862+00
+entails	f	entailed-by	Source inference node logically yields the target conclusion lemma (asserted, not proven).	\N	2026-08-11 10:02:57.075982+00
+entailed-by	f	entails	Source lemma is the asserted conclusion of the target inference node.	\N	2026-08-11 10:02:57.075982+00
+qualifies	f	qualified-by	Source caveat node limits/bounds the target claim (finding or lemma).	\N	2026-08-11 10:02:57.075982+00
+qualified-by	f	qualifies	Source claim is limited/bounded by the target caveat node.	\N	2026-08-11 10:02:57.075982+00
+cited-in	f	\N	Paper is woven into and cited by the document; a citation exists. src=paper, dst=dossier draft (optionally its section chunk).	\N	2026-08-11 10:02:57.078061+00
+corroborates	f	\N	Paper supports an existing point in the document, grouped with it.	\N	2026-08-11 10:02:57.078061+00
+superseded-in	f	\N	Paper is subsumed by a later or review paper already integrated; recorded, not separately woven.	\N	2026-08-11 10:02:57.078061+00
+off-topic-for	f	\N	Paper was considered for the document and rejected as out of scope.	\N	2026-08-11 10:02:57.078061+00
+copy-of	f	has-copy	Source draft is a fork/deep-copy of target draft (chunks + links copied).	\N	2026-08-11 10:02:57.079433+00
+has-copy	f	copy-of	Source draft has target draft as a fork/deep-copy of itself.	\N	2026-08-11 10:02:57.079433+00
+paper-of	f	has-paper	Source draft is the reader-facing paper projection of the target quest/process's dossier — a separate draft from the dossier itself.	\N	2026-08-11 10:02:57.079684+00
+has-paper	f	paper-of	Source quest/process has the target draft as its reader-facing paper.	\N	2026-08-11 10:02:57.079684+00
+made-of	f	used-in	Source component is made of target material.	\N	2026-08-11 10:02:57.082374+00
+used-in	f	made-of	Source material is used in target component.	\N	2026-08-11 10:02:57.082374+00
+establishes	f	\N	Source paper first showed / originated the target claim (taproot evidence edge; originator).	\N	2026-08-11 10:02:57.084788+00
+contains	f	part-of	Source component structurally contains target component (BOM edge).	\N	2026-08-11 10:02:57.085051+00
+part-of	f	contains	Source component is structurally part of target component.	\N	2026-08-11 10:02:57.085051+00
+refines	f	\N	Source claim hub is a sharper/reworded version of the target claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-08-11 10:02:57.087142+00
+awaits-evidence	f	\N	An acquisition-mode finding (STATUS:acquiring) awaits corpus evidence from the linked DREAM:acquire paper stub.	\N	2026-08-11 10:02:57.089406+00
+same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB patent family; source is typically a stub ingest, target the family's current publication-date representative.	\N	2026-08-11 10:02:57.095004+00
 \.
 
 
@@ -4828,7 +5090,7 @@ same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB paten
 
 COPY public.summarizers (name, prompt_template, config, is_default, description, deprecated_at, created_at) FROM stdin;
 rake-lemma	\N	{"model": "en_core_sci_sm", "lemmatizer": "scispacy", "max_keywords": 50, "max_phrase_words": 4, "min_phrase_words": 1}	t	RAKE phrase extraction + scispacy lemmatisation	\N	2026-05-21 20:06:05.179981+00
-llm-v1	\N	{"alias": "summarizer", "model": "qwen3-next-80b-a3b", "format": "brief;detail", "version": "1", "endpoint": "local"}	f	LLM brief+detail chunk summary (Qwen3-Next-80B-A3B via the litellm `summarizer` alias)	\N	2026-08-10 16:06:00.713374+00
+llm-v1	\N	{"alias": "summarizer", "model": "qwen3-next-80b-a3b", "format": "brief;detail", "version": "1", "endpoint": "local"}	f	LLM brief+detail chunk summary (Qwen3-Next-80B-A3B via the litellm `summarizer` alias)	\N	2026-08-11 10:02:57.03621+00
 \.
 
 
@@ -4961,4 +5223,7 @@ COPY public._migrations (version, applied_at, checksum, plugin) FROM stdin;
 0115_patent_family_relation	1970-01-01 00:00:00+00	5671a35dbbed4c5a9e234a73f5f5034ecd0785a8a94ea4edc9c7690d991771fd	precis
 0116_ref_embeddings	1970-01-01 00:00:00+00	ad5470de386954c93fecb63a9323a5dc1895a69ca31cc193518a440806d2206f	precis
 0117_cfp_kind_seed	1970-01-01 00:00:00+00	8698a190e4a4034391fdaf8ba4a6d979232a546a3732d88a1ce2d64229c71e2c	precis
+0118_drop_dead_indexes	1970-01-01 00:00:00+00	bb85d0488c8ffb5f010dc385ad8b8339c5a4e88d86e59166d1460373d11c23ef	precis
+0119_resource_slot_holds	1970-01-01 00:00:00+00	1bed291ef0dafe4dc6425ca05b843025ab33e381175fc58e547794fe066f2c85	precis
+0120_run_log_chunk_kind	1970-01-01 00:00:00+00	cc6d8fa871fe8132d6d4ea5fca13a6bef8c1149ed2c117527bece1d7d918dad0	precis
 \.

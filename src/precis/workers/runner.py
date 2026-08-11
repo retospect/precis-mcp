@@ -22,6 +22,7 @@ drift, disk full) where blind retry is more harm than good.
 from __future__ import annotations
 
 import logging
+import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -270,9 +271,19 @@ def run_loop(
             # Nothing to do anywhere; sleep before re-poll. Honour
             # ``should_stop`` while sleeping so ``Ctrl-C`` doesn't
             # have to wait the full interval.
+            #
+            # Jitter the target so the whole fleet doesn't idle-sleep in
+            # lockstep: every host starts idle at roughly the same wall-
+            # clock moment (they all drain their queues at similar rates),
+            # so an un-jittered fixed interval has them all wake and hit
+            # the DB again within the same instant, which is exactly the
+            # kind of synchronized burst that trips prod's
+            # ``lock_timeout=5s`` (see ``precis.utils.db_retry``'s module
+            # docstring) on whatever they collide on next.
+            target = idle_seconds * random.uniform(0.75, 1.25)
             slept = 0.0
-            tick = min(0.25, idle_seconds)
-            while slept < idle_seconds:
+            tick = min(0.25, target)
+            while slept < target:
                 if should_stop is not None and should_stop():
                     return
                 time.sleep(tick)

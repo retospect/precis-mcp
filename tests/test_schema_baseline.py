@@ -177,6 +177,7 @@ def _dump_schema(pg_dump_bin: str, dsn: str) -> str:
         [
             pg_dump_bin,
             "--schema=public",
+            "--schema=vault",
             "--schema-only",
             "--no-owner",
             "--no-privileges",
@@ -210,6 +211,20 @@ def _applied_ledger(dsn: str) -> set[tuple[str, str]]:
     return {(r[0], r[1]) for r in rows}
 
 
+def _drop_schema(dsn: str, name: str) -> None:
+    """Drop a whole non-``public`` schema (e.g. ``vault``, ADR 0055).
+
+    ``drop_public_objects`` (see ``tests/conftest._drop_all_public_objects``)
+    is deliberately scoped to ``public`` — every other db-tagged test relies
+    on that narrow contract. This test alone needs a byte-for-byte fresh
+    slate between Path A and Path B for every schema the migration chain
+    creates, so it tears down ``vault`` itself rather than widening the
+    shared fixture.
+    """
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+
+
 @pytest.mark.db
 def test_schema_convergence(
     fresh_db: str, drop_public_objects: Callable[[str], None]
@@ -236,8 +251,14 @@ def test_schema_convergence(
     schema_a = _dump_schema(pg_dump_bin, dsn)
     ledger_a = _applied_ledger(dsn)
 
-    # Path B: bootstrap from the snapshot, then apply any tail.
+    # Path B: bootstrap from the snapshot, then apply any tail. Every
+    # non-public schema the chain creates (currently just `vault`, ADR
+    # 0055) must go too, or reloading the baseline's `CREATE SCHEMA
+    # vault` / `CREATE FUNCTION vault.*` hits a DuplicateSchema /
+    # DuplicateFunction — those aren't `IF NOT EXISTS` / `OR REPLACE` in
+    # the pg_dump output (a truly fresh install never has them yet).
     drop_public_objects(dsn)
+    _drop_schema(dsn, "vault")
     Migrator(dsn, MIGRATIONS_DIR, baseline=BASELINE).apply_all()
     schema_b = _dump_schema(pg_dump_bin, dsn)
     ledger_b = _applied_ledger(dsn)
