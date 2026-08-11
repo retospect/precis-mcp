@@ -53,7 +53,9 @@ One fire (:func:`run_health_digest_pass`) does four things:
    raises a ``kind='alert'`` via :func:`precis.alerts.raise_alert` under
    ``alert_source="watchdog:<group>"``, severity capped to info/warn
    (nursery keeps the critical lane); :func:`precis.alerts.resolve_stale_alerts`
-   auto-closes whatever went fresh again.
+   auto-closes whatever went fresh again, including a group that emitted
+   no checks at all this eval (an all-quiet finding-only source is swept
+   too, not just groups present in this pass's results).
 3. **Remediation router** (:func:`_route_findings`, §D Phase 2) — every
    still-open ``watchdog:<group>`` alert older than its class's self-heal
    budget gets exactly one condition-linked ``kind='gripe'``, filed once
@@ -1012,7 +1014,13 @@ def _evaluate_checks(
 def _sync_alerts(store: Store, checks: list[CheckResult]) -> tuple[int, int, bool]:
     """Raise/refresh a ``watchdog:<group>`` alert per stale finding; resolve
     whatever went fresh again. Mirrors ``nursery.run_nursery_pass``'s
-    per-source raise-then-resolve-stale sweep.
+    per-source raise-then-resolve-stale sweep. A source that emitted zero
+    checks this eval (finding-only groups, e.g. ``_layer2_checks``, go
+    silent when everything's healthy — no group key at all) is still
+    swept: any currently-open ``watchdog:<source>`` alert with no
+    corresponding entry in ``by_group`` is resolved outright, so an
+    all-quiet group doesn't strand its alerts (and downstream marker
+    gripes) open forever.
 
     Returns ``(raised, resolved, degraded)`` — ``degraded`` is ``True`` iff
     at least one finding is a *first* sighting (``raise_alert``'s
@@ -1047,6 +1055,25 @@ def _sync_alerts(store: Store, checks: list[CheckResult]) -> tuple[int, int, boo
             raised += 1
             degraded = degraded or is_new
         resolved += resolve_stale_alerts(store, source=source, live_fingerprints=live)
+
+    covered = {f"watchdog:{group}" for group in by_group}
+    with store.pool.connection() as conn:
+        quiet_sources = conn.execute(
+            """
+            SELECT DISTINCT r.alert_source
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'alert' AND r.deleted_at IS NULL
+               AND r.alert_source LIKE 'watchdog:%%'
+               AND t.namespace = 'OPEN' AND t.value = %s
+            """,
+            (STATE_OPEN,),
+        ).fetchall()
+    for (source,) in quiet_sources:
+        if source in covered:
+            continue
+        resolved += resolve_stale_alerts(store, source=source, live_fingerprints=[])
     return raised, resolved, degraded
 
 

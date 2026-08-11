@@ -24,7 +24,12 @@ defect: `_resolve_enabled_somewhere`'s structural default still counted
 `enable_env` as intended-on post-§L, so 10 enable_env-only default-OFF
 passes were flagged "intended-on but silent" every cycle (false
 positives; fixed this ship). The discovery-group flags are Layer-1
-checks, a separate bucket.
+checks, a separate bucket. Follow-up (2026-08-11): `_sync_alerts`'s
+resolve sweep only covered groups present in the current eval's checks,
+so a group going *all-quiet* (finding-only sources like
+`_layer2_checks`) stranded its open alerts + marker gripes forever —
+the 10 coherence alerts/gripes stayed open after the fix deployed;
+fixed by sweeping open `watchdog:%` sources absent from the eval.
 
 SLA framing (kept — it shapes everything): "never really urgent — just
 don't let it linger and rot for days." Nursery owns real-time critical;

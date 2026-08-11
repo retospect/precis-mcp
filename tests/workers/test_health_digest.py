@@ -297,6 +297,30 @@ def test_watchdog_alerts_dedup_and_auto_resolve(store) -> None:
     assert not any(a["source"] == "watchdog:mygroup" for a in open_alerts_after)
 
 
+def test_watchdog_alerts_resolve_all_quiet_group(store) -> None:
+    """A finding-only group (e.g. Layer-2 coherence) that goes fully
+    healthy emits zero checks next eval — no ``coherence`` key in
+    ``by_group`` at all, not even an ``ok`` one. Regression for the bug
+    where such a group's alerts (and downstream marker gripes) stayed
+    open forever because the per-group loop never visited the source."""
+    stale = [CheckResult("coherence", "some-pass", "stale", "silent", "warn")]
+    _, _, first_degraded = _sync_alerts(store, stale)
+    assert first_degraded is True
+
+    open_alerts = list_open_alerts(store)
+    assert any(a["source"] == "watchdog:coherence" for a in open_alerts)
+
+    # Next eval: coherence is entirely quiet — no coherence-group checks at
+    # all, only an unrelated group.
+    _raised, resolved, _degraded = _sync_alerts(
+        store, [CheckResult("mygroup", "flaky-check", "stale", "still broken", "warn")]
+    )
+    assert resolved >= 1
+
+    open_alerts_after = list_open_alerts(store)
+    assert not any(a["source"] == "watchdog:coherence" for a in open_alerts_after)
+
+
 # ── (f) Layer-2 — zero digest edits for a new spec ──────────────────────
 
 
