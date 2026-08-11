@@ -27,6 +27,13 @@ import pytest
 
 pytest.importorskip("autocatpath")
 
+# Heaviest cluster in the suite: real materials/chemistry compute (seed fanout,
+# computed graphs, EMT analysis) — ~65% of the top-50 durations live here, at
+# 15–110s each. Marked `slow` so `scripts/test -m 'not slow'` gives a
+# full-minus-glacial run while the ship gate (and `/go` before a deploy) still
+# runs everything. See docs/conventions/testing.md § "Judging effectiveness".
+pytestmark = pytest.mark.slow
+
 import precis_pathway
 from precis.dispatch import Hub, InitError, _try
 from precis.store import Store

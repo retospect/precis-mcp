@@ -1,4 +1,8 @@
--- 0118_resource_slot_holds.sql
+-- 0119_resource_slot_holds.sql
+--
+-- Renumbered from 0118 (collided with 0118_drop_dead_indexes when two
+-- worktrees grabbed the same number in parallel; neither was prod-applied,
+-- so the ledger-key change is safe). See tests/test_migration_numbering.py.
 --
 -- Crash-safe reclaim for leaked `resource_slots` reservations (2026-08-10
 -- fleet-wide outage postmortem: a process killed between
@@ -40,4 +44,4 @@ COMMENT ON TABLE resource_slot_holds IS
     'the heartbeat pass, refunding their units to resource_slots.free — '
     'crash-safe reclaim for a holder killed before release().';
 
--- End of 0118_resource_slot_holds.sql
+-- End of 0119_resource_slot_holds.sql

@@ -43,14 +43,39 @@ pid dies or after 45 min.
 ```
 scripts/test                         # full suite (-n6)
 scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
+scripts/test --fast                  # fast set (-m 'not db and not slow'), no Postgres
+scripts/test -m 'not slow'           # full-minus-glacial (skips the heavy cluster)
 scripts/test --impacted              # ONLY tests your change affects (testmon)
+scripts/test --durations=25 …        # profile: pytest prints the 25 slowest
 ```
 
-`--impacted` is the tightest inner loop: `pytest-testmon` maps test↔code
-and runs just the tests a working-tree change touches (the first run
-builds the map; later runs are sub-second when nothing relevant changed
-files touched). Use it while iterating; it is *not* a substitute for a full
-run before shipping — testmon's map can miss an indirect dependency.
+Tiers, fastest to most complete — pick by what you changed:
+
+- **`--impacted`** is the tightest inner loop: `pytest-testmon` maps
+  test↔code and runs just the tests a working-tree change touches (the first
+  run builds the map; later runs are sub-second when nothing relevant
+  changed). Use it while iterating on a specific edit.
+- **`--fast`** runs the **fast set** — `-m 'not db and not slow'`: skips every
+  test that touches a `store`/`hub` fixture (auto-marked `db` in
+  `tests/conftest.py`) *and* the heavy `slow` compute cluster. Both exclusions
+  matter — the two slowest tests in the whole suite are no-DB compute tests in
+  the `slow` file, so `not db` alone would let them leak in. No Postgres is
+  started, so it's Docker-DB-independent and finishes in seconds. It's the
+  right gate for a change that can't touch a DB path — pure logic, formatting,
+  docs, config, a CLI-arg parser. It is a *coverage subset by construction*: a
+  change to any SQL/store path is exactly what it can't see, so it never
+  substitutes for the full run there.
+
+- **`-m 'not slow'`** keeps the DB suite but drops the `slow`-marked heavy
+  cluster (real materials/chemistry compute — see the marker in
+  `tests/conftest.py`). That one cluster is ~65% of the suite's wall-clock, so
+  this is a big cut while still exercising almost every code path. Use it when
+  you want broad DB coverage without paying for the glacial compute tests.
+
+None of these substitute for a full run before shipping — testmon's map can
+miss an indirect dependency, `--fast` deselects the entire DB suite, and
+`-m 'not slow'` skips the heavy cluster. The ship gate (and `/go` before a
+deploy) always runs everything.
 
 `scripts/ship` (via `/land`, `/go`) runs the **authoritative** full
 pre-merge gate (`ruff` + `mypy` + `pytest`, in-container). Everything above
@@ -89,3 +114,45 @@ coverage percentage is not a merge criterion and never gates a ship. The
 risk class coverage numbers are meant to proxy for — SQL paths FakeStore
 can't see — is already covered directly by the real-PG-companion-test
 policy above, which is a sharper signal than a line-coverage threshold.
+
+## Judging effectiveness (instead of a coverage %)
+
+A big suite (~11k tests) earns its keep only if it *catches* things and
+doesn't just *cost* things. Two cheap, honest signals — neither is a gate,
+both are periodic:
+
+**Time sink — profile, don't guess.** `--durations=N` is already wired
+through (`scripts/test --durations=25`). Run it when the suite feels slow and
+read the tail. The dominant cost is per-DB-test setup (template-clone +
+per-test `TRUNCATE`), so the usual finding is a test that pulls a
+`store`/`hub` fixture but only asserts pure logic — it pays for Postgres it
+never uses. Fixing those is the highest-leverage runtime win: swap
+`store`/`hub` → `hub_stateless`/`runtime_stateless` (no-DB fixtures in
+`tests/conftest.py`). That both shrinks the slow suite *and* moves the test
+into the `--fast` set. Don't delete tests to go faster; re-home the
+mis-classified ones.
+
+**Catch power — mutation-spot-check, don't count lines.** Line coverage says
+a line *ran*, not that a test would *fail* if it broke. When you want a real
+read on whether a module's tests assert or merely execute, run a mutation
+pass over that one module (periodic, never in the gate):
+
+```
+# in a dev shell (scripts/dev); pick ONE hot module, not the tree.
+# mutmut 3.x takes the path positionally (v2's --paths-to-mutate is gone).
+uv run --with mutmut mutmut run src/precis/<module>.py
+uv run --with mutmut mutmut results        # survivors = untested behaviour
+```
+
+Survivors are the honest to-do list: each is a code change your tests don't
+notice. Target the risk-dense modules (review-tier logic, SQL builders,
+routing/threshold math), not everything. A surviving-mutant report is a
+sharper "are these tests effective?" answer than any coverage number, which
+is why it lives here and not in the gate.
+
+**What caught a real bug — leave a one-line trace.** When a red gate (or a
+`--fast`/`--impacted` run) actually stops a real defect from shipping, note
+it in the fixing commit's subject (`fix(x): … caught by test_y`) or the
+test's docstring. Over months `git log --grep 'caught by'` becomes the
+ground-truth map of which tests earn their runtime — no separate tracker to
+maintain and rot.

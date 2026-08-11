@@ -18,6 +18,7 @@
 #   scripts/test tests/test_foo.py            # one file
 #   scripts/test -k "registry or env"         # a -k expression
 #   scripts/test tests/test_foo.py::test_bar -x
+#   scripts/test --fast                       # no-DB fast set (-m 'not db')
 #   scripts/test --impacted                   # ONLY tests your changes affect
 #
 # Everything after the script name is passed straight to pytest. Default
@@ -41,8 +42,15 @@ WORKTREE="$PWD"
 
 # --impacted / -i : testmon impact-selection mode (see header). Strip the
 # sentinel before the rest is forwarded to pytest.
+# --fast / -f : the fast set — `-m 'not db and not slow'`: skips every test that
+# needs Postgres (auto-marked `db` in tests/conftest.py) AND the heavy `slow`
+# compute cluster. No Postgres is started, so it runs in seconds and is
+# independent of the test DB. The right gate for pure-logic / docs / config
+# changes; NOT authoritative before a deploy (/go still runs the full suite).
 IMPACTED=0
+FAST=0
 if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; fi
+if [[ "${1:-}" == "--fast" || "${1:-}" == "-f" ]]; then FAST=1; shift; fi
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || {
@@ -63,8 +71,12 @@ compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE"
 
 # Co-located RAM test DB (the same service scripts/ship's gate uses). If it
 # can't start, fall back to whatever PRECIS_TEST_PG_URL the container carries.
+# --fast runs `-m 'not db'`, so no DB test is selected — skip the DB startup
+# entirely (a real time saver and it makes the fast path Docker-DB-independent).
 TEST_DB_ENV=()
-if compose up -d --wait precis-test-db >/dev/null 2>&1; then
+if [[ "$FAST" == "1" ]]; then
+    :  # no DB tests selected — don't pay for Postgres
+elif compose up -d --wait precis-test-db >/dev/null 2>&1; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
 else
     echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2
@@ -89,6 +101,13 @@ if [[ "$IMPACTED" == "1" ]]; then
     NPROC=(-n0)
 fi
 
+# Fast mode: deselect the whole DB suite (auto-applied `db` marker) AND the
+# heavy `slow` cluster. Both matter: the slowest two tests in the suite are
+# no-DB compute tests in the `slow` pathway file, so `not db` alone would let
+# them leak into the "fast" set. See docs/conventions/testing.md.
+FAST_ARGS=()
+if [[ "$FAST" == "1" ]]; then FAST_ARGS=(-m "not db and not slow"); fi
+
 # Take a fleet-wide gate slot just before the heavyweight container run (the
 # tiny tmpfs test-db above doesn't need one).
 gate_slot_acquire
@@ -103,4 +122,5 @@ compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
     "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
     -v "${WORKTREE}":/app precis-dev \
     bash -lc 'uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
-    _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" "$@"
+    _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
+    "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@"

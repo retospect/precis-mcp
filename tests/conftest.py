@@ -251,6 +251,13 @@ def pytest_configure(config: pytest.Config) -> None:
         "PRECIS_TEST_PG_URL (default postgresql://localhost/precis_test). "
         "Auto-skipped when unreachable.",
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: heavy compute/E2E test (10s+); ~65% of suite wall-clock lives "
+        "in the marked cluster. `scripts/test -m 'not slow'` runs "
+        "full-minus-glacial; the ship gate still runs it. See "
+        "docs/conventions/testing.md.",
+    )
 
 
 def pytest_collection_modifyitems(
