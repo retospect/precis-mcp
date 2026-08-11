@@ -288,6 +288,46 @@ aren't proven draining first):**
    drain by disabling the standing passes on melchior
    (`precis_worker_summarize_llm`/`precis_worker_classify` → `false`, redeploy).
 
+### As-run status (2026-08-11)
+
+Steps 1–2 **done and verified**; step 3 (cutover) **not yet applied — gated on
+operator approval** (the prod `app_settings` write was blocked by the auto-mode
+permission classifier). Present state = cloud rung still in place (safe: SMALL
+drains local + spills to cloud on saturation).
+
+- **Deploy converged** on `main` (melchior `PRECIS_NODE=melchior` on the running
+  worker; `derived_drain` in the `--profile all` union; job type loads). First
+  redeploy silently failed to converge (stale worktree behind `main` → templates
+  refused; and an earlier run left melchior's venv un-updated) — fixed by
+  ff-syncing the worktree to `origin/main` and re-running `scripts/deploy`.
+- **Bands drain locally.** `derived_drain` jobs claim on melchior only; steady
+  fresh `qwen3.5-9b-q4_k_m` local rows sourced `llm_summarize`. The 6 local slots
+  **saturate** — `llm_summarize: N/16 chunks backed off (all local serving slots
+  busy; recorded for retry)` — i.e. clean backpressure, as designed.
+- **Transient blocker (cleared):** right after deploy the melchior embedder
+  (`127.0.0.1:8181`) warmed unhealthy (`/readyz` flapping; `HTTP 500 …/embed`),
+  and its watchdog SIGTERM-bounced the `--profile all` worker every 1–2 min. A
+  worker that dies mid-rotation never reaches `job_inproc` (late in the serial
+  order) → bands looked stranded. Embedder recovered ~22:15 UTC; worker stable
+  since; `job_inproc` resumed claiming. See [[embedder_wedged_warming]].
+
+**Cutover consequence to weigh (beyond the accepted "backlog grows"):** there is
+no intra-SMALL fairness yet ([[fair-dispatch-two-currencies]]), and summarize
+currently saturates all 6 slots with a large backlog. Pre-cutover, classify
+escapes to the cloud rung (`z-ai/glm-4.7-flash`). **Dropping the rung makes
+classify backpressure (paused→retry) behind summarize until the summarize
+backlog clears** — role3 classification throughput drops to near-zero in the
+interim (clean backoff, not errors). Acceptable per the local-only intent, but
+sharper than "backlog grows".
+
+**Residuals (filed, not blockers):**
+- `job_inproc` sits late in melchior's long serial `--profile all` rotation, so
+  the bands get infrequent claim turns — throughput-limited even when healthy.
+- qwen3.5-9b context is `n_ctx≈5632` (32K ÷ parallel=6); oversized summarize/
+  classify prompts 400 (`exceed_context_size`). Pre-cutover they overflow to
+  cloud; **post-cutover they fail local and requeue** — a small tail never drains
+  until the model's per-slot context is raised or those chunks are pre-split.
+
 ## Explicitly NOT in scope
 
 - **The prio/fairness *scheduler* half** ([[fair-dispatch-two-currencies]]) — the
