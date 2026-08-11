@@ -19,12 +19,16 @@
         <string>-o</string>
         <string>StrictHostKeyChecking=accept-new</string>
         <string>-i</string>
-        <string>/Users/deploy/.ssh/tunnel_ed25519</string>
+        <string>{{ item.ssh_key | default('/Users/deploy/.ssh/tunnel_ed25519') }}</string>
+{% if item.ssh_port is defined %}
+        <string>-p</string>
+        <string>{{ item.ssh_port }}</string>
+{% endif %}
 {% for fwd in item.forwards %}
         <string>-L</string>
         <string>{{ fwd }}</string>
 {% endfor %}
-        <string>deploy@{{ hostvars[item.dest]['lan_ip'] }}</string>
+        <string>{{ item.ssh_user | default('deploy') }}@{{ item.ssh_host | default(hostvars[item.dest]['lan_ip']) }}</string>
     </array>
     <key>UserName</key>
     <string>deploy</string>

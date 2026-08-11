@@ -35,6 +35,7 @@ the reconcile pass) is machine-maintained and kept separate from the curated
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -79,10 +80,19 @@ OFFERING_KEYS: frozenset[str] = frozenset(
 #: ``model`` is the SERVER-SIDE model id the endpoint expects (a llama-swap alias
 #: or ollama tag) — distinct from the card's ``model_id`` (the precis-side handle a
 #: tier resolves to). ``local_serving`` reads it as ``served_model`` and folds it
-#: into the dispatch, defaulting to ``model_id`` when absent.
+#: into the dispatch, defaulting to ``model_id`` when absent. ``source`` marks who
+#: owns the entry: ``"auto"`` (the default, back-compat with every entry written
+#: before this key existed) is a per-heartbeat ``advertise_local_llm`` discovery —
+#: pruned the moment that host's llama-swap stops serving the model; ``"static"``
+#: is a hand/seed-authored entry (e.g. a tunnelled remote-cluster card) that
+#: ``advertise_local_llm`` must never touch, since that host's local-discovery
+#: probe will never see it.
 SERVED_BY_KEYS: frozenset[str] = frozenset(
-    {"host", "endpoint", "max_parallel", "model"}
+    {"host", "endpoint", "max_parallel", "model", "source"}
 )
+
+#: Values ``served_by[].source`` may take — see :data:`SERVED_BY_KEYS`.
+SERVED_BY_SOURCES: frozenset[str] = frozenset({"auto", "static"})
 
 #: Keys a reconciled **endpoint** (a bookable provider×quant variant, minted by
 #: ``llm_reconcile`` from OpenRouter ``/models/{slug}/endpoints``) may carry. An
@@ -167,6 +177,12 @@ def _validate_served_by(served_by: Any) -> list[dict[str, Any]]:
         if model is not None and (not isinstance(model, str) or not model):
             raise BadInput(
                 "served_by model must be a non-empty string (the server-side model id)"
+            )
+        source = e.get("source")
+        if source is not None and source not in SERVED_BY_SOURCES:
+            raise BadInput(
+                f"served_by source must be one of {sorted(SERVED_BY_SOURCES)}, "
+                f"got {source!r}"
             )
     return served_by
 
@@ -1004,6 +1020,97 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
     return results
 
 
+#: ``PRECIS_SLULLAMA_*`` env defaults for :func:`seed_slullama_card` — a remote
+#: GPU cluster's Ollama OpenAI-compat endpoint, tunnelled to loopback on a
+#: cluster host (``deploy/roles/ssh_tunnels``). Tier-neutral: which capability
+#: rung (if any) resolves to this model is a placement-chain concern
+#: (``precis.utils.llm.router``), not this seeder's.
+_SLULLAMA_DEFAULT_HOST = "melchior"
+_SLULLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11435/v1"
+_SLULLAMA_DEFAULT_MAX_PARALLEL = 3
+_SLULLAMA_DEFAULT_MODEL_ID = "qwen-hpc"
+
+
+def seed_slullama_card(
+    store: Store,
+    *,
+    model: str | None = None,
+    model_id: str | None = None,
+    host: str | None = None,
+    endpoint: str | None = None,
+    max_parallel: int | None = None,
+) -> tuple[int, bool]:
+    """Mint (or refresh) the ONE static ``llm`` card advertising a Slurm-HPC
+    GPU cluster's Ollama endpoint, tunnelled to loopback on ``host`` (default
+    ``melchior``). Idempotent on ``model_id`` (:func:`upsert_card`).
+
+    Every argument falls back to an env var when omitted, so the same call works
+    unconfigured-in-code from a deploy playbook or a one-shot CLI seed:
+
+    * ``model``          — ``$PRECIS_SLULLAMA_MODEL``, else ``model_id`` (the
+                            server-side Ollama tag the endpoint expects).
+    * ``model_id``       — ``$PRECIS_SLULLAMA_MODEL_ID``, default ``"qwen-hpc"``
+                            (the precis-side handle; a placement chain rung
+                            points at this model_id to route there).
+    * ``host``           — ``$PRECIS_SLULLAMA_HOST``, default ``"melchior"`` (the
+                            node holding the SSH tunnel — must match the
+                            heartbeat host name so ``local_serving.acquire``
+                            sees it).
+    * ``endpoint``       — ``$PRECIS_SLULLAMA_ENDPOINT``, default
+                            ``"http://127.0.0.1:11435/v1"`` (the tunnel's local
+                            port).
+    * ``max_parallel``   — ``$PRECIS_SLULLAMA_MAX_PARALLEL``, default ``3`` — the
+                            "nice citizen, one shared GPU node" concurrency cap;
+                            this IS the slot capacity ``resource_slots`` enforces.
+
+    The entry is stamped ``source="static"`` — the marker that shields it from
+    ``precis.workers.llm_serving.advertise_local_llm``'s per-heartbeat prune (that
+    pass only ever discovers/retracts models a HOST's own llama-swap answers for;
+    this model is served by the remote Slurm node through a tunnel, so it would
+    never show up in that host's discovery and would otherwise get its entry
+    stripped the next time the heartbeat runs on ``host``).
+    """
+    model_id = (
+        model_id
+        or os.environ.get("PRECIS_SLULLAMA_MODEL_ID")
+        or _SLULLAMA_DEFAULT_MODEL_ID
+    )
+    model = model or os.environ.get("PRECIS_SLULLAMA_MODEL") or model_id
+    host = host or os.environ.get("PRECIS_SLULLAMA_HOST") or _SLULLAMA_DEFAULT_HOST
+    endpoint = (
+        endpoint
+        or os.environ.get("PRECIS_SLULLAMA_ENDPOINT")
+        or _SLULLAMA_DEFAULT_ENDPOINT
+    )
+    if max_parallel is None:
+        max_parallel = int(
+            os.environ.get(
+                "PRECIS_SLULLAMA_MAX_PARALLEL", _SLULLAMA_DEFAULT_MAX_PARALLEL
+            )
+        )
+    served_by = [
+        {
+            "host": host,
+            "endpoint": endpoint,
+            "model": model,
+            "max_parallel": max_parallel,
+            "source": "static",
+        }
+    ]
+    text = (
+        f"Slurm-HPC cluster model (`{model_id}`) served remotely over an SSH "
+        f"tunnel on `{host}` (Ollama OpenAI-compat at `{endpoint}`). Concurrency "
+        f"capped at {max_parallel} — the shared-node nice-citizen limit."
+    )
+    return upsert_card(
+        store,
+        model_id=model_id,
+        text=text,
+        served_by=served_by,
+        provenance={"source": "seed-slullama"},
+    )
+
+
 __all__ = [
     "CAPABILITY_AXES",
     "DEFAULT_REVIEW_TYPE",
@@ -1014,6 +1121,7 @@ __all__ = [
     "REVIEW_KIND",
     "REVIEW_TYPES",
     "SERVED_BY_KEYS",
+    "SERVED_BY_SOURCES",
     "ToteRow",
     "append_review",
     "build_meta",
@@ -1026,5 +1134,6 @@ __all__ = [
     "record_observed_axes",
     "seed_default_cards",
     "seed_frontier_cards",
+    "seed_slullama_card",
     "upsert_card",
 ]

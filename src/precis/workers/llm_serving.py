@@ -142,6 +142,14 @@ def advertise_local_llm(
     ``resource_slots`` from all cards. Best-effort caller (heartbeat swallows).
     Returns ``(advertised, pruned)``. No-op (``0, 0``) with no local server / a
     probe blip.
+
+    Only touches entries this function itself owns — those with ``source="auto"``
+    (the default for an entry lacking ``source``, back-compat with everything
+    written before that key existed). An entry stamped ``source="static"`` (e.g.
+    :func:`precis.llm_catalog.seed_slullama_card`'s remote-tunnel card) is never
+    added, replaced, or pruned here, even for this same ``host`` — a static entry
+    routes to a model this host's OWN llama-swap will never discover, so treating
+    it as this pass's business would strip it on the very next heartbeat.
     """
     base_url = base_url or local_serve_url()
     if not base_url:
@@ -153,6 +161,11 @@ def advertise_local_llm(
     cards = store.list_refs(kind=LLM_KIND, limit=1000)
     by_model = {(c.meta or {}).get("model_id"): c for c in cards}
 
+    def _is_auto_here(e: dict[str, Any]) -> bool:
+        # "auto" is the default (back-compat: every entry written before the
+        # source= key existed) — only "static" opts an entry out of this pass.
+        return e.get("host") == host and e.get("source", "auto") != "static"
+
     advertised = 0
     for model_id, max_parallel in discovered.items():
         entry = {
@@ -160,6 +173,7 @@ def advertise_local_llm(
             "endpoint": base_url,
             "model": model_id,
             "max_parallel": max_parallel,
+            "source": "auto",
         }
         card = by_model.get(model_id)
         if card is None:
@@ -168,7 +182,7 @@ def advertise_local_llm(
             )
         else:
             current = (card.meta or {}).get("served_by") or []
-            served = [e for e in current if e.get("host") != host]
+            served = [e for e in current if not _is_auto_here(e)]
             served.append(entry)
             # Dirty-check: skip the refs write when the rebuilt served_by is,
             # order-insensitively, unchanged from what's already stored. Safe
@@ -190,10 +204,8 @@ def advertise_local_llm(
     for card in cards:
         card_model_id = (card.meta or {}).get("model_id")
         served = (card.meta or {}).get("served_by") or []
-        if card_model_id not in discovered and any(
-            e.get("host") == host for e in served
-        ):
-            pruned_served = [e for e in served if e.get("host") != host]
+        if card_model_id not in discovered and any(_is_auto_here(e) for e in served):
+            pruned_served = [e for e in served if not _is_auto_here(e)]
             # Same dirty-check as the advertise path above.
             if _served_by_signature(pruned_served) != _served_by_signature(served):
                 store.update_ref(card.id, meta_patch={"served_by": pruned_served})

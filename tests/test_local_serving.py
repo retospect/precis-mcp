@@ -399,6 +399,44 @@ def test_endpoint_is_host_scoped(store) -> None:
     assert slot.endpoint == "http://127.0.0.1:11445/v1"
 
 
+def test_seeded_slullama_card_reserves_and_caps(store: Any) -> None:
+    """The static remote-cluster tunnel seeder (:func:`llm_catalog.seed_slullama_card`)
+    produces a card whose ``served_by`` gives ``acquire`` the tunnel endpoint +
+    server-side model, and whose ``max_parallel`` is the real concurrency cap —
+    a 3rd concurrent acquire pauses rather than reserving."""
+    from precis import llm_catalog
+
+    meter.bind_store(store)
+    _ref_id, created = llm_catalog.seed_slullama_card(
+        store,
+        endpoint="http://127.0.0.1:11500/v1",
+        model="qwen3-235b-a22b",
+        host="testnode",
+        max_parallel=2,
+        model_id="qwen-hpc-test",
+    )
+    assert created
+    store.reconcile_llm_served_slots({("testnode", "llm:qwen-hpc-test"): 2})
+    local_serving.reset_cache()
+
+    first = local_serving.acquire("qwen-hpc-test")
+    assert first is not None and first.reserved
+    assert first.endpoint == "http://127.0.0.1:11500/v1"
+    assert first.served_model == "qwen3-235b-a22b"
+
+    second = local_serving.acquire("qwen-hpc-test")
+    assert second is not None and second.reserved  # cap is 2, still free
+
+    third = local_serving.acquire("qwen-hpc-test")
+    assert third is not None and third.paused and not third.reserved  # cap hit
+
+    local_serving.release(first)
+    local_serving.release(second)
+    local_serving.release(third)
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen-hpc-test"] == 2
+
+
 # ── crash-safe reclaim (resource_slot_holds, migration 0118) ───────────────
 
 

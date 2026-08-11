@@ -3,6 +3,7 @@
     precis llm seed             # mint/refresh a card per model precis runs
     precis llm seed --frontier  # + the curated frontier open-weight ladder (OSS)
     precis llm seed --all       # both default + frontier
+    precis llm seed --slullama --model qwen3-235b-a22b  # + a static remote-tunnel card
     precis llm reconcile        # run one reconcile pass now (facts + drift), forced
     precis llm list             # list the catalog cards
     precis llm cost --days 7    # mine llm_call_log: per lane/pass/ref spend + wall-clock
@@ -39,6 +40,43 @@ def add_parser(subparsers: Any) -> None:
         "--all",
         action="store_true",
         help="Seed both the default (models precis runs) and frontier ladders.",
+    )
+    s.add_argument(
+        "--slullama",
+        action="store_true",
+        help="Seed the static remote-cluster tunnel card (e.g. a Slurm-HPC "
+        "Ollama endpoint) instead of the default/frontier ladders.",
+    )
+    s.add_argument(
+        "--model",
+        default=None,
+        help="[--slullama] Server-side model tag the tunnelled endpoint expects "
+        "(required).",
+    )
+    s.add_argument(
+        "--model-id",
+        default=None,
+        help="[--slullama] Precis-side handle for the card "
+        "(env: PRECIS_SLULLAMA_MODEL_ID, default: qwen-hpc).",
+    )
+    s.add_argument(
+        "--host",
+        default=None,
+        help="[--slullama] Host holding the SSH tunnel "
+        "(env: PRECIS_SLULLAMA_HOST, default: melchior).",
+    )
+    s.add_argument(
+        "--endpoint",
+        default=None,
+        help="[--slullama] Tunnel's local OpenAI-compat endpoint "
+        "(env: PRECIS_SLULLAMA_ENDPOINT, default: http://127.0.0.1:11435/v1).",
+    )
+    s.add_argument(
+        "--max-parallel",
+        type=int,
+        default=None,
+        help="[--slullama] Concurrency cap — the shared-node slot capacity "
+        "(env: PRECIS_SLULLAMA_MAX_PARALLEL, default: 3).",
     )
 
     r = lsub.add_parser(
@@ -162,7 +200,35 @@ def add_parser(subparsers: Any) -> None:
     opc.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
 
-def _cmd_seed(store: Store, *, frontier: bool = False, seed_all: bool = False) -> None:
+def _cmd_seed(
+    store: Store,
+    *,
+    frontier: bool = False,
+    seed_all: bool = False,
+    slullama: bool = False,
+    model: str | None = None,
+    model_id: str | None = None,
+    host: str | None = None,
+    endpoint: str | None = None,
+    max_parallel: int | None = None,
+) -> None:
+    if slullama:
+        from precis.llm_catalog import seed_slullama_card
+
+        if not model:
+            raise SystemExit("llm seed --slullama: --model is required")
+        ref_id, created = seed_slullama_card(
+            store,
+            model=model,
+            model_id=model_id,
+            host=host,
+            endpoint=endpoint,
+            max_parallel=max_parallel,
+        )
+        verb = "created" if created else "refreshed"
+        print(f"{verb} llm lm{ref_id} — {model_id} (static, host={host})")
+        return
+
     from precis.llm_catalog import seed_default_cards, seed_frontier_cards
 
     seeders = []
@@ -471,7 +537,17 @@ def _cmd_op(store: Store, args: argparse.Namespace) -> None:
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.llm_cmd == "seed":
-        _cmd_seed(store, frontier=args.frontier, seed_all=args.all)
+        _cmd_seed(
+            store,
+            frontier=args.frontier,
+            seed_all=args.all,
+            slullama=args.slullama,
+            model=args.model,
+            model_id=args.model_id,
+            host=args.host,
+            endpoint=args.endpoint,
+            max_parallel=args.max_parallel,
+        )
     elif args.llm_cmd == "reconcile":
         _cmd_reconcile(store)
     elif args.llm_cmd == "list":

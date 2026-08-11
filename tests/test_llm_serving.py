@@ -59,6 +59,7 @@ def test_advertise_creates_card_and_seeds_slot(store: Any, monkeypatch: Any) -> 
         "endpoint": "http://127.0.0.1:11444/v1",
         "model": "qwen-235b-test",
         "max_parallel": 2,
+        "source": "auto",
     }
     slots = {s.resource: s.capacity for s in store.resource_slots_for_host("spark")}
     assert slots.get("llm:qwen-235b-test") == 2
@@ -140,6 +141,102 @@ def test_advertise_skips_noop_write_but_writes_on_change(
 def test_advertise_noop_without_local_server(store: Any, monkeypatch: Any) -> None:
     monkeypatch.setattr(llm_serving, "local_serve_url", lambda: None)
     assert llm_serving.advertise_local_llm(store, "spark") == (0, 0)
+
+
+def test_advertise_does_not_prune_a_static_served_by_entry(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A static card (e.g. a seeded remote-tunnel entry, ``source="static"``)
+    must survive a heartbeat ``advertise_local_llm`` pass on the SAME host that
+    discovers a DIFFERENT model via llama-swap — the static entry is never
+    discoverable there (it routes to a remote tunnel), so the prune loop must
+    not treat its absence-from-discovery as "gone"."""
+    from precis import llm_catalog
+
+    llm_catalog.seed_slullama_card(
+        store,
+        endpoint="http://127.0.0.1:11500/v1",
+        model="qwen3-235b-a22b",
+        host="melchior",
+        max_parallel=3,
+        model_id="qwen-heavy-static-test",
+    )
+
+    # This heartbeat pass on "melchior" discovers an unrelated local model —
+    # the static card's model is NOT in the discovered set.
+    monkeypatch.setattr(
+        llm_serving, "discover_local_models", lambda base: {"other-local-model": 1}
+    )
+    adv, pruned = llm_serving.advertise_local_llm(
+        store, "melchior", base_url="http://127.0.0.1:11445/v1"
+    )
+    assert pruned == 0
+
+    ref = store.find_ref_by_meta(
+        kind="llm", key="model_id", value="qwen-heavy-static-test"
+    )
+    served = store.get_ref(kind="llm", id=ref.id).meta["served_by"]
+    assert served == [
+        {
+            "host": "melchior",
+            "endpoint": "http://127.0.0.1:11500/v1",
+            "model": "qwen3-235b-a22b",
+            "max_parallel": 3,
+            "source": "static",
+        }
+    ]
+    assert adv == 1  # the other-local-model got its own (auto) card + entry
+
+
+def test_advertise_keeps_static_entry_when_rebuilding_same_model(
+    store: Any, monkeypatch: Any
+) -> None:
+    """The static-entry guard must hold in the REBUILD branch too, not only the
+    prune branch. If a static card's ``model_id`` is (also) discovered locally on
+    the same host, ``advertise_local_llm`` walks the per-model served_by rebuild
+    (``served = [e for e in current if not _is_auto_here(e)]; served.append(...)``)
+    — that filter must KEEP the ``source="static"`` entry and append the fresh
+    auto one, never clobber the static. A regression that filtered on ``host``
+    alone (dropping the static melchior entry) would be invisible to the
+    prune-only test above, so this exercises the other call site explicitly."""
+    from precis import llm_catalog
+
+    llm_catalog.seed_slullama_card(
+        store,
+        endpoint="http://127.0.0.1:11500/v1",
+        model="qwen3-235b-a22b",
+        host="melchior",
+        max_parallel=3,
+        model_id="qwen-collide-test",
+    )
+
+    # Heartbeat on "melchior" DISCOVERS the same model_id locally → the rebuild
+    # branch (card exists) runs for this card, not the prune branch.
+    monkeypatch.setattr(
+        llm_serving, "discover_local_models", lambda base: {"qwen-collide-test": 2}
+    )
+    llm_serving.advertise_local_llm(
+        store, "melchior", base_url="http://127.0.0.1:11445/v1"
+    )
+
+    ref = store.find_ref_by_meta(kind="llm", key="model_id", value="qwen-collide-test")
+    served = store.get_ref(kind="llm", id=ref.id).meta["served_by"]
+    by_source = {e["source"]: e for e in served}
+    assert by_source.keys() == {"static", "auto"}  # static NOT clobbered
+    assert by_source["static"] == {
+        "host": "melchior",
+        "endpoint": "http://127.0.0.1:11500/v1",
+        "model": "qwen3-235b-a22b",
+        "max_parallel": 3,
+        "source": "static",
+    }
+    assert by_source["auto"] == {
+        "host": "melchior",
+        "endpoint": "http://127.0.0.1:11445/v1",
+        "model": "qwen-collide-test",
+        "max_parallel": 2,
+        "source": "auto",
+    }
 
 
 def test_advertise_noop_on_probe_failure(store: Any, monkeypatch: Any) -> None:

@@ -40,6 +40,9 @@
   become: true
 
 - name: Distribute tunnel public key to destination nodes
+  # Internal cluster nodes only — for an external endpoint (ssh_host/ssh_user/
+  # ssh_key override) there is no ansible-reachable "deploy" account to
+  # delegate to; the human provisions the authorized_key there out-of-band.
   ansible.posix.authorized_key:
     user: deploy
     key: "{{ tunnel_pubkey.content | b64decode }}"
@@ -50,8 +53,9 @@
   loop: "{{ ssh_tunnels }}"
   loop_control:
     label: "{{ inventory_hostname }} → {{ item.dest }}"
+  when: item.ssh_host is not defined and item.ssh_user is not defined and item.ssh_key is not defined
 
-- name: Accept destination host keys
+- name: Accept destination host keys (internal cluster nodes)
   ansible.builtin.shell: |
     ssh-keyscan -t ed25519 {{ hostvars[item.dest]['lan_ip'] }} >> /Users/deploy/.ssh/known_hosts 2>/dev/null
     sort -u /Users/deploy/.ssh/known_hosts -o /Users/deploy/.ssh/known_hosts
@@ -61,6 +65,22 @@
   loop_control:
     label: "{{ item.dest }}"
   changed_when: false
+  when: item.ssh_host is not defined and item.ssh_user is not defined and item.ssh_key is not defined
+
+- name: Accept destination host keys (external endpoints)
+  # Belt-and-suspenders alongside StrictHostKeyChecking=accept-new on first
+  # connect — pre-seeds known_hosts so the first autossh launch doesn't race
+  # a keyscan. No -t filter: external hosts aren't guaranteed to offer ed25519.
+  ansible.builtin.shell: |
+    ssh-keyscan -p {{ item.ssh_port | default(22) }} {{ item.ssh_host }} >> /Users/deploy/.ssh/known_hosts 2>/dev/null
+    sort -u /Users/deploy/.ssh/known_hosts -o /Users/deploy/.ssh/known_hosts
+  become: true
+  become_user: deploy
+  loop: "{{ ssh_tunnels }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  changed_when: false
+  when: item.ssh_host is defined or item.ssh_user is defined or item.ssh_key is defined
 
 - name: Ensure tunnel log directory exists
   ansible.builtin.file:
