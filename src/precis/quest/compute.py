@@ -50,9 +50,11 @@ _CANDIDATE_TAG = "candidate"
 #: The tier ladder (docs/proposals — catpath ``search.screening``/``template``
 #: bridge): **screening** (relax-only, ``template=parked``, catpath emits no
 #: barrier scalar — cheap thermodynamic ranking) → **neb** (full NEB over the
-#: parked/fragment-parking template, today's straight-to-NEB default) →
-#: **verify** (full NEB over ``template=coadsorbed``, removing the
-#: fragment-parking approximation). Fidelity is monotonic in this order —
+#: coadsorbed template — catpath >= 0.10 resolves an unset ``template`` to
+#: ``"coadsorbed"`` for ammonia — pruned by the fast-screening NEB stack) →
+#: **verify** (the same coadsorbed network, exhaustive: no best_first
+#: pruning, every step re-refined). The two NEB tiers differ by search
+#: rigor, not network topology. Fidelity is monotonic in this order —
 #: :data:`_TIER_FIDELITY` is the single source of truth other modules
 #: (:mod:`precis.quest.graduate`) compare against.
 _TIER_SCREENING = "screening"
@@ -65,7 +67,7 @@ _TIER_FIDELITY: dict[str, int] = {_TIER_SCREENING: 0, _TIER_NEB: 1, _TIER_VERIFY
 #: :func:`precis.quest.catalyst_seed.seed_catalyst_quest` — never written by
 #: the tick/LLM loop, same convention as ``rubric_composite``).
 _DEFAULT_TIER_PROMOTE_NEB = 2
-_DEFAULT_TIER_PROMOTE_VERIFY = 1
+_DEFAULT_TIER_PROMOTE_VERIFY = 3
 
 
 def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
@@ -80,7 +82,11 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       fast-screening NEB stack (three ``search`` knobs, each a *default* an
       explicit caller key overrides; a caller-pinned ``neb_schedule`` suppresses
       the whole overlay, preserving the "hand-tuned NEB config wins wholesale"
-      contract):
+      contract). ``template`` is left unset: catpath >= 0.10 resolves that to
+      ``"coadsorbed"`` for ammonia (fragment parking is explicit opt-in only),
+      so this tier already measures the full network — N2/N2O coupling and the
+      NH2OH branch included — and pinning it here would only churn the content
+      key:
 
       - ``neb_schedule="best_first"`` (0.7): relax every endpoint first, then
         run NEBs frontier-first on the lowest-optimistic-span route and prune
@@ -102,10 +108,11 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       Together these target the seed-wall overrun: fewer edges NEB'd
       (best_first), fewer evals per edge (neb-ode), and each eval GPU-saturated
       (batched).
-    * ``verify`` — the same NEB search, but ``template="coadsorbed"`` (drops
-      the fragment-parking approximation) AND left exhaustive (no best_first
-      overlay): the authoritative final pass re-refines every step, removing
-      best_first's honest-absence caveats on the winning candidate.
+    * ``verify`` — the same NEB search over the same coadsorbed network
+      (``template="coadsorbed"`` pinned explicitly, version-proof) but left
+      exhaustive (no best_first overlay): the authoritative final pass
+      re-refines every step, removing best_first's honest-absence caveats on
+      the winning candidate. Verify differs from neb by search rigor only.
 
     The overlay folds into :func:`_autocatpath_content_key` automatically
     (the changed dict), so each tier of the same candidate+reaction content-
@@ -1286,11 +1293,17 @@ def _pathway_tier(pw_meta: dict[str, Any] | None) -> str:
     Prefers the dispatch-time stamp (:func:`dispatch_autocatpath`'s
     ``meta.tier``, present on every ladder-aware dispatch); falls back to
     reading catpath's own verbatim ``meta.results`` (``results.screening`` /
-    ``results.template`` — the contract this whole ladder is built on, see
-    the module docstring) for a pathway dispatched before the stamp existed
-    or minted outside precis. A pathway with neither signal (or no pathway
-    at all — ``pw_meta=None``) defaults to ``"neb"``, today's straight-to-
-    NEB shape — the ladder-off behaviour this feature must not regress.
+    ``results.template`` / ``results.neb_schedule`` — the contract this
+    whole ladder is built on, see the module docstring) for a pathway
+    dispatched before the stamp existed or minted outside precis. Since
+    catpath >= 0.10 runs coadsorbed at BOTH NEB tiers (the ammonia default),
+    ``template == "coadsorbed"`` alone no longer implies verify — the neb
+    tier's fast-screening overlay is the disambiguator: catpath emits the
+    per-step ``results.neb_schedule`` dict only when best_first ran, so a
+    coadsorbed result WITH it is neb (pruned) and WITHOUT it is verify
+    (exhaustive). A pathway with no signal at all (or no pathway —
+    ``pw_meta=None``) defaults to ``"neb"``, today's straight-to-NEB shape —
+    the ladder-off behaviour this feature must not regress.
     """
     if isinstance(pw_meta, dict):
         tier = pw_meta.get("tier")
@@ -1300,7 +1313,9 @@ def _pathway_tier(pw_meta: dict[str, Any] | None) -> str:
         results = results if isinstance(results, dict) else {}
         if results.get("screening") is True:
             return _TIER_SCREENING
-        if results.get("template") == "coadsorbed":
+        if results.get("template") == "coadsorbed" and not results.get(
+            "neb_schedule"
+        ):
             return _TIER_VERIFY
     return _TIER_NEB
 
@@ -1310,10 +1325,11 @@ def _canonicalize_barrier(
 ) -> None:
     """Mutate ``measures`` (about to be stamped onto the candidate) so the
     ranked ``barrier``/``span`` reflect the HIGHEST-fidelity pathway
-    (coadsorbed=verify > parked=neb), never silently discarding a superseded
-    value: when a fresh **verify**-tier barrier supersedes an existing
-    **neb**-tier one, the outgoing parked value moves to ``barrier_screen``
-    (kept as calibration data — the screen→verify delta). ``barrier_tier``
+    (exhaustive=verify > best_first-pruned=neb), never silently discarding a
+    superseded value: when a fresh **verify**-tier barrier supersedes an
+    existing **neb**-tier one, the outgoing pruned value moves to
+    ``barrier_screen`` (kept as calibration data — the pruned→exhaustive
+    delta). ``barrier_tier``
     always tracks which tier the candidate's current ``barrier`` came from
     (read by :mod:`precis.quest.graduate`'s verify-gate and
     :mod:`precis.quest.frontier`'s ``Candidate.flags``).
@@ -1350,22 +1366,22 @@ def _bump_tier_stamp(
 def _link_refines(
     store: Store, structure_ref_id: int, verify_pathway_ref_id: int
 ) -> None:
-    """When a verify(coadsorbed)-tier pathway lands for a candidate that also
-    has a parked(neb)-tier pathway, wire verify → ``refines`` → parked — "a
+    """When a verify-tier pathway lands for a candidate that also has a
+    neb-tier pathway, wire verify → ``refines`` → neb — "a
     higher-fidelity treatment of the same object" (the closed relation
     vocab, ``src/precis/data/skills/precis-relations.md``; the slug itself
     already exists in the DB/``Relation`` literal — minted for taproot claim
     hubs, migration 0100 — this is a second, unrelated use of the same
     general-purpose relation). Idempotent (:meth:`Store.add_link`'s own
-    dedup) and defensive: no parked sibling, or any lookup/link failure, is a
+    dedup) and defensive: no neb sibling, or any lookup/link failure, is a
     silent no-op — never a harvest failure.
     """
     try:
-        parked_id = _find_tier_pathway(store, structure_ref_id, _TIER_NEB)
-        if parked_id is None or parked_id == verify_pathway_ref_id:
+        neb_id = _find_tier_pathway(store, structure_ref_id, _TIER_NEB)
+        if neb_id is None or neb_id == verify_pathway_ref_id:
             return
         store.add_link(
-            src_ref_id=verify_pathway_ref_id, dst_ref_id=parked_id, relation="refines"
+            src_ref_id=verify_pathway_ref_id, dst_ref_id=neb_id, relation="refines"
         )
     except Exception:
         pass
@@ -1894,7 +1910,7 @@ def promote_tiers(
       measures (U_L_abs / span / …).
     * **neb → verify** — up to ``meta.tier_promote_verify`` (default
       :data:`_DEFAULT_TIER_PROMOTE_VERIFY`) **frontier** (Pareto
-      non-dominated) candidates with a trusted parked barrier
+      non-dominated) candidates with a trusted neb-tier barrier
       (``barrier_trusted is True`` + a ``barrier`` measure — the neb tier is
       the only source of a trusted `barrier` before a verify run lands, since
       screening emits none) and no verify-tier pathway dispatched yet, same

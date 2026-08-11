@@ -2039,6 +2039,39 @@ class TestTierConfigMapping:
         assert out["search"]["neb_schedule"] == "best_first"
 
 
+class TestPathwayTierFallback:
+    """:func:`compute._pathway_tier` — the dispatch-time ``meta.tier`` stamp
+    wins; the results-based fallback must NOT read ``template=coadsorbed``
+    alone as verify, since catpath >= 0.10 runs coadsorbed at both NEB tiers.
+    The per-step ``results.neb_schedule`` dict (emitted only when best_first
+    ran) is the disambiguator."""
+
+    def test_explicit_stamp_wins_over_results(self) -> None:
+        meta = {"tier": "neb", "results": {"template": "coadsorbed"}}
+        assert compute_mod._pathway_tier(meta) == compute_mod._TIER_NEB
+
+    def test_screening_flag_wins(self) -> None:
+        meta = {"results": {"screening": True, "template": "parked"}}
+        assert compute_mod._pathway_tier(meta) == compute_mod._TIER_SCREENING
+
+    def test_coadsorbed_with_best_first_schedule_is_neb(self) -> None:
+        meta = {"results": {"template": "coadsorbed",
+                            "neb_schedule": {"NO->N+O": "refined"}}}
+        assert compute_mod._pathway_tier(meta) == compute_mod._TIER_NEB
+
+    def test_coadsorbed_exhaustive_is_verify(self) -> None:
+        meta = {"results": {"template": "coadsorbed"}}
+        assert compute_mod._pathway_tier(meta) == compute_mod._TIER_VERIFY
+
+    def test_parked_results_default_to_neb(self) -> None:
+        meta = {"results": {"template": "parked"}}
+        assert compute_mod._pathway_tier(meta) == compute_mod._TIER_NEB
+
+    def test_no_signal_defaults_to_neb(self) -> None:
+        assert compute_mod._pathway_tier(None) == compute_mod._TIER_NEB
+        assert compute_mod._pathway_tier({}) == compute_mod._TIER_NEB
+
+
 class TestDispatchAutocatpath:
     """The candidate→autocatpath dispatch: mints a `autocatpath_explore` job pinned on
     the candidate (so :func:`harvest_measures` finds it) carrying the exported
