@@ -178,27 +178,27 @@ ask), `_in_failed_cooldown`.
 
 ### Fair claim ordering (the "drain equally" half)
 
-Both passes claim `ORDER BY c.chunk_id`, which lets one big paper's chunks
-monopolize the lane while others wait (the actual starvation bug, distinct from
-mint-fairness). We want a **content-fair** claim so no single `ref_id` hogs the
-drain — but **naive `ORDER BY random()` is a perf footgun here**: at a 1.3M-chunk
-backlog it forces a seqscan + full sort of the entire un-done candidate set on
-*every* 16-row claim, throwing away the `chunk_id` PK-index scan that keeps the
-current claim cheap. So this needs a measured approach, not a one-line swap:
-- **Cheap + fair:** pick the *paper* first, then drain its head — e.g. claim
-  from `ORDER BY ref_id` rotated by a per-tick random offset, or a
-  least-recently-served-`ref_id` CTE, so the lane round-robins papers while each
-  sub-scan stays index-friendly.
-- Measure the candidate-set size and the claim's `EXPLAIN` before/after; a
-  content-fair order that regresses claim latency at corpus scale is worse than
-  the monopoly it fixes.
+**SHIPPED (classify only).** Both passes claimed `ORDER BY c.chunk_id`, which —
+because a paper's chunks are contiguous in `chunk_id` (ingested together) — lets
+one big paper monopolize the lane and starves newest papers behind the whole
+backfill. **Naive `ORDER BY random()` is a perf footgun** (seqscan + full sort of
+the ~1M-row candidate set every claim, throwing away the PK-index walk). The
+shipped fix, **classify's `_claim` only**:
+- A **random `chunk_id` anchor** per corpus-sweep claim (`_random_chunk_anchor`
+  — one cheap scalar), then `ORDER BY chunk_id >= anchor` with a **head top-up**
+  (`< anchor`) if the forward slice runs short. Consecutive claims start at
+  different papers → uniform coverage, and each slice stays a forward PK-index
+  walk that stops at LIMIT (no sort). The first slice's in-statement lease INSERT
+  is visible to the top-up (same txn), so no chunk is double-claimed.
+- **Targeted (`ref_ids`) claims keep deterministic `chunk_id` order** — a scoped
+  backfill/test wants reproducibility.
 
-This is independent of the job/minter work but is **NOT a trivial swap** — it is
-deferred to its own measured change (ship Slices 1–2 without it). It is
-nonetheless *the* mechanism that makes "mint equally" actually buy
-progress-fairness at drain time — mint-fairness with a monopolizing claim order
-still starves — so it must land before the band is meant to keep papers
-progressing evenly.
+**Summarize is deliberately NOT reordered.** Its `ref_id, ord` contiguity is a
+llama.cpp **prefix-cache** optimization (`llm_summarize.py:661-663`) — draining a
+paper's chunks contiguously keeps the shared doc-header prompt prefix hot;
+randomizing it would cause KV-cache misses and *slow* the drain. Summarize also
+already has anti-starvation **tiers** (draft/conv/hot jump the backlog), which
+classify lacks — which is why the anchor fix targets classify.
 
 ### Local-only, never cloud (the placement half)
 
@@ -220,20 +220,73 @@ cloud spend on SMALL by construction.** (Ops step — Slice 4.)
   count fns; per-source enable flags (`PRECIS_SMALL_BAND_SUMMARIZE`,
   `PRECIS_SMALL_BAND_CLASSIFY`), **default-OFF**. Include `src.name` in the
   idem key.
-- **Slice 3 — fair claim ordering (measured, deferred).** A content-fair,
-  index-friendly claim order (paper round-robin, NOT naive `random()` — see
-  above). Its own change with an `EXPLAIN` before/after; must land before Slice 4
-  activation for the band's progress-fairness to be real, but does not block the
-  DARK mechanism ship.
-- **Slice 4 — activation (ops, after 1–3 deploy).** (a) Drop the SMALL cloud
-  rung in prod `app_settings`. (b) Flip the two band flags on. (c) Confirm the
-  `llm:qwen3.5-9b-q4_k_m` `resource_slots` row is `max_parallel=6` on melchior.
-  (d) Watch: `derived_drain` jobs land on melchior only (`target_node`),
-  `llm_call_log` shows qwen local rows and **zero** SMALL cloud rows,
-  summaries/ROLE3 tags keep landing, and the band's stuck-queue WARNING
-  ("band full … but 0 running … nothing is draining") stays silent — if it
-  fires, the `target_node` pin doesn't match melchior's `PRECIS_NODE` or the
-  melchior worker is down.
+- **Slice 3 — fair claim ordering. SHIPPED.** classify's `_claim` uses a random
+  `chunk_id` anchor + head top-up (index-friendly, no sort); summarize left on
+  its prefix-cache-friendly `ref_id, ord` order (see above).
+- **Slice 4 — activation (ops, staged; runbook below).** All CODE is shipped;
+  activation is private-overlay config + one `app_settings` flip + a supervised
+  live cutover. See the runbook.
+
+## Slice 4 activation runbook (ops)
+
+**Verified prereqs (2026-08-11, read-only prod):**
+- ✅ `resource_slots` `llm:qwen3.5-9b-q4_k_m` on **melchior**, capacity **6**,
+  free 6 — the cap-6 semaphore is live.
+- ❌ **BLOCKER: `PRECIS_NODE` is unset on melchior.** The `job_inproc` claim gate
+  compares `meta.params.target_node` against `os.environ["PRECIS_NODE"]` (→ NULL
+  when unset), so a job pinned `target_node="melchior"` matches **no host** and
+  strands. Must set `PRECIS_NODE=melchior` on melchior's `precis_worker_agent`
+  before the bands can drain.
+- ⚠️ `job_inproc` is registered on melchior (`--profile agent` … actually
+  `--profile all` union) but has been idle ~7 days (nothing pinned to claim) —
+  expected; it will claim once `derived_drain` jobs mint AND `PRECIS_NODE`
+  matches.
+- ⚠️ Current SMALL routing is **~4.5:1 cloud** (`glm-4.7-flash` 12.4k vs local
+  qwen 2.8k over 2 days) — the standing `llm_summarize`/`classify` passes hit
+  cloud heavily today. Forcing all-local shifts ~5× load onto melchior's 6
+  slots; the backlog will grow (backpressure — *this is the intended
+  "queue beyond 6, never cloud"*), so expect a rising `unsummarized`/
+  `unclassified` count until the 9B catches up (or indefinitely if it can't —
+  a deliberate throughput ceiling).
+
+**Config lives in the private overlay** (`inventory/group_vars/all/precis_env.yml`
+via `precis_shared_env`, host_vars) — not in-repo. Set:
+1. **`PRECIS_NODE: melchior`** — host_var for melchior's `precis_worker_agent`
+   (the blocker fix).
+2. **`PRECIS_SMALL_BAND_SUMMARIZE: "1"`**, **`PRECIS_SMALL_BAND_CLASSIFY: "1"`** —
+   fleet-wide `precis_shared_env` (the materializer is a fleet-singleton, any
+   host may run the tick, so the flags must be everywhere). Optional tuning:
+   `PRECIS_SMALL_BAND_LOW`/`_HIGH` (default 20/50), `PRECIS_SMALL_DRAIN_LIMIT`
+   (500), `PRECIS_SMALL_DRAIN_CONCURRENCY` (6), `PRECIS_SMALL_DRAIN_TARGET_NODE`
+   (default `melchior`).
+
+**Staged sequence (do NOT reorder — the cutover step can stop SMALL work if the
+bands aren't proven draining first):**
+1. Deploy the shipped code (`scripts/deploy`).
+2. Set overlay vars 1+2 → deploy. **Do NOT touch the SMALL chain or standing
+   passes yet.** Now the bands mint `derived_drain` on melchior *alongside* the
+   still-running standing passes (they cooperate via `chunk_claims` leases — no
+   conflict, some cloud spend continues).
+3. **Verify the bands actually drain** (the gate): `derived_drain` jobs appear
+   `queued`/`running` on melchior only; `llm_call_log` shows fresh
+   `qwen3.5-9b-q4_k_m` local rows sourced `llm_summarize`/`classify`; ROLE3 tags
+   + summaries land; the stuck-queue WARNING ("band full … 0 running … nothing
+   is draining") stays **silent**. If it fires → the `PRECIS_NODE` pin still
+   doesn't match or melchior's worker is down; fix before step 4.
+4. **Only after step 3 is green — the cutover:** (a) disable the standing passes
+   (`PRECIS_SUMMARIZE_LLM`/`PRECIS_CLASSIFY_ENABLED` off, or their
+   `service_config` rows) so they don't double-work or break; (b) drop the SMALL
+   cloud rung in prod `app_settings`:
+   `UPDATE app_settings SET value =
+   '[{"placement":"local","model":"qwen3.5-9b-q4_k_m","transport":"local"}]'
+   WHERE key='llm.chain.small';` (via `scripts/prod-psql`; today it also carries
+   a `glm-4.7-flash` cloud rung — that is the spill this removes). Now SMALL is
+   melchior-local-only, capped 6, queues beyond, **zero cloud**.
+5. **Watch:** zero SMALL cloud rows in `llm_call_log`; `unsummarized`/
+   `unclassified` backlog rises then plateaus/drains per the 9B's real
+   throughput; the reader still gets summaries (if the backlog starves the
+   reader unacceptably, raise the band or re-add a cloud rung — the knobs are
+   all live).
 
 ## Explicitly NOT in scope
 

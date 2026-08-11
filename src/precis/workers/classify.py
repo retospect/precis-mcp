@@ -208,10 +208,32 @@ def _classify_row(
 # ---- DB: claim + enrich (gold-parity context) -------------------------
 
 
-def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
-    """``ref_ids`` optionally restricts the claim to specific refs (targeted
-    backfill / tests); ``None`` sweeps the whole corpus (unchanged behaviour)."""
+def _random_chunk_anchor(conn) -> int | None:
+    """A random ``chunk_id`` in ``[0, max]`` — the fair-claim scan anchor
+    (Slice 3, ``docs/backlog/small-llm-derived-drain-band.md``). One cheap
+    scalar (``max(chunk_id)`` is an index lookup); ``None`` on an empty corpus.
+    """
+    row = conn.execute(
+        "SELECT floor(random() * (max(chunk_id) + 1))::bigint FROM chunks"
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _claim_slice(
+    conn,
+    *,
+    limit: int,
+    ref_ids: list[int] | None,
+    floor: int | None,
+    floor_cmp: str,
+) -> list[dict]:
+    """One claim scan: chunks needing a ROLE3 tag, ``ORDER BY chunk_id`` from an
+    optional ``floor`` (``floor_cmp`` = ``>=`` or ``<``), leased in the same
+    statement. Kept index-friendly (a forward PK-index walk that stops at LIMIT,
+    the property the ``NOT EXISTS`` predicates preserve) — the ``floor`` only
+    moves the *start* of that walk, it does not force a sort."""
     ref_filter = "AND c.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
+    floor_filter = f"AND c.chunk_id {floor_cmp} %(floor)s" if floor is not None else ""
     sql = f"""
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
@@ -219,6 +241,7 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
       WHERE r.kind = 'paper' AND r.deleted_at IS NULL
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
         {ref_filter}
+        {floor_filter}
         AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
                         WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s)
         AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
@@ -234,6 +257,8 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
     params: dict[str, Any] = {"ns": OUTPUT_NAMESPACE, "art": ARTIFACT, "limit": limit}
     if ref_ids:
         params["ref_ids"] = list(ref_ids)
+    if floor is not None:
+        params["floor"] = floor
     rows = conn.execute(sql, params).fetchall()
     return [
         {
@@ -245,6 +270,42 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
+    """Lease up to ``limit`` body chunks needing a ROLE3 tag.
+
+    ``ref_ids`` restricts to specific refs (targeted backfill / tests) and keeps
+    the deterministic ``chunk_id`` order — a scoped run wants reproducibility.
+
+    A corpus sweep (``ref_ids=None``) instead starts the ``chunk_id`` scan at a
+    RANDOM anchor, then tops up from below it (Slice 3 fair-claim ordering,
+    ``docs/backlog/small-llm-derived-drain-band.md``). Because a paper's chunks
+    are contiguous in ``chunk_id`` (ingested together), a fixed ``ORDER BY
+    chunk_id`` drains one big paper to completion before touching any other —
+    starving newest papers behind the whole backfill. A random per-claim anchor
+    makes consecutive claims start at different papers, so coverage is uniform
+    without the seqscan+sort that a naive ``ORDER BY random()`` would force on a
+    1M-row candidate set. The head top-up (``chunk_id < floor``) keeps a
+    high-anchor claim from returning short; the first slice's in-statement lease
+    INSERT is visible to the second (same txn), so no chunk is double-claimed.
+
+    (``llm_summarize`` deliberately does NOT do this — its ``ref_id, ord``
+    contiguity is a llama.cpp prefix-cache optimization; see that module.)
+    """
+    if ref_ids:
+        return _claim_slice(
+            conn, limit=limit, ref_ids=ref_ids, floor=None, floor_cmp=">="
+        )
+    floor = _random_chunk_anchor(conn)
+    if floor is None:  # empty corpus
+        return _claim_slice(conn, limit=limit, ref_ids=None, floor=None, floor_cmp=">=")
+    rows = _claim_slice(conn, limit=limit, ref_ids=None, floor=floor, floor_cmp=">=")
+    if len(rows) < limit:
+        rows += _claim_slice(
+            conn, limit=limit - len(rows), ref_ids=None, floor=floor, floor_cmp="<"
+        )
+    return rows
 
 
 def unclassified_chunk_count(conn) -> int:

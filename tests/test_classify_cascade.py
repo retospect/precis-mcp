@@ -138,6 +138,83 @@ def test_ref_ids_scopes_the_claim_to_the_named_papers(store: Any) -> None:
     assert _role3_tags(store, ref_b) == []  # untouched — outside scope
 
 
+def _seeded_ids(store: Any, ref_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        return [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY chunk_id",
+                (ref_id,),
+            ).fetchall()
+        ]
+
+
+def test_fair_claim_scan_starts_at_random_anchor(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slice 3 fair-claim: a corpus sweep starts the chunk_id scan at the random
+    anchor, so it does NOT always drain the lowest chunk_ids (the old
+    one-paper monopoly). Anchor pinned to the 4th id + limit 2 → claims the two
+    lowest ids >= the anchor, not ids[0..1]."""
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    for i in range(6):
+        seed_chunk(store, ref_id=ref, text=f"MARK{i} {_PROSE}", ord=i)
+    ids = _seeded_ids(store, ref)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[3])
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=2)
+        conn.commit()
+
+    assert sorted(r["chunk_id"] for r in rows) == [ids[3], ids[4]]
+
+
+def test_fair_claim_head_fallback_covers_everything(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A high anchor's forward slice runs short → the head top-up (< anchor)
+    covers the rest, so every chunk is still claimed exactly once (no chunk
+    left behind, no double-claim)."""
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    for i in range(6):
+        seed_chunk(store, ref_id=ref, text=f"MARK{i} {_PROSE}", ord=i)
+    ids = _seeded_ids(store, ref)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[4])
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=10)
+        conn.commit()
+
+    claimed = sorted(r["chunk_id"] for r in rows)
+    assert claimed == ids  # all 6, exactly once
+
+
+def test_ref_ids_claim_ignores_anchor_stays_ordered(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A targeted (ref_ids) claim keeps deterministic chunk_id order — the
+    random anchor is corpus-sweep-only, so a scoped backfill/test is
+    reproducible."""
+    from precis.workers import classify as c
+
+    ref = seed_ref(store)
+    for i in range(6):
+        seed_chunk(store, ref_id=ref, text=f"MARK{i} {_PROSE}", ord=i)
+    ids = _seeded_ids(store, ref)
+    # Anchor set high; the ref_ids path must ignore it entirely.
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[5])
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=3, ref_ids=[ref])
+        conn.commit()
+
+    assert [r["chunk_id"] for r in rows] == ids[:3]  # lowest three, in order
+
+
 def test_ref_ids_none_matches_global_unscoped_behaviour(store: Any) -> None:
     """``ref_ids=None`` (the default) must sweep every paper, unchanged."""
     seed_chunks(store, [_PROSE])
