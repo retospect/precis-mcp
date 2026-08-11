@@ -710,6 +710,67 @@ def _ensure_autocatpath_todo(
     return int(ref.id)
 
 
+def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
+    """Does the seed leaf at ``seed_todo_id`` need no fresh ``autocatpath_seed``
+    job — i.e. is it *handled* rather than *stuck*?
+
+    True iff either:
+
+    * the todo's own ``STATUS`` is terminal-closed (``done`` / ``won't-do``);
+      or
+    * it already has a live ``kind='job'`` child whose ``STATUS`` is anything
+      but ``failed``/``cancelled`` — i.e. ``succeeded``, or still non-terminal
+      (``queued``/``running``/…).
+
+    This is the exact dual of :mod:`precis.workers.auto_check_evaluators.
+    child_job_succeeded`'s own resolution predicate ("any child job
+    ``STATUS:succeeded`` and no live sibling todo"), deliberately: a seed
+    whose job just succeeded but whose auto_check pass hasn't yet flipped the
+    todo to ``done`` (auto_check runs one dispatch tick behind — see that
+    evaluator's guard 2) still reads as *handled* here via the job's own
+    STATUS, never re-minted out from under the pending flip.
+
+    Only a seed with **no** job at all (a todo minted by a prior dispatch that
+    crashed before ``jobs.put`` landed), or one whose only job(s) are
+    ``failed``/``cancelled``, comes back ``False`` — :func:`dispatch_autocatpath`'s
+    fan-out then falls through to :func:`_ensure_autocatpath_todo` (a
+    get-or-create — reuses this SAME todo, never mints a duplicate) and a
+    fresh ``jobs.put``. The re-mint is safe even if this predicate and the
+    idem-key check below ever raced: ``JobHandler._lookup_idem``
+    (``handlers/job.py``) independently treats terminal statuses as
+    non-blocking, so a fresh ``jobs.put`` with the same ``idem_key`` mints a
+    new job under the existing todo rather than either erroring or silently
+    no-op'ing — this predicate decides *whether* to call ``jobs.put``, idem
+    backstops what happens if it's called anyway.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+              COALESCE(
+                (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = st.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                'open'
+              ) IN ('done', 'won''t-do')
+              OR EXISTS (
+                    SELECT 1 FROM refs j
+                      JOIN ref_tags rt2 ON rt2.ref_id = j.ref_id
+                      JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                     WHERE j.parent_id = st.ref_id AND j.kind = 'job'
+                       AND j.deleted_at IS NULL
+                       AND t2.namespace = 'STATUS'
+                       AND t2.value NOT IN ('failed', 'cancelled')
+                  )
+            FROM refs st WHERE st.ref_id = %(sid)s
+            """,
+            {"sid": seed_todo_id},
+        ).fetchone()
+    # A missing todo (shouldn't happen — the caller only calls this with an
+    # id it just found via _find_child_todo_by_content_key) reads as handled
+    # rather than stuck: fail toward "leave it alone", not toward re-minting.
+    return bool(row[0]) if row else True
+
+
 def dispatch_autocatpath(
     store: Store,
     structure_ref_id: int,
@@ -757,8 +818,16 @@ def dispatch_autocatpath(
     autocatpath_version)`` (:func:`_autocatpath_seed_content_key` — the
     version MUST be in the key, same standing fix as
     :func:`_autocatpath_content_key`) — so a re-dispatch (retry) reuses any
-    seed todo that already exists (in ANY status) rather than duplicating
-    it, and a killed seed only loses that seed's own compute.
+    seed todo that already exists rather than duplicating it, and a killed
+    seed only loses that seed's own compute. Reuse is **status-aware**
+    (:func:`_seed_todo_handled`), not blanket: a seed that's ``done``,
+    ``won't-do``, or already carries a succeeded/live job is left alone; one
+    whose only job(s) infra-failed (``failed``/``cancelled`` — a autocatpath
+    barrier crash is never a physical verdict, see :func:`_latest_autocatpath_job`'s
+    docstring) gets a fresh job minted under the SAME todo instead of wedging
+    the whole candidate behind a dead seed forever. This is the automatic,
+    bounded repair path :func:`_stuck_seed_failure` + ``harvest_measures``'s
+    seed-lane ladder rides.
 
     ``T_agg`` deliberately carries NO job of its own yet — its
     ``meta.executor``/``job_type``/``params`` are set, but minting is left
@@ -951,8 +1020,15 @@ def dispatch_autocatpath(
                     run_config, slab_extxyz, seed, model_index
                 )
                 seed_todo_id = _find_child_todo_by_content_key(store, agg_todo_id, skey)
-                if seed_todo_id is not None:
-                    continue  # already dispatched (any status) — retry skips it
+                if seed_todo_id is not None and _seed_todo_handled(store, seed_todo_id):
+                    # done/won't-do, or already has a succeeded/live job —
+                    # leave it alone (§B-1's original "retry skips it").
+                    continue
+                # No seed todo yet, OR one exists but its only job(s) are
+                # failed/cancelled — this is the automatic infra-repair path
+                # (docs/backlog — qu164903): re-mint a fresh seed job under
+                # the SAME todo (get-or-create below reuses it) rather than
+                # leaving the candidate wedged behind a dead seed forever.
                 minted += 1
                 seed_todo_id = _ensure_autocatpath_todo(
                     store,
@@ -1457,6 +1533,117 @@ def _latest_autocatpath_job(
     return str(row[0]), dict(row[1] or {})
 
 
+def _stuck_seed_failure(
+    store: Store, structure_ref_id: int
+) -> tuple[str, dict[str, Any]] | None:
+    """The fallback :func:`_latest_autocatpath_job` can't see: a candidate
+    wedged behind a dead **seed**, with no aggregate lane even minted yet.
+
+    ``_latest_autocatpath_job`` only watches ``autocatpath_explore`` (legacy)
+    and ``autocatpath_aggregate`` jobs — but the aggregate never mints while
+    any per-seed todo under ``T_agg`` is still open (its own auto_check
+    gate, see :func:`dispatch_autocatpath`'s docstring), so a seed that
+    infra-failed and stays failed leaves the candidate with NO autocatpath
+    job of either watched shape at all — invisible to the retry ladder,
+    silently wedged forever (qu164903: 9 candidates lost this way). This
+    function is the seed-level fallback that makes that state visible.
+
+    Returns ``("failed", newest_failed_seed_job_meta)`` iff — in one query —
+    the candidate is wedged:
+
+    * **no** ``autocatpath_aggregate`` job exists yet under any ``T_agg``
+      child of ``structure_ref_id`` (any status — an aggregate already
+      minted, even a failed one, means the wedge is gone and
+      :func:`_latest_autocatpath_job` is the truth instead); **and**
+    * at least one still-open seed todo (``kind='todo'``, not
+      ``done``/``won't-do``, a child of a ``T_agg`` child of the candidate)
+      has a seed job whose ``STATUS`` is ``failed``/``cancelled`` **and no**
+      seed job whose ``STATUS`` is anything else — i.e. it reads
+      :func:`_seed_todo_handled` ``== False`` from the SQL side, restricted
+      to seeds that have actually tried and failed (not merely "no job
+      yet" — a candidate mid-initial-dispatch, todo committed but
+      ``jobs.put`` not yet reached, must never false-fire this as a
+      "failure").
+
+    Returns ``None`` otherwise (nothing wedged, or an aggregate already
+    exists so the ordinary ladder owns it). The literal status string
+    ``"failed"`` is returned regardless of whether the underlying seed job's
+    own STATUS is ``failed`` or ``cancelled`` — the caller
+    (``harvest_measures``) only branches on ``== "failed"``, and both seed
+    outcomes are equally infra-repairable, never a physical verdict (same
+    reasoning as :func:`_latest_autocatpath_job`'s own docstring).
+
+    **Known masking edge, intentionally accepted.** A candidate can carry
+    TWO+ independent ``T_agg`` trees (a config/tier change re-dispatches
+    under a fresh content key — see :func:`dispatch_autocatpath`'s
+    docstring). If an OLDER tree has a permanently-dead seed while a NEWER
+    tree's aggregate later SUCCEEDS, ``_latest_autocatpath_job`` (highest
+    ``ref_id`` across ALL trees) returns that newer succeeded job — a
+    non-``"failed"`` status short-circuits ``harvest_measures``'s outer
+    ``if`` before this function ever runs, via the ``or``'s short-circuit
+    (only invoked when ``_latest_autocatpath_job`` is ``None``, and never
+    consulted again once it isn't). So the old tree's stuck seed is never
+    repaired or gripe-filed — it becomes permanently invisible clutter
+    under the candidate. This is NOT a bug: the candidate has
+    forward-progressed via the newer tree, no compute or barrier signal is
+    lost, and the stale sub-tree is dormant (no live job, no lease held) —
+    just an orphaned todo subtree a human would need to notice manually
+    (e.g. via the nursery) to prune. Only a candidate stuck behind a dead
+    seed with NO surviving/successful tree at all is this function's
+    concern.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT j.meta
+              FROM refs t_agg
+              JOIN refs seed_todo ON seed_todo.parent_id = t_agg.ref_id
+                                  AND seed_todo.kind = 'todo'
+                                  AND seed_todo.deleted_at IS NULL
+              JOIN refs j ON j.parent_id = seed_todo.ref_id
+                          AND j.kind = 'job' AND j.deleted_at IS NULL
+                          AND j.meta->>'job_type' = 'autocatpath_seed'
+              JOIN ref_tags rt ON rt.ref_id = j.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+                          AND t.namespace = 'STATUS'
+                          AND t.value IN ('failed', 'cancelled')
+             WHERE t_agg.parent_id = %(sid)s
+               AND t_agg.kind = 'todo' AND t_agg.deleted_at IS NULL
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2
+                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = seed_todo.ref_id
+                         AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', 'won''t-do')
+               AND NOT EXISTS (
+                     SELECT 1 FROM refs j2
+                       JOIN ref_tags rt3 ON rt3.ref_id = j2.ref_id
+                       JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                      WHERE j2.parent_id = seed_todo.ref_id AND j2.kind = 'job'
+                        AND j2.deleted_at IS NULL
+                        AND t3.namespace = 'STATUS'
+                        AND t3.value NOT IN ('failed', 'cancelled')
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM refs agg_job
+                      WHERE agg_job.kind = 'job' AND agg_job.deleted_at IS NULL
+                        AND agg_job.meta->>'job_type' = 'autocatpath_aggregate'
+                        AND agg_job.parent_id IN (
+                              SELECT ref_id FROM refs
+                               WHERE parent_id = %(sid)s AND kind = 'todo'
+                                 AND deleted_at IS NULL
+                            )
+                   )
+             ORDER BY j.ref_id DESC LIMIT 1
+            """,
+            {"sid": structure_ref_id},
+        ).fetchone()
+    if row is None:
+        return None
+    return "failed", dict(row[0] or {})
+
+
 def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> None:
     with store.tx() as conn:
         conn.execute(
@@ -1501,6 +1688,112 @@ def _file_infra_gripe(
         ),
         tags=["quest-infra-failure"],
     )
+
+
+#: The seed-lane repair ladder's own retry window — deliberately NOT
+#: ``quest_autocatpath_infra_retries`` (the aggregate/explore counter above).
+#: That counter is non-windowed (retry-once-EVER per candidate) and is reset
+#: to 0 by the gr191615 amnesty branch — reusing it here would let a stale
+#: amnesty reset silently re-arm the seed lane too, or (the opposite failure)
+#: let one long-lived candidate's earlier aggregate-lane retry permanently
+#: exhaust the UNRELATED seed lane's single shot. A transient GPU-node
+#: hiccup that infra-kills several correlated seeds is a *fresh* event each
+#: time it recurs, independent of whatever the aggregate lane did months
+#: earlier — so the seed lane needs its own **windowed** budget (mirroring
+#: ``handlers/_job_bubble.py``'s ``_bump_orphan_retry_count``, window 6h):
+#: ``_MAX_INFRA_RETRIES`` free re-dispatches per rolling window, then one
+#: gripe, then silence until the window rolls over and a fresh failure
+#: re-arms it. One re-dispatch call re-mints EVERY currently-stuck seed
+#: under the candidate at once (:func:`dispatch_autocatpath`'s fan-out), so
+#: a correlated multi-seed node kill costs exactly one window slot, not one
+#: per seed.
+_SEED_INFRA_RETRY_WINDOW_HOURS = 6
+
+#: ``jsonb_set``-in-one-``UPDATE`` window read/bump for
+#: ``meta.quest_seed_infra_retries`` — same shape as
+#: ``handlers/_job_bubble.py``'s ``_BUMP_ORPHAN_RETRY_SQL``: the count resets
+#: to 1 (a fresh window) when ``quest_seed_infra_retries_window_start`` is
+#: absent or older than the window, otherwise it keeps climbing. A single
+#: atomic ``UPDATE … RETURNING`` — Postgres serialises concurrent writers on
+#: the row, no separate lock needed.
+_BUMP_SEED_INFRA_RETRY_SQL = """
+    UPDATE refs
+       SET meta = jsonb_set(
+             jsonb_set(
+               COALESCE(meta, '{}'::jsonb),
+               '{quest_seed_infra_retries}',
+               to_jsonb(
+                 CASE
+                   WHEN (meta->>'quest_seed_infra_retries_window_start') IS NULL
+                     OR (meta->>'quest_seed_infra_retries_window_start')::timestamptz
+                        < now() - %(window)s::interval
+                   THEN 1
+                   ELSE COALESCE((meta->>'quest_seed_infra_retries')::int, 0) + 1
+                 END
+               ),
+               true
+             ),
+             '{quest_seed_infra_retries_window_start}',
+             to_jsonb(
+               CASE
+                 WHEN (meta->>'quest_seed_infra_retries_window_start') IS NULL
+                   OR (meta->>'quest_seed_infra_retries_window_start')::timestamptz
+                      < now() - %(window)s::interval
+                 THEN now()
+                 ELSE (meta->>'quest_seed_infra_retries_window_start')::timestamptz
+               END
+             ),
+             true
+           )
+     WHERE ref_id = %(sid)s
+ RETURNING (meta->>'quest_seed_infra_retries')::int
+"""
+
+
+def _seed_infra_retry_count(store: Store, structure_ref_id: int) -> int:
+    """Read-only: the candidate's CURRENT-window ``quest_seed_infra_retries``.
+
+    Returns 0 (a fresh window, no write) when the window is absent or has
+    lapsed — mirrors :data:`_BUMP_SEED_INFRA_RETRY_SQL`'s own reset branch,
+    but without bumping, so ``harvest_measures`` can branch on the ladder
+    rung *before* deciding whether to bump at all (only the retry and gripe
+    rungs bump — the "already gripe-filed, dedup" rung must not keep
+    climbing every tick, see the ladder below)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT CASE
+                     WHEN (meta->>'quest_seed_infra_retries_window_start') IS NULL
+                       OR (meta->>'quest_seed_infra_retries_window_start')::timestamptz
+                          < now() - %(window)s::interval
+                     THEN 0
+                     ELSE COALESCE((meta->>'quest_seed_infra_retries')::int, 0)
+                   END
+              FROM refs WHERE ref_id = %(sid)s
+            """,
+            {
+                "window": f"{_SEED_INFRA_RETRY_WINDOW_HOURS} hours",
+                "sid": structure_ref_id,
+            },
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def _bump_seed_infra_retry_count(store: Store, structure_ref_id: int) -> int:
+    """Increment ``meta.quest_seed_infra_retries``, windowed. Returns the new
+    (post-bump) count. See :func:`_seed_infra_retry_count` for the paired
+    read-only half and :data:`_SEED_INFRA_RETRY_WINDOW_HOURS` for why this
+    counter is windowed and independent of ``quest_autocatpath_infra_retries``."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            _BUMP_SEED_INFRA_RETRY_SQL,
+            {
+                "window": f"{_SEED_INFRA_RETRY_WINDOW_HOURS} hours",
+                "sid": structure_ref_id,
+            },
+        ).fetchone()
+        conn.commit()
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def harvest_measures(
@@ -1559,6 +1852,21 @@ def harvest_measures(
       0, bypassing the ladder entirely, since the poison-fail defect that spent
       it is fixed and the failure carries no signal against the current run
       (gr191615).
+    * a candidate wedged behind a dead **seed** with no aggregate lane even
+      minted yet — invisible to the two bullets above, since neither an
+      ``autocatpath_explore`` nor an ``autocatpath_aggregate`` job exists in
+      that state (see :func:`_stuck_seed_failure`) — gets the *same*
+      retry-once-then-gripe shape, but on its OWN **windowed** counter
+      (``meta.quest_seed_infra_retries``, :func:`_seed_infra_retry_count` /
+      :func:`_bump_seed_infra_retry_count`, 6h window) rather than
+      ``quest_autocatpath_infra_retries`` — see
+      :data:`_SEED_INFRA_RETRY_WINDOW_HOURS` for why the two counters must
+      stay independent. The re-dispatch is a plain
+      :func:`dispatch_autocatpath` call, which re-mints every currently-stuck
+      seed under the candidate at once (status-aware fan-out,
+      :func:`_seed_todo_handled`) — this closes the qu164903 class of bug
+      (9 lost candidates: an infra-killed seed job used to stay
+      ``STATUS:failed`` forever, with nothing watching it).
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -1696,28 +2004,35 @@ def harvest_measures(
         # Autocatpath (barrier-lane) infra failure — the dossier-owned-by-process mirror of the
         # relax infra branch above, on the *barrier* lane. Unlike relax (where a
         # failed job can be a physical non-convergence verdict → rule out), a
-        # failed ``autocatpath_explore`` is ALWAYS a compute/infra failure: the NEB
+        # failed autocatpath job is ALWAYS a compute/infra failure: the NEB
         # run crashed, which says nothing about the material — so it NEVER rules
-        # out. Same retry-once-then-gripe shape on its own per-candidate counter
-        # (``quest_autocatpath_infra_retries``); the re-dispatch puts a fresh sim
-        # back in flight so the loop *awaits* it instead of reading the crash as
-        # a dry tick (the laundering §C names). Skipped for an already-ruled-out
-        # candidate (a dead geometry earns no more barrier compute), and — like
-        # relax — note-only when ``hub`` is absent (dry preview) or the quest
-        # has no reaction config to re-dispatch against.
+        # out. Retry-once-then-gripe on a per-candidate counter; the re-dispatch
+        # puts a fresh sim back in flight so the loop *awaits* it instead of
+        # reading the crash as a dry tick (the laundering §C names). Skipped for
+        # an already-ruled-out candidate (a dead geometry earns no more barrier
+        # compute), and — like relax — note-only when ``hub`` is absent (dry
+        # preview) or the quest has no reaction config to re-dispatch against.
+        #
+        # `_latest_autocatpath_job` watches two shapes (legacy explore, current
+        # aggregate); `_stuck_seed_failure` is a THIRD, seed-level fallback for a
+        # state neither shape can see — a dead seed with no aggregate minted yet
+        # (see its own docstring, qu164903). The `or` preserves
+        # aggregate-preferring semantics: an aggregate of ANY status existing
+        # means the seed lane has already resolved (the aggregate only mints
+        # once every seed todo under it is done), so the fallback only speaks
+        # when no aggregate lane exists at all.
         cp_ruled_out = any(
             str(t).startswith("ruled-out:") for t in store.tags_for(s.id)
         )
-        autocatpath_job = _latest_autocatpath_job(store, s.id)
+        autocatpath_job = _latest_autocatpath_job(store, s.id) or _stuck_seed_failure(
+            store, s.id
+        )
         if (
             not cp_ruled_out
             and autocatpath_job is not None
             and autocatpath_job[0] == "failed"
         ):
             _cp_status, cp_job_meta = autocatpath_job
-            cp_retries = int(
-                (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
-            )
             reaction = _quest_reaction_config(store, quest_id)
             # gr191615 amnesty: nothing has minted an `autocatpath_explore` job
             # since the seed/aggregate fan-out landed (47332ad3) — every candidate
@@ -1746,35 +2061,83 @@ def harvest_measures(
                         f"stale-era autocatpath failure for {handle} → amnesty "
                         "re-dispatch via seed/aggregate"
                     )
-            elif hub is None or reaction is None:
-                notes.append(
-                    f"autocatpath infra failure for {handle} "
-                    "(retry-eligible, not ruled out)"
-                )
-            elif cp_retries < _MAX_INFRA_RETRIES:
-                dispatch_autocatpath(store, s.id, reaction, hub=hub)
-                store.stamp_ref_meta(
-                    s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
-                )
-                notes.append(
-                    f"autocatpath infra failure for {handle} → re-dispatched "
-                    f"(retry {cp_retries + 1})"
-                )
-            elif cp_retries < _MAX_INFRA_RETRIES + 1:
-                _file_infra_gripe(
-                    store, quest_id, handle, cp_job_meta, hub=hub, lane="autocatpath"
-                )
-                store.stamp_ref_meta(
-                    s.id, {"quest_autocatpath_infra_retries": _MAX_INFRA_RETRIES + 1}
-                )
-                notes.append(
-                    f"autocatpath infra failure persists for {handle} → gripe filed"
-                )
+            elif cp_job_meta.get("job_type") == "autocatpath_seed":
+                # The `_stuck_seed_failure` fallback — its own WINDOWED counter
+                # (`quest_seed_infra_retries`), deliberately not
+                # `quest_autocatpath_infra_retries` (see
+                # `_SEED_INFRA_RETRY_WINDOW_HOURS`'s docstring for why the two
+                # must stay independent). Same retry-once-then-gripe SHAPE as
+                # the aggregate branch below, windowed instead of monotonic.
+                if hub is None or reaction is None:
+                    notes.append(
+                        f"stuck seed for {handle} (retry-eligible, not re-dispatched)"
+                    )
+                else:
+                    sk_retries = _seed_infra_retry_count(store, s.id)
+                    if sk_retries < _MAX_INFRA_RETRIES:
+                        dispatch_autocatpath(store, s.id, reaction, hub=hub)
+                        _bump_seed_infra_retry_count(store, s.id)
+                        notes.append(
+                            f"stuck seed for {handle} → re-dispatched "
+                            f"(retry {sk_retries + 1})"
+                        )
+                    elif sk_retries < _MAX_INFRA_RETRIES + 1:
+                        _file_infra_gripe(
+                            store,
+                            quest_id,
+                            handle,
+                            cp_job_meta,
+                            hub=hub,
+                            lane="autocatpath-seed",
+                        )
+                        _bump_seed_infra_retry_count(store, s.id)
+                        notes.append(f"stuck seed persists for {handle} → gripe filed")
+                    else:
+                        # Already gripe-filed within this window — dedup, no
+                        # re-file (the counter only bumps on the retry/gripe
+                        # rungs above, so it stays put until the window rolls).
+                        notes.append(
+                            f"stuck seed persists for {handle} (gripe already filed)"
+                        )
             else:
-                # Already gripe-filed on a prior harvest — dedup, no re-file.
-                notes.append(
-                    f"autocatpath infra failure persists for {handle} (gripe already filed)"
+                cp_retries = int(
+                    (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
                 )
+                if hub is None or reaction is None:
+                    notes.append(
+                        f"autocatpath infra failure for {handle} "
+                        "(retry-eligible, not ruled out)"
+                    )
+                elif cp_retries < _MAX_INFRA_RETRIES:
+                    dispatch_autocatpath(store, s.id, reaction, hub=hub)
+                    store.stamp_ref_meta(
+                        s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
+                    )
+                    notes.append(
+                        f"autocatpath infra failure for {handle} → re-dispatched "
+                        f"(retry {cp_retries + 1})"
+                    )
+                elif cp_retries < _MAX_INFRA_RETRIES + 1:
+                    _file_infra_gripe(
+                        store,
+                        quest_id,
+                        handle,
+                        cp_job_meta,
+                        hub=hub,
+                        lane="autocatpath",
+                    )
+                    store.stamp_ref_meta(
+                        s.id,
+                        {"quest_autocatpath_infra_retries": _MAX_INFRA_RETRIES + 1},
+                    )
+                    notes.append(
+                        f"autocatpath infra failure persists for {handle} → gripe filed"
+                    )
+                else:
+                    # Already gripe-filed on a prior harvest — dedup, no re-file.
+                    notes.append(
+                        f"autocatpath infra failure persists for {handle} (gripe already filed)"
+                    )
     return ComputeStep(
         candidates_created=0,
         sims_dispatched=0,

@@ -701,6 +701,348 @@ class TestHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_autocatpath_infra_retries") == 1
 
+    # ── stuck-seed repair (qu164903) — the seed-level fallback ─────────
+
+    def _stuck_seed(
+        self, store: Any, sid: int, *, todo_status: str | None = None
+    ) -> tuple[int, int]:
+        """The state ``_stuck_seed_failure`` exists to see: a failed
+        ``autocatpath_seed`` job under a still-open seed todo, with NO
+        ``autocatpath_aggregate`` job minted anywhere under the candidate
+        (the aggregate only mints once every seed todo resolves — so this IS
+        the "wedged" shape, not an approximation of it). One level deeper
+        than :meth:`_failed_autocatpath_aggregate` above."""
+        from precis.store import Tag
+
+        agg_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath aggregate",
+            meta={"executor": "ssh_node", "job_type": "autocatpath_aggregate"},
+            parent_id=sid,
+        )
+        seed_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath seed",
+            meta={"auto_check": {"type": "child_job_succeeded"}},
+            parent_id=agg_todo.id,
+        )
+        if todo_status:
+            store.add_tag(
+                seed_todo.id, Tag.closed("STATUS", todo_status), set_by="system"
+            )
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_seed",
+            meta={"job_type": "autocatpath_seed"},
+            parent_id=seed_todo.id,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+        return agg_todo.id, seed_todo.id
+
+    def test_stuck_seed_with_hub_retries_once_then_gripes_on_recurrence(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The full seed-lane ladder progression on its OWN windowed counter
+        (``quest_seed_infra_retries``, independent of
+        ``quest_autocatpath_infra_retries``): first stuck-seed harvest
+        re-dispatches (no gripe); the seed job is still failed and no
+        aggregate has minted (the fake dispatch is a no-op stub, same as the
+        aggregate-lane tests above), so a second harvest — still within the
+        6h window — gripes instead of dispatching a third time; a third
+        harvest dedups (no re-file)."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(store, sid)
+
+        dispatch_calls: list[dict[str, Any]] = []
+
+        def _fake_dispatch_autocatpath(
+            _s: Any, structure_ref_id: int, config: Any, **_kw: Any
+        ) -> str:
+            dispatch_calls.append(
+                {"structure_ref_id": structure_ref_id, "config": config}
+            )
+            return f"autocatpath[ml] dispatched for {structure_ref_id}"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", _fake_dispatch_autocatpath
+        )
+
+        gripe_calls: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripe_calls.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+
+        hub = object()
+
+        step1 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step1.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        assert len(dispatch_calls) == 1
+        assert dispatch_calls[0]["structure_ref_id"] == sid
+        assert gripe_calls == []
+        meta1 = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta1.get("quest_seed_infra_retries") == 1
+        # the aggregate/explore-lane counter is untouched — separate budget.
+        assert "quest_autocatpath_infra_retries" not in meta1
+
+        step2 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step2.ruled_out == 0
+        assert len(dispatch_calls) == 1  # no third dispatch
+        assert len(gripe_calls) == 1
+        assert "autocatpath-seed" in gripe_calls[0]["text"]
+        assert f"quest {qid}" in gripe_calls[0]["text"]
+        meta2 = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta2.get("quest_seed_infra_retries") == 2
+
+        # a third harvest while still stuck does not re-file (dedup).
+        step3 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step3.ruled_out == 0
+        assert len(gripe_calls) == 1  # unchanged
+        meta3 = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta3.get("quest_seed_infra_retries") == 2  # not bumped further
+
+    def test_aggregate_failure_takes_precedence_over_older_stuck_seed(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A candidate with an OLDER stuck seed (no aggregate minted for that
+        tree) plus a NEWER tree whose aggregate already failed — the ladder
+        must act on the aggregate branch only (``_latest_autocatpath_job``
+        wins the ``or``), never double-retrying via the seed fallback too."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(store, sid)  # older tree, wedged behind a dead seed
+        self._failed_autocatpath_aggregate(store, sid)  # newer tree, aggregate failed
+
+        dispatch_calls: list[dict[str, Any]] = []
+
+        def _fake_dispatch_autocatpath(
+            _s: Any, structure_ref_id: int, _config: Any, **_kw: Any
+        ) -> str:
+            dispatch_calls.append({"structure_ref_id": structure_ref_id})
+            return "autocatpath[ml]"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", _fake_dispatch_autocatpath
+        )
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert len(dispatch_calls) == 1  # ONE dispatch, not two
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 1
+        assert "quest_seed_infra_retries" not in meta  # seed lane never touched
+
+    def test_stuck_seed_latched_child_failed_final_still_repaired(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A seed todo latched ``child-failed-final`` (the todo-tree
+        sweeper's OWN, unrelated terminal park — an exhausted lease-expiry
+        orphan-retry budget, see ``handlers/_job_bubble.py``) must still be
+        repaired here: this ladder keys off the seed JOB's own ``STATUS``,
+        never that tag."""
+        from precis.store import Tag
+
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        _agg_todo_id, seed_todo_id = self._stuck_seed(store, sid)
+        store.add_tag(seed_todo_id, Tag.open("child-failed-final"), set_by="system")
+
+        calls: list[int] = []
+
+        def _fake_dispatch_autocatpath(
+            _s: Any, structure_ref_id: int, _config: Any, **_kw: Any
+        ) -> str:
+            calls.append(structure_ref_id)
+            return "autocatpath[ml]"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", _fake_dispatch_autocatpath
+        )
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert calls == [sid]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_infra_retries") == 1
+
+
+# ── _stuck_seed_failure — direct unit coverage ──────────────────────────
+
+
+class TestStuckSeedFailure:
+    """Direct coverage of :func:`compute_mod._stuck_seed_failure` — a pure
+    ``refs``/``tags`` query, so the §B-1 fan-out tree (candidate -> T_agg ->
+    seed todo -> seed job) is built by hand here rather than through a real
+    :func:`compute_mod.dispatch_autocatpath` call (no autocatpath plugin /
+    ``pathway`` schema needed)."""
+
+    def _candidate(self, store: Any, qid: int) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _agg_todo(self, store: Any, sid: int) -> int:
+        return int(
+            store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="autocatpath aggregate",
+                meta={"executor": "ssh_node", "job_type": "autocatpath_aggregate"},
+                parent_id=sid,
+            ).id
+        )
+
+    def _seed(
+        self,
+        store: Any,
+        agg_todo_id: int,
+        *,
+        job_statuses: list[str],
+        todo_status: str | None = None,
+    ) -> tuple[int, list[int]]:
+        """One seed todo under ``agg_todo_id`` with one ``autocatpath_seed``
+        job per entry in ``job_statuses`` (insertion order — the last
+        inserted is the "newest")."""
+        from precis.store import Tag
+
+        seed_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath seed",
+            meta={"auto_check": {"type": "child_job_succeeded"}},
+            parent_id=agg_todo_id,
+        )
+        if todo_status:
+            store.add_tag(
+                seed_todo.id, Tag.closed("STATUS", todo_status), set_by="system"
+            )
+        job_ids = []
+        for status in job_statuses:
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="autocatpath_seed",
+                meta={"job_type": "autocatpath_seed"},
+                parent_id=seed_todo.id,
+            )
+            store.add_tag(job.id, Tag.closed("STATUS", status), set_by="system")
+            job_ids.append(int(job.id))
+        return int(seed_todo.id), job_ids
+
+    def _agg_job(self, store: Any, agg_todo_id: int, status: str = "failed") -> int:
+        from precis.store import Tag
+
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_aggregate",
+            meta={"job_type": "autocatpath_aggregate"},
+            parent_id=agg_todo_id,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", status), set_by="system")
+        return int(job.id)
+
+    def test_failed_with_no_aggregate_returns_failed(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=["failed"])
+        result = compute_mod._stuck_seed_failure(store, sid)
+        assert result is not None
+        status, meta = result
+        assert status == "failed"
+        assert meta.get("job_type") == "autocatpath_seed"
+
+    def test_failed_with_aggregate_present_returns_none(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=["failed"])
+        self._agg_job(store, agg, status="failed")
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+
+    def test_succeeded_but_open_returns_none(self, store: Any) -> None:
+        """auto_check lag: the job succeeded but the todo hasn't flipped to
+        ``done`` yet — not a failure, so not stuck."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=["succeeded"])
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+
+    def test_mix_succeeded_and_failed_returns_the_failed_one(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=["succeeded"])
+        _bad_todo, (bad_job,) = self._seed(store, agg, job_statuses=["failed"])
+        result = compute_mod._stuck_seed_failure(store, sid)
+        assert result is not None
+        status, _meta = result
+        assert status == "failed"
+
+    def test_live_reminted_seed_returns_none(self, store: Any) -> None:
+        """A failed seed job PLUS a fresh non-terminal re-mint under the
+        SAME todo (the repair already fired) — no longer stuck."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=["failed", "queued"])
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+
+    def test_done_seed_todo_excluded_even_with_a_failed_job(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=["failed"], todo_status="done")
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+
+    def test_no_seed_dispatched_yet_returns_none(self, store: Any) -> None:
+        """T_agg minted but no seed todo/job under it yet (mid-dispatch, or
+        a candidate with no reaction config at all) — never false-fires."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._agg_todo(store, sid)
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+
+    def test_seed_todo_with_zero_jobs_returns_none(self, store: Any) -> None:
+        """A seed todo exists (``_ensure_autocatpath_todo`` committed) but
+        carries NO ``autocatpath_seed`` job row at all — the "crash between
+        minting the todo and reaching ``jobs.put``" state the docstring
+        calls out. Distinct from :meth:`test_no_seed_dispatched_yet_returns_none`
+        (zero seed TODOS under T_agg): here the todo exists but is job-less.
+        The failed-job match is an inner JOIN, so no job row ⇒ no result —
+        this pins that SQL-join semantic directly rather than leaving it
+        implicit."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        agg = self._agg_todo(store, sid)
+        self._seed(store, agg, job_statuses=[])  # todo minted, no job ever landed
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+
 
 # ── frontier over the store ───────────────────────────────────────────
 
@@ -2159,6 +2501,37 @@ class TestDispatchAutocatpath:
             ).fetchall()
         return [int(r[0]) for r in rows]
 
+    def _seed_todo_ids(self, store: Any, sid: int) -> list[int]:
+        """Every per-seed todo under EVERY aggregate tree — distinct from
+        :meth:`_seed_jobs`'s job count: a re-mint reuses the SAME todo, so
+        this count stays flat across a repair even as the job count grows."""
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT seed_todo.ref_id FROM refs seed_todo
+                 WHERE seed_todo.kind = 'todo' AND seed_todo.deleted_at IS NULL
+                   AND seed_todo.parent_id IN (
+                         SELECT ref_id FROM refs
+                          WHERE parent_id = %s AND kind = 'todo'
+                            AND deleted_at IS NULL
+                       )
+                 ORDER BY seed_todo.ref_id
+                """,
+                (sid,),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def _seed_job_for(
+        self, store: Any, sid: int, seed: int
+    ) -> tuple[int, dict[str, Any]]:
+        """The (first, oldest) seed job for a given ``seed`` number — the
+        one to fail/succeed/soft-delete to drive a repair scenario."""
+        return next(
+            (jid, m)
+            for jid, m in self._seed_jobs(store, sid)
+            if (m.get("params") or {}).get("seed") == seed
+        )
+
     def _promote_aggregate(self, store: Any, sid: int) -> int:
         """Drive the async half of ONE tree to completion: stamp every seed
         job succeeded, run the auto_check pass (closes each per-seed todo),
@@ -2230,6 +2603,137 @@ class TestDispatchAutocatpath:
         # retry skips seeds whose todo already exists — still 3, not 6
         assert len(self._seed_jobs(store, sid)) == 3
         assert len(self._agg_todo_ids(store, sid)) == 1  # one tree, not two
+
+    # ── status-aware seed skip: the automatic repair path (qu164903) ───
+
+    def test_failed_seed_reminted_under_the_same_todo(self, store: Any) -> None:
+        """A terminal-failed seed's todo is reused (get-or-create) and gets
+        exactly ONE fresh job — not a duplicate tree, not a duplicate todo."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.add_tag(
+            job0_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert "(1 new)" in note
+        seed_jobs = self._seed_jobs(store, sid)
+        assert len(seed_jobs) == 4  # 3 original + 1 fresh for seed 0
+        assert sorted(m["params"]["seed"] for _jid, m in seed_jobs) == [0, 0, 1, 2]
+        assert len(self._agg_todo_ids(store, sid)) == 1  # same tree, not a new one
+        assert len(self._seed_todo_ids(store, sid)) == 3  # same todo reused, not 4
+
+    def test_done_seed_todo_not_reminted_even_with_a_failed_job(
+        self, store: Any
+    ) -> None:
+        """Regression: a seed todo manually closed ``done`` (an operator/
+        edge override) must never be re-minted, even though its only job is
+        ``failed`` — the todo's own status wins."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.add_tag(
+            job0_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        with store.pool.connection() as conn:
+            seed_todo_id = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (job0_id,)
+            ).fetchone()[0]
+        store.add_tag(seed_todo_id, Tag.closed("STATUS", "done"), set_by="system")
+
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert len(self._seed_jobs(store, sid)) == 3  # no re-mint
+
+    def test_succeeded_but_open_seed_not_reminted(self, store: Any) -> None:
+        """Regression: auto_check lag — the job succeeded but the todo
+        hasn't flipped to ``done`` yet (auto_check runs a tick behind
+        dispatch) — must NOT be re-minted out from under the pending flip."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.add_tag(
+            job0_id,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        # deliberately no auto_check pass — the seed todo stays 'open'
+
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert len(self._seed_jobs(store, sid)) == 3  # no re-mint
+
+    def test_live_running_seed_not_reminted(self, store: Any) -> None:
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.add_tag(
+            job0_id,
+            Tag.closed("STATUS", "running"),
+            set_by="system",
+            replace_prefix=True,
+        )
+
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert len(self._seed_jobs(store, sid)) == 3  # no re-mint
+
+    def test_zero_job_seed_todo_mints_its_first_job(self, store: Any) -> None:
+        """A seed todo whose only job vanished (e.g. a dispatch that crashed
+        between ``_ensure_autocatpath_todo`` and ``jobs.put`` on a prior
+        attempt, simulated here via soft-delete) mints a fresh first job
+        under the SAME todo rather than being skipped as "already handled"."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.soft_delete_ref(job0_id)
+
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        seed_jobs = self._seed_jobs(store, sid)
+        assert len(seed_jobs) == 3  # 2 surviving originals + 1 fresh for seed 0
+        assert sorted(m["params"]["seed"] for _jid, m in seed_jobs) == [0, 1, 2]
+        assert len(self._seed_todo_ids(store, sid)) == 3  # same todo reused
+
+    def test_two_calls_after_a_failed_seed_mint_exactly_one_new_job(
+        self, store: Any
+    ) -> None:
+        """Idem holds: once the repair mints a fresh (non-terminal) job, a
+        SECOND ``dispatch_autocatpath`` call right after must not mint yet
+        another one — the fresh job itself now reads as "handled"."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.add_tag(
+            job0_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert len(self._seed_jobs(store, sid)) == 4  # not 5
 
     def test_default_tier_is_neb_config_and_pathway_meta_unchanged(
         self, store: Any
