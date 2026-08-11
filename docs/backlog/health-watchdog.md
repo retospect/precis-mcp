@@ -49,7 +49,17 @@ mere quiet.
 - **Surface canaries** — surface-type outcomes (PCB/CAD/export builds):
   last-use-ok + dep-present first; weekly synthetic canaries (render a
   trivial PCB/CAD) as the later add. Never alarm on mere absence of use.
-- **Alert-triage disposition pass** — DESIGN DECIDED (2026-08-11, opus
+- **Alert-triage disposition pass** — **CODE SHIPPED d4b0d354 (2026-08-11)**:
+  parts (A) true `COUNT(*) OVER ()` on the three capped detectors +
+  `Finding.total` + "showing oldest 50 of 297" in the alert detail
+  (`alerts.raise_alert` gained `extra_meta` to carry `total`); (B) the
+  router now files ONE aggregate auto-closing marker gripe per non-draining
+  nursery backlog category (`_NURSERY_BACKLOG_SOURCES`, budget 24h, flood-
+  capped) — no `created_at` age-out. Still open: (C) the actual prod-ops
+  triage of the 297+540 genuinely-broken todos (the deployed aggregate
+  gripe is the hand-off surface for it), and the brief-lane / surface-
+  canary bullets below. Original design (kept for the "why"):
+  DESIGN DECIDED (2026-08-11, opus
   root-cause dossier). The original "age-out the aged `/alerts` rot"
   framing is **refuted and unsafe**: a prod re-query of the nursery
   predicates showed the open backlog (131, oldest 46d) is not stale-
