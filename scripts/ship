@@ -406,8 +406,12 @@ for attempt in 1 2 3; do
         # is per-process, so xdist would fragment its map. Full mode (/go, bare):
         # the whole suite at -n6. mypy + ruff run in full either way.
         if [[ "$IMPACTED" == 1 ]]; then
-            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0'
-            say "integration gate (ruff autofix · mypy · pytest --impacted) — ${GATE_MODE} gate"
+            # Repo-invariant tests (migration numbering, schema-baseline drift)
+            # assert over filesystem globs, so testmon has no code-dependency
+            # edge to select them on a new migration — run them unconditionally
+            # alongside the impacted set (they're sub-second).
+            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py'
+            say "integration gate (ruff autofix · mypy · pytest --impacted + repo invariants) — ${GATE_MODE} gate"
         else
             PYTEST_CMD="uv run pytest -q -n ${PYTEST_N}"
             say "integration gate (ruff autofix · mypy · pytest) — ${GATE_MODE} gate, -n ${PYTEST_N}"

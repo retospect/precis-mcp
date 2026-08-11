@@ -63,6 +63,8 @@ _PAPER_EDIT_FIELDS: tuple[str, ...] = (
     "abstract",
     "doi",
     "arxiv",
+    "journal",
+    "entry_type",
 )
 
 

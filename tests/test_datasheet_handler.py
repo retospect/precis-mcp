@@ -82,6 +82,20 @@ def test_meta_patch_rejects_unknown_subtype() -> None:
         DatasheetHandler._datasheet_meta_patch(None, "brochure", None)
 
 
+def test_paper_edit_fields_cover_paper_bib_signature() -> None:
+    """Regression (gr202712): every bibliographic kwarg PaperHandler.edit
+    accepts must be forwarded by the datasheet allow-list — journal/entry_type
+    were silently dropped after cfc88e89 widened the paper editor."""
+    import inspect
+
+    from precis.handlers.datasheet import _PAPER_EDIT_FIELDS
+
+    paper_params = inspect.signature(PaperHandler.edit).parameters
+    assert {"journal", "entry_type"} <= set(_PAPER_EDIT_FIELDS)
+    for field in _PAPER_EDIT_FIELDS:
+        assert field in paper_params, f"{field} not a PaperHandler.edit kwarg"
+
+
 def test_edit_with_no_fields_is_rejected(store: Store) -> None:
     handler = DatasheetHandler(hub=Hub(store=store))
     with pytest.raises(BadInput):
