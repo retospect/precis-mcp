@@ -10,7 +10,10 @@
   hosts:
     - gateway
     - scheduler
-    - data
+    # `data` (the DB node) excluded to match 19a/20 (e8d89c0e): it runs no
+    # local embedder there, so its watchdog has nothing to kick — and
+    # re-rendering + loading the plist each deploy resurrected a daemon on
+    # the RAM-starved prod-DB box (manually disabled every time until now).
     - inference
   become: true
   roles:
