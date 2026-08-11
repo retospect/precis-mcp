@@ -2055,8 +2055,12 @@ class TestPathwayTierFallback:
         assert compute_mod._pathway_tier(meta) == compute_mod._TIER_SCREENING
 
     def test_coadsorbed_with_best_first_schedule_is_neb(self) -> None:
-        meta = {"results": {"template": "coadsorbed",
-                            "neb_schedule": {"NO->N+O": "refined"}}}
+        meta = {
+            "results": {
+                "template": "coadsorbed",
+                "neb_schedule": {"NO->N+O": "refined"},
+            }
+        }
         assert compute_mod._pathway_tier(meta) == compute_mod._TIER_NEB
 
     def test_coadsorbed_exhaustive_is_verify(self) -> None:

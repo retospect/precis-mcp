@@ -1313,9 +1313,7 @@ def _pathway_tier(pw_meta: dict[str, Any] | None) -> str:
         results = results if isinstance(results, dict) else {}
         if results.get("screening") is True:
             return _TIER_SCREENING
-        if results.get("template") == "coadsorbed" and not results.get(
-            "neb_schedule"
-        ):
+        if results.get("template") == "coadsorbed" and not results.get("neb_schedule"):
             return _TIER_VERIFY
     return _TIER_NEB
 
