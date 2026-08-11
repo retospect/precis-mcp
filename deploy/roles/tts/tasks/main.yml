@@ -67,10 +67,21 @@
         mode: preserve
       become: true
 
+    - name: Derive the base image from the Dockerfile (pre-pull stays in sync)
+      # The FROM line is the single source of truth. A hardcoded var here
+      # drifted once (still 3.11 after the Dockerfile's 3.12 bump): the
+      # pre-pull warmed the wrong image and the build died at step 1 on the
+      # flaky spark→Docker Hub TLS handshake, retry-less.
+      ansible.builtin.command:
+        cmd: awk '/^FROM /{print $2; exit}' /tmp/precis-tts-build/Dockerfile
+      register: tts_base_from
+      changed_when: false
+      failed_when: tts_base_from.stdout | trim | length == 0
+
     - name: Ensure the base image is present (pull only if missing — registry is flaky)
       ansible.builtin.shell: >-
-        {{ tts_container_cmd }} image inspect {{ tts_base_image }} >/dev/null 2>&1
-        || {{ tts_container_cmd }} pull {{ tts_base_image }}
+        {{ tts_container_cmd }} image inspect {{ tts_base_from.stdout | trim }} >/dev/null 2>&1
+        || {{ tts_container_cmd }} pull {{ tts_base_from.stdout | trim }}
       become: true
       register: tts_basepull
       retries: 8

@@ -18,10 +18,8 @@ tts_node: "{{ inventory_hostname }}"
 # the GPU node's deployed runtime (same as roles/dft / roles/aizynth).
 tts_image: "precis-tts:latest"
 tts_container_cmd: docker
-# The image's base — already cached on the compute node (shared with aizynth's
-# 3.11-slim), so `image inspect` short-circuits the flaky the GPU node→Docker Hub pull.
-# Keep in sync with the FROM in docker/tts/Dockerfile (>=3.11 is all precis needs).
-tts_base_image: "python:3.11-slim-bookworm"
+# (No tts_base_image var: the pre-pull task derives the base from the copied
+# Dockerfile's FROM line, so it can't drift out of sync with it.)
 # The precis-mcp ref installed INTO the image (the --build-arg). redeploy-precis.yml
 # passes the deploy's pinned sha, so the image tracks the venvs automatically.
 # Standalone 45-tts.yml runs should pass -e tts_precis_ref=<sha> too: the bare
