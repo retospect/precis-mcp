@@ -296,6 +296,20 @@ Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to
 the underlying ref; unknown entries are silently ignored. `exclude=` is the skip-list for
 known-irrelevant refs, not a paging mechanism — use `page=` for that.
 
+## What does the ⚠ on a paper hit mean?
+## Why did a retracted paper rank so low?
+
+A `⚠ RETRACTED` / `⚠ corrected` / `⚠ expression of concern` prefix on a
+row means `refs.retraction_status` is set on that paper. Retracted hits are
+downranked hard, the softer notices mildly — but **never excluded**: a
+retracted paper is often exactly what you were looking for, and silently
+dropping it would be indistinguishable from a broken index.
+
+No `⚠` means "no notice on file", which is usually **"nobody has checked"**
+rather than "clean" — checks are demand-driven, so coverage is sparse by
+design. Don't read a bare row as an integrity clearance. To actually check,
+use `get(kind="provenance", q="<doi>")` → `precis-provenance-help`.
+
 ## Find the right skill for a task
 ## Which skill explains how to do X?
 ## Discover a skill by topic

@@ -588,9 +588,10 @@ def attach_evidence(
     verdict (``support``/``support_reason``/``caveats``/``char_offset``/
     ``source_handle``), populated in Phase 3.
 
-    **Trigger 1 of the demand-driven retraction model**
-    (``docs/backlog/retraction-check-triggers.md``): a paper entering the
-    claim graph is the moment its integrity starts to matter, so a
+    **Trigger 1 of the demand-driven retraction model** (trigger 2 is
+    the draft's watch button, ``precis.export.retraction``): a paper
+    entering the claim graph is the moment its integrity starts to
+    matter, so a
     ``paper`` source (a patent has no DOI to check) gets checked via
     :func:`precis.ingest.provenance.check_ref_retraction`. The check is
     TTL-gated (30 days), so a chase pass re-attaching over an
@@ -686,8 +687,8 @@ def attach_evidence(
         with store.tx() as c:
             _do(c)
 
-    # Trigger 1 (docs/backlog/retraction-check-triggers.md). Patents have no
-    # DOI to check Crossref against, so only a paper source qualifies.
+    # Trigger 1. Patents have no DOI to check Crossref against, so only
+    # a paper source qualifies.
     if not (check_retraction and src_kind_box.get("kind") == "paper"):
         return
 

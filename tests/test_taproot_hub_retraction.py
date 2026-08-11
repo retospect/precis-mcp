@@ -1,5 +1,5 @@
-"""Trigger 1 of the demand-driven retraction model
-(``docs/backlog/retraction-check-triggers.md``): ``attach_evidence``, the
+"""Trigger 1 of the demand-driven retraction model (trigger 2 is the
+draft's watch button): ``attach_evidence``, the
 single write door for a ``paper --role--> hub`` evidence edge, opportunistically
 calls ``precis.ingest.provenance.check_ref_retraction`` after the edge lands.
 
@@ -97,7 +97,7 @@ def test_attach_evidence_survives_a_retraction_check_exception(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed check must NEVER fail the attach — the edge is the durable
-    thing, the check is opportunistic (docs/backlog/retraction-check-triggers.md)."""
+    thing, the check is opportunistic."""
 
     def _boom(store: Any, ref_id: int, **kwargs: Any) -> None:
         raise RuntimeError("Crossref is down")

@@ -27,9 +27,8 @@ from ``paper.py`` (mirroring the existing lazy import of
 helpers (``_maybe_resolve_doi``, ``_DOI_RE``, ``_suggest_paper_slugs``,
 …) without a circular top-level import.
 
-Retraction status (docs/backlog/retraction-status-downstream.md item
-1) is handled entirely in this module, not the store: ``refs.
-retraction_status`` is already selected on every ``Ref`` row, so
+Retraction status is handled entirely in this module, not the store:
+``refs.retraction_status`` is already selected on every ``Ref`` row, so
 :func:`_apply_retraction_downrank` (called from
 :meth:`FusedBlockSearch.run`) re-sorts the already-fetched hits
 in-process, and :func:`_retraction_flag` (used by
@@ -65,9 +64,10 @@ _BROAD_LEG_CAP = 8
 
 # Multiplicative penalty applied to a hit's fused ``score`` (the
 # store's ts_rank/cosine-distance blend), keyed by
-# ``refs.retraction_status``. See docs/backlog/retraction-status-
-# downstream.md item 1 for the severity split this encodes: hard
-# downrank for ``retracted`` (never excluded — a retracted paper is
+# ``refs.retraction_status``. The severity split mirrors
+# ``precis.export.retraction``'s ``BLOCKING_STATUSES`` /
+# ``SOFT_STATUSES`` (keep the two in step): hard downrank for
+# ``retracted`` (never excluded — a retracted paper is
 # often exactly what a search is looking for; silent exclusion would
 # be indistinguishable from a broken index), mild for the soft
 # statuses (``corrected`` / ``expression_of_concern`` — the science is

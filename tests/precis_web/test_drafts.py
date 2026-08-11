@@ -917,7 +917,7 @@ def test_export_pdf_falls_back_to_draft_ref_when_no_project(tmp_path) -> None:
     assert args["parent_id"] == 500  # the draft ref itself
 
 
-# ── retraction gate (docs/backlog/retraction-status-downstream.md items 2/3) ──
+# ────────────────────────── retraction gate ───────────────────────────
 # The gate consumes ``precis.export.retraction.draft_retraction_report`` /
 # ``cited_paper_refs`` — stubbed here rather than exercised end-to-end
 # (that module's own tests own the walk itself; a real run would need a DB

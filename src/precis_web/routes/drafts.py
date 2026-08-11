@@ -55,7 +55,7 @@ served from here:
   /drafts/{ident}/retraction-status`` (no-network read) and ``POST
   /drafts/{ident}/retraction-check`` (the watch button — live re-check,
   TTL-gated, ``force=1`` bypasses the TTL) back the export pane's
-  retraction UI; see ``docs/backlog/retraction-status-downstream.md``.
+  retraction UI; the shared walk is ``precis.export.retraction``.
 
 Rendering is **raw source** (Tier A); the resolution pass that computes
 §-numbers / resolves cross-refs is the export engine (Tier B), shared
@@ -1044,8 +1044,8 @@ _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.do
 #: Hard cap on how many cites the retraction-watch button re-checks in one
 #: request (``retraction_check_route``) — a big draft is one Crossref
 #: round-trip per uncached cite, and this is a synchronous request a human
-#: is deliberately waiting on (docs/backlog/retraction-status-downstream.md
-#: item 3 accepts sync-with-a-cap for v1 rather than promoting to a job).
+#: is deliberately waiting on — sync-with-a-cap for v1, rather than
+#: promoting the walk to a background job.
 #: Chosen so a cold-cache walk stays well under a minute; a draft with more
 #: cites than this gets a truncated, clearly-labelled check rather than an
 #: open-ended wait.
@@ -1216,7 +1216,7 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         # This ideally lands in the export's sources appendix
         # (precis.export.sources), which is outside this route's file
         # ownership; a server log line is the interim trace — see
-        # docs/backlog/retraction-status-downstream.md item 2.
+        # docs/backlog/retraction-override-appendix-trace.md.
         log.warning(
             "drafts: export override — draft=%s (%s) retracted cites=%s",
             ref.id,
@@ -1357,15 +1357,15 @@ async def retraction_status_route(request: Request, ident: str) -> Response:
 
 @router.post("/drafts/{ident}/retraction-check")
 async def retraction_check_route(request: Request, ident: str) -> Response:
-    """The retraction-watch button — trigger 2 of
-    ``docs/backlog/retraction-check-triggers.md``: re-checks the draft's
+    """The retraction-watch button — trigger 2 of the demand-driven
+    retraction model (trigger 1 is ``precis.taproot.hub.attach_evidence``):
+    re-checks the draft's
     cited papers through Crossref (TTL-gated, so a same-day re-press is
     nearly free) and reports per-paper status. ``force=1`` ignores the
     TTL — without it, pressing the button twice in one day is a silent
     no-op and reads as broken.
 
-    Synchronous-with-a-cap for v1
-    (``docs/backlog/retraction-status-downstream.md`` item 3): the user
+    Synchronous-with-a-cap for v1: the user
     is deliberately waiting on this button, but a large draft is one
     Crossref round-trip per uncached cite. The walk is capped at
     ``_RETRACTION_CHECK_CAP`` cites and wrapped in an overall wall-clock

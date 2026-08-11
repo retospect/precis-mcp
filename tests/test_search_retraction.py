@@ -1,5 +1,4 @@
-"""End-to-end paper-search retraction handling (docs/backlog/
-retraction-status-downstream.md item 1).
+"""End-to-end paper-search retraction handling.
 
 Covers the main consumer — ``PaperHandler.search()`` → ``FusedBlockSearch``
 + ``PaperSearchResultRenderer`` — which builds its TOON table directly

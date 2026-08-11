@@ -828,8 +828,9 @@
       </div>
 
       {# ── Export: docx/pdf downloads, PDF→project job, papers zip, reMarkable,
-           + the retraction watch (docs/backlog/retraction-status-downstream.md
-           items 2/3). `withSources` toggles the include-referenced-sources
+           + the retraction watch (backed by precis.export.retraction via
+           the routes in precis_web/routes/drafts.py).
+           `withSources` toggles the include-referenced-sources
            appendix (docx returns a zip; PDF a pdfpages appendix) — same
            semantics as classic. The retraction state is fetched read-only
            (no network) on pane load so the "N of M never checked" warning is
