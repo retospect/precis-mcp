@@ -1,5 +1,7 @@
 # precis-mcp
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fretospect%2Fprecis-mcp.svg)](https://mcptoplist.com/server/glama%2Fretospect%2Fprecis-mcp)
+
 [![check](https://github.com/retospect/precis-mcp/actions/workflows/check.yml/badge.svg)](https://github.com/retospect/precis-mcp/actions/workflows/check.yml)
 [![PyPI](https://img.shields.io/pypi/v/precis-mcp.svg)](https://pypi.org/project/precis-mcp/)
 [![Python](https://img.shields.io/pypi/pyversions/precis-mcp.svg)](https://pypi.org/project/precis-mcp/)
