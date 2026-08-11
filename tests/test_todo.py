@@ -249,6 +249,27 @@ def test_delete(handler: TodoHandler) -> None:
         handler.get(id=todo_id)
 
 
+def test_delete_cascades_to_descendant_todos(handler: TodoHandler) -> None:
+    """Deleting a todo takes its live subtree with it — a child left
+    under a deleted parent evades the nursery orphan walk (which needs
+    a live parent chain) and rots forever as a stuck-doable leaf."""
+    root_id = handler.put(text="root").ref_id
+    child_id = handler.put(text="child").ref_id
+    grandchild_id = handler.put(text="grandchild").ref_id
+    bystander_id = handler.put(text="unrelated").ref_id
+    assert root_id and child_id and grandchild_id and bystander_id
+    handler.link(id=child_id, target=f"todo:{root_id}", rel="parent")
+    handler.link(id=grandchild_id, target=f"todo:{child_id}", rel="parent")
+
+    r = handler.delete(id=root_id)
+    assert "+2 descendant todos" in r.body
+    for gone_id in (root_id, child_id, grandchild_id):
+        with pytest.raises(Gone, match="soft-deleted"):
+            handler.get(id=gone_id)
+    # An unrelated root is untouched.
+    assert handler.get(id=bystander_id)
+
+
 # ── search ─────────────────────────────────────────────────────────
 
 

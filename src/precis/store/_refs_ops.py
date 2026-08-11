@@ -1637,6 +1637,40 @@ class RefsMixin:
         if rowcount == 0:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
 
+    def soft_delete_todo_subtree(self, ref_id: int) -> int:
+        """Soft-delete a todo and every live ``kind='todo'`` descendant.
+
+        Cascading form of :meth:`soft_delete_ref` for the scheduling
+        tree. A live child left under a deleted parent is *stranded
+        debris*: the nursery orphan walk requires a live parent chain,
+        so it evades the orphan detector while still surfacing as a
+        stuck-doable leaf forever (2026-08-11 prod wipe found 401 such
+        rows). Non-todo children (``job`` execution records, review
+        ``finding`` rows) keep their own lifecycles and are left alone.
+
+        Returns the number of *descendants* deleted (excluding the
+        root); raises ``NotFound`` when the root todo is missing or
+        already deleted — descendants of an already-deleted root are
+        still swept first, so a retry after a half-failure converges.
+        """
+        sql = (
+            "WITH RECURSIVE sub AS ("
+            "  SELECT r.ref_id FROM refs r"
+            "   WHERE r.ref_id = %s AND r.kind = 'todo'"
+            "  UNION ALL"
+            "  SELECT c.ref_id FROM refs c JOIN sub s ON c.parent_id = s.ref_id"
+            "   WHERE c.kind = 'todo' AND c.deleted_at IS NULL"
+            ") "
+            "UPDATE refs SET deleted_at = now() "
+            "WHERE ref_id IN (SELECT ref_id FROM sub) AND deleted_at IS NULL "
+            "RETURNING ref_id"
+        )
+        with self.pool.connection() as c:
+            deleted = {row[0] for row in c.execute(sql, (ref_id,)).fetchall()}
+        if ref_id not in deleted:
+            raise NotFound(f"ref id={ref_id} not found (or already deleted)")
+        return len(deleted) - 1
+
     def touch_ref(
         self,
         ref_id: int,

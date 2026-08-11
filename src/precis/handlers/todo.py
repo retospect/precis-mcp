@@ -991,7 +991,14 @@ class TodoHandler(NumericRefHandler):
         # seeded folders). The check is on key presence so adding
         # new builtins doesn't need a new guard.
         guards.check_not_builtin(self.store, ref_id)
-        return super().delete(id=id, **_kw)
+        # Cascading soft delete: a live child under a deleted parent
+        # is invisible to the nursery orphan walk (it needs a live
+        # parent chain) yet rots forever as a stuck-doable leaf — the
+        # subtree goes with its root. Jobs/findings parented here keep
+        # their own lifecycles and stay.
+        n_desc = self.store.soft_delete_todo_subtree(ref_id)
+        suffix = f" (+{n_desc} descendant todos)" if n_desc else ""
+        return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}")
 
     # ── links view: synthesize the virtual parent edge ───────────
 
