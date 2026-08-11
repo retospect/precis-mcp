@@ -566,7 +566,13 @@
 # wiped both on every /go (introduced by db84485 2026-07-04; fixed 2026-07-13).
 # And we scope the removal to /opt/mcps/venv, NEVER the whole /opt/mcps tree, so
 # it can't collateral-damage extract/, quest/, bin/.
-- name: "Remove vestigial /opt/mcps/venv off non-owning hosts"
+#
+# The `data` (DB node) also carries an /opt/precis/venv WORKER relic: the worker
+# was taken off that node 2026-08-11 (RAM-starved prod DB), so its /opt/precis/venv
+# is now unmanaged, drifts a release behind, and is the same stale-sha diagnostic
+# trap. Remove it — but ONLY on `data`. `inference` still runs a live worker off
+# /opt/precis/venv (20b installs there), so the removal is `data`-scoped via `when`.
+- name: "Remove vestigial precis venvs off non-owning hosts"
   hosts:
     - data
     - inference
@@ -576,6 +582,11 @@
       ansible.builtin.file:
         path: /opt/mcps/venv
         state: absent
+    - name: Absent /opt/precis/venv on the DB node (worker taken off it 2026-08-11; relic on a stale sha)
+      ansible.builtin.file:
+        path: /opt/precis/venv
+        state: absent
+      when: inventory_hostname in groups['data']
 
 # ── 4. Prove convergence: every MANAGED precis venv runs the deployed sha ──
 # Deploy is only done when every venv a role installs is actually ON the ref
