@@ -66,11 +66,15 @@
     owner: "{{ pg_user }}"
   become: true
 
+# 03:30, not earlier: the DB node's daily-update-reboot root cron drains
+# Postgres and reboots at 03:00 UTC. Running the dump 30 min after gives the
+# DB time to come back and lets the backup grow toward a ~23 h budget before
+# the next reboot, instead of the old 02:00 slot's hard 60-min ceiling.
 - name: Schedule nightly pg_dump via cron
   ansible.builtin.cron:
     name: "pg_dump nightly backup"
-    minute: "0"
-    hour: "2"
+    minute: "30"
+    hour: "3"
     job: "{{ shared_mount }}/scripts/pg_backup.sh >> {{ shared_mount }}/logs/backup-pg.log 2>&1"
     user: "{{ pg_user }}"
   become: true
@@ -80,7 +84,7 @@
   ansible.builtin.cron:
     name: "weekly USB rsync backup"
     minute: "0"
-    hour: "4"
+    hour: "5"
     weekday: "0"
     job: "{{ shared_mount }}/scripts/usb_backup.sh >> {{ shared_mount }}/logs/backup-usb.log 2>&1"
   become: true
@@ -135,10 +139,10 @@
     mode: "0750"
   become: true
 
-- name: Schedule nightly B2 offsite sync (after pg_dump at 2am)
+- name: Schedule nightly B2 offsite sync (after the 03:30 pg_dump, ~40 min runtime)
   ansible.builtin.cron:
     name: "nightly b2 offsite sync"
     minute: "30"
-    hour: "2"
+    hour: "4"
     job: "{{ shared_mount }}/scripts/b2_sync.sh >> {{ shared_mount }}/logs/backup-b2.log 2>&1"
   become: true
