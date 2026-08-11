@@ -315,7 +315,7 @@ wheels = [
 
 [[package]]
 name = "autocatpath"
-version = "0.11.0"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ase" },
@@ -326,9 +326,9 @@ dependencies = [
     { name = "rdkit" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/6c/43588891cc0a7bdd51ff0b836fdd008f4ab8068370e75fbe7dea64c07fd2/autocatpath-0.11.0.tar.gz", hash = "sha256:9058691457dfa699475fcd159a46380b68eca989e832c9284089522da8027b57", size = 2741506, upload-time = "2026-08-09T21:27:44.078Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/42/d23e3270473a3f74745e922019f713f324f586cc99c65910968da9b36908/autocatpath-0.12.1.tar.gz", hash = "sha256:2f3aa095a0174e39780a537ea07c877d6f27b2a32b94a1a1a30264405239137b", size = 2766482, upload-time = "2026-08-11T09:20:24.968Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/f7/56423c32be95c059cd69b8a358bed0829434cf154d92bf1834ee07d4ef04/autocatpath-0.11.0-py3-none-any.whl", hash = "sha256:ef18df859979a891b639d14456c3683a23a69a98d0a50de0788a02ee2bd1b411", size = 299669, upload-time = "2026-08-09T21:27:40.661Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/18/9aeb250672b43dbf585abcc2440ec2eb353232f6bc1f2a926d10a97e4b4b/autocatpath-0.12.1-py3-none-any.whl", hash = "sha256:410832114abe81e403ef79c70ae696a9551562323a45408c422a65fd72bf55c4", size = 312540, upload-time = "2026-08-11T09:20:21.329Z" },
 ]
 
 [package.optional-dependencies]
@@ -3367,8 +3367,8 @@ requires-dist = [
     { name = "ase", marker = "extra == 'dft'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'import'", specifier = ">=3.22" },
-    { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.11.0" },
-    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.11.0" },
+    { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.12.1" },
+    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.12.1" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },

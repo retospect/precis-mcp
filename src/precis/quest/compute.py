@@ -491,7 +491,7 @@ _AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"
 #: metadata-less fallback re-keys with the primary derivation; the pin bump is
 #: the real re-key lever (:func:`_autocatpath_pinned_version` wins whenever
 #: dist metadata exists, which it always does on a dispatch host).
-_AUTOCATPATH_CACHE_EPOCH = "0.11.0"
+_AUTOCATPATH_CACHE_EPOCH = "0.12.1"
 
 #: Precis-side summary-contract revision folded into the idem keys
 #: alongside the engine token: a completed job's reusable artifact
