@@ -25,6 +25,16 @@ proper token accounting across all transports.
   `cache_creation_tokens`.
 - Backfill live rows if feasible; new rows post-fix will be complete.
 
+## Related gap: openai_tools split
+
+The `openai_tools` multi-turn loop has the same symptom for a different
+reason: `ToolChatClient.chat()` (`src/precis/utils/llm/openai_tools.py`)
+reads only `usage.total_tokens` per turn, and `AgentLoopResult`/`ChatTurn`
+carry only the summed total — so `_dispatch_openai_tools` rows get
+`total_tokens`/cost but NULL `input_tokens`/`output_tokens`. Fix alongside
+this item: read `usage.prompt_tokens`/`completion_tokens` per turn, sum
+into the loop result, and thread the split into `LlmResult`.
+
 ## Out of scope
 
 - Retroactive token estimation for past null rows.
