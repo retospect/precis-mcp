@@ -444,7 +444,7 @@ class DraftHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -589,7 +589,7 @@ class DraftHandler(Handler):
 
     # ── search: lexical / semantic over draft chunks ─────────────────
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -929,7 +929,7 @@ class DraftHandler(Handler):
 
     # ── put: create a draft, or add a chunk ──────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -1373,7 +1373,7 @@ class DraftHandler(Handler):
         head = f"[dry-run] {dc} — nothing written{note}. Proposed diff:"
         return Response(body=f"{head}\n\n{diff or '(no diff)'}")
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -1779,7 +1779,7 @@ class DraftHandler(Handler):
 
     # ── delete: soft-retire ──────────────────────────────────────────
 
-    def delete(  # type: ignore[override]
+    def delete(
         self,
         *,
         id: str | int | None = None,

@@ -149,7 +149,7 @@ def test_skill_index_lists_active_skill_slugs() -> None:
     `get(kind='skill', id=...)`, which the index header already pointed at.
     Budget + shape are pinned in tests/test_planner_prompt_budget.py.
     """
-    out = _build_skill_index(store=None)  # type: ignore[arg-type]
+    out = _build_skill_index(store=None)
     assert "precis-tasks-help" in out
     assert "precis-decomposition-help" in out
     # A skill with no `summary:` front-matter is still not advertised.

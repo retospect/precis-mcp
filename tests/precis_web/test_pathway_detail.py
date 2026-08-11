@@ -59,7 +59,7 @@ def _seed_pathway(store: Any, *, meta: dict[str, Any], body_text: str | None) ->
                 out[i] = extra_refs[i]
         return out
 
-    store.fetch_refs_by_ids = fetch  # type: ignore[method-assign]
+    store.fetch_refs_by_ids = fetch
 
     blocks = []
     if body_text is not None:
@@ -1030,7 +1030,7 @@ class _SiblingPool:
         self._rows = rows
 
     @contextmanager
-    def connection(self):  # type: ignore[no-untyped-def]
+    def connection(self):
         yield _SiblingConn(self._rows)
 
 
@@ -1105,7 +1105,7 @@ class _RunJobsPool:
         self._rows = rows
 
     @contextmanager
-    def connection(self):  # type: ignore[no-untyped-def]
+    def connection(self):
         yield _RunJobsConn(self._rows)
 
 
@@ -1338,7 +1338,7 @@ def _seed_tier_sibling(runtime: Any, sibling_ref: Any, *, refines_from: int) -> 
             out[sibling_ref.id] = sibling_ref
         return out
 
-    runtime.store.fetch_refs_by_ids = fetch  # type: ignore[method-assign]
+    runtime.store.fetch_refs_by_ids = fetch
 
     def links_for(
         ref_id: Any, *, direction: str = "both", relation: Any = None
@@ -1347,7 +1347,7 @@ def _seed_tier_sibling(runtime: Any, sibling_ref: Any, *, refines_from: int) -> 
             return [SimpleNamespace(src_ref_id=refines_from, dst_ref_id=sibling_ref.id)]
         return []
 
-    runtime.store.links_for = links_for  # type: ignore[method-assign]
+    runtime.store.links_for = links_for
 
 
 def test_pathway_tier_chip_explicit_meta_tier(client, runtime) -> None:

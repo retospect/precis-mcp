@@ -225,7 +225,7 @@ class OrcidHandler(Handler):
 
     # -- get -----------------------------------------------------------------
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -294,7 +294,7 @@ class OrcidHandler(Handler):
 
     # -- search --------------------------------------------------------------
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -316,7 +316,7 @@ class OrcidHandler(Handler):
             lines.append(f"\n## {_oi(ref.id)}  {ref.slug}  (score={score:.2f})\n{name}")
         return Response(body="\n".join(lines))
 
-    def search_hits(self, *, q: str | None = None, page_size: int = 10, **_kw: Any):  # type: ignore[override]
+    def search_hits(self, *, q: str | None = None, page_size: int = 10, **_kw: Any):
         """Cross-kind merge entry point (``kind='*'`` fan-out)."""
         from precis.utils.search_merge import block_hits_to_search_hits
 
@@ -338,7 +338,7 @@ class OrcidHandler(Handler):
 
     # -- tag / link ----------------------------------------------------------
 
-    def tag(  # type: ignore[override]
+    def tag(
         self,
         *,
         id: str | int | None = None,
@@ -362,7 +362,7 @@ class OrcidHandler(Handler):
             )
         )
 
-    def link(  # type: ignore[override]
+    def link(
         self,
         *,
         id: str | int | None = None,
@@ -413,7 +413,7 @@ class OrcidHandler(Handler):
             next_hint="get(kind='orcid', id='0000-...') to resolve the author first",
         )
 
-    def _is_fresh(self, ref) -> bool:  # type: ignore[no-untyped-def]
+    def _is_fresh(self, ref) -> bool:
         fetched = (ref.meta or {}).get("fetched_at")
         if not fetched:
             return False
@@ -501,9 +501,7 @@ class OrcidHandler(Handler):
             },
         )
 
-    def _render(  # type: ignore[no-untyped-def]
-        self, ref, *, summary: dict[str, int] | None, stale: bool
-    ) -> Response:
+    def _render(self, ref, *, summary: dict[str, int] | None, stale: bool) -> Response:
         meta = ref.meta or {}
         oid = meta.get("orcid_id", "?")
         lines = [f"# {ref.title}  ({_oi(ref.id)})", "", f"- ORCID: {oid}"]

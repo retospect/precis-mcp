@@ -53,10 +53,20 @@ def test_job_type_registered(name: str) -> None:
     assert name in known_job_types()
 
 
-@pytest.mark.parametrize("mod", [news_poll_jt, briefing_jt])
-def test_run_stub_raises(mod: Any) -> None:
-    with pytest.raises(NotImplementedError):
-        mod._run()
+@pytest.mark.parametrize(
+    ("module", "name"), [(news_poll_jt, "news_poll"), (briefing_jt, "briefing")]
+)
+def test_dispatch_only_types_have_no_run_landmine(module: object, name: str) -> None:
+    """news_poll and briefing are dispatch-only: their ``_run`` landmine
+    functions (and the ``run=`` assignments on their ``JobTypeSpec``) were
+    removed rather than left as unreachable ``raise NotImplementedError`` —
+    see ``JobTypeSpec.__post_init__``'s "run, dispatch, or submit+poll"
+    invariant, which both satisfy via ``dispatch`` alone."""
+    assert not hasattr(module, "_run")
+    spec = get_job_type(name)
+    assert spec is not None
+    assert spec.run is None
+    assert spec.dispatch is not None
 
 
 # ── news_poll dispatcher ───────────────────────────────────────────────

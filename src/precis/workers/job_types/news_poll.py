@@ -56,17 +56,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.set_meta(feeds=r["claimed"], new_articles=r["ok"], failed=r["failed"])
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("news_poll runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="news_poll",
     params_schema=_PARAMS_SCHEMA,
     compatible_executors=frozenset({"claude_inproc"}),
     requires=frozenset(),  # deterministic in-process — no executor capabilities
     description="Poll the news_sources RSS registry and mint new news articles.",
-    run=_run,
     dispatch=_dispatch,
 )
 

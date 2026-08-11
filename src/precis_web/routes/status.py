@@ -110,7 +110,7 @@ def _rollback_request_conn() -> None:
             log.exception("status: rollback of shared request connection failed")
 
 
-def _safe(fn) -> Any:  # type: ignore[no-untyped-def]
+def _safe(fn) -> Any:
     """Run a query closure, returning its result or a sentinel on error."""
     try:
         return fn()

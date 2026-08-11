@@ -199,7 +199,7 @@ class ProvenanceHandler(Handler):
 
         self._mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or None
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -308,7 +308,7 @@ class ProvenanceHandler(Handler):
             transitive=transitive,
             suggest_candidates=suggest_candidates,
         )
-        return Response(body=render_batch(results, view=v))  # type: ignore[arg-type]
+        return Response(body=render_batch(results, view=v))
 
 
 __all__ = ["ProvenanceHandler"]

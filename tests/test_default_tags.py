@@ -257,10 +257,10 @@ class _NoteLikeHandler(Handler):
         note_like=True,
     )
 
-    def put(self, **_kw: Any) -> Response:  # type: ignore[override]
+    def put(self, **_kw: Any) -> Response:
         return Response(body="ok")
 
-    def tag(self, **_kw: Any) -> Response:  # type: ignore[override]
+    def tag(self, **_kw: Any) -> Response:
         return Response(body="ok")
 
 
@@ -274,7 +274,7 @@ class _NotNoteLikeHandler(Handler):
         note_like=False,
     )
 
-    def put(self, **_kw: Any) -> Response:  # type: ignore[override]
+    def put(self, **_kw: Any) -> Response:
         return Response(body="ok")
 
 

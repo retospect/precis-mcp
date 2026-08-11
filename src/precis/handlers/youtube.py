@@ -93,7 +93,7 @@ class YouTubeHandler(CacheBackedHandler):
 
     # ── overridden get to honour view='languages' ─────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -138,7 +138,7 @@ class YouTubeHandler(CacheBackedHandler):
 
     # ── refresh-by-slug support ───────────────────────────────────────
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         """Reconstruct ``<video_id>:<lang_part>`` from cached meta.
 
         Cache meta stores ``video_id`` and ``languages`` from the
@@ -235,7 +235,7 @@ class YouTubeHandler(CacheBackedHandler):
 
     # ── render: append per-video deep-link below attribution ──────────
 
-    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _render(self, ref, cache, *, hit):
         resp = super()._render(ref, cache, hit=hit)
         meta = cache.meta or {}
         video_id = meta.get("video_id") or ref.slug

@@ -3036,7 +3036,7 @@ def test_dispatch_openai_compat_threads_the_pin(
         def __init__(self, cfg: object) -> None:
             pass
 
-        def complete(self, messages, *, extra_body=None):  # type: ignore[no-untyped-def]
+        def complete(self, messages, *, extra_body=None):
             captured["extra_body"] = extra_body
             return summ.LlmResult(text="ok", total_tokens=3)
 
@@ -3065,7 +3065,7 @@ def _compat_capture_client(
         def __init__(self, cfg: object) -> None:
             pass
 
-        def complete(self, messages, *, extra_body=None):  # type: ignore[no-untyped-def]
+        def complete(self, messages, *, extra_body=None):
             captured["extra_body"] = extra_body
             return summ.LlmResult(text="own", total_tokens=3)
 
@@ -3137,7 +3137,7 @@ def _local_capture_client(
         def __init__(self, config: object) -> None:
             seen["timeout"] = config.timeout  # type: ignore[attr-defined]
 
-        def complete(self, messages, *, extra_body=None):  # type: ignore[no-untyped-def]
+        def complete(self, messages, *, extra_body=None):
             return summ.LlmResult(text="ok", total_tokens=1)
 
     monkeypatch.setattr(summ, "LlmClient", _FakeClient)

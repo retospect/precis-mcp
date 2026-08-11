@@ -105,7 +105,7 @@ def ase_available() -> bool:
     return True
 
 
-def _to_ase(scene: Scene):  # type: ignore[no-untyped-def]
+def _to_ase(scene: Scene):
     """Scene → ASE Atoms (requires ASE)."""
     from ase import Atoms
 

@@ -28,13 +28,16 @@ Grammar (whitespace-separated tokens; ``#`` starts a comment)::
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from precis.cad.dsl import build_config
 from precis.cad.graph import Design
 from precis.cad.vec import Transform, identity, rotation, translation
+
+log = logging.getLogger(__name__)
 
 _OPS = ("add", "cut", "intersect")
 _LOC_RE = re.compile(r"^@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$")
@@ -52,6 +55,82 @@ class SceneError(ValueError):
     """A malformed design source line."""
 
 
+class PolarPattern(TypedDict):
+    """A ``polar:nNrR`` radial-array node config — ``n`` copies spread
+    evenly around a circle of radius ``r`` centred on the node's ``@x,y``
+    (``z`` from the node's own ``loc``)."""
+
+    kind: Literal["polar"]
+    n: float
+    r: float
+
+
+class LinearPattern(TypedDict):
+    """A ``linear:nNdx..dy..dz..`` grid-array node config — ``n`` copies
+    stepped by ``(dx, dy, dz)`` per instance from the node's ``loc``."""
+
+    kind: Literal["linear"]
+    n: float
+    dx: float
+    dy: float
+    dz: float
+
+
+#: A node's array-pattern config. The ``kind`` field discriminates the
+#: union — narrowing on it (``pat["kind"] == "polar"``) gives mypy a real,
+#: correctly-typed comparison (each member's ``kind`` is a ``Literal``, not
+#: a same-typed-as-the-rest ``float``), unlike the previous flat
+#: ``dict[str, float]`` shape where ``kind`` held a ``str`` in a
+#: nominally-all-``float`` mapping.
+NodePattern = PolarPattern | LinearPattern
+
+
+def coerce_pattern(raw: Any) -> NodePattern | None:
+    """Reconstruct a :class:`NodePattern` from a stored pattern payload
+    (the inverse of :meth:`NodeSpec.to_meta`'s ``m["pattern"] = dict(...)``).
+
+    Public so every reader of a persisted pattern shape — ``chunks.meta``
+    (:meth:`NodeSpec.from_meta`) and the ``cad_nodes.pattern`` JSONB column
+    (``precis.store._cad_ops.cad_load`` / ``cad_node``) alike — goes through
+    one coercion instead of each re-deriving its own ``dict``-to-``NodePattern``
+    cast.
+
+    Deserialization, not validation of untrusted input — the shape was
+    written by ``to_meta`` on a previous ``put``. An unrecognised /
+    missing ``kind`` (a payload from a future pattern type, or hand-edited
+    JSON) degrades to ``None`` (no pattern) rather than raising, so a
+    stored node with a pattern this build doesn't understand still loads
+    as a plain (unpatterned) node instead of failing the whole design.
+    ⚠ The degrade is lossy on a load→edit→save round trip (``to_meta``
+    omits a ``None`` pattern), so the drop is logged at WARNING — if a
+    future pattern kind ever ships, old builds discard it noisily, not
+    silently.
+    """
+    if not isinstance(raw, dict):
+        if raw is not None:
+            log.warning("coerce_pattern: dropping non-dict pattern %r", raw)
+        return None
+    kind = raw.get("kind")
+    if kind == "polar":
+        return PolarPattern(
+            kind="polar", n=float(raw.get("n", 0)), r=float(raw.get("r", 0))
+        )
+    if kind == "linear":
+        return LinearPattern(
+            kind="linear",
+            n=float(raw.get("n", 0)),
+            dx=float(raw.get("dx", 0.0)),
+            dy=float(raw.get("dy", 0.0)),
+            dz=float(raw.get("dz", 0.0)),
+        )
+    log.warning(
+        "coerce_pattern: dropping pattern with unrecognised kind %r "
+        "(a re-save will discard it)",
+        kind,
+    )
+    return None
+
+
 @dataclass(frozen=True)
 class NodeSpec:
     """One parsed design node — the serialisable unit the handler stores."""
@@ -62,7 +141,7 @@ class NodeSpec:
     component: str
     loc: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rot: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    pattern: dict[str, float] | None = None  # {kind:'polar'|'linear', ...}
+    pattern: NodePattern | None = None
 
     def to_meta(self) -> dict[str, Any]:
         """The ``chunks.meta`` payload for this node."""
@@ -82,7 +161,6 @@ class NodeSpec:
         """Reconstruct from a stored ``chunks.meta`` payload."""
         loc = [float(x) for x in meta.get("loc", [0, 0, 0])]
         rot = [float(x) for x in meta.get("rot", [0, 0, 0])]
-        pat = meta.get("pattern")
         return cls(
             name=name,
             op=str(meta.get("op", "add")),
@@ -90,7 +168,7 @@ class NodeSpec:
             component=str(meta.get("component", "part")),
             loc=(loc[0], loc[1], loc[2]),
             rot=(rot[0], rot[1], rot[2]),
-            pattern=dict(pat) if isinstance(pat, dict) else None,
+            pattern=coerce_pattern(meta.get("pattern")),
         )
 
 
@@ -148,22 +226,22 @@ def parse_source(text: str) -> SceneSpec:
 
         loc = (0.0, 0.0, 0.0)
         rot = (0.0, 0.0, 0.0)
-        pattern: dict[str, float] | None = None
+        pattern: NodePattern | None = None
         for tok in toks[3:]:
             if m := _LOC_RE.match(tok):
                 loc = (float(m[1]), float(m[2]), float(m[3]))
             elif m := _ROT_RE.match(tok):
                 rot = (float(m[1]), float(m[2]), float(m[3]))
             elif m := _POLAR_RE.match(tok):
-                pattern = {"kind": "polar", "n": float(m[1]), "r": float(m[2])}  # type: ignore[dict-item]
+                pattern = PolarPattern(kind="polar", n=float(m[1]), r=float(m[2]))
             elif m := _LINEAR_RE.match(tok):
-                pattern = {
-                    "kind": "linear",  # type: ignore[dict-item]
-                    "n": float(m[1]),
-                    "dx": float(m[2] or 0.0),
-                    "dy": float(m[3] or 0.0),
-                    "dz": float(m[4] or 0.0),
-                }
+                pattern = LinearPattern(
+                    kind="linear",
+                    n=float(m[1]),
+                    dx=float(m[2] or 0.0),
+                    dy=float(m[3] or 0.0),
+                    dz=float(m[4] or 0.0),
+                )
             else:
                 raise SceneError(f"line {lineno}: unrecognised token {tok!r}")
 
@@ -196,19 +274,17 @@ def _fmt_num(x: float) -> str:
     return str(int(x)) if x == int(x) else repr(x)
 
 
-def _pattern_token(pat: dict[str, float]) -> str:
+def _pattern_token(pat: NodePattern) -> str:
     """The ``polar:``/``linear:`` source token for a node pattern."""
-    kind = pat["kind"]
-    if kind == "polar":  # type: ignore[comparison-overlap]
-        return f"polar:n{int(pat['n'])}r{_fmt_num(float(pat['r']))}"
-    if kind == "linear":  # type: ignore[comparison-overlap]
+    if pat["kind"] == "polar":
+        return f"polar:n{int(pat['n'])}r{_fmt_num(pat['r'])}"
+    if pat["kind"] == "linear":
         tok = f"linear:n{int(pat['n'])}"
-        for axis in ("dx", "dy", "dz"):
-            v = float(pat.get(axis, 0.0))
+        for axis, v in (("dx", pat["dx"]), ("dy", pat["dy"]), ("dz", pat["dz"])):
             if v != 0.0:
                 tok += f"{axis}{_fmt_num(v)}"
         return tok
-    raise SceneError(f"unknown pattern kind {kind!r}")  # pragma: no cover
+    raise SceneError(f"unknown pattern kind {pat['kind']!r}")  # pragma: no cover
 
 
 def _node_line(node: NodeSpec) -> str:
@@ -267,17 +343,17 @@ def _pattern_transforms(node: NodeSpec) -> list[Transform]:
     pat = node.pattern
     base_rot = rotation(*node.rot) if node.rot != (0.0, 0.0, 0.0) else identity()
     out: list[Transform] = []
-    if pat["kind"] == "polar":  # type: ignore[index]
+    if pat["kind"] == "polar":
         n = int(pat["n"])
-        r = float(pat["r"])
+        r = pat["r"]
         z = node.loc[2]
         for i in range(n):
             theta = 360.0 * i / n
             xf = rotation(0.0, 0.0, theta).compose(translation(r, 0.0, z))
             out.append(xf.compose(base_rot))
-    elif pat["kind"] == "linear":  # type: ignore[index]
+    elif pat["kind"] == "linear":
         n = int(pat["n"])
-        dx, dy, dz = float(pat["dx"]), float(pat["dy"]), float(pat["dz"])
+        dx, dy, dz = pat["dx"], pat["dy"], pat["dz"]
         for i in range(n):
             xf = translation(
                 node.loc[0] + i * dx, node.loc[1] + i * dy, node.loc[2] + i * dz

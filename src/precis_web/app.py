@@ -38,7 +38,7 @@ def create_app(
     cfg = web_config or WebConfig.from_env()
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+    async def lifespan(app: FastAPI):
         owns_runtime = False
         if getattr(app.state, "runtime", None) is None:
             from precis.runtime import build_runtime

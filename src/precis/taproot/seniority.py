@@ -42,6 +42,7 @@ from typing import Any
 
 from precis.errors import BadInput
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+from precis.taproot.hub import EVIDENCE_SRC_KINDS
 from precis.utils import handle_registry
 
 #: The two roles that feed the seniority split (`establishes` is the
@@ -53,14 +54,17 @@ _CONTRADICTS_ROLE = "contradicts"
 _ALL_ROLES = (*_SUPPORT_ROLES, _CONTRADICTS_ROLE)
 _CITES_RELATION = "cites"
 
-#: Evidence source kinds — mirrors :data:`precis.taproot.hub._EVIDENCE_SRC_KINDS`
-#: (kept as a separate copy here rather than importing the private write-door
-#: constant, same reasoning as :func:`_is_claim_hub`'s docstring). Evidence
-#: edges have attached from a patent source since ``attach_evidence`` grew
-#: patent support (docs/backlog/patent-evidence-parity.md); the evidence
-#: read queries below must accept the same source kinds the write door does,
-#: or a patent's establishes/corroborates edge silently never surfaces here.
-_EVIDENCE_SRC_KINDS = ("paper", "patent")
+#: Evidence source kinds — imported from :data:`precis.taproot.hub.
+#: EVIDENCE_SRC_KINDS`, the single hand-maintained definition (see that
+#: module's docstring for why it's deliberately NOT derived from
+#: ``KindSpec.corpus_role``). Evidence edges have attached from a patent
+#: source since ``attach_evidence`` grew patent support (docs/backlog/
+#: patent-evidence-parity.md); the evidence read queries below must accept
+#: the same source kinds the write door does, or a patent's establishes/
+#: corroborates edge silently never surfaces here. Tupled for the ``%s
+#: = ANY(%s)`` SQL params below, which want a list-friendly shape rather
+#: than a frozenset.
+_EVIDENCE_SRC_KINDS: tuple[str, ...] = tuple(sorted(EVIDENCE_SRC_KINDS))
 
 _UNDETERMINED_NOTE = "seniority undetermined: no intra-set citation edges held"
 

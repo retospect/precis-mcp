@@ -107,7 +107,7 @@ def patch_pdf_metadata(
     # `import precis.ingest.pdf_writer` cheap for callers that
     # only want the dataclasses (e.g. tests).
     try:
-        import fitz  # type: ignore[import-not-found]
+        import fitz
     except ImportError:
         log.warning("pymupdf (fitz) not available; PDF write-back disabled")
         return PatchOutcome(pre_hash, None, None, "error")

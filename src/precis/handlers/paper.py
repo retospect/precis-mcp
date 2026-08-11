@@ -284,7 +284,7 @@ class PaperHandler(Handler):
 
     # -- acquire: the gated dream stub-mint tool -----------------------------
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         identifier: str | None = None,
@@ -564,7 +564,7 @@ class PaperHandler(Handler):
 
     # -- get -----------------------------------------------------------------
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -674,7 +674,7 @@ class PaperHandler(Handler):
 
     # -- search --------------------------------------------------------------
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,

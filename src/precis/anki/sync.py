@@ -44,8 +44,8 @@ class AnkiNotInstalled(AnkiSyncError):
 
 def _import_anki() -> tuple[Any, Any]:
     try:
-        import anki.sync_pb2 as sp  # type: ignore[import-not-found]
-        from anki.collection import Collection  # type: ignore[import-not-found]
+        import anki.sync_pb2 as sp
+        from anki.collection import Collection
     except ModuleNotFoundError as e:  # pragma: no cover - env-dependent
         raise AnkiNotInstalled(
             "the `anki` package is not installed on this runner. Install it with "

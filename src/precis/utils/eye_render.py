@@ -62,6 +62,20 @@ _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 
 #: Long ingested documents whose structure is per-chunk KeyBERT clustering
 #: (F20) rather than a heading tree — routed to the keyword-cluster fisheye.
+#:
+#: NOT a pure ``KindSpec.corpus_role`` derivation (kept hand-maintained on
+#: purpose, pinned by ``tests/test_kind_totality.py``): ``web`` carries no
+#: ``corpus_role`` (it's a fetched-cache provider, not a document-family
+#: kind) yet legitimately belongs here — a scraped page has body chunks and
+#: no heading tree, same as a paper. A pure ``corpus_role in ("evidence",
+#: "spec")`` derivation would therefore *drop* ``web`` from this set, which
+#: is exactly the dangerous direction ("derived set removes a hand-
+#: maintained member") that stays a hand call rather than an auto-swap.
+#: Flagged for a human call (not applied here): ``edgar`` shares
+#: ``corpus_role="evidence"`` with paper/patent/datasheet and looks like it
+#: belongs in this set too (a long SEC filing with section-labelled body
+#: chunks, same shape as a patent) — today an ``eg<id>`` eye falls through
+#: to the link-kind note renderer instead of the cluster-TOC one.
 _DOC_KINDS: frozenset[str] = frozenset({"paper", "patent", "web", "datasheet", "cfp"})
 
 _SUMMARY_CAP = 300

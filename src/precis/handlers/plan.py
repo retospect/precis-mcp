@@ -135,7 +135,7 @@ class PlanHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -162,7 +162,7 @@ class PlanHandler(Handler):
 
     # ── put: create a plan, or add a node ────────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -266,7 +266,7 @@ class PlanHandler(Handler):
 
     # ── edit: text / move / markers / cursor ─────────────────────────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -334,7 +334,7 @@ class PlanHandler(Handler):
 
     # ── delete: soft-retire ──────────────────────────────────────────
 
-    def delete(  # type: ignore[override]
+    def delete(
         self,
         *,
         id: str | int | None = None,

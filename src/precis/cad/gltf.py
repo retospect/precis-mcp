@@ -147,7 +147,7 @@ class _GlbBuilder:
         return len(self.bufferViews) - 1
 
     def _material(self, rgba: tuple[float, float, float, float]) -> int:
-        key = tuple(round(c, 4) for c in rgba)  # type: ignore[assignment]
+        key = tuple(round(c, 4) for c in rgba)
         if key in self._mat_cache:
             return self._mat_cache[key]
         mat: dict[str, Any] = {

@@ -253,7 +253,7 @@ def run_pathway(
         # Not a dataclass field, so it stays out of `effective`/content_key —
         # the injected geometry addresses via `config.slab.structure_ref`
         # (set by the caller) rather than the Atoms bytes.
-        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)  # type: ignore[attr-defined]
+        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)
     results = run(cfg, log=log)
 
     results_json, graph_json = _analysis_payloads(cfg, results)
@@ -370,7 +370,7 @@ def run_seed_partial(
     c = copy.deepcopy(cfg)
     c.mlip.backend, c.mlip.model, c.mlip.models = backend, model, []
     if slab_extxyz is not None:
-        c._prebuilt_slab = _hydrate_slab(slab_extxyz)  # type: ignore[attr-defined]
+        c._prebuilt_slab = _hydrate_slab(slab_extxyz)
     injected = getattr(c, "_prebuilt_slab", None) is not None
 
     lattice: dict[str, float] = {}
@@ -944,7 +944,7 @@ def aggregate_seed_partials(
     cfg = _prep(config, force_backend)
     effective = cfg.to_dict()
     if slab_extxyz is not None:
-        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)  # type: ignore[attr-defined]
+        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)
 
     partials = [r["partial"] for r in seed_results]
     results = aggregate_partials(cfg, partials)

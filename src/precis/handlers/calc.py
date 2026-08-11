@@ -63,7 +63,7 @@ class CalcHandler(Handler):
         _ = hub
         self._sympy = sympy
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,

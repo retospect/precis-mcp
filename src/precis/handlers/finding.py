@@ -138,7 +138,7 @@ class FindingHandler(NumericRefHandler):
     # put — create a new finding (idempotent on deterministic pub_id)
     # ──────────────────────────────────────────────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -953,7 +953,7 @@ class FindingHandler(NumericRefHandler):
     # get — intercept view='evidence' (Taproot Phase 2c), else base
     # ──────────────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -1055,7 +1055,7 @@ class FindingHandler(NumericRefHandler):
     # search — status-filtered TOON table
     # ──────────────────────────────────────────────────────────────────
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -1272,7 +1272,7 @@ class FindingHandler(NumericRefHandler):
     # edit — pick_candidate (multi-candidate disambiguation)
     # ──────────────────────────────────────────────────────────────────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: int | str | None = None,
@@ -1694,7 +1694,7 @@ class FindingHandler(NumericRefHandler):
     # cite — explicitly not supported
     # ──────────────────────────────────────────────────────────────────
 
-    def cite(self, *, id: str | int | None = None, **_kw: Any) -> Response:  # type: ignore[override]
+    def cite(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         """Findings are not externally citable.
 
         The finding's role in published text is the
@@ -1721,7 +1721,7 @@ class FindingHandler(NumericRefHandler):
     # _render_one — begat-style detail rendering
     # ──────────────────────────────────────────────────────────────────
 
-    def _render_one(self, ref: Ref, tags: Any) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: Any) -> str:
         """Render one finding record in begat style.
 
         Sections (omitted when empty):

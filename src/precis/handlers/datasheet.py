@@ -154,7 +154,7 @@ class DatasheetHandler(PaperHandler):
                 # The paper editor owns the bibliographic-field preview;
                 # stitch our meta-only preview in front when there is one
                 # so the caller sees both halves of the patch in one call.
-                bib_preview = super().edit(id=id, dry_run=dry_run, **bib)  # type: ignore[misc]
+                bib_preview = super().edit(id=id, dry_run=dry_run, **bib)
                 if meta_preview is None:
                     return bib_preview
                 return Response(body=f"{meta_preview.body}\n\n{bib_preview.body}")
@@ -167,7 +167,7 @@ class DatasheetHandler(PaperHandler):
         if bib:
             # The paper editor rebuilds search cards + returns its own summary;
             # let it own the response when bibliographic fields also changed.
-            return super().edit(id=id, dry_run=dry_run, **bib)  # type: ignore[misc]
+            return super().edit(id=id, dry_run=dry_run, **bib)
         return Response(body=f"updated datasheet {id}: {', '.join(meta_patch)}.")
 
     @staticmethod

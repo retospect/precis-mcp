@@ -95,7 +95,7 @@ class MathHandler(CacheBackedHandler):
 
     # ── canonicalization & cache key ──────────────────────────────────
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         """Return the input query stored in cache meta.
 
         Lets ``mode='refresh'`` work when the caller addressed by
@@ -149,7 +149,7 @@ class MathHandler(CacheBackedHandler):
 
     # ── response polish — append per-query deep-link to attribution ───
 
-    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _render(self, ref, cache, *, hit):
         """Override to inject Wolfram's per-query deep-link in the footer."""
         # Reuse the base body assembly but rewrite the footer line.
         resp = super()._render(ref, cache, hit=hit)

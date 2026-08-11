@@ -178,7 +178,7 @@ def test_transcripts_disabled_raises_not_found(
     import sys
 
     from youtube_transcript_api._errors import (
-        TranscriptsDisabled,  # type: ignore[import-not-found]
+        TranscriptsDisabled,
     )
 
     class Bad(_StubApi):
@@ -197,7 +197,7 @@ def test_no_transcript_raises_not_found(
     import sys
 
     from youtube_transcript_api._errors import (
-        NoTranscriptFound,  # type: ignore[import-not-found]
+        NoTranscriptFound,
     )
 
     class Bad(_StubApi):
@@ -218,7 +218,7 @@ def test_video_unavailable_raises_not_found(
     import sys
 
     from youtube_transcript_api._errors import (
-        VideoUnavailable,  # type: ignore[import-not-found]
+        VideoUnavailable,
     )
 
     class Bad(_StubApi):

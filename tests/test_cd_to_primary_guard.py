@@ -117,7 +117,7 @@ def test_primary_session_is_untouched(monkeypatch) -> None:
 
 def test_non_string_command_is_allowed(monkeypatch) -> None:
     _patch(monkeypatch)
-    assert evaluate(None, WT) is None  # type: ignore[arg-type]
+    assert evaluate(None, WT) is None
 
 
 # ── main() / stdin-JSON wiring + escape hatch ───────────────────────────────

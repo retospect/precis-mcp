@@ -109,7 +109,7 @@ class PathwayHandler(Handler):
         _ = hub
 
     # -- put -------------------------------------------------------------
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -279,7 +279,7 @@ class PathwayHandler(Handler):
         )
 
     # -- get -------------------------------------------------------------
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -474,9 +474,7 @@ class PathwayHandler(Handler):
         return topology_to_text(topo) if topo else "(no network)"
 
     # -- delete ----------------------------------------------------------
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None:
             raise BadInput("pathway delete needs an id")
         store = self.hub.store
@@ -487,7 +485,7 @@ class PathwayHandler(Handler):
         return Response(body=f"deleted pathway '{id}'")
 
     # -- tag -------------------------------------------------------------
-    def tag(  # type: ignore[override]
+    def tag(
         self,
         *,
         id: str | int | None = None,

@@ -166,7 +166,7 @@ class PatentHandler(Handler):
 
     # ── verbs ──────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -218,7 +218,7 @@ class PatentHandler(Handler):
 
         return self._render_overview(ref)
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -376,9 +376,7 @@ class PatentHandler(Handler):
 
         return response
 
-    def put(  # type: ignore[override]
-        self, **_kw: Any
-    ) -> Response:
+    def put(self, **_kw: Any) -> Response:
         raise Unsupported(
             "patent kind is read-only",
             next=(

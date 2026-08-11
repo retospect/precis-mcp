@@ -9,6 +9,7 @@ calls and to hide kinds whose env requirements aren't met.
 from __future__ import annotations
 
 import os
+from abc import ABC
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -136,7 +137,7 @@ class KindSpec:
         return getattr(self, f"supports_{verb}")
 
 
-class Handler:
+class Handler(ABC):
     """Base for all handlers.
 
     Subclasses override the verbs they support and declare a `KindSpec`
@@ -146,6 +147,13 @@ class Handler:
     Construction: :func:`precis.dispatch._try` builds the instance,
     then calls :meth:`_register_with` to publish it to the
     :class:`~precis.dispatch.Hub`.
+
+    Subclassing ``ABC`` (rather than a plain class) is what makes
+    ``@abstractmethod`` bind on descendants like
+    :class:`~precis.handlers._cache_base.CacheBackedHandler` — a
+    handler that declares an abstract hook but never overrides it now
+    fails at construction time instead of silently inheriting the
+    unimplemented method.
     """
 
     spec: ClassVar[KindSpec]
@@ -180,7 +188,7 @@ class Handler:
         spec = self.spec
         hub.register_handler(spec.kind, self)
         for verb in _ALL_VERBS:
-            if spec.supports(verb):  # type: ignore[arg-type]
+            if spec.supports(verb):
                 hub.register_ability(spec.kind, verb, None, getattr(self, verb))
         hub.register_overview(spec.kind, spec.description)
 

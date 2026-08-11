@@ -69,7 +69,7 @@ class ConversationHandler(Handler):
             raise InitError("conv: store required")
         self.store = hub.store
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -135,7 +135,7 @@ class ConversationHandler(Handler):
         # Default: overview.
         return self._render_overview(slug, ref)
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -240,7 +240,7 @@ class ConversationHandler(Handler):
 
     # ── put: capture-on-write turn append ──────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,

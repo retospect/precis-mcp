@@ -433,6 +433,15 @@ def test_index_query_embed_hang_fails_fast(
             time.sleep(5)
             return MockEmbedder(dim=32).embed_one(text)  # pragma: no cover
 
+        def is_ready(self) -> bool:
+            return True
+
+        def warmup(self) -> None:  # pragma: no cover — unused
+            return None
+
+        def unload(self) -> None:  # pragma: no cover — unused
+            return None
+
     idx = FileCorpusIndex(
         files=files,
         embedder=_HangingEmbedder(),
@@ -487,6 +496,15 @@ def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:
             # Query embedding still goes through this — keep it
             # deterministic so cosine ranks something.
             return MockEmbedder(dim=32).embed_one(text)
+
+        def is_ready(self) -> bool:
+            return True
+
+        def warmup(self) -> None:  # pragma: no cover — unused
+            return None
+
+        def unload(self) -> None:  # pragma: no cover — unused
+            return None
 
     idx2 = FileCorpusIndex(
         files=files,

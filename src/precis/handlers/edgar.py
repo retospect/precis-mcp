@@ -122,7 +122,7 @@ class EdgarHandler(Handler):
 
     # ── verbs ──────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -179,7 +179,7 @@ class EdgarHandler(Handler):
             return self._render_view(ref, view)
         return self._render_overview(ref)
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -274,7 +274,7 @@ class EdgarHandler(Handler):
 
         return response
 
-    def put(self, **_kw: Any) -> Response:  # type: ignore[override]
+    def put(self, **_kw: Any) -> Response:
         raise Unsupported(
             "edgar kind is read-only (public record)",
             next=(

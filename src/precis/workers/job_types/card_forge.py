@@ -74,10 +74,6 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("card_forge runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="card_forge",
     params_schema=_PARAMS_SCHEMA,
@@ -87,7 +83,6 @@ SPEC = JobTypeSpec(
         "Morning card work: refresh mastery, rework failing anki cards, mint "
         "today's new cards from concepts."
     ),
-    run=_run,
     dispatch=_dispatch,
 )
 

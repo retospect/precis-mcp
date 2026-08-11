@@ -88,7 +88,7 @@ class RandomHandler(Handler):
         self.hub = hub
         self.store: Store = hub.store
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         view: str | None = None,

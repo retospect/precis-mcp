@@ -128,7 +128,7 @@ class JobHandler(NumericRefHandler):
 
     # ── put: validated submit ───────────────────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -576,7 +576,7 @@ class JobHandler(NumericRefHandler):
 
     # ── render: header + status + summary + recent events ──────────
 
-    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         lines = [f"# job {ref.id}"]
         status = _status_of(tags)
         if status is not None:

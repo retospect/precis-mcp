@@ -139,7 +139,7 @@ class OpsClient:
         if self._inner is not None:
             return self._inner
         try:
-            import epo_ops  # type: ignore[import-not-found]
+            import epo_ops
         except ImportError as e:
             raise OpsError(
                 "python-epo-ops-client is not installed; "
@@ -207,7 +207,7 @@ class OpsClient:
 
     def _published_data(self, docdb: str, *, endpoint: str) -> bytes:
         try:
-            import epo_ops.models  # type: ignore[import-not-found]
+            import epo_ops.models
         except ImportError as e:
             raise OpsError("python-epo-ops-client missing") from e
 

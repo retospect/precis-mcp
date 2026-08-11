@@ -122,7 +122,7 @@ class RelaxResult:
     from_cache: bool = False
     cache_key: str | None = None
     structure_sha: str | None = None
-    final_geometry: dict | None = None  # type: ignore[type-arg]
+    final_geometry: dict | None = None
     # Storage-ready ``forces``, set by the handler like ``final_geometry``
     # above — but LABEL-paired, not canonical-rank-indexed (gripe 161576 FIX
     # 1): ``forces_labels[i]`` names the atom whose vector is
@@ -266,7 +266,7 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     try:
         from ase.optimize import FIRE as _Optimizer
     except ImportError:
-        from ase.optimize import BFGS as _Optimizer  # type: ignore[assignment]
+        from ase.optimize import BFGS as _Optimizer
 
     atoms = export._to_ase(scene)
     labels = list(scene.atoms)
@@ -317,7 +317,7 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     )
 
 
-def _ml_calculator(model: str):  # type: ignore[no-untyped-def]
+def _ml_calculator(model: str):
     """Instantiate an ASE calculator for an MLIP, or raise RelaxUnsupported.
 
     The import is isolated here so a missing backend gives one clean
@@ -345,7 +345,7 @@ def _ml_calculator(model: str):  # type: ignore[no-untyped-def]
     raise RelaxUnsupported(f"unknown MLIP model {model!r} (try 'mace_mp' or 'chgnet')")
 
 
-def _cell_filter(atoms, cell: str):  # type: ignore[no-untyped-def]
+def _cell_filter(atoms, cell: str):
     """Wrap ``atoms`` in an ASE strain filter so the optimiser relaxes the
     lattice alongside the positions, masked per :data:`_CELL_MASKS`.
 

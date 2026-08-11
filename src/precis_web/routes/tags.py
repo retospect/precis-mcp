@@ -183,7 +183,7 @@ async def refs_by_tag(
         "LIMIT %s OFFSET %s"
     )
     offset = (page - 1) * page_size
-    with store.pool.connection() as conn:  # type: ignore[attr-defined]
+    with store.pool.connection() as conn:
         count_row = conn.execute(count_sql, tuple(params)).fetchone()
         total = int(count_row[0]) if count_row and count_row[0] is not None else 0
         rows = conn.execute(page_sql, (*params, page_size, offset)).fetchall()
@@ -309,7 +309,7 @@ async def delete_tag(
             ),
         )
     store = get_store(request)
-    with store.pool.connection() as conn:  # type: ignore[attr-defined]
+    with store.pool.connection() as conn:
         with conn.transaction():
             conn.execute(
                 "DELETE FROM tags WHERE namespace = %s AND value = %s",

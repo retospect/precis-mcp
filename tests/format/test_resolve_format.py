@@ -30,7 +30,7 @@ def _stdout(*, isatty: bool):
     """
 
     class _Stream(io.StringIO):
-        def isatty(self) -> bool:  # type: ignore[override]
+        def isatty(self) -> bool:
             return isatty
 
     saved = sys.stdout

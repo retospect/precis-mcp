@@ -780,17 +780,12 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     )
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("quest_tick runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="quest_tick",
     params_schema=PARAMS_SCHEMA,
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
     description=DESCRIPTION,
-    run=_run,
     dispatch=_dispatch,
 )
 

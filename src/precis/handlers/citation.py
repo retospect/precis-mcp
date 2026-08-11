@@ -92,7 +92,7 @@ class CitationHandler(NumericRefHandler):
     # put — create a verified citation
     # ──────────────────────────────────────────────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -336,7 +336,7 @@ class CitationHandler(NumericRefHandler):
     # get — render the stored citation
     # ──────────────────────────────────────────────────────────────────
 
-    def _render_one(self, ref: Ref, tags: Any) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: Any) -> str:
         """Render one citation record.
 
         Pulls the claim / source / verifier fields out of ``ref.meta``

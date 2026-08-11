@@ -106,7 +106,7 @@ class PcbHandler(Handler):
         self.embedder = hub.embedder
 
     # ── put ──────────────────────────────────────────────────────────
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -167,7 +167,7 @@ class PcbHandler(Handler):
         return Response(body=head + "\n" + self._toc(design))
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -584,9 +584,7 @@ class PcbHandler(Handler):
         )
 
     # ── delete ───────────────────────────────────────────────────────
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput("delete(kind='pcb') requires id= (the design slug)")
         ref = resolve_live_slug_ref(self.store, kind="pcb", id=str(id).strip())
@@ -595,7 +593,7 @@ class PcbHandler(Handler):
         return Response(body=f"retired pcb design {ref.slug} ({n} instance(s))")
 
     # ── search ───────────────────────────────────────────────────────
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,

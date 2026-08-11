@@ -305,7 +305,7 @@ class TodoHandler(NumericRefHandler):
 
     # ── get: single-ref ancestry + tree view ──────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -351,7 +351,7 @@ class TodoHandler(NumericRefHandler):
 
     # ── search: tree-aware view router ────────────────────────────
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -376,7 +376,7 @@ class TodoHandler(NumericRefHandler):
 
     # ── put: parent_id + level guard at create ────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -688,7 +688,7 @@ class TodoHandler(NumericRefHandler):
 
     # ── edit: in-place text rewrite (polish the wording) ──────────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -1002,7 +1002,7 @@ class TodoHandler(NumericRefHandler):
 
     # ── links view: synthesize the virtual parent edge ───────────
 
-    def _render_links_view(self, ref: Ref) -> Response:  # type: ignore[override]
+    def _render_links_view(self, ref: Ref) -> Response:
         """Prepend the virtual ``parent`` edge to the stored-link view.
 
         ``parent`` lives in the ``refs.parent_id`` column, not the
@@ -1094,7 +1094,7 @@ class TodoHandler(NumericRefHandler):
         return Response(body=body, ref_id=ref_id)
 
 
-def _status_of(tags: list) -> str:  # type: ignore[type-arg]
+def _status_of(tags: list) -> str:
     """Return the STATUS: value from a tag list, or ``'open'`` as default."""
     for t in tags:
         if str(t).startswith("STATUS:"):

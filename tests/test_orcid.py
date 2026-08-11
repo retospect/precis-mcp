@@ -211,7 +211,7 @@ class _FakeStore:
     def find_paper_ref_by_identifier(self, value: str) -> int | None:
         return self.held.get(value)
 
-    def upsert_stub_paper(self, *, identifiers, title, year, set_by):  # type: ignore[no-untyped-def]
+    def upsert_stub_paper(self, *, identifiers, title, year, set_by):
         self.next_id += 1
         rid = self.next_id
         for _k, v in identifiers:
@@ -219,7 +219,7 @@ class _FakeStore:
         self.stubs.append((list(identifiers), set_by))
         return rid, True
 
-    def add_link(self, *, src_ref_id, dst_ref_id, relation, set_by, meta):  # type: ignore[no-untyped-def]
+    def add_link(self, *, src_ref_id, dst_ref_id, relation, set_by, meta):
         self.links.append((src_ref_id, dst_ref_id, relation, meta or {}))
 
 

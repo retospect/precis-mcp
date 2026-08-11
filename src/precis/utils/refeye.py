@@ -74,7 +74,18 @@ SEMANTIC_RELATIONS: frozenset[str] = frozenset(
 
 #: Kind → ring group. Anything unlisted falls into "Notes" (memory / finding /
 #: gripe / conv / todo …) — the "noted on this" bucket.
-_CITED_KINDS: frozenset[str] = frozenset({"paper", "datasheet", "patent", "cfp"})
+#:
+#: The document-family kinds — ``KindSpec.corpus_role in ("evidence",
+#: "spec")`` (paper/patent/datasheet = citable evidence; cfp/edgar = a
+#: read-only requirements/filing doc, never cited as evidence but still a
+#: "Cited"-shaped reference). Kept as a static literal (this module has no
+#: hub reachable at import time) rather than importing every handler —
+#: ``tests/test_kind_totality.py`` pins it equal to the live
+#: ``corpus_role``-derived set so a kind gaining/losing a corpus role can't
+#: drift silently.
+_CITED_KINDS: frozenset[str] = frozenset(
+    {"paper", "datasheet", "patent", "cfp", "edgar"}
+)
 _XREF_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 
 #: Max entries rendered per group before the overflow line (§6: no silent cap).

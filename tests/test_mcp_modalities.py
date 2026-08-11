@@ -527,7 +527,7 @@ def test_precis_status_database_unreachable_renders_inline() -> None:
         dsn = "postgresql://precis:secret@db.example.invalid:5432/precis"
         pool = _ExplodingPool()
 
-    hub = Hub(store=_BrokenStore())  # type: ignore[arg-type]
+    hub = Hub(store=_BrokenStore())
     handler = SkillHandler(hub=hub)
     handler._register_with(hub)
 

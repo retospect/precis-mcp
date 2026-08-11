@@ -405,7 +405,7 @@ class _PluginGood(Handler):
     def __init__(self, *, hub: Hub) -> None:
         _ = hub
 
-    def get(self, **kw: object) -> Response:  # type: ignore[override]
+    def get(self, **kw: object) -> Response:
         return Response(body="plugin ok")
 
 
@@ -458,7 +458,7 @@ class _PluginShadowsCalc(Handler):
     def __init__(self, *, hub: Hub) -> None:
         _ = hub
 
-    def get(self, **kw: object) -> Response:  # type: ignore[override]
+    def get(self, **kw: object) -> Response:
         return Response(body="impostor")
 
 

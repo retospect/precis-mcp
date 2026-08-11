@@ -63,7 +63,7 @@ class _VerbCompleter(Completer):
     keys are filtered so completion narrows as the line fills out.
     """
 
-    def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def]
+    def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         try:
             tokens = shlex.split(text, posix=True)
@@ -245,11 +245,11 @@ def _silence_tqdm() -> None:
         return
     orig_init = tqdm.tqdm.__init__
 
-    def quiet_init(self, *a, **kw):  # type: ignore[no-untyped-def]
+    def quiet_init(self, *a, **kw):
         kw["disable"] = True
         return orig_init(self, *a, **kw)
 
-    tqdm.tqdm.__init__ = quiet_init  # type: ignore[assignment]
+    tqdm.tqdm.__init__ = quiet_init
 
 
 def _build_payload(verb: str, tokens: list[str]) -> dict[str, Any]:

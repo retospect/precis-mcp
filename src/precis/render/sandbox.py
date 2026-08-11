@@ -115,7 +115,7 @@ class RenderResult:
     duration_s: float
 
 
-def _preexec(mem_mb: int, cpu_s: int, fsize_mb: int, max_nproc: int):  # type: ignore[no-untyped-def]
+def _preexec(mem_mb: int, cpu_s: int, fsize_mb: int, max_nproc: int):
     """Build the child ``preexec_fn`` that applies rlimits after fork.
 
     Each limit is best-effort: a platform that rejects one (macOS ignores

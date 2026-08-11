@@ -95,7 +95,7 @@ class MessageHandler(NumericRefHandler):
     kind: ClassVar[str] = "message"
     sense: ClassVar[str] = "message"
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -278,7 +278,7 @@ class MessageHandler(NumericRefHandler):
 
         return self._render_create_ack(ref.id, target=meta["target"])
 
-    def _render_create_ack(  # type: ignore[override]
+    def _render_create_ack(
         self,
         ref_id: int,
         target: str | None = None,
@@ -298,7 +298,7 @@ class MessageHandler(NumericRefHandler):
         )
         return Response(body=body)
 
-    def _render_one(self, ref: Any, tags: list[Any]) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Any, tags: list[Any]) -> str:
         meta = ref.meta or {}
         lines = [f"# message {ref.id}", ref.title]
         lines.append("")

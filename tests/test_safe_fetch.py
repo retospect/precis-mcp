@@ -396,7 +396,7 @@ def test_pinning_backend_installed_on_factory_clients() -> None:
         backend = client._transport._pool._network_backend  # type: ignore[attr-defined]
         assert isinstance(backend, backend_cls)
     transport = pinning_transport()
-    assert isinstance(transport._pool._network_backend, backend_cls)  # type: ignore[attr-defined]
+    assert isinstance(transport._pool._network_backend, backend_cls)
 
 
 def test_safe_get_refuses_unguarded_client() -> None:

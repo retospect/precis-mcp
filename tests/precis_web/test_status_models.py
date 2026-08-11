@@ -248,7 +248,7 @@ def test_active_routing_ctx_resolves_default_chain_per_tier() -> None:
 def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
     """Render smoke: the Jinja template compiles, the tab is wired, and a
     cloud card's price + a local card's serving host both reach the HTML."""
-    runtime.store.list_refs = lambda **_kw: [  # type: ignore[method-assign]
+    runtime.store.list_refs = lambda **_kw: [
         _ref(
             162503,
             "z-ai/glm-5.2",

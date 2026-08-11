@@ -2103,7 +2103,7 @@ def test_paper_edit_duplicate_identifier_renders_resolver(
             )
         return (f"[{verb}] ok", False)
 
-    runtime.dispatch_with_status = _dup  # type: ignore[method-assign]
+    runtime.dispatch_with_status = _dup
     resp = client.post(
         "/papers/10/edit",
         data={"doi": "10.1234/example.2024"},
@@ -2850,11 +2850,11 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
             return list(fake_turns)
         return original_blocks(ref_id, **kw)
 
-    runtime.store.list_blocks_for_ref = blocks  # type: ignore[assignment]
+    runtime.store.list_blocks_for_ref = blocks
     try:
         resp = client.get("/refs/conv/40")
     finally:
-        runtime.store.list_blocks_for_ref = original_blocks  # type: ignore[assignment]
+        runtime.store.list_blocks_for_ref = original_blocks
 
     assert resp.status_code == 200
     # chunk_kind badge per turn.
@@ -4477,8 +4477,8 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
             out[99] = {"status": "failed", "level": ""}
         return out
 
-    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
-    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
+    tasks_mod._child_jobs = child_jobs
+    tasks_mod._load_tags = load_tags
     try:
         # Default: closed job hidden.
         resp = client.get("/tasks")
@@ -4489,8 +4489,8 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
         assert resp.status_code == 200
         assert "plan_tick attempt" in resp.text
     finally:
-        tasks_mod._child_jobs = original_child  # type: ignore[assignment]
-        tasks_mod._load_tags = original_tags  # type: ignore[assignment]
+        tasks_mod._child_jobs = original_child
+        tasks_mod._load_tags = original_tags
 
 
 def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
@@ -4534,10 +4534,10 @@ def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
             }
         }
 
-    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
-    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
-    tasks_mod._load_freeform_tags = load_freeform  # type: ignore[assignment]
-    tasks_mod._job_notes = job_notes  # type: ignore[assignment]
+    tasks_mod._child_jobs = child_jobs
+    tasks_mod._load_tags = load_tags
+    tasks_mod._load_freeform_tags = load_freeform
+    tasks_mod._job_notes = job_notes
     try:
         resp = client.get("/tasks")
         assert resp.status_code == 200
@@ -4626,10 +4626,10 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
             }
         }
 
-    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
-    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
-    tasks_mod._load_freeform_tags = load_freeform  # type: ignore[assignment]
-    tasks_mod._job_notes = job_notes  # type: ignore[assignment]
+    tasks_mod._child_jobs = child_jobs
+    tasks_mod._load_tags = load_tags
+    tasks_mod._load_freeform_tags = load_freeform
+    tasks_mod._job_notes = job_notes
     try:
         resp = client.get("/tasks")
         assert resp.status_code == 200
@@ -4709,10 +4709,10 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(client, runtime) 
             }
         }
 
-    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
-    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
-    tasks_mod._load_freeform_tags = load_freeform  # type: ignore[assignment]
-    tasks_mod._job_notes = job_notes  # type: ignore[assignment]
+    tasks_mod._child_jobs = child_jobs
+    tasks_mod._load_tags = load_tags
+    tasks_mod._load_freeform_tags = load_freeform
+    tasks_mod._job_notes = job_notes
     try:
         resp = client.get("/tasks")
         assert resp.status_code == 200
@@ -4989,13 +4989,13 @@ def test_patent_detail_renders_chunks(client, runtime) -> None:
             return list(fake_blocks)
         return original_blocks(ref_id, **kw)
 
-    runtime.store.fetch_refs_by_ids = fetch  # type: ignore[assignment]
-    runtime.store.list_blocks_for_ref = blocks  # type: ignore[assignment]
+    runtime.store.fetch_refs_by_ids = fetch
+    runtime.store.list_blocks_for_ref = blocks
     try:
         resp = client.get("/refs/patent/6172")
     finally:
-        runtime.store.fetch_refs_by_ids = original_fetch  # type: ignore[assignment]
-        runtime.store.list_blocks_for_ref = original_blocks  # type: ignore[assignment]
+        runtime.store.fetch_refs_by_ids = original_fetch
+        runtime.store.list_blocks_for_ref = original_blocks
 
     assert resp.status_code == 200
     assert "Chunks" in resp.text
@@ -5029,7 +5029,7 @@ def test_template_missing_key_does_not_500(client, monkeypatch) -> None:
     # Drop ``usage`` (and any other section) from the context by making
     # every section query raise — _safe returns None, the page should
     # render anyway with empty panels.
-    def _boom(store):  # type: ignore[no-untyped-def]
+    def _boom(store):
         raise RuntimeError("simulated stale schema")
 
     for name in (
@@ -5539,7 +5539,7 @@ def test_ask_followup_records_question_links_and_answer(
     assert answer_put["text"] == "The dream suggests X."
     assert answer_put["author"] == "asa"
     # The source thought made it into the prompt.
-    assert "A decision" in fake.prompt  # type: ignore[attr-defined]
+    assert "A decision" in fake.prompt
 
 
 def test_ask_followup_chunk_scoped_target(client, runtime, monkeypatch) -> None:

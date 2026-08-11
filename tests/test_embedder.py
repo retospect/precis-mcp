@@ -69,7 +69,7 @@ class TestMakeEmbedder:
 
     def test_unknown_name_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown embedder"):
-            make_embedder("nonsense")  # type: ignore[arg-type]
+            make_embedder("nonsense")
 
     def test_bge_m3_construction_is_lazy(self) -> None:
         # Constructing the embedder must NOT load torch /

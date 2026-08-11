@@ -76,7 +76,7 @@ def test_extent_enum_and_bare_int_agree() -> None:
 # ── rollup_edges ───────────────────────────────────────────────────
 
 
-def _named_set(rollup) -> set[tuple[int, str, int, int]]:  # type: ignore[no-untyped-def]
+def _named_set(rollup) -> set[tuple[int, str, int, int]]:
     return {
         (
             n.src,

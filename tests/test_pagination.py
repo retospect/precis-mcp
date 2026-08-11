@@ -212,7 +212,7 @@ class TestTTL:
 
         # Fast-forward the cache's clock past the TTL.
         original_now = cache._now
-        cache._now = (  # type: ignore[method-assign, assignment]  # 10ks later
+        cache._now = (  # type: ignore[method-assign]  # 10ks later
             lambda: original_now() + 10_000.0
         )
         assert cursor is not None

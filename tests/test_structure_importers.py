@@ -70,7 +70,7 @@ def test_register_and_get_adapter_round_trip() -> None:
 
 
 def test_get_adapter_unknown_name_raises_with_known_names() -> None:
-    register_adapter("known-source", lambda raw: None)  # type: ignore[arg-type,return-value]
+    register_adapter("known-source", lambda raw: None)  # type: ignore[arg-type]
     try:
         with pytest.raises(ValueError, match="known-source"):
             get_adapter("nope")

@@ -159,7 +159,7 @@ class DiagramHandler(Handler):
 
     # ── get ───────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -237,7 +237,7 @@ class DiagramHandler(Handler):
 
     # ── put ────────────────────────────────────────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -310,7 +310,7 @@ class DiagramHandler(Handler):
 
     # ── edit ───────────────────────────────────────────────────────────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -388,9 +388,7 @@ class DiagramHandler(Handler):
 
     # ── delete ─────────────────────────────────────────────────────────
 
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput(f"delete(kind='{self.LANG.kind}') requires id=")
         ref = resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=str(id).strip())

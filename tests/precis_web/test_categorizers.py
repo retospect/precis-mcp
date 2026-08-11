@@ -227,7 +227,7 @@ def test_categorizers_progress_fragment_renders(client: TestClient) -> None:
 
 
 @pytest.fixture
-def real_client(runtime_with_store) -> TestClient:  # type: ignore[no-untyped-def]
+def real_client(runtime_with_store) -> TestClient:
     return TestClient(create_app(runtime=runtime_with_store))
 
 

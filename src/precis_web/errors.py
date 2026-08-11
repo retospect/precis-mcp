@@ -20,7 +20,7 @@ from precis_web.deps import templates
 log = logging.getLogger(__name__)
 
 
-def register_error_handlers(app) -> None:  # type: ignore[no-untyped-def]
+def register_error_handlers(app) -> None:
     """Attach the PrecisError + catch-all handlers to ``app``."""
 
     @app.exception_handler(PrecisError)

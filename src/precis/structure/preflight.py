@@ -39,8 +39,8 @@ try:  # pragma: no cover - exercised via the [dft] extra in the test env
     from ase.calculators.calculator import all_changes as _all_changes
 except ImportError:  # ASE not installed — module still imports; using the
     # settle (check 2/3) without it fails earlier, in ``_scene_to_ase``.
-    _Calculator = object  # type: ignore[assignment,misc]
-    _all_changes = []  # type: ignore[assignment]
+    _Calculator = object  # type: ignore[assignment, misc]
+    _all_changes = []
 
 # ── element-in-box (the box is the *MLIP*, not EMT) ────────────────────────
 
@@ -295,7 +295,7 @@ def _check_elements(
 # ── check 2: the dumb universal settle ──────────────────────────────────────
 
 
-def _scene_to_ase(scene: Scene):  # type: ignore[no-untyped-def]
+def _scene_to_ase(scene: Scene):
     """Scene → ASE ``Atoms``, honouring the ``fixed`` bitmask as per-axis
     ``FixCartesian`` constraints (mirrors :mod:`relax`'s emt/ml rungs)."""
     from ase.constraints import FixCartesian
@@ -313,7 +313,7 @@ def _scene_to_ase(scene: Scene):  # type: ignore[no-untyped-def]
     return atoms, labels
 
 
-class _DumbField(_Calculator):  # type: ignore[misc]
+class _DumbField(_Calculator):
     """A minimal, element-agnostic classical field for the settle.
 
     Per pair within :data:`BOND_FACTOR` * (covalent-radii sum): stiff soft
@@ -367,12 +367,12 @@ class _DumbField(_Calculator):  # type: ignore[misc]
         self.results = {"energy": float(energy), "forces": forces}
 
 
-def _settle(atoms) -> None:  # type: ignore[no-untyped-def]
+def _settle(atoms) -> None:
     """Settle ``atoms`` in place under :class:`_DumbField`, capped + fast."""
     try:
         from ase.optimize import FIRE as _Optimizer
     except ImportError:
-        from ase.optimize import BFGS as _Optimizer  # type: ignore[assignment]
+        from ase.optimize import BFGS as _Optimizer
 
     atoms.calc = _DumbField()
     opt = _Optimizer(atoms, logfile=None)
@@ -429,7 +429,7 @@ def _vacuum_gaps(scaled: np.ndarray, axis: int) -> list[tuple[float, float]]:
     return gaps
 
 
-def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightReason]:  # type: ignore[no-untyped-def]
+def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightReason]:
     reasons: list[PreflightReason] = []
     n = len(labels)
     if n == 0:

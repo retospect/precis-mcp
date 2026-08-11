@@ -986,7 +986,7 @@ class TestParserRegistration:
         # The subparsers action's choices are the registered subcommands.
         sub_actions = [action for action in parser._actions if action.dest == "cmd"]
         assert sub_actions, "expected a subparsers action with dest='cmd'"
-        choices = sub_actions[0].choices  # type: ignore[attr-defined]
+        choices = sub_actions[0].choices
         assert choices is not None
         assert "watch" in choices
         assert "add" in choices  # sanity — B4 still registered

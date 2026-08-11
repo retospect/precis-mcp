@@ -48,7 +48,7 @@ def no_local_mlip(monkeypatch):
     # shadowing the submodule name — reach the module via importlib.
     relax_mod = importlib.import_module("precis.structure.relax")
 
-    def _no_mlip(model):  # type: ignore[no-untyped-def]
+    def _no_mlip(model):
         raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
 
     monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)

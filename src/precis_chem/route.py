@@ -72,7 +72,7 @@ class RouteHandler(Handler):
         self.embedder = hub.embedder
 
     # ── put ──────────────────────────────────────────────────────────
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -265,7 +265,7 @@ class RouteHandler(Handler):
             )
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -301,9 +301,7 @@ class RouteHandler(Handler):
         return Response(body=graph.render())
 
     # ── delete ────────────────────────────────────────────────────────
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput("delete(kind='route') requires id= (the route slug)")
         ref = self.store.get_ref(kind="route", id=str(id).strip())

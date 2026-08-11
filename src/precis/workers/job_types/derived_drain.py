@@ -254,17 +254,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     )
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("derived_drain runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="derived_drain",
     params_schema=PARAMS_SCHEMA,
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
     description=DESCRIPTION,
-    run=_run,
     dispatch=_dispatch,
 )
 

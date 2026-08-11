@@ -228,7 +228,7 @@ def run(args: argparse.Namespace) -> None:
         max_workers=args.max_workers,
     )
 
-    body = render_batch(results, view=args.view)  # type: ignore[arg-type]
+    body = render_batch(results, view=args.view)
 
     if args.out is not None:
         args.out.write_text(body, encoding="utf-8")

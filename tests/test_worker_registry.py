@@ -317,7 +317,7 @@ def test_discover_axis_ids_excludes_cascade_axes_and_lookup_tables() -> None:
     assert ids == sorted(ids)  # deterministic registration order
 
 
-def test_axis_service_config_row_overrides_default_off(store) -> None:  # type: ignore[no-untyped-def]
+def test_axis_service_config_row_overrides_default_off(store) -> None:
     """Mirrors ``cli/worker.py``'s per-axis wiring call:
     ``_svc_resolver.enabled(f"axis:{id}", default_on=(id in _axes_env_set))``.
     Every axis is default-OFF (no ``PRECIS_AXES_ENABLED`` seed) until a

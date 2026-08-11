@@ -102,7 +102,7 @@ class GripeHandler(NumericRefHandler):
 
     # ── put: create or append-comment ───────────────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -294,7 +294,7 @@ class GripeHandler(NumericRefHandler):
 
     # ── rendering: body + comment timeline ──────────────────────────
 
-    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         blocks = self.store.list_blocks_for_ref(ref.id)
         lines = [f"# {self._sense()} {ref.id}"]
         if ref.set_by:

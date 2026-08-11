@@ -239,7 +239,7 @@ class NewsHandler(CacheBackedHandler):
     def _slug_for(self, key: str) -> str:
         return slug_from_text(key, max_len=72) or "news-article"
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         return (cache.meta or {}).get("url")
 
     # ── upstream fetch ────────────────────────────────────────────────
@@ -249,7 +249,7 @@ class NewsHandler(CacheBackedHandler):
 
     # ── render: append source URL + cache footer ──────────────────────
 
-    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _render(self, ref, cache, *, hit):
         resp = super()._render(ref, cache, hit=hit)
         url = (cache.meta or {}).get("url") or ""
         footer = f"  Article: {url}\n  Cache:   {_format_cache_footer(cache)}"

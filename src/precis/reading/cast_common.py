@@ -66,7 +66,7 @@ def link_sources(
             store.add_link(
                 src_ref_id=int(draft_id),
                 dst_ref_id=int(ref_id),
-                relation=relation,  # type: ignore[arg-type]
+                relation=relation,
                 set_by="agent",
                 meta={"via": via, "date": date_tag},
             )

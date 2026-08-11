@@ -528,7 +528,7 @@ class DispatchMixin(RuntimeShape):
                 next=next_hint,
             )
 
-        if not handler.spec.supports(verb):  # type: ignore[arg-type]
+        if not handler.spec.supports(verb):
             verbs = [v for v in _VERBS if handler.spec.supports(v)]
             # ``options`` enumerates the supported verbs as the
             # recovery vocabulary; ``next`` gives a concrete
@@ -842,7 +842,7 @@ class DispatchMixin(RuntimeShape):
         for k in sorted(self.hub.kinds):
             handler = self.hub.handler_for(k)
             assert handler is not None  # every kind in hub.kinds has a handler
-            if handler.spec.supports(verb):  # type: ignore[arg-type]
+            if handler.spec.supports(verb):
                 out.append(k)
         return out
 

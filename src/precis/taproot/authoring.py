@@ -25,6 +25,7 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import (
     _DEFAULT_ROLE,
+    EVIDENCE_SRC_KINDS,
     HUB_ROLES,
     _grounding_chunk_ord,
     attach_evidence,
@@ -35,10 +36,14 @@ from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 __all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
 
 
-#: Supporter refs must be one of these kinds (taproot evidence relations / hub.py open #15:
-#: only paper-sourced claims get evidence). ``patent`` is included alongside
-#: ``paper`` — both are citable primary-source documents in this corpus.
-_SUPPORTER_KINDS: frozenset[str] = frozenset({"paper", "patent"})
+#: Supporter refs must be one of these kinds (taproot evidence relations /
+#: hub.py open #15: only paper-sourced claims get evidence) — the same
+#: :data:`precis.taproot.hub.EVIDENCE_SRC_KINDS` :func:`~precis.taproot.
+#: hub.attach_evidence` itself gates on, so a supporter this module accepts
+#: can never fail that door's own kind check. See that module's docstring
+#: for why the set is hand-maintained rather than ``KindSpec.corpus_role``-
+#: derived.
+_SUPPORTER_KINDS: frozenset[str] = EVIDENCE_SRC_KINDS
 
 
 def resolve_paper_ref_id(store: Any, paper: int | str) -> int:

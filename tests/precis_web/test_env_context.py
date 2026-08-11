@@ -27,7 +27,7 @@ from precis_web.app import create_app
 
 
 @pytest.fixture
-def real_client(runtime_with_store) -> TestClient:  # type: ignore[no-untyped-def]
+def real_client(runtime_with_store) -> TestClient:
     """A real FastAPI ``TestClient`` backed by the shared test DB (not the
     FakeStore ``client`` fixture) — needed to seed a real
     ``meta.assembled_context`` and prove the panel's SQL finds it."""

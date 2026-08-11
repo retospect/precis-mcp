@@ -228,7 +228,7 @@ class SemanticScholarHandler(CacheBackedHandler):
     def _slug_for(self, key: str) -> str:
         return slug_from_text(key, max_len=60) or "semanticscholar-query"
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         meta = cache.meta or {}
         # New rows stamp the canonical key directly; fall back to the
         # legacy ``query`` field for search rows written before that.

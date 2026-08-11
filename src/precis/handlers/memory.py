@@ -163,7 +163,7 @@ class MemoryHandler(NumericRefHandler):
 
     # ── get: default single-ref + view='argument' ─────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -178,7 +178,7 @@ class MemoryHandler(NumericRefHandler):
         # — same dispatch shape as QuestHandler.get's view='tree'.
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if view == "argument" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
@@ -193,7 +193,7 @@ class MemoryHandler(NumericRefHandler):
 
     # ── put / create: ref (title) + memory_body chunk ───────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -358,7 +358,7 @@ class MemoryHandler(NumericRefHandler):
 
     # ── edit: in-place body rewrite (+ optional title) ──────────────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -516,7 +516,7 @@ class MemoryHandler(NumericRefHandler):
                 return block.text
         return ref.title or ""
 
-    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Single-ref view: ``# memory <id>: <title>`` + body + tag line."""
         title = ref.title or ""
         header = f"# {self._sense()} {ref.id}"
@@ -541,7 +541,7 @@ class MemoryHandler(NumericRefHandler):
             out.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(out)
 
-    def _render_hits_table(self, refs: list[Ref]) -> str:  # type: ignore[override]
+    def _render_hits_table(self, refs: list[Ref]) -> str:
         """List view: ``refs.title`` is now a real title, so show it verbatim
         as the summary and count the body words hidden behind the id.
 

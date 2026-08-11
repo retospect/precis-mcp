@@ -112,12 +112,12 @@ class WikipediaHandler(CacheBackedHandler):
     def _slug_for(self, key: str) -> str:
         return slug_from_text(key, max_len=60) or "wikipedia-query"
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         return (cache.meta or {}).get("query")
 
     # ── provenance stamp ──────────────────────────────────────────────
 
-    def _apply_tag_ops_if_any(self, ref_id, tags, untags):  # type: ignore[no-untyped-def]
+    def _apply_tag_ops_if_any(self, ref_id, tags, untags):
         """Always stamp ``ORIGIN:wikipedia`` (plus any caller tags).
 
         Every cache write — fresh create *and* in-place refresh — routes
@@ -245,7 +245,7 @@ class WikipediaHandler(CacheBackedHandler):
 
     # ── render: append source URL + cache footer ──────────────────────
 
-    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _render(self, ref, cache, *, hit):
         resp = super()._render(ref, cache, hit=hit)
         url = (cache.meta or {}).get("url") or ""
         cache_state = _format_cache_footer(cache)

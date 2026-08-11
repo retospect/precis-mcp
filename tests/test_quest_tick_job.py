@@ -638,8 +638,7 @@ class TestRegistration:
         assert spec is not None
         assert spec.compatible_executors == frozenset({"coordinator"})
         assert spec.dispatch is not None
-        with pytest.raises(NotImplementedError):
-            spec.run()
+        assert spec.run is None
 
 
 class TestSimWaitSetReachesBarrierFanout:

@@ -26,18 +26,29 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from precis_web.deps import get_store, templates
+from precis.utils import kind_facts
+from precis_web.deps import get_runtime, get_store, templates
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_abstract, paper_head
 
 router = APIRouter(tags=["preview"])
 
 
-# Kinds addressed purely by numeric ref_id. NB ``finding`` is *not*
-# here: it carries a public ``pub_id`` (6-char base32) handle, so it
-# goes through the slug path — which tries the cite_key/pub_id lookup
-# first and falls back to a kind-verified numeric ref_id, so both
-# ``finding:<pub_id>`` and ``finding:<ref_id>`` resolve.
-_NUMERIC_KINDS: frozenset[str] = frozenset(
+# Kinds addressed purely by numeric ref_id — derived from ``KindSpec.
+# is_numeric`` (see :func:`_numeric_kinds`) MINUS :data:`_NUMERIC_KIND_
+# EXCEPTIONS`. Kept as a static fallback too (used when no hub is
+# reachable, e.g. a direct unit-test call) — ``tests/test_kind_totality.py``
+# pins it equal to the live derivation so the two can't drift apart.
+#
+# ``finding`` is the one exception: it carries a public ``pub_id`` (6-char
+# base32) handle, so it goes through the slug path — which tries the
+# cite_key/pub_id lookup first and falls back to a kind-verified numeric
+# ref_id, so both ``finding:<pub_id>`` and ``finding:<ref_id>`` resolve
+# (``tests/precis_web/test_resolve_ref_id.py::test_resolves_finding_by_
+# pub_id`` pins this — ``KindSpec.is_numeric=True`` on ``finding`` describes
+# its *storage* id shape, not this resolver's routing).
+_NUMERIC_KIND_EXCEPTIONS: frozenset[str] = frozenset({"finding"})
+
+_NUMERIC_KINDS_FALLBACK: frozenset[str] = frozenset(
     {
         "memory",
         "todo",
@@ -48,8 +59,27 @@ _NUMERIC_KINDS: frozenset[str] = frozenset(
         "message",
         "alert",
         "agentlog",
+        "folder",
+        "quest",
+        "concept",
+        "llm",
     }
 )
+
+
+def _numeric_kinds(hub: Any) -> frozenset[str]:
+    """The live numeric-kind set, derived from the booted hub's
+    ``KindSpec.is_numeric`` flags; falls back to
+    :data:`_NUMERIC_KINDS_FALLBACK` when no hub is reachable (a bare
+    unit-test call) or the derivation itself errors."""
+    if hub is None:
+        return _NUMERIC_KINDS_FALLBACK
+    try:
+        specs = kind_facts.specs_of(hub)
+        return kind_facts.numeric_kinds(specs) - _NUMERIC_KIND_EXCEPTIONS
+    except Exception:
+        return _NUMERIC_KINDS_FALLBACK
+
 
 #: Per-kind URL shapes for the click-through redirector. Slug or id
 #: substituted via ``{id}``. The match order is unimportant — falls
@@ -73,7 +103,9 @@ _PAGE_RE = re.compile(r"^p(?P<page>\d+)$")
 _CHUNK_RE = re.compile(r"^(?P<from>\d+)(?:\.\.(?P<to>\d+))?$")
 
 
-def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
+def _resolve_ref_id(
+    store: Any, kind: str, raw_id: str, *, hub: Any = None
+) -> int | None:
     """Map a ``kind:id`` pair to the numeric ``refs.ref_id``.
 
     Numeric kinds accept the id directly; slug kinds route through the
@@ -89,16 +121,22 @@ def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
     numeric branch is verified against ``refs.kind`` so it never
     redirects to a paper that doesn't exist. Returns ``None`` when the
     ref isn't found.
+
+    ``hub`` — the live :class:`~precis.dispatch.Hub`, when reachable —
+    lets :func:`_numeric_kinds` derive the numeric-kind set from
+    ``KindSpec.is_numeric`` instead of the static fallback; ``None``
+    (a bare unit-test call, or a route that hasn't wired it) degrades to
+    :data:`_NUMERIC_KINDS_FALLBACK`.
     """
     raw_id = raw_id.lstrip("#")
-    if kind in _NUMERIC_KINDS:
+    if kind in _numeric_kinds(hub):
         try:
             return int(raw_id)
         except ValueError:
             return None
     # Slug kind: cite_key / pub_id slug first, then a verified numeric
     # ref_id. cite_key wins on the (rare) chance a value collides.
-    with store.pool.connection() as conn:  # type: ignore[attr-defined]
+    with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM ref_identifiers "
             "WHERE id_kind IN ('cite_key', 'pub_id') AND id_value = %s "
@@ -120,7 +158,7 @@ def _resolve_ref_id(store: Any, kind: str, raw_id: str) -> int | None:
 
 def _chunk_to_page(store: Any, ref_id: int, ord_pos: int) -> int | None:
     """Look up ``page_first`` for a chunk at ``ord=ord_pos`` on ``ref_id``."""
-    with store.pool.connection() as conn:  # type: ignore[attr-defined]
+    with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT page_first FROM chunks WHERE ref_id = %s AND ord = %s",
             (ref_id, ord_pos),
@@ -169,7 +207,8 @@ async def preview(
     page jump) carries no chunk text, so it falls back to the lead.
     """
     store = get_store(request)
-    numeric_id = _resolve_ref_id(store, kind, ref_id)
+    hub = get_runtime(request).hub
+    numeric_id = _resolve_ref_id(store, kind, ref_id, hub=hub)
     if numeric_id is None:
         return templates.TemplateResponse(
             request,
@@ -182,7 +221,7 @@ async def preview(
         m = _CHUNK_RE.match(chunk)
         if m is not None:
             ord_for_quote = int(m.group("from"))
-    with store.pool.connection() as conn:  # type: ignore[attr-defined]
+    with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT title, deleted_at IS NOT NULL FROM refs WHERE ref_id = %s",
             (numeric_id,),
@@ -271,7 +310,8 @@ async def resolve(
     overview page.
     """
     store = get_store(request)
-    numeric_id = _resolve_ref_id(store, kind, ref_id)
+    hub = get_runtime(request).hub
+    numeric_id = _resolve_ref_id(store, kind, ref_id, hub=hub)
     if numeric_id is None:
         raise HTTPException(
             status_code=404,

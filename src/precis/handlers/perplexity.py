@@ -147,7 +147,7 @@ class _PerplexityBase(CacheBackedHandler):
         _, _, q = key.partition(":")
         return slug_from_text(q, max_len=60) or "perplexity-query"
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         """Reconstruct ``<model>:<query>`` from cached meta.
 
         Cache meta stores the original ``query`` and ``model`` so a
@@ -276,7 +276,7 @@ class _PerplexityBase(CacheBackedHandler):
 
     # ── render: append "Sources:" + Next: trailer ────────────────────
 
-    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _render(self, ref, cache, *, hit):
         resp = super()._render(ref, cache, hit=hit)
         meta = cache.meta or {}
         citations = meta.get("citations") or []
@@ -364,7 +364,7 @@ class _PerplexityBase(CacheBackedHandler):
 
     # ── cost trailer: distinguish imported cache entries from fetched ─
 
-    def _cost_str(self, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _cost_str(self, cache, *, hit):
         """Override: when the cache row was populated by
         ``put(mode='import')`` we want the trailer to say so plainly
         rather than just ``[cost: free]`` — agents can then tell at a
@@ -375,7 +375,7 @@ class _PerplexityBase(CacheBackedHandler):
 
     # ── put: import a pre-generated report as a $0 cache entry ───────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,

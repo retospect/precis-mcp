@@ -95,7 +95,7 @@ def _default_service_caller(url: str, payload: dict[str, Any]) -> dict[str, Any]
 
     resp = httpx.post(url, json=payload, timeout=_SERVICE_TIMEOUT_S)
     resp.raise_for_status()
-    return resp.json()  # type: ignore[no-any-return]
+    return resp.json()
 
 
 def _build_normalizer_argv(

@@ -74,7 +74,7 @@ class ProteinHandler(Handler):
         self.embedder = hub.embedder
 
     # ── put ──────────────────────────────────────────────────────────
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -263,7 +263,7 @@ class ProteinHandler(Handler):
             )
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -370,9 +370,7 @@ class ProteinHandler(Handler):
         )
 
     # ── delete ────────────────────────────────────────────────────────
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput("delete(kind='protein') requires id= (the protein slug)")
         ref = self.store.get_ref(kind="protein", id=str(id).strip())

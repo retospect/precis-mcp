@@ -187,7 +187,7 @@ def test_canonicalization_collapses_variants(handler: WebHandler) -> None:
     expected_slug = "example-com-article"
     cached = handler.store.get_cache_entry(
         provider="web",
-        request_hash=handler._hash(canonical_url_str),  # type: ignore[arg-type]
+        request_hash=handler._hash(canonical_url_str),
     )
     assert cached is not None
     ref, _ = cached
@@ -302,7 +302,7 @@ def test_slug_uses_human_readable_form(handler: WebHandler) -> None:
     handler.get(id="https://github.com/modelcontextprotocol/servers")
     cached = handler.store.get_cache_entry(
         provider="web",
-        request_hash=handler._hash("https://github.com/modelcontextprotocol/servers"),  # type: ignore[arg-type]
+        request_hash=handler._hash("https://github.com/modelcontextprotocol/servers"),
     )
     assert cached is not None
     ref, _ = cached
@@ -328,7 +328,7 @@ def test_fetch_produces_multiple_blocks(handler: WebHandler) -> None:
     handler.get(id="https://example.com/article")
     cached = handler.store.get_cache_entry(
         provider="web",
-        request_hash=handler._hash("https://example.com/article"),  # type: ignore[arg-type]
+        request_hash=handler._hash("https://example.com/article"),
     )
     assert cached is not None
     ref, _ = cached
@@ -345,7 +345,7 @@ def test_fetched_blocks_are_embedded(handler: WebHandler) -> None:
     handler.get(id="https://example.com/article")
     cached = handler.store.get_cache_entry(
         provider="web",
-        request_hash=handler._hash("https://example.com/article"),  # type: ignore[arg-type]
+        request_hash=handler._hash("https://example.com/article"),
     )
     assert cached is not None
     ref, _ = cached

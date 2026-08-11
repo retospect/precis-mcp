@@ -115,7 +115,7 @@ def _query_counter() -> Iterator[dict[str, int]]:
         counts["n"] += 1
         return original(self, *args, **kwargs)
 
-    psycopg.Connection.execute = counting_execute  # type: ignore[method-assign, assignment]
+    psycopg.Connection.execute = counting_execute  # type: ignore[method-assign]
     try:
         yield counts
     finally:

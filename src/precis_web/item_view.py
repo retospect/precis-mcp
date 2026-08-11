@@ -361,7 +361,20 @@ def presenter_for(kind: str) -> ItemPresenter:
 #: Kinds declared ``role='artifact'`` that fall back to when the live hub
 #: isn't reachable (mirrors ``routes/drive.py``'s ``_artifact_kinds``
 #: fallback — kept in sync by hand since both are small, static lists).
-_ARTIFACT_KIND_FALLBACK: tuple[str, ...] = ("draft", "structure", "cad", "todo")
+#: ``tests/test_kind_totality.py`` pins this equal to the live
+#: ``role_kinds(specs, "artifact")`` derivation (minus ``folder``, same as
+#: :func:`artifact_kinds` below excludes) so a newly-declared artifact kind
+#: failing to land here fails CI instead of only ever showing up when the
+#: hub happens to be reachable.
+_ARTIFACT_KIND_FALLBACK: tuple[str, ...] = (
+    "cad",
+    "draft",
+    "figure",
+    "mermaid",
+    "plan",
+    "structure",
+    "todo",
+)
 
 
 def artifact_kinds(hub: Any) -> list[str]:

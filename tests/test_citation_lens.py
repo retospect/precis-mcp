@@ -74,7 +74,7 @@ def _build_graph(store) -> dict[str, int]:
             }
         }
 
-    cl.fetch_citations_batch = fake_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = fake_fetch_batch
     return {"a": a, "b": b, "c": c, "e": e}
 
 
@@ -115,7 +115,7 @@ def test_materialize_skips_when_fresh(hub: Hub) -> None:
         calls["n"] += 1
         return {pid: {"references": [], "cited_by": []} for pid in paper_ids}
 
-    cl.fetch_citations_batch = counting_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = counting_fetch_batch
     written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
     assert written == 0
     assert calls["n"] == 0  # fresh → S2 not re-hit
@@ -156,7 +156,7 @@ def test_materialize_batches_across_multiple_cold_papers(hub: Hub) -> None:
             },
         }
 
-    cl.fetch_citations_batch = batch_fetch  # type: ignore[assignment]
+    cl.fetch_citations_batch = batch_fetch
 
     # Materialise F on its own first, so it's already fresh by the time the
     # combined call below runs — the single-paper path here is exactly what
@@ -242,7 +242,7 @@ def test_materialize_refresh_replaces_s2_neighbors(hub: Hub) -> None:
             for pid in paper_ids
         }
 
-    cl.fetch_citations_batch = shrunk_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = shrunk_fetch_batch
     cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=0)  # force re-fetch
 
     cites = hub.store.list_s2_neighbors(g["a"], "cites")
@@ -261,7 +261,7 @@ def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> Non
         calls["n"] += 1
         return base_fetch_batch(paper_ids)
 
-    cl.fetch_citations_batch = counting_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = counting_fetch_batch
 
     assert hub.store.s2_neighbors_fresh(g["a"]) is False
     fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
@@ -289,13 +289,13 @@ def test_materialize_fetch_failure_leaves_unstamped_and_retries(hub: Hub) -> Non
     ) -> dict[str, dict[str, list[dict[str, object]]]]:
         raise RuntimeError("s2 down")
 
-    cl.fetch_citations_batch = failing_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = failing_fetch_batch
     written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
     assert written == 0
     assert hub.store.events_for(g["a"], source="citation_edges") == []
     assert hub.store.s2_neighbors_fresh(g["a"]) is False
 
-    cl.fetch_citations_batch = good_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = good_fetch_batch
     assert cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30) is True
     assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
 
@@ -320,7 +320,7 @@ def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> Non
         calls["n"] += 1
         return base_fetch_batch(paper_ids)
 
-    cl.fetch_citations_batch = counting_fetch_batch  # type: ignore[assignment]
+    cl.fetch_citations_batch = counting_fetch_batch
 
     fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
     assert fetched is True

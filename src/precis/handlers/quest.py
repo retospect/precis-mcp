@@ -179,7 +179,7 @@ class QuestHandler(NumericRefHandler):
 
     # ── create: sync a create-time PRIO: into the prio column ────────
 
-    def _create(  # type: ignore[override]
+    def _create(
         self,
         *,
         text: str | None,
@@ -265,7 +265,7 @@ class QuestHandler(NumericRefHandler):
 
     # ── put: create or append a logbook entry ───────────────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -371,7 +371,7 @@ class QuestHandler(NumericRefHandler):
 
     # ── edit: in-place rewrite of the founding striving statement ────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -434,7 +434,7 @@ class QuestHandler(NumericRefHandler):
 
     # ── get: default single-ref + view='tree' rollup ────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -448,19 +448,19 @@ class QuestHandler(NumericRefHandler):
         # (links/log/raw) fall through to NumericRefHandler.get unchanged.
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if view == "tree" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_tree(ref))
         if view == "gaps" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_gaps_only(ref))
         if view == "dossier" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_dossier(ref))
         if view == "frontier" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_frontier(ref))
         if view == "leaderboard" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))  # type: ignore[arg-type]
+            ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_leaderboard(ref))
         # An unrecognised view on a concrete id would otherwise fall through to
         # NumericRefHandler.get, whose error lists only links/log/raw — hiding
@@ -578,7 +578,7 @@ class QuestHandler(NumericRefHandler):
         """Lifetime spend sunk into the quest — the sum of entry costs."""
         return sum(float((b.meta or {}).get("cost", 0) or 0) for b in entries)
 
-    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         status = _status_of(tags) or "active"
         meta = ref.meta or {}
         lines = [f"# quest {ref.id}: {ref.title.splitlines()[0]}"]

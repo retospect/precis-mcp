@@ -351,18 +351,6 @@ def compose_prompt(task: str) -> str:
     return "\n".join(lines)
 
 
-def _run_not_supported(**_kw: Any) -> None:  # pragma: no cover - guard
-    """Placeholder ``run`` — sandbox_run is driven by the claude_docker
-    executor's poll loop, which handles launch/poll/reap directly keyed
-    on the job_type. ``spec.run`` is never invoked for it."""
-    raise NotImplementedError(
-        "sandbox_run is executed by the claude_docker poll loop, not spec.run"
-    )
-
-
-run = _run_not_supported
-
-
 __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
@@ -372,7 +360,6 @@ __all__ = [
     "default_image",
     "read_mcp_enabled",
     "resolve_sandbox_model",
-    "run",
     "semantic_rejection",
     "validate_submit",
 ]

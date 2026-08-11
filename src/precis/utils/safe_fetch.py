@@ -237,7 +237,7 @@ def _pinning_backend_class() -> type[httpcore.SyncBackend]:
     """
     httpcore = require_optional("httpcore", extra="external")
 
-    class _PinningBackend(httpcore.SyncBackend):  # type: ignore[name-defined,misc]
+    class _PinningBackend(httpcore.SyncBackend):  # type: ignore[name-defined]
         def connect_tcp(
             self,
             host: str,
@@ -275,7 +275,7 @@ def pinning_transport(**httptransport_kwargs: Any) -> httpx.HTTPTransport:
     # stores the backend as ``_pool._network_backend``; swap it before any
     # request so all connections route through the pinning backend. Private
     # attrs, guarded by test_pinning_backend_is_installed.
-    transport._pool._network_backend = _pinning_backend_class()()  # type: ignore[attr-defined]
+    transport._pool._network_backend = _pinning_backend_class()()
     return transport
 
 

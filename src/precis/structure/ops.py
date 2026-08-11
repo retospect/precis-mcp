@@ -93,7 +93,7 @@ def _op_set_cell(scene: Scene, op: dict[str, Any]) -> None:
     if "lattice" in op:
         lattice = np.asarray(op["lattice"], dtype=float).reshape(3, 3)
         pbc = tuple(op.get("pbc", scene.cell.pbc))
-        scene.cell = Cell(lattice, pbc)  # type: ignore[arg-type]
+        scene.cell = Cell(lattice, pbc)
     else:
         cell = Cell.from_lengths_angles(
             op["a"],
@@ -102,7 +102,7 @@ def _op_set_cell(scene: Scene, op: dict[str, Any]) -> None:
             op.get("alpha", 90.0),
             op.get("beta", 90.0),
             op.get("gamma", 90.0),
-            tuple(op.get("pbc", scene.cell.pbc)),  # type: ignore[arg-type]
+            tuple(op.get("pbc", scene.cell.pbc)),
         )
         scene.cell = cell
 
@@ -161,7 +161,7 @@ def _op_add_bond(scene: Scene, op: dict[str, Any]) -> None:
             order=float(op.get("order", 1.0)),
             kind=op.get("kind", "pairwise"),
             provenance="declared",
-            image=tuple(op.get("image", (0, 0, 0))),  # type: ignore[arg-type]
+            image=tuple(op.get("image", (0, 0, 0))),
         )
     )
 
@@ -323,7 +323,7 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
         order = np.argsort(slab.positions[:, 2])
         frozen = set(order[: fix_layers * nx * ny].tolist())
     # (Re)seed the scene from the ASE slab, preserving ASE's atom order.
-    scene.cell = Cell(np.asarray(slab.cell), (True, True, True))  # type: ignore[arg-type]
+    scene.cell = Cell(np.asarray(slab.cell), (True, True, True))
     scene.atoms.clear()
     scene.bonds = []
     scene.measures = []

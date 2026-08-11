@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from precis.embedder import Embedder
 from precis.skill_index.cache import (
     CachedChunk,
     CacheEntry,
@@ -152,15 +153,17 @@ class FileCorpusIndex:
     def is_available(self) -> bool:
         """True iff a search call would route through cosine search.
 
-        False when no embedder is wired or when the embedder lacks
-        the duck-typed ``embed`` / ``embed_one`` / ``model``
-        attributes the index needs. Falsey result is the caller's
-        cue to use its lexical fallback.
+        False when no embedder is wired or when the embedder doesn't
+        satisfy the :class:`~precis.embedder.Embedder` protocol (which
+        the runtime-checkable ``isinstance`` check verifies structurally
+        — ``embed`` / ``embed_one`` / ``model`` / ``dim`` / ``is_ready``
+        / ``warmup`` / ``unload``). Falsey result is the caller's cue to
+        use its lexical fallback.
         """
         e = self._embedder
         if e is None:
             return False
-        return all(hasattr(e, attr) for attr in ("embed", "embed_one", "model"))
+        return isinstance(e, Embedder)
 
     # ── search ─────────────────────────────────────────────────────
 

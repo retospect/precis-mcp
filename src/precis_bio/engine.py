@@ -234,4 +234,4 @@ def resolve_engine(name: str | None) -> FoldEngine:
     cls = _ENGINES.get(key)
     if cls is None:
         raise ValueError(f"unknown fold engine {name!r}; known: {sorted(_ENGINES)}")
-    return cls()  # type: ignore[return-value]
+    return cls()

@@ -284,7 +284,15 @@ def test_item_row_carries_hover_thumbnail_actions() -> None:
 
 
 def test_artifact_kinds_falls_back_when_hub_is_none() -> None:
-    assert artifact_kinds(None) == ["draft", "structure", "cad", "todo"]
+    assert artifact_kinds(None) == [
+        "cad",
+        "draft",
+        "figure",
+        "mermaid",
+        "plan",
+        "structure",
+        "todo",
+    ]
 
 
 def test_artifact_kinds_reads_role_from_hub() -> None:
@@ -304,4 +312,12 @@ def test_artifact_kinds_falls_back_on_hub_error() -> None:
     hub = SimpleNamespace(
         kinds=["draft"], handler_for=lambda k: (_ for _ in ()).throw(RuntimeError())
     )
-    assert artifact_kinds(hub) == ["draft", "structure", "cad", "todo"]
+    assert artifact_kinds(hub) == [
+        "cad",
+        "draft",
+        "figure",
+        "mermaid",
+        "plan",
+        "structure",
+        "todo",
+    ]

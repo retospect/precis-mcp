@@ -111,7 +111,7 @@ class OracleHandler(Handler):
         # is absent or failing (see ``embed_query`` / ``query_vec_for``).
         self.embedder = hub.embedder
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -184,7 +184,7 @@ class OracleHandler(Handler):
             return Response(body=f"# oracle {handle}\n_{ref.title}_\n\n{body}")
         return self._render_random_entry(ref, blocks)
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,

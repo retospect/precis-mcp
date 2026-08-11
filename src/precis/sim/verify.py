@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from precis.sim.manifest import SimManifest
 from precis.sim.registry import SimEntry

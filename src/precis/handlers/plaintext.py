@@ -389,7 +389,7 @@ class PlaintextHandler(Handler):
 
     # ── get ────────────────────────────────────────────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -464,7 +464,7 @@ class PlaintextHandler(Handler):
 
     # ── search ─────────────────────────────────────────────────────
 
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,
@@ -592,7 +592,7 @@ class PlaintextHandler(Handler):
         "find-replace",
     )
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,

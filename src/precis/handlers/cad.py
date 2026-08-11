@@ -151,7 +151,7 @@ class CadHandler(Handler):
         )
 
     # ── put ──────────────────────────────────────────────────────────
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -203,7 +203,7 @@ class CadHandler(Handler):
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
     # ── derive ───────────────────────────────────────────────────────
-    def derive(  # type: ignore[override]
+    def derive(
         self,
         *,
         id: str | int,
@@ -261,7 +261,7 @@ class CadHandler(Handler):
         return Response(body=head + "\n" + self._tree_table(spec, handles))
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -348,9 +348,7 @@ class CadHandler(Handler):
         )
 
     # ── delete ───────────────────────────────────────────────────────
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput("delete(kind='cad') requires id= (the design slug)")
         ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
@@ -358,7 +356,7 @@ class CadHandler(Handler):
         return Response(body=f"retired cad design {ref.slug} ({n} chunk(s))")
 
     # ── search ───────────────────────────────────────────────────────
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,

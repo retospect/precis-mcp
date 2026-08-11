@@ -242,4 +242,4 @@ def resolve_engine(name: str | None) -> RetrosynthEngine:
         raise ValueError(
             f"unknown retrosynthesis engine {name!r}; known: {sorted(_ENGINES)}"
         )
-    return cls()  # type: ignore[return-value]
+    return cls()

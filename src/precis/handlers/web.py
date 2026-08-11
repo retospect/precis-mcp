@@ -106,7 +106,7 @@ class WebHandler(CacheBackedHandler):
         slug = slug_from_url(key)
         return slug or "web-fetch"
 
-    def _recover_key(self, ref, cache):  # type: ignore[no-untyped-def]
+    def _recover_key(self, ref, cache):
         """Return the canonical URL stored in cache meta.
 
         Lets ``mode='refresh'`` work when the caller addressed by
@@ -214,7 +214,7 @@ class WebHandler(CacheBackedHandler):
 
     # ── render: append source URL + fetched-at line ───────────────────
 
-    def _render(self, ref, cache, *, hit):  # type: ignore[no-untyped-def]
+    def _render(self, ref, cache, *, hit):
         resp = super()._render(ref, cache, hit=hit)
         url = (cache.meta or {}).get("url") or ""
         fetched = cache.fetched_at.date().isoformat() if cache.fetched_at else "?"

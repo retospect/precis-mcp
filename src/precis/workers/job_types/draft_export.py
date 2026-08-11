@@ -198,17 +198,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("draft_export runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="draft_export",
     params_schema=_PARAMS_SCHEMA,
     compatible_executors=frozenset({"claude_inproc"}),
     requires=frozenset(),  # deterministic in-process — no executor capabilities
     description="Render a draft to LaTeX and compile a PDF (deterministic).",
-    run=_run,
     dispatch=_dispatch,
 )
 

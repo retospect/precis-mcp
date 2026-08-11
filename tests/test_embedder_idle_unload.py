@@ -130,7 +130,7 @@ def _mk_service(
     # also starts is never exercised here — ticks are driven directly
     # via ``_probe_tick()``.
     service = EmbedderService(
-        embedder,  # type: ignore[arg-type]
+        embedder,
         max_inflight=4,
         warm=False,
         idle_s=idle_s,

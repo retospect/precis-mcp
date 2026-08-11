@@ -117,7 +117,7 @@ def test_cost_trailer_not_double_prefixed(runtime_stateless: PrecisRuntime) -> N
             supports_get=True,
         )
 
-        def get(self, **_kw):  # type: ignore[no-untyped-def]
+        def get(self, **_kw):
             return Response(body="hello", cost="[cost: ~$0.0020]")
 
     fake = _FakePaid()
@@ -1491,7 +1491,7 @@ def test_search_error_path_survives_fastmcp_convert_result(
         # errors; older paths return a content list.  Either way, the
         # rendered body must mention the error class.
         if hasattr(out_err, "content"):
-            blocks = out_err.content  # type: ignore[union-attr]
+            blocks = out_err.content
             assert getattr(out_err, "isError", False), (
                 "error path must set isError=True on the protocol surface"
             )
@@ -1529,14 +1529,14 @@ def test_search_default_kind_annotates_error_path(
     assert handler is not None
     original = handler.search
 
-    def _boom(**_kw):  # type: ignore[no-untyped-def]
+    def _boom(**_kw):
         raise BadInput("synthetic search failure")
 
     try:
-        handler.search = _boom  # type: ignore[method-assign]
+        handler.search = _boom
         out = runtime_with_store.dispatch("search", {"kind": "memory", "q": "anything"})
     finally:
-        handler.search = original  # type: ignore[method-assign]
+        handler.search = original
 
     assert "[error:BadInput]" in out, f"expected error envelope, got: {out!r}"
     assert "synthetic search failure" in out, (
@@ -1545,16 +1545,16 @@ def test_search_default_kind_annotates_error_path(
 
     # …and the non-Precis branch (gets wrapped as Internal but the
     # rendered envelope must still preserve the kind context).
-    def _explode(**_kw):  # type: ignore[no-untyped-def]
+    def _explode(**_kw):
         raise RuntimeError("synthetic non-precis failure")
 
     try:
-        handler.search = _explode  # type: ignore[method-assign]
+        handler.search = _explode
         out2 = runtime_with_store.dispatch(
             "search", {"kind": "memory", "q": "anything"}
         )
     finally:
-        handler.search = original  # type: ignore[method-assign]
+        handler.search = original
 
     assert "[error:Internal]" in out2
 

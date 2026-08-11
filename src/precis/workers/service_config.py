@@ -338,7 +338,7 @@ def set_reserve(
         row = cur.fetchone()
         conn.commit()
         assert row is not None
-        return row[0]  # type: ignore[no-any-return]
+        return row[0]
 
 
 def clear_reserve(store: Store, host: str) -> bool:

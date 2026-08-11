@@ -186,7 +186,7 @@ def run_tool_from_cli(tool_name: str, args: argparse.Namespace) -> str:
     # ``CallToolResult`` carries the ``isError`` flag plus a single
     # ``TextContent`` block; the operator wants the body text.
     if _is_call_tool_result(result):
-        return result.content[0].text  # type: ignore[union-attr]
+        return result.content[0].text
     return result
 
 

@@ -23,7 +23,7 @@ def _engine() -> Any | None:
     """The ``mermaidx`` module, or ``None`` when the ``[mermaid]`` extra is not
     installed (the dark path — validation degrades to accept-as-authored)."""
     try:
-        import mermaidx  # type: ignore[import-not-found]
+        import mermaidx
     except Exception:
         return None
     return mermaidx

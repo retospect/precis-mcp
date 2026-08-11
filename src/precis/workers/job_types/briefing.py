@@ -72,17 +72,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.set_meta(articles=r["articles"], brief_ref_id=r["ref_id"])
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("briefing runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="briefing",
     params_schema=_PARAMS_SCHEMA,
     compatible_executors=frozenset({"claude_inproc"}),
     requires=frozenset(),  # deterministic in-process — no executor capabilities
     description="Summarize recent news into a dated morning briefing ref.",
-    run=_run,
     dispatch=_dispatch,
 )
 

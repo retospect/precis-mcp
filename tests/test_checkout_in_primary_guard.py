@@ -184,7 +184,7 @@ def test_unrelated_command_is_allowed(monkeypatch) -> None:
 
 def test_non_string_command_is_allowed(monkeypatch) -> None:
     _patch(monkeypatch)
-    assert evaluate(None, MAIN) is None  # type: ignore[arg-type]
+    assert evaluate(None, MAIN) is None
 
 
 # ── main() / stdin-JSON wiring + escape hatch ───────────────────────────

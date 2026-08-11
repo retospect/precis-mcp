@@ -610,7 +610,7 @@ def _stub_handler() -> CacheBackedHandler:
     arguments. We bypass __init__ so we don't need a Hub.
     """
     h = _FakeCacheKindAsMath.__new__(_FakeCacheKindAsMath)
-    return h  # type: ignore[return-value]
+    return h
 
 
 def test_short_block_passes_through_unchanged() -> None:

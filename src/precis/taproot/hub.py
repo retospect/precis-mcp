@@ -15,7 +15,7 @@ Four functions:
    paper-grounded claim (open #15: only paper-sourced claims become hubs).
 2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
    in :data:`HUB_ROLES`, guarding the target is actually a claim hub and the
-   source is a paper/patent ref (:data:`_EVIDENCE_SRC_KINDS` backstop).
+   source is a paper/patent ref (:data:`EVIDENCE_SRC_KINDS` backstop).
    Also the single choke point for the deterministic prophetic-example
    caveat (patent-evidence-parity phase 4): a patent source whose grounding
    chunk carries ``PATENT_EXAMPLE:prophetic`` (``data/axes/
@@ -83,8 +83,25 @@ _DEFAULT_ROLE = "corroborates"
 #: :func:`attach_evidence`'s src-kind guard (open #15: only paper-sourced
 #: claims get evidence) — defense-in-depth behind
 #: :func:`precis.taproot.authoring.resolve_paper_ref_id`'s authoritative
-#: check, for any caller that reaches this door directly.
-_EVIDENCE_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent"})
+#: check, for any caller that reaches this door directly. The single
+#: definition (:mod:`precis.taproot.seniority`'s read side and
+#: :mod:`precis.taproot.authoring`'s ``_SUPPORTER_KINDS`` both import this
+#: rather than each keeping their own copy — the three-way hand-duplication
+#: this replaced was exactly the "KindSpec facts re-hardcoded downstream"
+#: drift class).
+#:
+#: **Deliberately NOT derived from ``KindSpec.corpus_role``.** Every kind
+#: flagged ``corpus_role="evidence"`` is ``{paper, patent, datasheet,
+#: edgar}`` — a pure derivation would silently let a datasheet or an SEC
+#: filing become scientific-claim evidence, which is a scope call on what
+#: "evidence" means for a Taproot claim hub (taproot.md open #15: "only
+#: paper-sourced claims become hubs"; the patent addition itself came from
+#: a deliberate design doc, docs/backlog/patent-evidence-parity.md), not a
+#: mechanical fact this codebase already declared elsewhere. Flagged here
+#: for a human call rather than auto-widened; see also
+#: :mod:`precis.taproot.seniority`'s read-query docstring, which needs the
+#: same set to stay in lock-step with whatever this evolves to.
+EVIDENCE_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent"})
 
 _STATUS_NS = "STATUS"
 _STATUS_CANONICAL = "canonical"
@@ -641,7 +658,7 @@ def attach_evidence(
         src = store.fetch_refs_by_ids([paper_ref_id], include_deleted=True).get(
             paper_ref_id
         )
-        if src is None or src.kind not in _EVIDENCE_SRC_KINDS:
+        if src is None or src.kind not in EVIDENCE_SRC_KINDS:
             kind_desc = "unknown" if src is None else src.kind
             raise BadInput(
                 f"paper_ref_id={paper_ref_id} is a {kind_desc!r} ref, not a "
@@ -902,6 +919,7 @@ def apply_placement(
 
 __all__ = [
     "CLAIM_LINK_RELATIONS",
+    "EVIDENCE_SRC_KINDS",
     "HUB_ROLES",
     "apply_placement",
     "attach_evidence",

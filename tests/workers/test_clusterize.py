@@ -174,12 +174,12 @@ def test_assign_all_overrides_statement_timeout_before_copy(
     orig_execute = psycopg.Cursor.execute
     orig_copy = psycopg.Cursor.copy
 
-    def spy_execute(self, query, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def spy_execute(self, query, *args, **kwargs):
         sql = query if isinstance(query, str) else str(query)
         calls.append(sql)
         return orig_execute(self, query, *args, **kwargs)
 
-    def spy_copy(self, statement, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def spy_copy(self, statement, *args, **kwargs):
         sql = statement if isinstance(statement, str) else str(statement)
         calls.append(sql)
         return orig_copy(self, statement, *args, **kwargs)

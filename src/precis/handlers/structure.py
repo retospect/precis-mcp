@@ -300,7 +300,7 @@ def _vec(args: dict[str, Any], *keys: str, default: Any = None) -> Any:
 def _build_cell(spec: dict[str, Any]) -> Cell:
     pbc = tuple(spec.get("pbc", (True, True, True)))
     if "lattice" in spec:
-        return Cell(np.array(spec["lattice"], dtype=float), pbc)  # type: ignore[arg-type]
+        return Cell(np.array(spec["lattice"], dtype=float), pbc)
     try:
         return Cell.from_lengths_angles(
             float(spec["a"]),
@@ -309,7 +309,7 @@ def _build_cell(spec: dict[str, Any]) -> Cell:
             float(spec.get("alpha", 90.0)),
             float(spec.get("beta", 90.0)),
             float(spec.get("gamma", 90.0)),
-            pbc,  # type: ignore[arg-type]
+            pbc,
         )
     except KeyError as exc:
         raise BadInput(
@@ -554,7 +554,7 @@ class StructureHandler(Handler):
         self.embedder = hub.embedder
 
     # ── put ──────────────────────────────────────────────────────────
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -632,7 +632,7 @@ class StructureHandler(Handler):
         )
 
     # ── edit ─────────────────────────────────────────────────────────
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
         id: str | int | None = None,
@@ -753,7 +753,7 @@ class StructureHandler(Handler):
         return self._toc_response(_scene, ref, handles, head_verb="derived")
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -1242,9 +1242,7 @@ class StructureHandler(Handler):
         )
 
     # ── delete ───────────────────────────────────────────────────────
-    def delete(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput("delete(kind='structure') requires id= (the design slug)")
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
@@ -2120,7 +2118,7 @@ class StructureHandler(Handler):
         )
 
     # ── search ───────────────────────────────────────────────────────
-    def search(  # type: ignore[override]
+    def search(
         self,
         *,
         q: str | None = None,

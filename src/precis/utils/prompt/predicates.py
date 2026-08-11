@@ -26,7 +26,7 @@ def _anchor_handle(ctx: AssemblyContext) -> str | None:
     prefix away. Cached under ``extras['anchor']`` so both the predicate
     and the doc_context builder share one query."""
     if "anchor" in ctx.extras:
-        return ctx.extras["anchor"]  # type: ignore[no-any-return]
+        return ctx.extras["anchor"]
     handle: str | None = None
     if ctx.store is not None:
         with ctx.store.pool.connection() as conn:
@@ -67,7 +67,7 @@ def _review_kind(ctx: AssemblyContext) -> str | None:
     so the predicate and the reviewer persona / section modules share one
     query."""
     if "review" in ctx.extras:
-        return ctx.extras["review"]  # type: ignore[no-any-return]
+        return ctx.extras["review"]
     review: str | None = None
     author = False
     if ctx.store is not None:
@@ -102,7 +102,7 @@ def is_patent(ctx: AssemblyContext) -> bool:
     ``plan_tick`` in the variable layer — no separate job_type (like
     reviewer / backfill mode). Memoised under ``extras['is_patent']``."""
     if "is_patent" in ctx.extras:
-        return ctx.extras["is_patent"]  # type: ignore[no-any-return]
+        return ctx.extras["is_patent"]
     result = False
     if ctx.store is not None:
         from precis.utils.workspace import Workspace
@@ -127,7 +127,7 @@ def _backfill_targets(ctx: AssemblyContext) -> list[str]:
     (or names no resolvable target). Cached under ``extras['backfill_targets']``
     so the predicate and the builder share one query."""
     if "backfill_targets" in ctx.extras:
-        return ctx.extras["backfill_targets"]  # type: ignore[no-any-return]
+        return ctx.extras["backfill_targets"]
     targets: list[str] = []
     if ctx.store is not None:
         with ctx.store.pool.connection() as conn:
@@ -168,7 +168,7 @@ def _project_plan(ctx: AssemblyContext) -> tuple[int, str] | None:
     ``extras['project_plan']`` so the predicate and the builder share the
     one query."""
     if "project_plan" in ctx.extras:
-        return ctx.extras["project_plan"]  # type: ignore[no-any-return]
+        return ctx.extras["project_plan"]
     result: tuple[int, str] | None = None
     if ctx.store is not None:
         with ctx.store.pool.connection() as conn:
@@ -222,7 +222,7 @@ def _bound_draft_ref(ctx: AssemblyContext) -> tuple[int, str, str] | None:
     ``extras['draft_ref']`` so the predicate and the builder share one
     query. ``None`` when there's no store or no draft bound."""
     if "draft_ref" in ctx.extras:
-        return ctx.extras["draft_ref"]  # type: ignore[no-any-return]
+        return ctx.extras["draft_ref"]
     result: tuple[int, str, str] | None = None
     if ctx.store is not None:
         with ctx.store.pool.connection() as conn:

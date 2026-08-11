@@ -155,10 +155,6 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.set_meta(scanned=n_scanned, converted=n_converted, failed=n_failed)
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("taproot_backfill runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="taproot_backfill",
     params_schema=_PARAMS_SCHEMA,
@@ -168,7 +164,6 @@ SPEC = JobTypeSpec(
         "Convert a draft scope's [pc]/[pa] cites into [fi] claim-hub cites "
         "(LLM cascade; serial, checkpointed)."
     ),
-    run=_run,
     dispatch=_dispatch,
 )
 

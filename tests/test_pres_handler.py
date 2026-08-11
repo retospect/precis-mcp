@@ -60,8 +60,8 @@ class TestNormalizeAuthors:
 
 def _ref(**meta: object) -> SimpleNamespace:
     return SimpleNamespace(
-        slug=meta.pop("slug", "deck1"),  # type: ignore[arg-type]
-        title=meta.pop("title", "Lecture 1"),  # type: ignore[arg-type]
+        slug=meta.pop("slug", "deck1"),
+        title=meta.pop("title", "Lecture 1"),
         meta=dict(meta),
     )
 

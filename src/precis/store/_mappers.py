@@ -46,7 +46,7 @@ def _coerce_vector(value: Any) -> list[float] | None:
     if hasattr(value, "to_list"):  # pgvector Vector (>=0.5)
         return list(value.to_list())
     if hasattr(value, "tolist"):  # numpy.ndarray (<0.5)
-        return value.tolist()  # type: ignore[no-any-return]
+        return value.tolist()
     if isinstance(value, str):  # unregistered text form "[a,b,c]"
         return [float(x) for x in value.strip("[]").split(",") if x.strip()]
     return list(map(float, value))

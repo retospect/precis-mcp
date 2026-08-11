@@ -34,6 +34,22 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+#: Executor lanes that actually read ``JobTypeSpec.run`` / ``.dispatch`` /
+#: ``.submit``+``.poll`` when they claim a job (see each module's own
+#: guard: ``claude_inproc._run_one``'s ``spec.dispatch is not None`` /
+#: hardcoded-name ``spec.run`` fallback, ``job_inproc._run_one``'s
+#: ``spec.dispatch is None`` failure, ``ssh_node.run_ssh_node_pass``'s
+#: ``submit``+``poll`` / ``dispatch`` gate, and ``coordinator``'s
+#: ``spec.dispatch is None`` failure). ``claude_docker`` is deliberately
+#: absent — ``run_claude_docker_pass`` claims ``sandbox_run`` rows and
+#: calls the ``sandbox_run`` module's functions directly, keyed on
+#: job_type name; it never reads any of these three fields, so a
+#: job_type whose *only* compatible executor is ``claude_docker``
+#: legitimately needs none of them set.
+_DISPATCH_PROTOCOL_EXECUTORS: frozenset[str] = frozenset(
+    {"claude_inproc", "job_inproc", "ssh_node", "coordinator"}
+)
+
 
 @dataclass(frozen=True)
 class JobTypeSpec:
@@ -44,7 +60,10 @@ class JobTypeSpec:
     compatible_executors: frozenset[str]
     requires: frozenset[str]
     description: str
-    run: Callable[..., Any]
+    #: ``None`` for job_types driven entirely through ``dispatch`` (or
+    #: the detached ``submit``/``poll`` pair) — see the class-level
+    #: ``__post_init__`` invariant for what "driven" requires.
+    run: Callable[..., Any] | None = None
     #: Optional submit-time check. Signature ``(store, *,
     #: gripe_id, params) -> str | None``: return an error message
     #: when the submit can't actually be carried out, ``None``
@@ -117,6 +136,47 @@ class JobTypeSpec:
     #: ``claude_docker``'s ``_terminate``, which always CAN kill because
     #: it owns the container directly).
     kill: Callable[..., Any] | None = None
+
+    def __post_init__(self) -> None:
+        """Enforce "the executor has something to call".
+
+        A job_type compatible with one of the dispatch-protocol
+        executors (:data:`_DISPATCH_PROTOCOL_EXECUTORS`) must set
+        ``run``, ``dispatch``, or the detached ``submit``+``poll``
+        pair — otherwise every one of those executors fails the job
+        at claim time with "no dispatch()" / "has no submit/poll or
+        dispatch" (see their own guards). Catching that here, at
+        registration time, turns a landmine that only detonates once a
+        job of that type is actually claimed into an immediate,
+        traceback-at-import error. ``claude_docker``-only job_types
+        (``sandbox_run``) are exempt — that executor bypasses this
+        protocol entirely.
+
+        ``submit``/``poll`` are also required to travel together: a
+        lone one of the pair satisfies neither ``ssh_node``'s ``if
+        spec.submit is not None and spec.poll is not None`` detached
+        gate nor its legacy ``dispatch`` fallback, so it would silently
+        fall through to "no submit/poll or dispatch" too — just less
+        obviously than an outright missing pair.
+        """
+        if (self.submit is None) != (self.poll is None):
+            raise ValueError(
+                f"job_type {self.name!r}: submit and poll must be set together "
+                "(ssh_node's detached protocol requires both or neither)"
+            )
+        has_dispatchable = (
+            self.run is not None
+            or self.dispatch is not None
+            or (self.submit is not None and self.poll is not None)
+        )
+        if not has_dispatchable and (
+            self.compatible_executors & _DISPATCH_PROTOCOL_EXECUTORS
+        ):
+            raise ValueError(
+                f"job_type {self.name!r}: compatible with a dispatch-protocol "
+                f"executor ({sorted(self.compatible_executors)}) but sets none "
+                "of run / dispatch / submit+poll"
+            )
 
 
 JOB_TYPE_PLUGIN_GROUP = "precis.job_types"
@@ -271,13 +331,15 @@ def _load_sandbox_run() -> JobTypeSpec:
     # rejected by validate_submit, not by an unknown-job_type error).
     from precis.workers.job_types import sandbox_run
 
+    # No run/dispatch/submit/poll: claude_docker (sandbox_run's sole
+    # compatible executor) bypasses the dispatch protocol entirely — see
+    # _DISPATCH_PROTOCOL_EXECUTORS and __post_init__'s exemption for it.
     return JobTypeSpec(
         name="sandbox_run",
         params_schema=sandbox_run.PARAMS_SCHEMA,
         compatible_executors=sandbox_run.COMPATIBLE_EXECUTORS,
         requires=sandbox_run.REQUIRES,
         description=sandbox_run.DESCRIPTION,
-        run=sandbox_run.run,
         validate_submit=sandbox_run.validate_submit,
     )
 

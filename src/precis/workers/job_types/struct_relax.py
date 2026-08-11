@@ -600,17 +600,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.set_status("succeeded")
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("struct_relax runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="struct_relax",
     params_schema=_PARAMS_SCHEMA,
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
     description=DESCRIPTION,
-    run=_run,
     dispatch=_dispatch,
 )
 

@@ -50,9 +50,7 @@ class PartHandler(Handler):
         self.store = hub.store
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(  # type: ignore[override]
-        self, *, id: str | int | None = None, **_kw: Any
-    ) -> Response:
+    def get(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
             raise BadInput(
                 "get(kind='part') requires id= (an LCSC C-number)",
@@ -82,7 +80,7 @@ class PartHandler(Handler):
         return Response(body=render_agent_table([payload]))
 
     # ── search ───────────────────────────────────────────────────────
-    def search(  # type: ignore[override]
+    def search(
         self, *, q: str | None = None, page_size: int = 20, **_kw: Any
     ) -> Response:
         if q is None or not str(q).strip():

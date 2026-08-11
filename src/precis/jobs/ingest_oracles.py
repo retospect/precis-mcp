@@ -42,7 +42,7 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from precis.embedder import Embedder
 from precis.store import Store

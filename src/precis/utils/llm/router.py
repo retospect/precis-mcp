@@ -780,7 +780,7 @@ def llm_select_from_payload(
         select["effort"] = effort
     if temperature is not None:
         try:
-            t = float(temperature)  # type: ignore[arg-type]
+            t = float(temperature)
         except (TypeError, ValueError):
             t = None
         if t is not None and 0 <= t <= 2:

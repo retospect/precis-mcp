@@ -151,11 +151,11 @@ class _FakeDeliverStore:
         self.inserted: list[dict] = []
         self.blocks: list[tuple] = []
 
-    def tx(self):  # type: ignore[no-untyped-def]
+    def tx(self):
         import contextlib
 
         @contextlib.contextmanager
-        def _cm():  # type: ignore[no-untyped-def]
+        def _cm():
             yield self.conn
 
         return _cm()
@@ -275,11 +275,11 @@ class _PassStore:
         self.identifiers: list[tuple] = []
         self._idc = 5000
 
-    def tx(self):  # type: ignore[no-untyped-def]
+    def tx(self):
         import contextlib
 
         @contextlib.contextmanager
-        def _cm():  # type: ignore[no-untyped-def]
+        def _cm():
             yield self.conn
 
         return _cm()
@@ -292,7 +292,7 @@ class _PassStore:
     def get_cache_entry(self, *, provider: str, request_hash: str) -> object | None:
         return object() if request_hash in self.seen_rh else None
 
-    def put_cache_entry(self, **kw: object):  # type: ignore[no-untyped-def]
+    def put_cache_entry(self, **kw: object):
         self.minted.append(kw)
         self._idc += 1
         return SimpleNamespace(id=self._idc), None
@@ -308,11 +308,11 @@ def _src_row(etag: str | None = None, modified: str | None = None) -> tuple:
     return (1, "http://feed", "Feed", "bbc", [], 50, etag, modified)
 
 
-def _feed(entries: list, *, status: int = 200, etag=None, modified=None):  # type: ignore[no-untyped-def]
+def _feed(entries: list, *, status: int = 200, etag=None, modified=None):
     return SimpleNamespace(entries=entries, status=status, etag=etag, modified=modified)
 
 
-def _e(link: str, guid: str = "", title: str = "t", summary: str = "body"):  # type: ignore[no-untyped-def]
+def _e(link: str, guid: str = "", title: str = "t", summary: str = "body"):
     return SimpleNamespace(link=link, id=guid, title=title, summary=summary)
 
 
@@ -374,7 +374,7 @@ def test_conditional_get_sends_and_saves_validators(
     store = _PassStore([_src_row(etag="old-etag", modified="old-mod")])
     seen: dict = {}
 
-    def parse(url: str, *, etag=None, modified=None):  # type: ignore[no-untyped-def]
+    def parse(url: str, *, etag=None, modified=None):
         seen["etag"], seen["modified"] = etag, modified
         return _feed([], etag="new-etag", modified="new-mod")
 
@@ -390,7 +390,7 @@ def test_conditional_get_sends_and_saves_validators(
 class _AttrDict(dict):
     """Minimal stand-in for ``feedparser.FeedParserDict`` (attr + item)."""
 
-    def __getattr__(self, k: str):  # type: ignore[no-untyped-def]
+    def __getattr__(self, k: str):
         try:
             return self[k]
         except KeyError as exc:
@@ -405,13 +405,13 @@ def _patch_feed_fetch(monkeypatch: pytest.MonkeyPatch, resp, *, parse_returns=No
     """
     captured: dict = {"parse_arg": None}
 
-    def fake_safe_get(client, url, /, **kw):  # type: ignore[no-untyped-def]
+    def fake_safe_get(client, url, /, **kw):
         captured["url"] = url
         captured["headers"] = dict(client.headers)
         return resp
 
     class _FakeFeedparser:
-        def parse(self, content, **kw):  # type: ignore[no-untyped-def]
+        def parse(self, content, **kw):
             captured["parse_arg"] = content
             return _AttrDict(parse_returns or {"entries": []})
 

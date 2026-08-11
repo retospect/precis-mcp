@@ -26,7 +26,7 @@ def _req() -> LlmRequest:
 def _result(**kw: object) -> LlmResult:
     base: dict = dict(text="", cost_usd=None, turns_used=None, model="m", tier=Tier.BIG)
     base.update(kw)
-    return LlmResult(**base)  # type: ignore[arg-type]
+    return LlmResult(**base)
 
 
 def test_clean_answer_is_not_flagged() -> None:

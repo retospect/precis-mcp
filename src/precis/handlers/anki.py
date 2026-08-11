@@ -140,7 +140,7 @@ class AnkiHandler(NumericRefHandler):
         stripped = _strip_cloze(cloze_text)
         return f"{stripped}\n\n{extra}".rstrip() if extra else stripped
 
-    def _create(self, *, text: str | None, **kw: Any):  # type: ignore[override]
+    def _create(self, *, text: str | None, **kw: Any):
         # Reject a non-cloze body up front (before the insert tx) so a bad
         # card writes nothing — mirrors the atomic-create contract.
         if text is not None and text.strip():

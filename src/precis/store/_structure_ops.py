@@ -358,7 +358,7 @@ class StructureMixin:
         meta = dict(ref.meta) if (ref is not None and ref.meta) else {}
         lattice = np.array(meta.get("lattice", np.eye(3) * 10.0), dtype=float)
         pbc = tuple(meta.get("pbc", (True, True, True)))
-        scene = Scene(cell=Cell(lattice, pbc), label_hi=dict(meta.get("label_hi", {})))  # type: ignore[arg-type]
+        scene = Scene(cell=Cell(lattice, pbc), label_hi=dict(meta.get("label_hi", {})))
         with self.pool.connection() as conn:
             arows = conn.execute(
                 "SELECT id, label, element, fa, fb, fc, fixed, magmom, oxidation, "

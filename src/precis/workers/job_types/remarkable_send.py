@@ -145,17 +145,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"remarkable_send: {sres.error}")
 
 
-def _run(*_a: Any, **_k: Any) -> Any:
-    raise NotImplementedError("remarkable_send runs via dispatch(), not run()")
-
-
 SPEC = JobTypeSpec(
     name="remarkable_send",
     params_schema=_PARAMS_SCHEMA,
     compatible_executors=frozenset({"claude_inproc"}),
     requires=frozenset(),  # deterministic in-process — no executor capabilities
     description="Export a draft in reMarkable mode and upload the PDF to the tablet.",
-    run=_run,
     dispatch=_dispatch,
 )
 

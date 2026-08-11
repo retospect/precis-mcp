@@ -75,7 +75,7 @@ class FolderHandler(NumericRefHandler):
 
     # ── get: layer view='tree' over the base views ─────────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,

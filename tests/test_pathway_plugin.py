@@ -597,7 +597,7 @@ def test_injected_slab_does_not_leak_into_content_key(
 
     cfg = Config.from_dict(_SLAB_CONFIG)
     key_before = runner.content_key(cfg.to_dict())
-    cfg._prebuilt_slab = build_slab(SlabConfig(element="Pd", size=(2, 2, 3)))  # type: ignore[attr-defined]
+    cfg._prebuilt_slab = build_slab(SlabConfig(element="Pd", size=(2, 2, 3)))
     assert runner.content_key(cfg.to_dict()) == key_before
 
 

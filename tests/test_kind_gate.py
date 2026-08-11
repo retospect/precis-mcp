@@ -399,7 +399,7 @@ def test_patent_handler_raises_init_error_when_envs_missing() -> None:
     class _FakeStore:
         pass
 
-    hub = Hub(store=_FakeStore())  # type: ignore[arg-type]
+    hub = Hub(store=_FakeStore())
 
     with patch.dict(os.environ, {}, clear=False):
         for env in (
@@ -428,7 +428,7 @@ def test_patent_handler_test_path_unaffected_by_env() -> None:
     class _FakeOps:
         pass
 
-    hub = Hub(store=_FakeStore())  # type: ignore[arg-type]
+    hub = Hub(store=_FakeStore())
 
     with patch.dict(os.environ, {}, clear=False):
         for env in (

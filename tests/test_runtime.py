@@ -72,15 +72,15 @@ def test_hints_appended_to_response(runtime: PrecisRuntime) -> None:
     assert calc is not None
     original = calc.get
 
-    def wrapped(**kw):  # type: ignore[no-untyped-def]
+    def wrapped(**kw):
         runtime.hints.emit(Hint("calc tip", topic="test.tip"))
         return original(**kw)
 
-    calc.get = wrapped  # type: ignore[method-assign]
+    calc.get = wrapped
     try:
         out = runtime.dispatch("get", {"kind": "calc", "id": "1+1"})
     finally:
-        calc.get = original  # type: ignore[method-assign]
+        calc.get = original
 
     assert "2" in out
     assert "[tip] calc tip" in out
@@ -147,8 +147,8 @@ def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
         assert paper is not None
         assert rt.store is not None
         # Default: mock embedder. Real backend is opt-in via config.
-        assert isinstance(paper.embedder, MockEmbedder)  # type: ignore[attr-defined]
-        assert paper.embedder.dim == rt.store.embedding_dim()  # type: ignore[attr-defined]
+        assert isinstance(paper.embedder, MockEmbedder)
+        assert paper.embedder.dim == rt.store.embedding_dim()
         rt.store.close()
     finally:
         if original_db is None:

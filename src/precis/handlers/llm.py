@@ -88,7 +88,7 @@ class LlmHandler(NumericRefHandler):
 
     # ── get: slug resolution + the tote / reviews views ─────────────
 
-    def get(  # type: ignore[override]
+    def get(
         self,
         *,
         id: str | int | None = None,
@@ -114,7 +114,7 @@ class LlmHandler(NumericRefHandler):
 
     # ── put: guarded funnel to the shared catalog writer ────────────
 
-    def put(  # type: ignore[override]
+    def put(
         self,
         *,
         id: str | int | None = None,
@@ -193,7 +193,7 @@ class LlmHandler(NumericRefHandler):
 
     # ── rendering ────────────────────────────────────────────────────
 
-    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:  # type: ignore[override]
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         meta = ref.meta or {}
         model_id = meta.get("model_id", "?")
         handle = handle_registry.try_format(self.kind, ref.id) or f"llm:{ref.id}"

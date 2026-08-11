@@ -225,7 +225,7 @@ def _release_marker_caches() -> None:
     import gc
 
     try:
-        import torch  # type: ignore[import-not-found]
+        import torch
     except ImportError:
         gc.collect()
         return
@@ -234,7 +234,7 @@ def _release_marker_caches() -> None:
         torch.cuda.empty_cache()
     mps = getattr(getattr(torch, "backends", None), "mps", None)
     if mps is not None and mps.is_available():
-        torch.mps.empty_cache()  # type: ignore[attr-defined]
+        torch.mps.empty_cache()
 
     gc.collect()
 
@@ -379,7 +379,7 @@ def _run_in_subprocess_with_timeout[R](
         raise TimeoutError(f"{label} timed out after {timeout_s}s")
     if status == "err":
         raise RuntimeError(f"{label} failed in subprocess: {payload}")
-    return payload  # type: ignore[no-any-return]
+    return payload
 
 
 def _marker_extract_subprocess(

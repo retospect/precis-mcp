@@ -88,7 +88,7 @@ class MarkdownHandler(PlaintextHandler):
         language-lang-when-fenced-code into a JSON-friendly dict."""
         return block_meta(block)
 
-    def _block_noun(self) -> str:  # type: ignore[override]
+    def _block_noun(self) -> str:
         """``block`` instead of plaintext's ``paragraph``.
 
         Markdown's grammar produces headings, paragraphs, fenced
@@ -114,7 +114,7 @@ class MarkdownHandler(PlaintextHandler):
 
     # ── view dispatch ────────────────────────────────────────────────
 
-    def _render_view(self, view: str, ref: Ref, *, slug: str) -> Response:  # type: ignore[override]
+    def _render_view(self, view: str, ref: Ref, *, slug: str) -> Response:
         """Add the ``/toc`` view on top of plaintext's ``/raw``."""
         if view == "toc":
             return self._render_toc(ref)
@@ -146,7 +146,7 @@ class MarkdownHandler(PlaintextHandler):
 
     # ── overview customisation ──────────────────────────────────────
 
-    def _overview_blocks_label(self) -> str:  # type: ignore[override]
+    def _overview_blocks_label(self) -> str:
         """``blocks:`` instead of plaintext's ``paragraphs:``.
 
         Markdown's block grammar is heterogeneous (headings,
@@ -155,9 +155,7 @@ class MarkdownHandler(PlaintextHandler):
         """
         return "blocks:      "
 
-    def _overview_body_extras(  # type: ignore[override]
-        self, ref: Ref, blocks: Sequence[Any]
-    ) -> list[str]:
+    def _overview_body_extras(self, ref: Ref, blocks: Sequence[Any]) -> list[str]:
         """Heading-TOC preview in place of plaintext's paragraph list.
 
         Renders the first ten heading entries (H1s plus their nested
@@ -184,9 +182,7 @@ class MarkdownHandler(PlaintextHandler):
             lines.append(f"  … and {len(flat) - 10} more (see /toc)")
         return lines
 
-    def _overview_next_hints(  # type: ignore[override]
-        self, ref: Ref
-    ) -> list[tuple[str, str]]:
+    def _overview_next_hints(self, ref: Ref) -> list[tuple[str, str]]:
         """Markdown's hint set mentions ``/toc`` and ``block`` nouns."""
         handle = handle_registry.format_handle(self._KIND, ref.id)
         return [
@@ -204,7 +200,7 @@ class MarkdownHandler(PlaintextHandler):
 
     # ── index Next: hints — ``toc`` instead of ``raw`` ──────────────
 
-    def _render_index(self) -> Response:  # type: ignore[override]
+    def _render_index(self) -> Response:
         """Same layout as plaintext's index, but the Next: hints
         mention ``/toc`` (markdown's signature view) rather than
         ``/raw``."""

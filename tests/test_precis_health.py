@@ -24,7 +24,7 @@ def _client_with_fake_request(handler) -> PrecisClient:
         return handler(method, params)
 
     # Bypass the real subprocess + MCP handshake entirely.
-    client.request = _fake_request  # type: ignore[assignment]
+    client.request = _fake_request  # type: ignore[method-assign]
     return client
 
 

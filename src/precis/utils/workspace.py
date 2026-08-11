@@ -446,7 +446,7 @@ def _copy_template_if_missing(format: str, name: str, dest: Path) -> None:
         return
     try:
         template_root = resources.files("precis.data.workspace_templates")
-        candidate = template_root / format / name  # type: ignore[union-attr]
+        candidate = template_root / format / name
         if not candidate.is_file():
             log.debug("workspace template missing: %s/%s (skipping)", format, name)
             return
