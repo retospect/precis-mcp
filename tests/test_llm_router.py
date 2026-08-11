@@ -225,10 +225,12 @@ def test_result_from_claude_p() -> None:
 
 @dataclass
 class _FakeOpenAI:
-    """Duck type of llm_summarize.LlmResult (text + total_tokens)."""
+    """Duck type of llm_summarize.LlmResult (text + total/prompt/completion)."""
 
     text: str
     total_tokens: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 def test_result_from_openai() -> None:
@@ -240,6 +242,32 @@ def test_result_from_openai() -> None:
     assert got.turns_used is None
     assert got.model == "summarizer"
     assert got.tier is Tier.SMALL
+
+
+def test_result_from_openai_maps_prompt_completion_split() -> None:
+    # The OpenAI-shaped usage split (llm_summarize.LlmResult.prompt_tokens /
+    # .completion_tokens) rides straight onto input_tokens/output_tokens —
+    # no cache split is invented (a local/OpenRouter completion's usage block
+    # carries none).
+    raw = _FakeOpenAI(
+        text="a gloss", total_tokens=120, prompt_tokens=100, completion_tokens=20
+    )
+    got = result_from_openai(raw, model="summarizer", tier=Tier.SMALL)
+    assert got.input_tokens == 100
+    assert got.output_tokens == 20
+    assert got.cache_read_tokens is None
+    assert got.cache_creation_tokens is None
+
+
+def test_result_from_openai_missing_split_leaves_tokens_none() -> None:
+    # A bare .text-only fake (no prompt/completion attrs) must not fabricate
+    # zeros — getattr leniency keeps this None, not 0.
+    class _BareText:
+        text = "bare"
+
+    got = result_from_openai(_BareText(), model="summarizer", tier=Tier.SMALL)
+    assert got.input_tokens is None
+    assert got.output_tokens is None
 
 
 # ── dispatch: routes to the right transport (wrappers monkeypatched) ────

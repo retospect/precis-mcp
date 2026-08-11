@@ -1026,18 +1026,25 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
     so an OSS judge reaches parity instead of silently degrading to its
     fallback (gripe 159758).
 
+    Tokens: ``prompt_tokens``/``completion_tokens`` (the same OpenAI
+    ``usage`` split the cost estimate above prices) map straight onto
+    :attr:`LlmResult.input_tokens`/``output_tokens``. No cache split is set —
+    a local/OpenRouter completion's ``usage`` block carries no cache-read/
+    -write breakdown, so inventing one would be a silent fabrication rather
+    than an honest ``None``.
+
     All fields are read leniently (``getattr``) so a bare ``.text`` fake still
     normalizes.
     """
     from precis.budget.pricing import cost_from_tokens
     from precis.utils.claude_p import _parse_last_json_block
 
+    prompt_tokens = getattr(res, "prompt_tokens", None)
+    completion_tokens = getattr(res, "completion_tokens", None)
     cost = getattr(res, "cost_usd", None)
     if cost is None:
         cost = cost_from_tokens(
-            model,
-            prompt_tokens=getattr(res, "prompt_tokens", None),
-            completion_tokens=getattr(res, "completion_tokens", None),
+            model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
         )
     return LlmResult(
         text=res.text,
@@ -1047,6 +1054,8 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
         tier=tier,
         data=_parse_last_json_block(res.text),
         total_tokens=getattr(res, "total_tokens", None),
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
     )
 
 
@@ -1685,6 +1694,28 @@ def _rung_is_cloud(rung: Rung) -> bool:
     if rung.transport is Transport.LOCAL:
         return False
     return bool(os.environ.get("PRECIS_LLM_BASE_URL"))
+
+
+def _fallback_placement(transport: Transport) -> str:
+    """Transport-only local/cloud guess — :func:`_record_dispatch`'s
+    belt-and-suspenders fallback for a call whose :attr:`LlmResult.placement`
+    somehow arrived unset.
+
+    Every current call site already stamps ``placement`` before reaching
+    ``_record_dispatch`` (``FailoverProvider.run`` per rung, or the
+    ``if result.placement is None`` fill in ``dispatch``/``dispatch_async``
+    below), so this branch is not known to fire today. It mirrors
+    :func:`_rung_is_cloud`'s label-less, transport-only classification (no
+    ``Rung`` — with its possible operator ``placement`` label — is available
+    at the recording chokepoint, only the transport that ran) so a *future*
+    call site that forgets to stamp placement still logs a best-effort value
+    instead of quietly reopening the migration-0112 NULL-placement gap.
+    """
+    if transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+        return "cloud"
+    if transport is Transport.LOCAL:
+        return "local"
+    return "cloud" if os.environ.get("PRECIS_LLM_BASE_URL") else "local"
 
 
 def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
@@ -2548,7 +2579,14 @@ def _record_dispatch(
                 request_text=_serialize_request(req),
                 response_text=result.text or "",
                 cost_usd=result.cost_usd,
-                placement=result.placement,
+                # Every caller already stamps this before calling us; the
+                # fallback is a chokepoint safety net, not the primary path —
+                # see _fallback_placement.
+                placement=(
+                    result.placement
+                    if result.placement is not None
+                    else _fallback_placement(transport)
+                ),
                 turns_used=result.turns_used,
                 duration_ms=duration_ms,
                 errored=result.error is not None,
@@ -2557,6 +2595,10 @@ def _record_dispatch(
                 ref_id=req.ref_id,
                 store_blobs=req.log_blobs,
                 features=_route_features(req, result),
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cache_read_tokens=result.cache_read_tokens,
+                cache_creation_tokens=result.cache_creation_tokens,
             )
         )
     except Exception:

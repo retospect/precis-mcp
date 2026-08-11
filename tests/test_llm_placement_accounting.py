@@ -22,6 +22,7 @@ from precis.utils.llm.router import (
     Rung,
     Tier,
     Transport,
+    _fallback_placement,
     _placement_of,
     _rung_is_cloud,
 )
@@ -60,6 +61,27 @@ def test_claude_transports_are_always_cloud() -> None:
     labelled — it must never be excludable as 'local'."""
     for t in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
         assert _placement_of(Rung(transport=t)) == "cloud"
+
+
+# ── _record_dispatch's chokepoint fallback ─────────────────────────────────
+
+
+def test_fallback_placement_claude_transports_are_cloud() -> None:
+    for t in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+        assert _fallback_placement(t) == "cloud"
+
+
+def test_fallback_placement_local_transport_is_local() -> None:
+    assert _fallback_placement(Transport.LOCAL) == "local"
+
+
+def test_fallback_placement_oss_transport_follows_base_url(monkeypatch: Any) -> None:
+    # No hosted endpoint configured ⇒ the only way an OSS transport ran is a
+    # local served_by slot.
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    assert _fallback_placement(Transport.OPENAI_TOOLS) == "local"
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.example/v1")
+    assert _fallback_placement(Transport.OPENAI_TOOLS) == "cloud"
 
 
 # ── the failover stamp: follow the money, not the intent ──────────────────

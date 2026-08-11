@@ -72,6 +72,45 @@ def test_record_call_writes_row_and_dedups_blobs(store: Any) -> None:
     assert row[2] is True
 
 
+def test_record_call_persists_token_counts(store: Any) -> None:
+    # Migration 0121: the four token fields round-trip to the row untouched —
+    # None stays None (claude_p reports no telemetry), a set value survives.
+    tag = uuid4().hex[:8]
+    src = f"tokens-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            input_tokens=1234,
+            output_tokens=56,
+            cache_read_tokens=7,
+            cache_creation_tokens=89,
+        ),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT input_tokens, output_tokens, cache_read_tokens, "
+            "cache_creation_tokens FROM llm_call_log WHERE source=%s",
+            (src,),
+        ).fetchone()
+    assert row == (1234, 56, 7, 89)
+
+
+def test_record_call_leaves_missing_token_counts_null(store: Any) -> None:
+    # A transport that reports no telemetry (claude_p) must leave these NULL,
+    # not a false zero.
+    tag = uuid4().hex[:8]
+    src = f"notokens-{tag}"
+    route_log.record_call(_rec(source=src), store=store)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT input_tokens, output_tokens, cache_read_tokens, "
+            "cache_creation_tokens FROM llm_call_log WHERE source=%s",
+            (src,),
+        ).fetchone()
+    assert row == (None, None, None, None)
+
+
 def test_record_call_persists_ref_id(store: Any) -> None:
     # gr162130: ref_id is stamped so a call is attributable to an entity, not
     # just a source pass. It cannot be back-filled — verify it round-trips.
@@ -310,3 +349,108 @@ def test_dispatch_records_the_full_call(store: Any, monkeypatch: Any) -> None:
     assert row[4] is False
     assert row[5]["source"] == src  # features captured
     assert "judge this" in req[0]  # the full request text is recorded
+
+
+def test_dispatch_records_placement_and_token_counts(
+    store: Any, monkeypatch: Any
+) -> None:
+    # gr(token-accounting): a claude_agent dispatch's AgentResult token
+    # telemetry (result_from_agent) and the always-on placement fill (the
+    # ``if result.placement is None`` stamp in dispatch, migration 0112) both
+    # reach the persisted row.
+    import precis.utils.llm.router as router
+    from precis.utils.claude_agent import AgentResult
+    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+
+    tag = uuid4().hex[:8]
+    src = f"agent-tokens-{tag}"
+
+    def fake_agent(prompt: str, **kwargs: Any) -> AgentResult:
+        return AgentResult(
+            final_text="agent out",
+            cost_usd=1.0,
+            duration_s=1.0,
+            turns_used=3,
+            input_tokens=1000,
+            output_tokens=200,
+            cache_read_tokens=10,
+            cache_creation_tokens=20,
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+
+    route_log.bind_store(store)
+    try:
+        out = dispatch(
+            LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True, source=src)
+        )
+    finally:
+        route_log.bind_store(None)
+
+    assert out.text == "agent out"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT transport, placement, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_creation_tokens FROM llm_call_log "
+            "WHERE source=%s",
+            (src,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "claude_agent"
+    # claude_agent always hits Anthropic's cloud — never excludable as 'local'.
+    assert row[1] == "cloud"
+    assert row[2:] == (1000, 200, 10, 20)
+
+
+def test_dispatch_local_records_openai_token_split(
+    store: Any, monkeypatch: Any
+) -> None:
+    # A local/openai_compat-shaped dispatch (result_from_openai) carries a
+    # prompt/completion split but no cache split — verify both survive to the
+    # persisted row, and placement lands 'local' (the loopback LOCAL
+    # transport is never excludable as cloud spend).
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm.router import LlmRequest, Tier, dispatch
+
+    tag = uuid4().hex[:8]
+    src = f"local-tokens-{tag}"
+
+    class _FakeResult:
+        text = "local gloss"
+        total_tokens = 150
+        prompt_tokens = 130
+        completion_tokens = 20
+
+    class FakeClient:
+        def __init__(self, config: Any) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            return _FakeResult()
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+
+    route_log.bind_store(store)
+    try:
+        out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="summarize me", source=src))
+    finally:
+        route_log.bind_store(None)
+
+    assert out.text == "local gloss"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT transport, placement, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_creation_tokens FROM llm_call_log "
+            "WHERE source=%s",
+            (src,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "local"
+    assert row[1] == "local"
+    assert row[2] == 130  # input_tokens ← prompt_tokens
+    assert row[3] == 20  # output_tokens ← completion_tokens
+    assert row[4] is None  # cache_read_tokens — no cache split reported
+    assert row[5] is None  # cache_creation_tokens — no cache split reported
