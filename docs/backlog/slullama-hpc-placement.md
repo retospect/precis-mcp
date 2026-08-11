@@ -1,7 +1,7 @@
 # slullama HPC model — placement-chain rung + cluster access
 
-- **Status**: leg 1 (static card) DONE; leg 2 (chain rung) blocked on
-  external cluster access.
+- **Status**: leg 1 (static card) SHIPPED `04004d7a` (dark); leg 2 (chain
+  rung) OPEN — blocked on external cluster access.
 - **Refs**: memory `slullama_cluster_llm`; ADR 0066 (git-only ADR,
   capability tiers + placement chains); `precis.utils.llm` package
   docstring §4 ("Chain"); `precis.llm_catalog.seed_slullama_card`.
