@@ -92,6 +92,7 @@ def raise_alert(
     detail: str = "",
     severity: str = "warn",
     subject_ref_id: int | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> tuple[int, bool]:
     """Raise (or refresh) an alert. Returns ``(alert_ref_id, is_new)``.
 
@@ -121,6 +122,12 @@ def raise_alert(
     throttled, ``seen_count`` / ``updated_at`` become coarse by design —
     nothing reads the exact count, only a ``seen_count > 1`` display
     boolean, so under-counting during a throttle window is harmless.
+
+    ``extra_meta`` (e.g. a backlog detector's true pre-``LIMIT`` ``total``)
+    is merged into the stored ``meta`` on both the first INSERT and any
+    later refresh. It's subject to the same reraise throttle as ``detail``
+    above, so a slowly-changing value can be up to the throttle window
+    stale on a repeat sighting — fine for advisory signage.
     """
     severity = _norm_severity(severity)
     throttle = timedelta(seconds=_throttle_seconds())
@@ -205,6 +212,8 @@ def raise_alert(
                         "severity": severity,
                         "detail": detail,
                     }
+                    if extra_meta:
+                        patch.update(extra_meta)
                     store.update_ref(ref_id, title=title, meta_patch=patch, conn=conn)
                     # Severity can change between sightings (a loop that gets
                     # worse); keep exactly one severity: tag.
@@ -220,6 +229,8 @@ def raise_alert(
             }
             if subject_ref_id is not None:
                 meta["subject_ref_id"] = int(subject_ref_id)
+            if extra_meta:
+                meta.update(extra_meta)
             ref = store.insert_ref(
                 kind="alert", slug=None, title=title, meta=meta, conn=conn
             )

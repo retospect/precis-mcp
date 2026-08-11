@@ -176,6 +176,51 @@ def test_raise_alert_coerces_unknown_severity(store: Store) -> None:
     assert "severity:warn" in _tags(store, aid)
 
 
+def test_raise_alert_extra_meta_merges_on_insert(store: Store) -> None:
+    """``extra_meta`` (e.g. a backlog detector's true ``total``) is merged
+    into the stored ``meta`` on the first INSERT."""
+    aid, is_new = raise_alert(
+        store,
+        source="nursery:orphan",
+        fingerprint="orphan:1",
+        title="a",
+        severity="info",
+        extra_meta={"total": 297},
+    )
+    assert is_new
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (aid,)).fetchone()
+    assert row is not None
+    assert row[0]["total"] == 297
+
+
+def test_raise_alert_extra_meta_merges_on_update(store: Store) -> None:
+    """A repeat sighting with a changed ``extra_meta`` value merges the new
+    value onto the already-open alert."""
+    aid, _ = raise_alert(
+        store,
+        source="nursery:orphan",
+        fingerprint="orphan:1",
+        title="a",
+        severity="info",
+        extra_meta={"total": 55},
+    )
+    aid2, is_new = raise_alert(
+        store,
+        source="nursery:orphan",
+        fingerprint="orphan:1",
+        title="a — changed",
+        severity="info",
+        extra_meta={"total": 62},
+    )
+    assert aid2 == aid
+    assert not is_new
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (aid,)).fetchone()
+    assert row is not None
+    assert row[0]["total"] == 62
+
+
 # ── producer: dedup-write throttle (fix #2) ────────────────────────
 
 

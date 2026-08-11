@@ -1096,6 +1096,7 @@ _ROUTER_CLASS: dict[str, str] = {
     "cadence": "transient",
     "coherence": "config-drift",
     "discovery": "pipeline-stuck",
+    "nursery-backlog": "backlog-nondraining",
 }
 _ROUTER_DEFAULT_CLASS = "outcome"
 
@@ -1131,6 +1132,21 @@ _ROUTER_OVERRIDES: dict[str, float] = {}
 #: conditions (e.g. a shared dependency going down) must not dump a wall
 #: of gripes on one pass.
 _ROUTER_FLOOD_CAP = 3
+
+#: Nursery capped-backlog alert sources (each detector ends LIMIT 50 and
+#: carries a true `total` in alert meta). These get ONE aggregate,
+#: auto-closing marker gripe per category when the backlog is not
+#: draining — a human hand-off, never an alert auto-resolve. Critical
+#: nursery categories are intentionally excluded (they page in real-time).
+_NURSERY_BACKLOG_SOURCES: frozenset[str] = frozenset(
+    {"nursery:orphan", "nursery:stuck-doable", "nursery:child-failed-parked"}
+)
+#: Aggregate fingerprint for a non-draining nursery backlog (one per source).
+_NURSERY_BACKLOG_FP = "backlog"
+#: Synthetic router group for nursery backlog gripes (drives class/nudge).
+_NURSERY_BACKLOG_GROUP = "nursery-backlog"
+#: Slow-rot self-heal budget before a non-draining nursery backlog gripes.
+_NURSERY_BACKLOG_BUDGET_HOURS = 24.0
 
 
 def _router_class(group: str) -> str:
@@ -1186,6 +1202,14 @@ def _router_nudge(store: Store, cls: str, fingerprint: str) -> str:
         return (
             "backlog not draining past budget — check the corresponding "
             f"worker pass's worker_logs for {fingerprint}."
+        )
+    if cls == "backlog-nondraining":
+        return (
+            "capped backlog not draining past budget — this is prod-ops "
+            "disposition (triage/close the underlying todos), not a code "
+            "fix. The count is in the gripe body; nursery auto-resolves "
+            "each item as it's fixed and this gripe auto-closes when the "
+            "category fully clears."
         )
     return (
         f"pulse-probe outcome {fingerprint!r} missed its freshness window — "
@@ -1342,20 +1366,46 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
             """
             SELECT r.ref_id, r.alert_source, r.fingerprint, r.created_at,
                    r.title, r.meta->>'detail' AS detail,
-                   r.meta->>'severity' AS severity
+                   r.meta->>'severity' AS severity, r.meta->>'total' AS total
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'alert' AND r.deleted_at IS NULL
-               AND r.alert_source LIKE 'watchdog:%%'
+               AND (r.alert_source LIKE 'watchdog:%%'
+                    OR r.alert_source = ANY(%s))
                AND r.alert_source IS NOT NULL AND r.fingerprint IS NOT NULL
                AND t.namespace = 'OPEN' AND t.value = %s
             """,
-            (STATE_OPEN,),
+            (list(_NURSERY_BACKLOG_SOURCES), STATE_OPEN),
         ).fetchall()
 
     marker_gripes = _open_marker_gripes(store)
-    live_conditions = {(str(source), str(fp)) for _rid, source, fp, *_ in alert_rows}
+
+    # ``live_conditions`` is the auto-close sweep's truth set. A nursery
+    # backlog row aggregates onto its category's single ``(source,
+    # "backlog")`` marker slot (never a per-ref fingerprint) — everything
+    # else keeps its per-(source, fingerprint) identity as before. Also
+    # accumulate, per nursery source, the surfaced count / true total /
+    # oldest ``created_at`` needed to file (or skip) the one aggregate
+    # gripe below.
+    live_conditions: set[tuple[str, str]] = set()
+    nursery_agg: dict[str, dict[str, Any]] = {}
+    for _rid, source, fp, created_at, _title, _detail, _severity, total in alert_rows:
+        source = str(source)
+        fp = str(fp)
+        if source in _NURSERY_BACKLOG_SOURCES:
+            live_conditions.add((source, _NURSERY_BACKLOG_FP))
+            agg = nursery_agg.setdefault(
+                source, {"surfaced": 0, "total": 0, "oldest": created_at}
+            )
+            agg["surfaced"] += 1
+            agg["total"] = max(agg["total"], int(total) if total is not None else 0)
+            if agg["oldest"] is None or (
+                created_at is not None and created_at < agg["oldest"]
+            ):
+                agg["oldest"] = created_at
+        else:
+            live_conditions.add((source, fp))
 
     # Auto-close sweep: a marker gripe whose condition is no longer a live
     # open watchdog alert — the check went fresh, resolve_stale_alerts
@@ -1379,11 +1429,22 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
     # oldest condition first, bounded by the flood cap.
     filed = 0
     routed: set[tuple[str, str]] = set()
-    for _ref_id, source, fingerprint, created_at, title, detail, severity in sorted(
-        alert_rows, key=lambda row: row[3]
-    ):
+    for (
+        _ref_id,
+        source,
+        fingerprint,
+        created_at,
+        title,
+        detail,
+        severity,
+        _total,
+    ) in sorted(alert_rows, key=lambda row: row[3]):
         source = str(source)
         fingerprint = str(fingerprint)
+        # Nursery backlog rows never file per-ref — handled in aggregate,
+        # below, after this watchdog loop.
+        if source in _NURSERY_BACKLOG_SOURCES:
+            continue
         group = source.removeprefix("watchdog:")
         budget = _router_budget_hours(fingerprint, group, severity or _WARN)
         if budget is None:
@@ -1425,6 +1486,58 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
             continue
         filed += 1
         routed.add((group, fingerprint))
+
+    # Nursery backlog aggregates: ONE marker gripe per non-draining
+    # category, never per ref — the exact per-leaf noise this design
+    # forbids (each capped detector already surfaces up to 50 individual
+    # per-ref alerts of its own; those stay per-ref, only the "is this
+    # category draining" verdict is aggregated here).
+    for source, agg in nursery_agg.items():
+        oldest = agg["oldest"]
+        age = _hours_since(oldest)
+        if age is None or age <= _NURSERY_BACKLOG_BUDGET_HOURS:
+            continue
+        if (source, _NURSERY_BACKLOG_FP) in marker_gripes:
+            routed.add((_NURSERY_BACKLOG_GROUP, source))
+            continue
+        if filed >= _ROUTER_FLOOD_CAP:
+            log.warning(
+                "health_digest: router flood cap (%d) hit — %s/%s over "
+                "budget (%.1fh > %.0fh) held for next eval",
+                _ROUTER_FLOOD_CAP,
+                source,
+                _NURSERY_BACKLOG_FP,
+                age,
+                _NURSERY_BACKLOG_BUDGET_HOURS,
+            )
+            continue
+        total = int(agg["total"])
+        surfaced = int(agg["surfaced"])
+        title = f"{source}: backlog not draining ({total} live, {surfaced} surfaced)"
+        detail = (
+            f"{total} live conditions ({surfaced} surfaced, oldest {age:.0f}h) "
+            f"and not draining past the {_NURSERY_BACKLOG_BUDGET_HOURS:.0f}h "
+            "budget — prod-ops disposition (triage/close the underlying todos)."
+        )
+        try:
+            _file_router_gripe(
+                store,
+                source=source,
+                fingerprint=_NURSERY_BACKLOG_FP,
+                group=_NURSERY_BACKLOG_GROUP,
+                title=title,
+                detail=detail,
+                created_at=oldest,
+                budget_hours=_NURSERY_BACKLOG_BUDGET_HOURS,
+            )
+        except Exception:
+            log.exception(
+                "health_digest: router failed to file nursery-backlog gripe for %s",
+                source,
+            )
+            continue
+        filed += 1
+        routed.add((_NURSERY_BACKLOG_GROUP, source))
     return frozenset(routed)
 
 

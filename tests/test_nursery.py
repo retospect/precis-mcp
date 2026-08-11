@@ -190,6 +190,22 @@ def test_orphans_detector_excludes_recurring_subtree(
     assert "Hourly watcher" not in titles
 
 
+def test_orphans_detector_reports_true_total_when_capped(store: Store) -> None:
+    """>50 matching orphans: only 50 ``Finding``s surface, but each one
+    carries the true pre-LIMIT total, and the raised alert's detail says
+    so (gr — alert-triage §A/§B)."""
+    for i in range(55):
+        store.insert_ref(kind="todo", slug=None, title=f"Orphan {i}")
+
+    findings = _detect_orphans(store)
+    assert len(findings) == 50
+    assert all(f.total == 55 for f in findings)
+
+    run_nursery_pass(store)
+    alert = next(a for a in list_open_alerts(store) if a["source"] == "nursery:orphan")
+    assert "of 55" in alert["detail"]
+
+
 # ── stale claims ──────────────────────────────────────────────────
 
 
@@ -314,6 +330,25 @@ def test_stuck_doable_detector_skips_recurring_umbrella(
     assert "Watches" not in titles
 
 
+def test_stuck_doable_detector_reports_true_total_when_capped(store: Store) -> None:
+    """>50 matching stuck-doable leaves: only 50 ``Finding``s surface, but
+    each one carries the true pre-LIMIT total, and the raised alert's
+    detail says so."""
+    for i in range(55):
+        r = store.insert_ref(kind="todo", slug=None, title=f"Stuck {i}")
+        _backdate_ref(store, r.id, STUCK_DOABLE_HOURS + 1)
+
+    findings = _detect_stuck_doable(store)
+    assert len(findings) == 50
+    assert all(f.total == 55 for f in findings)
+
+    run_nursery_pass(store)
+    alert = next(
+        a for a in list_open_alerts(store) if a["source"] == "nursery:stuck-doable"
+    )
+    assert "of 55" in alert["detail"]
+
+
 # ── child-failed parked ────────────────────────────────────────────
 
 
@@ -390,6 +425,32 @@ def test_child_failed_parked_detector_excludes_child_failed_final(
     findings = _detect_child_failed_parked(store)
     ids = {f.ref_id for f in findings}
     assert rid not in ids
+
+
+def test_child_failed_parked_detector_reports_true_total_when_capped(
+    store: Store,
+) -> None:
+    """>50 matching parked parents: only 50 ``Finding``s surface, but each
+    one carries the true pre-LIMIT (post-``DISTINCT ON``) total, and the
+    raised alert's detail says so."""
+    for i in range(55):
+        r = store.insert_ref(kind="todo", slug=None, title=f"Parked {i}")
+        store.add_tag(r.id, Tag.open(f"child-failed:{900 + i}"), set_by="system")
+        _backdate_tag(
+            store, r.id, f"child-failed:{900 + i}", CHILD_FAILED_PARKED_HOURS + 1
+        )
+
+    findings = _detect_child_failed_parked(store)
+    assert len(findings) == 50
+    assert all(f.total == 55 for f in findings)
+
+    run_nursery_pass(store)
+    alert = next(
+        a
+        for a in list_open_alerts(store)
+        if a["source"] == "nursery:child-failed-parked"
+    )
+    assert "of 55" in alert["detail"]
 
 
 # ── child-failed-final (aggregate) ──────────────────────────────────

@@ -795,6 +795,141 @@ def test_open_marker_gripes_parses_source_and_fingerprint(store) -> None:
     assert ("watchdog:coherence", "some-pass") in markers
 
 
+# ── §D Phase 3 (alert-triage): nursery capped-backlog aggregate hand-off ──
+
+
+def _seed_nursery_backlog_alert(
+    store,
+    *,
+    source: str,
+    ref_id: int,
+    hours_old: float,
+    total: int,
+    fingerprint: str | None = None,
+) -> int:
+    """Raise one per-ref nursery alert the way ``run_nursery_pass`` now does
+    for a capped-backlog category — ``extra_meta={"total": ...}`` — then
+    backdate ``created_at``, mirroring ``_seed_watchdog_alert``."""
+    fp = fingerprint or f"{source.removeprefix('nursery:')}:{ref_id}"
+    alert_id, _ = raise_alert(
+        store,
+        source=source,
+        fingerprint=fp,
+        title=f"[{source}] finding {ref_id}",
+        detail="some finding",
+        severity="info",
+        subject_ref_id=ref_id,
+        extra_meta={"total": total},
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (hours_old, alert_id),
+        )
+        conn.commit()
+    return int(alert_id)
+
+
+def test_nursery_backlog_non_draining_files_one_aggregate_gripe(store) -> None:
+    """A non-draining nursery source (open backlog alerts older than the
+    24h budget) files exactly ONE aggregate marker gripe whose body
+    carries the total — never one gripe per surfaced ref."""
+    for i in range(5):
+        _seed_nursery_backlog_alert(
+            store, source="nursery:orphan", ref_id=100 + i, hours_old=30, total=297
+        )
+
+    routed = _route_findings(store)
+    assert ("nursery-backlog", "nursery:orphan") in routed
+
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    body = store.list_blocks_for_ref(gripes[0].id)[0].text
+    assert body.startswith("watchdog-condition: nursery:orphan/backlog")
+    assert "297" in body
+
+
+def test_nursery_backlog_drained_auto_closes_aggregate_gripe(store) -> None:
+    """When the backlog fully clears (no open alert left for the source),
+    the aggregate gripe auto-closes — nursery's own ``resolve_stale_alerts``
+    already closed the alert; this only sweeps the marker gripe."""
+    from precis.alerts import resolve_alert
+
+    alert_id = _seed_nursery_backlog_alert(
+        store, source="nursery:orphan", ref_id=200, hours_old=30, total=297
+    )
+    _route_findings(store)
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    gripe_id = int(gripes[0].id)
+
+    resolve_alert(store, alert_id)
+    routed_after = _route_findings(store)
+    assert ("nursery-backlog", "nursery:orphan") not in routed_after
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (gripe_id,)
+        ).fetchone()
+    assert row[0] is not None
+
+
+def test_nursery_backlog_under_budget_files_nothing(store) -> None:
+    """A nursery backlog source under the 24h self-heal budget files no
+    gripe — the per-ref alert itself stays open, unrouted, until aged."""
+    _seed_nursery_backlog_alert(
+        store, source="nursery:stuck-doable", ref_id=300, hours_old=1, total=60
+    )
+
+    routed = _route_findings(store)
+    assert routed == frozenset()
+    assert store.list_refs(kind="gripe", tags=["STATUS:open"]) == []
+
+
+def test_nursery_backlog_never_files_per_ref(store) -> None:
+    """Even with many surfaced per-ref alerts over budget, exactly ONE
+    gripe files (the aggregate) — never one per ref_id, the exact
+    per-leaf noise this design forbids."""
+    for i in range(10):
+        _seed_nursery_backlog_alert(
+            store,
+            source="nursery:child-failed-parked",
+            ref_id=400 + i,
+            hours_old=30,
+            total=55,
+        )
+
+    _route_findings(store)
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+
+
+def test_watchdog_routing_unchanged_alongside_nursery_backlog(store) -> None:
+    """A watchdog alert and a nursery backlog alert both over budget in the
+    same eval: watchdog behaviour stays byte-identical (its own marker
+    gripe, unaffected by the nursery aggregate logic living alongside
+    it) — existing router tests above still pass unmodified."""
+    _seed_watchdog_alert(store, group="coherence", name="some-pass", hours_old=30)
+    _seed_nursery_backlog_alert(
+        store, source="nursery:orphan", ref_id=500, hours_old=30, total=100
+    )
+
+    routed = _route_findings(store)
+    assert ("coherence", "some-pass") in routed
+    assert ("nursery-backlog", "nursery:orphan") in routed
+
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 2
+    bodies = [store.list_blocks_for_ref(g.id)[0].text for g in gripes]
+    assert any(
+        b.startswith("watchdog-condition: watchdog:coherence/some-pass") for b in bodies
+    )
+    assert any(
+        b.startswith("watchdog-condition: nursery:orphan/backlog") for b in bodies
+    )
+
+
 # ── §F coupling: embed-pipeline culprit diagnosis ───────────────────────
 
 

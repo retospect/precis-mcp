@@ -134,6 +134,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
 from precis.handlers._todo_guards import todo_root_sql
@@ -318,6 +319,11 @@ class Finding:
     are not ref-scoped — they set ``ref_id=None`` and supply an explicit
     ``fingerprint_key`` (e.g. ``"worker-restart:melchior:precis-worker-agent"``)
     so dedup / auto-resolve still work per (host, process).
+
+    ``total`` is the category's true pre-``LIMIT`` count (a window-function
+    read, same value on every ``Finding`` of that pass) for the handful of
+    ``LIMIT 50``-capped detectors that compute it; ``None`` for every other
+    detector.
     """
 
     category: str
@@ -325,6 +331,7 @@ class Finding:
     title: str
     detail: str  # one-line human summary for the alert
     fingerprint_key: str | None = None
+    total: int | None = None
 
 
 #: Detectors in catalogue order, each paired with its category. The
@@ -374,25 +381,33 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
         source = f"nursery:{category}"
         severity = _SEVERITY.get(category, "warn")
         findings = detect(store)
+        surfaced = len(findings)
         live: list[str] = []
         for f in findings:
             fp = f.fingerprint_key or f"{f.category}:{f.ref_id}"
             live.append(fp)
             title = f"[{f.category}] {f.title}"
+            detail = f.detail
+            extra_meta: dict[str, Any] | None = None
+            if f.total is not None:
+                if f.total > surfaced:
+                    detail += f" · showing oldest {surfaced} of {f.total}"
+                extra_meta = {"total": f.total}
             _ref_id, is_new = raise_alert(
                 store,
                 source=source,
                 fingerprint=fp,
                 title=title,
-                detail=f.detail,
+                detail=detail,
                 severity=severity,
                 subject_ref_id=f.ref_id,
+                extra_meta=extra_meta,
             )
             # A *new* critical condition pages once (dead / thrashing
             # worker → planner stall). Bumps of an already-open alert
             # don't re-push, so a standing outage doesn't spam.
             if is_new and severity == "critical":
-                notify_critical_alert(store, title, f.detail, fingerprint=fp)
+                notify_critical_alert(store, title, detail, fingerprint=fp)
         raised += len(findings)
         resolved += resolve_stale_alerts(store, source=source, live_fingerprints=live)
     if raised or resolved:
@@ -442,7 +457,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
                  WHERE {todo_root_sql("r")}
                  ORDER BY w.ref_id, w.root_id
             )
-            SELECT r.ref_id, r.title
+            SELECT r.ref_id, r.title, COUNT(*) OVER () AS total_count
               FROM refs r
               JOIN roots rt ON rt.leaf_id = r.ref_id
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
@@ -469,6 +484,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
                 "``meta.rotation_root=true`` or this leaf needs to be "
                 "re-parented under one"
             ),
+            total=int(r[-1]),
         )
         for r in rows
     ]
@@ -590,7 +606,7 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.title, r.created_at
+            SELECT r.ref_id, r.title, r.created_at, COUNT(*) OVER () AS total_count
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND r.created_at < now() - %s::interval
@@ -642,6 +658,7 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
                 f"doable for {_hours_since(r[2]):.0f}h with no claim, no wait, "
                 f"no blocker — check the strategic rotation or its PRIO"
             ),
+            total=int(r[-1]),
         )
         for r in rows
     ]
@@ -672,27 +689,32 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT ON (r.ref_id)
-                   r.ref_id, r.title, t.value AS tag, rt.created_at
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-               AND t.namespace = 'OPEN'
-               AND t.value LIKE 'child-failed:%%'
-               AND rt.created_at < now() - %s::interval
-               AND COALESCE(
-                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
-                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN ('done', 'won''t-do', 'auto-timeout')
-               AND NOT EXISTS (
-                     SELECT 1 FROM ref_tags rt3 JOIN tags t3 ON t3.tag_id = rt3.tag_id
-                      WHERE rt3.ref_id = r.ref_id
-                        AND t3.namespace = 'OPEN'
-                        AND t3.value = 'child-failed-final'
-                   )
-             ORDER BY r.ref_id, rt.created_at ASC
+            SELECT sub.ref_id, sub.title, sub.tag, sub.created_at,
+                   COUNT(*) OVER () AS total_count
+              FROM (
+                SELECT DISTINCT ON (r.ref_id)
+                       r.ref_id, r.title, t.value AS tag, rt.created_at
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'todo' AND r.deleted_at IS NULL
+                   AND t.namespace = 'OPEN'
+                   AND t.value LIKE 'child-failed:%%'
+                   AND rt.created_at < now() - %s::interval
+                   AND COALESCE(
+                         (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                           WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                         'open'
+                       ) NOT IN ('done', 'won''t-do', 'auto-timeout')
+                   AND NOT EXISTS (
+                         SELECT 1 FROM ref_tags rt3 JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                          WHERE rt3.ref_id = r.ref_id
+                            AND t3.namespace = 'OPEN'
+                            AND t3.value = 'child-failed-final'
+                       )
+                 ORDER BY r.ref_id, rt.created_at ASC
+              ) sub
+             ORDER BY sub.ref_id
              LIMIT 50
             """,
             (f"{CHILD_FAILED_PARKED_HOURS} hours",),
@@ -714,6 +736,7 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
                     f"the job's job_result / job_event chunks or "
                     f"view='attention' for the recovery options"
                 ),
+                total=int(r[-1]),
             )
         )
     return out
