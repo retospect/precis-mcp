@@ -2,8 +2,9 @@
    Rendered inside the shared reader's Meta tab (_reader/reader.html.j2),
    which supplies the ``x-show="tab === 'Meta'"`` wrapper. Reads the paper
    detail context (paper, pa_handle, n_chunks, pdf_on_disk, authors_display,
-   abstract, ingested, tags, is_reviewed, reviewed_at, reviewed_by) built
-   by papers._render_detail. #}
+   abstract, ingested, tags, is_reviewed, reviewed_at, reviewed_by, journal,
+   issn, entry_type, entry_type_label, retraction, extra_identifiers,
+   s2_citation_count, s2_fields, keywords) built by papers._render_detail. #}
 <dl class="space-y-1 text-xs">
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
@@ -12,9 +13,51 @@
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">chunks</dt><dd>{{ n_chunks }}</dd></div>
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
   {% if authors_display %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
+  {% if journal %}
+  <div class="flex gap-2">
+    <dt class="w-20 shrink-0 text-slate-400">journal</dt>
+    <dd>{{ journal }}{% if issn %} <span class="text-slate-400" title="ISSN">({{ issn }})</span>{% endif %}</dd>
+  </div>
+  {% endif %}
+  {% if entry_type %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">type</dt><dd>{{ entry_type_label }}</dd></div>{% endif %}
   {% if paper.links.doi_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">DOI</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.doi_url }}" target="_blank" rel="noopener">{{ paper.links.doi }}</a></dd></div>{% endif %}
   {% if paper.links.arxiv_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">arXiv</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener">{{ paper.links.arxiv }}</a></dd></div>{% endif %}
+  {% for ident in extra_identifiers %}
+  <div class="flex gap-2">
+    <dt class="w-20 shrink-0 text-slate-400">{{ ident.label }}</dt>
+    <dd>{% if ident.url %}<a class="text-sky-700 hover:underline" href="{{ ident.url }}" target="_blank" rel="noopener">{{ ident.value }}</a>{% else %}{{ ident.value }}{% endif %}</dd>
+  </div>
+  {% endfor %}
+  {% if s2_citation_count is not none %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">citations</dt><dd>{{ s2_citation_count }} <span class="text-slate-400">(Semantic Scholar)</span></dd></div>
+  {% endif %}
+  {% if s2_fields %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">fields</dt><dd>{{ s2_fields | join(', ') }}</dd></div>
+  {% endif %}
 </dl>
+
+{# Retraction notice — display-only (source of record is Crossref's
+   update-to metadata; see docs/backlog/paper-meta-surfacing.md). Rose,
+   matching the strongest alert vocabulary this reader uses elsewhere
+   (duplicate-identifier resolver / delete button). #}
+{% if retraction %}
+<div class="rounded-lg border border-rose-300 bg-rose-50 p-3 text-xs">
+  <p class="font-medium text-rose-900">⚠ {{ retraction.label }}</p>
+  {% if retraction.reason %}<p class="mt-1 text-rose-800">{{ retraction.reason }}</p>{% endif %}
+  {% if retraction.url %}<a class="mt-1 inline-block text-rose-700 underline" href="{{ retraction.url }}" target="_blank" rel="noopener">notice</a>{% endif %}
+</div>
+{% endif %}
+
+{% if keywords %}
+<div class="border-t border-slate-100 pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-slate-400">Keywords</p>
+  <div class="mt-1 flex flex-wrap gap-1">
+    {% for kw in keywords %}
+    <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ kw }}</span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 
 {# ingestion timeline #}
 <div class="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-2 text-[11px] text-slate-500">

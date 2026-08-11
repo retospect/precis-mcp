@@ -9,7 +9,7 @@ Mixin on :class:`precis.store.Store`. Backs slice 6 of
 ``heartbeat`` reporter with the self-probe's verdict. The atomic
 reserve/release helpers slice 6c adds land here too; 6b is upsert + read.
 
-``resource_slot_holds`` (migration ``0118_resource_slot_holds.sql``) is a
+``resource_slot_holds`` (migration ``0119_resource_slot_holds.sql``) is a
 TTL lease alongside the bare ``free`` counter, closing the crash-leak gap a
 2026-08-10 fleet-wide outage exposed: a holder killed between reserve and
 release never refunds. :func:`insert_slot_hold`/:func:`delete_slot_hold`

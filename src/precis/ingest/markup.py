@@ -334,9 +334,16 @@ def _jats_front(root: Any, ext: MarkupExtraction) -> None:
                 surname = _text_of(sub)
             elif ln == "given-names":
                 given = _text_of(sub)
-        name = f"{surname}, {given}".strip(", ").strip()
-        if name:
-            ext.authors.append({"name": name})
+        # JATS carries the surname/given-name split natively — emit the
+        # canonical structured shape directly rather than joining into a
+        # string only for normalize_authors to re-split downstream.
+        if surname or given:
+            entry: dict[str, Any] = {}
+            if given:
+                entry["given"] = given
+            if surname:
+                entry["family"] = surname
+            ext.authors.append(entry)
 
     for aid in root.iter():
         if _localname(aid) == "article-id" and aid.get("pub-id-type") == "doi":
@@ -395,9 +402,14 @@ def parse_elsevier(
                 surname = _text_of(sub)
             elif ln in ("given-name", "first-name"):
                 given = _text_of(sub)
-        name = f"{surname}, {given}".strip(", ").strip()
-        if name:
-            ext.authors.append({"name": name})
+        # Elsevier's ce:author carries the same split as JATS — structured.
+        if surname or given:
+            entry: dict[str, Any] = {}
+            if given:
+                entry["given"] = given
+            if surname:
+                entry["family"] = surname
+            ext.authors.append(entry)
 
     body = _find_first(root, {"body", "serial-item"})
     if body is None:

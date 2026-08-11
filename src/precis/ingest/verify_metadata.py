@@ -253,7 +253,12 @@ def verify_metadata(
         author_checked = 0
         author_warnings: list[str] = []
         for author in authors:
-            surname = surname_from_name(author.get("name", ""))
+            # ``author`` may carry the canonical structured shape
+            # (``{"family", "given"}`` — Crossref now hands this back
+            # directly, see ``ingest/crossref.py``) or the flat
+            # ``{"name"}`` fallback; family, when present, IS the
+            # surname already.
+            surname = author.get("family") or surname_from_name(author.get("name", ""))
             if surname:
                 author_checked += 1
                 norm_surname = _normalize(surname)

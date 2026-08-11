@@ -19,6 +19,7 @@ from precis.ingest.pdf_sidecar import (
 from precis.ingest.semantic_scholar import get_paper_by_id, lookup_s2
 from precis.ingest.verify_metadata import verify_metadata
 from precis.secrets import get_secret
+from precis.utils.authors import is_junk_author_name
 
 log = logging.getLogger(__name__)
 
@@ -218,15 +219,25 @@ def _parse_author_string(author: str | None) -> list[dict[str, str]]:
 
 
 def _sanitize_authors(authors: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Drop tool/account-stamp entries from a parsed author list.
+    """Drop tool/account-stamp and section-heading entries from a parsed
+    author list.
 
     Applied to embedded ``/Author`` strings only — CrossRef / S2 authors
-    are authoritative and never pass through here. Filters values like
-    ``"Microsoft Office User"`` or bare initials (``"DRP"``) that would
-    otherwise become a stored author and a cite_key surname. See
-    :func:`precis.ingest.pdf_sidecar.is_garbage_author`.
+    are authoritative and never pass through here. Two junk guards, both
+    conservative on genuine short names:
+
+    * :func:`precis.ingest.pdf_sidecar.is_garbage_author` — tool/account
+      stamps (``"Microsoft Office User"``) and bare initials (``"DRP"``).
+    * :func:`precis.utils.authors.is_junk_author_name` — the shared
+      choke-point guard (emails, ``"REFERENCES"``, over-long strings),
+      applied here too since this /Author path is the noisiest source.
     """
-    return [a for a in authors if not is_garbage_author(a.get("name", ""))]
+    return [
+        a
+        for a in authors
+        if not is_garbage_author(a.get("name", ""))
+        and not is_junk_author_name(a.get("name", ""))
+    ]
 
 
 def _extract_arxiv_from_filename(pdf_path: str) -> str | None:

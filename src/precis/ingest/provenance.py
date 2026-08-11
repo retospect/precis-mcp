@@ -800,7 +800,11 @@ def _extract_title(msg: dict[str, Any]) -> str | None:
 
 
 def _extract_authors(msg: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Author list in the same shape ``ingest/crossref.py`` produces."""
+    """Author list as ``{"name": "Family, Given"}`` — self-contained (does
+    NOT reuse ``ingest/crossref.py::_normalize``'s canonical structured
+    output) because :func:`_first_author_surname` below wants the
+    comma-split string directly; this module never writes ``refs.authors``,
+    so it doesn't need to converge on the storage shape."""
     authors: list[dict[str, Any]] = []
     for a in msg.get("author") or []:
         family = (a.get("family") or "").strip()

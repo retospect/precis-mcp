@@ -495,6 +495,23 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # docs/backlog/paper-metadata-enrichment-pass.md: one Crossref
+        # (+conditional OpenAlex) fetch per paper backfills authors
+        # (structured given/family + junk flush), entry_type/journal/
+        # issn, extra ref_identifiers, retraction status, and per-author
+        # ORCID links. Same shape as openalex_enrich just above.
+        name="paper_meta_enrich",
+        label="Paper metadata enrichment (authors/entry_type/retraction)",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        uses_external=("crossref", "openalex"),
+        one_line="Re-resolve authors/entry_type/journal/idents/retraction "
+        "status from Crossref (+OpenAlex) on a cadence.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         # Stub-ranking pipeline (docs/backlog): S2-enrich + embed + anchor-
         # similarity re-rank paper stubs (title/abstract only, no PDF yet) so
         # `fetch_oa`'s claim query and the stub-backlog surfaces float the

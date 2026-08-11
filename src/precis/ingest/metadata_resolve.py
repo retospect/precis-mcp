@@ -98,6 +98,8 @@ class Resolution:
     year: int | None = None
     journal: str = ""
     abstract: str = ""
+    entry_type: str = ""
+    issn: str = ""
     doi: str | None = None
     arxiv: str | None = None
     sim: float | None = None
@@ -224,6 +226,8 @@ def _from_meta(ref_id: int, meta: dict[str, Any], *, track: str) -> Resolution:
         year=meta.get("year"),
         journal=(meta.get("journal") or "").strip(),
         abstract=(meta.get("abstract") or "").strip(),
+        entry_type=(meta.get("entry_type") or "").strip(),
+        issn=(meta.get("issn") or "").strip(),
         doi=meta.get("doi"),
         arxiv=meta.get("arxiv_id"),
     )
@@ -339,6 +343,10 @@ def apply_resolution(
         meta_patch["abstract"] = res.abstract
     if res.journal:
         meta_patch["journal"] = res.journal
+    if res.entry_type:
+        meta_patch["entry_type"] = res.entry_type
+    if res.issn:
+        meta_patch["issn"] = res.issn
     with store.tx() as conn:
         store.update_paper_fields(
             res.ref_id,

@@ -38,8 +38,8 @@ Three pass shapes share the one ``run_loop`` rotation (``runner.py``):
   ``refs`` (sibling-worker shape): ``classify``, ``bib_parse``,
   ``bib_mark``, ``chase``, ``fetch``, ``hub_refine``, ``nursery``,
   ``sweeper``, ``heartbeat``, ``corpus_reconcile``, ``paper_reconcile``,
-  ``openalex_enrich``, ``stub_rank``, ``llm_summarize``, … (roster:
-  ``registry.py``).
+  ``paper_meta_enrich``, ``openalex_enrich``, ``stub_rank``,
+  ``llm_summarize``, … (roster: ``registry.py``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
   The ``dispatch`` pass is the intent→compute bridge: it walks
   open todos with ``meta.executor`` and mints one child ``kind='job'``
@@ -173,8 +173,9 @@ Notable pass mechanics
   gets up to ``UNPARK_CAP`` autonomous, cool-down-gated re-arms before
   latching the terminal ``child-failed-final`` tag.
 * ``corpus_reconcile`` (per-host ``pdf_locations`` presence ledger),
-  ``paper_reconcile`` (standing dedup + hygiene heals), and
-  ``openalex_enrich`` (abstract fill + card rebuild) each self-throttle
+  ``paper_reconcile`` (standing dedup + hygiene heals), ``openalex_enrich``
+  (abstract fill + card rebuild), and ``paper_meta_enrich`` (Crossref/
+  OpenAlex author/entry_type/retraction re-resolve) each self-throttle
   via an ``app_state`` marker + a single-runner advisory lock.
 * ``stub_rank`` S2-enriches + ``bge-m3``-embeds (into ``ref_embeddings``)
   every pending paper stub, then scores each against active-quest and

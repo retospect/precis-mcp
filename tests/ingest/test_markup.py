@@ -60,7 +60,7 @@ def test_parse_jats_metadata() -> None:
     assert ext.title == "A Study of Widgets"
     assert ext.doi == "10.1234/abc"
     assert ext.year == 2021
-    assert ext.authors == [{"name": "Smith, Jane"}]
+    assert ext.authors == [{"given": "Jane", "family": "Smith"}]
     assert "widgets" in ext.abstract.lower()
     assert ext.keywords == ["widgets", "spectroscopy"]
 
@@ -119,7 +119,7 @@ def test_parse_elsevier_metadata_and_body() -> None:
     assert ext.source_format == "elsevier_xml"
     assert ext.title == "Elsevier Widgets"
     assert ext.doi == "10.1016/j.widget.2021.01.001"
-    assert ext.authors == [{"name": "Curie, Marie"}]
+    assert ext.authors == [{"given": "Marie", "family": "Curie"}]
     assert "elsevier widgets" in ext.abstract.lower()
     body = [b for b in ext.blocks if b["type"] == "paragraph"]
     assert body and "Widgets matter" in body[0]["text"]

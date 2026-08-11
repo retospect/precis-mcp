@@ -128,6 +128,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             from precis.ingest.paper_hygiene import (
                 collapse_superseded_chains,
                 heal_drifted_cards,
+                metadata_hygiene_stats,
                 migrate_dangling_paper_links,
                 requeue_stranded_fetches,
             )
@@ -136,6 +137,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
             relinked = migrate_dangling_paper_links(store, dry_run=False, limit=limit)
             requeued = requeue_stranded_fetches(store, dry_run=False, limit=limit)
+            stats = metadata_hygiene_stats(store)
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 
             merged = sum(
@@ -160,6 +162,25 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 )
             for r in review:
                 log.info("paper_reconcile: %s", r.line())
+            log.info(
+                "paper_hygiene: authors structured %d/%d (%.1f%%), "
+                "entry_type %d/%d (%.1f%%), journal %d/%d (%.1f%%), "
+                "%d heuristic-sourced, %d junk author entr(y/ies)%s",
+                stats.structured_authors_papers,
+                stats.authored_papers,
+                stats.structured_authors_pct,
+                stats.entry_type_papers,
+                stats.total_papers,
+                stats.entry_type_pct,
+                stats.journal_papers,
+                stats.total_papers,
+                stats.journal_pct,
+                stats.heuristic_source_papers,
+                stats.junk_author_entries,
+                f" (sampled first {stats.junk_sample_papers} authored papers)"
+                if stats.junk_sample_bounded
+                else "",
+            )
             work = (
                 merged
                 + len(healed_cards)

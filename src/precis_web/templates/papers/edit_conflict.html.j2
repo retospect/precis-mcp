@@ -39,7 +39,7 @@
      metadata onto the survivor once the duplicate's identifiers free up.
      Defined once, macro'd into each merge form below. #}
   {% macro pending_fields() %}
-    {% for name in ['title','year','doi','arxiv','abstract','authors','cite_key'] %}
+    {% for name in ['title','year','doi','arxiv','abstract','authors','cite_key','journal','entry_type'] %}
     <input type="hidden" name="{{ name }}" value="{{ form.get(name, '') }}" />
     {% endfor %}
   {% endmacro %}

@@ -2074,6 +2074,22 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_openalex_enrich_pass)
 
+        # Paper metadata enrichment — re-resolve authors + entry_type/
+        # journal/issn/idents/retraction status from one Crossref
+        # (+conditional OpenAlex) fetch per paper. Wholesale author
+        # replace (also flushes junk) unless human_verified_at is set;
+        # DOI-less papers get a no-network heuristic split. Same
+        # throttle + advisory-lock guards as openalex_enrich, cadence via
+        # PRECIS_PAPER_META_ENRICH_REFRESH_HOURS (default 6).
+        if _register("paper_meta_enrich"):
+            from precis.workers.paper_meta_enrich import run_paper_meta_enrich_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _paper_meta_enrich_pass(batch_size: int) -> _BatchResult:
+                return run_paper_meta_enrich_pass(store, limit=None)
+
+            ref_passes.append(_paper_meta_enrich_pass)
+
         # Stub rank — S2-enrich + embed + anchor-similarity re-rank paper
         # stubs (title/abstract only, no PDF yet) so fetch_oa's claim
         # query and the stub-backlog surfaces float the relevant ones

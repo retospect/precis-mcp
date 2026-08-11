@@ -48,6 +48,7 @@ import psycopg
 
 from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.store import Store
+from precis.utils.authors import author_names
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -175,7 +176,10 @@ def _rebuild_cards(store: Store, ref_id: int) -> None:
     abstract = abstract if isinstance(abstract, str) else ""
     if not abstract:
         return
-    author_names = [a.get("name", "") for a in (ref.authors or []) if a.get("name")]
+    # Shape-tolerant: ``ref.authors`` may hold ``{"name"}`` or the
+    # canonical ``{"given", "family"}`` shape — a bare ``.get("name")``
+    # filter would silently drop the latter from the rebuilt card.
+    authors_display = author_names(ref.authors)
     kw_raw = meta.get("keywords", [])
     keywords = list(kw_raw) if isinstance(kw_raw, list) else []
     with store.tx() as conn:
@@ -183,7 +187,7 @@ def _rebuild_cards(store: Store, ref_id: int) -> None:
             conn,
             ref_id,
             title=ref.title or "",
-            author_names=author_names,
+            author_names=authors_display,
             abstract=abstract,
             keywords=keywords,
         )

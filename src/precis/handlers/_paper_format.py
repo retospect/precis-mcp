@@ -10,10 +10,17 @@ rendering, JATS scrubbing, author normalisation).
 Public-ish surface (used by ``paper.py`` and a few critic tests):
 
 * :func:`_format_authors` — flat "A; B; C" or "A et al."
-* :func:`_format_citation` — BibTeX / RIS / EndNote renderer
+* :func:`_format_citation` — BibTeX / RIS / EndNote renderer, now
+  type-aware over ``meta.entry_type`` (see :data:`ENTRY_TYPE_CHOICES` /
+  :data:`_EXPORT_TYPE_MAP`, docs/backlog/paper-meta-surfacing.md).
 * :func:`_clean_inline_text` — html.unescape + tag-whitelist strip
 * :func:`_latex_escape` — backslash-escape BibTeX special chars
 * :func:`_strip_jats` — drop ``<jats:*>`` namespace tags
+
+``ENTRY_TYPE_CHOICES`` / ``ENTRY_TYPE_LABELS`` are also imported by
+``precis_web.routes.papers`` for the Meta tab's document-type
+``<select>`` and display label — the vocabulary is defined once here
+so the edit form and the exporter never drift apart.
 """
 
 from __future__ import annotations
@@ -61,16 +68,80 @@ _JATS_ABSTRACT_TITLE_RE = re.compile(
     r"<jats:title>\s*Abstract\s*</jats:title>", re.IGNORECASE
 )
 
+# Crossref document-type vocabulary this repo actually stores in
+# ``meta.entry_type`` (paper_meta_enrich writes the Crossref ``type``
+# field verbatim; this is the subset the Meta tab edit form offers as a
+# ``<select>`` — anything else Crossref might send stays representable
+# via ``meta.entry_type`` but has no dedicated select option, matching
+# the "other" escape). Order is display order in the form.
+ENTRY_TYPE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("journal-article", "Journal article"),
+    ("proceedings-article", "Conference paper"),
+    ("book-chapter", "Book chapter"),
+    ("posted-content", "Preprint / posted content"),
+    ("dissertation", "Dissertation"),
+    ("book", "Book"),
+    ("monograph", "Monograph"),
+    ("report", "Report"),
+    ("reference-entry", "Reference entry"),
+    ("other", "Other"),
+)
 
-def _author_names(raw: Any) -> list[str]:
-    """Flat list of citation-form (``Family, Given``) name strings.
+#: ``{entry_type: label}`` — the display-only lookup for the Meta tab
+#: (an entry_type value that predates/exceeds ``ENTRY_TYPE_CHOICES``,
+#: e.g. a raw Crossref type we don't offer in the select, still shows
+#: its verbatim value via ``dict.get(..., entry_type)``).
+ENTRY_TYPE_LABELS: dict[str, str] = dict(ENTRY_TYPE_CHOICES)
+
+#: ``meta.entry_type`` → per-format citation type, for the entry types
+#: whose export differs from the journal-article default
+#: (``@article`` / ``TY  - JOUR`` / ``%0 Journal Article``). Absent or
+#: unrecognised ``entry_type`` (including ``journal-article``,
+#: ``reference-entry``, ``other``) falls through to that default
+#: unchanged — an un-enriched paper's export is byte-identical to
+#: before this map existed.
+_EXPORT_TYPE_MAP: dict[str, dict[str, str]] = {
+    "proceedings-article": {
+        "bibtex": "inproceedings",
+        "ris": "CONF",
+        "endnote": "Conference Paper",
+    },
+    "book-chapter": {
+        "bibtex": "incollection",
+        "ris": "CHAP",
+        "endnote": "Book Section",
+    },
+    "posted-content": {
+        "bibtex": "misc",
+        "ris": "UNPB",
+        "endnote": "Unpublished Work",
+    },
+    "dissertation": {
+        "bibtex": "phdthesis",
+        "ris": "THES",
+        "endnote": "Thesis",
+    },
+    "book": {"bibtex": "book", "ris": "BOOK", "endnote": "Book"},
+    "monograph": {"bibtex": "book", "ris": "BOOK", "endnote": "Book"},
+    "report": {
+        "bibtex": "techreport",
+        "ris": "RPRT",
+        "endnote": "Report",
+    },
+}
+
+
+def _author_names(raw: Any, *, order: str = "natural") -> list[str]:
+    """Flat list of display-form name strings.
 
     Tolerates every stored ``refs.authors`` shape — ``{name}``,
     ``{family, given}``, bare strings, semicolon-packed byline — via
-    the canonical :mod:`precis.utils.authors` reader. Pure; never
-    raises.
+    the canonical :mod:`precis.utils.authors` reader. ``order='natural'``
+    (the default) is the display convention everywhere;
+    ``order='sortable'`` is used only by citation renderers (BibTeX)
+    that need "Family, Given". Pure; never raises.
     """
-    return _shared_author_names(raw, order="sortable")
+    return _shared_author_names(raw, order=order)
 
 
 def _format_authors(raw: Any) -> str:
@@ -97,15 +168,27 @@ def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     ``doi`` is fetched from ``ref_identifiers`` by the caller and
     passed in. ``journal`` is still in ``meta`` because it's the
     only one of the four that v2 chose to keep there.
+
+    ``meta.entry_type`` (Crossref vocabulary, see
+    :data:`_EXPORT_TYPE_MAP`) picks the citation type — ``@article`` /
+    ``TY  - JOUR`` / ``%0 Journal Article`` when absent or unrecognised,
+    matching the export's behaviour before ``entry_type`` existed.
     """
     meta = ref.meta or {}
     slug = ref.slug or "???"
     title = _clean_inline_text(ref.title)
-    authors = [_clean_inline_text(a) for a in _author_names(ref.authors)]
+    # Citation formats (BibTeX / RIS / EndNote) use the sortable
+    # "Family, Given" convention — inverted order is *derived* here,
+    # never the stored display string (see utils/authors.py).
+    authors = [
+        _clean_inline_text(a) for a in _author_names(ref.authors, order="sortable")
+    ]
     authors = [a for a in authors if a]
     journal = _clean_inline_text(str(meta.get("journal") or ""))
     year = ref.year
     doi_clean = _clean_inline_text(doi or "")
+    entry_type = str(meta.get("entry_type") or "").strip()
+    export_type = _EXPORT_TYPE_MAP.get(entry_type)
 
     if style == "bibtex":
         # LaTeX-escape every scalar field that might carry a special
@@ -116,7 +199,8 @@ def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         bx_authors = " and ".join(_latex_escape(a) for a in authors)
         bx_journal = _latex_escape(journal)
         bx_doi = _latex_escape(doi_clean)
-        lines = [f"@article{{{slug},"]
+        bx_type = export_type["bibtex"] if export_type else "article"
+        lines = [f"@{bx_type}{{{slug},"]
         if bx_title:
             lines.append(f"  title = {{{bx_title}}},")
         if bx_authors:
@@ -127,11 +211,14 @@ def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
             lines.append(f"  journal = {{{bx_journal}}},")
         if bx_doi:
             lines.append(f"  doi = {{{bx_doi}}},")
+        if entry_type == "posted-content":
+            lines.append("  note = {Preprint},")
         lines.append("}")
         return "\n".join(lines) + "\n"
 
     if style == "ris":
-        out = ["TY  - JOUR"]
+        ris_type = export_type["ris"] if export_type else "JOUR"
+        out = [f"TY  - {ris_type}"]
         if title:
             out.append(f"TI  - {title}")
         for a in authors:
@@ -146,7 +233,8 @@ def _format_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         return "\n".join(out)
 
     # endnote (subset)
-    out = ["%0 Journal Article"]
+    endnote_type = export_type["endnote"] if export_type else "Journal Article"
+    out = [f"%0 {endnote_type}"]
     if title:
         out.append(f"%T {title}")
     for a in authors:
@@ -218,6 +306,8 @@ def _strip_jats(text: str) -> str:
 
 
 __all__ = [
+    "ENTRY_TYPE_CHOICES",
+    "ENTRY_TYPE_LABELS",
     "_author_names",
     "_clean_inline_text",
     "_format_authors",

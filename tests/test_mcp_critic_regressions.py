@@ -9,6 +9,7 @@ matching changelog entry.
 from __future__ import annotations
 
 from datetime import UTC
+from typing import Any
 
 import pytest
 
@@ -1269,6 +1270,79 @@ def test_bibtex_unescapes_html_entities() -> None:
     # JATS / HTML inline tags strip from the title.
     assert "<sub>" not in bibtex
     assert "CO2" in bibtex
+
+
+def _citation_ref(entry_type: str | None) -> Any:
+    """Minimal ``Ref`` for the type-aware export tests
+    (docs/backlog/paper-meta-surfacing.md) — same shape as
+    :func:`test_bibtex_unescapes_html_entities`, journal/entry_type only."""
+    from datetime import datetime
+
+    from precis.store.types import Ref
+
+    _now = datetime(2026, 1, 1, tzinfo=UTC)
+    meta: dict[str, Any] = {"journal": "Some Venue"}
+    if entry_type is not None:
+        meta["entry_type"] = entry_type
+    return Ref(
+        id=1,
+        kind="paper",
+        slug="smith2025paper",
+        title="A Paper",
+        provider=None,
+        meta=meta,
+        created_at=_now,
+        updated_at=_now,
+        deleted_at=None,
+    )
+
+
+def test_citation_export_no_entry_type_unchanged() -> None:
+    """A paper with no ``meta.entry_type`` exports exactly as it did
+    before the type-aware mapping existed — the journal-article default
+    (@article / TY  - JOUR / %0 Journal Article)."""
+    from precis.handlers._paper_format import _format_citation
+
+    ref = _citation_ref(None)
+    assert _format_citation(ref, style="bibtex").startswith("@article{")
+    assert _format_citation(ref, style="ris").startswith("TY  - JOUR")
+    assert _format_citation(ref, style="endnote").startswith("%0 Journal Article")
+
+
+def test_citation_export_proceedings_article_maps_to_conference() -> None:
+    """``entry_type: proceedings-article`` → BibTeX ``@inproceedings`` and
+    RIS ``TY  - CONF`` (acceptance criterion,
+    docs/backlog/paper-meta-surfacing.md)."""
+    from precis.handlers._paper_format import _format_citation
+
+    ref = _citation_ref("proceedings-article")
+    assert _format_citation(ref, style="bibtex").startswith("@inproceedings{")
+    assert _format_citation(ref, style="ris").startswith("TY  - CONF")
+    assert _format_citation(ref, style="endnote").startswith("%0 Conference Paper")
+
+
+def test_citation_export_posted_content_notes_preprint() -> None:
+    """``posted-content`` → BibTeX ``@misc`` + a preprint note, RIS
+    ``UNPB``, EndNote "Unpublished Work"."""
+    from precis.handlers._paper_format import _format_citation
+
+    ref = _citation_ref("posted-content")
+    bibtex = _format_citation(ref, style="bibtex")
+    assert bibtex.startswith("@misc{")
+    assert "note = {Preprint}" in bibtex
+    assert _format_citation(ref, style="ris").startswith("TY  - UNPB")
+    assert _format_citation(ref, style="endnote").startswith("%0 Unpublished Work")
+
+
+def test_citation_export_unknown_entry_type_falls_back_to_default() -> None:
+    """An entry_type outside ``_EXPORT_TYPE_MAP`` (e.g. Crossref's
+    ``reference-entry``, or the select's ``other``) degrades to the same
+    journal-article default as no entry_type at all."""
+    from precis.handlers._paper_format import _format_citation
+
+    ref = _citation_ref("reference-entry")
+    assert _format_citation(ref, style="bibtex").startswith("@article{")
+    assert _format_citation(ref, style="ris").startswith("TY  - JOUR")
 
 
 def test_paper_list_view_strips_jats_markup() -> None:

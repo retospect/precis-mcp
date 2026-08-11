@@ -4,8 +4,8 @@ Bodies are read-only via ``get`` / ``search``; ingest happens
 out-of-band via :func:`precis.ingest.add.precis_add` (or the
 top-level ``precis add`` / ``precis watch`` CLI), so ``put`` is not
 exposed. ``edit`` is supported but scoped to *bibliographic metadata*
-(authors / year / title / abstract / doi / arxiv) — it never touches
-block text.
+(authors / year / title / abstract / doi / arxiv / journal / entry_type)
+— it never touches block text.
 
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
@@ -67,7 +67,8 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils import handle_registry
-from precis.utils.authors import to_name_dicts
+from precis.utils.authors import author_names as _shared_author_names
+from precis.utils.authors import normalize_authors
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
 from precis.utils.next_block import render_next_section
@@ -946,6 +947,8 @@ class PaperHandler(Handler):
         abstract: str | None = None,
         doi: str | None = None,
         arxiv: str | None = None,
+        journal: str | None = None,
+        entry_type: str | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
@@ -959,10 +962,19 @@ class PaperHandler(Handler):
 
         ``authors`` accepts any tolerated shape (name strings,
         ``{family, given}`` or ``{name}`` dicts) and is canonicalised
-        to the stored ``[{"name": …}]`` shape via
-        :func:`precis.utils.authors.to_name_dicts`. ``abstract`` merges
-        into ``meta``; ``doi`` / ``arxiv`` replace this ref's alias via
-        :meth:`Store.set_ref_identifier`.
+        via :func:`precis.utils.authors.normalize_authors` — a flat
+        "Family, Given" string splits to ``{given, family}``; anything
+        ambiguous or junk-flagged stays ``{"name"}`` or is dropped.
+        ``abstract`` / ``journal`` / ``entry_type`` merge into ``meta``
+        (``entry_type`` verbatim, matching what
+        :mod:`precis.ingest.paper_meta_enrich` writes — see
+        ``_paper_format.ENTRY_TYPE_CHOICES`` for the vocabulary the web
+        edit form offers); ``doi`` / ``arxiv`` replace this ref's alias
+        via :meth:`Store.set_ref_identifier`. A manual ``journal`` /
+        ``entry_type`` edit stamps no provenance key — unlike authors
+        (``meta.authors_source``), nothing in the enrich pass tracks
+        provenance for these two fields, so there's nothing to keep
+        consistent with.
 
         ``dry_run=True`` (or ``'diff'`` / ``'full'``) previews the patch
         as ``field: old → new`` lines and writes nothing — inherited by
@@ -971,10 +983,14 @@ class PaperHandler(Handler):
         dry_mode = normalize_dry_run(dry_run)
         ref_id = self._resolve_paper_ref_id(id)
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
-        new_authors = to_name_dicts(authors) if authors else None
+        new_authors = normalize_authors(authors) if authors else None
         meta_patch: dict[str, Any] = {}
         if isinstance(abstract, str) and abstract.strip():
             meta_patch["abstract"] = abstract.strip()
+        if isinstance(journal, str) and journal.strip():
+            meta_patch["journal"] = journal.strip()
+        if isinstance(entry_type, str) and entry_type.strip():
+            meta_patch["entry_type"] = entry_type.strip()
         has_doi = bool(doi and str(doi).strip())
         has_arxiv = bool(arxiv and str(arxiv).strip())
         if (
@@ -1033,11 +1049,7 @@ class PaperHandler(Handler):
                     conn,
                     ref_id,
                     title=updated.title or "",
-                    author_names=[
-                        a.get("name", "")
-                        for a in (updated.authors or [])
-                        if a.get("name")
-                    ],
+                    author_names=_shared_author_names(updated.authors),
                     abstract=abstract_val if isinstance(abstract_val, str) else "",
                     keywords=list(kw) if isinstance(kw, list) else [],
                 )
@@ -1047,8 +1059,7 @@ class PaperHandler(Handler):
             changed.append("year")
         if new_authors:
             changed.append(f"authors({len(new_authors)})")
-        if meta_patch:
-            changed.append("abstract")
+        changed.extend(meta_patch.keys())
         return Response(
             body=(
                 f"updated paper id={ref_id}: "
@@ -1092,6 +1103,14 @@ class PaperHandler(Handler):
             new_abstract = meta_patch["abstract"]
             old_len = len(old_abstract) if isinstance(old_abstract, str) else 0
             lines.append(f"abstract: {old_len} chars → {len(new_abstract)} chars")
+        if "journal" in meta_patch:
+            old_journal = (old.meta or {}).get("journal") or "(none)"
+            lines.append(f"journal: {old_journal!r} → {meta_patch['journal']!r}")
+        if "entry_type" in meta_patch:
+            old_entry_type = (old.meta or {}).get("entry_type") or "(none)"
+            lines.append(
+                f"entry_type: {old_entry_type!r} → {meta_patch['entry_type']!r}"
+            )
         if doi:
             lines.append(f"doi: {old_ids.get('doi', '(none)')!r} → {doi!r}")
         if arxiv:

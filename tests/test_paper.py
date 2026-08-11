@@ -1040,8 +1040,9 @@ class TestPaperEdit:
         self, store: Store, handler: PaperHandler
     ) -> None:
         """edit() writes the year/authors columns (the only write path
-        for them) and canonicalises authors to the stored ``{name}``
-        shape regardless of the input shape."""
+        for them) and canonicalises authors via
+        :func:`precis.utils.authors.normalize_authors`: an unambiguous
+        "Family, Given" string splits, a bare name stays ``{name}``."""
         ref_id = _seed_paper(store, slug="smith2019foo", year=2019)
         handler.edit(
             id=ref_id,
@@ -1051,18 +1052,21 @@ class TestPaperEdit:
         )
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert ref.year == 2021
-        assert ref.authors == [{"name": "Smith, Jane"}, {"name": "Aristotle"}]
+        assert ref.authors == [
+            {"given": "Jane", "family": "Smith"},
+            {"name": "Aristotle"},
+        ]
         assert ref.meta["abstract"] == "A repaired abstract."
 
     def test_edit_normalises_legacy_family_given_input(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """A legacy ``{family, given}`` author payload (what the old web
-        editor produced) is converted to ``{name}`` on write."""
+        """A ``{family, given}`` author payload (what the web editor
+        canonicalises a split name to) passes through unchanged."""
         ref_id = _seed_paper(store, slug="doe2020bar")
         handler.edit(id=ref_id, authors=[{"family": "Doe", "given": "Alice"}])
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
-        assert ref.authors == [{"name": "Doe, Alice"}]
+        assert ref.authors == [{"given": "Alice", "family": "Doe"}]
 
     def test_edit_blank_fields_keep_existing(
         self, store: Store, handler: PaperHandler
@@ -1115,4 +1119,38 @@ class TestPaperEdit:
         assert not is_error, body
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert ref.year == 2022
-        assert ref.authors == [{"name": "Smith, Jane"}, {"name": "Jones, Bob"}]
+        assert ref.authors == [
+            {"given": "Jane", "family": "Smith"},
+            {"given": "Bob", "family": "Jones"},
+        ]
+
+    def test_edit_persists_journal_and_entry_type(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``journal`` / ``entry_type`` (paper-meta-surfacing) merge into
+        ``meta`` like ``abstract`` — no ``authors_source``-style
+        provenance stamp (that key is authors-only; see
+        ``paper_meta_enrich.py``)."""
+        ref_id = _seed_paper(store, slug="wang2020state", journal="Old Journal")
+        handler.edit(id=ref_id, journal="New Journal", entry_type="proceedings-article")
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.meta["journal"] == "New Journal"
+        assert ref.meta["entry_type"] == "proceedings-article"
+        assert "authors_source" not in ref.meta
+
+    def test_edit_dry_run_previews_journal_and_entry_type(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, slug="wang2020state", journal="Old Journal")
+        resp = handler.edit(
+            id=ref_id,
+            journal="New Journal",
+            entry_type="book-chapter",
+            dry_run=True,
+        )
+        assert "journal: 'Old Journal' → 'New Journal'" in resp.body
+        assert "entry_type: '(none)' → 'book-chapter'" in resp.body
+        # Dry run writes nothing.
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.meta["journal"] == "Old Journal"
+        assert "entry_type" not in ref.meta

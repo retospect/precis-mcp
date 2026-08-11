@@ -7,6 +7,28 @@ from typing import Any
 from habanero import Crossref
 
 
+def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
+    """Raw CrossRef ``message`` dict for a DOI, or ``None`` if not found.
+
+    :func:`_normalize` (via :func:`lookup_crossref`) drops several fields
+    a caller may still want off the same response — ``ISSN``,
+    ``update-to`` retraction/correction notices — so this is exposed
+    separately rather than folded into the normalized shape (which stays
+    stable for existing callers). Used by
+    :mod:`precis.ingest.paper_meta_enrich` (the corpus-wide backfill
+    pass) to get metadata + retraction signal from one fetch instead of
+    two.
+    """
+    cr = Crossref(mailto=mailto) if mailto else Crossref()
+    try:
+        result = cr.works(ids=doi)
+    except Exception:
+        return None
+    if not result or "message" not in result:
+        return None
+    return result["message"]
+
+
 def lookup_crossref(doi: str, mailto: str = "") -> dict[str, Any] | None:
     """Fetch metadata from CrossRef for a given DOI.
 
@@ -17,16 +39,9 @@ def lookup_crossref(doi: str, mailto: str = "") -> dict[str, Any] | None:
     Returns:
         Normalized metadata dict or None if not found.
     """
-    cr = Crossref(mailto=mailto) if mailto else Crossref()
-    try:
-        result = cr.works(ids=doi)
-    except Exception:
+    msg = fetch_message(doi, mailto)
+    if msg is None:
         return None
-
-    if not result or "message" not in result:
-        return None
-
-    msg = result["message"]
     return _normalize(msg, doi)
 
 
@@ -78,7 +93,9 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
 
     Crossref ``author`` entries come in three flavours:
 
-    * ``{"family": "Smith", "given": "John"}`` — typical natural person.
+    * ``{"family": "Smith", "given": "John"}`` — typical natural person;
+      emitted here as the canonical structured shape (see
+      ``precis.utils.authors``), unchanged.
     * ``{"name": "OECD"}`` — corporate / organisational author (no
       family/given split).
     * ``{"name": "Master of Science in Management, ..."}`` — affiliation
@@ -126,8 +143,15 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
         family = (a.get("family") or "").strip()
         given = (a.get("given") or "").strip()
         if family or given:
-            parts = [p for p in (family, given) if p]
-            authors.append({"name": ", ".join(parts)})
+            # Crossref hands us the split natively — emit the canonical
+            # structured shape rather than joining into a string that
+            # normalize_authors would just have to re-split.
+            entry: dict[str, str] = {}
+            if given:
+                entry["given"] = given
+            if family:
+                entry["family"] = family
+            authors.append(entry)
             continue
         # Corporate or affiliation-mistaken entry — only the ``name`` field is set.
         name = (a.get("name") or "").strip()
@@ -141,8 +165,12 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
             family = (e.get("family") or "").strip()
             given = (e.get("given") or "").strip()
             if family or given:
-                parts = [p for p in (family, given) if p]
-                authors.append({"name": ", ".join(parts)})
+                entry = {}
+                if given:
+                    entry["given"] = given
+                if family:
+                    entry["family"] = family
+                authors.append(entry)
             else:
                 name = (e.get("name") or "").strip()
                 if name and not _looks_like_affiliation(name):
@@ -158,6 +186,9 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
     title_list = msg.get("title", [])
     title = title_list[0] if title_list else ""
 
+    issn_list = msg.get("ISSN") or []
+    issn = str(issn_list[0]).strip() if issn_list else ""
+
     return {
         "title": title,
         "authors": authors,
@@ -166,6 +197,7 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
         "journal": (
             msg.get("container-title", [""])[0] if msg.get("container-title") else ""
         ),
+        "issn": issn,
         "abstract": msg.get("abstract", ""),
         "entry_type": msg.get("type", "article"),
         "source": "crossref",

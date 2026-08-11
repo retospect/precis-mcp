@@ -23,6 +23,13 @@ ingestion/edit bugs that the current code no longer produces:
 
 All are dry-run by default and idempotent: a clean corpus yields empty
 results and the next pass is a cheap no-op.
+
+:func:`metadata_hygiene_stats` is a different animal — pure read-only
+corpus-quality *counters* (no remediation, no dry-run flag), so a human
+or ``/whatneedsdoing`` can see the author-format-drift backfill's
+progress (and catch a future ingest path that bypasses the normalizer
+again) without an ad-hoc prod sample. See its docstring for the
+individual counters.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -37,6 +45,7 @@ from psycopg.types.json import Jsonb
 
 from precis.ingest.cards import rewrite_cards
 from precis.store import Store
+from precis.utils.authors import author_display, author_names, is_junk_author_name
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +94,10 @@ def heal_drifted_cards(
         if ref is None or not ref.title:
             continue
         title = ref.title
-        author_names = [a.get("name", "") for a in (ref.authors or []) if a.get("name")]
+        # Shape-tolerant: ``ref.authors`` may hold ``{"name"}`` or the
+        # canonical ``{"given", "family"}`` shape — a bare ``.get("name")``
+        # filter would silently drop the latter from the rebuilt card.
+        authors_display = author_names(ref.authors)
         meta = ref.meta or {}
         abstract = meta.get("abstract", "")
         abstract = abstract if isinstance(abstract, str) else ""
@@ -114,7 +126,7 @@ def heal_drifted_cards(
                 conn,
                 rid,
                 title=title,
-                author_names=author_names,
+                author_names=authors_display,
                 abstract=abstract,
                 keywords=keywords,
             )
@@ -353,8 +365,148 @@ def requeue_stranded_fetches(
     return requeued
 
 
+# ---------------------------------------------------------------------------
+# Metadata hygiene counters (read-only)
+# ---------------------------------------------------------------------------
+
+#: Default cap on how many authored papers :func:`metadata_hygiene_stats`
+#: walks in Python to count junk author entries (the one counter
+#: :func:`is_junk_author_name` — a pure-Python check — can't do in SQL).
+#: The other counters are single aggregate queries and scan the whole
+#: corpus regardless.
+_JUNK_SAMPLE_LIMIT_DEFAULT = 5000
+
+
+def _pct(numerator: int, denominator: int) -> float:
+    return round(100.0 * numerator / denominator, 1) if denominator else 0.0
+
+
+@dataclass
+class MetadataHygieneStats:
+    """Corpus-quality counters for ``kind='paper'`` metadata — pure read,
+    no remediation (see :func:`metadata_hygiene_stats`)."""
+
+    total_papers: int = 0
+    authored_papers: int = 0
+    structured_authors_papers: int = 0
+    entry_type_papers: int = 0
+    journal_papers: int = 0
+    heuristic_source_papers: int = 0
+    junk_author_entries: int = 0
+    junk_sample_papers: int = 0
+    junk_sample_bounded: bool = False
+
+    @property
+    def structured_authors_pct(self) -> float:
+        """% of *authored* papers whose author list is fully structured
+        (every entry has non-blank ``given``+``family``)."""
+        return _pct(self.structured_authors_papers, self.authored_papers)
+
+    @property
+    def entry_type_pct(self) -> float:
+        return _pct(self.entry_type_papers, self.total_papers)
+
+    @property
+    def journal_pct(self) -> float:
+        return _pct(self.journal_papers, self.total_papers)
+
+
+def metadata_hygiene_stats(
+    store: Store, *, junk_sample_limit: int = _JUNK_SAMPLE_LIMIT_DEFAULT
+) -> MetadataHygieneStats:
+    """Corpus-quality visibility for the author-format-drift backfill.
+
+    Pure read over ``refs`` (``kind='paper' AND deleted_at IS NULL``); makes
+    no writes. Counts:
+
+    * ``structured_authors_papers`` / ``_pct`` — of the *authored* papers
+      (non-empty ``authors``), how many have every entry in the canonical
+      ``{"given", "family"}`` shape vs. still carrying a flat ``{"name"}``
+      (or a mix).
+    * ``entry_type_papers`` / ``_pct``, ``journal_papers`` / ``_pct`` — of
+      *all* papers, how many carry ``meta.entry_type`` / ``meta.journal``
+      (stamped by :func:`precis.ingest.paper_meta_enrich.enrich_paper`).
+    * ``heuristic_source_papers`` — papers whose current authors came from
+      the no-network comma-split heuristic (``meta.authors_source ==
+      'heuristic'``) rather than a resolved Crossref record — the backlog
+      still awaiting real resolution.
+    * ``junk_author_entries`` — count of individual author entries
+      :func:`~precis.utils.authors.is_junk_author_name` flags (an email,
+      a section heading, a mis-split affiliation). :func:`is_junk_author_name`
+      is pure Python, so this counter walks authored papers row-by-row
+      rather than aggregating in SQL like the others; ``junk_sample_papers``
+      /  ``junk_sample_bounded`` record how many papers were actually
+      walked and whether the corpus was larger than ``junk_sample_limit``
+      (default 5000) — a bounded sample, not a full-corpus count, in that
+      case.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT "
+            "  count(*) AS total, "
+            "  count(*) FILTER ("
+            "    WHERE jsonb_array_length(coalesce(r.authors, '[]'::jsonb)) > 0"
+            "  ) AS authored, "
+            "  count(*) FILTER ("
+            "    WHERE jsonb_array_length(coalesce(r.authors, '[]'::jsonb)) > 0"
+            "      AND NOT EXISTS ("
+            "        SELECT 1 FROM jsonb_array_elements(r.authors) a "
+            "        WHERE NOT ("
+            "          coalesce(a->>'given', '') <> '' "
+            "          AND coalesce(a->>'family', '') <> ''"
+            "        )"
+            "      )"
+            "  ) AS structured, "
+            "  count(*) FILTER (WHERE r.meta ? 'entry_type') AS with_entry_type, "
+            "  count(*) FILTER (WHERE r.meta ? 'journal') AS with_journal, "
+            "  count(*) FILTER ("
+            "    WHERE r.meta->>'authors_source' = 'heuristic'"
+            "  ) AS heuristic_source "
+            "FROM refs r "
+            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL"
+        ).fetchone()
+    assert row is not None
+    total, authored, structured, with_entry_type, with_journal, heuristic = (
+        int(n) for n in row
+    )
+
+    with store.pool.connection() as conn:
+        sample_rows = conn.execute(
+            "SELECT authors FROM refs "
+            "WHERE kind = 'paper' AND deleted_at IS NULL "
+            "  AND jsonb_array_length(coalesce(authors, '[]'::jsonb)) > 0 "
+            "ORDER BY ref_id "
+            "LIMIT %s",
+            (junk_sample_limit + 1,),
+        ).fetchall()
+    bounded = len(sample_rows) > junk_sample_limit
+    sample_rows = sample_rows[:junk_sample_limit]
+
+    junk = 0
+    for (authors_raw,) in sample_rows:
+        entries = authors_raw if isinstance(authors_raw, list) else []
+        for entry in entries:
+            name = author_display(entry)
+            if name and is_junk_author_name(name):
+                junk += 1
+
+    return MetadataHygieneStats(
+        total_papers=total,
+        authored_papers=authored,
+        structured_authors_papers=structured,
+        entry_type_papers=with_entry_type,
+        journal_papers=with_journal,
+        heuristic_source_papers=heuristic,
+        junk_author_entries=junk,
+        junk_sample_papers=len(sample_rows),
+        junk_sample_bounded=bounded,
+    )
+
+
 __all__ = [
+    "MetadataHygieneStats",
     "collapse_superseded_chains",
     "heal_drifted_cards",
+    "metadata_hygiene_stats",
     "migrate_dangling_paper_links",
 ]

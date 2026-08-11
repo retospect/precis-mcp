@@ -62,6 +62,7 @@ from precis.ingest.pdf_sidecar import (
     is_garbage_title,
     is_pii,
 )
+from precis.utils.authors import author_names as _shared_author_names
 
 log = logging.getLogger(__name__)
 
@@ -447,11 +448,10 @@ def extract_metadata_from_sources(
             if not metadata.title and best_doi.metadata.get("title"):
                 metadata.title = best_doi.metadata["title"]
             if not metadata.authors and best_doi.metadata.get("authors"):
-                metadata.authors = [
-                    a.get("name", "")
-                    for a in best_doi.metadata["authors"]
-                    if a.get("name")
-                ]
+                # Shape-tolerant: a Crossref hit now hands back structured
+                # {given, family} dicts, not just {"name"} — a bare
+                # ``.get("name")`` filter would silently drop them.
+                metadata.authors = _shared_author_names(best_doi.metadata["authors"])
             if not metadata.year and best_doi.metadata.get("year"):
                 metadata.year = best_doi.metadata["year"]
             if not metadata.journal and best_doi.metadata.get("journal"):
@@ -464,9 +464,7 @@ def extract_metadata_from_sources(
             if lookup_result.get("title"):
                 metadata.title = lookup_result["title"]
             if lookup_result.get("authors"):
-                metadata.authors = [
-                    a.get("name", "") for a in lookup_result["authors"] if a.get("name")
-                ]
+                metadata.authors = _shared_author_names(lookup_result["authors"])
             if lookup_result.get("year"):
                 metadata.year = lookup_result["year"]
             if lookup_result.get("journal"):

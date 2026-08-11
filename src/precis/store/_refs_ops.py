@@ -1222,9 +1222,10 @@ class RefsMixin:
         untouched; pass an explicit value to overwrite. ``meta_patch``
         is a top-level merge (``meta || patch``) used for ``abstract``
         and other meta-resident fields. ``authors`` is stored verbatim
-        as JSONB — canonicalise to the ``[{"name": …}]`` shape *before*
-        calling (see :func:`precis.utils.authors.to_name_dicts`) so the
-        column converges on one shape.
+        as JSONB — canonicalise *before* calling (see
+        :func:`precis.utils.authors.normalize_authors`) so the column
+        converges on the canonical ``{given, family}`` / ``{name}``
+        shape.
 
         Unlike :meth:`update_ref` (title + meta only), this is the sole
         write path for the ``year`` / ``authors`` columns, which were

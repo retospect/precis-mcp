@@ -1604,6 +1604,90 @@ def test_paper_detail_meta_form_has_s2_fill_button(client) -> None:
     assert "/s2-prefill" in resp.text
 
 
+def test_paper_meta_tab_shows_journal_type_keywords_and_s2_fields(
+    client, runtime
+) -> None:
+    """journal (+ ISSN), document type, keywords, and S2 citation
+    count/fields-of-study all surface on the Meta tab once
+    ``paper_meta_enrich`` (or a manual edit) has populated ``meta``
+    (paper-meta-surfacing)."""
+    ref = next(r for r in runtime.store.papers if r.id == 10)
+    ref.meta = {
+        **ref.meta,
+        "journal": "Nature Catalysis",
+        "issn": "2520-1158",
+        "entry_type": "proceedings-article",
+        "s2_citation_count": 42,
+        "s2_fields": ["Chemistry", "Materials Science"],
+        "keywords": ["catalysis", "nitrate reduction"],
+    }
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Nature Catalysis" in resp.text
+    assert "2520-1158" in resp.text
+    assert "Conference paper" in resp.text  # ENTRY_TYPE_LABELS display
+    assert "<dd>42 " in resp.text
+    assert "(Semantic Scholar)" in resp.text
+    assert "Chemistry" in resp.text
+    assert "catalysis" in resp.text
+    assert "nitrate reduction" in resp.text
+
+
+def test_paper_meta_tab_retraction_banner(client, runtime) -> None:
+    """A retracted paper shows a visible retraction notice on the Meta
+    tab (display-only — the web never writes these columns)."""
+    ref = next(r for r in runtime.store.papers if r.id == 10)
+    ref.retraction_status = "retracted"
+    ref.retraction_reason = "10.1/notice"
+    ref.retraction_url = "https://doi.org/10.1/notice"
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Retracted" in resp.text
+    assert "https://doi.org/10.1/notice" in resp.text
+
+
+def test_paper_meta_tab_no_retraction_banner_when_clean(client) -> None:
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Retracted" not in resp.text
+
+
+def test_paper_meta_tab_shows_linked_extra_identifiers(client, runtime) -> None:
+    """PubMed/OpenAlex identifiers stored in ``ref_identifiers`` are
+    visible on the Meta tab and linked to their canonical page."""
+
+    def _ids(ref_ids: list[int]) -> dict[int, dict[str, str]]:
+        return {
+            10: {
+                "doi": "10.1234/example.2024",
+                "pubmed": "17234567",
+                "openalex": "W2100000000",
+            }
+        }
+
+    runtime.store.identifiers_for_refs = _ids
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "https://pubmed.ncbi.nlm.nih.gov/17234567/" in resp.text
+    assert "https://openalex.org/W2100000000" in resp.text
+
+
+def test_paper_edit_form_offers_document_type_select_with_current_value(
+    client, runtime
+) -> None:
+    """The edit form's document-type ``<select>`` carries every
+    ``ENTRY_TYPE_CHOICES`` option and preselects the paper's current
+    ``entry_type`` — the round-trip half of the edit form."""
+    ref = next(r for r in runtime.store.papers if r.id == 10)
+    ref.meta = {**ref.meta, "journal": "Nature", "entry_type": "book-chapter"}
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert 'name="journal"' in resp.text
+    assert 'value="Nature"' in resp.text
+    assert '<option value="book-chapter">Book chapter</option>' in resp.text
+    assert "etSel: 'book-chapter'" in resp.text
+
+
 def test_paper_reader_full_width_and_resizable(client) -> None:
     """The reader page goes full-bleed (overrides base's ``max-w-6xl`` via the
     ``main_class`` block, F) and carries the drag-to-resize splitter between
@@ -1657,6 +1741,32 @@ def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
     assert "arxiv" not in args
     assert "abstract" not in args
     assert "authors" not in args
+
+
+def test_paper_edit_forwards_journal_and_entry_type(client, runtime) -> None:
+    """journal/entry_type (paper-meta-surfacing) forward like any other
+    blank-means-unchanged metadata field."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"journal": "Nature", "entry_type": "proceedings-article"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _, args = runtime.calls[-1]
+    assert args["journal"] == "Nature"
+    assert args["entry_type"] == "proceedings-article"
+
+
+def test_paper_edit_blank_journal_and_entry_type_not_sent(client, runtime) -> None:
+    resp = client.post(
+        "/papers/10/edit",
+        data={"title": "New title"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _, args = runtime.calls[-1]
+    assert "journal" not in args
+    assert "entry_type" not in args
 
 
 def test_paper_edit_forwards_author_lines(client, runtime) -> None:
@@ -2291,8 +2401,10 @@ def test_triage_lookup_miss_shows_message(client) -> None:
 def test_s2_prefill_returns_metadata_json(client) -> None:
     """The Meta edit form's "Fill blanks from Semantic Scholar" button hits
     this read-only JSON endpoint; it returns the S2 record so the client can
-    fill only the empty fields. Authors come back one-per-line in sortable
-    ``Family, Given`` order (matching the editor's convention)."""
+    fill only the empty fields. Authors come back one-per-line (natural
+    order; an unsplit ``{"name"}`` entry like S2's is returned verbatim
+    regardless of order, so this fixture's "Family, Given" strings pass
+    through unchanged)."""
     pytest.importorskip("habanero")  # [paper] extra — see triage tests above
     from unittest.mock import patch
 
@@ -2318,6 +2430,36 @@ def test_s2_prefill_returns_metadata_json(client) -> None:
     assert d["doi"] == "10.1038/nature01797"
     assert d["year"] == "2003"
     assert d["authors"].splitlines() == ["Javey, Ali", "Guo, Jing"]
+
+
+def test_s2_prefill_returns_journal_but_not_entry_type(client) -> None:
+    """``journal`` prefills from S2's ``venue``; ``entry_type`` is
+    deliberately absent from the response — S2 hardcodes it to
+    ``"article"``, which carries no real signal and would clobber a
+    genuine Crossref-derived value client-side (paper-meta-surfacing)."""
+    pytest.importorskip("habanero")
+    from unittest.mock import patch
+
+    hit = {
+        "title": "Ballistic carbon nanotube field-effect transistors",
+        "authors": [{"name": "Javey, Ali"}],
+        "year": 2003,
+        "doi": "10.1038/nature01797",
+        "arxiv_id": "",
+        "abstract": "",
+        "journal": "Nature",
+        "entry_type": "article",
+    }
+    with (
+        patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=None),
+        patch("precis.ingest.lookup.lookup_title", return_value=hit),
+    ):
+        resp = client.get("/papers/10/s2-prefill")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["ok"] is True
+    assert d["journal"] == "Nature"
+    assert "entry_type" not in d
 
 
 def test_s2_prefill_miss_returns_not_ok(client) -> None:

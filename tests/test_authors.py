@@ -10,6 +10,8 @@ from precis.utils.authors import (
     author_display,
     author_names,
     build_byline,
+    is_junk_author_name,
+    normalize_authors,
     to_author_dicts,
     to_name_dicts,
 )
@@ -141,3 +143,104 @@ class TestBuildByline:
     def test_empty(self) -> None:
         assert build_byline(None)["authors"] == []
         assert build_byline([])["affiliations"] == []
+
+
+class TestIsJunkAuthorName:
+    def test_email_is_junk(self) -> None:
+        assert is_junk_author_name("j.smith@example.com") is True
+
+    def test_section_heading_is_junk(self) -> None:
+        assert is_junk_author_name("REFERENCES") is True
+        assert is_junk_author_name("Abstract") is True
+        assert is_junk_author_name("introduction.") is True
+
+    def test_lone_all_caps_token_is_junk(self) -> None:
+        assert is_junk_author_name("OECD") is True
+
+    def test_over_long_string_is_junk(self) -> None:
+        assert is_junk_author_name("This is way too many words to be a name") is True
+
+    def test_empty_is_junk(self) -> None:
+        assert is_junk_author_name("") is True
+        assert is_junk_author_name("   ") is True
+
+    def test_genuine_short_names_pass(self) -> None:
+        assert is_junk_author_name("Aristotle") is False
+        assert is_junk_author_name("Dellago, Christoph") is False
+        assert is_junk_author_name("Bryan R. Goldsmith") is False
+
+
+class TestNormalizeAuthors:
+    def test_structured_passes_through(self) -> None:
+        raw = [{"family": "Smith", "given": "Jane"}]
+        assert normalize_authors(raw) == [{"given": "Jane", "family": "Smith"}]
+
+    def test_family_only_and_given_only(self) -> None:
+        assert normalize_authors([{"family": "Aristotle"}]) == [{"family": "Aristotle"}]
+        assert normalize_authors([{"given": "Cher"}]) == [{"given": "Cher"}]
+
+    def test_single_comma_string_splits(self) -> None:
+        assert normalize_authors(["Smith, Jane"]) == [
+            {"given": "Jane", "family": "Smith"}
+        ]
+        assert normalize_authors([{"name": "Dellago, Christoph"}]) == [
+            {"given": "Christoph", "family": "Dellago"}
+        ]
+
+    def test_ambiguous_natural_string_stays_name(self) -> None:
+        # No comma — a middle name / multi-word surname can't be told
+        # apart without a real parser, so no heuristic reordering.
+        assert normalize_authors(["Christoph Dellago"]) == [
+            {"name": "Christoph Dellago"}
+        ]
+        assert normalize_authors(["Aristotle"]) == [{"name": "Aristotle"}]
+
+    def test_junk_entries_dropped(self) -> None:
+        raw = ["REFERENCES", "j.smith@example.com", "Smith, Jane"]
+        assert normalize_authors(raw) == [{"given": "Jane", "family": "Smith"}]
+
+    def test_junk_guard_applies_to_structured_display_name(self) -> None:
+        # A junk family/given pair (mis-parsed section heading) is
+        # rejected on its rendered display name, same as a flat string.
+        raw = [{"given": "", "family": "REFERENCES"}]
+        assert normalize_authors(raw) == []
+
+    def test_optional_keys_carried_through(self) -> None:
+        raw = [
+            {
+                "family": "Smith",
+                "given": "Jane",
+                "orcid": "0000-0000-0000-0001",
+                "affiliation": "MIT",
+                "ror": "r1",
+            }
+        ]
+        assert normalize_authors(raw) == [
+            {
+                "given": "Jane",
+                "family": "Smith",
+                "orcid": "0000-0000-0000-0001",
+                "affiliation": "MIT",
+                "ror": "r1",
+            }
+        ]
+
+    def test_semicolon_packed_string(self) -> None:
+        assert normalize_authors("Smith, Jane; Dellago, Christoph") == [
+            {"given": "Jane", "family": "Smith"},
+            {"given": "Christoph", "family": "Dellago"},
+        ]
+
+    def test_empty_and_garbage(self) -> None:
+        assert normalize_authors(None) == []
+        assert normalize_authors([]) == []
+        assert normalize_authors(123) == []
+
+    def test_crossref_and_s2_shapes_display_identically(self) -> None:
+        """Acceptance: the same person via Crossref's structured shape and
+        S2's natural unstructured string renders the same natural-order
+        display string, even though the stored shapes differ (Crossref
+        carries the split, S2's ambiguous flat string doesn't)."""
+        crossref_style = normalize_authors([{"family": "Smith", "given": "John"}])
+        s2_style = normalize_authors([{"name": "John Smith"}])
+        assert author_names(crossref_style) == author_names(s2_style) == ["John Smith"]

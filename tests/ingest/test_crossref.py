@@ -13,7 +13,7 @@ class TestCrossrefNormalize:
         result = _normalize(msg, "10.1038/s41567-024-1234-5")
         assert result["title"] == "Quantum Error Correction in Practice"
         assert len(result["authors"]) == 2
-        assert result["authors"][0]["name"] == "Smith, John"
+        assert result["authors"][0] == {"given": "John", "family": "Smith"}
         assert result["year"] == 2024
         assert result["journal"] == "Nature Physics"
         assert result["source"] == "crossref"
@@ -64,8 +64,8 @@ class TestCrossrefNormalize:
         result = _normalize(msg, "10.63125/grqtf978")
         # Affiliation entries dropped; first real author is Babar.
         assert result["authors"] == [
-            {"name": "Babar, Zahir"},
-            {"name": "Paul, Rajesh"},
+            {"given": "Zahir", "family": "Babar"},
+            {"given": "Rajesh", "family": "Paul"},
         ]
 
     def test_normalize_falls_back_to_editors(self):
@@ -78,7 +78,7 @@ class TestCrossrefNormalize:
             "type": "book",
         }
         result = _normalize(msg, "10.1007/978-3-031-04881-4")
-        assert result["authors"] == [{"name": "De Marsico, Maria"}]
+        assert result["authors"] == [{"given": "Maria", "family": "De Marsico"}]
 
     def test_normalize_no_author_no_editor(self):
         """When neither authors nor editors exist (rare), return [] —

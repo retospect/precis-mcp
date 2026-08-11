@@ -2,14 +2,17 @@
 
 The grounding line names papers at the point of use as a *label*, not by fat
 handle: ``✓ Wang'20`` reads at a glance where ``✓ pa234`` does not. This is
-deterministic (the *fact* layer). Author dicts store a full-name string under
-``"name"`` (``ingest/*``); we take the first author's surname + the 2-digit
-year, falling back to slug then title when the metadata is thin.
+deterministic (the *fact* layer). Author dicts hold either a full-name string
+under ``"name"`` or the canonical structured ``{"given", "family"}`` shape
+(:mod:`precis.utils.authors`); we take the first author's surname + the
+2-digit year, falling back to slug then title when the metadata is thin.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from precis.utils.authors import author_display
 
 _TITLE_CAP = 24
 
@@ -26,6 +29,15 @@ def _surname(name: str) -> str:
     return parts[-1] if parts else ""
 
 
+def _first_author_surname(entry: Any) -> str:
+    """Surname for the first author entry, tolerant of both stored shapes."""
+    if isinstance(entry, dict):
+        family = (entry.get("family") or "").strip()
+        if family:
+            return family
+    return _surname(author_display(entry))
+
+
 def short_cite(ref: Any) -> str:
     """``Surname'YY`` for a ref, e.g. ``Wang'20``. Degrades gracefully: surname
     alone when the year is missing; the slug, then a capped title, then ``?``
@@ -34,10 +46,7 @@ def short_cite(ref: Any) -> str:
     year = getattr(ref, "year", None)
     surname = ""
     if authors:
-        first = authors[0] or {}
-        surname = _surname(
-            str(first.get("name", "") if isinstance(first, dict) else "")
-        )
+        surname = _first_author_surname(authors[0] or {})
     if surname:
         return f"{surname}'{year % 100:02d}" if year else surname
     slug = getattr(ref, "slug", None)

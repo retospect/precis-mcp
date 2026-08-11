@@ -36,6 +36,16 @@ static for the process lifetime). Policy:
 Hygiene: pysbd sentence splitting in the chunker fallback chain
 (:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
 ``marker._clean_text``.
+
+Every ingest/edit author writer funnels through
+:func:`precis.utils.authors.normalize_authors` (the canonical
+``{given, family}`` shape) rather than an ad hoc ``{"name"}`` wrap.
+:mod:`precis.ingest.paper_meta_enrich` re-resolves a paper's authors plus
+``meta.entry_type``/``journal``/``issn``, extra ``ref_identifiers``,
+per-author ORCID links, and retraction status from one Crossref
+(+conditional OpenAlex) fetch, on the :mod:`precis.workers.paper_meta_enrich`
+cadence; ``meta.authors_resolved_at`` is its idempotency stamp and
+``refs.human_verified_at`` its skip guard.
 """
 
 from precis.ingest.add import IngestResult

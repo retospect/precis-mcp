@@ -3,21 +3,39 @@
 The ``refs.authors`` JSONB column holds author dicts in more than one
 shape, because different writers built it differently over time:
 
-* ingest (Crossref / Semantic Scholar / provenance) writes
-  ``{"name": "Family, Given"}`` or ``{"name": "Given Family"}`` — this
-  is the shape actually present in storage today (every ingest path
-  funnels through ``{"name": ...}``).
-* the web metadata editor parses operator input into
-  ``{"family": ..., "given": ...}``.
-* a few legacy call sites pass bare strings.
+* the **canonical shape**, CSL-style: ``{"given": "Bryan R.", "family":
+  "Goldsmith"}`` — middle names/initials live inside ``given``, there is
+  no third field. Optional ``orcid`` / ``affiliation`` / ``ror`` keys
+  may ride along.
+* ``{"name": "..."}`` remains a legal, explicit fallback for names that
+  can't be reliably split (mononyms, some CJK, an ambiguous flat
+  string) — this was the *only* shape every writer produced before
+  :func:`normalize_authors` existed, so it's also what most legacy rows
+  still hold.
+* a few call sites pass bare strings, or a semicolon-packed byline
+  string.
 
-Readers must tolerate all three; indexing ``a["family"]`` directly is
-the bug this module exists to prevent — it silently blanks the
-``{"name"}`` shape (and a ``{"name"}``-only reader blanks the
+Readers must tolerate all of the above; indexing ``a["family"]``
+directly is the bug this module exists to prevent — it silently blanks
+the ``{"name"}`` shape (and a ``{"name"}``-only reader blanks the
 ``{"family", "given"}`` shape). Funnel every *read* through
-:func:`author_names` / :func:`author_display`, and every *write*
-through :func:`to_name_dicts` so new rows converge on the single
-``{"name"}`` shape.
+:func:`author_names` / :func:`author_display` (default
+``order="natural"`` — "Given Family" is the display convention
+everywhere; "Family, Given" is *derived* only where a convention
+demands it — sorting, BibTeX), and every ingest/edit *write* through
+:func:`normalize_authors`, the single choke point every author writer
+routes through: structured ``{given, family}`` input passes through
+(junk-guarded); a flat string/`` {"name"}`` splits into
+``{given, family}`` only when unambiguous (exactly one comma); anything
+still ambiguous, or recognizably junk (see :func:`is_junk_author_name`
+— an email, a bare section heading, an over-long non-name string),
+stays ``{"name"}`` or is dropped outright.
+
+``to_name_dicts`` predates :func:`normalize_authors` and is kept for
+the paths that still want the old squash-everything-to-``{"name"}``
+behaviour (metadata re-resolution / backfill enrichment, out of scope
+for the structured-shape rollout) — new write paths should reach for
+:func:`normalize_authors` instead.
 
 Authored artifacts (``kind='draft'``) additionally carry a per-author
 **affiliation** — an institution string plus an optional ROR id
@@ -32,15 +50,76 @@ verbatim by the LaTeX / docx exporters and the web reader.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 __all__ = [
     "author_display",
     "author_names",
     "build_byline",
+    "is_junk_author_name",
+    "normalize_authors",
     "to_author_dicts",
     "to_name_dicts",
 ]
+
+# A lone all-caps token ("REFERENCES", "OECD") — used together with the
+# stopword list below; a single all-caps *word* is virtually never a
+# personal name (initials-only stamps are caught separately upstream by
+# ``pdf_sidecar.is_garbage_author``).
+_ALL_CAPS_TOKEN_RE = re.compile(r"^[A-Z]{2,}$")
+
+# Section-heading / front-matter words that leak into an author field
+# from a mis-parsed PDF or markup byline. Matched case-insensitively
+# against the whole (punctuation-stripped) entry, not a substring.
+_JUNK_STOPWORDS = frozenset(
+    {
+        "references",
+        "bibliography",
+        "abstract",
+        "introduction",
+        "conclusion",
+        "conclusions",
+        "acknowledgments",
+        "acknowledgements",
+        "keywords",
+        "appendix",
+        "contents",
+        "methods",
+        "methodology",
+        "results",
+        "discussion",
+        "supplementary",
+    }
+)
+
+
+def is_junk_author_name(name: str) -> bool:
+    """True when *name* is an obvious non-name, not a real author.
+
+    Catches the junk that leaks through raw-metadata scraping — an
+    embedded PDF ``/Author`` field, or a mis-parsed markup byline: an
+    email address, a lone all-caps token ("REFERENCES"), an over-long
+    string (six-plus words — a mis-split affiliation or sentence, not a
+    name), or a bare section-heading word ("Abstract", "Introduction").
+    Conservative — a genuine short or single-word name ("Aristotle")
+    never trips this. Used by :func:`normalize_authors` (every ingest
+    write path) and by :func:`precis.ingest.lookup._sanitize_authors`
+    (the PDF ``/Author`` path specifically). Pure — never raises.
+    """
+    s = name.strip()
+    if not s:
+        return True
+    if "@" in s:
+        return True
+    words = s.split()
+    if len(words) == 1 and _ALL_CAPS_TOKEN_RE.match(s):
+        return True
+    if len(words) > 6:
+        return True
+    if s.strip(".,:;").lower() in _JUNK_STOPWORDS:
+        return True
+    return False
 
 
 def author_display(entry: Any, *, order: str = "natural") -> str:
@@ -90,6 +169,90 @@ def to_name_dicts(raw: Any) -> list[dict[str, str]]:
     where those must survive.
     """
     return [{"name": n} for n in author_names(raw, order="sortable")]
+
+
+def normalize_authors(raw: Any) -> list[dict[str, Any]]:
+    """The write-side choke point — every ingest/edit author writer
+    routes through this, not an ad hoc ``{"name": ...}`` wrap.
+
+    Converges heterogeneous input onto the canonical shape:
+    ``{"given": ..., "family": ...}`` when the split is known (either
+    side may be absent — a family-only entry stays ``{"family"}``),
+    ``{"name": ...}`` as an explicit fallback when it isn't. Optional
+    ``orcid`` / ``affiliation`` / ``ror`` keys on a dict entry ride
+    along untouched.
+
+    * Already-structured ``{"given"/"family", ...}`` entries pass
+      through as-is (junk-guarded on the rendered display name).
+    * ``{"name": ...}`` dicts and bare strings are junk-guarded, then
+      split into ``{"given", "family"}`` ONLY when unambiguous — a
+      single comma ("Family, Given"). A natural "Given Family" string
+      (no comma) is ambiguous by design (a middle name / multi-word
+      surname can't be told apart without a real parser) and stays
+      ``{"name": ...}`` — no heuristic reordering at write time.
+    * Junk entries (see :func:`is_junk_author_name`) are dropped
+      outright, regardless of shape.
+
+    Accepts a list of dicts/strings, or a semicolon-packed string.
+    Order is preserved. Pure — never raises.
+    """
+    if isinstance(raw, str):
+        raw = [p.strip() for p in raw.split(";") if p.strip()]
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for a in raw:
+        entry = _normalize_one_author(a)
+        if entry is not None:
+            out.append(entry)
+    return out
+
+
+def _normalize_one_author(a: Any) -> dict[str, Any] | None:
+    """Normalize a single raw author entry — see :func:`normalize_authors`."""
+    if isinstance(a, dict):
+        family = (a.get("family") or "").strip()
+        given = (a.get("given") or "").strip()
+        if family or given:
+            display = f"{given} {family}".strip()
+            if is_junk_author_name(display):
+                return None
+            entry: dict[str, Any] = {}
+            if given:
+                entry["given"] = given
+            if family:
+                entry["family"] = family
+            _carry_optional_author_keys(a, entry)
+            return entry
+        name = (a.get("name") or "").strip()
+        if not name or is_junk_author_name(name):
+            return None
+        entry = _split_author_name(name)
+        _carry_optional_author_keys(a, entry)
+        return entry
+    name = str(a or "").strip()
+    if not name or is_junk_author_name(name):
+        return None
+    return _split_author_name(name)
+
+
+def _split_author_name(name: str) -> dict[str, Any]:
+    """Best-effort ``{"given", "family"}`` split — single-comma only."""
+    if name.count(",") == 1:
+        family, given = (p.strip() for p in name.split(","))
+        if family and given:
+            return {"given": given, "family": family}
+    return {"name": name}
+
+
+def _carry_optional_author_keys(src: dict[str, Any], dst: dict[str, Any]) -> None:
+    """Copy non-blank ``orcid`` / ``affiliation`` / ``ror`` onto *dst*."""
+    for key in ("orcid", "affiliation", "ror"):
+        val = src.get(key)
+        if isinstance(val, str):
+            val = val.strip()
+        if val:
+            dst[key] = val
 
 
 def to_author_dicts(raw: Any) -> list[dict[str, str]]:

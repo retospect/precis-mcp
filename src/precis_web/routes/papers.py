@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -50,6 +51,7 @@ from fastapi.responses import (
 from precis.backfill.citation_lens import ensure_s2_neighbors
 from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
+from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
 from precis.store.types import BibEntry
 from precis.utils.authors import author_names
@@ -166,9 +168,12 @@ def _authors_str(ref: Any) -> str:
 
 
 def _author_edit_lines(ref: Any) -> list[str]:
-    """Editor prefill: one author per line in ``Family, Given`` order,
-    which the edit handler round-trips back to the stored shape."""
-    return author_names(getattr(ref, "authors", None), order="sortable")
+    """Editor prefill: one author per line in natural ("Given Family")
+    order — the display convention everywhere (see
+    :mod:`precis.utils.authors`) — round-tripped back to the stored
+    shape by the edit handler's :func:`~precis.utils.authors.normalize_authors`
+    call."""
+    return author_names(getattr(ref, "authors", None))
 
 
 def _abstract_str(ref: Any) -> str:
@@ -202,6 +207,58 @@ def _links_from_ids(ids: dict[str, str]) -> dict[str, str]:
         "arxiv": arxiv,
         "arxiv_url": f"https://arxiv.org/abs/{arxiv}" if arxiv else "",
     }
+
+
+#: Schemes already surfaced by :func:`_links_from_ids` (doi, arxiv) or
+#: internal/non-display (the local slug + dedup hashes) — never repeated
+#: in the Meta tab's "other identifiers" list.
+_EXTRA_ID_HIDDEN_SCHEMES = frozenset(
+    {"doi", "arxiv", "cite_key", "paper_id", "pdf_sha256", "content_hash"}
+)
+
+#: Display label per extra identifier scheme; falls back to the raw
+#: scheme string for anything not listed.
+_EXTRA_ID_LABELS: dict[str, str] = {
+    "pubmed": "PubMed",
+    "openalex": "OpenAlex",
+    "s2": "S2",
+    "mag": "MAG",
+    "dblp": "DBLP",
+}
+
+#: Canonical verify-link builder per scheme, for the schemes that have
+#: one. MAG / DBLP have no single canonical landing page, so they render
+#: as plain (unlinked) text per the backlog decision.
+_EXTRA_ID_URL_BUILDERS: dict[str, Callable[[str], str]] = {
+    "pubmed": lambda v: f"https://pubmed.ncbi.nlm.nih.gov/{v}/",
+    "openalex": lambda v: f"https://openalex.org/{v}",
+    "s2": lambda v: f"https://www.semanticscholar.org/paper/{v}",
+}
+
+
+def _extra_identifiers(ids: dict[str, str]) -> list[dict[str, str]]:
+    """Identifiers beyond DOI/arXiv — PubMed, OpenAlex, S2, MAG, DBLP —
+    from the same ``{scheme: value}`` map :func:`_links_from_ids` reads,
+    each linked where a canonical URL exists (see
+    :data:`_EXTRA_ID_URL_BUILDERS`). Sorted by scheme for stable
+    rendering; empty when the paper carries none."""
+    out: list[dict[str, str]] = []
+    for scheme in sorted(ids):
+        if scheme in _EXTRA_ID_HIDDEN_SCHEMES:
+            continue
+        value = (ids.get(scheme) or "").strip()
+        if not value:
+            continue
+        builder = _EXTRA_ID_URL_BUILDERS.get(scheme)
+        out.append(
+            {
+                "scheme": scheme,
+                "label": _EXTRA_ID_LABELS.get(scheme, scheme),
+                "value": value,
+                "url": builder(value) if builder else "",
+            }
+        )
+    return out
 
 
 def _paper_row(ref: Any) -> dict[str, Any]:
@@ -328,6 +385,34 @@ async def triage_queue() -> Response:
     return RedirectResponse(url=_TRIAGE_PRESET)
 
 
+#: Display label per ``refs.retraction_status`` value (the CHECK
+#: constraint vocabulary — see ``store._refs_ops.py::set_retraction_status``).
+_RETRACTION_LABELS: dict[str, str] = {
+    "retracted": "Retracted",
+    "corrected": "Correction issued",
+    "expression_of_concern": "Expression of concern",
+}
+
+
+def _retraction_notice(ref: Any) -> dict[str, str] | None:
+    """The Meta tab's retraction banner data, or ``None`` when clean.
+
+    Display-only (Crossref ``update-to`` is the source of record — see
+    ``ingest/paper_meta_enrich.py``); the web UI never writes these
+    columns. ``getattr`` defaults tolerate a duck-typed ``Ref`` (route
+    tests) that doesn't set the retraction columns at all.
+    """
+    status = getattr(ref, "retraction_status", None)
+    if not status:
+        return None
+    return {
+        "status": status,
+        "label": _RETRACTION_LABELS.get(status, status),
+        "reason": getattr(ref, "retraction_reason", None) or "",
+        "url": getattr(ref, "retraction_url", None) or "",
+    }
+
+
 def _detail_tags(store: Any, ref_id: int) -> list[dict[str, Any]]:
     """Tag chips for the Meta tab. OPEN (free) tags are ``deletable`` so
     the template offers a × that removes them (the ``needs-triage`` review
@@ -383,9 +468,10 @@ def _render_detail(
     pdf_keys = _ref_pdf_keys(store, ref)
     found = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
     paper = _paper_row(ref)
-    paper["links"] = _links_from_ids(
-        store.identifiers_for_refs([ref_id]).get(ref_id, {})
-    )
+    ref_idents = store.identifiers_for_refs([ref_id]).get(ref_id, {})
+    paper["links"] = _links_from_ids(ref_idents)
+    meta = ref.meta or {}
+    entry_type = str(meta.get("entry_type") or "").strip()
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     verified_at = getattr(ref, "human_verified_at", None)
     stamps = store.ingest_timestamps(ref_id)
@@ -440,7 +526,36 @@ def _render_detail(
         # unverified lifecycle finding's note — never to soften a claim to
         # Ⓐ/✍ (that's a separate, claim-level declaration). ``None`` when
         # unset.
-        "unacquirable": (ref.meta or {}).get("unacquirable_override"),
+        "unacquirable": meta.get("unacquirable_override"),
+        # Journal + document type (paper_meta_enrich / manual edit —
+        # meta.journal, meta.issn, meta.entry_type, Crossref vocabulary
+        # verbatim). ``entry_type_label`` renders "Journal article" for a
+        # known select value, else the raw string for an out-of-vocabulary
+        # Crossref type. Both editable via the Meta tab form.
+        "journal": meta.get("journal") or "",
+        "issn": meta.get("issn") or "",
+        "entry_type": entry_type,
+        "entry_type_label": ENTRY_TYPE_LABELS.get(entry_type, entry_type),
+        "entry_type_choices": ENTRY_TYPE_CHOICES,
+        # Whether the current entry_type is one of the form's <select>
+        # options — drives which control (select vs free-text escape) the
+        # edit form's Alpine state opens on.
+        "entry_type_is_known": (not entry_type) or entry_type in ENTRY_TYPE_LABELS,
+        # Retraction banner (display-only — see _retraction_notice).
+        "retraction": _retraction_notice(ref),
+        # Identifiers beyond DOI/arXiv (PubMed/OpenAlex/S2/MAG/DBLP),
+        # linked where a canonical URL exists.
+        "extra_identifiers": _extra_identifiers(ref_idents),
+        # S2 enrich leftovers (stub_rank mint-time pass / paper_meta_enrich):
+        # citation count + field-of-study classification, plus the
+        # discovery-layer per-chunk keyword rollup.
+        "s2_citation_count": meta.get("s2_citation_count"),
+        "s2_fields": (
+            meta.get("s2_fields") if isinstance(meta.get("s2_fields"), list) else []
+        ),
+        "keywords": (
+            meta.get("keywords") if isinstance(meta.get("keywords"), list) else []
+        ),
         # "Who links here" — held incoming edges (drafts / findings / dreams /
         # papers) into this ref, grouped by (kind, relation), each clickable to
         # the source's canonical page. Read-only over the ``links`` reverse
@@ -1333,8 +1448,15 @@ async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
     Looks the paper up by its most reliable identifier first: a held DOI or
     arXiv id resolves an exact Semantic Scholar record; otherwise fall back to
     a title search (same path as ``triage-lookup``). Authors come back in
-    ``Family, Given`` order to match the editor's one-per-line convention
-    (``_author_edit_lines``)."""
+    natural order to match the editor's one-per-line convention
+    (``_author_edit_lines``).
+
+    ``journal`` prefills from S2's ``venue`` field. ``entry_type`` is
+    deliberately NOT returned — ``semantic_scholar._normalize`` hardcodes
+    it to ``"article"`` (S2 doesn't classify document type), so it carries
+    no real signal and would silently clobber a genuine Crossref-derived
+    value if the client ever filled it (docs/backlog/
+    paper-meta-surfacing.md)."""
     store = get_store(request)
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
     if ref is None or ref.kind not in _DOC_FAMILY:
@@ -1380,7 +1502,7 @@ async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
             }
         )
 
-    names = author_names(result.get("authors") or [], order="sortable")
+    names = author_names(result.get("authors") or [])
     return JSONResponse(
         {
             "ok": True,
@@ -1390,6 +1512,7 @@ async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
             "arxiv": result.get("arxiv_id") or "",
             "abstract": result.get("abstract") or "",
             "authors": "\n".join(names),
+            "journal": result.get("journal") or "",
         }
     )
 
@@ -1509,6 +1632,8 @@ def _build_paper_payload(
     arxiv: str,
     abstract: str,
     authors: str,
+    journal: str = "",
+    entry_type: str = "",
 ) -> dict[str, Any]:
     """Build the ``edit`` verb payload from the metadata form fields.
 
@@ -1518,6 +1643,11 @@ def _build_paper_payload(
     result always carries ``kind`` + ``id``; ``len(...) > 2`` means real
     metadata is present. Shared by the ``edit`` route and the duplicate
     resolver's re-apply step.
+
+    ``journal`` / ``entry_type`` default to ``""`` (not required
+    keyword-only, unlike the rest) so a call site that predates the two
+    new Meta-tab fields still compiles — ``resolve_duplicate``'s re-apply
+    passes them through explicitly.
     """
     payload: dict[str, Any] = {"kind": "paper", "id": ref_id}
     if title.strip():
@@ -1533,6 +1663,10 @@ def _build_paper_payload(
         payload["arxiv"] = arxiv.strip()
     if abstract.strip():
         payload["abstract"] = abstract.strip()
+    if journal.strip():
+        payload["journal"] = journal.strip()
+    if entry_type.strip():
+        payload["entry_type"] = entry_type.strip()
     if authors.strip():
         lines = [a.strip() for a in authors.replace(";", "\n").splitlines()]
         cleaned = [a for a in lines if a]
@@ -1605,14 +1739,20 @@ async def edit(
     abstract: str = Form(""),
     authors: str = Form(""),
     cite_key: str = Form(""),
+    journal: str = Form(""),
+    entry_type: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     """Update editable paper metadata.
 
     Empty fields are NOT sent (so an unset value doesn't overwrite the
-    existing one). Authors come in as a newline- or comma-separated
-    string and get split + re-shaped into the ``[{family, given}, ...]``
-    list shape the schema stores. ``cite_key`` is the short handle: when
-    it differs from the current slug the paper is re-slugged (and its PDF
+    existing one). Authors come in as a newline- or semicolon-separated
+    string; the paper edit handler canonicalises each line to
+    ``{given, family}`` (unambiguous single-comma split) or ``{name}``
+    (see :func:`precis.utils.authors.normalize_authors`). ``journal`` /
+    ``entry_type`` merge into ``meta`` (``entry_type`` is Crossref
+    vocabulary — a known value off the form's ``<select>``, or free text
+    via its "Other…" escape). ``cite_key`` is the short handle: when it
+    differs from the current slug the paper is re-slugged (and its PDF
     moved on disk) — see :func:`_rename_slug`.
     """
     payload = _build_paper_payload(
@@ -1623,6 +1763,8 @@ async def edit(
         arxiv=arxiv,
         abstract=abstract,
         authors=authors,
+        journal=journal,
+        entry_type=entry_type,
     )
 
     store = get_store(request)
@@ -1669,6 +1811,8 @@ async def edit(
                         "abstract": abstract,
                         "authors": authors,
                         "cite_key": cite_key,
+                        "journal": journal,
+                        "entry_type": entry_type,
                     },
                 )
             # Any other error: render inline rather than redirect — the
@@ -1823,6 +1967,8 @@ async def resolve_duplicate(
     abstract: str = Form(""),
     authors: str = Form(""),
     cite_key: str = Form(""),
+    journal: str = Form(""),
+    entry_type: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     """Resolve a same-identifier duplicate by merging one paper into the other.
 
@@ -1877,6 +2023,8 @@ async def resolve_duplicate(
         arxiv=arxiv,
         abstract=abstract,
         authors=authors,
+        journal=journal,
+        entry_type=entry_type,
     )
     if len(payload) > 2:  # real metadata beyond kind + id
         body, is_error = await await_dispatch(request, "edit", payload)

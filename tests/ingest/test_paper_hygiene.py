@@ -240,3 +240,116 @@ def test_requeue_dry_run_writes_nothing(store: Store) -> None:
     assert requeue_stranded_fetches(store, dry_run=True) == [rid]
     assert _fetcher_event_count(store, rid) == 1  # untouched
     assert "oa_requeued" not in _meta(store, rid)
+
+
+# ── metadata hygiene stats ───────────────────────────────────────
+
+
+def test_metadata_hygiene_stats_structured_vs_flat_split(store: Store) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    _paper(store, slug="unauthored-h1", title="No Authors At All")
+    store.insert_ref(
+        kind="paper",
+        slug="structured-h1",
+        title="Fully Structured Authors",
+        authors=[
+            {"given": "Ada", "family": "Lovelace"},
+            {"given": "Alan", "family": "Turing"},
+        ],
+    )
+    store.insert_ref(
+        kind="paper",
+        slug="flat-h1",
+        title="Flat Author Byline",
+        authors=[{"name": "Grace Hopper"}],
+    )
+    store.insert_ref(
+        kind="paper",
+        slug="mixed-h1",
+        title="One Structured One Flat",
+        authors=[{"given": "Rosalind", "family": "Franklin"}, {"name": "J. Watson"}],
+    )
+
+    stats = metadata_hygiene_stats(store)
+    assert stats.total_papers == 4
+    assert stats.authored_papers == 3
+    assert stats.structured_authors_papers == 1
+    assert stats.structured_authors_pct == round(100 / 3, 1)
+
+
+def test_metadata_hygiene_stats_entry_type_and_journal_coverage(store: Store) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    store.insert_ref(
+        kind="paper",
+        slug="full-meta-h1",
+        title="Paper With Full Meta",
+        meta={"entry_type": "journal-article", "journal": "Nature"},
+    )
+    _paper(store, slug="bare-meta-h1", title="Paper With No Meta")
+
+    stats = metadata_hygiene_stats(store)
+    assert stats.total_papers == 2
+    assert stats.entry_type_papers == 1
+    assert stats.journal_papers == 1
+    assert stats.entry_type_pct == 50.0
+    assert stats.journal_pct == 50.0
+
+
+def test_metadata_hygiene_stats_heuristic_source_and_junk_authors(
+    store: Store,
+) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    store.insert_ref(
+        kind="paper",
+        slug="heuristic-h1",
+        title="Heuristically Split Paper",
+        authors=[{"name": "Doe, Jane"}],
+        meta={"authors_source": "heuristic"},
+    )
+    store.insert_ref(
+        kind="paper",
+        slug="crossref-h1",
+        title="Crossref Resolved Paper",
+        authors=[{"given": "Marie", "family": "Curie"}],
+        meta={"authors_source": "crossref"},
+    )
+    store.insert_ref(
+        kind="paper",
+        slug="junk-h1",
+        title="Paper With A Junk Author Entry",
+        authors=[{"name": "REFERENCES"}, {"name": "not-a-name@example.com"}],
+    )
+
+    stats = metadata_hygiene_stats(store)
+    assert stats.heuristic_source_papers == 1
+    assert stats.junk_author_entries == 2
+    assert stats.junk_sample_bounded is False
+
+
+def test_metadata_hygiene_stats_junk_sample_is_bounded(store: Store) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    for i in range(3):
+        store.insert_ref(
+            kind="paper",
+            slug=f"bound-h{i}",
+            title=f"Bounded Sample Paper {i}",
+            authors=[{"name": "REFERENCES"}],
+        )
+
+    stats = metadata_hygiene_stats(store, junk_sample_limit=2)
+    assert stats.junk_sample_papers == 2
+    assert stats.junk_sample_bounded is True
+    assert stats.junk_author_entries == 2  # only the sampled two counted
+
+
+def test_metadata_hygiene_stats_is_read_only(store: Store) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    rid = _paper(store, slug="readonly-h1", title="Untouched Paper")
+    before = _meta(store, rid)
+    metadata_hygiene_stats(store)
+    assert _meta(store, rid) == before

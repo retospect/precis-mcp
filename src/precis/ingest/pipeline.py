@@ -44,6 +44,8 @@ from precis.ingest.lookup import lookup_doi
 from precis.ingest.marker import extract_blocks_marker
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
 from precis.ingest.semantic_scholar import lookup_s2
+from precis.utils.authors import author_names as _shared_author_names
+from precis.utils.authors import normalize_authors
 from precis.utils.boilerplate import ChunkClass, classify_chunks
 from precis.utils.numerics import extract_numerics
 
@@ -248,14 +250,18 @@ def _build_cards(
     cards: list[ChunkToWrite] = []
     ord_counter = -1
 
-    author_names = [a.get("name", "") for a in authors if a.get("name")]
+    # Shape-tolerant reader — ``authors`` entries are ``{"name"}`` or
+    # ``{"given", "family"}`` (canonical shape since normalize_authors);
+    # a bare ``.get("name")`` filter here would silently drop every
+    # structured entry from the search cards.
+    authors_display = _shared_author_names(authors)
 
     # card_combined — concatenation of every search-relevant field.
     combined_parts: list[str] = []
     if title:
         combined_parts.append(title)
-    if author_names:
-        combined_parts.append("; ".join(author_names))
+    if authors_display:
+        combined_parts.append("; ".join(authors_display))
     if abstract:
         combined_parts.append(abstract)
     if keywords:
@@ -276,12 +282,12 @@ def _build_cards(
         )
         ord_counter -= 1
 
-    if author_names:
+    if authors_display:
         cards.append(
             ChunkToWrite(
                 ord=ord_counter,
                 chunk_kind="card_authors",
-                text="; ".join(author_names),
+                text="; ".join(authors_display),
             ),
         )
         ord_counter -= 1
@@ -356,7 +362,7 @@ def extract_paper(
     doi = metadata.doi or None
     arxiv_id: str | None = None  # extract_metadata_from_sources doesn't surface arxiv
 
-    authors_dict = [{"name": n} for n in metadata.authors if n]
+    authors_dict = normalize_authors(metadata.authors)
 
     paper_id, pub_id, cite_key_prefix = _resolve_identity(
         doi=doi,
@@ -489,6 +495,7 @@ def extract_paper_from_markup(
     from precis.ingest.markup import parse_markup
 
     ext = parse_markup(markup_path, fmt=fmt, source_url=source_url)
+    ext.authors = normalize_authors(ext.authors)
 
     doi = normalize_doi(ext.doi) if ext.doi else None
     arxiv_id = normalize_arxiv(ext.arxiv_id) if ext.arxiv_id else None
@@ -651,9 +658,7 @@ def _paper_from_lookup(
     provider: str,
 ) -> PaperToWrite:
     title = result.get("title", "")
-    authors = result.get("authors", []) or []
-    # Coerce to the dict form precis.identity expects.
-    authors_dict = [a if isinstance(a, dict) else {"name": str(a)} for a in authors]
+    authors_dict = normalize_authors(result.get("authors") or [])
     year = result.get("year")
     abstract = result.get("abstract", "")
     keywords = result.get("keywords", []) or []

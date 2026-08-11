@@ -1,7 +1,8 @@
 {# Metadata edit / triage / delete affordances for the paper detail
    sidebar. Split out of detail.html.j2 so the two-pane layout stays
    readable; relies on the detail context (paper, prefill, is_triage,
-   triage_msg, slug_default, suggested_slug, author_lines, abstract). #}
+   triage_msg, slug_default, suggested_slug, author_lines, abstract,
+   journal, entry_type, entry_type_choices, entry_type_is_known). #}
 
 {% if is_triage %}
 <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs">
@@ -74,7 +75,8 @@
   {% endif %}
 
   <form x-show="editing" x-cloak method="post" action="/papers/{{ paper.id }}/edit"
-        class="mt-2 space-y-2" x-data="{ slug: '{{ slug_default }}' }">
+        class="mt-2 space-y-2"
+        x-data="{ slug: '{{ slug_default }}', etSel: '{{ entry_type if entry_type_is_known else '__other__' }}' }">
     <p class="text-slate-500">Leave a field blank to keep its current value. Authors: one per line.</p>
     {# Fill only the *empty* fields from Semantic Scholar (title/DOI/arXiv →
        exact record, else title search). Client-side prefill — nothing is
@@ -119,6 +121,28 @@
               class="font-mono text-sky-700 underline">{{ suggested_slug }}</button>
       (renaming moves the PDF on disk)</p>
     {% endif %}
+    <div class="grid grid-cols-2 gap-2">
+      <label class="block">
+        <span class="text-slate-500">Journal</span>
+        <input name="journal" value="{{ prefill.journal if prefill else (journal or '') }}"
+               class="w-full rounded border border-slate-300 px-2 py-1" />
+      </label>
+      <label class="block">
+        <span class="text-slate-500">Document type</span>
+        <select x-model="etSel" :disabled="etSel === '__other__'" name="entry_type"
+                class="w-full rounded border border-slate-300 px-2 py-1">
+          <option value="">(leave unchanged)</option>
+          {% for value, label in entry_type_choices %}
+          <option value="{{ value }}">{{ label }}</option>
+          {% endfor %}
+          <option value="__other__">Other…</option>
+        </select>
+        <input x-show="etSel === '__other__'" x-cloak :disabled="etSel !== '__other__'"
+               name="entry_type" value="{{ entry_type if not entry_type_is_known else '' }}"
+               placeholder="Crossref type, e.g. peer-review"
+               class="mt-1 w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+      </label>
+    </div>
     <label class="block">
       <span class="text-slate-500">Authors (one per line)</span>
       <textarea name="authors" rows="3" placeholder="Smith, Jane&#10;Jones, Bob"
@@ -170,6 +194,9 @@ if (!window.__paperFillBlanks) {
       setIfEmpty('arxiv', d.arxiv);
       setIfEmpty('authors', d.authors);
       setIfEmpty('abstract', d.abstract);
+      setIfEmpty('journal', d.journal);
+      // entry_type is deliberately NOT filled here — see the s2-prefill
+      // route docstring (S2 hardcodes "article", no real signal).
       if (msg) msg.textContent = filled
         ? ('Filled ' + filled + ' blank field(s) — review and Save.')
         : 'Nothing to fill — all fields already set.';
