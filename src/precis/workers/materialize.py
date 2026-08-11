@@ -21,9 +21,16 @@ embeddings, never loses them.
 
 **One small table, not a rewrite, for a second backlog source.**
 :data:`_BACKLOG_SOURCES` is deliberately generic — `(name, job_type,
-executor, count_fn, batch_limit, params_fn)` — so a future non-embedding
-demand is a new tuple entry, not new mint/hysteresis logic. Out of scope
-for §F cycle a (embeddings is the only source today).
+executor, count_fn, batch_limit, params_fn, …)` — so a new demand is a new
+tuple entry, not new mint/hysteresis logic. Two policies now share it:
+
+* **backlog high-water** (embed) — mint a bounded batch when the backlog
+  count crosses HIGH and nothing is live; wait for it to drain.
+* **job-queue band** (``is_band=True``; the SMALL-LLM ``derived_drain``
+  sources, ``docs/backlog/small-llm-derived-drain-band.md``) — keep
+  ``[low, high]`` live jobs per source while backlog remains. Default-OFF
+  per-source. Two SMALL sources share one ``job_type`` (``derived_drain``),
+  discriminated by ``params_pass`` (``meta.params.pass``) in every count.
 """
 
 from __future__ import annotations
@@ -69,6 +76,91 @@ _BACKLOG_WARN_MULTIPLIER = 4
 #: concurrent/repeated mint landing in the same cadence window derives the
 #: SAME ``idem_key`` set (see :func:`_mint_jobs`).
 _TICK_BUCKET_S = 300
+
+# ── SMALL-LLM derived-drain bands (docs/backlog/small-llm-derived-drain-band.md)
+# A different minting POLICY from embed's backlog high-water: keep a BAND of
+# 20–50 live `derived_drain` jobs per SMALL queue (summarize / classify) while
+# backlog remains, so melchior's job_inproc always has a next low-prio job to
+# claim. Per-source (each SMALL queue is its own band), default-OFF.
+_SMALL_BAND_SUMMARIZE_ENV = "PRECIS_SMALL_BAND_SUMMARIZE"
+_SMALL_BAND_CLASSIFY_ENV = "PRECIS_SMALL_BAND_CLASSIFY"
+_SMALL_BAND_LOW_ENV = "PRECIS_SMALL_BAND_LOW"
+_SMALL_BAND_HIGH_ENV = "PRECIS_SMALL_BAND_HIGH"
+_SMALL_DRAIN_LIMIT_ENV = "PRECIS_SMALL_DRAIN_LIMIT"
+_SMALL_DRAIN_CONCURRENCY_ENV = "PRECIS_SMALL_DRAIN_CONCURRENCY"
+#: The host whose local SMALL model these jobs pin to (params.target_node — a
+#: job_inproc claim-gate node pin). MUST match that host's PRECIS_NODE claim
+#: identity, else the job strands unclaimed. Default melchior (the SMALL server).
+_SMALL_TARGET_NODE_ENV = "PRECIS_SMALL_DRAIN_TARGET_NODE"
+
+_DEFAULT_BAND_LOW = 20
+_DEFAULT_BAND_HIGH = 50
+_DEFAULT_SMALL_DRAIN_LIMIT = 500  # params.limit per derived_drain job
+_DEFAULT_SMALL_DRAIN_CONCURRENCY = 6  # == the router's cap-6 local SMALL slot
+_DEFAULT_SMALL_TARGET_NODE = "melchior"
+
+
+def _env_int(name: str, default: int, *, floor: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(floor, int(raw))
+    except ValueError:
+        log.warning(
+            "materialize: %s=%r is not an int; using default %d", name, raw, default
+        )
+        return default
+
+
+def _small_band() -> tuple[int, int]:
+    low = _env_int(_SMALL_BAND_LOW_ENV, _DEFAULT_BAND_LOW, floor=0)
+    high = _env_int(_SMALL_BAND_HIGH_ENV, _DEFAULT_BAND_HIGH, floor=1)
+    return (min(low, high), high)
+
+
+def _small_drain_limit() -> int:
+    """The per-job ``params.limit`` (chunks one ``derived_drain`` drains). ONE
+    source of truth: both the minted params AND :func:`_materialize_band`'s
+    "how many jobs does the backlog need" math read this, so raising
+    ``PRECIS_SMALL_DRAIN_LIMIT`` can't desync them (a fixed ``src.batch_limit``
+    would over-mint ~limit/500× no-op jobs)."""
+    return _env_int(_SMALL_DRAIN_LIMIT_ENV, _DEFAULT_SMALL_DRAIN_LIMIT)
+
+
+def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
+    """A ``params_fn`` for a SMALL derived_drain source — carries the pass
+    discriminator, the per-job chunk limit, the in-pass concurrency (== the
+    router slot cap), and the melchior host pin."""
+
+    def _fn(_batch_limit: int) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "pass": pass_name,
+            "limit": _small_drain_limit(),
+            "concurrency": _env_int(
+                _SMALL_DRAIN_CONCURRENCY_ENV, _DEFAULT_SMALL_DRAIN_CONCURRENCY
+            ),
+        }
+        target = os.environ.get(_SMALL_TARGET_NODE_ENV, _DEFAULT_SMALL_TARGET_NODE)
+        if target:
+            params["target_node"] = target
+        return params
+
+    return _fn
+
+
+def _summarize_backlog_count(store: Any) -> int:
+    from precis.workers.llm_summarize import unsummarized_chunk_count
+
+    with store.pool.connection() as conn:
+        return unsummarized_chunk_count(conn)
+
+
+def _classify_backlog_count(store: Any) -> int:
+    from precis.workers.classify import unclassified_chunk_count
+
+    with store.pool.connection() as conn:
+        return unclassified_chunk_count(conn)
 
 
 def materialize_embed_enabled() -> bool:
@@ -124,7 +216,21 @@ def _embed_backlog_count(store: Any) -> int:
 @dataclass(frozen=True, slots=True)
 class _BacklogSource:
     """One backlog source: how to count it, and how to mint against it.
-    See the module docstring's "one small table" note."""
+    See the module docstring's "one small table" note.
+
+    ``enabled_fn`` / ``band`` / ``params_pass`` (all default to the embed
+    behaviour) add the SMALL-LLM derived-drain sources without touching embed:
+
+    * ``enabled_fn`` — a per-source gate (embed stays gated by the pass-level
+      ``materialize_embed_enabled``; SMALL sources gate on their own flags).
+    * ``is_band`` — when True, this source uses the job-queue BAND policy
+      (:func:`_materialize_band`, live ``[low, high]`` from :func:`_small_band`)
+      instead of the backlog high-water policy: keep the band of live jobs full
+      while backlog remains.
+    * ``params_pass`` — the ``meta.params.pass`` discriminator, so two sources
+      sharing one ``job_type`` (``derived_drain``) count their OWN live/failed
+      jobs, not each other's.
+    """
 
     name: str
     job_type: str
@@ -132,6 +238,9 @@ class _BacklogSource:
     count_fn: Callable[[Any], int]
     batch_limit: int
     params_fn: Callable[[int], dict[str, Any]]
+    enabled_fn: Callable[[], bool] = lambda: True
+    is_band: bool = False
+    params_pass: str | None = None
 
 
 _BACKLOG_SOURCES: tuple[_BacklogSource, ...] = (
@@ -143,18 +252,69 @@ _BACKLOG_SOURCES: tuple[_BacklogSource, ...] = (
         batch_limit=_DEFAULT_BATCH_LIMIT,
         params_fn=lambda limit: {"limit": limit},
     ),
+    # SMALL-LLM derived-drain bands — one `derived_drain` job_type, two queues
+    # discriminated by params.pass. Default-OFF (enable per-source in Slice 4).
+    _BacklogSource(
+        name="summarize_drain",
+        job_type="derived_drain",
+        executor="job_inproc",
+        count_fn=_summarize_backlog_count,
+        batch_limit=_DEFAULT_SMALL_DRAIN_LIMIT,
+        params_fn=_small_drain_params("llm_summarize"),
+        enabled_fn=lambda: _band_source_enabled(_SMALL_BAND_SUMMARIZE_ENV),
+        is_band=True,
+        params_pass="llm_summarize",
+    ),
+    _BacklogSource(
+        name="classify_drain",
+        job_type="derived_drain",
+        executor="job_inproc",
+        count_fn=_classify_backlog_count,
+        batch_limit=_DEFAULT_SMALL_DRAIN_LIMIT,
+        params_fn=_small_drain_params("classify"),
+        enabled_fn=lambda: _band_source_enabled(_SMALL_BAND_CLASSIFY_ENV),
+        is_band=True,
+        params_pass="classify",
+    ),
 )
 
 
-def _live_jobs(store: Any, job_type: str) -> int:
-    """Count of ``job_type`` jobs currently ``queued``/``running`` (any
-    host) — "a bounded batch and no more until it drains"."""
+def _band_source_enabled(env_name: str) -> bool:
+    """A SMALL band source is live only when its flag is explicitly truthy —
+    default-OFF (dark ship). Rides the ``materialize`` cadence, so the cadence
+    itself must also be enabled (``PRECIS_MATERIALIZE_EMBED`` != 0)."""
+    from precis.utils.env import env_flag
+
+    return env_flag(env_name, default=False)
+
+
+def _live_jobs(
+    store: Any,
+    job_type: str,
+    *,
+    params_pass: str | None = None,
+    statuses: tuple[str, ...] = ("queued", "running"),
+) -> int:
+    """Count of ``job_type`` jobs currently in ``statuses`` (default
+    ``queued``/``running``, any host) — "a bounded batch and no more until it
+    drains". ``params_pass`` narrows to one ``meta.params.pass`` so two SMALL
+    sources sharing the ``derived_drain`` job_type count their OWN live jobs,
+    not each other's; ``statuses`` narrows further (e.g. ``("running",)`` for
+    the "is anything actually draining?" stuck check)."""
+    pass_clause = ""
+    # Statement-order params: job_type, [optional pass], status-array.
+    args: list[Any] = [job_type]
+    if params_pass is not None:
+        pass_clause = "AND r.meta->'params'->>'pass' = %s"
+        args.append(params_pass)
+    args.append(list(statuses))
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT count(*) FROM refs r
              WHERE r.kind = 'job' AND r.deleted_at IS NULL
                AND r.meta->>'job_type' = %s
+               {pass_clause}
                AND EXISTS (
                      SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                       WHERE rt.ref_id = r.ref_id
@@ -162,14 +322,18 @@ def _live_jobs(store: Any, job_type: str) -> int:
                         AND t.value = ANY(%s)
                    )
             """,
-            (job_type, ["queued", "running"]),
+            tuple(args),
         ).fetchone()
     return int(row[0]) if row else 0
 
 
-def _in_failed_cooldown(store: Any, job_type: str) -> bool:
+def _in_failed_cooldown(
+    store: Any, job_type: str, *, params_pass: str | None = None
+) -> bool:
     """True when the MOST RECENT terminal ``job_type`` job failed within
-    :data:`_FAILED_COOLDOWN_MINUTES` — no mint-fail loop.
+    :data:`_FAILED_COOLDOWN_MINUTES` — no mint-fail loop. ``params_pass``
+    narrows to one ``meta.params.pass`` (same reason as :func:`_live_jobs`) so a
+    failed summarize drain doesn't put classify's band into cooldown too.
 
     Keyed on ``ref_tags.created_at`` for the CURRENT ``STATUS:`` tag row,
     not ``refs.updated_at`` — ``set_status``'s ``replace_prefix=True``
@@ -178,21 +342,28 @@ def _in_failed_cooldown(store: Any, job_type: str) -> bool:
     ``refs.updated_at`` isn't bumped by every tag write and would be the
     wrong clock.
     """
+    pass_clause = ""
+    args: list[Any] = [job_type]
+    if params_pass is not None:
+        pass_clause = "AND r.meta->'params'->>'pass' = %s"
+        args.append(params_pass)
+    args.append(["succeeded", "failed", "cancelled"])
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT t.value, rt.created_at
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'job' AND r.deleted_at IS NULL
                AND r.meta->>'job_type' = %s
+               {pass_clause}
                AND t.namespace = 'STATUS'
                AND t.value = ANY(%s)
              ORDER BY rt.created_at DESC
              LIMIT 1
             """,
-            (job_type, ["succeeded", "failed", "cancelled"]),
+            tuple(args),
         ).fetchone()
     if row is None:
         return False
@@ -234,7 +405,11 @@ def _mint_jobs(store: Any, src: _BacklogSource, n: int) -> int:
     tick = int(time.time()) // _TICK_BUCKET_S
     minted = 0
     for i in range(n):
-        idem_key = f"materialize:{src.job_type}:{tick}:{i}"
+        # Keyed on src.NAME, not src.job_type — two SMALL sources share the
+        # `derived_drain` job_type, so a job_type key would collide their mints
+        # within a tick. (embed's key changes format once, harmless: idem only
+        # dedupes within the 300s window.)
+        idem_key = f"materialize:{src.name}:{tick}:{i}"
         with store.pool.connection() as conn:
             existing = conn.execute(
                 "SELECT 1 FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
@@ -269,8 +444,68 @@ def _mint_jobs(store: Any, src: _BacklogSource, n: int) -> int:
     return minted
 
 
+def _materialize_band(store: Any, src: _BacklogSource, count: int) -> int:
+    """Job-queue BAND policy (SMALL derived-drain sources): keep ``[low, high]``
+    live jobs for THIS source while its backlog remains. When live drops below
+    ``low`` and backlog > 0, top the band back up toward ``high`` (capped by how
+    many jobs the current backlog can actually feed). Independent per source —
+    an empty queue mints nothing; a summarize flood can't crowd classify out
+    (each has its own band + its own live/failed counts via ``params_pass``)."""
+    if count <= 0:
+        return 0
+    low, high = _small_band()
+    live = _live_jobs(store, src.job_type, params_pass=src.params_pass)
+    if live >= low:
+        # Band full → not minting. That's NORMAL while jobs drain, but STUCK if
+        # the band is full of jobs NOTHING is claiming (dead melchior worker or
+        # a target_node that no host's claim-gate matches) while backlog remains
+        # — the band-policy analogue of the high-water WARN (there's no
+        # count-vs-4×HIGH here; "full but 0 running" is the precise signal).
+        running = _live_jobs(
+            store, src.job_type, params_pass=src.params_pass, statuses=("running",)
+        )
+        if running == 0:
+            log.warning(
+                "materialize: %s band full (%d live) but 0 running and "
+                "backlog=%d — nothing is draining; check target_node pin / the "
+                "melchior worker (band=[%d,%d])",
+                src.name,
+                live,
+                count,
+                low,
+                high,
+            )
+        return 0  # hysteresis: full enough, don't re-mint
+    if _in_failed_cooldown(store, src.job_type, params_pass=src.params_pass):
+        return 0
+    # Top up toward HIGH, but never mint more jobs than the backlog can feed
+    # (each job drains up to _small_drain_limit() chunks — the SAME figure the
+    # minted params.limit carries, so the two can't desync) — else an empty-ish
+    # queue mints a pile of jobs that each find nothing and no-op.
+    want = high - live
+    by_backlog = math.ceil(count / _small_drain_limit())
+    n = max(1, min(want, by_backlog))
+    minted = _mint_jobs(store, src, n)
+    if minted:
+        log.info(
+            "materialize: %s band [%d,%d] live=%d backlog=%d — minted %d %s job(s)",
+            src.name,
+            low,
+            high,
+            live,
+            count,
+            minted,
+            src.job_type,
+        )
+    return minted
+
+
 def _materialize_one(store: Any, src: _BacklogSource) -> int:
+    if not src.enabled_fn():
+        return 0
     count = src.count_fn(store)
+    if src.is_band:
+        return _materialize_band(store, src, count)
     high = _backlog_high()
     if count > high * _BACKLOG_WARN_MULTIPLIER:
         # One line per tick (this function runs once per Cadence tick per

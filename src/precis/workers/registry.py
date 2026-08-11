@@ -716,6 +716,25 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # docs/backlog/small-llm-derived-drain-band.md: the SMALL-tier sibling of
+        # embed_batch — a bounded work order draining a derived LLM queue
+        # (summarize/classify) as a minted job. `requires=frozenset()`
+        # DELIBERATELY (unlike embed_batch's {'embedder'}): concurrency is capped
+        # at the ROUTER's local-serving slot per call, so reserving an executor
+        # slot here would double-count. Melchior-pinned via params.target_node,
+        # never cloud (Tier.SMALL). Minted by the materialize SMALL bands; dark
+        # until those are enabled.
+        name="derived_drain",
+        label="Derived drain (SMALL LLM job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("llm_summarize", "classify"),
+        one_line="Bounded work order draining a SMALL-tier derived LLM queue "
+        "(summarize/classify) — melchior-pinned, router-capped, never cloud.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="llm_summarize",
         label="LLM summarize (llm-v1)",
         category="discovery",

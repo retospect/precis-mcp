@@ -689,6 +689,43 @@ def claim_chunks_without_summary(
     return claimed
 
 
+def unsummarized_chunk_count(conn: Any, *, summarizer: str = SUMMARIZER_NAME) -> int:
+    """Chunks still needing the ``summarizer`` summary — the backlog the
+    ``materialize`` SMALL band gates on (``docs/backlog/
+    small-llm-derived-drain-band.md``).
+
+    The base eligibility predicate of :data:`_FRESH_CLAIM_SQL` (no current
+    summary row + not a skip-kind + within the length window + not
+    ``no_index``), WITHOUT the per-tier ``kind_pred``/``extra_pred`` — the four
+    fresh tiers (draft/conv/hot/rest) *partition* eligibility, so their union is
+    exactly this base predicate. Read-only and lease-blind (it does NOT consult
+    ``chunk_claims``): an approximate *backlog* for a high-water threshold, not
+    "claimable right now" — same contract as
+    :func:`~precis.workers.embed.unembedded_chunk_count`.
+    """
+    row = conn.execute(
+        """
+        SELECT count(*)
+          FROM chunks c
+         WHERE NOT EXISTS (
+                   SELECT 1 FROM chunk_summaries cs
+                    WHERE cs.chunk_id = c.chunk_id AND cs.summarizer = %(artifact)s
+               )
+           AND c.chunk_kind <> ALL(%(skip_kinds)s)
+           AND length(c.text) >= %(min_chars)s
+           AND length(c.text) <= %(max_chars)s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+        """,
+        {
+            "artifact": summarizer,
+            "skip_kinds": list(SKIP_KINDS),
+            "min_chars": MIN_CHUNK_CHARS,
+            "max_chars": MAX_CHUNK_CHARS,
+        },
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def fetch_doc_card(conn: Any, ref_id: int) -> str:
     """Return the document's header card text (title+authors+abstract+…).
 
@@ -1344,5 +1381,6 @@ __all__ = [
     "fetch_doc_card",
     "parse_summary",
     "run_llm_summarize_pass",
+    "unsummarized_chunk_count",
     "write_chunk_summary",
 ]

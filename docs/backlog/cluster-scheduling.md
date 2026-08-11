@@ -78,7 +78,7 @@ split units retired).
 
 Dark / spec: the **LLM half of `resource_slots`** (`llm:<model>` slots no-op
 until a card carries `served_by` — activation vehicle:
-`local-first-capacity-valve.md`); **containerized dispatch**
+`small-llm-derived-drain-band.md`); **containerized dispatch**
 (`job_claude_docker`, colima sidecar, `sandbox_run` `mode:build`, and the
 `plan_tick`/`fix_gripe` spawn seams that bypass `call_claude_agent`); §F
 elastic residency for LLM models; §C fuse/split.
@@ -152,7 +152,7 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
 - **§F — demand-materialized batches + counted slots + elastic serving.**
   Shipped for the embedder (amended: the daemon stays supervised; residency
   = idle-unload + lazy-reload in the daemon). **LLM elastic residency
-  remains spec** — activation via `local-first-capacity-valve.md` first.
+  remains spec** — activation via `small-llm-derived-drain-band.md` first.
   Open mechanics: generalize `local_serving`'s acquire/release to any
   `resource_slots` row; seed `llm:` rows from the host's real llama-swap
   model ids; residency is hysteretic (spin-up earned by a pile crossing
@@ -347,10 +347,11 @@ mechanics, this doc on cross-axis ordering and the laws.
 - `sandbox-run-substrate.md` → §H (built, dark; slices 2–3 = §H).
 - `content-sensitivity-placement.md` → Pillar 5's must-stay-local guard —
   the one genuinely unbuilt piece of the routing cluster.
-- `local-first-capacity-valve.md` → Pillar 5 activation — the first
-  activation of the serving primitive's two dark pieces (`served_by` +
-  `llm:` slots), for SMALL; gated on picking model M and measuring real
-  `max_parallel` N; shovel-ready, ships as a unit.
+- `small-llm-derived-drain-band.md` → Pillar 5 activation — SMALL derived
+  work (summarize/classify) minted as low-prio `derived_drain` jobs,
+  melchior-pinned + router-capped at 6, **never cloud** (supersedes the
+  retired `local-first-capacity-valve.md` spill design). Mechanism ships
+  dark; activation = drop the SMALL cloud rung + flip the band flags.
 - `factory-console-and-scheduling.md` → §K + the console/registry/capability
   detail; its scheduling framing is superseded by this doc.
 - `gpu-cluster-modes.md` → §C — parked behind the one-Spark-quantized test.

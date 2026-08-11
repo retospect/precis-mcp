@@ -247,6 +247,33 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
     ]
 
 
+def unclassified_chunk_count(conn) -> int:
+    """Body paragraph chunks still lacking a ``ROLE3`` tag — the backlog the
+    ``materialize`` SMALL band gates on (``docs/backlog/
+    small-llm-derived-drain-band.md``).
+
+    Mirrors :func:`_claim`'s eligibility (paper body ``paragraph`` chunks >120
+    chars with no ``ROLE3`` tag), WITHOUT the ``chunk_claims`` lease NOT-EXISTS
+    — an approximate *backlog* for a high-water threshold, not "claimable right
+    now" (same contract as ``embed.unembedded_chunk_count``). Corpus-wide (no
+    ``ref_ids`` scope).
+    """
+    row = conn.execute(
+        """
+        SELECT count(*)
+          FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+         WHERE r.kind = 'paper' AND r.deleted_at IS NULL
+           AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+           AND NOT EXISTS (
+                   SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                    WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s
+               )
+        """,
+        {"ns": OUTPUT_NAMESPACE},
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def _enrich(conn, rows: list[dict]) -> None:
     for row in rows:
         ref_id, ord_ = row["ref_id"], row["ord"]

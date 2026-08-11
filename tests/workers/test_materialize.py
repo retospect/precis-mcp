@@ -71,6 +71,77 @@ def _queued_job_count(store: Store, job_type: str) -> int:
     return int(row[0]) if row else 0
 
 
+def _fake_band_source(
+    backlog: dict[str, int], *, pass_name: str = "classify"
+) -> m._BacklogSource:
+    """A SMALL-LLM derived-drain BAND source (``is_band=True``) over a
+    controllable fake backlog count, always-enabled so the tests pin the band
+    POLICY directly (not the per-source env flags)."""
+    return m._BacklogSource(
+        name=f"{pass_name}_band_fake",
+        job_type="derived_drain",
+        executor="job_inproc",
+        count_fn=lambda _store: backlog["n"],
+        batch_limit=m._DEFAULT_SMALL_DRAIN_LIMIT,
+        # Use the REAL params builder so params.limit flows through
+        # _small_drain_limit() — the same figure the band's capacity math reads.
+        params_fn=m._small_drain_params(pass_name),
+        enabled_fn=lambda: True,
+        is_band=True,
+        params_pass=pass_name,
+    )
+
+
+def _queued_derived(store: Store, pass_name: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*) FROM refs r
+             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+               AND r.meta->>'job_type' = 'derived_drain'
+               AND r.meta->'params'->>'pass' = %s
+            """,
+            (pass_name,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _seed_derived(
+    store: Store, pass_name: str, n: int, *, status: str = "queued"
+) -> None:
+    """Insert ``n`` derived_drain jobs for ``pass_name`` at ``status`` directly
+    (no idem_key, so they don't interfere with a same-tick mint)."""
+    with store.pool.connection() as conn:
+        for _ in range(n):
+            ref = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="seed",
+                meta={
+                    "job_type": "derived_drain",
+                    "executor": "job_inproc",
+                    "params": {"pass": pass_name, "limit": 500},
+                },
+                prio=8,
+                conn=conn,
+            )
+            store.add_tag(
+                ref.id,
+                Tag.closed("STATUS", status),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+        conn.commit()
+
+
+@pytest.fixture
+def _small_band_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Shrink the band so tests mint a handful, not 50.
+    monkeypatch.setenv("PRECIS_SMALL_BAND_LOW", "2")
+    monkeypatch.setenv("PRECIS_SMALL_BAND_HIGH", "5")
+
+
 def _job_prios(store: Store, job_type: str) -> list[int | None]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -352,6 +423,188 @@ def test_backlog_warning_fires_once_per_tick(
 
     warnings = [r for r in caplog.records if "not draining" in r.message]
     assert len(warnings) == 1
+
+
+# ── SMALL-LLM derived-drain BAND policy (is_band=True) ───────────────────
+
+
+def test_band_below_low_mints_toward_high(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """Live jobs below LOW with backlog present → top the band up to HIGH."""
+    backlog = {"n": 999_999}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 5  # high(5) - live(0), backlog can feed all
+    assert _queued_derived(store, "classify") == 5
+    assert _job_prios(store, "derived_drain") == [8, 8, 8, 8, 8]
+
+
+def test_band_at_low_mints_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """Hysteresis: live already at/above LOW → no re-mint."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 2)  # == LOW
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0
+    assert _queued_derived(store, "classify") == 2  # unchanged
+
+
+def test_band_empty_backlog_mints_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """An empty queue mints nothing even below LOW — no zero-row jobs."""
+    backlog = {"n": 0}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0
+    assert _queued_derived(store, "classify") == 0
+
+
+def test_band_backlog_caps_mint_below_high(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """Never mint more jobs than the backlog can feed (ceil(count/limit))."""
+    backlog = {"n": 600}  # ceil(600/500) = 2, below HIGH-live (5)
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 2
+    assert _queued_derived(store, "classify") == 2
+
+
+def test_band_per_source_independent(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """A full classify band does NOT suppress the summarize band — each source
+    counts its own live jobs via params_pass (the anti-starvation property)."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 5)  # classify band full (== HIGH)
+    monkeypatch.setattr(
+        m, "_BACKLOG_SOURCES", (_fake_band_source(backlog, pass_name="llm_summarize"),)
+    )
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 5  # summarize still mints its own band
+    assert _queued_derived(store, "llm_summarize") == 5
+    assert _queued_derived(store, "classify") == 5  # untouched
+
+
+def test_band_failed_cooldown_is_per_pass(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """A freshly-failed classify job puts CLASSIFY's band in cooldown but not
+    summarize's — failed-cooldown is discriminated by params_pass."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 1, status="failed")  # recent failure
+
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+    assert m.run_materialize_pass(store).claimed == 0  # classify in cooldown
+
+    monkeypatch.setattr(
+        m, "_BACKLOG_SOURCES", (_fake_band_source(backlog, pass_name="llm_summarize"),)
+    )
+    assert m.run_materialize_pass(store).claimed == 5  # summarize unaffected
+
+
+def test_band_full_but_nothing_running_warns(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    _small_band_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Band full of QUEUED jobs that nothing is draining (dead melchior /
+    target_node misconfig) while backlog remains → the stuck-queue WARNING (the
+    band analogue of the high-water liveness signal)."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 5, status="queued")  # band full, 0 running
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0  # band full → no mint
+    assert any(
+        "nothing is draining" in r.message and "classify_band_fake" in r.message
+        for r in caplog.records
+    )
+
+
+def test_band_full_and_running_is_silent(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    _small_band_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Band full but jobs ARE running (normal steady drain) → no stuck WARNING."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 4, status="queued")
+    _seed_derived(store, "classify", 1, status="running")  # something IS draining
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    assert not any("nothing is draining" in r.message for r in caplog.records)
+
+
+def test_drain_limit_env_scales_mint_capacity(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """PRECIS_SMALL_DRAIN_LIMIT feeds BOTH params.limit and the band's
+    per-job capacity math — raising it mints FEWER jobs for the same backlog
+    (each job drains more), never a desynced over-mint."""
+    monkeypatch.setenv("PRECIS_SMALL_DRAIN_LIMIT", "1000")
+    backlog = {"n": 1500}  # ceil(1500/1000) = 2 (was ceil(1500/500)=3 at default)
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 2
+    # and the minted jobs carry the raised per-job limit
+    with store.pool.connection() as conn:
+        limits = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT (meta->'params'->>'limit')::int FROM refs "
+                "WHERE kind='job' AND meta->>'job_type'='derived_drain' "
+                "AND meta->'params'->>'pass'='classify'"
+            ).fetchall()
+        ]
+    assert limits == [1000, 1000]
+
+
+def test_band_source_disabled_mints_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """enabled_fn=False (the default-OFF dark-ship gate) → the source is skipped
+    entirely regardless of backlog."""
+    backlog = {"n": 999_999}
+    src = m._BacklogSource(
+        name="classify_band_off",
+        job_type="derived_drain",
+        executor="job_inproc",
+        count_fn=lambda _s: backlog["n"],
+        batch_limit=500,
+        params_fn=lambda limit: {"pass": "classify", "limit": limit},
+        enabled_fn=lambda: False,
+        is_band=True,
+        params_pass="classify",
+    )
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (src,))
+
+    assert m.run_materialize_pass(store).claimed == 0
+    assert _queued_derived(store, "classify") == 0
 
 
 def test_backlog_warning_reports_live_jobs_count(

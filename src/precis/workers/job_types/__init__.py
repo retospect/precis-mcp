@@ -298,6 +298,15 @@ def _load_embed_batch() -> JobTypeSpec:
     return embed_batch.SPEC
 
 
+def _load_derived_drain() -> JobTypeSpec:
+    # Bounded in-proc work order draining a SMALL-tier derived LLM queue
+    # (summarize/classify) — melchior-pinned, router-capped, never cloud.
+    # Runs via plugin dispatch under the job_inproc executor.
+    from precis.workers.job_types import derived_drain
+
+    return derived_drain.SPEC
+
+
 def _load_quest_tick() -> JobTypeSpec:
     # Perpetual catalyst-quest loop (harvest → review+propose → dispatch sims →
     # wait → repeat). Runs via plugin dispatch under the coordinator executor.
@@ -498,6 +507,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "embed_batch":
         _REGISTRY["embed_batch"] = _load_embed_batch()
         return _REGISTRY["embed_batch"]
+    if name == "derived_drain":
+        _REGISTRY["derived_drain"] = _load_derived_drain()
+        return _REGISTRY["derived_drain"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -532,6 +544,7 @@ def known_job_types() -> list[str]:
         "good_search_triage",
         "quest_tick",
         "embed_batch",
+        "derived_drain",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
