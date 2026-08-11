@@ -192,12 +192,15 @@
   become: true
   vars:
     # Same venv → ref mapping as the convergence assert (step 4). /opt/mcps
-    # only exists on the gateway (precis_web); the other two are on every host.
+    # only exists on the gateway (precis_web); the embedder venv is not
+    # installed on the data node (19a excludes it — no local worker there).
     _precis_venv_refs: >-
       {{ {
            '/opt/precis/venv': precis_worker_git_ref | default('main'),
-           '/opt/precis/embedder-venv': precis_embedder_git_ref | default(precis_worker_git_ref | default('main')),
          } | combine(
+           {'/opt/precis/embedder-venv': precis_embedder_git_ref | default(precis_worker_git_ref | default('main'))}
+           if inventory_hostname not in groups['data'] else {}
+         ) | combine(
            {'/opt/mcps/venv': precis_web_git_ref | default('main')}
            if inventory_hostname in groups['gateway'] else {}
          ) }}
@@ -578,12 +581,15 @@
   become: true
   vars:
     # venv → the git ref its role deploys. /opt/mcps only exists on the gateway
-    # (precis_web); the other two venvs are installed on every host.
+    # (precis_web); the embedder venv is not installed on the data node
+    # (19a excludes it — no local worker there).
     _precis_venv_refs: >-
       {{ {
            '/opt/precis/venv': precis_worker_git_ref | default('main'),
-           '/opt/precis/embedder-venv': precis_embedder_git_ref | default(precis_worker_git_ref | default('main')),
          } | combine(
+           {'/opt/precis/embedder-venv': precis_embedder_git_ref | default(precis_worker_git_ref | default('main'))}
+           if inventory_hostname not in groups['data'] else {}
+         ) | combine(
            {'/opt/mcps/venv': precis_web_git_ref | default('main')}
            if inventory_hostname in groups['gateway'] else {}
          ) }}

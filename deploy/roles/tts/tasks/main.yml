@@ -71,7 +71,7 @@
       # The FROM line is the single source of truth. A hardcoded var here
       # drifted once (still 3.11 after the Dockerfile's 3.12 bump): the
       # pre-pull warmed the wrong image and the build died at step 1 on the
-      # flaky spark→Docker Hub TLS handshake, retry-less.
+      # flaky tts-host→Docker Hub TLS handshake, retry-less.
       ansible.builtin.command:
         cmd: awk '/^FROM /{print $2; exit}' /tmp/precis-tts-build/Dockerfile
       register: tts_base_from
