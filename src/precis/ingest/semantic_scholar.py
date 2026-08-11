@@ -13,6 +13,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from precis.utils.rate_limit import acquire as acquire_rate_limit
+
 
 def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] | None:
     """Search Semantic Scholar by title, return best match metadata.
@@ -42,6 +44,7 @@ def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] |
 )
 def _search_with_retry(sch: SemanticScholar, title: str, limit: int) -> Any:
     """Search S2 with exponential backoff on 429."""
+    acquire_rate_limit("s2")
     return sch.search_paper(title, limit=limit)
 
 
@@ -135,6 +138,7 @@ def _get_papers_with_retry(
     sch: SemanticScholar, paper_ids: list[str]
 ) -> tuple[list[Any], list[str]]:
     """Batch-get with exponential backoff on 429."""
+    acquire_rate_limit("s2")
     return sch.get_papers(paper_ids, return_not_found=True)
 
 
@@ -178,6 +182,7 @@ def get_paper_by_id(paper_id: str, api_key: str = "") -> dict[str, Any] | None:
 )
 def _get_with_retry(sch: SemanticScholar, paper_id: str) -> Any:
     """Get paper with exponential backoff on 429."""
+    acquire_rate_limit("s2")
     return sch.get_paper(paper_id)
 
 

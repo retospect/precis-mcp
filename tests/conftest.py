@@ -763,6 +763,7 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "material_properties",  # seeded property registry, 0092 (core + proposed)
         "component_categories",  # seeded category registry, 0093 (core + proposed)
         "component_specs",  # seeded spec registry, 0093 (core + proposed)
+        "external_rate_limits",  # seeded provider rate/quota limits, 0121
     }
 )
 
