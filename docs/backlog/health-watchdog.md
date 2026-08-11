@@ -49,9 +49,35 @@ mere quiet.
 - **Surface canaries** — surface-type outcomes (PCB/CAD/export builds):
   last-use-ok + dep-present first; weekly synthetic canaries (render a
   trivial PCB/CAD) as the later add. Never alarm on mere absence of use.
-- **Alert-triage disposition pass** — dispose of aged `/alerts` backlog
-  (the 36-day/95-alert rot class); open: fold into `health_digest` or a
-  separate pass; how aggressive may auto-resolve be vs file-a-gripe.
+- **Alert-triage disposition pass** — DESIGN DECIDED (2026-08-11, opus
+  root-cause dossier). The original "age-out the aged `/alerts` rot"
+  framing is **refuted and unsafe**: a prod re-query of the nursery
+  predicates showed the open backlog (131, oldest 46d) is not stale-
+  uncleared alerts but the *visible tip* of a genuinely-live, LIMIT-50-
+  masked backlog — **297 live orphan conditions (50 alerted), 540 live
+  stuck-doable (50 alerted)**; 100% of the surfaced 50 are still true
+  right now. Every detector ends `ORDER BY r.ref_id LIMIT 50`
+  (`nursery.py:_detect_orphans/_detect_stuck_doable/_detect_child_failed_parked`),
+  a noise-cap copy-pasted onto backlog-style detectors, so the same
+  oldest-by-`ref_id` 50 re-fire every pass. A `created_at`-only auto-
+  resolve would mark still-broken todos "resolved," and nursery would
+  re-open the same fingerprint next pass with a **reset `created_at`** —
+  erasing the staleness signal while faking a drained backlog (masking).
+  Nursery's `resolve_stale_alerts` (per-pass, per-source) already works
+  (298 historical `orphan` resolves); the pile-up is the LIMIT cap +
+  no escalation, not a broken resolve path. **Approved design (safe):**
+  (A) each capped detector reports a true `COUNT(*)` sibling so the
+  alert/gripe body reads "50 of 297, oldest 46d"; (B) widen
+  `_route_findings`'s `watchdog:%` filter (`health_digest.py:~1349`) to
+  cover `nursery:%` (or lift to a shared helper), filing ONE aggregate
+  auto-closing marker-gripe per non-draining category via the existing
+  `_file_router_gripe`/`_auto_close_marker_gripe` infra — a human hand-
+  off, **never** an alert auto-resolve; (C) the 297+540 genuinely-broken
+  todos are prod-ops disposition (substrate-2), filed separately, not a
+  code fix. Anchors: `src/precis/alerts.py` (`raise_alert`,
+  `resolve_stale_alerts`, `_flip_resolved`), `src/precis/workers/nursery.py`
+  (detectors + `run_nursery_pass`), `src/precis/workers/health_digest.py`
+  (`_sync_alerts`, `_route_findings`).
 - Optional capped auto-restart-once for daemon-death findings.
 
 **Phases 4–5 — the autonomy ladder** (Pillar 6 of `cluster-scheduling.md`;
@@ -82,7 +108,10 @@ schema; replacing nursery/`alert`/self-heal passes.
 - `backlog_groom` on for watchdog gripes, or nudge-only? (Leaning
   nudge-only per the SLA.)
 - Which classes ever earn Rung 2, and the bar to be added.
-- Alert-triage: in `health_digest` or separate; auto-resolve aggressiveness.
+- ~~Alert-triage: in `health_digest` or separate; auto-resolve
+  aggressiveness.~~ RESOLVED 2026-08-11 (see Phase 3 above): widen
+  `health_digest`'s `_route_findings` to `nursery:%`; no auto-resolve
+  (gripe hand-off only — age-out masks a live backlog).
 - LLM phrasing of the digest (template-first is the shipped posture).
 - Post-deploy verify + rollback mechanics for Rung 2.
 
