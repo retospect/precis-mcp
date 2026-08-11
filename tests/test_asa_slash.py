@@ -15,8 +15,24 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from asa_bot.slash import Runtime, SlashContext, _resolve_model_alias, cmd_model
-from precis.utils.llm.router import PLANNER_TIER_BY_ALIAS, Tier, resolve_model
+import pytest
+
+# asa_bot.slash imports discord.py (the `[asa]` extra). Skip cleanly where
+# it isn't installed — mirrors the importorskip pattern in
+# test_asa_split_for_discord.py (CI's `--extra all` omits `[asa]`).
+pytest.importorskip("discord")
+
+from asa_bot.slash import (
+    Runtime,
+    SlashContext,
+    _resolve_model_alias,
+    cmd_model,
+)
+from precis.utils.llm.router import (
+    PLANNER_TIER_BY_ALIAS,
+    Tier,
+    resolve_model,
+)
 
 
 def test_resolve_model_alias_opus_matches_router_frontier() -> None:
