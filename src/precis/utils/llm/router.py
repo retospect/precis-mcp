@@ -1080,6 +1080,16 @@ class LlmRequest:
     model: str | None = None
     max_usd: float | None = None
     timeout_s: float | None = None
+    #: Stream the completion over SSE (honoured by the ``OPENAI_TOOLS``
+    #: transport; ignored elsewhere). Streaming changes the timeout semantics:
+    #: ``timeout_s`` becomes the *hard wall ceiling* per turn while a separate
+    #: idle timeout (:func:`_stream_idle_timeout_s`) detects a dead connection
+    #: — so a model actively emitting reasoning keeps its connection instead
+    #: of being cut mid-thought by a blind socket cap, and on any abort the
+    #: partial output is preserved (``StreamTimeout`` → ``LlmResult.text``)
+    #: rather than lost. Default ``False`` = the blocking POST, byte-identical
+    #: to before this knob existed.
+    stream: bool = False
     #: Completion-length cap. For the local / openai-compat transports this is
     #: the ``max_tokens`` field of the underlying ``LlmConfig`` — a real,
     #: generation-time stop. ``None`` keeps ``LlmConfig.from_env``'s default
@@ -2897,6 +2907,27 @@ def _read_system_prompt(sp: str | Path | None) -> str | None:
     return sp
 
 
+#: Default inter-chunk silence cap for a streamed (SSE) completion — the idle
+#: timeout that detects a dead connection. Generous relative to real token
+#: cadence (even a loaded backend emits *something* every few seconds once
+#: generation starts; OpenRouter keeps the stream warm with comment pings) but
+#: far below the old blind 600s blocking cap, so a hung wire fails in ~2min
+#: instead of stalling the whole rung. Override via PRECIS_LLM_STREAM_IDLE_S.
+_STREAM_IDLE_TIMEOUT_S = 120.0
+
+
+def _stream_idle_timeout_s() -> float:
+    raw = os.environ.get("PRECIS_LLM_STREAM_IDLE_S")
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _STREAM_IDLE_TIMEOUT_S
+
+
 def run_oss_tool_loop(
     *,
     prompt: str,
@@ -2908,6 +2939,7 @@ def run_oss_tool_loop(
     local_url: str | None = None,
     temperature: float | None = None,
     thinking: bool | None = None,
+    stream: bool = False,
 ) -> AgentLoopResult:
     """Drive the in-process OSS ``tools=`` loop and return the RAW
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
@@ -2963,6 +2995,8 @@ def run_oss_tool_loop(
         timeout=timeout,
         temperature=temperature,
         extra_body=extra_body,
+        stream=stream,
+        idle_timeout=_stream_idle_timeout_s(),
     )
     return run_tool_loop(
         client,
@@ -3001,6 +3035,7 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             local_url=req.local_url,
             temperature=req.temperature,
             thinking=req.thinking,
+            stream=req.stream,
         )
     except (RuntimeError, OSError) as exc:
         return LlmResult(

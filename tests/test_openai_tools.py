@@ -14,11 +14,13 @@ import pytest
 from precis.utils.llm.openai_tools import (
     AgentLoopResult,
     ChatTurn,
+    StreamTimeout,
     ToolCall,
     ToolChatClient,
     ToolSpec,
     _parse_tool_calls,
     build_tools_param,
+    partial_artifact,
     run_tool_loop,
 )
 
@@ -196,6 +198,222 @@ def test_client_missing_usage_cost_is_none() -> None:
     client = ToolChatClient(url="http://x/v1", api_key="k", model="m", transport=tx)
     turn = client.chat([{"role": "user", "content": "hi"}])
     assert turn.cost_usd is None
+
+
+# ── streaming (SSE) ────────────────────────────────────────────────────
+
+
+class _FakeSseTransport:
+    """Yields scripted SSE event dicts; records the payloads sent. An entry
+    that is an Exception instance is raised mid-stream instead of yielded
+    (a socket idle-timeout / connection failure at that point)."""
+
+    def __init__(self, events: list[Any]) -> None:
+        self._events = list(events)
+        self.sent: list[dict[str, Any]] = []
+
+    def post_sse(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str],
+        idle_timeout: float,
+    ) -> Any:
+        self.sent.append(payload)
+        for ev in self._events:
+            if isinstance(ev, Exception):
+                raise ev
+            yield ev
+
+    def post_json(self, *a: Any, **k: Any) -> dict[str, Any]:
+        raise AssertionError("streaming client must not fall back to post_json")
+
+
+def _delta(content: str | None = None, **extra: Any) -> dict[str, Any]:
+    d: dict[str, Any] = dict(extra)
+    if content is not None:
+        d["content"] = content
+    return {"choices": [{"delta": d}]}
+
+
+def test_streaming_accumulates_content_and_usage() -> None:
+    tx = _FakeSseTransport(
+        [
+            _delta("hel"),
+            _delta("lo"),
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 42, "cost": 0.003},
+            },
+        ]
+    )
+    client = ToolChatClient(
+        url="http://x/v1", api_key="k", model="m", transport=tx, stream=True
+    )
+    turn = client.chat([{"role": "user", "content": "hi"}])
+    assert turn.content == "hello"
+    assert turn.tool_calls == []
+    assert turn.total_tokens == 42
+    assert turn.cost_usd == 0.003
+    assert turn.finish_reason == "stop"
+    # The request carried the stream flag.
+    assert tx.sent[0]["stream"] is True
+
+
+def test_streaming_merges_tool_call_fragments() -> None:
+    tx = _FakeSseTransport(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "c1",
+                                    "function": {"name": "search", "arguments": '{"q"'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": ': "x"}'}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+    )
+    client = ToolChatClient(
+        url="http://x/v1", api_key="k", model="m", transport=tx, stream=True
+    )
+    turn = client.chat([{"role": "user", "content": "hi"}])
+    assert turn.tool_calls == [ToolCall("c1", "search", {"q": "x"})]
+    # The assembled assistant message is echo-able (carries the raw calls).
+    assert turn.message["tool_calls"][0]["function"]["arguments"] == '{"q": "x"}'
+
+
+def test_streaming_idle_timeout_carries_partials() -> None:
+    """A mid-stream socket timeout raises StreamTimeout with everything
+    received so far — the whole point: the reasoning is an artifact, not
+    collateral of the abort."""
+    tx = _FakeSseTransport(
+        [
+            _delta(None, reasoning="thinking about Pd"),
+            _delta("partial ans"),
+            TimeoutError("timed out"),
+        ]
+    )
+    client = ToolChatClient(
+        url="http://x/v1", api_key="k", model="m", transport=tx, stream=True
+    )
+    with pytest.raises(StreamTimeout) as exc_info:
+        client.chat([{"role": "user", "content": "hi"}])
+    exc = exc_info.value
+    assert exc.partial_text == "partial ans"
+    assert exc.partial_reasoning == "thinking about Pd"
+    # TimeoutError subclass → the router's unavailability classifier fires.
+    assert isinstance(exc, TimeoutError)
+
+
+def test_streaming_hard_ceiling_carries_partials() -> None:
+    tx = _FakeSseTransport([_delta("a"), _delta("b"), _delta("c")])
+    client = ToolChatClient(
+        url="http://x/v1",
+        api_key="k",
+        model="m",
+        transport=tx,
+        stream=True,
+        timeout=1e-9,  # any elapsed time exceeds the ceiling after event 1
+    )
+    with pytest.raises(StreamTimeout) as exc_info:
+        client.chat([{"role": "user", "content": "hi"}])
+    assert exc_info.value.partial_text == "a"
+    assert "hard ceiling" in str(exc_info.value)
+
+
+def test_streaming_reasoning_content_variant() -> None:
+    """Some providers stream thinking as ``reasoning_content`` rather than
+    OpenRouter's normalized ``reasoning`` — both accumulate."""
+    tx = _FakeSseTransport(
+        [
+            _delta(None, reasoning_content="hmm "),
+            _delta(None, reasoning_content="ok"),
+            TimeoutError("timed out"),
+        ]
+    )
+    client = ToolChatClient(
+        url="http://x/v1", api_key="k", model="m", transport=tx, stream=True
+    )
+    with pytest.raises(StreamTimeout) as exc_info:
+        client.chat([{"role": "user", "content": "hi"}])
+    assert exc_info.value.partial_reasoning == "hmm ok"
+
+
+def test_stream_flag_falls_back_without_post_sse() -> None:
+    """``stream=True`` over a transport with no ``post_sse`` (an older fake /
+    custom transport) degrades to the blocking POST rather than crashing."""
+    tx = _FakeTransport(
+        [
+            {
+                "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 3},
+            }
+        ]
+    )
+    client = ToolChatClient(
+        url="http://x/v1", api_key="k", model="m", transport=tx, stream=True
+    )
+    turn = client.chat([{"role": "user", "content": "q"}])
+    assert turn.content == "hi"
+    # The blocking path never adds the stream flag to the payload.
+    assert "stream" not in tx.sent[0]
+
+
+def test_partial_artifact_formats_both_sections() -> None:
+    exc = StreamTimeout("t", partial_text="ans", partial_reasoning="why")
+    art = partial_artifact(exc)
+    assert "partial reasoning" in art and "why" in art
+    assert "partial content" in art and "ans" in art
+    # A plain exception (no partials) yields "" so callers can `or`-fallback.
+    assert partial_artifact(RuntimeError("x")) == ""
+
+
+def test_loop_surfaces_stream_partials_on_error() -> None:
+    """A StreamTimeout mid-loop lands its partial artifact in ``final_text``
+    with ``stop_reason='error'`` + ``paused=True`` — the router then carries
+    it to ``LlmResult.text`` so the caller can persist it."""
+
+    class _StreamTimeoutClient:
+        def chat(
+            self, messages: Any, *, tools: Any = None, tool_choice: str = "auto"
+        ) -> ChatTurn:
+            raise StreamTimeout(
+                "stream went silent for 120s",
+                partial_text="half an answer",
+                partial_reasoning="half a thought",
+            )
+
+    out = run_tool_loop(
+        _StreamTimeoutClient(),
+        prompt="q",
+        tools=[],
+        execute=lambda n, a: "",
+        max_turns=5,
+    )
+    assert out.stop_reason == "error"
+    assert out.paused is True
+    assert "half a thought" in out.final_text
+    assert "half an answer" in out.final_text
 
 
 # ── run_tool_loop ──────────────────────────────────────────────────────

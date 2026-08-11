@@ -792,12 +792,15 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
             timeout: float,
             temperature: float | None = None,
             extra_body: dict[str, object] | None = None,
+            stream: bool = False,
+            idle_timeout: float = 120.0,
         ) -> None:
             seen["url"] = url
             seen["api_key"] = api_key
             seen["model"] = model
             seen["temperature"] = temperature
             seen["extra_body"] = extra_body
+            seen["stream"] = stream
 
     monkeypatch.setattr("precis.utils.llm.openai_tools.ToolChatClient", FakeClient)
     monkeypatch.setattr(
@@ -820,6 +823,7 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
     # A local endpoint never gets the (unconfirmed) no-thinking directive —
     # see the NOTE in _dispatch_local / run_oss_tool_loop.
     assert seen["extra_body"] is None
+    assert seen["stream"] is False  # streaming is opt-in per request
 
 
 def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
@@ -843,6 +847,8 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
             timeout: float,
             temperature: float | None = None,
             extra_body: dict[str, object] | None = None,
+            stream: bool = False,
+            idle_timeout: float = 120.0,
         ) -> None:
             seen["temperature"] = temperature
             seen["extra_body"] = extra_body

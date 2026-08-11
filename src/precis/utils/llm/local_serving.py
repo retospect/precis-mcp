@@ -61,11 +61,13 @@ log = logging.getLogger(__name__)
 
 #: Default TTL (seconds) for a reservation's crash-reclaim hold
 #: (``resource_slot_holds``, migration 0118) — overridable via
-#: ``PRECIS_SLOT_HOLD_TTL_S``. An LLM call outlasting 30 minutes is already
-#: dead by its own timeouts, so this is comfortably above any legitimate
-#: call duration while still bounding how long a crashed holder's unit can
-#: stay leaked.
-_HOLD_TTL_S = 1800.0
+#: ``PRECIS_SLOT_HOLD_TTL_S``. Sized above the longest legitimate call a
+#: dispatch can make: a quest tick's per-rung wall ceiling is 900s
+#: (``PRECIS_QUEST_TICK_LLM_TIMEOUT_S``) and a 2-rung BIG chain can spend
+#: 2×900s back-to-back under one dispatch, so an hour bounds how long a
+#: crashed holder's unit can stay leaked without the sweeper reclaiming a
+#: slot out from under a live long-reasoning call.
+_HOLD_TTL_S = 3600.0
 
 
 def _hold_ttl_s() -> float:

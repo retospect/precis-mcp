@@ -58,6 +58,42 @@ QUEST_LOOP_ENABLED_ENV = "PRECIS_QUEST_LOOP_ENABLED"
 
 #: How many trailing logbook entries to feed the tick as episodic context.
 _LOGBOOK_TAIL = 8
+
+#: Per-rung wall ceiling (seconds) for the tick's LLM call. The transport
+#: default (600s) proved too tight for a big-tier reasoning pass over a ~20k-char
+#: quest prompt — glm-5.2 via OpenRouter routinely needs >10 min, so both rungs
+#: of the BIG chain timed out back-to-back (2×600s = the observed 1200s "timed
+#: out" ticks, 2026-08-11) and the tick paused with zero output. 900s per rung
+#: keeps the worst case (2 rungs) inside the slot-hold TTL
+#: (:data:`precis.utils.llm.local_serving._HOLD_TTL_S`). Override via env.
+_TICK_LLM_TIMEOUT_ENV = "PRECIS_QUEST_TICK_LLM_TIMEOUT_S"
+_TICK_LLM_TIMEOUT_S = 900.0
+
+#: Cap (chars) on the partial-output artifact persisted to the agentlog when
+#: the tick's LLM call dies mid-generation. Head + tail halves survive (the
+#: setup and wherever the reasoning got to); the middle is elided.
+_PARTIAL_RESULT_CAP = 20_000
+
+
+def _tick_llm_timeout_s() -> float:
+    raw = os.environ.get(_TICK_LLM_TIMEOUT_ENV)
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _TICK_LLM_TIMEOUT_S
+
+
+def _cap_partial(text: str, cap: int = _PARTIAL_RESULT_CAP) -> str:
+    if len(text) <= cap:
+        return text
+    half = cap // 2
+    return text[:half] + f"\n…[{len(text) - cap} chars elided]…\n" + text[-half:]
+
+
 #: A frontier review steps back over accumulated history — a deeper tail than
 #: a cheap local tick.
 _LOGBOOK_TAIL_REVIEW = 20
@@ -1301,10 +1337,21 @@ def run_quest_tick(
     except Exception:
         log.warning("run_quest_tick: failed to open agentlog", exc_info=True)
 
-    def _finalize(outcome: QuestTickOutcome) -> QuestTickOutcome:
+    def _finalize(
+        outcome: QuestTickOutcome, *, partial: str | None = None
+    ) -> QuestTickOutcome:
         if agentlog_id is not None:
             try:
-                agentlog.finalize_log(store, log_id=agentlog_id, status=outcome.status)
+                agentlog.finalize_log(
+                    store,
+                    log_id=agentlog_id,
+                    status=outcome.status,
+                    # Partial output salvaged from a mid-generation abort
+                    # (a streamed rung's StreamTimeout) — persisted so the
+                    # reasoning isn't lost with the connection; the
+                    # /agentlogs viewer shows it next to the prompt.
+                    result=partial or None,
+                )
             except Exception:
                 log.warning(
                     "run_quest_tick: failed to finalize agentlog", exc_info=True
@@ -1324,10 +1371,21 @@ def run_quest_tick(
             prompt=prompt,
             source="quest_review" if is_review else "quest_tick",
             ref_id=quest_id,
+            # The transport-default 600s wall cap cut big-tier reasoning off
+            # mid-thought (see _TICK_LLM_TIMEOUT_S); streaming makes the cap a
+            # hard ceiling with an idle timeout underneath, and preserves the
+            # partial output on abort instead of dropping the connection's
+            # entire generation.
+            timeout_s=_tick_llm_timeout_s(),
+            stream=True,
         )
     )
     cost = getattr(res, "cost_usd", None)
     if getattr(res, "error", None):
+        # Whatever the model produced before the failure (a streamed rung's
+        # partial reasoning/content rides LlmResult.text alongside the error)
+        # is persisted to the agentlog rather than lost with the connection.
+        salvage = _cap_partial((getattr(res, "text", "") or "").strip())
         # A window-scoped breaker trip (dollar cap / claude-OAuth quota) is a
         # pause, not a failure: report "paused" so the allocator skips it (no
         # pick recorded, no panel "failed") and re-picks once the window clears —
@@ -1336,12 +1394,14 @@ def run_quest_tick(
             return _finalize(
                 QuestTickOutcome(
                     quest_id, "paused", 0, False, cost, f"paused: {res.error}"
-                )
+                ),
+                partial=salvage,
             )
         return _finalize(
             QuestTickOutcome(
                 quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
-            )
+            ),
+            partial=salvage,
         )
 
     payload = _payload_from_result(res)

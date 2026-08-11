@@ -609,6 +609,54 @@ class TestQuestTick:
             b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
         ]
 
+    def test_partial_output_persists_to_agentlog_on_error(self, store: Any) -> None:
+        # A streamed rung that dies mid-generation returns its partial
+        # reasoning on LlmResult.text alongside the error — the tick persists
+        # it to the agentlog (meta.result) instead of losing the generation.
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                None,
+                text="[partial reasoning — stream aborted]\nsubsurface H first",
+                error="stream went silent for 120s",
+                paused=True,
+            ),
+        )
+        assert out.status == "paused"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->>'result' FROM refs "
+                "WHERE kind = 'agentlog' AND (meta->>'parent_ref_id')::int = %s "
+                "ORDER BY ref_id DESC LIMIT 1",
+                (qid,),
+            ).fetchone()
+        assert row is not None and row[0] is not None
+        assert "subsurface H first" in row[0]
+
+    def test_clean_error_leaves_agentlog_result_unset(self, store: Any) -> None:
+        # No partial text on the error result → no meta.result key (the
+        # agentlog stays lean; finalize_log(result=None) skips the field).
+        qid = _mk_quest(store, "A striving")
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(None, error="boom"))
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta ? 'result' FROM refs "
+                "WHERE kind = 'agentlog' AND (meta->>'parent_ref_id')::int = %s "
+                "ORDER BY ref_id DESC LIMIT 1",
+                (qid,),
+            ).fetchone()
+        assert row is not None and row[0] is False
+
+    def test_cap_partial_keeps_head_and_tail(self) -> None:
+        text = "A" * 15_000 + "MIDDLE" + "Z" * 15_000
+        capped = tick_mod._cap_partial(text)
+        assert len(capped) < len(text)
+        assert capped.startswith("A") and capped.endswith("Z")
+        assert "chars elided" in capped and "MIDDLE" not in capped
+        assert tick_mod._cap_partial("short") == "short"
+
     def test_unparseable_output_fails(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         out = run_quest_tick(
