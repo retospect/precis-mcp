@@ -232,15 +232,21 @@ cloud spend on SMALL by construction.** (Ops step — Slice 4.)
 **Verified prereqs (2026-08-11, read-only prod):**
 - ✅ `resource_slots` `llm:qwen3.5-9b-q4_k_m` on **melchior**, capacity **6**,
   free 6 — the cap-6 semaphore is live.
-- ❌ **BLOCKER: `PRECIS_NODE` is unset on melchior.** The `job_inproc` claim gate
-  compares `meta.params.target_node` against `os.environ["PRECIS_NODE"]` (→ NULL
-  when unset), so a job pinned `target_node="melchior"` matches **no host** and
-  strands. Must set `PRECIS_NODE=melchior` on melchior's `precis_worker_agent`
-  before the bands can drain.
-- ⚠️ `job_inproc` is registered on melchior (`--profile agent` … actually
-  `--profile all` union) but has been idle ~7 days (nothing pinned to claim) —
-  expected; it will claim once `derived_drain` jobs mint AND `PRECIS_NODE`
-  matches.
+- ✅ **`PRECIS_NODE` (was the blocker; FIXED here).** melchior's worker is
+  `com.precis.worker` running `--profile all` (so `job_inproc` — a `system`-
+  profile pass — is live), rendered from the `precis_worker` role, user `deploy`.
+  It had **no** `PRECIS_NODE`, so a `target_node="melchior"` pin matched no host.
+  Fixed by adding `PRECIS_NODE: "{{ 'melchior' if inventory_hostname ==
+  'melchior' else '' }}"` to `precis_shared_env` (same conditional pattern as
+  `PRECIS_OA_FETCH`); compute nodes keep their own `PRECIS_NODE` via their
+  systemd drop-in `EnvironmentFile` (loaded last → overrides the base "").
+- ✅ **Standing passes are melchior-only.** `precis_worker_summarize_llm`/
+  `precis_worker_classify` are `true` **only** in `host_vars/melchior.yml`
+  (default `false`); balthazar/caspar/spark don't run them. So the ~4.5:1 cloud
+  is melchior's **own** passes spilling to the chain's cloud rung when the 9B is
+  full — dropping the rung strands **no** other host. The bands coexist safely
+  with the standing passes (same `chunk_claims` lease dedup, same 6-slot router
+  cap), so they need not be disabled for the cutover — that's optional cleanup.
 - ⚠️ Current SMALL routing is **~4.5:1 cloud** (`glm-4.7-flash` 12.4k vs local
   qwen 2.8k over 2 days) — the standing `llm_summarize`/`classify` passes hit
   cloud heavily today. Forcing all-local shifts ~5× load onto melchior's 6
@@ -249,44 +255,38 @@ cloud spend on SMALL by construction.** (Ops step — Slice 4.)
   `unclassified` count until the 9B catches up (or indefinitely if it can't —
   a deliberate throughput ceiling).
 
-**Config lives in the private overlay** (`inventory/group_vars/all/precis_env.yml`
-via `precis_shared_env`, host_vars) — not in-repo. Set:
-1. **`PRECIS_NODE: melchior`** — host_var for melchior's `precis_worker_agent`
-   (the blocker fix).
-2. **`PRECIS_SMALL_BAND_SUMMARIZE: "1"`**, **`PRECIS_SMALL_BAND_CLASSIFY: "1"`** —
-   fleet-wide `precis_shared_env` (the materializer is a fleet-singleton, any
-   host may run the tick, so the flags must be everywhere). Optional tuning:
-   `PRECIS_SMALL_BAND_LOW`/`_HIGH` (default 20/50), `PRECIS_SMALL_DRAIN_LIMIT`
-   (500), `PRECIS_SMALL_DRAIN_CONCURRENCY` (6), `PRECIS_SMALL_DRAIN_TARGET_NODE`
-   (default `melchior`).
+**Overlay config applied** (`inventory/group_vars/all/precis_env.yml`,
+`precis_shared_env` — fleet-wide, since the materializer is a fleet-singleton):
+`PRECIS_SMALL_BAND_SUMMARIZE=1`, `PRECIS_SMALL_BAND_CLASSIFY=1`, `PRECIS_NODE`
+(melchior-conditional). Optional tuning knobs (unset = defaults):
+`PRECIS_SMALL_BAND_LOW`/`_HIGH` (20/50), `PRECIS_SMALL_DRAIN_LIMIT` (500),
+`PRECIS_SMALL_DRAIN_CONCURRENCY` (6), `PRECIS_SMALL_DRAIN_TARGET_NODE` (melchior).
 
-**Staged sequence (do NOT reorder — the cutover step can stop SMALL work if the
-bands aren't proven draining first):**
-1. Deploy the shipped code (`scripts/deploy`).
-2. Set overlay vars 1+2 → deploy. **Do NOT touch the SMALL chain or standing
-   passes yet.** Now the bands mint `derived_drain` on melchior *alongside* the
-   still-running standing passes (they cooperate via `chunk_claims` leases — no
-   conflict, some cloud spend continues).
-3. **Verify the bands actually drain** (the gate): `derived_drain` jobs appear
+**Staged sequence (do NOT reorder — the cutover can stop SMALL work if the bands
+aren't proven draining first):**
+1. **Deploy** (`scripts/deploy`) — installs `main` (the code) AND renders the
+   overlay config (band flags + `PRECIS_NODE`) into every worker unit.
+2. **Verify the bands drain** (the gate): `derived_drain` jobs appear
    `queued`/`running` on melchior only; `llm_call_log` shows fresh
    `qwen3.5-9b-q4_k_m` local rows sourced `llm_summarize`/`classify`; ROLE3 tags
    + summaries land; the stuck-queue WARNING ("band full … 0 running … nothing
-   is draining") stays **silent**. If it fires → the `PRECIS_NODE` pin still
-   doesn't match or melchior's worker is down; fix before step 4.
-4. **Only after step 3 is green — the cutover:** (a) disable the standing passes
-   (`PRECIS_SUMMARIZE_LLM`/`PRECIS_CLASSIFY_ENABLED` off, or their
-   `service_config` rows) so they don't double-work or break; (b) drop the SMALL
-   cloud rung in prod `app_settings`:
+   is draining") stays **silent**. If it fires → the `PRECIS_NODE` pin didn't
+   take or melchior's worker is down; fix before step 3. Also confirm a compute
+   node (e.g. the dft/fold node) still has its own `PRECIS_NODE` (drop-in
+   override held).
+3. **Cutover — drop the SMALL cloud rung** in prod `app_settings` (this is all
+   the cutover needs; the standing passes are melchior-only and coexist, so no
+   disable required):
    `UPDATE app_settings SET value =
    '[{"placement":"local","model":"qwen3.5-9b-q4_k_m","transport":"local"}]'
    WHERE key='llm.chain.small';` (via `scripts/prod-psql`; today it also carries
-   a `glm-4.7-flash` cloud rung — that is the spill this removes). Now SMALL is
+   a `glm-4.7-flash` cloud rung — the spill this removes). Now SMALL is
    melchior-local-only, capped 6, queues beyond, **zero cloud**.
-5. **Watch:** zero SMALL cloud rows in `llm_call_log`; `unsummarized`/
-   `unclassified` backlog rises then plateaus/drains per the 9B's real
-   throughput; the reader still gets summaries (if the backlog starves the
-   reader unacceptably, raise the band or re-add a cloud rung — the knobs are
-   all live).
+4. **Watch:** zero SMALL cloud rows in `llm_call_log`; `unsummarized`/
+   `unclassified` backlog rises then plateaus/drains per the 9B's throughput.
+5. **Optional cleanup (later):** once stable, make the bands the *sole* SMALL
+   drain by disabling the standing passes on melchior
+   (`precis_worker_summarize_llm`/`precis_worker_classify` → `false`, redeploy).
 
 ## Explicitly NOT in scope
 
