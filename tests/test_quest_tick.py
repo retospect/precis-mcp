@@ -664,6 +664,27 @@ class TestQuestTick:
         )
         assert out.status == "failed"
 
+    def test_unparseable_output_persists_raw_text_and_reason(self, store: Any) -> None:
+        # A CLEAN completion whose text doesn't parse as a tick action must
+        # not vanish: the raw text lands in agentlog meta.result and the
+        # outcome note in meta.error (glm-5.2 has returned prose/near-empty
+        # answers here — without the text the failure mode is invisible).
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(None, text="no json in here")
+        )
+        assert out.status == "failed"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->>'result', meta->>'error' FROM refs "
+                "WHERE kind = 'agentlog' AND (meta->>'parent_ref_id')::int = %s "
+                "ORDER BY ref_id DESC LIMIT 1",
+                (qid,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] is not None and "no json in here" in row[0]
+        assert row[1] == "unparseable model output"
+
     def test_missing_quest_fails(self, store: Any) -> None:
         out = run_quest_tick(store, 999999, dispatch_fn=_fake_dispatch({"logbook": []}))
         assert out.status == "failed" and "not found" in out.note

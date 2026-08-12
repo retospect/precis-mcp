@@ -1351,6 +1351,13 @@ def run_quest_tick(
                     # reasoning isn't lost with the connection; the
                     # /agentlogs viewer shows it next to the prompt.
                     result=partial or None,
+                    # Non-succeeded ticks stamp WHY (the outcome note) —
+                    # a bare status="failed" row is undiagnosable.
+                    meta_extra=(
+                        {"error": outcome.note}
+                        if outcome.status != "succeeded" and outcome.note
+                        else None
+                    ),
                 )
             except Exception:
                 log.warning(
@@ -1406,10 +1413,16 @@ def run_quest_tick(
 
     payload = _payload_from_result(res)
     if payload is None:
+        # The model completed cleanly but its text didn't parse as a tick
+        # action — persist the raw text so the malformed output can be
+        # inspected instead of vanishing with the failure (glm-5.2 has
+        # returned prose/near-empty answers here; without the text the
+        # failure mode is invisible).
         return _finalize(
             QuestTickOutcome(
                 quest_id, "failed", 0, False, cost, "unparseable model output"
-            )
+            ),
+            partial=_cap_partial((getattr(res, "text", "") or "").strip()),
         )
 
     # Open hypotheses to dedup fresh ones against — a spin is the same question
