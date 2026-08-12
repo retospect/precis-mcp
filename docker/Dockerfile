@@ -275,6 +275,30 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         plantuml \
         default-jre-headless
 
+# TeX toolchain (gr53208): the ship gate must compile the shipped draft
+# preamble — two prod PDF-export breaks were preamble-only errors invisible
+# to a TeX-free gate. Minimal Debian TeX Live subset covering what
+# templates/draft/preamble.tex loads: lualatex engine (texlive-luatex),
+# fontspec/microtype/listings (latex-recommended), glossaries-extra +
+# pdfcomment + cleveref + authblk + csquotes and the makeglossaries perl
+# script (latex-extra), biblatex (bibtex-extra) + biber, Latin Modern
+# (lmodern) + base fonts (fonts-recommended), and latexmk to drive it all
+# (same entrypoint as export/compile.py). --no-install-recommends keeps
+# the -doc packages out. No CJK fonts: preamble's \IfFontExistsTF degrades
+# cleanly, and haranoaji lives in the huge texlive-fonts-extra.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        latexmk \
+        texlive-luatex \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-bibtex-extra \
+        biber \
+        lmodern \
+        texlive-fonts-recommended \
+        texlive-plain-generic
+
 # Overlay pg_dump 17 to match the pgvector server (17.x). pg_dump aborts
 # with "server version mismatch" when its major < the server's, which
 # broke the schema-baseline / migration tests (test_schema_convergence,

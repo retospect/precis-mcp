@@ -82,8 +82,8 @@ class _FakeCtx:
 def test_dispatch_exports_and_skips_pdf_without_latexmk(
     hub: Hub, monkeypatch: Any
 ) -> None:
-    # Force the no-toolchain path (the gate image gained TeX when the tex
-    # extra went core, so presence can't be assumed either way) → export
+    # Force the no-toolchain path (the gate container ships real TeX since
+    # gr53208, so "latexmk absent" must be simulated, not assumed) → export
     # succeeds, PDF is skipped.
     import precis.export.compile as _compile
 

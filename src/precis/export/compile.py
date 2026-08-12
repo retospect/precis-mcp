@@ -11,10 +11,12 @@ Determinism rests on three things, in order of leverage:
 
 1. **A pinned toolchain.** ``latexmk`` + ``biber`` + ``makeglossaries``
    + the packages the preamble loads (glossaries-extra, biblatex,
-   cleveref, microtype) must be present and versioned. The honest way
-   to guarantee this across the fleet is a containerised TeX Live; today
-   we reuse the same host-mactex assumption as ``compile_guard`` and
-   degrade cleanly (no binary → emit the .tex, skip the PDF).
+   cleveref, microtype) must be present and versioned. The dev/gate
+   container bakes a minimal Debian TeX Live for exactly this (gr53208;
+   ``tests/test_preamble_smoke.py`` compiles the shipped preamble in the
+   gate), so a preamble regression can no longer ship green. Fleet hosts
+   still carry their own mactex/TeX Live and we degrade cleanly where
+   it's absent (no binary → emit the .tex, skip the PDF).
 2. **Compile-safe generation.** The renderer (``latex.py``) escapes
    LaTeX specials, translates non-ASCII to LaTeX commands (so pdflatex
    never hits a "missing character"), guarantees every ``\\gls`` has a
