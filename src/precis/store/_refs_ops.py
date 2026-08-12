@@ -1635,6 +1635,33 @@ class RefsMixin:
         if rowcount == 0:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
 
+    def restore_ref(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> bool:
+        """Undo a soft-delete by clearing ``deleted_at`` — the inverse of
+        :meth:`soft_delete_ref`.
+
+        Returns ``True`` when a soft-deleted row was restored, ``False`` when
+        the ref is absent or already live (idempotent — a double-undelete is
+        a no-op, not an error). The ``WHERE deleted_at IS NOT NULL`` guard
+        means only a currently-deleted ref is touched; the ref's body chunks
+        and links were never removed by the soft-delete, so clearing the flag
+        brings the whole ref back.
+        """
+        sql = (
+            "UPDATE refs SET deleted_at = NULL, updated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NOT NULL"
+        )
+        if conn is not None:
+            rowcount = conn.execute(sql, (ref_id,)).rowcount
+        else:
+            with self.pool.connection() as c:
+                rowcount = c.execute(sql, (ref_id,)).rowcount
+        return rowcount > 0
+
     def soft_delete_todo_subtree(self, ref_id: int) -> int:
         """Soft-delete a todo and every live ``kind='todo'`` descendant.
 

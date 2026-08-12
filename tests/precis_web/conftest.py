@@ -98,6 +98,12 @@ class FakeStore(_FakeStoreBase):
         #: ref_ids soft-deleted via the web delete route (the route calls
         #: the store directly — paper delete is web-only, not dispatched).
         self.deleted_ref_ids: set[int] = set()
+        #: {ref_id: ref} soft-deleted refs reachable ONLY via
+        #: ``fetch_refs_by_ids(include_deleted=True)`` — seeds the tombstone /
+        #: undelete route tests (a dangling link to a removed ref). ``restore_ref``
+        #: pops from here; ``restored_ref_ids`` records the calls.
+        self.deleted_refs: dict[int, Any] = {}
+        self.restored_ref_ids: list[int] = []
         #: (victim, survivor) pairs merged via the resolve-duplicate route.
         self.merges: list[tuple[int, int]] = []
         #: ref_ids stamped via touch_viewed (the reader page-open access
@@ -769,7 +775,22 @@ class FakeStore(_FakeStoreBase):
             + self.gripes
             + self.quests
         }
+        if include_deleted:
+            # Soft-deleted refs are reachable only when explicitly asked for —
+            # the tombstone route's second, include-deleted fetch.
+            pool = {**self.deleted_refs, **pool}
         return {i: pool[i] for i in ids if i in pool}
+
+    def restore_ref(self, ref_id, *, conn=None) -> bool:
+        """Undelete: move a ref out of the deleted pool back into live view.
+        Returns whether a soft-deleted ref was restored (idempotent no-op
+        otherwise), mirroring ``Store.restore_ref``."""
+        self.restored_ref_ids.append(ref_id)
+        ref = self.deleted_refs.pop(ref_id, None)
+        if ref is None:
+            return False
+        self.memories.append(ref)  # back into a live pool for follow-on reads
+        return True
 
     def update_ref(
         self,

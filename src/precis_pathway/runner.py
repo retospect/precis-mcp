@@ -186,21 +186,23 @@ def _analysis_payloads(
     return summary, nx.node_link_data(an.graph, edges="links")
 
 
+def _atoms_to_extxyz(atoms: Any) -> str:
+    """One relaxed ASE ``Atoms`` → an extxyz string (lossless: cell, pbc,
+    per-atom info). The wire form the precis ``structure`` seam ingests."""
+    from ase.io import write as ase_write
+
+    buf = io.StringIO()
+    ase_write(buf, atoms, format="extxyz")
+    return buf.getvalue()
+
+
 def _structures_extxyz(results: Results) -> dict[str, str]:
     """Serialise the lowest-energy relaxed Atoms per state to extxyz strings.
 
-    Not ingested in slice 0, but harvested here so slice 1's
-    ``Scene.from_ase`` ingest (structure refs → pathway nodes) has the
-    geometries ready. extxyz is lossless (cell, pbc, per-atom info).
+    Harvested so the slice-1b ``Scene.from_ase`` ingest (structure refs →
+    pathway nodes) has the geometries ready.
     """
-    from ase.io import write as ase_write
-
-    out: dict[str, str] = {}
-    for name, atoms in results.structures.items():
-        buf = io.StringIO()
-        ase_write(buf, atoms, format="extxyz")
-        out[name] = buf.getvalue()
-    return out
+    return {name: _atoms_to_extxyz(atoms) for name, atoms in results.structures.items()}
 
 
 def _hydrate_slab(slab_extxyz: str) -> Any:
@@ -342,13 +344,13 @@ def run_seed_partial(
     Returns a JSON-serialisable dict (no ASE ``Atoms`` leak): ``partial``
     (the raw ``run_one_seed`` result, ``model`` tag folded in — same shape
     ``pipeline.run()`` accumulates), ``model`` (the resolved tag string),
-    and ``lattice`` (``{tag: relaxed_a}`` if this unit relaxed the lattice,
-    else ``{}`` — ``aggregate_seed_partials`` merges these back in).
-
-    State geometries are NOT collected in this slice (native structure
-    ingest per state is later work, §3.8/slice-1b of
-    ``docs/backlog/autocatpath-integration.md``) — ``run_one_seed`` is called
-    without ``collect=``.
+    ``lattice`` (``{tag: relaxed_a}`` if this unit relaxed the lattice, else
+    ``{}`` — ``aggregate_seed_partials`` merges these back in), and
+    ``structures`` (``{state: {"energy": float, "extxyz": str}}`` — the
+    lowest-energy relaxed geometry this unit saw per state, serialised to
+    extxyz so it survives the JSON job boundary; ``aggregate_seed_partials``
+    keeps the min-energy geometry across seeds/models and hands it to the
+    native structure ingest, slice-1b).
     """
     from autocatpath.calculators import make_calculator, resolve_backend
     from autocatpath.pipeline import run_one_seed
@@ -384,14 +386,30 @@ def run_seed_partial(
         c.slab.a = a0
         lattice[tag] = a0
 
-    partial = run_one_seed(c, seed, log=log)
+    # Capture geometry ONLY from the first model (``model_index == 0``),
+    # exactly as ``pipeline.run()`` does (``collect=structures if si == 0``):
+    # raw relaxed energies from different MLIP potentials sit on different
+    # absolute references, so a cross-model "lowest energy" pick would be an
+    # artifact of each potential's zero point, not relaxation quality. Within
+    # one model, across seeds, min-energy is meaningful — that's what the
+    # aggregate merges. ``collect`` receives ``{state: (energy, Atoms)}`` plus
+    # ``poison:<p>`` keys; serialise the non-poison states to extxyz so the
+    # geometry crosses the JSON job boundary.
+    collect: dict[str, Any] | None = {} if model_index == 0 else None
+    partial = run_one_seed(c, seed, log=log, collect=collect)
     partial["model"] = tag
+    structures = {
+        name: {"energy": energy, "extxyz": _atoms_to_extxyz(atoms)}
+        for name, (energy, atoms) in (collect or {}).items()
+        if not name.startswith("poison:")
+    }
     return {
         "seed": seed,
         "model": tag,
         "model_index": model_index,
         "partial": partial,
         "lattice": lattice,
+        "structures": structures,
     }
 
 
@@ -933,8 +951,12 @@ def aggregate_seed_partials(
     slab_extxyz: str | None = None,
 ) -> dict[str, Any]:
     """Combine N :func:`run_seed_partial` outputs into the same
-    self-contained artifact shape :func:`run_pathway` returns (minus
-    per-state structures — not collected by the fan-out, §3.8/slice-1b).
+    self-contained artifact shape :func:`run_pathway` returns, including the
+    per-state relaxed geometries the fan-out now carries (slice-1b): the
+    lowest-energy geometry seen for each state across the first-model seeds
+    (only ``model_index == 0`` units collect geometry — see
+    :func:`run_seed_partial` — so these energies are on one potential's scale
+    and min-energy-wins is meaningful, mirroring the monolith).
 
     Pure numpy (``autocatpath.pipeline.aggregate_partials`` — no ML deps),
     so this runs in-process on any node, not just wherever the seeds ran.
@@ -952,7 +974,18 @@ def aggregate_seed_partials(
     for r in seed_results:
         lattice.update(r.get("lattice") or {})
     results.lattice = lattice
-    results.structures = {}
+
+    # Min-energy geometry per state across the first-model seeds (only those
+    # units carry ``structures``). A partial from before this field existed
+    # simply contributes nothing (``.get`` → {}), so a mixed-vintage aggregate
+    # degrades to "whatever was collected".
+    best: dict[str, tuple[float, str]] = {}
+    for r in seed_results:
+        for name, geo in (r.get("structures") or {}).items():
+            energy = geo["energy"]
+            if name not in best or energy < best[name][0]:
+                best[name] = (energy, geo["extxyz"])
+    structures_extxyz = {name: xyz for name, (_e, xyz) in best.items()}
 
     results_json, graph_json = _analysis_payloads(cfg, results)
     return {
@@ -963,7 +996,7 @@ def aggregate_seed_partials(
         "results_json": results_json,
         "graph_json": graph_json,
         "methods_md": provenance.methods_text(cfg, results),
-        "structures_extxyz": {},
+        "structures_extxyz": structures_extxyz,
         "warnings": list(results.warnings),
     }
 

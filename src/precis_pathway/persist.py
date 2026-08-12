@@ -11,8 +11,11 @@ import inside the job dispatcher.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 BODY_KIND = "pathway_body"
 
@@ -93,7 +96,16 @@ def persist_result(
                 artifact["structures_extxyz"],
             )
         except Exception:
-            pass  # native ingest is additive; keep the pathway result regardless
+            # Native ingest is additive — keep the pathway result regardless —
+            # but never silently: a swallowed failure here is exactly how
+            # per-state geometry went missing unnoticed (empty structure_refs
+            # with no trace). Log loudly so a regression surfaces.
+            log.warning(
+                "pathway %s: per-state structure ingest failed; "
+                "structure_refs left unset",
+                pathway_slug,
+                exc_info=True,
+            )
 
     meta = pathway_meta(artifact, extra=extra)
 

@@ -192,6 +192,15 @@ def test_run_seed_partial_shape() -> None:
     assert partial["model"] == "emt"
     # relax_lattice: false in FANOUT -> this unit never touched the lattice
     assert result["lattice"] == {}
+    # per-state relaxed geometry rides back on the partial (slice-1b) so the
+    # aggregate can hand it to the native structure ingest — the fix for
+    # fan-out pathways showing "no geometry linked". No poison:* keys leak.
+    structures = result["structures"]
+    assert structures, "no per-state geometry collected in the fan-out unit"
+    assert not any(name.startswith("poison:") for name in structures)
+    sample = next(iter(structures.values()))
+    assert "extxyz" in sample and "energy" in sample
+    assert sample["extxyz"].strip(), "empty extxyz payload"
 
 
 def test_seed_fanout_matches_monolith_run() -> None:
@@ -212,6 +221,12 @@ def test_seed_fanout_matches_monolith_run() -> None:
     assert _json_eq(fanout["results_json"]["edges"], monolith["results_json"]["edges"])
     assert fanout["results_json"]["n_samples"] == monolith["results_json"]["n_samples"]
     assert _json_eq(fanout["graph_json"], monolith["graph_json"])
+
+    # per-state geometry: the fan-out must now harvest the same states the
+    # monolith does (regression guard — this was silently empty, which is
+    # why fan-out pathways rendered "no geometry linked" for every state).
+    assert fanout["structures_extxyz"], "fan-out dropped all per-state geometry"
+    assert set(fanout["structures_extxyz"]) == set(monolith["structures_extxyz"])
 
     # and the scalar summary quest.compute.harvest_measures reads matches too
     from precis_pathway._dispatch_common import summarize

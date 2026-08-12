@@ -2468,6 +2468,26 @@ async def detail(
     refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
     ref = refs.get(ref_id)
     if ref is None or ref.kind != kind:
+        # Distinguish "deleted" from "never existed": a soft-deleted ref (e.g.
+        # a pathway's candidate structure that was later removed) is a dangling
+        # link, not a typo. Render a tombstone with an Undelete affordance
+        # (404, not the PrecisError->400 a bare NotFound would give) so the
+        # link resolves to something actionable rather than a raw error.
+        deleted = store.fetch_refs_by_ids([ref_id], include_deleted=True).get(ref_id)
+        if deleted is not None and deleted.kind == kind:
+            return templates.TemplateResponse(
+                request,
+                "refs/tombstone.html.j2",
+                {
+                    "active_tab": f"refs:{kind}",
+                    "kind": kind,
+                    "kind_label": _REF_KIND_LABEL.get(
+                        kind, kind.replace("-", " ").title()
+                    ),
+                    "ref": _row(deleted),
+                },
+                status_code=404,
+            )
         raise NotFound(f"{kind} id={ref_id} not found")
 
     # Structures have a dedicated interactive 3D viewer at /structure/{slug};
@@ -2694,6 +2714,27 @@ async def edit_tags(
     return await redirect_or_error(
         request, "tag", args, redirect=redirect_url, error_title="Tag error"
     )
+
+
+@router.post("/{kind}/{ref_id}/undelete")
+async def undelete(request: Request, kind: str, ref_id: int) -> Response:
+    """Restore a soft-deleted ref — the Undelete button on the tombstone page.
+
+    Clears ``deleted_at`` (idempotent — a no-op if the ref is already live)
+    and redirects back to the detail URL, which now resolves: a restored
+    structure 303-hops on to its ``/structure/{slug}`` viewer.
+    """
+    _require_kind(kind)
+    store = get_store(request)
+    # Restore only a ref that actually IS this kind — ``restore_ref`` keys on
+    # ref_id alone, so without this guard ``/refs/<any-kind>/<id>/undelete``
+    # would resurrect whatever <id> is, kind-unchecked. Mirrors the tombstone
+    # render's own ``deleted.kind == kind`` gate.
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=True).get(ref_id)
+    if ref is None or ref.kind != kind:
+        raise NotFound(f"{kind} id={ref_id} not found")
+    store.restore_ref(ref_id)
+    return RedirectResponse(url=f"/refs/{kind}/{ref_id}", status_code=303)
 
 
 # ---- Ask a follow-up question about a thought -----------------------

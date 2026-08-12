@@ -135,6 +135,20 @@ def test_soft_delete(store: Store) -> None:
     assert found.deleted_at is not None
 
 
+def test_restore_ref(store: Store) -> None:
+    ref = store.insert_ref(kind="memory", slug=None, title="undelete me")
+    store.soft_delete_ref(ref.id)
+    assert store.get_ref(kind="memory", id=ref.id) is None
+
+    assert store.restore_ref(ref.id) is True
+    live = store.get_ref(kind="memory", id=ref.id)
+    assert live is not None and live.deleted_at is None
+
+    # idempotent: restoring an already-live (or absent) ref is a no-op, not an error
+    assert store.restore_ref(ref.id) is False
+    assert store.restore_ref(10_000_001) is False
+
+
 def test_list_refs_filters(store: Store) -> None:
     store.insert_ref(kind="memory", slug=None, title="m1")
     store.insert_ref(kind="memory", slug=None, title="m2")

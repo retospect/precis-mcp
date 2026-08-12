@@ -299,8 +299,8 @@ def test_stale_coordinator_job_is_swept_to_cancelled_not_failed(
     r = handler.put(text="parent")
     rid = _id_of(r.body)
     job_id = _mint_running_job(
-        store, rid, backdate_hours=2.0, executor="coordinator",
-        job_type="quest_tick")
+        store, rid, backdate_hours=2.0, executor="coordinator", job_type="quest_tick"
+    )
 
     result = run_sweeper_pass(store, limit=10)
 
@@ -323,24 +323,29 @@ def test_swept_cancelled_coordinator_loop_is_not_backoff_gated(
     hold the re-mint back."""
     from precis.quest.loop import _failed_rest_cooldown_active
 
-    quest = store.insert_ref(kind="quest", slug=None, title="test quest",
-                             meta={})
+    quest = store.insert_ref(kind="quest", slug=None, title="test quest", meta={})
     job_id = _mint_running_job(
-        store, quest.id, backdate_hours=2.0, executor="coordinator",
+        store,
+        quest.id,
+        backdate_hours=2.0,
+        executor="coordinator",
         job_type="quest_tick",
-        params={"quest_id": quest.id, "tier": "big"})
+        params={"quest_id": quest.id, "tier": "big"},
+    )
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET meta = meta || jsonb_build_object("
             "  'idem_key', 'quest_tick:' || %s::text) WHERE ref_id = %s",
-            (quest.id, job_id))
+            (quest.id, job_id),
+        )
         conn.commit()
 
     assert run_sweeper_pass(store, limit=10).ok == 1
     job_tags = {str(t) for t in store.tags_for(job_id)}
     assert "STATUS:cancelled" in job_tags
-    assert _failed_rest_cooldown_active(
-        store, quest.id, base_s=1800, max_s=21600) is False
+    assert (
+        _failed_rest_cooldown_active(store, quest.id, base_s=1800, max_s=21600) is False
+    )
 
 
 def test_stale_running_job_with_live_lease_is_left_alone(
