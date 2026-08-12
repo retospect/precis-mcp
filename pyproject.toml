@@ -277,7 +277,7 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
 # compute extra below (mirrors dft/dft-ml) so a gateway venv can serve
 # get(kind='pathway') without pulling torch. Kept out of `all` (heavy,
 # host-specific like the other dft-ml/cad/pcb extras).
-catalyst = ["autocatpath>=0.12.1"]
+catalyst = ["autocatpath>=0.13.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -287,7 +287,7 @@ catalyst = ["autocatpath>=0.12.1"]
 # actually engage (same math, faster CUDA kernels) — upstream keeps its
 # `mace` extra lean, so the dep rides here; Linux-only (no macOS wheels).
 catalyst-gpu = [
-    "autocatpath[mace]>=0.12.1",
+    "autocatpath[mace]>=0.13.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
 # Paid web tools (perplexity / wolfram / youtube transcripts).
