@@ -283,6 +283,66 @@ def test_stale_running_job_is_swept_and_parent_bubbled(
     assert f"child-failed:{job_id}" not in parent_tags
 
 
+def test_stale_coordinator_job_is_swept_to_cancelled_not_failed(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A claim-orphaned ``coordinator`` row terminalizes as ``cancelled``.
+
+    2026-08-12 incident: deploy SIGKILLs orphaned every quest loop; the
+    sweeper marked them ``failed``, which quest/loop.py's
+    ``_failed_rest_cooldown_active`` reads as "the tick is broken — back
+    off exponentially", stalling all quests ~3 h for a death the deploy
+    inflicted. ``cancelled`` is the reconciler's reboot-orphan reap
+    semantics: re-mint immediately. No failure bubble either —
+    cancellation is not a failure.
+    """
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store, rid, backdate_hours=2.0, executor="coordinator",
+        job_type="quest_tick")
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:cancelled" in job_tags
+    assert "STATUS:failed" not in job_tags
+    assert "STATUS:running" not in job_tags
+    assert "swept:claim-orphaned" in job_tags  # recovery path stays legible
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    # no child-failed bubble, now or ever (not retry-cap gated — skipped)
+    assert not any(t.startswith("child-failed") for t in parent_tags)
+
+
+def test_swept_cancelled_coordinator_loop_is_not_backoff_gated(
+    handler: TodoHandler, store: Store
+) -> None:
+    """End-to-end with quest/loop.py: after a sweep, the quest's most-recent
+    loop rests ``cancelled``, so ``_failed_rest_cooldown_active`` must NOT
+    hold the re-mint back."""
+    from precis.quest.loop import _failed_rest_cooldown_active
+
+    quest = store.insert_ref(kind="quest", slug=None, title="test quest",
+                             meta={})
+    job_id = _mint_running_job(
+        store, quest.id, backdate_hours=2.0, executor="coordinator",
+        job_type="quest_tick",
+        params={"quest_id": quest.id, "tier": "big"})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'idem_key', 'quest_tick:' || %s::text) WHERE ref_id = %s",
+            (quest.id, job_id))
+        conn.commit()
+
+    assert run_sweeper_pass(store, limit=10).ok == 1
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:cancelled" in job_tags
+    assert _failed_rest_cooldown_active(
+        store, quest.id, base_s=1800, max_s=21600) is False
+
+
 def test_stale_running_job_with_live_lease_is_left_alone(
     handler: TodoHandler, store: Store
 ) -> None:

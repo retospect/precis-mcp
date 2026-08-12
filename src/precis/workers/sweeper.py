@@ -57,15 +57,22 @@ The sweeper:
 1. Selects rows where the *current* ``STATUS:`` value is ``running``, the
    ``ref_tags`` row that wrote that tag is older than
    :data:`STUCK_JOB_HOURS`, **and** ``meta.lease_until`` is null or past.
-2. Replaces ``STATUS:running`` with ``STATUS:failed`` (via
-   ``replace_prefix=True`` on the STATUS namespace).
+2. Replaces ``STATUS:running`` with the terminal status (via
+   ``replace_prefix=True`` on the STATUS namespace): ``STATUS:failed``
+   normally, ``STATUS:cancelled`` for perpetual-loop job types
+   (:data:`_SWEEP_CANCEL_JOB_TYPES`, today ``quest_tick``) — a
+   claim-orphaned quest loop died externally (deploy SIGKILL, host
+   loss), and quest-loop reconcile treats ``cancelled`` as re-mint-now
+   while ``failed`` triggers its escalating rest backoff (see
+   :func:`_transition_to_failed`'s docstring; 2026-08-12 incident).
 3. Adds an ``OPEN:swept:claim-orphaned`` tag so the failure isn't
    mis-attributed to the executor.
 4. Calls ``bubble_job_failure`` to tag the parent todo
    ``child-failed:<job_id>``. The bubble is normally fired from
    ``JobHandler.tag(STATUS:failed)``; the sweeper writes the tag at
    the store level (the handler isn't in scope here), so the bubble
-   is called explicitly.
+   is called explicitly. Skipped for the cancelled quest-loop case —
+   cancellation is not a failure and the reconciler owns the recovery.
 5. Appends a ``job-swept`` event so the audit trail is intact.
 6. **Active container reap (gripe 50905).** Failing the DB row does not by
    itself stop whatever OS process/container the job launched. Two
@@ -1298,15 +1305,43 @@ def _run_unpark_pass(store: Store, *, limit: int) -> int:
     return n
 
 
+#: Job types whose claim-orphaned rows terminalize as ``cancelled`` instead of
+#: ``failed`` — perpetual loops with a reconciler that reads the rest status
+#: (see :func:`_transition_to_failed`'s docstring). Keyed on job_type, not
+#: executor: other coordinator campaigns keep failed + bubble semantics.
+_SWEEP_CANCEL_JOB_TYPES = frozenset({"quest_tick"})
+
+
 def _transition_to_failed(
     store: Store, orphan: _Orphan, threshold_hours: float
 ) -> bool:
-    """Lock the job ref, re-verify state, write STATUS:failed + swept tag.
+    """Lock the job ref, re-verify state, write the terminal STATUS + swept tag.
+
+    The terminal status depends on who owns recovery. Ordinary rows get
+    ``STATUS:failed`` — an executor death the parent should hear about
+    (bubble). **Perpetual-loop rows (:data:`_SWEEP_CANCEL_JOB_TYPES`,
+    today just ``quest_tick``) get ``STATUS:cancelled``**: a claim-orphaned
+    quest loop died *externally* — deploy SIGKILL, host loss — not by its
+    own tick budget, and ``quest/loop.py``'s
+    ``_failed_rest_cooldown_active`` reads a ``failed`` rest as "the tick
+    is broken, back off exponentially". Sweeping those to ``failed``
+    therefore put every quest on an escalating re-mint cooldown for a death
+    a deploy inflicted (2026-08-12 incident: two deploy SIGKILLs → 4 quest
+    loops swept ``failed`` → ~3 h stall, manual reconcile to unblock).
+    ``cancelled`` is the reconciler's own reap semantics
+    (``reaped:reboot-orphan``) — re-mint immediately. No failure bubble for
+    a cancelled row either: cancellation is not a failure, the loops are
+    unparented, and loop reconcile owns the recovery. Deliberately keyed on
+    ``job_type``, not ``executor == 'coordinator'``: other coordinator
+    campaigns (e.g. ``dft_campaign``) have parent todos that DO want the
+    ``child-failed`` bubble and no rest-backoff reader.
 
     Returns ``True`` on successful transition, ``False`` on race
     (someone else held the row, or the status changed between
     enumeration and lock).
     """
+    cancel = (orphan.meta or {}).get("job_type") in _SWEEP_CANCEL_JOB_TYPES
+    status = "cancelled" if cancel else "failed"
     with store.tx() as conn:
         row = conn.execute(
             """
@@ -1331,12 +1366,12 @@ def _transition_to_failed(
         ).fetchone()
         if row is None:
             return False
-        # Replace STATUS:running with STATUS:failed in one shot.
+        # Replace STATUS:running with the terminal status in one shot.
         # replace_prefix=True nukes any other STATUS:* on this ref
         # (there should only be one, but defensively cover races).
         store.add_tag(
             orphan.ref_id,
-            Tag.closed("STATUS", "failed"),
+            Tag.closed("STATUS", status),
             set_by="system",
             replace_prefix=True,
             conn=conn,
@@ -1360,11 +1395,12 @@ def _transition_to_failed(
                 "swept_at": datetime.now(UTC).isoformat(),
                 "threshold_hours": threshold_hours,
                 "cause": "claim-orphaned",
+                "status": status,
             },
             conn=conn,
         )
         # Refund the crashed job's resource reservation (slice 6c) — the
-        # sweeper writes STATUS:failed directly rather than via
+        # sweeper writes the terminal STATUS directly rather than via
         # ``set_status``, so it releases the slots itself. Idempotent: a
         # no-op if the job reserved nothing.
         release_job_reservation(conn, orphan.ref_id)
@@ -1373,8 +1409,11 @@ def _transition_to_failed(
     # bubble helper is idempotent (re-applying the same
     # ``child-failed:<job>`` tag is a no-op), so the explicit call
     # doesn't race with anything the JobHandler.tag path may do
-    # later if the operator re-tags by hand.
-    bubble_job_failure(store, orphan.ref_id)
+    # later if the operator re-tags by hand. A cancelled perpetual-loop row
+    # never bubbles: cancellation is not a failure, and the quest-loop
+    # reconciler (not a parent todo) owns its recovery.
+    if not cancel:
+        bubble_job_failure(store, orphan.ref_id)
     # Immediate active reap (gripe 50905) — kill the job's container (by the
     # naming convention its executor/job_type uses), instead of leaving an
     # orphaned OS process/container for a lazy per-boot reconcile.
