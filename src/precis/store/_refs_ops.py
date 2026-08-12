@@ -66,19 +66,6 @@ class RefsMixin:
 
     pool: ConnectionPool
 
-    # Provided by the concrete Store — validates the ``slug vs None``
-    # rule per kind (numeric kinds reject non-None slugs, slug kinds
-    # require a slug). MRO resolves this to the real implementation
-    # at runtime; calling it on a bare ``RefsMixin`` raises.
-    def _validate_slug_for_kind(
-        self,
-        kind: str,
-        slug: str | None,
-        *,
-        conn: Connection | None = None,
-    ) -> None:
-        raise NotImplementedError  # pragma: no cover — overridden by Store
-
     # Provided by ``TagsMixin`` on the concrete Store; declared here so
     # the retraction-cascade path in ``regrade_finding_for_retraction``
     # type-checks against the cross-mixin call. **Must be TYPE_CHECKING
@@ -105,6 +92,17 @@ class RefsMixin:
         # Provided by the concrete Store (store.py); declared here so the
         # merged-handle redirect in ``resolve_handle`` type-checks its emit.
         def emit_hint(self, hint: Hint) -> None: ...
+
+        # Provided by the concrete Store (store.py) — validates the
+        # ``slug vs None`` rule per kind (numeric kinds reject non-None
+        # slugs, slug kinds require a slug).
+        def _validate_slug_for_kind(
+            self,
+            kind: str,
+            slug: str | None,
+            *,
+            conn: Connection | None = None,
+        ) -> None: ...
 
     def insert_ref(
         self,

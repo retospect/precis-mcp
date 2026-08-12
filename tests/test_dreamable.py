@@ -146,7 +146,7 @@ def _put_memory(rt: PrecisRuntime, text: str) -> int:
 
 
 def _embed_card(rt: PrecisRuntime, ref_id: int, text: str) -> int:
-    store = rt.hub.store
+    store = rt.hub.live_store
     assert store is not None
     (cid,) = store.card_chunk_ids([ref_id])
     with store.pool.connection() as conn:
@@ -155,7 +155,7 @@ def _embed_card(rt: PrecisRuntime, ref_id: int, text: str) -> int:
             "VALUES (%s, 'bge-m3', %s, 'ok', 1) "
             "ON CONFLICT (chunk_id, embedder) DO UPDATE "
             "SET vector = EXCLUDED.vector, status = 'ok'",
-            (cid, rt.hub.embedder.embed_one(text)),
+            (cid, rt.hub.embed_one(text)),
         )
     return cid
 
@@ -169,7 +169,7 @@ def test_dreamable_renders_region(runtime_with_store: PrecisRuntime) -> None:
     rt = runtime_with_store
     a = _put_memory(rt, "copper catalyses nitrate reduction")
     cid = _embed_card(rt, a, "copper catalyses nitrate reduction")
-    _set_score(rt.hub.store, cid, 100)
+    _set_score(rt.hub.live_store, cid, 100)
 
     out = rt.dispatch("search", {"view": "dreamable"})
     assert "region member" in out
@@ -178,7 +178,7 @@ def test_dreamable_renders_region(runtime_with_store: PrecisRuntime) -> None:
 
 def test_dreamable_stamps_rotation(runtime_with_store: PrecisRuntime) -> None:
     rt = runtime_with_store
-    store = rt.hub.store
+    store = rt.hub.live_store
     assert store is not None
     a = _put_memory(rt, "copper catalyses nitrate reduction")
     b = _put_memory(rt, "palladium absorbs hydrogen gas")

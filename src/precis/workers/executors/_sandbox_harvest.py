@@ -396,7 +396,7 @@ def project_out(
         # :func:`stage_run_artifact`'s plaintext-reconstruction fallback
         # needs this to restore a runnable filename rather than the
         # rewritten one.
-        hub.store.stamp_ref_meta(ref.id, {"harvest_orig_path": str(rel)})
+        hub.live_store.stamp_ref_meta(ref.id, {"harvest_orig_path": str(rel)})
         ref_ids.append(ref.id)
         messages.append(f"ok    {rel}  -> plaintext:{slug}")
 

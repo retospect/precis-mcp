@@ -52,7 +52,7 @@ def _mint_hub_with_evidence(hub: Hub, i: int) -> int:
     """One claim hub, cited by an originator + a corroborator (so both
     seniority groups + a grounding chunk are exercised), returns its
     ref_id."""
-    store = hub.store
+    store = hub.live_store
     claim = CanonicalClaim(
         sentence=f"Claim sentence number {i} about some reaction.",
         scope={"material": f"material-{i}"},
@@ -85,7 +85,7 @@ def _seed_draft(hub: Hub, n: int, *, name: str) -> tuple[str, list[str]]:
     """A draft with ``n`` paragraphs, each citing a DISTINCT freshly-minted
     claim hub by ``[fi<id>]`` — all within the ±40 full-doc render window
     (focus defaults to the first body chunk). Returns ``(slug, dcs)``."""
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title=f"QC project {name}").id
     ref, _title = store.create_draft(name=name, title="QC draft", project_ref_id=proj)
     dcs: list[str] = []
@@ -172,7 +172,7 @@ def test_render_claims_evidence_matches_singular_calls(hub: Hub) -> None:
     """Batch-vs-singular equivalence: ``render_claims_evidence`` over a
     handful of hubs returns the SAME order/content as calling
     ``render_claim_evidence`` once per head."""
-    store = hub.store
+    store = hub.live_store
     heads = []
     for i in range(3):
         hub_ref_id = _mint_hub_with_evidence(hub, 100 + i)
@@ -189,7 +189,7 @@ def test_render_claims_evidence_skips_non_hub_heads(hub: Hub) -> None:
     """A head that doesn't resolve to a live claim hub is silently dropped
     from the plural result, same as the singular function returning
     ``None`` for it."""
-    store = hub.store
+    store = hub.live_store
     hub_ref_id = _mint_hub_with_evidence(hub, 200)
     real_head = handle_registry.format_handle("finding", hub_ref_id)
     plain_finding = store.insert_ref(kind="finding", slug=None, title="Not a hub").id

@@ -49,7 +49,7 @@ def _chunk_id(dc: str) -> int:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _pc_of(store: Store, *, paper_title: str = "src paper") -> tuple[int, str]:
@@ -74,8 +74,9 @@ def _seed_sectioned_draft(
     """
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_dc = hub.store.reading_order(ref.id)[0].dc
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_dc = hub.live_store.reading_order(ref.id)[0].dc
 
     r = draft.put(
         id="nt", chunk_kind="heading", text="Section A", at={"after": title_dc}
@@ -369,12 +370,14 @@ def test_dispatch_dc_scope_processes_only_that_sections_chunks(
 
 
 def test_dispatch_missing_scope_records_failure(hub: Hub) -> None:
-    ctx = _FakeCtx(store=hub.store, meta={"params": {}})
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {}})
     _spec().dispatch(ctx, _spec())
     assert any("params.scope is required" in f for f in ctx.failures)
 
 
 def test_dispatch_unknown_scope_records_failure(hub: Hub) -> None:
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"scope": "no-such-draft-xyz"}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"scope": "no-such-draft-xyz"}}
+    )
     _spec().dispatch(ctx, _spec())
     assert ctx.failures

@@ -7,6 +7,11 @@ Public surface:
     Ref, Block, Link, Tag, CacheEntry, BlockInsert  — frozen row types
     Density, CacheFreshness, Namespace, Relation, ActorSlug  — type aliases
 
+Typing the seam: functions that need only a sliver of the Store take a
+role protocol from :mod:`precis.store.protocols` (import-light, no
+cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
+``Store | None``; ``Hub.live_store`` narrows it for store-backed paths.
+
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
 """
 

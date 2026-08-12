@@ -171,12 +171,12 @@ def test_kinds_table_codes_match_registry() -> None:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def test_glossary_table_lists_terms(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="g1", title="MOF paper", project=_proj(hub))
-    ref = hub.store.get_ref(kind="draft", id="g1")
+    ref = hub.live_store.get_ref(kind="draft", id="g1")
     assert ref is not None
     draft.put(
         id="g1",
@@ -184,24 +184,24 @@ def test_glossary_table_lists_terms(draft: DraftHandler, hub: Hub) -> None:
         text="metal-organic framework",
         meta={"short": "MOF"},
     )
-    out = glossary_table(hub.store, ref.id)
+    out = glossary_table(hub.live_store, ref.id)
     assert "MOF" in out and "metal-organic framework" in out
     assert "{term\tshort\tlong\thandle}" in out
 
 
 def test_glossary_table_empty_is_blank(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="g2", title="no terms", project=_proj(hub))
-    ref = hub.store.get_ref(kind="draft", id="g2")
+    ref = hub.live_store.get_ref(kind="draft", id="g2")
     assert ref is not None
-    assert glossary_table(hub.store, ref.id) == ""
+    assert glossary_table(hub.live_store, ref.id) == ""
 
 
 def _draft_with_paragraphs(draft: DraftHandler, hub: Hub, slug: str) -> Store:
     """Title + two paragraphs; returns the store for convenience."""
     draft.put(id=slug, title="Doc", project=_proj(hub))
-    ref = hub.store.get_ref(kind="draft", id=slug)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id=slug,
         chunk_kind="paragraph",
@@ -210,7 +210,7 @@ def _draft_with_paragraphs(draft: DraftHandler, hub: Hub, slug: str) -> Store:
     )
     first_h = next(
         c.handle
-        for c in hub.store.reading_order(ref.id)
+        for c in hub.live_store.reading_order(ref.id)
         if c.text.startswith("First para")
     )
     draft.put(
@@ -219,7 +219,7 @@ def _draft_with_paragraphs(draft: DraftHandler, hub: Hub, slug: str) -> Store:
         text="Second neighbour paragraph.",
         at={"after": first_h},
     )
-    return hub.store
+    return hub.live_store
 
 
 def test_doc_context_table_window(draft: DraftHandler, hub: Hub) -> None:
@@ -229,7 +229,7 @@ def test_doc_context_table_window(draft: DraftHandler, hub: Hub) -> None:
     change-request stamps it) but the table renders the canonical
     ``dc<chunk_id>`` form the prompt tells the agent to use."""
     store = _draft_with_paragraphs(draft, hub, "dctx")
-    ref = hub.store.get_ref(kind="draft", id="dctx")
+    ref = hub.live_store.get_ref(kind="draft", id="dctx")
     assert ref is not None
     anchor_chunk = next(
         c for c in store.reading_order(ref.id) if c.text.startswith("First para")
@@ -247,7 +247,7 @@ def test_doc_context_table_window(draft: DraftHandler, hub: Hub) -> None:
 
 
 def test_doc_context_missing_anchor_is_blank(hub: Hub) -> None:
-    assert doc_context_table(hub.store, "dc999999") == ""
+    assert doc_context_table(hub.live_store, "dc999999") == ""
 
 
 # ── planner integration: the new tables ride the real prompt ────────
@@ -256,8 +256,8 @@ def test_doc_context_missing_anchor_is_blank(hub: Hub) -> None:
 def test_planner_system_carries_tools_and_kinds(hub: Hub) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="do a thing")
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
     assert "## Tools" in prompts.system
     assert "## Kinds" in prompts.system
     # tables are cached → system, never the variable user layer
@@ -270,15 +270,15 @@ def test_planner_user_has_doc_context_when_anchored(
     from precis.workers.planner_prompt import build_planner_prompts
 
     store = _draft_with_paragraphs(draft, hub, "dctx2")
-    ref = hub.store.get_ref(kind="draft", id="dctx2")
+    ref = hub.live_store.get_ref(kind="draft", id="dctx2")
     assert ref is not None
     anchor = next(
         c.handle for c in store.reading_order(ref.id) if c.text.startswith("First para")
     )
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="edit the para")
-    hub.store.stamp_ref_meta(todo.id, {"anchor": anchor})
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="edit the para")
+    hub.live_store.stamp_ref_meta(todo.id, {"anchor": anchor})
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
     assert "## doc_context" in prompts.user
     assert anchor in prompts.user
 
@@ -286,8 +286,8 @@ def test_planner_user_has_doc_context_when_anchored(
 def test_planner_user_no_doc_context_without_anchor(hub: Hub) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="plain todo")
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="plain todo")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
     assert "## doc_context" not in prompts.user
 
 
@@ -298,12 +298,12 @@ def _draft_with_section(draft: DraftHandler, hub: Hub, slug: str) -> str:
     """Title + a Methods heading + two paragraphs under it. Returns the
     Methods heading handle (the section root a review-todo anchors to)."""
     draft.put(id=slug, title="Doc", project=_proj(hub))
-    ref = hub.store.get_ref(kind="draft", id=slug)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(id=slug, chunk_kind="heading", text="Methods", at={"after": title_h})
     methods_h = next(
-        c.handle for c in hub.store.reading_order(ref.id) if c.text == "Methods"
+        c.handle for c in hub.live_store.reading_order(ref.id) if c.text == "Methods"
     )
     # nest the paragraphs UNDER the heading (into, not after) so they form
     # the section subtree the reviewer reads
@@ -324,19 +324,23 @@ def _draft_with_section(draft: DraftHandler, hub: Hub, slug: str) -> str:
 
 def test_has_review_predicate(draft: DraftHandler, hub: Hub) -> None:
     methods_h = _draft_with_section(draft, hub, "rev1")
-    review = hub.store.insert_ref(kind="todo", slug=None, title="review the methods")
-    hub.store.stamp_ref_meta(review.id, {"anchor": methods_h, "review": "structural"})
-    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
+    review = hub.live_store.insert_ref(
+        kind="todo", slug=None, title="review the methods"
+    )
+    hub.live_store.stamp_ref_meta(
+        review.id, {"anchor": methods_h, "review": "structural"}
+    )
+    plain = hub.live_store.insert_ref(kind="todo", slug=None, title="plain")
 
-    assert P.has_review(_ctx(hub.store, review.id)) is True
-    assert P.has_review(_ctx(hub.store, plain.id)) is False
+    assert P.has_review(_ctx(hub.live_store, review.id)) is True
+    assert P.has_review(_ctx(hub.live_store, plain.id)) is False
 
 
 def test_section_review_block_lists_subtree_verbatim(
     draft: DraftHandler, hub: Hub
 ) -> None:
     methods_h = _draft_with_section(draft, hub, "rev2")
-    out = section_review_block(hub.store, methods_h)
+    out = section_review_block(hub.live_store, methods_h)
     assert "## Section under review" in out
     # the section's prose is shown verbatim (a reviewer must read it)
     assert "We synthesized the catalyst at 80C." in out
@@ -346,7 +350,7 @@ def test_section_review_block_lists_subtree_verbatim(
 
 
 def test_section_review_block_missing_anchor_blank(hub: Hub) -> None:
-    assert section_review_block(hub.store, "dc999999") == ""
+    assert section_review_block(hub.live_store, "dc999999") == ""
 
 
 def test_planner_review_todo_gets_persona_and_section(
@@ -355,10 +359,12 @@ def test_planner_review_todo_gets_persona_and_section(
     from precis.workers.planner_prompt import build_planner_prompts
 
     methods_h = _draft_with_section(draft, hub, "rev3")
-    review = hub.store.insert_ref(kind="todo", slug=None, title="review methods")
-    hub.store.stamp_ref_meta(review.id, {"anchor": methods_h, "review": "structural"})
+    review = hub.live_store.insert_ref(kind="todo", slug=None, title="review methods")
+    hub.live_store.stamp_ref_meta(
+        review.id, {"anchor": methods_h, "review": "structural"}
+    )
 
-    prompts = build_planner_prompts(hub.store, ref_id=review.id, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=review.id, model="opus")
     # reviewer stance is specialised in the variable (user) layer
     assert "Reviewer mode" in prompts.user
     assert "structural" in prompts.user
@@ -373,8 +379,8 @@ def test_planner_review_todo_gets_persona_and_section(
 def test_planner_plain_todo_has_no_reviewer_blocks(hub: Hub) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="just do it")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
     assert "Reviewer mode" not in prompts.user
     assert "## Section under review" not in prompts.user
 
@@ -385,20 +391,20 @@ def test_planner_plain_todo_has_no_reviewer_blocks(hub: Hub) -> None:
 def test_has_backfill_predicate(draft: DraftHandler, hub: Hub) -> None:
     methods_h = _draft_with_section(draft, hub, "bf1")
     # explicit targets
-    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
-    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
-    assert P.has_backfill(_ctx(hub.store, run.id)) is True
-    assert P._backfill_targets(_ctx(hub.store, run.id)) == [methods_h]
+    run = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.live_store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    assert P.has_backfill(_ctx(hub.live_store, run.id)) is True
+    assert P._backfill_targets(_ctx(hub.live_store, run.id)) == [methods_h]
 
     # bare marker falls back to the anchor
-    run2 = hub.store.insert_ref(kind="todo", slug=None, title="backfill anchored")
-    hub.store.stamp_ref_meta(run2.id, {"backfill": True, "anchor": methods_h})
-    assert P.has_backfill(_ctx(hub.store, run2.id)) is True
-    assert P._backfill_targets(_ctx(hub.store, run2.id)) == [methods_h]
+    run2 = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill anchored")
+    hub.live_store.stamp_ref_meta(run2.id, {"backfill": True, "anchor": methods_h})
+    assert P.has_backfill(_ctx(hub.live_store, run2.id)) is True
+    assert P._backfill_targets(_ctx(hub.live_store, run2.id)) == [methods_h]
 
     # plain todo is not a backfill run
-    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
-    assert P.has_backfill(_ctx(hub.store, plain.id)) is False
+    plain = hub.live_store.insert_ref(kind="todo", slug=None, title="plain")
+    assert P.has_backfill(_ctx(hub.live_store, plain.id)) is False
 
 
 def test_planner_backfill_todo_gets_workspace_and_instructions(
@@ -407,10 +413,10 @@ def test_planner_backfill_todo_gets_workspace_and_instructions(
     from precis.workers.planner_prompt import build_planner_prompts
 
     methods_h = _draft_with_section(draft, hub, "bf2")
-    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
-    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    run = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.live_store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
 
-    prompts = build_planner_prompts(hub.store, ref_id=run.id, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=run.id, model="opus")
     # the backfill task framing + the three actions
     assert "Source backfill — weave the sources you missed" in prompts.user
     assert "DISMISSED_SOURCE" in prompts.user  # the dismiss command
@@ -428,8 +434,8 @@ def test_planner_backfill_todo_gets_workspace_and_instructions(
 def test_planner_plain_todo_has_no_backfill_block(hub: Hub) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="just do it")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
     assert "Source backfill — weave" not in prompts.user
 
 
@@ -442,23 +448,23 @@ def test_backfill_phase_helper(draft: DraftHandler, hub: Hub) -> None:
     )
 
     methods_h = _draft_with_section(draft, hub, "bfp")
-    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
-    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    run = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.live_store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
     # default (no phase tag) → find
-    assert _backfill_phase(hub.store, run.id) == PHASE_FIND
+    assert _backfill_phase(hub.live_store, run.id) == PHASE_FIND
     # tagging BACKFILL_PHASE:review advances the run
-    hub.store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
-    assert _backfill_phase(hub.store, run.id) == PHASE_REVIEW
+    hub.live_store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
+    assert _backfill_phase(hub.live_store, run.id) == PHASE_REVIEW
 
     # a near-miss value (case / "reviewing") still enters review — a trivial typo
     # must not silently drop the run back to find and re-do the whole weave.
-    run2 = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods 2")
-    hub.store.add_tag(run2.id, Tag.closed("BACKFILL_PHASE", "Reviewing"))
-    assert _backfill_phase(hub.store, run2.id) == PHASE_REVIEW
+    run2 = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill methods 2")
+    hub.live_store.add_tag(run2.id, Tag.closed("BACKFILL_PHASE", "Reviewing"))
+    assert _backfill_phase(hub.live_store, run2.id) == PHASE_REVIEW
     # an unrelated value degrades to the safe, work-producing find phase
-    run3 = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods 3")
-    hub.store.add_tag(run3.id, Tag.closed("BACKFILL_PHASE", "whatever"))
-    assert _backfill_phase(hub.store, run3.id) == PHASE_FIND
+    run3 = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill methods 3")
+    hub.live_store.add_tag(run3.id, Tag.closed("BACKFILL_PHASE", "whatever"))
+    assert _backfill_phase(hub.live_store, run3.id) == PHASE_FIND
 
 
 def test_planner_backfill_review_phase_instructions(
@@ -468,11 +474,11 @@ def test_planner_backfill_review_phase_instructions(
     from precis.workers.planner_prompt import build_planner_prompts
 
     methods_h = _draft_with_section(draft, hub, "bfr")
-    run = hub.store.insert_ref(kind="todo", slug=None, title="backfill methods")
-    hub.store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
-    hub.store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
+    run = hub.live_store.insert_ref(kind="todo", slug=None, title="backfill methods")
+    hub.live_store.stamp_ref_meta(run.id, {"backfill": {"targets": [methods_h]}})
+    hub.live_store.add_tag(run.id, Tag.closed("BACKFILL_PHASE", "review"))
 
-    prompts = build_planner_prompts(hub.store, ref_id=run.id, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=run.id, model="opus")
     # the review-phase framing replaces the weave framing
     assert "Source backfill — REVIEW what you wove" in prompts.user
     assert "Source backfill — weave the sources you missed" not in prompts.user
@@ -493,20 +499,20 @@ def test_is_patent_predicate(hub: Hub) -> None:
     ws = Workspace(
         path="projects/pat", format="tex", entrypoint="main.tex", doc_type="patent"
     )
-    run = hub.store.insert_ref(kind="todo", slug=None, title="patent tick")
-    hub.store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
-    assert P.is_patent(_ctx(hub.store, run.id)) is True
+    run = hub.live_store.insert_ref(kind="todo", slug=None, title="patent tick")
+    hub.live_store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
+    assert P.is_patent(_ctx(hub.live_store, run.id)) is True
 
     # A non-patent genre and a plain todo are both False.
     ws2 = Workspace(
         path="projects/pap", format="tex", entrypoint="main.tex", doc_type="paper"
     )
-    run2 = hub.store.insert_ref(kind="todo", slug=None, title="paper tick")
-    hub.store.stamp_ref_meta(run2.id, {"workspace": ws2.to_meta()})
-    assert P.is_patent(_ctx(hub.store, run2.id)) is False
+    run2 = hub.live_store.insert_ref(kind="todo", slug=None, title="paper tick")
+    hub.live_store.stamp_ref_meta(run2.id, {"workspace": ws2.to_meta()})
+    assert P.is_patent(_ctx(hub.live_store, run2.id)) is False
 
-    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
-    assert P.is_patent(_ctx(hub.store, plain.id)) is False
+    plain = hub.live_store.insert_ref(kind="todo", slug=None, title="plain")
+    assert P.is_patent(_ctx(hub.live_store, plain.id)) is False
 
 
 def test_patent_authoring_block_gated_and_content(hub: Hub) -> None:
@@ -516,9 +522,9 @@ def test_patent_authoring_block_gated_and_content(hub: Hub) -> None:
     ws = Workspace(
         path="projects/pat", format="tex", entrypoint="main.tex", doc_type="patent"
     )
-    run = hub.store.insert_ref(kind="todo", slug=None, title="patent tick")
-    hub.store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
-    block = _m_patent(_ctx(hub.store, run.id))
+    run = hub.live_store.insert_ref(kind="todo", slug=None, title="patent tick")
+    hub.live_store.stamp_ref_meta(run.id, {"workspace": ws.to_meta()})
+    block = _m_patent(_ctx(hub.live_store, run.id))
     assert "Patent authoring" in block
     assert "source='remote'" in block  # prior-art sweep
     assert "[pk…]" in block  # patent handle, not [pc…]
@@ -530,7 +536,7 @@ def test_has_plan_and_plan_ledger_block(hub: Hub) -> None:
     from precis.handlers.plan import PlanHandler
     from precis.workers.planner_prompt import _m_plan
 
-    proj = hub.store.insert_ref(kind="todo", slug=None, title="Patent project")
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Patent project")
     plan = PlanHandler(hub=hub)
     plan.put(id="frypat-scoping", title="Scoping", project=proj.id)
     plan.put(
@@ -539,15 +545,15 @@ def test_has_plan_and_plan_ledger_block(hub: Hub) -> None:
         at={"last": True},
         status="done",
     )
-    ctx = _ctx(hub.store, proj.id)
+    ctx = _ctx(hub.live_store, proj.id)
     assert P.has_plan(ctx) is True
     block = _m_plan(ctx)
     assert "decision ledger" in block.lower()
     assert "mesh geometry" in block  # the recorded decision is surfaced
 
     # A project with no plan → predicate false, block empty.
-    plain = hub.store.insert_ref(kind="todo", slug=None, title="plain")
-    ctx2 = _ctx(hub.store, plain.id)
+    plain = hub.live_store.insert_ref(kind="todo", slug=None, title="plain")
+    ctx2 = _ctx(hub.live_store, plain.id)
     assert P.has_plan(ctx2) is False
     assert _m_plan(ctx2) == ""
 
@@ -574,14 +580,16 @@ def _project_with_draft(draft: DraftHandler, hub: Hub, slug: str) -> tuple[int, 
     """A fresh project + a one-heading draft bound to it (``draft-of``
     link), the heading's paragraph carrying :data:`_SECTION_TEXT`.
     Returns ``(project_ref_id, draft_ref_id)``."""
-    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id=slug, title="Doc", project=proj)
-    ref = hub.store.get_ref(kind="draft", id=slug)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(id=slug, chunk_kind="heading", text="Calibration", at={"after": title_h})
     intro_h = next(
-        c.handle for c in hub.store.reading_order(ref.id) if c.text == "Calibration"
+        c.handle
+        for c in hub.live_store.reading_order(ref.id)
+        if c.text == "Calibration"
     )
     draft.put(
         id=slug,
@@ -598,13 +606,13 @@ def _paper_with_matching_chunk(hub: Hub, *, slug: str) -> tuple[int, str]:
     chunk_text)``."""
     from precis.store.types import BlockInsert
 
-    paper = hub.store.insert_ref(kind="paper", slug=slug, title="Cartridge Paper")
-    hub.store.insert_blocks(paper.id, [BlockInsert(pos=0, text=_PAPER_CHUNK_TEXT)])
+    paper = hub.live_store.insert_ref(kind="paper", slug=slug, title="Cartridge Paper")
+    hub.live_store.insert_blocks(paper.id, [BlockInsert(pos=0, text=_PAPER_CHUNK_TEXT)])
     return paper.id, _PAPER_CHUNK_TEXT
 
 
 def _bound_todo(hub: Hub, project_ref_id: int, title: str = "tick") -> int:
-    return hub.store.insert_ref(
+    return hub.live_store.insert_ref(
         kind="todo", slug=None, title=title, parent_id=project_ref_id
     ).id
 
@@ -619,7 +627,7 @@ def test_planner_sources_block_uncited_draft(draft: DraftHandler, hub: Hub) -> N
     _paper_with_matching_chunk(hub, slug="src1-paper")
     todo = _bound_todo(hub, proj)
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo, model="opus")
     user = prompts.user
     assert "## Source material" in user
     assert "### Candidate corpus sources" in user
@@ -636,10 +644,12 @@ def test_planner_sources_block_cited_draft(draft: DraftHandler, hub: Hub) -> Non
     from precis.workers.planner_prompt import build_planner_prompts
 
     proj, draft_ref_id = _project_with_draft(draft, hub, "src2")
-    cited = hub.store.insert_ref(kind="paper", slug="src2-cited", title="Cited Paper")
+    cited = hub.live_store.insert_ref(
+        kind="paper", slug="src2-cited", title="Cited Paper"
+    )
     intro_h = next(
         c.handle
-        for c in hub.store.reading_order(draft_ref_id)
+        for c in hub.live_store.reading_order(draft_ref_id)
         if c.text == "Calibration"
     )
     draft.put(
@@ -650,7 +660,7 @@ def test_planner_sources_block_cited_draft(draft: DraftHandler, hub: Hub) -> Non
     )
     todo = _bound_todo(hub, proj)
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo, model="opus")
     assert re.search(r"✓ pa\d+", prompts.user), prompts.user
 
 
@@ -664,13 +674,13 @@ def test_planner_sources_block_absent_when_anchored(
     proj, draft_ref_id = _project_with_draft(draft, hub, "src3")
     intro_h = next(
         c.handle
-        for c in hub.store.reading_order(draft_ref_id)
+        for c in hub.live_store.reading_order(draft_ref_id)
         if c.text == "Calibration"
     )
     todo = _bound_todo(hub, proj)
-    hub.store.stamp_ref_meta(todo, {"anchor": intro_h})
+    hub.live_store.stamp_ref_meta(todo, {"anchor": intro_h})
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo, model="opus")
     assert "## Source material" not in prompts.user
 
 
@@ -681,17 +691,17 @@ def test_planner_sources_block_absent_for_review_todo(
 
     proj, _draft_ref_id = _project_with_draft(draft, hub, "src4")
     todo = _bound_todo(hub, proj, title="review it")
-    hub.store.stamp_ref_meta(todo, {"review": "cites"})
+    hub.live_store.stamp_ref_meta(todo, {"review": "cites"})
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo, model="opus")
     assert "## Source material" not in prompts.user
 
 
 def test_planner_sources_block_absent_without_bound_draft(hub: Hub) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="just do it")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
     assert "## Source material" not in prompts.user
 
 
@@ -710,13 +720,15 @@ def test_planner_sources_block_outline_mode_over_cap(
         build_planner_prompts,
     )
 
-    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="src5", title="Doc", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="src5")
+    ref = hub.live_store.get_ref(kind="draft", id="src5")
     assert ref is not None
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(id="src5", chunk_kind="heading", text="Body", at={"after": title_h})
-    body_h = next(c.handle for c in hub.store.reading_order(ref.id) if c.text == "Body")
+    body_h = next(
+        c.handle for c in hub.live_store.reading_order(ref.id) if c.text == "Body"
+    )
     big_text = ("filler word " * 700) + _LONG_DRAFT_MARKER
     assert len(big_text) > _SOURCES_DRAFT_INLINE_CAP
     draft.put(
@@ -727,7 +739,7 @@ def test_planner_sources_block_outline_mode_over_cap(
     )
     todo = _bound_todo(hub, proj)
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo, model="opus")
     assert "## Source material" in prompts.user
     assert "sections: [" in prompts.user
     assert _LONG_DRAFT_MARKER not in prompts.user
@@ -743,7 +755,7 @@ def test_planner_sources_block_inline_mode_under_cap(
     proj, _draft_ref_id = _project_with_draft(draft, hub, "src6")
     todo = _bound_todo(hub, proj)
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo, model="opus")
     assert "## Source material" in prompts.user
     assert "#### dc" in prompts.user
     assert _SECTION_TEXT in prompts.user

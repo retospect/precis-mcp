@@ -26,19 +26,8 @@ fallback.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
-
 from precis.errors import BadInput
-
-if TYPE_CHECKING:
-    pass
-
-
-class _StoreProto(Protocol):
-    """Subset of ``Store`` used by the lift — narrowed for testability."""
-
-    def find_first_meta_for_open_tag(self, *, kind: str, tag: str) -> dict | None: ...
-
+from precis.store.protocols import OpenTagMetaStore
 
 # ---------------------------------------------------------------------------
 # Lookup tables
@@ -75,7 +64,7 @@ def build_cql(
     *,
     q: str | None,
     tags: list[str] | None,
-    store: _StoreProto | None = None,
+    store: OpenTagMetaStore | None = None,
 ) -> str:
     """Assemble one CQL string for the OPS remote leg.
 
@@ -132,7 +121,7 @@ def _promote_or_passthrough(q: str) -> str:
     return f'(ti="{safe}" OR ab="{safe}")'
 
 
-def _lift_tag(tag: str, *, store: _StoreProto | None) -> str | None:
+def _lift_tag(tag: str, *, store: OpenTagMetaStore | None) -> str | None:
     """One stored tag → one CQL clause, or None if the prefix is open.
 
     Returns None for tags whose prefix isn't in ``_TAG_TO_CQL`` —
@@ -171,7 +160,7 @@ def _classification_canonical(slug: str) -> str:
     return slug.upper()
 
 
-def _resolve_applicant(slug: str, *, store: _StoreProto | None) -> str:
+def _resolve_applicant(slug: str, *, store: OpenTagMetaStore | None) -> str:
     """Slugged applicant tag → canonical OPS phrase.
 
     Title-cased ``hyphen→space`` of the slug. OPS phrase matching is

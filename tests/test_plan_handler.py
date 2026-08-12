@@ -33,7 +33,7 @@ def plan(hub: Hub) -> PlanHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 # ── handle codes ─────────────────────────────────────────────────────
@@ -206,8 +206,9 @@ def test_edit_and_move_node(plan: PlanHandler, hub: Hub) -> None:
     assert "first (revised)" in plan.get(id=a).body
     # move b before a
     plan.edit(id=b, move={"before": a})
-    ref = hub.store.get_ref(kind="plan", id="p1")
-    order = [c.dc for c in hub.store.reading_order(ref.id, kind="plan")]
+    ref = hub.live_store.get_ref(kind="plan", id="p1")
+    assert ref is not None
+    order = [c.dc for c in hub.live_store.reading_order(ref.id, kind="plan")]
     assert order.index(b) < order.index(a)
 
 
@@ -219,6 +220,6 @@ def test_export_refuses_plan(plan: PlanHandler, hub: Hub, tmp_path: Path) -> Non
 
     proj = _proj(hub)
     plan.put(id="p1", title="P", project=proj)
-    ref = hub.store.get_ref(kind="plan", id="p1")
+    ref = hub.live_store.get_ref(kind="plan", id="p1")
     with pytest.raises(BadInput, match="not an exportable deliverable"):
-        export_draft(hub.store, ref, target_dir=tmp_path)
+        export_draft(hub.live_store, ref, target_dir=tmp_path)

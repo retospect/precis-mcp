@@ -20,11 +20,11 @@ _PNG = b"\x89PNG\r\n\x1a\n" + b"stub"
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="P").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="P").id
 
 
 def _ord(hub: Hub, chunk_id: int) -> int:
-    with hub.store.pool.connection() as conn:
+    with hub.live_store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ord FROM chunks WHERE chunk_id = %s", (chunk_id,)
         ).fetchone()
@@ -37,15 +37,18 @@ def seeded(hub: Hub) -> tuple[Hub, int, object, object]:
     """A draft with one data (table) chunk and one figure chunk."""
     d = DraftHandler(hub=hub)
     d.put(id="g", title="T", project=_proj(hub))
-    ref = hub.store.get_ref(kind="draft", id="g")
+    ref = hub.live_store.get_ref(kind="draft", id="g")
+    assert ref is not None
     d.put(
         id="g",
         chunk_kind="table",
         table={"header": ["x", "y"], "rows": [[1, 2], [3, 4]]},
         at={"last": True},
     )
-    data_c = next(c for c in hub.store.reading_order(ref.id) if c.chunk_kind == "table")
-    fig = hub.store.add_figure(
+    data_c = next(
+        c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "table"
+    )
+    fig = hub.live_store.add_figure(
         ref_id=ref.id,
         caption="Fig 1.",
         origin="own_graph",
@@ -59,7 +62,7 @@ def seeded(hub: Hub) -> tuple[Hub, int, object, object]:
 def test_plots_relation_links_figure_to_data(seeded: tuple) -> None:
     hub, ref_id, data_c, fig = seeded
     # figure --plots--> data, chunk→chunk within the one draft ref
-    link = hub.store.add_link(
+    link = hub.live_store.add_link(
         src_ref_id=ref_id,
         src_pos=_ord(hub, fig.chunk_id),
         dst_ref_id=ref_id,
@@ -71,7 +74,7 @@ def test_plots_relation_links_figure_to_data(seeded: tuple) -> None:
     assert link.src_pos == _ord(hub, fig.chunk_id)
     assert link.dst_pos == _ord(hub, data_c.chunk_id)
     # the edge is discoverable on the draft (the stale-walk reads it back)
-    found = hub.store.links_for(ref_id, relation="plots", direction="out")
+    found = hub.live_store.links_for(ref_id, relation="plots", direction="out")
     assert any(ln.relation == "plots" for ln in found)
 
 
@@ -79,10 +82,10 @@ def test_upsert_chunk_blob_replaces_deferred_image(seeded: tuple) -> None:
     hub, _ref_id, _data_c, fig = seeded
     # add_figure seeded the stub; a render overwrites it in place
     new = b"\x89PNG\r\n\x1a\n" + b"rendered"
-    hub.store.upsert_chunk_blob(fig.chunk_id, new, "image/png")
-    got = hub.store.get_chunk_blob(fig.handle)
+    hub.live_store.upsert_chunk_blob(fig.chunk_id, new, "image/png")
+    got = hub.live_store.get_chunk_blob(fig.handle)
     assert got == (new, "image/png")
     # a second render replaces again (not a second row)
     newer = b"\x89PNG\r\n\x1a\n" + b"rerendered"
-    hub.store.upsert_chunk_blob(fig.chunk_id, newer, "image/png")
-    assert hub.store.get_chunk_blob(fig.handle) == (newer, "image/png")
+    hub.live_store.upsert_chunk_blob(fig.chunk_id, newer, "image/png")
+    assert hub.live_store.get_chunk_blob(fig.handle) == (newer, "image/png")

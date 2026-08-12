@@ -27,12 +27,25 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _order(hub: Hub, slug: str) -> list:
-    ref = hub.store.get_ref(kind="draft", id=slug)
-    return hub.store.reading_order(ref.id)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    return hub.live_store.reading_order(ref.id)
+
+
+def _chunk_text(hub: Hub, handle: str) -> str | None:
+    ch = hub.live_store.get_draft_chunk(handle)
+    assert ch is not None
+    return ch.text
+
+
+def _chunk_meta(hub: Hub, handle: str) -> dict[str, Any]:
+    ch = hub.live_store.get_draft_chunk(handle)
+    assert ch is not None
+    return ch.meta
 
 
 def test_create_requires_project_then_outlines(draft: DraftHandler, hub: Hub) -> None:
@@ -77,21 +90,21 @@ def test_dry_run_previews_text_edit_without_writing(
     )
     assert "[dry-run]" in r.body
     assert "original paragraph" in r.body and "rewritten paragraph" in r.body
-    assert hub.store.get_draft_chunk(para_h).text == "The original paragraph text."
+    assert _chunk_text(hub, para_h) == "The original paragraph text."
 
     # find-replace, dry-run → preview, no write
     r2 = draft.edit(id=f"¶{para_h}", find="original", text="pristine", dry_run=True)
     assert "[dry-run]" in r2.body
-    assert hub.store.get_draft_chunk(para_h).text == "The original paragraph text."
+    assert _chunk_text(hub, para_h) == "The original paragraph text."
 
     # dry_run='full' shows the whole post-edit text
     r3 = draft.edit(id=f"¶{para_h}", text="Brand new body.", dry_run="full")
     assert "Brand new body." in r3.body
-    assert hub.store.get_draft_chunk(para_h).text == "The original paragraph text."
+    assert _chunk_text(hub, para_h) == "The original paragraph text."
 
     # Applying for real (no dry_run) still writes.
     draft.edit(id=f"¶{para_h}", text="Committed text.")
-    assert hub.store.get_draft_chunk(para_h).text == "Committed text."
+    assert _chunk_text(hub, para_h) == "Committed text."
 
 
 def test_edit_review_verdict_retract_deletes_ledger_row(
@@ -113,13 +126,13 @@ def test_edit_review_verdict_retract_deletes_ledger_row(
     para = _order(hub, "nt")[1]
 
     draft.edit(id=f"¶{para.handle}", review="human", verdict="approved")
-    assert [r["checker"] for r in hub.store.review_status_for_chunk(para.chunk_id)] == [
-        "human"
-    ]
+    assert [
+        r["checker"] for r in hub.live_store.review_status_for_chunk(para.chunk_id)
+    ] == ["human"]
 
     r = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")
     assert "retracted human review" in r.body
-    assert hub.store.review_status_for_chunk(para.chunk_id) == []
+    assert hub.live_store.review_status_for_chunk(para.chunk_id) == []
 
     # Retracting again (nothing left to retract) is a clean no-op, not an error.
     r2 = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")
@@ -147,7 +160,7 @@ def test_put_claim_chunk_kind_inserts_without_fk_violation(
     )
     assert "added 1 chunk" in r1.body
     dc1 = _dc(r1.body)
-    chunk1 = hub.store.get_draft_chunk(dc1)
+    chunk1 = hub.live_store.get_draft_chunk(dc1)
     assert chunk1 is not None
     assert chunk1.chunk_kind == "claim"
 
@@ -202,7 +215,9 @@ def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
 
     # edit its text in place
     draft.edit(id=f"¶{intro_h}", text="Intro v2")
-    assert hub.store.get_draft_chunk(intro_h).text == "Intro v2"
+    intro_chunk = hub.live_store.get_draft_chunk(intro_h)
+    assert intro_chunk is not None
+    assert intro_chunk.text == "Intro v2"
 
     # move it before the title
     draft.edit(id=f"¶{intro_h}", move={"before": "¶" + title_h})
@@ -255,8 +270,9 @@ def test_add_empty_block_inserts_paragraph_after_anchor(
         id="nt", chunk_kind="paragraph", text="First.", at={"after": "¶" + title_h}
     )
     para_h = _order(hub, "nt")[1].handle
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    chunks = hub.store.add_chunks(
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    chunks = hub.live_store.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text="", at={"after": "¶" + para_h}
     )
     assert len(chunks) == 1 and chunks[0].text == ""
@@ -277,19 +293,22 @@ def test_split_keeps_handle_and_inserts_tail_after(
         id="nt", chunk_kind="paragraph", text="Hello world", at={"after": "¶" + title_h}
     )
     para_h = _order(hub, "nt")[1].handle
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    hub.store.edit_text(para_h, "Hello ")
-    new = hub.store.add_chunks(
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    hub.live_store.edit_text(para_h, "Hello ")
+    new = hub.live_store.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="world",
         at={"after": "¶" + para_h},
         split=False,
     )[0]
-    assert (
-        hub.store.get_draft_chunk(para_h).text == "Hello "
-    )  # first keeps handle + before
-    assert hub.store.get_draft_chunk(new.handle).text == "world"
+    para_chunk = hub.live_store.get_draft_chunk(para_h)
+    assert para_chunk is not None
+    assert para_chunk.text == "Hello "  # first keeps handle + before
+    new_chunk = hub.live_store.get_draft_chunk(new.handle)
+    assert new_chunk is not None
+    assert new_chunk.text == "world"
     handles = [c.handle for c in _order(hub, "nt")]
     assert handles.index(new.handle) == handles.index(para_h) + 1
 
@@ -305,17 +324,22 @@ def test_merge_prev_joins_text_and_deletes_block(draft: DraftHandler, hub: Hub) 
         id="nt", chunk_kind="paragraph", text="Hello", at={"after": "¶" + title_h}
     )
     p1 = _order(hub, "nt")[1].handle
-    hub.store.edit_text(p1, "Hello ")  # the editor saves verbatim (put would strip)
+    hub.live_store.edit_text(
+        p1, "Hello "
+    )  # the editor saves verbatim (put would strip)
     draft.put(id="nt", chunk_kind="paragraph", text="world", at={"after": "¶" + p1})
     p2 = _order(hub, "nt")[2].handle
 
-    prev = hub.store.get_draft_chunk(p1)
+    prev = hub.live_store.get_draft_chunk(p1)
+    assert prev is not None
     caret = len(prev.text or "")
-    hub.store.retire_chunk(p2)
-    hub.store.edit_text(p1, (prev.text or "") + "world")
+    hub.live_store.retire_chunk(p2)
+    hub.live_store.edit_text(p1, (prev.text or "") + "world")
 
     assert caret == 6
-    assert hub.store.get_draft_chunk(p1).text == "Hello world"
+    merged = hub.live_store.get_draft_chunk(p1)
+    assert merged is not None
+    assert merged.text == "Hello world"
     assert p2 not in [c.handle for c in _order(hub, "nt")]
 
 
@@ -351,7 +375,7 @@ def test_outline_prefers_summary_then_keywords_then_text(
     by_text = {c.text: c for c in order}
     summ = by_text["Para with summary."]
     kw = by_text["Para with keywords."]
-    with hub.store.pool.connection() as conn:
+    with hub.live_store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO chunk_summaries (chunk_id, summarizer, text) "
             "VALUES (%s, 'llm-v1', %s)",
@@ -429,7 +453,7 @@ def test_numeric_paper_ref_hints_chunk_handle_form(
     toward the canonical inline chunk handle `[pc<id>]`; a bare handle
     citation does not trigger the hint."""
     proj = _proj(hub)
-    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    paper = hub.live_store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
     th = _order(hub, "nt")[0].handle
 
@@ -455,7 +479,7 @@ def test_whole_paper_citation_hints_toward_chunk(draft: DraftHandler, hub: Hub) 
     """A bare whole-paper handle `[pa<id>]` (no chunk) is tolerated but
     nudged toward `[pc<id>]`; a chunk-level citation trips nothing."""
     proj = _proj(hub)
-    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    paper = hub.live_store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
     th = _order(hub, "nt")[0].handle
 
@@ -484,7 +508,7 @@ def test_whole_paper_citation_hint_scoped_to_new_write(
     """Editing a chunk that already carried a `[pa<id>]` citation doesn't
     re-nag about it — only a *newly introduced* whole-paper cite fires."""
     proj = _proj(hub)
-    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    paper = hub.live_store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
     th = _order(hub, "nt")[0].handle
     draft.put(
@@ -647,16 +671,16 @@ def test_edit_base_sha_blocks_stale_overwrite(draft: DraftHandler, hub: Hub) -> 
     stale = content_sha("original")
     # correct base_sha → succeeds, chunk now says v2
     draft.edit(id=para_h, text="v2", base_sha=stale)
-    assert hub.store.get_draft_chunk(para_h).text == "v2"
+    assert _chunk_text(hub, para_h) == "v2"
 
     # the same (now stale) base_sha → rejected, text unchanged
     with pytest.raises(BadInput, match="changed since you read it"):
         draft.edit(id=para_h, text="v3", base_sha=stale)
-    assert hub.store.get_draft_chunk(para_h).text == "v2"
+    assert _chunk_text(hub, para_h) == "v2"
 
     # no base_sha → force overwrite still works
     draft.edit(id=para_h, text="v4")
-    assert hub.store.get_draft_chunk(para_h).text == "v4"
+    assert _chunk_text(hub, para_h) == "v4"
 
 
 def test_chunk_read_surfaces_sha(draft: DraftHandler, hub: Hub) -> None:
@@ -684,7 +708,9 @@ def test_retired_chunk_read_discloses_retired_state(
         id="nt", chunk_kind="paragraph", text="centering payload", at={"last": True}
     )
     para_h = _dc(para.body)
-    hub.store.retire_chunk(hub.store.get_draft_chunk(para_h).handle)
+    para_chunk = hub.live_store.get_draft_chunk(para_h)
+    assert para_chunk is not None
+    hub.live_store.retire_chunk(para_chunk.handle)
 
     out = draft.get(id=para_h).body
     assert "⚠ RETIRED" in out
@@ -716,11 +742,11 @@ def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:
 
     short = content_sha("original")[:12]
     draft.edit(id=para_h, text="v2", base_sha=short)  # prefix → succeeds
-    assert hub.store.get_draft_chunk(para_h).text == "v2"
+    assert _chunk_text(hub, para_h) == "v2"
 
     full = content_sha("v2")  # full digest is also a valid prefix
     draft.edit(id=para_h, text="v3", base_sha=full)
-    assert hub.store.get_draft_chunk(para_h).text == "v3"
+    assert _chunk_text(hub, para_h) == "v3"
 
 
 def test_edit_rejects_too_short_sha(draft: DraftHandler, hub: Hub) -> None:
@@ -807,7 +833,8 @@ def test_defined_abbrevs_collects_terms_and_inline(
     `Long Form (ABBR)` first-uses; an explicit term wins on a clash."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
     title_h = _order(hub, "nt")[0].handle
 
     # inline definition in prose → picked up by Schwartz-Hearst
@@ -825,7 +852,7 @@ def test_defined_abbrevs_collects_terms_and_inline(
         meta={"short": "MOF"},
     )
 
-    abb = hub.store.defined_abbrevs(ref.id)
+    abb = hub.live_store.defined_abbrevs(ref.id)
     assert abb["PEI"] == "polyethyleneimine"
     assert abb["MOF"] == "metal-organic framework"
 
@@ -842,11 +869,11 @@ def test_requests_by_handle_runs_against_real_pg(draft: DraftHandler, hub: Hub) 
     draft.put(id="nt", title="T", project=proj)
     para_h = _order(hub, "nt")[0].handle
     # an anchored change-request todo, tagged asking-the-user
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="tighten")
-    hub.store.stamp_ref_meta(todo.id, {"anchor": f"¶{para_h}"})
-    hub.store.add_tag(todo.id, Tag.open("ask-user:which-para"))
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="tighten")
+    hub.live_store.stamp_ref_meta(todo.id, {"anchor": f"¶{para_h}"})
+    hub.live_store.add_tag(todo.id, Tag.open("ask-user:which-para"))
 
-    out = _requests_by_handle(hub.store, [para_h])  # must not raise
+    out = _requests_by_handle(hub.live_store, [para_h])  # must not raise
     reqs = out.get(para_h, [])
     assert any(r["asking"] == "which-para" for r in reqs)
 
@@ -859,7 +886,7 @@ def test_resolve_ask_question_resolves_see_chunk_overflow(hub: Hub) -> None:
     through unchanged."""
     from precis.store.types import BlockInsert
 
-    store = hub.store
+    store = hub.live_store
     todo = store.insert_ref(kind="todo", slug=None, title="fix bolding")
     q = (
         "Which did you mean? (A) fold the ~100 label-headings back inline "
@@ -891,7 +918,7 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
     from precis.store.types import BlockInsert, Tag
     from precis_web.routes.drafts import _requests_by_handle
 
-    store = hub.store
+    store = hub.live_store
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     para_h = _order(hub, "nt")[0].handle
@@ -957,7 +984,7 @@ def test_requests_by_handle_fail_reason_falls_back_to_job_event(
     from precis.store.types import BlockInsert, Tag
     from precis_web.routes.drafts import _requests_by_handle
 
-    store = hub.store
+    store = hub.live_store
     proj = _proj(hub)
     draft.put(id="nt2", title="T", project=proj)
     para_h = _order(hub, "nt2")[0].handle
@@ -1004,16 +1031,17 @@ def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None
         id="nt", chunk_kind="paragraph", text="A claim.", at={"after": f"¶{title_h}"}
     )
     para = next(c for c in _order(hub, "nt") if c.text == "A claim.")
-    dref = hub.store.get_ref(kind="draft", id="nt")
-    mem = hub.store.insert_ref(kind="memory", slug=None, title="A dreamt idea")
-    with hub.store.pool.connection() as conn:
+    dref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert dref is not None
+    mem = hub.live_store.insert_ref(kind="memory", slug=None, title="A dreamt idea")
+    with hub.live_store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, relation, set_by) "
             "VALUES (%s, %s, %s, 'derived-from', 'agent')",
             (dref.id, para.chunk_id, mem.id),
         )
 
-    conns = hub.store.chunk_connections(dref.id, [para.handle])
+    conns = hub.live_store.chunk_connections(dref.id, [para.handle])
     assert conns[para.handle][0]["kind"] == "memory"
     assert conns[para.handle][0]["title"] == "A dreamt idea"
     assert conns[para.handle][0]["relation"] == "derived-from"
@@ -1021,7 +1049,7 @@ def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None
 
     # edit the chunk → an 'edited' event is logged
     draft.edit(id=f"¶{para.handle}", text="A revised claim.")
-    stats = hub.store.chunk_edit_stats(dref.id, [para.handle])
+    stats = hub.live_store.chunk_edit_stats(dref.id, [para.handle])
     assert stats[para.handle]["edits"] >= 1
 
 
@@ -1041,13 +1069,13 @@ def test_anchored_todos_groups_by_handle_and_keeps_done(
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     para_h = _order(hub, "nt")[0].handle
-    open_todo = hub.store.insert_ref(kind="todo", slug=None, title="tighten this")
-    hub.store.stamp_ref_meta(open_todo.id, {"anchor": f"¶{para_h}"})
-    done_todo = hub.store.insert_ref(kind="todo", slug=None, title="already fixed")
-    hub.store.stamp_ref_meta(done_todo.id, {"anchor": para_h})  # bare form too
-    hub.store.add_tag(done_todo.id, Tag.closed("STATUS", "done"))
+    open_todo = hub.live_store.insert_ref(kind="todo", slug=None, title="tighten this")
+    hub.live_store.stamp_ref_meta(open_todo.id, {"anchor": f"¶{para_h}"})
+    done_todo = hub.live_store.insert_ref(kind="todo", slug=None, title="already fixed")
+    hub.live_store.stamp_ref_meta(done_todo.id, {"anchor": para_h})  # bare form too
+    hub.live_store.add_tag(done_todo.id, Tag.closed("STATUS", "done"))
 
-    out = hub.store.anchored_todos([para_h])
+    out = hub.live_store.anchored_todos([para_h])
     reqs = out.get(para_h, [])
     assert {r["ref_id"] for r in reqs} == {open_todo.id, done_todo.id}
     done = next(r for r in reqs if r["ref_id"] == done_todo.id)
@@ -1055,7 +1083,7 @@ def test_anchored_todos_groups_by_handle_and_keeps_done(
     # active-first ordering (_REQUEST_ORDER): open sorts ahead of done.
     assert reqs[0]["ref_id"] == open_todo.id
     # unrelated handle sees no anchored todos.
-    assert hub.store.anchored_todos(["ZZZZZZ"]) == {}
+    assert hub.live_store.anchored_todos(["ZZZZZZ"]) == {}
 
 
 # ── queued UX fixes: abbrev scoping, promote hint, link redirect ──
@@ -1140,7 +1168,7 @@ def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
     from precis.embedder import make_embedder
     from precis.runtime import PrecisRuntime
 
-    store = hub.store
+    store = hub.live_store
     rt = PrecisRuntime(
         config=PrecisConfig(),
         hub=boot(
@@ -1161,7 +1189,7 @@ def test_outline_surfaces_blocked_work(draft: DraftHandler, hub: Hub) -> None:
     from precis.handlers._job_bubble import bubble_job_failure
     from precis.store.types import Tag
 
-    store = hub.store
+    store = hub.live_store
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
 
@@ -1203,7 +1231,7 @@ def test_outline_wip_job_history_collapses_to_counts(
     gr192827 item 3 collapses it to per-status counts."""
     from precis.store.types import Tag
 
-    store = hub.store
+    store = hub.live_store
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
 
@@ -1235,7 +1263,7 @@ def test_outline_surfaces_hygiene_debt(draft: DraftHandler, hub: Hub) -> None:
     the write that introduced them — so legacy/bulk-authored content that
     never passed through an incremental edit still gets flagged."""
     proj = _proj(hub)
-    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    paper = hub.live_store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
     th = _order(hub, "nt")[0].handle
     draft.put(
@@ -1268,7 +1296,7 @@ def test_hygiene_view_returns_full_lists_unelided(
     block. The default outline footer keeps its truncated-to-8 rendering
     unchanged."""
     proj = _proj(hub)
-    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    paper = hub.live_store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
     th = _order(hub, "nt")[0].handle
     abbrevs = [f"ABBR{i}" for i in range(12)]
@@ -1452,9 +1480,9 @@ def test_word_target_clear(draft: DraftHandler, hub: Hub) -> None:
     title_dc = _order(hub, "nt")[0].dc
     intro = _add_heading(draft, hub, title_dc, "Intro")
     draft.edit(id=intro, word_target={"min": 1, "max": 5})
-    assert "word_target" in (hub.store.get_draft_chunk(intro).meta or {})
+    assert "word_target" in _chunk_meta(hub, intro)
     draft.edit(id=intro, word_target={})  # clear
-    assert "word_target" not in (hub.store.get_draft_chunk(intro).meta or {})
+    assert "word_target" not in _chunk_meta(hub, intro)
 
 
 def test_edit_retired_or_unknown_chunk_is_typed(draft: DraftHandler, hub: Hub) -> None:
@@ -1467,7 +1495,7 @@ def test_edit_retired_or_unknown_chunk_is_typed(draft: DraftHandler, hub: Hub) -
     r = draft.put(id="rt", chunk_kind="paragraph", text="doomed body")
     para_h = _order(hub, "rt")[-1].handle
     # Retire it out from under the caller, then edit the now-stale handle.
-    hub.store.retire_chunk(para_h)
+    hub.live_store.retire_chunk(para_h)
     with pytest.raises(Gone, match="retired"):
         draft.edit(id="¶" + para_h, text="new text")
     # An unknown / garbage handle → typed NotFound (not the opaque fallback).
@@ -1675,7 +1703,8 @@ def test_authors_edit_sets_byline_with_affiliation(
         ],
     )
     assert "set 2 authors" in r.body and "1 with affiliation" in r.body
-    ref = hub.store.get_ref(kind="draft", id="byl")
+    ref = hub.live_store.get_ref(kind="draft", id="byl")
+    assert ref is not None
     # persisted to the first-class authors column, affiliation/ror preserved,
     # names canonicalised to the sortable {"name"} shape.
     assert ref.authors == [

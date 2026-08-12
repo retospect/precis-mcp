@@ -325,7 +325,7 @@ def test_fetch_guarded_raises_upstream_and_skips_fetch_on_trip(
         cost_per_call_usd = 0.50
 
         def __init__(self) -> None:  # bypass Hub wiring for the unit
-            self.store = None
+            self.store = cast("Store", None)
 
         def _canonical_key(self, query: str, *, literal: bool = False) -> str:
             return query

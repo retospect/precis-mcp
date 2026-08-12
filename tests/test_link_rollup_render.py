@@ -70,7 +70,7 @@ def _doc(store: Any, plan: PlanHandler) -> tuple[int, dict[str, Any]]:
 def test_render_link_rollup_aggregates_by_visibility(
     hub: Hub, plan: PlanHandler
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     ref_id, ch = _doc(store, plan)
     paper = store.insert_ref(kind="paper", slug="kumar2021", title="Kumar 2021")
     ords = _ords(store, ref_id)
@@ -114,7 +114,7 @@ def test_render_link_rollup_aggregates_by_visibility(
 
 
 def test_render_link_rollup_empty_without_links(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     ref_id, ch = _doc(store, plan)
     demand = {ch["Root"].chunk_id: Extent.FULL}
     out = render_link_rollup(
@@ -126,7 +126,7 @@ def test_render_link_rollup_empty_without_links(hub: Hub, plan: PlanHandler) -> 
 def test_link_map_gate_is_byte_identical_when_off(hub: Hub, plan: PlanHandler) -> None:
     """The overlay ships dark: the default path (and an explicit
     ``link_map=False``) is byte-for-byte unchanged even with links present."""
-    store = hub.store
+    store = hub.live_store
     ref_id, ch = _doc(store, plan)
     paper = store.insert_ref(kind="paper", slug="p1", title="P1")
     ords = _ords(store, ref_id)
@@ -146,7 +146,7 @@ def test_link_map_gate_is_byte_identical_when_off(hub: Hub, plan: PlanHandler) -
 
 
 def test_link_map_gate_appends_block_when_on(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     ref_id, ch = _doc(store, plan)
     paper = store.insert_ref(kind="paper", slug="p2", title="P2")
     ords = _ords(store, ref_id)

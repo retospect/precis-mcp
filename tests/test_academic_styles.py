@@ -39,29 +39,30 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def test_sci_methods_injects_real_body(draft: DraftHandler, hub: Hub) -> None:
-    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="rp", title="A paper", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="rp")
-    title = hub.store.reading_order(ref.id)[0]
+    ref = hub.live_store.get_ref(kind="draft", id="rp")
+    assert ref is not None
+    title = hub.live_store.reading_order(ref.id)[0]
     draft.put(
         id="rp",
         chunk_kind="heading",
         text="Methods",
         at={"after": "¶" + title.handle},
     )
-    methods = hub.store.reading_order(ref.id)[1]
+    methods = hub.live_store.reading_order(ref.id)[1]
     draft.put(
         id="rp",
         chunk_kind="paragraph",
         text="We ran it.",
         at={"into": "¶" + methods.handle, "last": True},
     )
-    para = hub.store.reading_order(ref.id)[2]
+    para = hub.live_store.reading_order(ref.id)[2]
     draft.edit(id=methods.dc, style="sci-methods")
-    cr = hub.store.insert_ref(
+    cr = hub.live_store.insert_ref(
         kind="todo", slug=None, title="cr", meta={"anchor": para.dc}
     ).id
-    block = _render_section_style(hub.store, cr)
+    block = _render_section_style(hub.live_store, cr)
     assert "Section style — sci-methods" in block
     assert "reproduce" in block  # body content, not the pointer
     assert "get(kind='skill'" not in block

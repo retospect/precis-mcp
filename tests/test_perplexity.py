@@ -943,7 +943,9 @@ def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
     embedded = [b for b in blocks if b.embedding is not None]
     assert embedded, "expected fetch-path blocks to be embedded"
     # Mock embedder yields 1024-dim unit-norm vectors.
-    assert all(len(b.embedding) == 1024 for b in embedded)
+    for b in embedded:
+        assert b.embedding is not None
+        assert len(b.embedding) == 1024
 
 
 # ── embedder-outage resilience (gripe #47286) ───────────────────────
@@ -957,11 +959,28 @@ class _DownEmbedder:
     gripe #47286.
     """
 
+    @property
+    def dim(self) -> int:
+        return 1024
+
+    @property
+    def model(self) -> str:
+        return "down"
+
     def embed_one(self, text: str) -> list[float]:
         raise EmbedderUnavailable("all embedder endpoints failed (down)")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise EmbedderUnavailable("all embedder endpoints failed (down)")
+
+    def is_ready(self) -> bool:
+        return True
+
+    def warmup(self) -> None:
+        return None
+
+    def unload(self) -> None:
+        return None
 
 
 class _WarmingEmbedder:

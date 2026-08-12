@@ -177,7 +177,7 @@ def test_edit_tool_sub_reaches_draft_handler(hub: Hub) -> None:
     from precis.dispatch import boot
     from precis.runtime import PrecisRuntime
 
-    store = hub.store
+    store = hub.live_store
     runtime = PrecisRuntime(
         config=PrecisConfig(), hub=boot(store=store, embedder=hub.embedder)
     )

@@ -213,12 +213,13 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="P").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="P").id
 
 
 def _figures(hub: Hub, slug: str) -> list:
-    ref = hub.store.get_ref(kind="draft", id=slug)
-    return [c for c in hub.store.reading_order(ref.id) if c.chunk_kind == "figure"]
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    return [c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "figure"]
 
 
 def test_put_figure_original(draft: DraftHandler, hub: Hub) -> None:
@@ -229,7 +230,9 @@ def test_put_figure_original(draft: DraftHandler, hub: Hub) -> None:
     assert "added figure" in r.body and "[original]" in r.body
     figs = _figures(hub, "nt")
     assert len(figs) == 1 and figs[0].meta["figure"]["origin"] == "original"
-    assert hub.store.get_chunk_blob(figs[0].handle)[0] == _PNG
+    blob = hub.live_store.get_chunk_blob(figs[0].handle)
+    assert blob is not None
+    assert blob[0] == _PNG
 
 
 def test_put_figure_bad_origin(draft: DraftHandler, hub: Hub) -> None:
@@ -283,7 +286,9 @@ def test_mime_sniffed_when_omitted(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="nt", title="T", project=_proj(hub))
     draft.put(id="nt", chunk_kind="figure", text="c", image=_PNG_B64, origin="original")
     fig = _figures(hub, "nt")[0]
-    _data, mime = hub.store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.get_chunk_blob(fig.handle)
+    assert blob is not None
+    _data, mime = blob
     assert mime == "image/png"
 
 
@@ -293,7 +298,8 @@ def test_edit_permission_via_handler(draft: DraftHandler, hub: Hub) -> None:
     fig = _figures(hub, "nt")[0]
     r = draft.edit(id=f"¶{fig.handle}", origin="third_party", permission=_PERM)
     assert "updated figure provenance" in r.body
-    upd = hub.store.get_draft_chunk(fig.handle)
+    upd = hub.live_store.get_draft_chunk(fig.handle)
+    assert upd is not None
     assert upd.meta["figure"]["origin"] == "third_party"
     assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
 
@@ -334,7 +340,9 @@ def test_put_svg_figure_sniffed_and_sanitized(draft: DraftHandler, hub: Hub) -> 
         origin="original",
     )
     fig = _figures(hub, "nt")[0]
-    data, mime = hub.store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.get_chunk_blob(fig.handle)
+    assert blob is not None
+    data, mime = blob
     assert mime == "image/svg+xml"
     text = data.decode()
     assert "<script" not in text.lower()  # active content stripped
@@ -355,7 +363,9 @@ def test_put_svg_figure_explicit_mime_still_sanitized(
         mime="image/svg+xml; charset=utf-8",
     )
     fig = _figures(hub, "nt")[0]
-    data, mime = hub.store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.get_chunk_blob(fig.handle)
+    assert blob is not None
+    data, mime = blob
     assert mime == "image/svg+xml"  # charset param normalised off
     assert "<script" not in data.decode().lower()
 

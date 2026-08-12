@@ -12,6 +12,8 @@ lexical legs instead of escaping as a 500.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -44,7 +46,8 @@ def _seed(store: Store, *, slug: str, blocks: list[str], embed: bool = True) -> 
 
 
 def _handler(store: Store, embedder: object | None = None) -> PaperHandler:
-    return PaperHandler(hub=Hub(store=store, embedder=embedder))
+    emb: Any = embedder
+    return PaperHandler(hub=Hub(store=store, embedder=emb))
 
 
 class CountingEmbedder(MockEmbedder):

@@ -59,16 +59,16 @@ def _make_draft(draft: DraftHandler, hub: Hub) -> object:
         text="metal-organic framework",
         meta={"short": "MOF"},
     )
-    return hub.store.get_ref(kind="draft", id="d1")
+    return hub.live_store.get_ref(kind="draft", id="d1")
 
 
 def test_export_produces_valid_docx(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    _seed_paper(hub.store, "miller2020", "A study of MOFs", 2020)
+    _seed_paper(hub.live_store, "miller2020", "A study of MOFs", 2020)
     ref = _make_draft(draft, hub)
     out = tmp_path / "d1.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert out.is_file()
     # Re-open (validity check) and read the text.
     doc = docx.Document(str(out))
@@ -93,10 +93,10 @@ def test_export_produces_valid_docx(
 def test_citation_integrity_in_references(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    _seed_paper(hub.store, "miller2020", "A study of MOFs", 2020)
+    _seed_paper(hub.live_store, "miller2020", "A study of MOFs", 2020)
     ref = _make_draft(draft, hub)
     out = tmp_path / "d1.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert res.cited_slugs == ["miller2020"]
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     # A numbered References section carries the entry resolved through the
@@ -114,7 +114,7 @@ def test_repeated_citation_does_not_corrupt(
     yields ONE References entry — the case a native Word endnote can't model
     (an endnote is 1:1 with its reference, and reusing one makes Word declare
     the document's content unreadable)."""
-    _seed_paper(hub.store, "wu22", "Wu 2022 study", 2022)
+    _seed_paper(hub.live_store, "wu22", "Wu 2022 study", 2022)
     pid = int(
         TodoHandler(hub=hub)
         .put(text="proj")
@@ -129,9 +129,9 @@ def test_repeated_citation_does_not_corrupt(
         text="First claim [§wu22~3]. Then unrelated prose. Second claim [§wu22~9].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dr")
+    ref = hub.live_store.get_ref(kind="draft", id="dr")
     out = tmp_path / "dr.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert res.cited_slugs == ["wu22"]
     import zipfile
 
@@ -161,10 +161,11 @@ def test_docx_embeds_figure_image(
         .rstrip(",.()")
     )
     draft.put(id="d1", title="T", project=pid)
-    ref = hub.store.get_ref(kind="draft", id="d1")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="d1")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     # a caption-only figure chunk (no blob) backed by a canvas.
-    fig = hub.store.add_chunks(
+    fig = hub.live_store.add_chunks(
         ref_id=ref.id,
         chunk_kind="figure",
         text="Fig 1. A widget.",
@@ -180,11 +181,12 @@ def test_docx_embeds_figure_image(
             "</svg>"
         ),
     )
-    canvas = hub.store.get_ref(kind="figure", id="fig1")
-    hub.store.link_figure_canvas(fig.chunk_id, canvas.id)
+    canvas = hub.live_store.get_ref(kind="figure", id="fig1")
+    assert canvas is not None
+    hub.live_store.link_figure_canvas(fig.chunk_id, canvas.id)
 
     out = tmp_path / "d1.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
 
     doc = docx.Document(str(out))
     assert len(doc.inline_shapes) == 1  # the rasterised canvas embedded
@@ -193,10 +195,10 @@ def test_docx_embeds_figure_image(
 
 
 def test_glossary_section(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
-    _seed_paper(hub.store, "miller2020", "A study of MOFs", 2020)
+    _seed_paper(hub.live_store, "miller2020", "A study of MOFs", 2020)
     ref = _make_draft(draft, hub)
     out = tmp_path / "d1.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "Glossary" in text
     assert "MOF" in text and "metal-organic framework" in text
@@ -210,7 +212,7 @@ def test_missing_paper_warns_but_exports(
 ) -> None:
     ref = _make_draft(draft, hub)  # cites miller2020 which is NOT seeded
     out = tmp_path / "d1.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert out.is_file()
     assert any("miller2020" in w for w in res.warnings)
 
@@ -238,9 +240,9 @@ def test_acronym_first_use_expansion(
         text="First, MOF systems. Later, more MOFs appear.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dx")
+    ref = hub.live_store.get_ref(kind="draft", id="dx")
     out = tmp_path / "dx.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     # First prose occurrence expanded; later plural stays abbreviated.
     assert "metal-organic framework (MOF)" in text
@@ -267,9 +269,9 @@ def test_math_renders_as_omml(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
         text="The relation $E = mc^2$ and a fraction $\\frac{a}{b}$.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dm")
+    ref = hub.live_store.get_ref(kind="draft", id="dm")
     out = tmp_path / "dm.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
     # Inspect the document XML for native OMML math.
     import zipfile
 
@@ -304,9 +306,9 @@ def test_empty_base_math_gets_a_base(
         text="The Zr$_6$ node and the UO$_2^{2+}$ ion.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dz")
+    ref = hub.live_store.get_ref(kind="draft", id="dz")
     out = tmp_path / "dz.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
     import zipfile
 
     with zipfile.ZipFile(out) as z:
@@ -322,7 +324,7 @@ def test_latex_cite_command_is_folded(
     """A draft carrying verbatim LaTeX ``\\cite{key}`` resolves to a numbered
     mark + References entry — the ``\\cite{`` / ``}`` wrapper never leaks as
     literal text."""
-    _seed_paper(hub.store, "wu22", "Wu 2022 study", 2022)
+    _seed_paper(hub.live_store, "wu22", "Wu 2022 study", 2022)
     pid = int(
         TodoHandler(hub=hub)
         .put(text="proj")
@@ -337,9 +339,9 @@ def test_latex_cite_command_is_folded(
         text="Adsorption is fast \\cite{wu22}.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dc")
+    ref = hub.live_store.get_ref(kind="draft", id="dc")
     out = tmp_path / "dc.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert res.cited_slugs == ["wu22"]
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "\\cite" not in text and "cite{" not in text  # wrapper folded away
@@ -358,8 +360,9 @@ def test_handle_form_citation_resolves(
     section at all."""
     from precis.utils import handle_registry
 
-    _seed_paper(hub.store, "nasibulin2007", "Multifunctional nanobuds", 2007)
-    pref = hub.store.get_ref(kind="paper", id="nasibulin2007")
+    _seed_paper(hub.live_store, "nasibulin2007", "Multifunctional nanobuds", 2007)
+    pref = hub.live_store.get_ref(kind="paper", id="nasibulin2007")
+    assert pref is not None
     handle = handle_registry.format_handle("paper", pref.id)  # 'pa<ref_id>'
     assert handle.startswith("pa")
     pid = int(
@@ -376,9 +379,9 @@ def test_handle_form_citation_resolves(
         text=f"Nanobuds were first reported [{handle}].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dh")
+    ref = hub.live_store.get_ref(kind="draft", id="dh")
     out = tmp_path / "dh.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert res.cited_slugs == ["nasibulin2007"]  # handle resolved to the slug
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "[1]" in text  # numbered mark emitted (not dropped)
@@ -396,7 +399,7 @@ def test_endnote_citations_emit_cwyw_fields(
     Structure pinned against a real EndNote-authored .docx."""
     import zipfile
 
-    _seed_paper(hub.store, "nasibulin2007", "Multifunctional nanobuds", 2007)
+    _seed_paper(hub.live_store, "nasibulin2007", "Multifunctional nanobuds", 2007)
     pid = int(
         TodoHandler(hub=hub)
         .put(text="proj")
@@ -411,9 +414,9 @@ def test_endnote_citations_emit_cwyw_fields(
         text="Nanobuds were first reported [§nasibulin2007~0].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="en")
+    ref = hub.live_store.get_ref(kind="draft", id="en")
     out = tmp_path / "en.docx"
-    res = export_docx(hub.store, ref, target_path=out, citations="endnote")
+    res = export_docx(hub.live_store, ref, target_path=out, citations="endnote")
     assert res.cited_slugs == ["nasibulin2007"]
     with zipfile.ZipFile(out) as z:
         body = z.read("word/document.xml").decode("utf-8")
@@ -432,7 +435,7 @@ def test_endnote_citations_emit_cwyw_fields(
     docx.Document(str(out))
     # Plain mode is unchanged — no EndNote machinery leaks in.
     plain = tmp_path / "plain.docx"
-    export_docx(hub.store, ref, target_path=plain, citations="plain")
+    export_docx(hub.live_store, ref, target_path=plain, citations="plain")
     with zipfile.ZipFile(plain) as z:
         pbody = z.read("word/document.xml").decode("utf-8")
     assert "ADDIN EN.CITE" not in pbody
@@ -448,21 +451,22 @@ def test_endnote_pc_citation_embeds_cited_passage(
     no passage."""
     import zipfile
 
-    store = hub.store
+    store = hub.live_store
     store.insert_ref(
         kind="paper", slug="nas07", title="Nanobuds paper", year=2007, provider="manual"
     )
     pref = store.get_ref(kind="paper", id="nas07")
+    assert pref is not None
     passage = "The exact cited passage about sp3 rehybridization at junctions."
     store.insert_blocks(pref.id, [BlockInsert(pos=0, text=passage, slug="b0")])
     with store.pool.connection() as conn:
-        chunk_id = int(
-            conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0 "
-                "ORDER BY ord LIMIT 1",
-                (pref.id,),
-            ).fetchone()[0]
-        )
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "ORDER BY ord LIMIT 1",
+            (pref.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
     pid = int(
         TodoHandler(hub=hub)
         .put(text="proj")
@@ -503,7 +507,7 @@ def test_same_paper_chunks_collapse_to_one_mark(
 ) -> None:
     """a~3, a~9, a~23 (different chunks, same paper) → ONE References entry,
     and consecutive marks collapse to a single ``[1]``."""
-    _seed_paper(hub.store, "wu22", "Wu 2022 study", 2022)
+    _seed_paper(hub.live_store, "wu22", "Wu 2022 study", 2022)
     pid = int(
         TodoHandler(hub=hub)
         .put(text="proj")
@@ -518,9 +522,9 @@ def test_same_paper_chunks_collapse_to_one_mark(
         text="Several findings [§wu22~3] [§wu22~9] [§wu22~23] agree.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dd")
+    ref = hub.live_store.get_ref(kind="draft", id="dd")
     out = tmp_path / "dd.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
     assert res.cited_slugs == ["wu22"]  # one paper, deduped
     paras = [p.text for p in docx.Document(str(out)).paragraphs]
     body_para = next(p for p in paras if "Several findings" in p)
@@ -550,9 +554,9 @@ def test_export_renders_list_styles(
     ol_h = re.search(r"dc\d+", ol.body).group(0)  # type: ignore[union-attr]
     draft.put(id="ld", chunk_kind="item", text="one", at={"into": ol_h, "last": True})
 
-    ref = hub.store.get_ref(kind="draft", id="ld")
+    ref = hub.live_store.get_ref(kind="draft", id="ld")
     out = tmp_path / "ld.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
     doc = docx.Document(str(out))
     styled = {
         p.text: p.style.name for p in doc.paragraphs if p.text in ("alpha", "one")
@@ -580,9 +584,9 @@ def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
         caption="Issue register",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="tb")
+    ref = hub.live_store.get_ref(kind="draft", id="tb")
     out = tmp_path / "tb.docx"
-    export_docx(hub.store, ref, target_path=out)
+    export_docx(hub.live_store, ref, target_path=out)
 
     doc = docx.Document(str(out))
     assert len(doc.tables) == 1
@@ -745,20 +749,20 @@ def test_hub_finding_single_originator_renders_one_mark(
     from precis.taproot.hub import attach_evidence
     from precis.utils import handle_registry
 
-    hub_ref = _mint_hub_claim(hub.store)
-    origin = hub.store.insert_ref(
+    hub_ref = _mint_hub_claim(hub.live_store)
+    origin = hub.live_store.insert_ref(
         kind="paper", slug="docxo01", title="Original report", year=2001, meta={}
     ).id
-    follow = hub.store.insert_ref(
+    follow = hub.live_store.insert_ref(
         kind="paper", slug="docxf05", title="Follow-up", year=2005, meta={}
     ).id
     attach_evidence(
-        hub.store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
+        hub.live_store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
     )
     attach_evidence(
-        hub.store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
+        hub.live_store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
     )
-    hub.store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    hub.live_store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
     finding_handle = handle_registry.format_handle("finding", hub_ref)
 
     pid = _new_draft_project(hub)
@@ -769,9 +773,9 @@ def test_hub_finding_single_originator_renders_one_mark(
         text=f"Living citation [{finding_handle}].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dhub1")
+    ref = hub.live_store.get_ref(kind="draft", id="dhub1")
     out = tmp_path / "dhub1.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     assert res.cited_slugs == ["docxo01"]  # the derived originator, not corroborator
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
@@ -788,22 +792,22 @@ def test_hub_finding_multiple_originators_renders_two_marks(
     from precis.taproot.hub import attach_evidence
     from precis.utils import handle_registry
 
-    hub_ref = _mint_hub_claim(hub.store)
-    a = hub.store.insert_ref(
+    hub_ref = _mint_hub_claim(hub.live_store)
+    a = hub.live_store.insert_ref(
         kind="paper", slug="docxa01", title="A — first report", year=2001, meta={}
     ).id
-    b = hub.store.insert_ref(
+    b = hub.live_store.insert_ref(
         kind="paper", slug="docxb02", title="B — second report", year=2002, meta={}
     ).id
-    citer = hub.store.insert_ref(
+    citer = hub.live_store.insert_ref(
         kind="paper", slug="docxc09", title="Citer", year=2009, meta={}
     ).id
     for p in (a, b, citer):
         attach_evidence(
-            hub.store, hub_ref_id=hub_ref, paper_ref_id=p, role="corroborates"
+            hub.live_store, hub_ref_id=hub_ref, paper_ref_id=p, role="corroborates"
         )
-    hub.store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
-    hub.store.add_link(src_ref_id=citer, dst_ref_id=b, relation="cites")
+    hub.live_store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
+    hub.live_store.add_link(src_ref_id=citer, dst_ref_id=b, relation="cites")
     finding_handle = handle_registry.format_handle("finding", hub_ref)
 
     pid = _new_draft_project(hub)
@@ -814,9 +818,9 @@ def test_hub_finding_multiple_originators_renders_two_marks(
         text=f"Living citation [{finding_handle}].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dhub2")
+    ref = hub.live_store.get_ref(kind="draft", id="dhub2")
     out = tmp_path / "dhub2.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     assert res.cited_slugs == ["docxa01", "docxb02"]
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
@@ -829,7 +833,7 @@ def test_hub_finding_no_evidence_renders_no_cite(
 ) -> None:
     from precis.utils import handle_registry
 
-    hub_ref = _mint_hub_claim(hub.store)
+    hub_ref = _mint_hub_claim(hub.live_store)
     finding_handle = handle_registry.format_handle("finding", hub_ref)
 
     pid = _new_draft_project(hub)
@@ -840,9 +844,9 @@ def test_hub_finding_no_evidence_renders_no_cite(
         text=f"Pending [{finding_handle}] evidence.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dhub3")
+    ref = hub.live_store.get_ref(kind="draft", id="dhub3")
     out = tmp_path / "dhub3.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     assert res.cited_slugs == []
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
@@ -862,21 +866,21 @@ def test_pin_replace_renders_pinned_not_derived_originator(
     from precis.taproot.hub import attach_evidence
     from precis.utils import handle_registry
 
-    hub_ref = _mint_hub_claim(hub.store)
-    origin = hub.store.insert_ref(
+    hub_ref = _mint_hub_claim(hub.live_store)
+    origin = hub.live_store.insert_ref(
         kind="paper", slug="docxp01", title="Original report", year=2001, meta={}
     ).id
-    follow = hub.store.insert_ref(
+    follow = hub.live_store.insert_ref(
         kind="paper", slug="docxq01", title="Follow-up", year=2005, meta={}
     ).id
     attach_evidence(
-        hub.store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
+        hub.live_store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
     )
     attach_evidence(
-        hub.store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
+        hub.live_store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
     )
-    hub.store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
-    pinned = hub.store.insert_ref(
+    hub.live_store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    pinned = hub.live_store.insert_ref(
         kind="paper", slug="docxr01", title="Author's pick", meta={}
     ).id
     finding_handle = handle_registry.format_handle("finding", hub_ref)
@@ -890,9 +894,9 @@ def test_pin_replace_renders_pinned_not_derived_originator(
         text=f"Living citation [{finding_handle}>{pin_handle}].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dpin1")
+    ref = hub.live_store.get_ref(kind="draft", id="dpin1")
     out = tmp_path / "dpin1.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     assert res.cited_slugs == ["docxr01"]  # pinned handle, not the derived originator
     assert any("reconsider" in w for w in res.warnings)
@@ -907,21 +911,21 @@ def test_pin_supplement_renders_derived_plus_pinned(
     from precis.taproot.hub import attach_evidence
     from precis.utils import handle_registry
 
-    hub_ref = _mint_hub_claim(hub.store)
-    origin = hub.store.insert_ref(
+    hub_ref = _mint_hub_claim(hub.live_store)
+    origin = hub.live_store.insert_ref(
         kind="paper", slug="docxp02", title="Original report", year=2001, meta={}
     ).id
-    follow = hub.store.insert_ref(
+    follow = hub.live_store.insert_ref(
         kind="paper", slug="docxq02", title="Follow-up", year=2005, meta={}
     ).id
     attach_evidence(
-        hub.store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
+        hub.live_store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
     )
     attach_evidence(
-        hub.store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
+        hub.live_store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
     )
-    hub.store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
-    pinned = hub.store.insert_ref(
+    hub.live_store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    pinned = hub.live_store.insert_ref(
         kind="paper", slug="docxr02", title="Extra evidence", meta={}
     ).id
     finding_handle = handle_registry.format_handle("finding", hub_ref)
@@ -935,9 +939,9 @@ def test_pin_supplement_renders_derived_plus_pinned(
         text=f"Living citation [{finding_handle}+{pin_handle}].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dpin2")
+    ref = hub.live_store.get_ref(kind="draft", id="dpin2")
     out = tmp_path / "dpin2.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     assert res.cited_slugs == ["docxp02", "docxr02"]  # derived + pinned, both present
     assert not any("reconsider" in w for w in res.warnings)
@@ -950,12 +954,12 @@ def test_pin_on_non_hub_finding_ignored_with_warning(
 ) -> None:
     from precis.handlers.finding import FindingHandler
 
-    _seed_paper(hub.store, "docxn01", "Established plain finding", 2019)
+    _seed_paper(hub.live_store, "docxn01", "Established plain finding", 2019)
     resp = FindingHandler(hub=hub).put(
         title="t", body="b", scope={}, cited_in="docxn01"
     )
     ref_id = int(resp.body.split("id=")[1].split()[0].rstrip(",.()"))
-    hub.store.update_ref(ref_id, meta_patch={"primary_cite_key": "docxn01"})
+    hub.live_store.update_ref(ref_id, meta_patch={"primary_cite_key": "docxn01"})
     from precis.utils import handle_registry
 
     finding_handle = handle_registry.format_handle("finding", ref_id)
@@ -968,9 +972,9 @@ def test_pin_on_non_hub_finding_ignored_with_warning(
         text=f"Established [{finding_handle}>pa5].",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id="dpin3")
+    ref = hub.live_store.get_ref(kind="draft", id="dpin3")
     out = tmp_path / "dpin3.docx"
-    res = export_docx(hub.store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     assert res.cited_slugs == ["docxn01"]  # unchanged — pin is meaningless here
     assert any("pin on" in w and "ignored" in w for w in res.warnings)

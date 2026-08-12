@@ -61,11 +61,18 @@ def count_words(text: str | None) -> int:
 
 
 class _ChunkLike(Protocol):
-    chunk_id: int
-    parent_chunk_id: int | None
-    chunk_kind: str
-    text: str
-    meta: dict[str, Any]
+    # Read-only properties, not plain attributes — frozen dataclasses
+    # (DraftChunk) don't satisfy a mutable-attribute protocol.
+    @property
+    def chunk_id(self) -> int: ...
+    @property
+    def parent_chunk_id(self) -> int | None: ...
+    @property
+    def chunk_kind(self) -> str: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def meta(self) -> dict[str, Any]: ...
 
 
 def _parse_target(meta: dict[str, Any] | None) -> tuple[int, int] | None:

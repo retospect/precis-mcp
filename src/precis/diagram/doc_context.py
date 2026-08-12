@@ -128,10 +128,6 @@ class _ChunkLike(Protocol):
     chunk_id: int
 
 
-class _StoreLike(Protocol):
-    def reading_order(self, ref_id: int, *, kind: str = ...) -> list[Any]: ...
-
-
 #: An expansion hook: ``(store, draft_chunk_handle) -> rendered fisheye text``.
 ExpandFn = Callable[[Any, str], str]
 

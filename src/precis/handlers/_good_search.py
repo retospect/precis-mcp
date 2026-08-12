@@ -125,7 +125,7 @@ def submit_good_search(
     :meth:`Hub.sibling` to reach the ``job`` / ``todo`` handlers rather
     than hand-building a throwaway ``Hub(store=...)``.
     """
-    store = hub.store
+    store = hub.live_store
 
     clean_queries = [str(s).strip() for s in (queries or []) if s and str(s).strip()]
     clean_answers = [str(s).strip() for s in (answers or []) if s and str(s).strip()]

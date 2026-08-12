@@ -238,7 +238,10 @@ Relation = Literal[
     # seed in 0115_patent_family_relation.sql.
     "same-family-as",
 ]
-ActorSlug = Literal["agent", "user", "system"]
+# Keep in sync with the ``actors`` seed rows (0001_initial.sql): every
+# slug here must exist in ``actors`` — ``set_by`` columns FK into it.
+# ``chase`` is the citation-chase worker's actor.
+ActorSlug = Literal["agent", "user", "system", "chase"]
 
 
 # Built-in inverse relations — the static typo-safety reference for the

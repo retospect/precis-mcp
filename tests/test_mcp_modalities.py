@@ -37,6 +37,7 @@ from precis.mcp_modalities import (
     register_skill_prompts,
 )
 from precis.runtime import PrecisRuntime
+from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # Fixture: build a fresh FastMCP for each test so prompts/resources
@@ -511,7 +512,9 @@ def test_precis_status_runtime_section_present() -> None:
     assert "uptime_seconds" in body
 
 
-def test_precis_status_database_unreachable_renders_inline() -> None:
+def test_precis_status_database_unreachable_renders_inline(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When the DB roundtrip raises, the Database section reports
     ``unreachable: <type>: <msg>`` inline rather than crashing the
     whole status response. The status surface is the first thing
@@ -523,11 +526,18 @@ def test_precis_status_database_unreachable_renders_inline() -> None:
         def connection(self) -> None:
             raise RuntimeError("pretend the DB is down")
 
-    class _BrokenStore:
-        dsn = "postgresql://precis:secret@db.example.invalid:5432/precis"
-        pool = _ExplodingPool()
+        def close(self) -> None:
+            # The store fixture's teardown calls ``s.close()`` → ``pool.close()``
+            # while the monkeypatch is still applied (monkeypatch set up before
+            # store → torn down after it).
+            pass
 
-    hub = Hub(store=_BrokenStore())
+    monkeypatch.setattr(
+        store, "dsn", "postgresql://precis:secret@db.example.invalid:5432/precis"
+    )
+    monkeypatch.setattr(store, "pool", _ExplodingPool())
+
+    hub = Hub(store=store)
     handler = SkillHandler(hub=hub)
     handler._register_with(hub)
 

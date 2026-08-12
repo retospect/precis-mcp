@@ -142,7 +142,7 @@ def test_semantic_mode_runs(draft: DraftHandler, hub: Hub) -> None:
     # leg has vectors (put() doesn't embed — the derived queue).
     assert isinstance(hub.embedder, MockEmbedder)
     _seed_draft(draft, hub, slug="d1")
-    _embed_draft(hub.store, "d1")
+    _embed_draft(hub.live_store, "d1")
     out = draft.search(q="carbon dioxide uptake", mode="semantic").body
     assert "draft:d1" in out  # returns ranked matches over embedded chunks
 

@@ -45,7 +45,7 @@ def _finding(
 ) -> int:
     """A plain (non-hub) finding, promoted to ``status`` with the given
     chain/dead_reason/override meta."""
-    _seed_paper(hub.store, cite_key)
+    _seed_paper(hub.live_store, cite_key)
     resp = FindingHandler(hub=hub).put(
         title="Pd/C catalyzes Suzuki coupling at RT",
         body="claim body",
@@ -63,8 +63,8 @@ def _finding(
     if override is not None:
         meta_patch["unacquirable_override"] = override
     if meta_patch:
-        hub.store.update_ref(ref_id, meta_patch=meta_patch)
-    hub.store.add_tag(
+        hub.live_store.update_ref(ref_id, meta_patch=meta_patch)
+    hub.live_store.add_tag(
         ref_id, Tag.closed("STATUS", status), set_by="chase", replace_prefix=True
     )
     return ref_id
@@ -81,7 +81,7 @@ def _draft_citing(hub: Hub, *, slug: str, finding_ref_id: int) -> Any:
         text=f"Claim [{handle}] holds.",
         at={"last": True},
     )
-    ref = hub.store.get_ref(kind="draft", id=slug)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
     return ref
 
@@ -101,13 +101,13 @@ def test_established_clean_renders_plain_cite_no_marks(
     fid = _finding(hub, cite_key="ac6clean", status="established")
     ref = _draft_citing(hub, slug="dclean", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "clean")
+    tex = _export(hub.live_store, ref, tmp_path, "clean")
 
     assert "\\cite{ac6clean}" in tex
     assert "unverified" not in tex
     assert "UNSUPPORTED" not in tex
     assert "Unverified claims" not in tex
-    assert hub.store.events_for(ref.id, event="export_override") == []
+    assert hub.live_store.events_for(ref.id, event="export_override") == []
 
 
 # ── regression — a malformed verification blob never aborts the export
@@ -125,7 +125,7 @@ def test_non_dict_verification_export_succeeds_unmarked(
     )
     ref = _draft_citing(hub, slug="dmalformed", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "malformed")  # must not raise
+    tex = _export(hub.live_store, ref, tmp_path, "malformed")  # must not raise
 
     assert "\\cite{malformed}" in tex
     assert "unverified" not in tex
@@ -141,7 +141,7 @@ def test_acquiring_finding_gets_unverified_mark_and_end_matter(
     fid = _finding(hub, cite_key="ac1acq", status="acquiring")
     ref = _draft_citing(hub, slug="dacq", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "acq")
+    tex = _export(hub.live_store, ref, tmp_path, "acq")
 
     assert "\\textsuperscript{?}" in tex
     assert "[unverified: source pending]" in tex
@@ -160,7 +160,7 @@ def test_dead_chain_unacquirable_without_override_is_unverified_with_note(
     )
     ref = _draft_citing(hub, slug="ddead", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "dead")
+    tex = _export(hub.live_store, ref, tmp_path, "dead")
 
     assert "[unverified: no OA copy obtainable; hand-download queued]" in tex
     assert "UNSUPPORTED" not in tex
@@ -187,7 +187,7 @@ def test_unsupported_renders_loud_distinct_mark(hub: Hub, tmp_path: Path) -> Non
     )
     ref = _draft_citing(hub, slug="dunsup", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "unsup")
+    tex = _export(hub.live_store, ref, tmp_path, "unsup")
 
     assert "\\textbf{" in tex
     assert "UNSUPPORTED" in tex
@@ -215,7 +215,7 @@ def test_override_renders_vouched_mark_and_records_ref_event(
     )
     ref = _draft_citing(hub, slug="dover", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "over")
+    tex = _export(hub.live_store, ref, tmp_path, "over")
 
     assert "\\cite{ac3over}" in tex
     # Calm author-vouched mark, not clean and not the loud unverified /
@@ -226,7 +226,7 @@ def test_override_renders_vouched_mark_and_records_ref_event(
     assert "UNSUPPORTED" not in tex
     assert "Unverified claims" not in tex
 
-    events = hub.store.events_for(ref.id, event="export_override")
+    events = hub.live_store.events_for(ref.id, event="export_override")
     assert len(events) == 1
     overridden = events[0].payload["overridden"]
     assert len(overridden) == 1
@@ -249,9 +249,9 @@ def test_override_does_not_suppress_unsupported_mark(hub: Hub, tmp_path: Path) -
     )
     ref = _draft_citing(hub, slug="dunsupov", finding_ref_id=fid)
 
-    tex = _export(hub.store, ref, tmp_path, "unsupov")
+    tex = _export(hub.live_store, ref, tmp_path, "unsupov")
 
     assert "UNSUPPORTED" in tex
     # No override event — an unsupported render is never "the override
     # worked", so nothing should be recorded as overridden-clean.
-    assert hub.store.events_for(ref.id, event="export_override") == []
+    assert hub.live_store.events_for(ref.id, event="export_override") == []

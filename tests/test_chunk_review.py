@@ -401,29 +401,33 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def test_edit_review_records(draft: DraftHandler, hub: Hub) -> None:
-    proj = _project(hub.store)
+    proj = _project(hub.live_store)
     draft.put(id="rv", title="T", project=proj)
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="rv").id)
+    ref = hub.live_store.get_ref(kind="draft", id="rv")
+    assert ref is not None
+    order = hub.live_store.reading_order(ref.id)
     title = order[0]
     r = draft.edit(id=f"¶{title.handle}", review="human")
     assert "human" in r.body and title.dc in r.body
 
-    statuses = hub.store.review_status_for_chunk(title.chunk_id)
+    statuses = hub.live_store.review_status_for_chunk(title.chunk_id)
     assert statuses[0]["checker"] == "human"
     assert statuses[0]["verdict"] == "approved"
 
     # explicit verdict
     r2 = draft.edit(id=f"¶{title.handle}", review="cites", verdict="fail")
     assert "fail" in r2.body
-    statuses = hub.store.review_status_for_chunk(title.chunk_id)
+    statuses = hub.live_store.review_status_for_chunk(title.chunk_id)
     by_checker = {s["checker"]: s for s in statuses}
     assert by_checker["cites"]["verdict"] == "fail"
 
 
 def test_edit_review_dry_run_rejected(draft: DraftHandler, hub: Hub) -> None:
-    proj = _project(hub.store)
+    proj = _project(hub.live_store)
     draft.put(id="rv", title="T", project=proj)
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="rv").id)
+    ref = hub.live_store.get_ref(kind="draft", id="rv")
+    assert ref is not None
+    order = hub.live_store.reading_order(ref.id)
     title = order[0]
     with pytest.raises(BadInput):
         draft.edit(id=f"¶{title.handle}", review="human", dry_run=True)
@@ -435,10 +439,12 @@ def test_edit_review_dry_run_rejected(draft: DraftHandler, hub: Hub) -> None:
 
 
 def test_view_review_renders_dirty_for_human(draft: DraftHandler, hub: Hub) -> None:
-    proj = _project(hub.store)
+    proj = _project(hub.live_store)
     draft.put(id="rv", title="T", project=proj)
-    ref_id = hub.store.get_ref(kind="draft", id="rv").id
-    title = hub.store.reading_order(ref_id)[0]
+    ref = hub.live_store.get_ref(kind="draft", id="rv")
+    assert ref is not None
+    ref_id = ref.id
+    title = hub.live_store.reading_order(ref_id)[0]
 
     # never reviewed → shows up as dirty-for-human
     out = draft.get(id="rv", view="review").body
@@ -451,7 +457,7 @@ def test_view_review_renders_dirty_for_human(draft: DraftHandler, hub: Hub) -> N
     assert "nothing dirty-for-human" in out
 
     # edit again → dirty-for-human again
-    hub.store.edit_text(title.handle, "T (revised)")
+    hub.live_store.edit_text(title.handle, "T (revised)")
     out = draft.get(id="rv", view="review").body
     assert "dirty-for-human" in out and "nothing dirty-for-human" not in out
 
@@ -459,23 +465,25 @@ def test_view_review_renders_dirty_for_human(draft: DraftHandler, hub: Hub) -> N
 def test_view_review_diff_shows_change_since_human_approval(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    proj = _project(hub.store)
+    proj = _project(hub.live_store)
     draft.put(id="rv", title="T", project=proj)
-    ref_id = hub.store.get_ref(kind="draft", id="rv").id
-    title = hub.store.reading_order(ref_id)[0]
+    ref = hub.live_store.get_ref(kind="draft", id="rv")
+    assert ref is not None
+    ref_id = ref.id
+    title = hub.live_store.reading_order(ref_id)[0]
 
     out = draft.get(id=title.dc, view="review-diff").body
     assert "never approved" in out
 
     draft.edit(id=f"¶{title.handle}", review="human")
-    hub.store.edit_text(title.handle, "T (revised)")
+    hub.live_store.edit_text(title.handle, "T (revised)")
     out = draft.get(id=title.dc, view="review-diff").body
     assert "-T" in out
     assert "+T (revised)" in out
 
 
 def test_unknown_draft_view_still_lists_review(draft: DraftHandler, hub: Hub) -> None:
-    proj = _project(hub.store)
+    proj = _project(hub.live_store)
     draft.put(id="rv", title="T", project=proj)
     with pytest.raises(BadInput) as ei:
         draft.get(id="rv", view="bogus")
@@ -501,19 +509,21 @@ def test_mcp_edit_tool_records_review(
 
     monkeypatch.setattr(core, "_runtime", runtime_with_store)
 
-    proj = _project(hub.store)
+    proj = _project(hub.live_store)
     draft = DraftHandler(hub=hub)
     draft.put(id="rv-wire", title="T", project=proj)
-    ref_id = hub.store.get_ref(kind="draft", id="rv-wire").id
-    title = hub.store.reading_order(ref_id)[0]
+    ref = hub.live_store.get_ref(kind="draft", id="rv-wire")
+    assert ref is not None
+    ref_id = ref.id
+    title = hub.live_store.reading_order(ref_id)[0]
 
     assert title.chunk_id in {
-        r["chunk_id"] for r in hub.store.chunks_requiring_review(ref_id, "human")
+        r["chunk_id"] for r in hub.live_store.chunks_requiring_review(ref_id, "human")
     }
 
     out = core.edit(kind="draft", id=title.dc, review="human")
     assert isinstance(out, str) and "human" in out
 
     assert title.chunk_id not in {
-        r["chunk_id"] for r in hub.store.chunks_requiring_review(ref_id, "human")
+        r["chunk_id"] for r in hub.live_store.chunks_requiring_review(ref_id, "human")
     }

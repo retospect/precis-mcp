@@ -37,7 +37,7 @@ def _dc(body: str) -> str:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _seed_section_draft(
@@ -56,8 +56,9 @@ def _seed_section_draft(
     """
     proj = _proj(hub)
     draft.put(id=slug, title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id=slug)
-    title_dc = hub.store.reading_order(ref.id)[0].dc
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    title_dc = hub.live_store.reading_order(ref.id)[0].dc
 
     r = draft.put(
         id=slug, chunk_kind="heading", text="Section A", at={"after": title_dc}
@@ -186,19 +187,21 @@ def test_submit_ok(hub: Hub) -> None:
 
 
 def test_dispatch_missing_draft_records_failure(hub: Hub) -> None:
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"scope": "dc1"}})
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"scope": "dc1"}})
     _spec().dispatch(ctx, _spec())
     assert any("params.draft is required" in f for f in ctx.failures)
 
 
 def test_dispatch_missing_scope_records_failure(hub: Hub) -> None:
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "nt"}})
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": "nt"}})
     _spec().dispatch(ctx, _spec())
     assert any("params.scope is required" in f for f in ctx.failures)
 
 
 def test_dispatch_non_dc_scope_records_failure(hub: Hub) -> None:
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "nt", "scope": "nt"}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": "nt", "scope": "nt"}}
+    )
     _spec().dispatch(ctx, _spec())
     assert any("dc<id> heading anchor" in f for f in ctx.failures)
 

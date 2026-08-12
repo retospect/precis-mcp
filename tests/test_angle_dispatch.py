@@ -23,9 +23,9 @@ def _put_memory(runtime: PrecisRuntime, text: str) -> int:
 
 def _embed_card(runtime: PrecisRuntime, ref_id: int, text: str) -> None:
     """Populate the memory's card_combined embedding (worker is lazy)."""
-    store = runtime.hub.store
+    store = runtime.hub.live_store
     assert store is not None
-    vec = runtime.hub.embedder.embed_one(text)
+    vec = runtime.hub.embed_one(text)
     (cid,) = store.card_chunk_ids([ref_id])
     with store.pool.connection() as conn:
         conn.execute(

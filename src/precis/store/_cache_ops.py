@@ -65,13 +65,6 @@ class CacheMixin:
 
     pool: ConnectionPool
 
-    # Provided by the concrete Store. A runtime stub is safe here only
-    # for ``tx`` — Store defines it on the class itself, which always
-    # precedes the mixins in the MRO. Calling it on a bare ``CacheMixin``
-    # raises.
-    def tx(self) -> AbstractContextManager[Connection]:
-        raise NotImplementedError  # pragma: no cover — overridden by Store
-
     # Provided by ``RefsMixin`` / ``BlocksMixin``; declared here so the
     # cache create-or-replace paths type-check against the cross-mixin
     # calls. **Must be TYPE_CHECKING only** — a runtime ``def`` here
@@ -80,6 +73,8 @@ class CacheMixin:
     # ``_refs_ops.py``; gripe 202377). ``tests/test_store_mixin_guard.py``
     # enforces this class-wide.
     if TYPE_CHECKING:
+        # Provided by the concrete Store (store.py).
+        def tx(self) -> AbstractContextManager[Connection]: ...
 
         def insert_ref(
             self,

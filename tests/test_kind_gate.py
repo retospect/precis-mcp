@@ -18,6 +18,7 @@ Phase 4 of the cold-start token budget design
 from __future__ import annotations
 
 import os
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -402,7 +403,8 @@ def test_patent_handler_raises_init_error_when_envs_missing() -> None:
     class _FakeStore:
         pass
 
-    hub = Hub(store=_FakeStore())
+    fake_store: Any = _FakeStore()
+    hub = Hub(store=fake_store)
 
     with patch.dict(os.environ, {}, clear=False):
         for env in (
@@ -431,7 +433,8 @@ def test_patent_handler_test_path_unaffected_by_env() -> None:
     class _FakeOps:
         pass
 
-    hub = Hub(store=_FakeStore())
+    fake_store: Any = _FakeStore()
+    hub = Hub(store=fake_store)
 
     with patch.dict(os.environ, {}, clear=False):
         for env in (

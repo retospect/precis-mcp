@@ -228,10 +228,11 @@ def test_create_no_touch_and_no_error_without_agentlog_env(
     r = handler.put(text="an ordinary memory")
     assert "created memory me" in r.body
     with handler.store.pool.connection() as conn:
-        n = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM links WHERE relation = 'touched'"
-        ).fetchone()[0]
-    assert n == 0
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 0
 
 
 def test_create_derives_title_when_omitted(handler: MemoryHandler) -> None:

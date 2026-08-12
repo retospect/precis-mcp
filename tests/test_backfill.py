@@ -138,7 +138,7 @@ def test_find_candidates_broadens_kinds_and_weights_by_tier(
     from precis.backfill.candidates import find_candidates
     from precis.backfill.provenance import PRIOR_ART, SOURCE_KINDS
 
-    store = hub.store
+    store = hub.live_store
     sec, _cited_id, _cand_id = _doc_with_citation(store, plan)
     tc = store.get_draft_chunk(sec, kind="plan")
 
@@ -189,7 +189,7 @@ def test_find_candidates_surfaces_memory_as_ref_level_lead(
     from precis.backfill.candidates import find_candidates
     from precis.backfill.provenance import LEAD
 
-    store = hub.store
+    store = hub.live_store
     sec, _cited, _cand = _doc_with_citation(store, plan)
     tc = store.get_draft_chunk(sec, kind="plan")
 
@@ -214,7 +214,7 @@ def test_assemble_focuses_memory_lead_as_flat_ref_eye(
     """A ref-level lead opens as a flat ``summary`` note eye addressed by ``me<id>``
     (not a ``verbatim`` chunk eye), and the whole workspace renders without the
     handle-less kind blowing up the composer."""
-    store = hub.store
+    store = hub.live_store
     sec, _cited_id, _cand_id = _doc_with_citation(store, plan)
     note = store.insert_ref(kind="memory", slug=None, title="my synthesis").id
     lead = Candidate(
@@ -243,7 +243,7 @@ def test_assemble_focuses_memory_lead_as_flat_ref_eye(
 def test_draft_cited_ref_ids_finds_only_cited_papers(
     hub: Hub, plan: PlanHandler
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     cited = store.insert_ref(kind="paper", slug="cited", title="Cited Paper")
     other = store.insert_ref(kind="paper", slug="other", title="Uncited Paper")
     note = store.insert_ref(kind="memory", slug=None, title="a note")
@@ -255,7 +255,9 @@ def test_draft_cited_ref_ids_finds_only_cited_papers(
         id="p", text=f"a claim paper:{cited.id} memory:{note.id}", at={"into": sec}
     )
 
-    ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    ref_id = sec_chunk.ref_id
     got = draft_cited_ref_ids(store, ref_id, kind="plan")
     assert cited.id in got
     assert other.id not in got  # never mentioned
@@ -280,7 +282,7 @@ def _doc_with_citation(store, plan: PlanHandler) -> tuple[str, int, int]:
 def test_assemble_builds_target_cited_and_candidate_eyes(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     sec, cited_id, cand_id = _doc_with_citation(store, plan)
     cand = Candidate(
         ref_id=cand_id,
@@ -315,7 +317,7 @@ def test_assemble_builds_target_cited_and_candidate_eyes(
 
 def test_assemble_raises_on_no_live_target(hub: Hub) -> None:
     with pytest.raises(ValueError, match="no live"):
-        assemble(hub.store, hub.embedder, ["dc999999999"], kind="draft")
+        assemble(hub.live_store, hub.embedder, ["dc999999999"], kind="draft")
 
 
 def test_recall_embedder_gated_on_remote_url(
@@ -324,10 +326,10 @@ def test_recall_embedder_gated_on_remote_url(
     # no remote URL configured → None (recall runs lexical + citation only,
     # never pulling torch into the agent worker)
     monkeypatch.delenv("PRECIS_EMBEDDER_URL", raising=False)
-    assert wsmod.recall_embedder(hub.store) is None
+    assert wsmod.recall_embedder(hub.live_store) is None
     # a configured remote URL → a live (connection-free) remote embedder
     monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://embed.local:8900")
-    emb = wsmod.recall_embedder(hub.store)
+    emb = wsmod.recall_embedder(hub.live_store)
     assert emb is not None
     assert emb.embed_one.__self__ is emb  # it's a real embedder, not a stub
 
@@ -335,7 +337,7 @@ def test_recall_embedder_gated_on_remote_url(
 def test_render_backfill_shows_workspace_and_candidates(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     sec, _cited_id, cand_id = _doc_with_citation(store, plan)
     cand = Candidate(
         ref_id=cand_id,
@@ -363,7 +365,7 @@ def test_render_backfill_shows_workspace_and_candidates(
 
 
 def test_backfill_marks_stamp_cited_and_candidate(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     sec, cited_id, cand_id = _doc_with_citation(store, plan)
     cand = Candidate(
         ref_id=cand_id,
@@ -395,7 +397,7 @@ def test_draft_cited_ref_ids_includes_fi_hub_supporters(
     from precis.taproot.canon import CanonicalClaim
     from precis.taproot.hub import attach_evidence, mint_hub
 
-    store = hub.store
+    store = hub.live_store
     supporter = store.insert_ref(kind="paper", slug="supporter", title="Supporter")
     contradictor = store.insert_ref(kind="paper", slug="contra", title="Contradictor")
     hub_ref_id = mint_hub(
@@ -413,7 +415,9 @@ def test_draft_cited_ref_ids_includes_fi_hub_supporters(
     sec = _pe(plan.put(id="g1", text="Section", at={"last": True}).body)
     plan.put(id="g1", text=f"a settled claim [fi{hub_ref_id}]", at={"into": sec})
 
-    ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    ref_id = sec_chunk.ref_id
     got = draft_cited_ref_ids(store, ref_id, kind="plan")
     assert supporter.id in got
     assert contradictor.id not in got
@@ -425,7 +429,7 @@ def test_draft_cited_ref_ids_ignores_non_hub_finding_cite(
     """A ``[fi<id>]`` cite to a plain chase finding (never tagged
     ``TAPROOT:claim``) is silently skipped — ``derive_evidence`` only accepts
     live claim hubs, and this closure scan must not error on the rest."""
-    store = hub.store
+    store = hub.live_store
     plain_finding = store.insert_ref(kind="finding", slug=None, title="chase finding")
 
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
@@ -433,7 +437,9 @@ def test_draft_cited_ref_ids_ignores_non_hub_finding_cite(
     sec = _pe(plan.put(id="g1b", text="Section", at={"last": True}).body)
     plan.put(id="g1b", text=f"see [fi{plain_finding.id}] for detail", at={"into": sec})
 
-    ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    ref_id = sec_chunk.ref_id
     got = draft_cited_ref_ids(store, ref_id, kind="plan")  # must not raise
     assert got == set()
 
@@ -445,7 +451,7 @@ def test_draft_topic_slugs_picks_the_dominant_tag(hub: Hub) -> None:
     from precis.backfill.candidates import draft_topic_slugs
     from precis.store.types import Tag
 
-    store = hub.store
+    store = hub.live_store
     a = store.insert_ref(kind="paper", slug="ta", title="A").id
     b = store.insert_ref(kind="paper", slug="tb", title="B").id
     c = store.insert_ref(kind="paper", slug="tc", title="C").id
@@ -468,7 +474,7 @@ def test_find_candidates_topic_gate_demotes_off_domain_hit(
     from precis.backfill.candidates import LENS_TOPIC, find_candidates
     from precis.store.types import Tag
 
-    store = hub.store
+    store = hub.live_store
     sec, cited_id, _cand_id = _doc_with_citation(store, plan)
     store.add_tag(cited_id, Tag.open("topic:nanobuds"), set_by="system")
 
@@ -506,7 +512,7 @@ def test_find_candidates_topic_gate_noop_without_draft_topics(
     from precis.backfill.candidates import LENS_TOPIC, find_candidates
     from precis.store.types import Tag
 
-    store = hub.store
+    store = hub.live_store
     sec, cited_id, _cand_id = _doc_with_citation(store, plan)
     # cited_id carries no topic: tag — the domain is undeterminable
 
@@ -541,7 +547,7 @@ def test_find_candidates_topic_gate_covers_citation_lens_only_hit(
     from precis.backfill.candidates import LENS_CITATION, LENS_TOPIC, find_candidates
     from precis.store.types import Tag
 
-    store = hub.store
+    store = hub.live_store
     sec, cited_id, _cand_id = _doc_with_citation(store, plan)
     store.add_tag(cited_id, Tag.open("topic:nanobuds"), set_by="system")
 
@@ -590,11 +596,12 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
     file) stays untouched."""
     from precis.handlers.draft import DraftHandler
 
-    store = hub.store
+    store = hub.live_store
     draft = DraftHandler(hub=hub)
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="wd", title="Whole Draft Doc", project=proj)
     ref = store.get_ref(kind="draft", id="wd")
+    assert ref is not None
     title_h = store.reading_order(ref.id)[0].handle
     draft.put(id="wd", chunk_kind="heading", text="Intro", at={"after": "¶" + title_h})
     intro_h = next(c.handle for c in store.reading_order(ref.id) if c.text == "Intro")
@@ -636,11 +643,12 @@ def test_assemble_draft_notes_truncation_not_a_silent_drop(
     from precis.backfill.workspace import assemble_draft
     from precis.handlers.draft import DraftHandler
 
-    store = hub.store
+    store = hub.live_store
     draft = DraftHandler(hub=hub)
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="wd2", title="Doc", project=proj)
     ref = store.get_ref(kind="draft", id="wd2")
+    assert ref is not None
     title_h = store.reading_order(ref.id)[0].handle
     draft.put(id="wd2", chunk_kind="heading", text="A", at={"after": "¶" + title_h})
     a_h = next(c.handle for c in store.reading_order(ref.id) if c.text == "A")

@@ -20,32 +20,37 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _second_chunk(hub: Hub, slug: str, *, kind: str, text: str):
     """Add a chunk after the auto-minted title heading, return it."""
-    ref = hub.store.get_ref(kind="draft", id=slug)
-    title = hub.store.reading_order(ref.id)[0]
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    title = hub.live_store.reading_order(ref.id)[0]
     DraftHandler(hub=hub).put(
         id=slug, chunk_kind=kind, text=text, at={"after": "¶" + title.handle}
     )
-    return hub.store.reading_order(ref.id)[1]
+    return hub.live_store.reading_order(ref.id)[1]
 
 
 def test_set_and_clear_heading_style(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="pat", title="Paperclip", project=_proj(hub))
     claims = _second_chunk(hub, "pat", kind="heading", text="Claims")
-    text_before = hub.store.get_draft_chunk(claims.handle).text
+    claims_chunk_before = hub.live_store.get_draft_chunk(claims.handle)
+    assert claims_chunk_before is not None
+    text_before = claims_chunk_before.text
 
     draft.edit(id=claims.dc, style="patent-claim")
-    assert hub.store.draft_chunk_meta(claims.handle).get("style") == "patent-claim"
+    assert hub.live_store.draft_chunk_meta(claims.handle).get("style") == "patent-claim"
     # metadata-only: the heading text is untouched (so content_sha / embedding
     # never re-derive).
-    assert hub.store.get_draft_chunk(claims.handle).text == text_before
+    claims_chunk_after = hub.live_store.get_draft_chunk(claims.handle)
+    assert claims_chunk_after is not None
+    assert claims_chunk_after.text == text_before
 
     draft.edit(id=claims.dc, style="")
-    assert "style" not in hub.store.draft_chunk_meta(claims.handle)
+    assert "style" not in hub.live_store.draft_chunk_meta(claims.handle)
 
 
 def test_style_rejected_on_non_heading(draft: DraftHandler, hub: Hub) -> None:

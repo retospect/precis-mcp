@@ -21,25 +21,28 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _auto_links(hub: Hub, slug: str) -> set[tuple[int, int | None]]:
-    ref = hub.store.get_ref(kind="draft", id=slug)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
     return {
         (link.dst_ref_id, link.dst_pos)
-        for link in hub.store.links_for(ref.id, direction="out", relation="related-to")
+        for link in hub.live_store.links_for(
+            ref.id, direction="out", relation="related-to"
+        )
         if (link.meta or {}).get("auto") == "mention"
     }
 
 
 def test_kind_ref_mention_materialises_link(draft: DraftHandler, hub: Hub) -> None:
-    target = hub.store.insert_ref(kind="memory", slug=None, title="cited note").id
+    target = hub.live_store.insert_ref(kind="memory", slug=None, title="cited note").id
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    title_h = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)[
-        0
-    ].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
 
     draft.put(
         id="nt",
@@ -54,11 +57,13 @@ def test_universal_handle_ref_materialises_link(draft: DraftHandler, hub: Hub) -
     """The simple rule: a ``[<handle>]`` is a ref to *something*. A bare
     ``[me<id>]`` universal handle resolves via the one decoder and
     materialises a related-to edge — no `kind:`/sigil needed."""
-    target = hub.store.insert_ref(kind="memory", slug=None, title="cited note").id
+    target = hub.live_store.insert_ref(kind="memory", slug=None, title="cited note").id
     me_handle = handle_registry.format_handle("memory", target)  # e.g. me42
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    title_h = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)[0].dc
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].dc
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -69,12 +74,13 @@ def test_universal_handle_ref_materialises_link(draft: DraftHandler, hub: Hub) -
 
 
 def test_editing_out_a_mention_drops_its_link(draft: DraftHandler, hub: Hub) -> None:
-    a = hub.store.insert_ref(kind="memory", slug=None, title="A").id
-    b = hub.store.insert_ref(kind="memory", slug=None, title="B").id
+    a = hub.live_store.insert_ref(kind="memory", slug=None, title="A").id
+    b = hub.live_store.insert_ref(kind="memory", slug=None, title="B").id
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
 
     draft.put(
         id="nt",
@@ -82,7 +88,7 @@ def test_editing_out_a_mention_drops_its_link(draft: DraftHandler, hub: Hub) -> 
         text=f"see memory:{a} and memory:{b}",
         at={"after": "¶" + title_h},
     )
-    para_h = hub.store.reading_order(ref.id)[1].handle
+    para_h = hub.live_store.reading_order(ref.id)[1].handle
     assert {(a, None), (b, None)} <= _auto_links(hub, "nt")
 
     # drop the reference to B → its link disappears, A survives
@@ -97,13 +103,15 @@ def test_xref_to_another_draft_links_at_chunk_level(
     # a second draft whose title chunk we cross-reference by handle
     other_proj = _proj(hub)
     draft.put(id="other", title="Other doc", project=other_proj)
-    other_ref = hub.store.get_ref(kind="draft", id="other")
-    other_title = hub.store.reading_order(other_ref.id)[0]
+    other_ref = hub.live_store.get_ref(kind="draft", id="other")
+    assert other_ref is not None
+    other_title = hub.live_store.reading_order(other_ref.id)[0]
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -111,18 +119,21 @@ def test_xref_to_another_draft_links_at_chunk_level(
         at={"after": "¶" + title_h},
     )
     # chunk-level link to the other draft's title chunk (its ord)
-    with hub.store.pool.connection() as conn:
-        ord_ = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT ord FROM chunks WHERE handle = %s", (other_title.handle,)
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    ord_ = row[0]
     assert (other_ref.id, ord_) in _auto_links(hub, "nt")
 
 
 def _cite_links(hub: Hub, slug: str) -> set[tuple[int, int | None]]:
-    ref = hub.store.get_ref(kind="draft", id=slug)
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
     return {
         (link.dst_ref_id, link.dst_pos)
-        for link in hub.store.links_for(ref.id, direction="out", relation="cites")
+        for link in hub.live_store.links_for(ref.id, direction="out", relation="cites")
         if (link.meta or {}).get("auto") == "mention"
     }
 
@@ -136,25 +147,26 @@ def test_paper_chunk_ref_is_a_cites_edge_not_related_to(
     are to the literature; links are to our own notes)."""
     from precis.store.types import BlockInsert
 
-    paper = hub.store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    hub.store.insert_blocks(
+    paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
+    hub.live_store.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
     )
-    with hub.store.pool.connection() as conn:
-        chunk_id = int(
-            conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
-                (paper.id,),
-            ).fetchone()[0]
-        )
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
     pc = handle_registry.format_handle("paper", chunk_id, chunk=True)  # pc<id>
-    mem = hub.store.insert_ref(kind="memory", slug=None, title="note").id
+    mem = hub.live_store.insert_ref(kind="memory", slug=None, title="note").id
     me = handle_registry.format_handle("memory", mem)
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -179,23 +191,24 @@ def test_cites_edge_grounds_at_source_draft_chunk(
     (``src_pos is None``)."""
     from precis.store.types import BlockInsert
 
-    paper = hub.store.insert_ref(kind="paper", slug="wu2022a", title="Paper")
-    hub.store.insert_blocks(
+    paper = hub.live_store.insert_ref(kind="paper", slug="wu2022a", title="Paper")
+    hub.live_store.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
     )
-    with hub.store.pool.connection() as conn:
-        chunk_id = int(
-            conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
-                (paper.id,),
-            ).fetchone()[0]
-        )
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
     pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -204,11 +217,11 @@ def test_cites_edge_grounds_at_source_draft_chunk(
     )
 
     # the citing paragraph is the source chunk of the cites edge
-    para = hub.store.reading_order(ref.id)[1]
-    para_ord = hub.store.chunk_ord_map(ref.id)[para.chunk_id]
+    para = hub.live_store.reading_order(ref.id)[1]
+    para_ord = hub.live_store.chunk_ord_map(ref.id)[para.chunk_id]
     cites = [
         link
-        for link in hub.store.links_for(ref.id, direction="out", relation="cites")
+        for link in hub.live_store.links_for(ref.id, direction="out", relation="cites")
         if (link.meta or {}).get("auto") == "mention"
     ]
     assert len(cites) == 1
@@ -224,30 +237,31 @@ def test_same_ref_cited_from_two_chunks_is_two_edges(
     collapsed ref-level edge — each passage keeps its own provenance."""
     from precis.store.types import BlockInsert
 
-    paper = hub.store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    hub.store.insert_blocks(
+    paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
+    hub.live_store.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
     )
-    with hub.store.pool.connection() as conn:
-        chunk_id = int(
-            conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
-                (paper.id,),
-            ).fetchone()[0]
-        )
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
     pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
         text=f"first mention [{pc}]",
         at={"after": "¶" + title_h},
     )
-    para1_h = hub.store.reading_order(ref.id)[1].handle
+    para1_h = hub.live_store.reading_order(ref.id)[1].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -257,7 +271,7 @@ def test_same_ref_cited_from_two_chunks_is_two_edges(
 
     cites = [
         link
-        for link in hub.store.links_for(ref.id, direction="out", relation="cites")
+        for link in hub.live_store.links_for(ref.id, direction="out", relation="cites")
         if (link.meta or {}).get("auto") == "mention" and link.dst_ref_id == paper.id
     ]
     assert len(cites) == 2  # one edge per citing paragraph
@@ -267,8 +281,9 @@ def test_same_ref_cited_from_two_chunks_is_two_edges(
 def test_intra_draft_xref_is_not_an_edge(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     # a paragraph referencing the draft's OWN title chunk
     draft.put(
         id="nt",

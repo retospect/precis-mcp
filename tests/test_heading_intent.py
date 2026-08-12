@@ -50,7 +50,7 @@ def _doc_with_heading(
 
 
 def test_set_read_and_upsert(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     draft, h = _doc_with_heading(store, plan)
 
     rid = set_intent(store, h, "This section exists to motivate the problem.")
@@ -79,7 +79,7 @@ def test_set_read_and_upsert(hub: Hub, plan: PlanHandler) -> None:
 def test_body_is_recallable_chunk(hub: Hub, plan: PlanHandler) -> None:
     """The intent prose lands in a ``memory_body`` chunk (the embed source), so it
     is searchable/recallable — not stranded in the title."""
-    store = hub.store
+    store = hub.live_store
     _draft, h = _doc_with_heading(store, plan)
     rid = set_intent(store, h, "grain-boundary blocking dominates below 30C")
     with store.pool.connection() as conn:
@@ -91,7 +91,7 @@ def test_body_is_recallable_chunk(hub: Hub, plan: PlanHandler) -> None:
 
 
 def test_retire(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     _draft, h = _doc_with_heading(store, plan)
     rid = set_intent(store, h, "some intent")
     assert intents_for(store, [h]) != {}
@@ -102,7 +102,7 @@ def test_retire(hub: Hub, plan: PlanHandler) -> None:
 def test_prune_dangling_reaps_orphans_only(hub: Hub, plan: PlanHandler) -> None:
     """An intent whose heading still resolves survives; one anchored to a vanished
     heading (the DELETE+INSERT-orphan case) is retired by the heal."""
-    store = hub.store
+    store = hub.live_store
     _draft, h = _doc_with_heading(store, plan)
     live = set_intent(store, h, "live intent")
     dead = set_intent(store, "pe999999", "orphan intent")  # anchor never resolves
@@ -127,13 +127,15 @@ def test_section_intents_breadcrumb_and_siblings(hub: Hub, plan: PlanHandler) ->
     is not double-counted as its own sibling."""
     from precis.backfill.heading_intent import section_intents, set_intent
 
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
     plan.put(id="p", title="Doc", project=proj)
     root = _pe(
         plan.put(id="p", chunk_kind="heading", text="Root", at={"last": True}).body
     )
-    draft = store.get_draft_chunk(root, kind="plan").ref_id
+    root_chunk = store.get_draft_chunk(root, kind="plan")
+    assert root_chunk is not None
+    draft = root_chunk.ref_id
     plan.put(id="p", chunk_kind="heading", text="Section A", at={"into": root})
     plan.put(id="p", chunk_kind="heading", text="Section B", at={"into": root})
     plan.put(id="p", chunk_kind="heading", text="Section C", at={"into": root})
@@ -169,7 +171,7 @@ def test_planner_prompt_renders_section_intent_when_anchored(
     guidance caveat."""
     from precis.workers.planner_prompt import build_planner_prompts
 
-    store = hub.store
+    store = hub.live_store
     _draft, h = _doc_with_heading(store, plan, title="Methods")
     set_intent(store, h, "Methods exists to make the result reproducible.", hard=True)
     todo = store.insert_ref(kind="todo", slug=None, title="edit methods")
@@ -187,7 +189,7 @@ def test_planner_prompt_no_section_intent_without_anchor(
 ) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    store = hub.store
+    store = hub.live_store
     todo = store.insert_ref(kind="todo", slug=None, title="plain todo")
     prompts = build_planner_prompts(store, ref_id=todo.id, model="opus")
     assert "## Section intent" not in prompts.user
@@ -209,7 +211,7 @@ def test_sweeper_intent_prune_throttles_when_marker_fresh(
         _prune_dangling_intents,
     )
 
-    store = hub.store
+    store = hub.live_store
     dead = set_intent(store, "pe888888", "orphan for throttle test")  # never resolves
     store.set_setting(_INTENT_PRUNE_STATE_KEY, datetime.now(UTC).isoformat())  # fresh
 
@@ -218,6 +220,7 @@ def test_sweeper_intent_prune_throttles_when_marker_fresh(
         row = conn.execute(
             "SELECT deleted_at FROM refs WHERE ref_id = %s", (dead,)
         ).fetchone()
+    assert row is not None
     assert row[0] is None  # orphan untouched because the pass was throttled
 
 
@@ -227,7 +230,7 @@ def test_intent_note_is_not_exportable(hub: Hub, plan: PlanHandler) -> None:
     from precis.errors import BadInput
     from precis.export import guard_exportable
 
-    store = hub.store
+    store = hub.live_store
     _draft, h = _doc_with_heading(store, plan)
     rid = set_intent(store, h, "never exported")
     ref = store.fetch_refs_by_ids([rid])[rid]

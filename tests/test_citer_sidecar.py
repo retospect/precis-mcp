@@ -245,7 +245,7 @@ class TestPaperHandlerSidecarWiring:
         self, hub: Hub, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("PRECIS_INBOUND_CHASE_ENABLED", raising=False)
-        store = hub.store
+        store = hub.live_store
         x = _paper(store, slug="x2020", blocks=["chunk zero"])
         y = _paper(store, slug="y2020", blocks=["cited"])
         store.add_link(
@@ -262,7 +262,7 @@ class TestPaperHandlerSidecarWiring:
         self, hub: Hub, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "1")
-        store = hub.store
+        store = hub.live_store
         x = _paper(store, slug="x2021", blocks=["chunk zero"])
         y = _paper(store, slug="y2021", blocks=["cited"])
         store.add_link(
@@ -282,7 +282,7 @@ class TestPaperHandlerSidecarWiring:
         """A chunk can both cite something (outbound) and be cited by
         something else (inbound) — two small sections, not one table."""
         monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "1")
-        store = hub.store
+        store = hub.live_store
         w = _paper(store, slug="w2021", blocks=["chunk zero"])
         x = _paper(store, slug="x2021", blocks=["chunk zero"])
         y = _paper(store, slug="y2021", blocks=["cited"])

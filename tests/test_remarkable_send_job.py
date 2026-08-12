@@ -60,11 +60,11 @@ def _project_and_draft(hub: Hub) -> str:
 def test_target_folder_default_setting_and_override(hub: Hub) -> None:
     from precis.budget.settings import set_setting
 
-    ctx = _FakeCtx(store=hub.store, meta={})
+    ctx = _FakeCtx(store=hub.live_store, meta={})
     # no setting → default
     assert rs._target_folder(ctx, {}) == "/Precis"
     # app_settings value wins over the default
-    set_setting(hub.store, rs.TARGET_FOLDER_KEY, "/Reading")
+    set_setting(hub.live_store, rs.TARGET_FOLDER_KEY, "/Reading")
     assert rs._target_folder(ctx, {}) == "/Reading"
     # an explicit params.folder wins over the setting
     assert rs._target_folder(ctx, {"folder": "/Inbox"}) == "/Inbox"
@@ -75,7 +75,7 @@ def test_dispatch_fails_without_credential(hub: Hub, monkeypatch: Any) -> None:
     monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
     slug = _project_and_draft(hub)
     spec = get_job_type("remarkable_send")
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("credential" in f for f in ctx.failures), ctx.failures
@@ -88,7 +88,7 @@ def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
     monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
     slug = _project_and_draft(hub)
     spec = get_job_type("remarkable_send")
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("latexmk" in f for f in ctx.failures), ctx.failures
@@ -96,7 +96,7 @@ def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
 
 def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
     spec = get_job_type("remarkable_send")
-    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "nope"}})
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": "nope"}})
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("no draft" in f for f in ctx.failures)

@@ -177,9 +177,11 @@ def test_miss_no_touch_and_no_error_without_agentlog_env(
     resp = handler.get(q="population of Ireland")
     assert "population of ireland" in resp.body
     with handler.store.pool.connection() as conn:
-        n = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM links WHERE relation = 'touched'"
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    n = row[0]
     assert n == 0
 
 

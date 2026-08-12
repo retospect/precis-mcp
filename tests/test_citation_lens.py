@@ -88,10 +88,10 @@ def _restore_fetch() -> object:
 
 
 def test_materialize_writes_corpus_internal_edges_both_directions(hub: Hub) -> None:
-    g = _build_graph(hub.store)
-    written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    g = _build_graph(hub.live_store)
+    written = cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
 
-    edges = _cites_edges(hub.store)
+    edges = _cites_edges(hub.live_store)
     assert (g["a"], g["b"]) in edges  # A references B  → A cites B
     assert (g["a"], g["e"]) in edges  # A references E  → A cites E (held stub)
     assert (g["c"], g["a"]) in edges  # C cited-by-of A → C cites A
@@ -100,12 +100,12 @@ def test_materialize_writes_corpus_internal_edges_both_directions(hub: Hub) -> N
     assert all(s in held and d in held for s, d in edges)
     assert written == 3
     # freshness stamped on A
-    assert hub.store.events_for(g["a"], source="citation_edges") != []
+    assert hub.live_store.events_for(g["a"], source="citation_edges") != []
 
 
 def test_materialize_skips_when_fresh(hub: Hub) -> None:
-    g = _build_graph(hub.store)
-    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    g = _build_graph(hub.live_store)
+    cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
 
     calls = {"n": 0}
 
@@ -116,7 +116,7 @@ def test_materialize_skips_when_fresh(hub: Hub) -> None:
         return {pid: {"references": [], "cited_by": []} for pid in paper_ids}
 
     cl.fetch_citations_batch = counting_fetch_batch
-    written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    written = cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
     assert written == 0
     assert calls["n"] == 0  # fresh → S2 not re-hit
 
@@ -127,13 +127,13 @@ def test_materialize_batches_across_multiple_cold_papers(hub: Hub) -> None:
     fresh is excluded from the batch; the edges a batched result produces
     match exactly what the old per-paper loop produced for the same
     input (co-citation degree, direction, s2_neighbors row count)."""
-    g = _build_graph(hub.store)  # seeds A (s2 S2A) + B/C/E, D not held
+    g = _build_graph(hub.live_store)  # seeds A (s2 S2A) + B/C/E, D not held
 
     # A second, independent seed paper F with its own held reference G.
-    f = _paper(hub.store, "feng")
-    guo = _paper(hub.store, "guo")
-    _add_id(hub.store, f, "s2", "S2F")
-    _add_id(hub.store, guo, "s2", "S2G")
+    f = _paper(hub.live_store, "feng")
+    guo = _paper(hub.live_store, "guo")
+    _add_id(hub.live_store, f, "s2", "S2F")
+    _add_id(hub.live_store, guo, "s2", "S2G")
 
     calls: list[list[str]] = []
 
@@ -162,18 +162,18 @@ def test_materialize_batches_across_multiple_cold_papers(hub: Hub) -> None:
     # combined call below runs — the single-paper path here is exactly what
     # the old per-paper loop did, and doubles as the "matches per-paper
     # writes" baseline (b): 1 held edge, one s2_neighbors row, degree 1.
-    written_f = cl.materialize_citation_edges(hub.store, {f}, ttl_days=30)
+    written_f = cl.materialize_citation_edges(hub.live_store, {f}, ttl_days=30)
     assert written_f == 1
     assert calls == [["S2F"]]
-    assert (f, guo) in _cites_edges(hub.store)
-    assert [n.s2_id for n in hub.store.list_s2_neighbors(f, "cites")] == ["S2G"]
+    assert (f, guo) in _cites_edges(hub.live_store)
+    assert [n.s2_id for n in hub.live_store.list_s2_neighbors(f, "cites")] == ["S2G"]
 
-    written = cl.materialize_citation_edges(hub.store, {g["a"], f}, ttl_days=30)
+    written = cl.materialize_citation_edges(hub.live_store, {g["a"], f}, ttl_days=30)
     # F is fresh → excluded; only A's qid goes into the (single) new call.
     assert calls == [["S2F"], ["S2A"]]
     assert written == 3  # A's 3 held edges; F untouched (already materialised)
 
-    edges = _cites_edges(hub.store)
+    edges = _cites_edges(hub.live_store)
     assert (g["a"], g["b"]) in edges
     assert (g["a"], g["e"]) in edges
     assert (g["c"], g["a"]) in edges
@@ -181,21 +181,25 @@ def test_materialize_batches_across_multiple_cold_papers(hub: Hub) -> None:
 
 
 def test_neighbor_degrees_excludes_cited_and_bodyless(hub: Hub) -> None:
-    g = _build_graph(hub.store)
-    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    g = _build_graph(hub.live_store)
+    cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
 
-    degrees = cl.citation_neighbor_degrees(hub.store, {g["a"]}, exclude={g["a"]})
+    degrees = cl.citation_neighbor_degrees(hub.live_store, {g["a"]}, exclude={g["a"]})
     ids = {rid for rid, _ in degrees}
     assert ids == {g["b"], g["c"]}  # E has no body → not a candidate; D not held
 
     # excluding B (e.g. already dismissed) drops it
-    only_c = cl.citation_neighbor_degrees(hub.store, {g["a"]}, exclude={g["a"], g["b"]})
+    only_c = cl.citation_neighbor_degrees(
+        hub.live_store, {g["a"]}, exclude={g["a"], g["b"]}
+    )
     assert {rid for rid, _ in only_c} == {g["c"]}
 
 
 def test_find_citation_candidates_builds_lead_chunk_candidates(hub: Hub) -> None:
-    g = _build_graph(hub.store)
-    cands = cl.find_citation_candidates(hub.store, {g["a"]}, exclude={g["a"]}, limit=8)
+    g = _build_graph(hub.live_store)
+    cands = cl.find_citation_candidates(
+        hub.live_store, {g["a"]}, exclude={g["a"]}, limit=8
+    )
     by_ref = {c.ref_id: c for c in cands}
     assert set(by_ref) == {g["b"], g["c"]}
     for c in cands:
@@ -208,10 +212,10 @@ def test_materialize_writes_s2_neighbors_both_directions(hub: Hub) -> None:
     """The Sources/Cited tabs' data side: the FULL neighbour list (held or not)
     lands in ``s2_neighbors``, not just the held↔held subset that gets a
     ``cites`` edge."""
-    g = _build_graph(hub.store)
-    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    g = _build_graph(hub.live_store)
+    cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
 
-    cites = hub.store.list_s2_neighbors(g["a"], "cites")
+    cites = hub.live_store.list_s2_neighbors(g["a"], "cites")
     assert [n.s2_id for n in cites] == ["S2B", "S2E", "S2D"]  # ord = S2 list order
     by_s2 = {n.s2_id: n for n in cites}
     assert by_s2["S2B"].held_ref_id == g["b"]
@@ -219,20 +223,20 @@ def test_materialize_writes_s2_neighbors_both_directions(hub: Hub) -> None:
     assert by_s2["S2D"].held_ref_id is None  # D is not held — persisted anyway
     assert by_s2["S2D"].title == "Not held"
 
-    cited_by = hub.store.list_s2_neighbors(g["a"], "cited_by")
+    cited_by = hub.live_store.list_s2_neighbors(g["a"], "cited_by")
     assert len(cited_by) == 1
     assert cited_by[0].doi == "10.1/CCC"
     assert cited_by[0].held_ref_id == g["c"]
 
-    assert hub.store.s2_neighbors_fresh(g["a"]) is True
+    assert hub.live_store.s2_neighbors_fresh(g["a"]) is True
     # B was never fetched from as a seed — no neighbours persisted for it.
-    assert hub.store.s2_neighbors_fresh(g["b"]) is False
+    assert hub.live_store.s2_neighbors_fresh(g["b"]) is False
 
 
 def test_materialize_refresh_replaces_s2_neighbors(hub: Hub) -> None:
-    g = _build_graph(hub.store)
-    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
-    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+    g = _build_graph(hub.live_store)
+    cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
+    assert len(hub.live_store.list_s2_neighbors(g["a"], "cites")) == 3
 
     def shrunk_fetch_batch(
         paper_ids: list[str],
@@ -243,15 +247,17 @@ def test_materialize_refresh_replaces_s2_neighbors(hub: Hub) -> None:
         }
 
     cl.fetch_citations_batch = shrunk_fetch_batch
-    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=0)  # force re-fetch
+    cl.materialize_citation_edges(
+        hub.live_store, {g["a"]}, ttl_days=0
+    )  # force re-fetch
 
-    cites = hub.store.list_s2_neighbors(g["a"], "cites")
+    cites = hub.live_store.list_s2_neighbors(g["a"], "cites")
     assert [n.s2_id for n in cites] == ["S2B"]  # E and D dropped, no dup rows
-    assert hub.store.list_s2_neighbors(g["a"], "cited_by") == []  # cleared too
+    assert hub.live_store.list_s2_neighbors(g["a"], "cited_by") == []  # cleared too
 
 
 def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> None:
-    g = _build_graph(hub.store)
+    g = _build_graph(hub.live_store)
     calls = {"n": 0}
     base_fetch_batch = cl.fetch_citations_batch
 
@@ -263,15 +269,15 @@ def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> Non
 
     cl.fetch_citations_batch = counting_fetch_batch
 
-    assert hub.store.s2_neighbors_fresh(g["a"]) is False
-    fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    assert hub.live_store.s2_neighbors_fresh(g["a"]) is False
+    fetched = cl.ensure_s2_neighbors(hub.live_store, g["a"], ttl_days=30)
     assert fetched is True
     assert calls["n"] == 1
-    assert hub.store.s2_neighbors_fresh(g["a"]) is True
-    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+    assert hub.live_store.s2_neighbors_fresh(g["a"]) is True
+    assert len(hub.live_store.list_s2_neighbors(g["a"], "cites")) == 3
 
     # second call within the TTL: no re-fetch, S2 not hit again.
-    fetched_again = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    fetched_again = cl.ensure_s2_neighbors(hub.live_store, g["a"], ttl_days=30)
     assert fetched_again is False
     assert calls["n"] == 1
 
@@ -281,7 +287,7 @@ def test_materialize_fetch_failure_leaves_unstamped_and_retries(hub: Hub) -> Non
     dying after its retry budget) must persist NOTHING and stamp NOTHING —
     a partial result stored as truth would freeze an empty bibliography for
     a whole TTL. The next call retries and succeeds."""
-    g = _build_graph(hub.store)
+    g = _build_graph(hub.live_store)
     good_fetch_batch = cl.fetch_citations_batch
 
     def failing_fetch_batch(
@@ -290,14 +296,14 @@ def test_materialize_fetch_failure_leaves_unstamped_and_retries(hub: Hub) -> Non
         raise RuntimeError("s2 down")
 
     cl.fetch_citations_batch = failing_fetch_batch
-    written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    written = cl.materialize_citation_edges(hub.live_store, {g["a"]}, ttl_days=30)
     assert written == 0
-    assert hub.store.events_for(g["a"], source="citation_edges") == []
-    assert hub.store.s2_neighbors_fresh(g["a"]) is False
+    assert hub.live_store.events_for(g["a"], source="citation_edges") == []
+    assert hub.live_store.s2_neighbors_fresh(g["a"]) is False
 
     cl.fetch_citations_batch = good_fetch_batch
-    assert cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30) is True
-    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+    assert cl.ensure_s2_neighbors(hub.live_store, g["a"], ttl_days=30) is True
+    assert len(hub.live_store.list_s2_neighbors(g["a"], "cites")) == 3
 
 
 def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> None:
@@ -305,11 +311,11 @@ def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> Non
     has no rows (the fetch predated persistence) — the stamp alone must not
     suppress the fetch, or old papers show empty Sources/Cited tabs until
     the TTL lapses."""
-    g = _build_graph(hub.store)
-    cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
-    with hub.store.pool.connection() as conn:
+    g = _build_graph(hub.live_store)
+    cl.ensure_s2_neighbors(hub.live_store, g["a"], ttl_days=30)
+    with hub.live_store.pool.connection() as conn:
         conn.execute("DELETE FROM s2_neighbors WHERE ref_id = %s", (g["a"],))
-    assert hub.store.s2_neighbors_fresh(g["a"]) is False
+    assert hub.live_store.s2_neighbors_fresh(g["a"]) is False
 
     calls = {"n": 0}
     base_fetch_batch = cl.fetch_citations_batch
@@ -322,17 +328,18 @@ def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> Non
 
     cl.fetch_citations_batch = counting_fetch_batch
 
-    fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    fetched = cl.ensure_s2_neighbors(hub.live_store, g["a"], ttl_days=30)
     assert fetched is True
     assert calls["n"] == 1
-    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+    assert len(hub.live_store.list_s2_neighbors(g["a"], "cites")) == 3
 
 
 def test_disabled_by_env(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
-    g = _build_graph(hub.store)
+    g = _build_graph(hub.live_store)
     monkeypatch.setenv("PRECIS_BACKFILL_CITATION_LENS", "0")
     assert (
-        cl.find_citation_candidates(hub.store, {g["a"]}, exclude=set(), limit=8) == []
+        cl.find_citation_candidates(hub.live_store, {g["a"]}, exclude=set(), limit=8)
+        == []
     )
 
 
@@ -370,7 +377,7 @@ def test_merge_badges_agreement_and_appends_citation_only(
         cl, "find_citation_candidates", lambda *a, **k: [cite_b, cite_c]
     )
 
-    candmod._merge_citation_lens(hub.store, out, {1}, set(), 8)
+    candmod._merge_citation_lens(hub.live_store, out, {1}, set(), 8)
 
     assert out[0].ref_id == 101
     assert out[0].lenses == (LENS_TEXT, LENS_CITATION)  # agreement badge

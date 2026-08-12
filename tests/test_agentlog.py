@@ -19,7 +19,7 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 # ── module: open / finalize / read ──────────────────────────────────
@@ -27,7 +27,7 @@ def _proj(hub: Hub) -> int:
 
 def test_open_log_records_prompt_source_and_tag(hub: Hub) -> None:
     log_id = agentlog.open_log(
-        hub.store,
+        hub.live_store,
         source="plan_tick",
         title="plan_tick #1 (opus)",
         model="opus",
@@ -35,20 +35,21 @@ def test_open_log_records_prompt_source_and_tag(hub: Hub) -> None:
         parent_ref_id=1,
         job_ref_id=2,
     )
-    ref = hub.store.get_ref(kind="agentlog", id=log_id)
+    ref = hub.live_store.get_ref(kind="agentlog", id=log_id)
     assert ref is not None
     assert ref.meta["source"] == "plan_tick"
     assert ref.meta["model"] == "opus"
     assert "do the thing" in ref.meta["prompt"]
     assert ref.meta["parent_ref_id"] == 1 and ref.meta["job_ref_id"] == 2
-    tags = {str(t) for t in hub.store.tags_for(log_id)}
+    tags = {str(t) for t in hub.live_store.tags_for(log_id)}
     assert "agentlog-source:plan_tick" in tags
 
 
 def test_finalize_stamps_status_and_ended(hub: Hub) -> None:
-    log_id = agentlog.open_log(hub.store, source="plan_tick", title="t")
-    agentlog.finalize_log(hub.store, log_id=log_id, status="ok")
-    ref = hub.store.get_ref(kind="agentlog", id=log_id)
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    agentlog.finalize_log(hub.live_store, log_id=log_id, status="ok")
+    ref = hub.live_store.get_ref(kind="agentlog", id=log_id)
+    assert ref is not None
     assert ref.meta["status"] == "ok"
     assert ref.meta.get("ended_at")
 
@@ -56,11 +57,12 @@ def test_finalize_stamps_status_and_ended(hub: Hub) -> None:
 def test_list_recent_counts_touched(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    log_id = agentlog.open_log(hub.store, source="plan_tick", title="t")
-    title = hub.store.reading_order(ref.id)[0]
-    agentlog.attach_touch(hub.store, log_id=log_id, chunk_ids=[title.chunk_id])
-    rows = agentlog.list_recent(hub.store)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    title = hub.live_store.reading_order(ref.id)[0]
+    agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[title.chunk_id])
+    rows = agentlog.list_recent(hub.live_store)
     row = next(r for r in rows if r["ref_id"] == log_id)
     assert row["touched"] == 1
     assert row["source"] == "plan_tick"
@@ -74,21 +76,22 @@ def test_draft_edit_attributes_touch_when_env_set(
 ) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    log_id = agentlog.open_log(hub.store, source="plan_tick", title="t")
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
     monkeypatch.setenv(agentlog.ENV_VAR, str(log_id))
 
     # Add a paragraph — the handler should attribute it to the run.
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id="nt", chunk_kind="paragraph", text="A new para", at={"after": "¶" + title_h}
     )
 
-    links = hub.store.links_for(log_id, direction="out", relation="touched")
+    links = hub.live_store.links_for(log_id, direction="out", relation="touched")
     assert len(links) >= 1
     # The touched chunk surfaces on the draft's Connections graph.
-    handles = [c.handle for c in hub.store.reading_order(ref.id)]
-    conns = hub.store.chunk_connections(ref.id, handles)
+    handles = [c.handle for c in hub.live_store.reading_order(ref.id)]
+    conns = hub.live_store.chunk_connections(ref.id, handles)
     flat = [c for rows in conns.values() for c in rows]
     assert any(c["kind"] == "agentlog" and c["relation"] == "touched" for c in flat)
 
@@ -99,14 +102,17 @@ def test_draft_edit_no_touch_without_env(
     monkeypatch.delenv(agentlog.ENV_VAR, raising=False)
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    title_h = hub.store.reading_order(ref.id)[0].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(id="nt", chunk_kind="paragraph", text="x", at={"after": "¶" + title_h})
     # No agentlog exists, so no touched link anywhere.
-    with hub.store.pool.connection() as conn:
-        n = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT count(*) FROM links WHERE relation = 'touched'"
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        n = row[0]
     assert n == 0
 
 
@@ -129,37 +135,40 @@ def test_gc_drops_links_keeps_chunks_softdeletes_log(
 ) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="nt")
-    chunk = hub.store.reading_order(ref.id)[0]
-    log_id = agentlog.open_log(hub.store, source="plan_tick", title="t")
-    agentlog.attach_touch(hub.store, log_id=log_id, chunk_ids=[chunk.chunk_id])
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    chunk = hub.live_store.reading_order(ref.id)[0]
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[chunk.chunk_id])
 
     # Backdate the log past the retention window.
-    with hub.store.pool.connection() as conn:
+    with hub.live_store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET created_at = now() - interval '40 days' WHERE ref_id = %s",
             (log_id,),
         )
         conn.commit()
 
-    n = agentlog.gc_stale_logs(hub.store, older_than_days=30)
+    n = agentlog.gc_stale_logs(hub.live_store, older_than_days=30)
     assert n == 1
 
     # Log soft-deleted, its touched links gone…
-    assert hub.store.get_ref(kind="agentlog", id=log_id) is None
-    with hub.store.pool.connection() as conn:
-        links = conn.execute(
+    assert hub.live_store.get_ref(kind="agentlog", id=log_id) is None
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT count(*) FROM links WHERE src_ref_id = %s", (log_id,)
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        links = row[0]
     assert links == 0
     # …but the chunk it touched is untouched.
-    assert hub.store.get_draft_chunk(chunk.handle) is not None
+    assert hub.live_store.get_draft_chunk(chunk.handle) is not None
 
 
 def test_gc_spares_fresh_logs(hub: Hub) -> None:
-    log_id = agentlog.open_log(hub.store, source="plan_tick", title="t")
-    assert agentlog.gc_stale_logs(hub.store, older_than_days=30) == 0
-    assert hub.store.get_ref(kind="agentlog", id=log_id) is not None
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    assert agentlog.gc_stale_logs(hub.live_store, older_than_days=30) == 0
+    assert hub.live_store.get_ref(kind="agentlog", id=log_id) is not None
 
 
 # ── read handler ────────────────────────────────────────────────────
@@ -169,7 +178,7 @@ def test_handler_recent_view_and_no_put(hub: Hub) -> None:
     from precis.handlers.agentlog import AgentLogHandler
 
     handler = AgentLogHandler(hub=hub)
-    agentlog.open_log(hub.store, source="plan_tick", title="plan_tick #7 (opus)")
+    agentlog.open_log(hub.live_store, source="plan_tick", title="plan_tick #7 (opus)")
     out = handler.get(id="/recent").body
     assert "plan_tick #7" in out
     # Read-only kind: no put / edit in the spec.
@@ -190,9 +199,10 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
 
     proj = _proj(hub)
     draft.put(id="smoke", title="Smoke Doc", project=proj)
-    ref = hub.store.get_ref(kind="draft", id="smoke")
+    ref = hub.live_store.get_ref(kind="draft", id="smoke")
+    assert ref is not None
     log_id = agentlog.open_log(
-        hub.store,
+        hub.live_store,
         source="plan_tick",
         title="plan_tick #1 (opus)",
         model="opus",
@@ -200,10 +210,10 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
         parent_ref_id=proj,
         job_ref_id=999,
     )
-    chunk = hub.store.reading_order(ref.id)[0]
-    agentlog.attach_touch(hub.store, log_id=log_id, chunk_ids=[chunk.chunk_id])
+    chunk = hub.live_store.reading_order(ref.id)[0]
+    agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[chunk.chunk_id])
 
-    app = create_app(runtime=types.SimpleNamespace(store=hub.store))
+    app = create_app(runtime=types.SimpleNamespace(store=hub.live_store))
     with TestClient(app) as client:
         r1 = client.get("/agentlogs")
         assert r1.status_code == 200

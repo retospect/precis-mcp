@@ -306,6 +306,7 @@ def test_slug_uses_human_readable_form(handler: WebHandler) -> None:
     )
     assert cached is not None
     ref, _ = cached
+    assert ref.slug is not None
     assert "github" in ref.slug
     assert "modelcontextprotocol" in ref.slug
     assert "servers" in ref.slug
@@ -459,7 +460,7 @@ def test_link_to_memory(handler: WebHandler, hub: Hub) -> None:
     pattern ("I kept this page for the idea I wrote down in
     memory 42")."""
     # Seed a memory to link against.
-    store = hub.store
+    store = hub.live_store
     assert store is not None
     mem = store.insert_ref(kind="memory", slug=None, title="the idea")
     # Fetch the web page.
@@ -481,7 +482,7 @@ def test_link_to_memory(handler: WebHandler, hub: Hub) -> None:
 def test_link_to_paper(handler: WebHandler, hub: Hub) -> None:
     """``target='paper:slug'`` works the same way — web pages as
     supplementary reading for a paper."""
-    store = hub.store
+    store = hub.live_store
     assert store is not None
     paper = store.insert_ref(kind="paper", slug="miller2000food", title="Food")
     handler.get(id="https://example.com/article")
@@ -497,7 +498,7 @@ def test_link_to_paper(handler: WebHandler, hub: Hub) -> None:
 
 
 def test_unlink_removes(handler: WebHandler, hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     assert store is not None
     mem = store.insert_ref(kind="memory", slug=None, title="the idea")
     handler.get(id="https://example.com/article")

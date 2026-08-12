@@ -75,7 +75,7 @@ def _seed_paper_ref(
 ) -> int:
     """Insert a minimal ``kind`` ref (paper / cfp / datasheet all share
     the ``refs`` shape) + one body chunk. Returns the ref_id."""
-    ref = hub.store.insert_ref(
+    ref = hub.live_store.insert_ref(
         kind=kind,
         slug=slug,
         title=kw.pop("title", "Original title"),
@@ -83,7 +83,9 @@ def _seed_paper_ref(
         year=kw.pop("year", 2020),
         meta=kw.pop("meta", {"abstract": "Original abstract."}),
     )
-    hub.store.insert_blocks(ref.id, [BlockInsert(pos=0, text="Body chunk.", meta={})])
+    hub.live_store.insert_blocks(
+        ref.id, [BlockInsert(pos=0, text="Body chunk.", meta={})]
+    )
     return ref.id
 
 
@@ -96,7 +98,7 @@ def test_paper_edit_dry_run_previews_field_patch_and_does_not_write(hub: Hub) ->
     assert "2020" in resp.body and "2024" in resp.body
     assert "New title" in resp.body
 
-    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    ref = hub.live_store.fetch_refs_by_ids([ref_id])[ref_id]
     assert ref.year == 2020
     assert ref.title == "Original title"
 
@@ -123,7 +125,7 @@ def test_cfp_insert_ref_round_trips_on_fresh_db(hub: Hub) -> None:
     dry-run-only workaround this replaces."""
     ref_id = _seed_paper_ref(hub, kind="cfp", slug="nsf-2026-call")
 
-    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    ref = hub.live_store.fetch_refs_by_ids([ref_id])[ref_id]
     assert ref.kind == "cfp"
     assert ref.title == "Original title"
 
@@ -138,7 +140,7 @@ def test_datasheet_edit_dry_run_previews_meta_patch_and_does_not_write(
     assert "dry run" in resp.body.lower()
     assert "Espressif" in resp.body
 
-    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    ref = hub.live_store.fetch_refs_by_ids([ref_id])[ref_id]
     assert (ref.meta or {}).get("vendor") is None
 
 
@@ -153,7 +155,7 @@ def test_datasheet_edit_dry_run_previews_both_meta_and_bib_and_does_not_write(
     assert "Espressif" in resp.body
     assert "2020" in resp.body and "2025" in resp.body
 
-    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    ref = hub.live_store.fetch_refs_by_ids([ref_id])[ref_id]
     assert ref.year == 2020
     assert (ref.meta or {}).get("vendor") is None
 

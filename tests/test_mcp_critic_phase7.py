@@ -549,13 +549,13 @@ class TestSlugKindInference:
         )
 
     def test_paper_chunk_addr_infers_paper(self, runtime: PrecisRuntime) -> None:
-        self._seed_paper(runtime.hub.store, "wu22c")
+        self._seed_paper(runtime.hub.live_store, "wu22c")
         out = runtime.dispatch("get", {"id": "wu22c~2"})  # no kind=
         assert "missing kind" not in out
         assert "block 2" in out  # routed to the paper, selector parsed
 
     def test_bare_slug_infers_paper(self, runtime: PrecisRuntime) -> None:
-        self._seed_paper(runtime.hub.store, "wu22c")
+        self._seed_paper(runtime.hub.live_store, "wu22c")
         out = runtime.dispatch("get", {"id": "wu22c"})  # whole paper, no kind=
         assert "missing kind" not in out
 

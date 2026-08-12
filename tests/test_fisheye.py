@@ -25,7 +25,7 @@ def plan(hub: Hub) -> PlanHandler:
 def _build_tree(hub: Hub, plan: PlanHandler) -> dict[str, str]:
     """A plan with 4 top-level nodes; the 2nd owns a child. Returns a map of
     label → pe-handle."""
-    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="Root", project=proj)
     labels = {}
     for name in ("survey", "axes", "draft", "review"):
@@ -41,7 +41,7 @@ def test_verbatim_eye_is_the_node_alone(hub: Hub, plan: PlanHandler) -> None:
     # the neighborhood is what the fisheye rung is for.
     labels = _build_tree(hub, plan)
     out = render_fisheye(
-        hub.store, kind="plan", handle=labels["axes"], extent="verbatim"
+        hub.live_store, kind="plan", handle=labels["axes"], extent="verbatim"
     )
     assert "axes the thing" in out
     assert f"▸ {labels['axes']}" in out
@@ -54,7 +54,7 @@ def test_fisheye_eye_returns_the_neighborhood(hub: Hub, plan: PlanHandler) -> No
     # fisheye (FIDELITY) is where the spatial neighborhood appears.
     labels = _build_tree(hub, plan)
     out = render_fisheye(
-        hub.store, kind="plan", handle=labels["axes"], extent="fisheye"
+        hub.live_store, kind="plan", handle=labels["axes"], extent="fisheye"
     )
     assert "axes the thing" in out
     assert labels["survey"] in out  # a reading-order neighbour
@@ -65,7 +65,9 @@ def test_toc_eye_is_a_one_line_bookmark_with_ancestor_branch(
     hub: Hub, plan: PlanHandler
 ) -> None:
     labels = _build_tree(hub, plan)
-    out = render_fisheye(hub.store, kind="plan", handle=labels["child"], extent="toc")
+    out = render_fisheye(
+        hub.live_store, kind="plan", handle=labels["child"], extent="toc"
+    )
     # ancestor branch present (child sits under 'axes')
     assert out.startswith("↑ ")
     assert "axis: speed" in out
@@ -77,7 +79,7 @@ def test_summary_eye_is_the_node_alone(hub: Hub, plan: PlanHandler) -> None:
     # summary is the target's gloss, alone — no surroundings (§ C0).
     labels = _build_tree(hub, plan)
     out = render_fisheye(
-        hub.store, kind="plan", handle=labels["draft"], extent=Extent.SUMMARY
+        hub.live_store, kind="plan", handle=labels["draft"], extent=Extent.SUMMARY
     )
     assert labels["draft"] in out
     assert labels["review"] not in out  # no skirt at this rung
@@ -86,7 +88,7 @@ def test_summary_eye_is_the_node_alone(hub: Hub, plan: PlanHandler) -> None:
 def test_fidelity_eye_spans_reading_order(hub: Hub, plan: PlanHandler) -> None:
     labels = _build_tree(hub, plan)
     out = render_fisheye(
-        hub.store, kind="plan", handle=labels["survey"], extent="fidelity"
+        hub.live_store, kind="plan", handle=labels["survey"], extent="fidelity"
     )
     # a wide graduated span reaches multiple neighbours across the tree
     seen = set(_handles(out))
@@ -97,12 +99,12 @@ def test_fidelity_eye_spans_reading_order(hub: Hub, plan: PlanHandler) -> None:
 def test_gloss_lines_are_capped_not_spilled(hub: Hub, plan: PlanHandler) -> None:
     """A toc eye is a bookmark: even if the node carries a prose paragraph, the
     one-line gloss is whitespace-collapsed + clipped, never a wall of text."""
-    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="Root", project=proj)
     prose = "alpha beta gamma delta " * 40  # ~920 chars, one logical line
     h = _handles(plan.put(id="p", text=prose, at={"last": True}).body)[0]
 
-    out = render_fisheye(hub.store, kind="plan", handle=h, extent="toc")
+    out = render_fisheye(hub.live_store, kind="plan", handle=h, extent="toc")
     bookmark = next(line for line in out.splitlines() if h in line)
     assert "\n" not in bookmark
     assert len(bookmark) <= 130  # ▸ + handle + capped gloss
@@ -111,4 +113,4 @@ def test_gloss_lines_are_capped_not_spilled(hub: Hub, plan: PlanHandler) -> None
 
 def test_unknown_handle_raises(hub: Hub, plan: PlanHandler) -> None:
     with pytest.raises(ValueError, match="no live plan node"):
-        render_fisheye(hub.store, kind="plan", handle="pe999999", extent="full")
+        render_fisheye(hub.live_store, kind="plan", handle="pe999999", extent="full")

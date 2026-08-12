@@ -35,7 +35,7 @@ def _pe(body: str) -> str:
 
 
 def test_dismiss_and_read_back(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     draft = store.insert_ref(kind="todo", slug=None, title="proj").id
     paper = store.insert_ref(kind="paper", slug="kumar", title="Kumar 2021").id
 
@@ -52,14 +52,16 @@ def test_dismiss_and_read_back(hub: Hub) -> None:
 def test_assemble_excludes_dismissed_from_recall(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     cited = store.insert_ref(kind="paper", slug="wang", title="Wang 2020")
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
     plan.put(id="p", title="Doc", project=proj)
     sec = _pe(plan.put(id="p", text="Ionic transport", at={"last": True}).body)
     plan.put(id="p", text=f"a claim paper:{cited.id}", at={"into": sec})
 
-    draft_ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    draft_ref_id = sec_chunk.ref_id
     dropped = store.insert_ref(kind="paper", slug="kumar", title="Kumar 2021").id
     dismiss_source(store, draft_ref_id, dropped)
 
@@ -88,7 +90,7 @@ def test_dismissal_by_handle_form_still_sticks(hub: Hub) -> None:
     still suppress the candidate. The old number-only ledger silently dropped a
     handle-form value, so the dismissal never stuck and the candidate resurfaced
     every run — the non-convergence the ledger exists to prevent."""
-    store = hub.store
+    store = hub.live_store
     draft = store.insert_ref(kind="todo", slug=None, title="proj").id
     paper = store.insert_ref(kind="paper", slug="kumar", title="Kumar 2021").id
 
@@ -114,11 +116,13 @@ def test_dismissal_by_chunk_handle_resolves_to_owning_ref(
     """A ``pc<id>`` chunk-handle paste (both handles ride the candidate line)
     resolves to the chunk's owning ref, so dismissing by the chunk still suppresses
     the whole source."""
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
     plan.put(id="p", title="Doc", project=proj)
     sec = _pe(plan.put(id="p", text="Ionic transport", at={"last": True}).body)
-    draft_ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    draft_ref_id = sec_chunk.ref_id
     # ``sec`` is a chunk handle (``pe<id>`` here; ``pc<id>`` in prod) — it resolves
     # to the ref that owns the chunk, not the chunk id.
     assert resolve_source_ref_id(store, sec) == draft_ref_id
@@ -129,7 +133,7 @@ def test_resolve_recovers_kind_id_and_slug_forms(hub: Hub) -> None:
     """The recovery ladder is exhaustive: bare int / handle / ``kind:id`` canonical
     link-target form / ``cite_key`` slug all resolve to the same source ref, so a
     dismissal sticks no matter which form the model reached for."""
-    store = hub.store
+    store = hub.live_store
     paper = store.insert_ref(kind="paper", slug="wang2020", title="Wang 2020").id
     assert resolve_source_ref_id(store, paper) == paper  # bare int
     assert resolve_source_ref_id(store, f"pa{paper}") == paper  # record handle
@@ -146,7 +150,7 @@ def test_unresolvable_dismissal_is_loud_and_dropped(
     is not raised: one bad tag must not blow up the workspace-render read path."""
     import logging
 
-    store = hub.store
+    store = hub.live_store
     draft = store.insert_ref(kind="todo", slug=None, title="proj").id
     good = store.insert_ref(kind="paper", slug="kumar", title="Kumar 2021").id
     store.add_tag(draft, Tag.closed(DISMISS_NS, str(good)))

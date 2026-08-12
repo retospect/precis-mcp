@@ -40,7 +40,7 @@ def reader_client(runtime_with_store, tmp_path) -> TestClient:
 def _draft_citing_a_hub(hub: Hub) -> str:
     """Mint a claim hub with one corroborator, then a draft with a single
     paragraph citing it by ``[fi<id>]``. Returns the draft's slug."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="claim-orig", title="The original report", year=2001

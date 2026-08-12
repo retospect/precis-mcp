@@ -1769,7 +1769,7 @@ class PaperHandler(Handler):
         # back to H2 / flat listing when embeddings is None.
         if all(b.embedding is not None for b in blocks):
             embeddings: tuple[tuple[float, ...], ...] | None = tuple(
-                tuple(b.embedding) for b in blocks
+                tuple(b.embedding) for b in blocks if b.embedding is not None
             )
         else:
             embeddings = None

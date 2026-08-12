@@ -58,7 +58,7 @@ def test_to_working_set_meta_shape() -> None:
 
 
 def test_marks_round_trip_on_ref_meta(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     ref = store.insert_ref(kind="draft", slug="d1", title="D")
     marks = {"pens": ["dc1"], "eyes": {"dc1": "fisheye+1hop"}}
     draft_eyes.save_marks(store, ref.id, marks)
@@ -69,7 +69,7 @@ def test_marks_round_trip_on_ref_meta(hub: Hub) -> None:
 
 
 def test_marks_expire_past_ttl(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
-    store = hub.store
+    store = hub.live_store
     ref = store.insert_ref(kind="draft", slug="d2", title="D")
     draft_eyes.save_marks(store, ref.id, {"pens": ["dc1"], "eyes": {"dc1": "verbatim"}})
     # TTL of 0 hours → any stored set reads back empty (never-sticky).
@@ -84,7 +84,7 @@ def test_marks_expire_past_ttl(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> Non
 def _draft_citing_a_paper(hub: Hub) -> tuple[int, str, int]:
     """A draft whose one section cites a paper. Returns (ref_id, section dc
     handle, paper ref_id)."""
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     paper = store.insert_ref(kind="paper", slug="coolpaper", title="A Cool Paper")
     ref, _title = store.create_draft(name="d", title="My Draft", project_ref_id=proj)
@@ -98,7 +98,7 @@ def _draft_citing_a_paper(hub: Hub) -> tuple[int, str, int]:
 
 
 def test_around_here_promotes_the_cited_paper_to_an_eye(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     ref_id, section_dc, paper_id = _draft_citing_a_paper(hub)
     marks: dict[str, Any] = {"pens": [], "eyes": {}}
     draft_eyes.expand_around(store, ref_id, [section_dc], marks)
@@ -109,7 +109,7 @@ def test_around_here_promotes_the_cited_paper_to_an_eye(hub: Hub) -> None:
 def test_planner_renders_the_curated_working_set(hub: Hub) -> None:
     from precis.workers.planner_prompt import _render_reader_working_set
 
-    store = hub.store
+    store = hub.live_store
     _ref_id, section_dc, _paper_id = _draft_citing_a_paper(hub)
     # A change-request todo carrying the hand-curated working set.
     todo = store.insert_ref(kind="todo", slug=None, title="fix the section")
@@ -131,6 +131,6 @@ def test_planner_renders_the_curated_working_set(hub: Hub) -> None:
 def test_planner_working_set_empty_when_no_meta(hub: Hub) -> None:
     from precis.workers.planner_prompt import _render_reader_working_set
 
-    store = hub.store
+    store = hub.live_store
     todo = store.insert_ref(kind="todo", slug=None, title="plain todo")
     assert _render_reader_working_set(store, todo.id) == ""

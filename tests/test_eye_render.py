@@ -39,7 +39,7 @@ class _B:
 
 
 def test_memory_eye_1hop_shows_link_neighborhood_by_relation(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="SEI thickness anomaly note")
     paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS depth profiling")
     mem2 = store.insert_ref(
@@ -59,7 +59,7 @@ def test_memory_eye_1hop_shows_link_neighborhood_by_relation(hub: Hub) -> None:
 
 
 def test_memory_eye_below_1hop_omits_the_link_neighborhood(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="A note")
     other = store.insert_ref(kind="memory", slug=None, title="Linked")
     store.add_link(src_ref_id=mem.id, dst_ref_id=other.id, relation="related-to")
@@ -69,7 +69,7 @@ def test_memory_eye_below_1hop_omits_the_link_neighborhood(hub: Hub) -> None:
 
 
 def test_memory_eye_kwd_is_a_one_line_bookmark(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="Bookmark me")
     h = handle_registry.format_handle("memory", mem.id)
     out = render_eye(store, h, "kwd")
@@ -78,7 +78,7 @@ def test_memory_eye_kwd_is_a_one_line_bookmark(hub: Hub) -> None:
 
 def test_doc_eye_empty_paper_renders_the_head(hub: Hub) -> None:
     # A paper with no body chunks yet degrades to its head line — never a crash.
-    store = hub.store
+    store = hub.live_store
     paper = store.insert_ref(kind="paper", slug="li21", title="Cryo-EM SEI")
     h = handle_registry.format_handle("paper", paper.id)
     out = render_eye(store, h, "verbatim")
@@ -193,7 +193,7 @@ def _seed_paper_with_keyworded_body(
 
 
 def test_doc_eye_whole_paper_renders_the_cluster_map(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     ref_id = _seed_paper_with_keyworded_body(
         store,
         slug="mao18",
@@ -208,7 +208,7 @@ def test_doc_eye_whole_paper_renders_the_cluster_map(hub: Hub) -> None:
 
 
 def test_doc_eye_chunk_handle_opens_that_chunk(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     ref_id = _seed_paper_with_keyworded_body(
         store,
         slug="sun19",
@@ -227,7 +227,7 @@ def test_doc_eye_chunk_handle_opens_that_chunk(hub: Hub) -> None:
 def test_paper_eye_1hop_surfaces_a_linked_note_both_ways(hub: Hub) -> None:
     """Links are symmetric: a note linked to a paper must appear when you fisheye
     the PAPER (not only when you fisheye the note)."""
-    store = hub.store
+    store = hub.live_store
     paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS profiling")
     note = store.insert_ref(kind="memory", slug=None, title="XPS caveat note")
     store.add_link(src_ref_id=note.id, dst_ref_id=paper.id, relation="related-to")
@@ -245,7 +245,7 @@ def test_paper_eye_1hop_surfaces_a_linked_note_both_ways(hub: Hub) -> None:
 
 
 def test_working_set_mixes_tree_and_link_eyes(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     plan = PlanHandler(hub=hub)
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="A Plan", project=proj)
@@ -264,7 +264,7 @@ def test_working_set_mixes_tree_and_link_eyes(hub: Hub) -> None:
 def test_unresolvable_flat_eye_degrades_not_crashes(hub: Hub) -> None:
     ws = WorkingSet()
     ws.focus("me999999", "verbatim")  # no such memory
-    out = render_working_set(hub.store, ws)
+    out = render_working_set(hub.live_store, ws)
     assert "unrenderable" in out  # marker, not an exception
 
 
@@ -295,5 +295,5 @@ def test_skill_eye_unknown_slug_raises() -> None:
 def test_skill_eye_unknown_slug_degrades_not_crashes_in_working_set(hub: Hub) -> None:
     ws = WorkingSet()
     ws.focus("sk:no-such-skill-slug", "verbatim")
-    out = render_working_set(hub.store, ws)
+    out = render_working_set(hub.live_store, ws)
     assert "unrenderable" in out  # marker, not an exception

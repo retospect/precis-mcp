@@ -715,9 +715,11 @@ class DraftHandler(Handler):
             if not ids:
                 raise NotFound(f"draft chunk {raw} not found")
             root = self.store.get_draft_chunk(raw)
+            if root is None:
+                raise NotFound(f"draft chunk {raw} not found")
             ref_id = int(root.ref_id)
-            ref = self.store.get_ref(kind="draft", id=ref_id)
-            slug = (ref.slug if ref and ref.slug else None) or str(ref_id)
+            owner = self.store.get_ref(kind="draft", id=ref_id)
+            slug = (owner.slug if owner and owner.slug else None) or str(ref_id)
             keep = set(ids)
             chunks = [c for c in self.store.reading_order(ref_id) if c.chunk_id in keep]
             return [(slug, c) for c in chunks], f"subtree {raw}"
@@ -1608,14 +1610,15 @@ class DraftHandler(Handler):
             c = self.store.set_figure_provenance(
                 handle, permission=permission, origin=origin
             )
-            return Response(body=f"updated figure provenance {c.dc}")
+            return Response(body=f"updated figure provenance {(c or _base).dc}")
         if style is not None:
             # Set/clear the heading's section style. Metadata-only
             # (meta.style = a skill slug) — no re-embed.
             c = self.store.set_chunk_style(handle, style or None)
+            dc = (c or _base).dc
             if style:
-                return Response(body=f"styled {c.dc} → {style}")
-            return Response(body=f"cleared style on {c.dc}")
+                return Response(body=f"styled {dc} → {style}")
+            return Response(body=f"cleared style on {dc}")
         if list_kind is not None:
             # Switch a ulist/olist container's kind, or dissolve it to normal
             # text (migration 0037). Structural — no text touched.
@@ -1651,20 +1654,21 @@ class DraftHandler(Handler):
             # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.
             target = _coerce_word_target(word_target)
             c = self.store.set_word_target(handle, target)
+            dc = (c or _base).dc
             if target:
                 lo, hi = target
                 return Response(
                     body=(
-                        f"set word target on {c.dc} → {lo}–{hi} words "
+                        f"set word target on {dc} → {lo}–{hi} words "
                         f"(check with get(kind='draft', view='wordcount'))"
                     )
                 )
-            return Response(body=f"cleared word target on {c.dc}")
+            return Response(body=f"cleared word target on {dc}")
         if move is not None:
             c = self.store.move_chunk(handle, move)
             if c is not None:
                 self._attribute_touch([c.chunk_id])
-            return Response(body=f"moved {c.dc}")
+            return Response(body=f"moved {(c or _base).dc}")
         is_table = _base.chunk_kind == "table"
         if is_table or table is not None or regen is not None:
             return self._edit_table(
@@ -2294,7 +2298,7 @@ class DraftHandler(Handler):
                     next=f"get(kind='draft', id={chunk.dc!r})",
                 )
         elif caption is not None or regen is not None:
-            norm = cur_table
+            norm = cur_table or {}
         else:
             raise BadInput(
                 "a table chunk's text is derived from its data — pass "
@@ -2823,6 +2827,7 @@ class DraftHandler(Handler):
         section subtree (on a ``dc<heading>`` handle)."""
         from precis.utils.wordcount import aggregate_word_counts
 
+        root = None
         if root_handle is not None:
             root = self.store.get_draft_chunk(root_handle)
             if root is None:
@@ -2843,7 +2848,7 @@ class DraftHandler(Handler):
         # Scope to the heading's DFS subtree when a root is given: the
         # contiguous run after the root whose depth exceeds the root's,
         # plus the root itself (standard DFS subtree property).
-        if root_handle is not None:
+        if root is not None:
             scoped: list[Any] = []
             collecting = False
             root_depth = 0

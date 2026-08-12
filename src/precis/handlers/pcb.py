@@ -438,7 +438,7 @@ class PcbHandler(Handler):
         mechanical profile) off the IR. Pure — no binary needed; the file lands
         under the corpus (or a temp dir)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
-        slug = ref.slug if ref is not None else str(ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         model = self._export_model(ref_id)
         raw_dir = args.get("dir")
         out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
@@ -508,7 +508,7 @@ class PcbHandler(Handler):
         ``max_passes`` is hit. Degrades to a single ``.dsn``-only pass when no
         router is installed (the gate is at this step only)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
-        slug = ref.slug if ref is not None else str(ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         # max(1,…): '0' is truthy, and 0 passes would report a .dsn that was
         # never written (the write lives inside the pass loop).
         max_passes = max(1, int(args.get("max_passes") or 3))

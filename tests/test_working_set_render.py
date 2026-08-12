@@ -29,7 +29,7 @@ def plan(hub: Hub) -> PlanHandler:
 def _flat_doc(
     hub: Hub, plan: PlanHandler, slug: str, names: list[str]
 ) -> dict[str, str]:
-    proj = hub.store.insert_ref(kind="todo", slug=None, title=f"{slug} proj").id
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title=f"{slug} proj").id
     plan.put(id=slug, title=f"Doc {slug}", project=proj)
     h = {}
     for name in names:
@@ -46,13 +46,13 @@ def test_overlapping_eyes_render_shared_body_once(hub: Hub, plan: PlanHandler) -
     ws = WorkingSet()
     ws.focus(h["alpha"], "fisheye")
     ws.focus(h["gamma"], "fisheye")
-    out = render_working_set(hub.store, ws)
+    out = render_working_set(hub.live_store, ws)
     assert out.count("beta body unique") == 1
     assert out.count("# Doc d") == 1  # one document block, not two
 
 
 def test_rings_merge_across_eyes_by_ref(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     shared = store.insert_ref(kind="paper", slug="shared", title="Shared Paper")
     only_a = store.insert_ref(kind="paper", slug="onlya", title="Only A Paper")
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
@@ -80,7 +80,7 @@ def test_small_gap_is_bridged(hub: Hub, plan: PlanHandler) -> None:
     ws = WorkingSet()
     ws.focus(h["a"], "verbatim")
     ws.focus(h["c"], "verbatim")
-    out = render_working_set(hub.store, ws)
+    out = render_working_set(hub.live_store, ws)
     assert "b body unique" in out  # the hole filled in
     assert "⋯" not in out  # no collapse marker for a bridged gap
 
@@ -90,7 +90,7 @@ def test_large_gap_collapses_to_marker(hub: Hub, plan: PlanHandler) -> None:
     ws = WorkingSet()
     ws.focus(h["n0"], "verbatim")
     ws.focus(h["n5"], "verbatim")
-    out = render_working_set(hub.store, ws)
+    out = render_working_set(hub.live_store, ws)
     assert "⋯ 4 more ⋯" in out  # n1..n4 collapsed, not silently dropped
     assert "n2 body unique" not in out  # genuinely omitted, not shown
 
@@ -100,11 +100,12 @@ def test_collapse_marker_rolls_up_keywords(hub: Hub, plan: PlanHandler) -> None:
     # keywords the marker says *what* it hides, not just a bare count.
     from precis.workers.chunk_keywords import write_chunk_keywords
 
-    store = hub.store
+    store = hub.live_store
     h = _flat_doc(hub, plan, "kw", ["n0", "n1", "n2", "n3", "n4", "n5"])
     with store.pool.connection() as conn:
         for name in ("n1", "n2", "n3", "n4"):
             ch = store.get_draft_chunk(h[name], kind="plan")
+            assert ch is not None
             write_chunk_keywords(
                 conn,
                 ch.chunk_id,
@@ -125,9 +126,9 @@ def test_cursor_document_leads(hub: Hub, plan: PlanHandler) -> None:
     ws.focus(ha["x"], "verbatim")
     ws.focus(hb["y"], "verbatim")
     ws.set_cursor(hb["y"])  # cursor in doc bbb
-    out = render_working_set(hub.store, ws)
+    out = render_working_set(hub.live_store, ws)
     assert out.index("# Doc bbb") < out.index("# Doc aaa")
 
 
 def test_empty_working_set(hub: Hub, plan: PlanHandler) -> None:
-    assert render_working_set(hub.store, WorkingSet()) == "— empty working set —"
+    assert render_working_set(hub.live_store, WorkingSet()) == "— empty working set —"

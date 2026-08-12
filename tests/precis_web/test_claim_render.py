@@ -26,7 +26,7 @@ def test_render_claim_evidence_status_unverified_when_print_set_empty(hub: Hub) 
     set the ``claim`` page already renders as "no print-visible supporter
     yet" — carries the SAME derived label in ``status``, not the old
     dormant ``None``."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     head = handle_registry.format_handle("finding", claim_hub)
 
@@ -45,7 +45,7 @@ def test_render_claim_evidence_status_clean_with_print_visible_supporter(
     "clean" — hub "unsupported" is deferred (a contradictor alongside
     support is normal science, already surfaced by the evidence lists
     themselves)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
         kind="paper", slug="claim-render-supporter", title="A supporting paper"
@@ -69,7 +69,7 @@ def test_render_claim_evidence_reflects_unacquirable_supporter(hub: Hub) -> None
     fabricate a claim-backing assertion nobody made) and the render exposes
     the harden note via ``trust_note`` — AND the specific supporter row is
     itself marked (1-residual: name WHICH paper, not just the note)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
         kind="paper", slug="unacq-supporter", title="A paywalled paper"
@@ -107,7 +107,7 @@ def test_render_claim_evidence_claim_level_override_softens_and_reflects(
 ) -> None:
     """A claim-level declaration made ON THE HUB itself softens the (possibly
     hardened) label and IS reflected as ``trust_overridden``."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
         kind="paper", slug="unacq-supporter2", title="A paywalled paper"
@@ -142,7 +142,7 @@ def test_render_claim_evidence_claim_level_override_softens_and_reflects(
 def test_render_claim_evidence_acquirable_supporter_row_unmarked(hub: Hub) -> None:
     """A supporter with no unacquirable declaration renders an unmarked row —
     the mark is per-paper, not a blanket flag on every supporter."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
         kind="paper", slug="acquirable-supporter", title="An open paper"

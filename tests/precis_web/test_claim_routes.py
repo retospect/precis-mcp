@@ -46,7 +46,7 @@ def claim_client(runtime_with_store, tmp_path) -> TestClient:
 def _seed_hub(hub: Hub) -> tuple[int, str]:
     """Mint a claim hub with a derived (cited) originator. Returns
     ``(hub_ref_id, pub_id)``."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="claim-orig", title="The original report", year=2001
@@ -86,7 +86,7 @@ def test_claim_view_reflects_unacquirable_supporter(
     (a paper-level FACT, no mode) hardens to unverified — not Ⓐ/✍, since no
     author asserted this claim is backed. The supporter row and the harden
     note both surface; the claim-level softener control is offered."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
         kind="paper", slug="unacq-route", title="A paywalled paper"
@@ -121,7 +121,7 @@ def test_claim_view_claim_level_override_softens_and_shows_undo(
 ) -> None:
     """A claim-level declaration made ON THE HUB itself (never inherited
     from a paper) softens the label and renders the undo control."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(kind="paper", slug="unacq-route2", title="A paper").id
     attach_evidence(
@@ -154,7 +154,7 @@ def test_claim_view_claim_level_override_softens_and_shows_undo(
 def test_claim_view_originator_handle_and_star(
     claim_client: TestClient, hub: Hub
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="claim-orig2", title="The original report v2", year=2002
@@ -215,7 +215,7 @@ def test_claim_view_used_by_lists_citers(claim_client: TestClient, hub: Hub) -> 
     ``precis-paper`` window (so a click reuses the one paper tab — the
     "click and get to pc" ask); a chunk-less citer falls back to the source
     record handle plus its title."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
 
     # A paper that cites the claim, pinned to a real chunk.
@@ -291,7 +291,7 @@ def test_refs_finding_non_hub_keeps_generic_detail(
     """An ordinary (non-hub) finding — the ~12% that are citation-pending
     markers / quality checks — has no claim page, so it must NOT redirect to
     ``/claim`` and keeps the generic finding detail."""
-    store = hub.store
+    store = hub.live_store
     plain = store.insert_ref(
         kind="finding", slug=None, title="[citation pending] check"
     ).id
@@ -326,7 +326,7 @@ def test_claim_preview_fragment(claim_client: TestClient, hub: Hub) -> None:
 def _seed_hub_with_chunk(hub: Hub) -> tuple[int, str, str]:
     """Mint a claim hub whose corroborating edge grounds at a REAL paper
     chunk. Returns ``(hub_ref_id, chunk_handle, chunk_text)``."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     paper = store.insert_ref(
         kind="paper", slug="claim-grounded", title="The grounded report", year=2003
@@ -419,7 +419,7 @@ def test_claim_view_renders_table_math_and_all_three_passages(
     passages (not just the ★ print set), and leave the claim TITLE as
     plain text (titles never get math-processed — the "Already decided"
     policy)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
 
     plain_paper = store.insert_ref(
@@ -493,7 +493,7 @@ def test_claim_view_renders_table_math_and_all_three_passages(
 def test_claim_view_non_hub_finding_shows_missing(
     claim_client: TestClient, hub: Hub
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     finding = store.insert_ref(
         kind="finding", slug=None, title="An ordinary finding", meta={}
     ).id
@@ -513,7 +513,7 @@ def test_claim_view_surfaces_both_src_chunk_grounding(
     chunks — must BOTH render as clickable grounding passages. The redirect
     that folded /refs/finding/<hub> into this page must not lose either
     (the "2 corroborates, we don't want to lose it" regression)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     paper = store.insert_ref(
         kind="paper", slug="claim-backfill", title="Backfilled supporter", year=2004
@@ -545,7 +545,7 @@ def test_claim_view_shows_full_untruncated_claim_sentence(
     """``refs.title`` is capped ``[:200]`` at mint; the whole sentence lives in
     the finding_body chunk. The claim page's h1 shows the FULL sentence, so a
     long claim isn't sheared mid-word ("concentrations up t" regression)."""
-    store = hub.store
+    store = hub.live_store
     long_sentence = (
         "Graphene supports ballistic electron transport at submicron distances "
     ) * 3 + "and this distinctive SENTINELTAIL closes the claim."
@@ -588,7 +588,7 @@ def test_claim_view_mixed_paper_labels_contradiction_not_support(
     different chunks): the contradicting passage renders under the
     contradictor role, not relabeled as support (reviewer finding — grounding
     attribution keyed by relation, not paper)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     paper = store.insert_ref(
         kind="paper", slug="mixed-ev", title="Mixed evidence", year=2004
@@ -635,7 +635,7 @@ def test_claim_unacquirable_set_abstract(claim_client: TestClient, hub: Hub) -> 
 
     assert r.status_code == 303
     assert r.headers["location"] == f"/claim/{fi_handle}"
-    ov = hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta[
+    ov = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta[
         "unacquirable_override"
     ]
     assert ov["mode"] == "abstract"
@@ -655,7 +655,7 @@ def test_claim_unacquirable_set_vouched(claim_client: TestClient, hub: Hub) -> N
     )
 
     assert r.status_code == 303
-    ov = hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta[
+    ov = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta[
         "unacquirable_override"
     ]
     assert ov["mode"] == "vouched"
@@ -673,7 +673,7 @@ def test_claim_unacquirable_requires_note(claim_client: TestClient, hub: Hub) ->
 
     assert r.status_code == 400
     assert "unacquirable_override" not in (
-        hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
+        hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id].meta or {}
     )
 
 
@@ -696,7 +696,7 @@ def test_claim_unacquirable_clear_drops_override(
     claim_client: TestClient, hub: Hub
 ) -> None:
     hub_ref_id, _pub_id = _seed_hub(hub)
-    hub.store.update_ref(
+    hub.live_store.update_ref(
         hub_ref_id,
         meta_patch={"unacquirable_override": {"mode": "vouched", "note": "x"}},
     )
@@ -709,7 +709,7 @@ def test_claim_unacquirable_clear_drops_override(
     )
 
     assert r.status_code == 303
-    ref = hub.store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
+    ref = hub.live_store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
     assert (ref.meta or {}).get("unacquirable_override") is None
 
 

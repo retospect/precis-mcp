@@ -11,21 +11,17 @@ is ``lang.elements(source)`` (the anchor list); everything else is data.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any
 
 from precis.diagram.lang import DiagramLang
+from precis.store.protocols import DiagramBindingStore
 
 #: Cap on an inlined linked-chunk body — keep the prompt bounded.
 _BODY_CHARS = 1200
 
 
-class _StoreLike(Protocol):
-    def element_bindings(self, node_chunk_id: int) -> list[dict[str, Any]]: ...
-    def universal_chunk(self, handle: str) -> dict[str, Any] | None: ...
-
-
 def render_diagram_context(
-    lang: DiagramLang, store: _StoreLike, node_chunk_id: int, source: str
+    lang: DiagramLang, store: DiagramBindingStore, node_chunk_id: int, source: str
 ) -> str:
     """The ``## Diagram elements ↔ linked context`` block (+ inlined bodies),
     or ``""`` when nothing is bound (the block is simply omitted). Safe on an
@@ -70,7 +66,7 @@ def render_diagram_context(
     return "\n".join(lines)
 
 
-def _linked_text(store: _StoreLike, binding: dict[str, Any]) -> str:
+def _linked_text(store: DiagramBindingStore, binding: dict[str, Any]) -> str:
     """The bound target's text — a chunk body for a chunk-level target, else
     ``""`` (a ref-level target's title already appears in the element line)."""
     if binding.get("chunk_id") is None:

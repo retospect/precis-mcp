@@ -31,7 +31,7 @@ def _section_with_refs(hub: Hub, plan: PlanHandler):
     """A plan whose 'Mechanisms' section cites a paper + a memory in its child,
     with a second memory linked *to* the section. Returns (section_chunk,
     reading_order, {names→id})."""
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     paper = store.insert_ref(
         kind="paper", slug="coolpaper", title="A Cool Paper On SEI"
@@ -49,6 +49,7 @@ def _section_with_refs(hub: Hub, plan: PlanHandler):
         at={"into": sec},
     )
     sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
     chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
     # inbound: a memory that links TO the section (the "noted on this" edge)
     store.add_link(
@@ -67,7 +68,7 @@ def _section_with_refs(hub: Hub, plan: PlanHandler):
 
 def test_ring_groups_cited_and_notes(hub: Hub, plan: PlanHandler) -> None:
     sec_chunk, chunks, ids = _section_with_refs(hub, plan)
-    ring = render_reference_ring(hub.store, sec_chunk, chunks)
+    ring = render_reference_ring(hub.live_store, sec_chunk, chunks)
 
     assert "— referenced (1 hop) —" in ring
     # cited paper, rendered by kind (cite_key + title)
@@ -80,17 +81,18 @@ def test_ring_groups_cited_and_notes(hub: Hub, plan: PlanHandler) -> None:
 
 
 def test_ring_empty_when_section_points_nowhere(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="Root", project=proj)
     sec = _handles(plan.put(id="p", text="A lonely section", at={"last": True}).body)[0]
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
-    chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
+    sec_chunk: Any = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    chunks: Any = store.reading_order(sec_chunk.ref_id, kind="plan")
     assert render_reference_ring(store, sec_chunk, chunks) == "— no references —"
 
 
 def test_ring_caps_each_group_with_overflow(hub: Hub, plan: PlanHandler) -> None:
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     paper_ids = [
         store.insert_ref(kind="paper", slug=f"p{i}", title=f"Paper {i}").id
@@ -101,8 +103,9 @@ def test_ring_caps_each_group_with_overflow(hub: Hub, plan: PlanHandler) -> None
     sec = _handles(
         plan.put(id="p", text=f"Cites all: {cites}", at={"last": True}).body
     )[0]
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
-    chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
+    sec_chunk: Any = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    chunks: Any = store.reading_order(sec_chunk.ref_id, kind="plan")
 
     ring = render_reference_ring(store, sec_chunk, chunks, cap=8)
     assert "Cited:" in ring
@@ -113,7 +116,7 @@ def test_ring_caps_each_group_with_overflow(hub: Hub, plan: PlanHandler) -> None
 def test_fisheye_hop1_appends_the_ring(hub: Hub, plan: PlanHandler) -> None:
     sec_chunk, _chunks, _ids = _section_with_refs(hub, plan)
     out = render_fisheye(
-        hub.store, kind="plan", handle=sec_chunk.dc, extent="fisheye+1hop"
+        hub.live_store, kind="plan", handle=sec_chunk.dc, extent="fisheye+1hop"
     )
     # the fidelity span (the section body) is present …
     assert "Mechanisms" in out
@@ -148,12 +151,13 @@ def _cites(store: Any, *, src: int, dst: int) -> None:
 def _plan_section_citing(hub: Hub, plan: PlanHandler, text: str):
     """A minimal plan with one section whose body is ``text``. Returns
     ``(section_chunk, reading_order)``."""
-    store = hub.store
+    store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="Root", project=proj)
     sec = _handles(plan.put(id="p", text="Section", at={"last": True}).body)[0]
     plan.put(id="p", text=text, at={"into": sec})
     sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
     chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
     return sec_chunk, chunks
 
@@ -161,7 +165,7 @@ def _plan_section_citing(hub: Hub, plan: PlanHandler, text: str):
 def test_ring_claims_group_explodes_cited_hub_with_grounding(
     hub: Hub, plan: PlanHandler
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="orig1", title="The original report", year=2001
@@ -199,7 +203,7 @@ def test_ring_claims_group_explodes_cited_hub_with_grounding(
 def test_ring_claims_group_skips_non_hub_finding(hub: Hub, plan: PlanHandler) -> None:
     from precis.identity import make_pub_id
 
-    store = hub.store
+    store = hub.live_store
     finding = store.insert_ref(
         kind="finding", slug=None, title="An ordinary finding", meta={}
     ).id
@@ -225,7 +229,7 @@ def test_ring_claims_group_skips_non_hub_finding(hub: Hub, plan: PlanHandler) ->
 def test_ring_claims_group_caps_originators_with_overflow(
     hub: Hub, plan: PlanHandler
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     roots = [
         store.insert_ref(
@@ -253,7 +257,7 @@ def test_ring_claims_group_caps_originators_with_overflow(
 def test_ring_claims_group_falls_back_to_corroborators_when_undetermined(
     hub: Hub, plan: PlanHandler
 ) -> None:
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     a = store.insert_ref(kind="paper", slug="fba", title="Supporter A", year=2001).id
     b = store.insert_ref(kind="paper", slug="fbb", title="Supporter B", year=2002).id
@@ -281,7 +285,7 @@ def test_ring_claims_group_marks_pinned_paper(hub: Hub, plan: PlanHandler) -> No
     """A ``[<pub_id>>...]`` replace pin naming the derived originator
     itself just marks it 📌 (no divergence — pin matches the derived
     set)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="pinorig1", title="The pinned original report", year=2001
@@ -314,7 +318,7 @@ def test_ring_claims_group_notes_pin_divergence(hub: Hub, plan: PlanHandler) -> 
     """A pin naming a *different* paper than the derived originator gets
     both the 📌 marker (surfaced even though it isn't part of the derived
     evidence) and a short divergence note."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="divorig1", title="The original report", year=2001
@@ -355,7 +359,7 @@ def test_ring_claims_group_supplement_pin_never_notes_divergence(
     """A `+` supplement pin naming a paper the derivation never picked is
     correct usage (derived plus this), not a divergence — only `>` gets
     the `(pinned; derived: ...)` note."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="supporig1", title="The original report", year=2001
@@ -393,7 +397,7 @@ def test_ring_claims_group_pin_overflow_gets_more_line(
 ) -> None:
     """More pinned-but-not-derived-evidence papers than `cap` still get a
     visible `+N more` line — the ring never silently truncates (§6)."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="ovorig1", title="The original report", year=2001
@@ -434,7 +438,7 @@ def test_ring_claims_group_explodes_cited_hub_via_finding_handle(
 ) -> None:
     """A hub cited by its ``fi<id>`` handle (the preferred form) explodes
     into evidence exactly like the content-hash ``[pub_id]`` form."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="fihorig1", title="The original report", year=2001
@@ -482,7 +486,7 @@ def test_ring_claims_group_marks_pinned_paper_via_finding_handle(
 ) -> None:
     """A ``[fi<id>>...]`` replace pin — same pin marking as the ``[pub_id>...]``
     form, via the finding-handle cite."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="fihpinorig1", title="The pinned original report", year=2001
@@ -516,7 +520,7 @@ def test_ring_claims_group_dedups_hub_cited_via_both_forms(
 ) -> None:
     """A hub cited via BOTH ``[pub_id]`` and ``[fi<id>]`` in one span
     explodes once, not twice."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="fihdedup1", title="The original report", year=2001
@@ -545,7 +549,7 @@ def test_ring_claims_group_surfaces_refined_by_when_a_sharper_hub_exists(
 ) -> None:
     """Citing the ORIGINAL claim surfaces an advisory ``↰ refined by`` line
     naming the sharper hub — the "a sharper version exists" nudge."""
-    store = hub.store
+    store = hub.live_store
     original = mint_hub(store, _CLAIM)
     sharper = mint_hub(
         store,
@@ -575,7 +579,7 @@ def test_ring_claims_group_surfaces_refines_when_citing_the_sharper_hub(
 ) -> None:
     """Citing the SHARPER claim surfaces an advisory ``↳ refines`` line
     naming the coarser hub it sharpens."""
-    store = hub.store
+    store = hub.live_store
     original = mint_hub(store, _CLAIM)
     sharper = mint_hub(
         store,
@@ -603,7 +607,7 @@ def test_ring_claims_group_no_refines_lines_when_hub_has_no_claim_links(
     hub: Hub, plan: PlanHandler
 ) -> None:
     """A cited hub with no ``refines`` neighbours renders no advisory lines."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     hub_handle = handle_registry.format_handle("finding", claim_hub)
     sec_chunk, chunks = _plan_section_citing(
@@ -633,7 +637,7 @@ def test_ring_claims_group_orders_across_grammars_by_text_position(
     are mined as one interleaved, position-sorted pass, not sequentially
     (which would put every ``[pub_id]`` hit ahead of every handle hit
     regardless of where each actually sits in the text)."""
-    store = hub.store
+    store = hub.live_store
     hub_a = mint_hub(store, _CLAIM)
     hub_b = mint_hub(store, _CLAIM_B)
     paper_a = store.insert_ref(kind="paper", slug="ordera1", title="Paper A").id
@@ -666,7 +670,7 @@ def test_ring_claims_group_keeps_pin_when_pinned_form_seen_first(
     two grammars sequentially (which would let the later, unpinned
     ``[pub_id]`` position claim ``seen`` first if pub_ids are scanned
     before handles) would silently drop the pin."""
-    store = hub.store
+    store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
     originator = store.insert_ref(
         kind="paper", slug="pinfirst1", title="The pinned original report", year=2001

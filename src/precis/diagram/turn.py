@@ -23,24 +23,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from precis.diagram.context import render_diagram_context
 from precis.diagram.lang import DiagramLang, LintFinding
+from precis.store.protocols import DiagramTurnStore
 
 log = logging.getLogger(__name__)
-
-
-class _StoreLike(Protocol):
-    def reading_order(self, ref_id: int, *, kind: str = ...) -> list[Any]: ...
-    def edit_text(self, handle: str, text: str, *, kind: str = ...) -> Any: ...
-    def add_chunks(self, **kw: Any) -> list[Any]: ...
-    def stamp_ref_meta(self, ref_id: int, patch: dict[str, Any]) -> Any: ...
-    def element_bindings(self, node_chunk_id: int) -> list[dict[str, Any]]: ...
-    def set_element_bindings(
-        self, *, node_chunk_id: int, desired: list[dict[str, Any]], set_by: str = ...
-    ) -> dict[str, int]: ...
-    def universal_chunk(self, handle: str) -> dict[str, Any] | None: ...
 
 
 #: A turn model call: takes the built prompt, returns the parsed JSON dict.
@@ -88,7 +77,7 @@ class TurnResult:
 
 
 def _docs(
-    lang: DiagramLang, store: _StoreLike, ref_id: int
+    lang: DiagramLang, store: DiagramTurnStore, ref_id: int
 ) -> tuple[Any | None, Any | None, Any | None]:
     """Return ``(source_chunk, vocab_chunk, notes_chunk)`` for a diagram."""
     source = vocab = notes = None
@@ -168,7 +157,7 @@ def build_prompt(
 
 def run_turn(
     lang: DiagramLang,
-    store: _StoreLike,
+    store: DiagramTurnStore,
     ref: Any,
     message: str,
     *,
@@ -283,7 +272,7 @@ def _document_context(store: Any, ref: Any, message: str) -> str:
 
 def _all_findings(
     lang: DiagramLang,
-    store: _StoreLike,
+    store: DiagramTurnStore,
     node_chunk_id: int | None,
     source: str,
     bounds: Any,
@@ -301,7 +290,7 @@ def _all_findings(
 
 def _persist_doc(
     lang: DiagramLang,
-    store: _StoreLike,
+    store: DiagramTurnStore,
     ref_id: int,
     chunk: Any | None,
     chunk_kind: str,
@@ -436,7 +425,7 @@ def _clean_if_valid(lang: DiagramLang, raw: str) -> str | None:
 
 
 def _persist_turn(
-    lang: DiagramLang, store: _StoreLike, ref_id: int, message: str, reply: str
+    lang: DiagramLang, store: DiagramTurnStore, ref_id: int, message: str, reply: str
 ) -> None:
     """Append the turn's chat chunk (embedded, resumable)."""
     text = f"user: {message.strip()}\n\nassistant: {reply.strip()}"

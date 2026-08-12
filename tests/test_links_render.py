@@ -141,9 +141,9 @@ def test_numeric_ref_handler_still_appends_links_section_on_get(hub: Hub) -> Non
     from precis.handlers.memory import MemoryHandler
 
     handler = MemoryHandler(hub=hub)
-    a = hub.store.insert_ref(kind="memory", slug=None, title="A note").id
-    b = hub.store.insert_ref(kind="memory", slug=None, title="Another note").id
-    hub.store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+    a = hub.live_store.insert_ref(kind="memory", slug=None, title="A note").id
+    b = hub.live_store.insert_ref(kind="memory", slug=None, title="Another note").id
+    hub.live_store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
     resp = handler.get(id=a)
     assert "Links:" in resp.body
     assert "Another note" in resp.body
@@ -160,7 +160,7 @@ class TestPaperLinksView:
         assert "links" in handler.accepted_views()
 
     def test_paper_links_view_shows_inbound_and_outbound(self, hub: Hub) -> None:
-        store = hub.store
+        store = hub.live_store
         y = store.insert_ref(kind="paper", slug="y2020cited", title="Cited Paper Y").id
         x = store.insert_ref(kind="paper", slug="x2021citer", title="Citing Paper X").id
         store.add_link(src_ref_id=x, dst_ref_id=y, relation="cites")
@@ -173,7 +173,7 @@ class TestPaperLinksView:
         assert "Citing Paper X" in resp.body
 
     def test_paper_links_view_empty_still_renders(self, hub: Hub) -> None:
-        store = hub.store
+        store = hub.live_store
         store.insert_ref(kind="paper", slug="lonely2020", title="Lonely Paper")
         handler = PaperHandler(hub=hub)
         resp = handler.get(id="lonely2020", view="links")
@@ -186,7 +186,7 @@ class TestPaperLinksView:
 
 
 def test_cad_links_view(hub: Hub) -> None:
-    store = hub.store
+    store = hub.live_store
     a = store.insert_ref(kind="cad", slug="bracket", title="bracket design").id
     b = store.insert_ref(kind="memory", slug=None, title="a design note").id
     store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")

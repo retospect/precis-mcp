@@ -137,12 +137,12 @@ class Hub:
     #: Database-backed store. ``None`` for stateless deployments —
     #: store-backed handlers (memory, paper, todo, …) won't be
     #: registered in that case. Set once at boot; read freely.
-    store: Any = None  # precis.store.Store | None
+    store: Store | None = None
     #: Vector embedder. ``None`` when no embedder is configured —
     #: handlers that need vectors should call :meth:`embed_one`,
     #: which raises a clean error in that case rather than crashing
     #: deep inside the call.
-    embedder: Any = None  # precis.embedder.Embedder | None
+    embedder: Embedder | None = None
     #: Per-request hint collector. Always present; emit hints via
     #: :meth:`emit_hint`. Handlers don't need to know about the
     #: contextvar plumbing.
@@ -330,6 +330,24 @@ class Hub:
         return len(self.kinds)
 
     # ----- service methods (the "hub" half of the Hub) -----
+
+    @property
+    def live_store(self) -> Store:
+        """The store, narrowed to non-``None``.
+
+        For call sites whose existence already implies a store-backed
+        build (store-backed handlers, tests on the ``hub`` /
+        ``runtime_with_store`` fixtures) — reaching this on a stateless
+        boot is a wiring bug, so it raises :class:`RuntimeError` rather
+        than returning ``None``. Code that legitimately runs on both
+        build shapes keeps checking ``self.store is None`` explicitly.
+        """
+        if self.store is None:
+            raise RuntimeError(
+                "hub has no store configured; "
+                "this call path should not be reachable on a stateless build"
+            )
+        return self.store
 
     def embed_one(self, text: str) -> list[float]:
         """Embed a single text into the configured vector space.

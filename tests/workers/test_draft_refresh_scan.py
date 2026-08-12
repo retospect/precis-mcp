@@ -26,15 +26,16 @@ def _dc(body: str) -> str:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _seed_draft(draft: DraftHandler, hub: Hub, *, slug: str) -> dict[str, Any]:
     """A bare draft: just the title chunk."""
     proj = _proj(hub)
     draft.put(id=slug, title="T", project=proj)
-    ref = hub.store.get_ref(kind="draft", id=slug)
-    title_dc = hub.store.reading_order(ref.id)[0].dc
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    title_dc = hub.live_store.reading_order(ref.id)[0].dc
     return {"ref_id": ref.id, "title": title_dc}
 
 

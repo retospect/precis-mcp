@@ -166,7 +166,7 @@ def draft(hub: Hub) -> DraftHandler:
 
 
 def _proj(hub: Hub) -> int:
-    return hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
 def _seed_draft_para(draft: DraftHandler, hub: Hub, text: str) -> int:
@@ -174,16 +174,16 @@ def _seed_draft_para(draft: DraftHandler, hub: Hub, text: str) -> int:
     chunk_id."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
-    title_handle = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)[
-        0
-    ].handle
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_handle = hub.live_store.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
         text=text,
         at={"after": "¶" + title_handle},
     )
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    order = hub.live_store.reading_order(ref.id)
     return int(order[-1].chunk_id)
 
 
@@ -274,12 +274,12 @@ def _edge_is_ref_level(store: Store, *, paper_ref_id: int, hub_ref_id: int) -> b
 
 
 def test_plan_new_claim_writes_nothing(draft: DraftHandler, hub: Hub) -> None:
-    _, pc = _pc_of(hub.store)
+    _, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
-    before = _finding_count(hub.store)
+    before = _finding_count(hub.live_store)
 
     result = plan_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         chunk_id=dc,
         extract_fn=_extract_const("Ribbons are semiconducting."),
@@ -289,7 +289,7 @@ def test_plan_new_claim_writes_nothing(draft: DraftHandler, hub: Hub) -> None:
     )
 
     assert [p.action for p in result.plans] == ["new"]
-    assert _finding_count(hub.store) == before  # dry-run minted nothing
+    assert _finding_count(hub.live_store) == before  # dry-run minted nothing
 
 
 def test_resolve_backfill_chunks_by_slug_and_handle(
@@ -301,13 +301,15 @@ def test_resolve_backfill_chunks_by_slug_and_handle(
 
     from precis.cli.taproot import _resolve_backfill_chunks
 
-    _, pc = _pc_of(hub.store)
+    _, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"A claim [{pc}].")  # seeds draft "nt"
 
-    by_slug = _resolve_backfill_chunks(hub.store, Namespace(chunk=None, draft="nt"))
+    by_slug = _resolve_backfill_chunks(
+        hub.live_store, Namespace(chunk=None, draft="nt")
+    )
     assert dc in by_slug
     by_handle = _resolve_backfill_chunks(
-        hub.store, Namespace(chunk=f"dc{dc}", draft=None)
+        hub.live_store, Namespace(chunk=f"dc{dc}", draft=None)
     )
     assert by_handle == [dc]
 
@@ -319,26 +321,26 @@ def test_resolve_backfill_chunks_unknown_slug_raises(hub: Hub) -> None:
 
     with pytest.raises(BadInput):
         _resolve_backfill_chunks(
-            hub.store, Namespace(chunk=None, draft="no-such-draft-xyz")
+            hub.live_store, Namespace(chunk=None, draft="no-such-draft-xyz")
         )
 
 
 def test_plan_rejects_non_draft_chunk(hub: Hub) -> None:
-    paper = seed_ref(hub.store, kind="paper")
-    pchunk = seed_chunk(hub.store, ref_id=paper, text="body [pc1].")
+    paper = seed_ref(hub.live_store, kind="paper")
+    pchunk = seed_chunk(hub.live_store, ref_id=paper, text="body [pc1].")
     with pytest.raises(BadInput):
-        plan_chunk(hub.store, embedder=None, chunk_id=pchunk)
+        plan_chunk(hub.live_store, embedder=None, chunk_id=pchunk)
 
 
 # ── apply_chunk (writes) ─────────────────────────────────────────────────
 
 
 def test_apply_mints_hub_and_rewrites_prose(draft: DraftHandler, hub: Hub) -> None:
-    paper, pc = _pc_of(hub.store)
+    paper, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -351,13 +353,13 @@ def test_apply_mints_hub_and_rewrites_prose(draft: DraftHandler, hub: Hub) -> No
     plan = result.plans[0]
     assert plan.action == "new"
     assert plan.hub_ref_id is not None
-    assert is_claim_hub(hub.store, plan.hub_ref_id)
+    assert is_claim_hub(hub.live_store, plan.hub_ref_id)
     # prose rewritten pc → fi
     assert result.rewritten_text is not None
     assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
     assert "[pc" not in result.rewritten_text
     # evidence edge paper --> hub written
-    with hub.store.pool.connection() as conn:
+    with hub.live_store.pool.connection() as conn:
         edge = conn.execute(
             "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
             (paper, plan.hub_ref_id),
@@ -369,9 +371,9 @@ def test_apply_converges_onto_existing_hub(draft: DraftHandler, hub: Hub) -> Non
     from precis.taproot.authoring import seed_claim_hub
 
     # An existing hub for the same claim, grounded by paper A.
-    paper_a = seed_ref(hub.store, title="paper A", kind="paper")
+    paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
     existing = seed_claim_hub(
-        hub.store,
+        hub.live_store,
         sentence="Ribbons are semiconducting.",
         scope={},
         supporters=[{"paper": paper_a}],
@@ -379,12 +381,12 @@ def test_apply_converges_onto_existing_hub(draft: DraftHandler, hub: Hub) -> Non
     hub_id = existing["hub_ref_id"]
 
     # A different draft citing paper B for the same claim.
-    paper_b, pc = _pc_of(hub.store, paper_title="paper B")
+    paper_b, pc = _pc_of(hub.live_store, paper_title="paper B")
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
-    before = _finding_count(hub.store)
+    before = _finding_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -397,11 +399,11 @@ def test_apply_converges_onto_existing_hub(draft: DraftHandler, hub: Hub) -> Non
     plan = result.plans[0]
     assert plan.action == "attach"
     assert plan.hub_ref_id == hub_id
-    assert _finding_count(hub.store) == before  # converged, no new hub
+    assert _finding_count(hub.live_store) == before  # converged, no new hub
     assert result.rewritten_text is not None
     assert f"[fi{hub_id}]" in result.rewritten_text
     # paper B now also grounds the shared hub
-    with hub.store.pool.connection() as conn:
+    with hub.live_store.pool.connection() as conn:
         edge = conn.execute(
             "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
             (paper_b, hub_id),
@@ -419,19 +421,19 @@ def test_apply_attach_evidence_raise_leaves_prose_untouched(
     # hub whose evidence edge never actually landed this call.
     from precis.taproot.authoring import seed_claim_hub
 
-    paper_a = seed_ref(hub.store, title="paper A", kind="paper")
+    paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
     existing = seed_claim_hub(
-        hub.store,
+        hub.live_store,
         sentence="Ribbons are semiconducting.",
         scope={},
         supporters=[{"paper": paper_a}],
     )
     hub_id = existing["hub_ref_id"]
 
-    paper_b, pc = _pc_of(hub.store, paper_title="paper B")
+    paper_b, pc = _pc_of(hub.live_store, paper_title="paper B")
     original_text = f"Ribbons are semiconducting [{pc}]."
     dc = _seed_draft_para(draft, hub, original_text)
-    links_before = _links_count(hub.store)
+    links_before = _links_count(hub.live_store)
 
     def _raising_attach_evidence(*_a: Any, **_k: Any) -> None:
         raise RuntimeError("simulated transient write failure")
@@ -439,7 +441,7 @@ def test_apply_attach_evidence_raise_leaves_prose_untouched(
     monkeypatch.setattr("precis.taproot.hub.attach_evidence", _raising_attach_evidence)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -452,14 +454,16 @@ def test_apply_attach_evidence_raise_leaves_prose_untouched(
     plan = result.plans[0]
     assert plan.action == "error"
     # No evidence edge landed on this call.
-    assert _links_count(hub.store) == links_before
+    assert _links_count(hub.live_store) == links_before
     # Prose must be left exactly as it was — no [fi<hub>] cite for a hub
     # whose evidence edge never landed.
     assert result.rewritten_text is None
-    with hub.store.pool.connection() as conn:
-        text = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT text FROM chunks WHERE chunk_id = %s", (dc,)
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    text = row[0]
     assert text == original_text
     assert f"[fi{hub_id}]" not in text
 
@@ -467,12 +471,12 @@ def test_apply_attach_evidence_raise_leaves_prose_untouched(
 def test_apply_collapses_adjacent_cites_to_one_hub(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    paper1, pc1 = _pc_of(hub.store, paper_title="p1")
-    paper2, pc2 = _pc_of(hub.store, paper_title="p2")
+    paper1, pc1 = _pc_of(hub.live_store, paper_title="p1")
+    paper2, pc2 = _pc_of(hub.live_store, paper_title="p2")
     dc = _seed_draft_para(draft, hub, f"A widely held result [{pc1}][{pc2}].")
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -490,7 +494,7 @@ def test_apply_collapses_adjacent_cites_to_one_hub(
     assert result.rewritten_text.count(f"[fi{plan.hub_ref_id}]") == 1
     assert "[pc" not in result.rewritten_text
     # both papers attached to the one hub
-    with hub.store.pool.connection() as conn:
+    with hub.live_store.pool.connection() as conn:
         n = conn.execute(
             "SELECT count(*) FROM links WHERE dst_ref_id = %s AND src_ref_id IN (%s, %s)",
             (plan.hub_ref_id, paper1, paper2),
@@ -505,12 +509,12 @@ def test_apply_collapse_space_separated_cites_leaves_no_artifact(
     # with NO leftover space before the period — the whole contiguous run is
     # replaced in one span-edit, so there is no cleanup regex to corrupt
     # unrelated markdown elsewhere in the chunk.
-    _, pc1 = _pc_of(hub.store, paper_title="p1")
-    _, pc2 = _pc_of(hub.store, paper_title="p2")
+    _, pc1 = _pc_of(hub.live_store, paper_title="p1")
+    _, pc2 = _pc_of(hub.live_store, paper_title="p2")
     dc = _seed_draft_para(draft, hub, f"A widely held result [{pc1}] [{pc2}].")
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -528,12 +532,12 @@ def test_apply_collapse_space_separated_cites_leaves_no_artifact(
 
 
 def test_apply_leaves_no_claim_span_untouched(draft: DraftHandler, hub: Hub) -> None:
-    _, pc = _pc_of(hub.store)
+    _, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"See prior work [{pc}].")
-    before = _finding_count(hub.store)
+    before = _finding_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -545,14 +549,14 @@ def test_apply_leaves_no_claim_span_untouched(draft: DraftHandler, hub: Hub) -> 
 
     assert result.plans[0].action == "no-claim"
     assert result.rewritten_text is None  # nothing rewrote
-    assert _finding_count(hub.store) == before
+    assert _finding_count(hub.live_store) == before
 
 
 def test_apply_skips_unresolvable_pc(draft: DraftHandler, hub: Hub) -> None:
     dc = _seed_draft_para(draft, hub, "Claim with a dangling cite [pc999999999].")
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -571,15 +575,15 @@ def test_apply_needs_review_files_todo_and_leaves_prose(
 ) -> None:
     from precis.taproot.authoring import seed_claim_hub
 
-    paper_a = seed_ref(hub.store, title="paper A", kind="paper")
+    paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
     existing = seed_claim_hub(
-        hub.store,
+        hub.live_store,
         sentence="Ribbons are semiconducting.",
         scope={},
         supporters=[{"paper": paper_a}],
     )
     hub_id = existing["hub_ref_id"]
-    _, pc = _pc_of(hub.store, paper_title="paper B")
+    _, pc = _pc_of(hub.live_store, paper_title="paper B")
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
 
     def _todos(store: Store) -> int:
@@ -590,9 +594,9 @@ def test_apply_needs_review_files_todo_and_leaves_prose(
             ).fetchone()
         return int(row[0]) if row else 0
 
-    before_todos = _todos(hub.store)
+    before_todos = _todos(hub.live_store)
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -604,15 +608,15 @@ def test_apply_needs_review_files_todo_and_leaves_prose(
 
     assert result.plans[0].action == "needs_review"
     assert result.rewritten_text is None  # prose left as [pc…]
-    assert _todos(hub.store) == before_todos + 1  # review todo filed
+    assert _todos(hub.live_store) == before_todos + 1  # review todo filed
 
 
 def test_apply_is_idempotent_at_draft_level(draft: DraftHandler, hub: Hub) -> None:
-    _, pc = _pc_of(hub.store)
+    _, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
 
     apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -624,10 +628,12 @@ def test_apply_is_idempotent_at_draft_level(draft: DraftHandler, hub: Hub) -> No
 
     # The draft's current body chunk now reads [fi…]; a fresh backfill of it
     # finds no pc-cites → zero cite-groups.
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert nt_ref is not None
+    order = hub.live_store.reading_order(nt_ref.id)
     new_dc = int(order[-1].chunk_id)
     second = plan_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         chunk_id=new_dc,
         extract_fn=_never_called,
@@ -646,11 +652,11 @@ def test_plan_stub_pa_is_fetch_first_and_writes_nothing(
 ) -> None:
     # AC5 (dry-run) + AC2: a whole-paper cite to an un-fetched stub is
     # classified stub-fetch-first without ever reaching the claim extractor.
-    _, pa = _stub_pa(hub.store)
+    _, pa = _stub_pa(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"A landmark result [{pa}].")
 
     result = plan_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         chunk_id=dc,
         ref_level=True,  # even with the override, a stub is never promoted
@@ -668,13 +674,13 @@ def test_apply_stub_pa_skipped_no_write_prose_untouched(
     draft: DraftHandler, hub: Hub
 ) -> None:
     # AC2: a stub [pa] mints no hub, no edge, and leaves its [pa] token.
-    _, pa = _stub_pa(hub.store)
+    _, pa = _stub_pa(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"A landmark result [{pa}].")
-    findings_before = _finding_count(hub.store)
-    links_before = _links_count(hub.store)
+    findings_before = _finding_count(hub.live_store)
+    links_before = _links_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -687,20 +693,20 @@ def test_apply_stub_pa_skipped_no_write_prose_untouched(
 
     assert result.plans[0].action == "stub-fetch-first"
     assert result.rewritten_text is None  # prose left as [pa…]
-    assert _finding_count(hub.store) == findings_before  # no hub
-    assert _links_count(hub.store) == links_before  # no edge
+    assert _finding_count(hub.live_store) == findings_before  # no hub
+    assert _links_count(hub.live_store) == links_before  # no edge
 
 
 def test_plan_fetched_pa_default_is_reground(draft: DraftHandler, hub: Hub) -> None:
     # AC1/AC5 (dry-run): a fetched [pa] WITHOUT --ref-level re-grounds to the
     # located passage — action 'reground' carrying the target chunk_id, and the
     # dry-run writes nothing.
-    _, pa, chunk_id = _fetched_pa_c(hub.store)
+    _, pa, chunk_id = _fetched_pa_c(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
-    before = _finding_count(hub.store)
+    before = _finding_count(hub.live_store)
 
     result = plan_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         chunk_id=dc,
         ref_level=False,
@@ -715,18 +721,18 @@ def test_plan_fetched_pa_default_is_reground(draft: DraftHandler, hub: Hub) -> N
     assert p.action == "reground"
     assert p.group.kind == "pa"
     assert p.reground_targets == [chunk_id]
-    assert _finding_count(hub.store) == before  # dry-run wrote nothing
+    assert _finding_count(hub.live_store) == before  # dry-run wrote nothing
 
 
 def test_apply_ref_level_pa_mints_ungrounded_and_rewrites(
     draft: DraftHandler, hub: Hub
 ) -> None:
     # AC3: fetched [pa] + --ref-level → ref-level (ungrounded) edge, [pa]→[fi].
-    paper, pa = _fetched_pa(hub.store)
+    paper, pa = _fetched_pa(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -742,13 +748,15 @@ def test_apply_ref_level_pa_mints_ungrounded_and_rewrites(
     assert plan.ungrounded is True
     assert result.n_ungrounded == 1
     assert plan.hub_ref_id is not None
-    assert is_claim_hub(hub.store, plan.hub_ref_id)
+    assert is_claim_hub(hub.live_store, plan.hub_ref_id)
     # prose rewritten pa → fi
     assert result.rewritten_text is not None
     assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
     assert "[pa" not in result.rewritten_text
     # the evidence edge is ref-level (whole-paper, no grounding chunk)
-    assert _edge_is_ref_level(hub.store, paper_ref_id=paper, hub_ref_id=plan.hub_ref_id)
+    assert _edge_is_ref_level(
+        hub.live_store, paper_ref_id=paper, hub_ref_id=plan.hub_ref_id
+    )
 
 
 def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
@@ -759,14 +767,14 @@ def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
     # WHOLE run to one [fi], which would silently erase the stub's token (no
     # edge, no trace, and draft chunks are append-only). It is skipped
     # (fetch-first); both [pa] tokens survive, no hub, no edge.
-    _, stub = _stub_pa(hub.store, paper_title="stub")
-    _, fetched = _fetched_pa(hub.store, paper_title="fetched")
+    _, stub = _stub_pa(hub.live_store, paper_title="stub")
+    _, fetched = _fetched_pa(hub.live_store, paper_title="fetched")
     dc = _seed_draft_para(draft, hub, f"A broadly held result [{stub}][{fetched}].")
-    findings_before = _finding_count(hub.store)
-    links_before = _links_count(hub.store)
+    findings_before = _finding_count(hub.live_store)
+    links_before = _links_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -783,15 +791,19 @@ def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
     assert result.plans[0].action == "stub-fetch-first"
     assert "mixed" in result.plans[0].note
     assert result.rewritten_text is None  # nothing rewrote
-    assert _finding_count(hub.store) == findings_before  # no hub
-    assert _links_count(hub.store) == links_before  # no edge
+    assert _finding_count(hub.live_store) == findings_before  # no hub
+    assert _links_count(hub.live_store) == links_before  # no edge
     # Both [pa] tokens still present in the live draft chunk — nothing erased.
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert nt_ref is not None
+    order = hub.live_store.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
-    with hub.store.pool.connection() as conn:
-        text = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT text FROM chunks WHERE chunk_id = %s", (live_dc,)
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    text = row[0]
     assert f"[{stub}]" in text and f"[{fetched}]" in text
 
 
@@ -800,13 +812,13 @@ def test_apply_fetched_pa_default_regrounds_pa_to_pc(
 ) -> None:
     # AC1: fetched [pa] default → rewrite [pa]→[pc<chunk>] at the located
     # passage. A cite refinement, NOT a promote: no hub, no evidence edge.
-    _, pa, chunk_id = _fetched_pa_c(hub.store)
+    _, pa, chunk_id = _fetched_pa_c(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
-    findings_before = _finding_count(hub.store)
-    links_before = _links_count(hub.store)
+    findings_before = _finding_count(hub.live_store)
+    links_before = _links_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -825,8 +837,8 @@ def test_apply_fetched_pa_default_regrounds_pa_to_pc(
     assert result.rewritten_text is not None
     assert f"[pc{chunk_id}]" in result.rewritten_text
     assert "[pa" not in result.rewritten_text
-    assert _finding_count(hub.store) == findings_before  # no hub
-    assert _links_count(hub.store) == links_before  # no edge
+    assert _finding_count(hub.live_store) == findings_before  # no hub
+    assert _links_count(hub.live_store) == links_before  # no edge
 
 
 def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
@@ -835,18 +847,18 @@ def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
     # AC5: a chunk mixing a stub [pa], a fetched [pa], and a [pc] reports the
     # correct per-group action (fetch-first / re-ground / promote) and writes
     # nothing. ref_level is OFF so the fetched [pa] stays re-ground.
-    _, stub = _stub_pa(hub.store, paper_title="stub")
-    _, fetched = _fetched_pa(hub.store, paper_title="fetched")
-    _, pc = _pc_of(hub.store, paper_title="chunked")
+    _, stub = _stub_pa(hub.live_store, paper_title="stub")
+    _, fetched = _fetched_pa(hub.live_store, paper_title="fetched")
+    _, pc = _pc_of(hub.live_store, paper_title="chunked")
     dc = _seed_draft_para(
         draft,
         hub,
         f"Stub claim [{stub}]. Whole-paper claim [{fetched}]. Passage claim [{pc}].",
     )
-    findings_before = _finding_count(hub.store)
+    findings_before = _finding_count(hub.live_store)
 
     result = plan_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         chunk_id=dc,
         ref_level=False,
@@ -861,7 +873,7 @@ def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
     assert by_kind[("pa", (stub,))] == "stub-fetch-first"
     assert by_kind[("pa", (fetched,))] == "reground"
     assert by_kind[("pc", (pc,))] == "new"
-    assert _finding_count(hub.store) == findings_before  # dry-run wrote nothing
+    assert _finding_count(hub.live_store) == findings_before  # dry-run wrote nothing
 
 
 def test_apply_ref_level_pa_converges_after_rewrite_failure(
@@ -872,7 +884,7 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
     # [pa] token (a valid grounded cite), and a re-run converges onto the same
     # hub (content-derived pub_id) and completes the rewrite — no duplicate hub
     # or edge.
-    paper, pa = _fetched_pa(hub.store)
+    paper, pa = _fetched_pa(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
 
     class _EditFails:
@@ -883,7 +895,7 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
 
     with pytest.raises(RuntimeError):
         apply_chunk(
-            hub.store,
+            hub.live_store,
             embedder=None,
             draft_handler=_EditFails(),
             chunk_id=dc,
@@ -895,20 +907,24 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
         )
 
     # The hub + edge committed; the draft prose still reads [pa…] (grounded).
-    assert _finding_count(hub.store) == 1
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    assert _finding_count(hub.live_store) == 1
+    nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert nt_ref is not None
+    order = hub.live_store.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
-    with hub.store.pool.connection() as conn:
-        text = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT text FROM chunks WHERE chunk_id = %s", (live_dc,)
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    text = row[0]
     assert f"[{pa}]" in text and "[fi" not in text
 
-    links_after_fail = _links_count(hub.store)
+    links_after_fail = _links_count(hub.live_store)
     # Re-run with a working handler: converges by pub_id (no duplicate hub),
     # add_link is a no-op on the existing edge, and the rewrite completes.
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=live_dc,
@@ -919,8 +935,8 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
         merge_confirm_fn=_never_called,
     )
 
-    assert _finding_count(hub.store) == 1  # no duplicate hub
-    assert _links_count(hub.store) == links_after_fail  # no duplicate edge
+    assert _finding_count(hub.live_store) == 1  # no duplicate hub
+    assert _links_count(hub.live_store) == links_after_fail  # no duplicate edge
     plan = result.plans[0]
     assert plan.hub_ref_id is not None
     assert result.rewritten_text is not None
@@ -937,12 +953,12 @@ def test_apply_reground_multi_supporter_rewrites_all_to_pc(
     # A contiguous [pa1][pa2] run (one span, both fetched) re-grounds each
     # supporter to its own passage → [pc<c1>][pc<c2>] (one pc per pa, same
     # count), which the existing [pc] path folds to one hub on a later run.
-    _, p1, c1 = _fetched_pa_c(hub.store, paper_title="one")
-    _, p2, c2 = _fetched_pa_c(hub.store, paper_title="two")
+    _, p1, c1 = _fetched_pa_c(hub.live_store, paper_title="one")
+    _, p2, c2 = _fetched_pa_c(hub.live_store, paper_title="two")
     dc = _seed_draft_para(draft, hub, f"A jointly-supported claim [{p1}][{p2}].")
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -969,13 +985,15 @@ def test_apply_reground_multi_supporter_partial_nomatch_skips_whole_run(
     # All-or-nothing: a [pa1][pa2] run where locate finds a passage for pa1 but
     # NOT pa2 skips the WHOLE run (reground-nomatch, no write) — a partial
     # rewrite would collapse the run's span and erase pa2's token (append-only).
-    _, good, _gc = _fetched_pa_c(hub.store, paper_title="good", text="clean passage")
-    _, bad, _bc = _fetched_pa_c(hub.store, paper_title="bad", text="NOMATCH here")
+    _, good, _gc = _fetched_pa_c(
+        hub.live_store, paper_title="good", text="clean passage"
+    )
+    _, bad, _bc = _fetched_pa_c(hub.live_store, paper_title="bad", text="NOMATCH here")
     dc = _seed_draft_para(draft, hub, f"A jointly-supported claim [{good}][{bad}].")
-    links_before = _links_count(hub.store)
+    links_before = _links_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -991,14 +1009,18 @@ def test_apply_reground_multi_supporter_partial_nomatch_skips_whole_run(
     assert result.plans[0].group.handles == [good, bad]
     assert result.plans[0].action == "reground-nomatch"
     assert result.rewritten_text is None  # nothing rewrote
-    assert _links_count(hub.store) == links_before
+    assert _links_count(hub.live_store) == links_before
     # Both [pa] tokens survive in the live draft chunk — nothing erased.
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert nt_ref is not None
+    order = hub.live_store.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
-    with hub.store.pool.connection() as conn:
-        text = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT text FROM chunks WHERE chunk_id = %s", (live_dc,)
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    text = row[0]
     assert f"[{good}]" in text and f"[{bad}]" in text
 
 
@@ -1010,13 +1032,13 @@ def test_apply_reground_partial_unresolved_handle_skips_whole_run(
     # rewrite) — else the run's span-replace would collapse two [pa] tokens into
     # one [pc] and erase the unresolved token (append-only draft chunk). The
     # slice-1 erasure class, reached via an unresolved handle rather than a stub.
-    _, good, _gc = _fetched_pa_c(hub.store, paper_title="good")
+    _, good, _gc = _fetched_pa_c(hub.live_store, paper_title="good")
     bad = "pa999999999"  # no such ref → resolve_paper_ref_id raises BadInput
     dc = _seed_draft_para(draft, hub, f"A jointly-cited claim [{good}][{bad}].")
-    links_before = _links_count(hub.store)
+    links_before = _links_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -1032,26 +1054,30 @@ def test_apply_reground_partial_unresolved_handle_skips_whole_run(
     assert result.plans[0].group.handles == [good, bad]
     assert result.plans[0].action == "unresolved"
     assert result.rewritten_text is None  # nothing rewrote
-    assert _links_count(hub.store) == links_before
+    assert _links_count(hub.live_store) == links_before
     # Both tokens survive — the unresolved one was NOT erased.
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert nt_ref is not None
+    order = hub.live_store.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
-    with hub.store.pool.connection() as conn:
-        text = conn.execute(
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
             "SELECT text FROM chunks WHERE chunk_id = %s", (live_dc,)
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None
+    text = row[0]
     assert f"[{good}]" in text and f"[{bad}]" in text
 
 
 def test_apply_reground_nomatch_single_leaves_pa(draft: DraftHandler, hub: Hub) -> None:
     # A fetched [pa] whose locate finds no passage → reground-nomatch, no write,
     # token left [pa] (author re-grounds by hand or uses --ref-level).
-    _, pa, _c = _fetched_pa_c(hub.store)
+    _, pa, _c = _fetched_pa_c(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
-    links_before = _links_count(hub.store)
+    links_before = _links_count(hub.live_store)
 
     result = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -1065,7 +1091,7 @@ def test_apply_reground_nomatch_single_leaves_pa(draft: DraftHandler, hub: Hub) 
 
     assert result.plans[0].action == "reground-nomatch"
     assert result.rewritten_text is None
-    assert _links_count(hub.store) == links_before
+    assert _links_count(hub.live_store) == links_before
 
 
 def test_reground_then_promote_yields_chunk_grounded_hub(
@@ -1074,12 +1100,12 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
     # AC1 end-to-end (two-step): re-ground [pa]→[pc], then the EXISTING [pc]
     # promote path (unchanged) mints a hub whose evidence edge is
     # CHUNK-GROUNDED (src_chunk_id NOT NULL), not ref-level/ungrounded.
-    paper, pa, chunk_id = _fetched_pa_c(hub.store)
+    paper, pa, chunk_id = _fetched_pa_c(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
 
     # Step 1 — re-ground the [pa] to its passage [pc].
     r1 = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=dc,
@@ -1093,12 +1119,14 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
     assert r1.plans[0].action == "reground"
     assert f"[pc{chunk_id}]" in (r1.rewritten_text or "")
 
-    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert nt_ref is not None
+    order = hub.live_store.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
 
     # Step 2 — promote the freshly-grounded [pc] via the existing path.
     r2 = apply_chunk(
-        hub.store,
+        hub.live_store,
         embedder=None,
         draft_handler=draft,
         chunk_id=live_dc,
@@ -1117,5 +1145,5 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
     assert f"[fi{plan.hub_ref_id}]" in (r2.rewritten_text or "")
     # The evidence edge grounds at the passage chunk (src_chunk_id NOT NULL).
     assert not _edge_is_ref_level(
-        hub.store, paper_ref_id=paper, hub_ref_id=plan.hub_ref_id
+        hub.live_store, paper_ref_id=paper, hub_ref_id=plan.hub_ref_id
     )

@@ -119,15 +119,15 @@ def test_persist_caps_oversized_blocks(store: Store) -> None:
 def test_planner_assembly_persists_onto_job_ref(hub: Hub) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    todo = hub.store.insert_ref(kind="todo", slug=None, title="do a thing")
-    job = hub.store.insert_ref(
+    todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
+    job = hub.live_store.insert_ref(
         kind="job", slug=None, title="plan_tick job", parent_id=todo.id
     )
 
-    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
-    persist_assembled_context(hub.store, job.id, prompts.blocks)
+    prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
+    persist_assembled_context(hub.live_store, job.id, prompts.blocks)
 
-    got = hub.store.get_ref(kind="job", id=job.id)
+    got = hub.live_store.get_ref(kind="job", id=job.id)
     assert got is not None
     ids = [b["id"] for b in got.meta["assembled_context"]]
     # cached-layer modules land first, then the variable-layer body module —
