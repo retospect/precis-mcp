@@ -119,6 +119,29 @@ def _find_cast_watch(store: Store, cast: str) -> int | None:
     return int(row[0]) if row else None
 
 
+def _reconcile_watch_cron(store: Store, ref_id: int, sched: Any, label: str) -> None:
+    """Bring an already-installed watch's cron into line with the code profile.
+
+    Install is idempotent on the ``cast_watch`` marker, so a cron change in
+    ``CAST_PROFILES`` (or ``_CARD_FORGE_CRON``) would otherwise never reach a
+    watch that already exists — the code would drift from the live schedule
+    silently. Compares the stored ``meta.schedule.cron`` to the desired one and
+    patches the (small: cron + backfill_missed) schedule subdict when they differ.
+    No-op when they already match.
+    """
+    ref = store.get_ref(kind="todo", id=ref_id)
+    schedule = dict((ref.meta or {}).get("schedule") or {}) if ref else {}
+    current = schedule.get("cron")
+    if current == sched.cron:
+        return
+    # Preserve the rest of the schedule subdict (e.g. an operator-set
+    # ``backfill_missed``) — only the cron literal drifts here, so patch just that.
+    schedule["cron"] = sched.cron
+    schedule.setdefault("backfill_missed", sched.backfill_missed)
+    store.update_ref(ref_id, meta_patch={"schedule": schedule})
+    print(f"{label}: watch cron {current!r} → {sched.cron!r} (ref {ref_id})")
+
+
 def _cmd_run(store: Store, args: argparse.Namespace) -> None:
     draft_id = _compose(store, args.cast, date_tag=args.date)
     if draft_id is None:
@@ -154,12 +177,13 @@ def install_cast_watches(store: Store) -> list[int]:
     out: list[int] = []
     for cast in _CASTS:
         profile = CAST_PROFILES[cast]
+        sched = validate_schedule({"cron": profile.cron})
         existing = _find_cast_watch(store, cast)
         if existing is not None:
+            _reconcile_watch_cron(store, existing, sched, f"cast {cast}")
             out.append(existing)
             print(f"cast {cast}: watch already installed (ref {existing})")
             continue
-        sched = validate_schedule({"cron": profile.cron})
         ref = store.insert_ref(
             kind="todo",
             slug=None,
@@ -188,12 +212,13 @@ def install_cast_watches(store: Store) -> list[int]:
 
     # The morning card pass — not a cast (no draft, no narration), but part of
     # the same daily loop, so it installs alongside the cast watches.
+    sched = validate_schedule({"cron": _CARD_FORGE_CRON})
     existing = _find_cast_watch(store, "card_forge")
     if existing is not None:
+        _reconcile_watch_cron(store, existing, sched, "card_forge")
         out.append(existing)
         print(f"card_forge: watch already installed (ref {existing})")
         return out
-    sched = validate_schedule({"cron": _CARD_FORGE_CRON})
     ref = store.insert_ref(
         kind="todo",
         slug=None,

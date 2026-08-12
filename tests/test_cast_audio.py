@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -108,6 +109,36 @@ class TestSelection:
         after_two = store.get_ref(kind="draft", id=ref.id)
         assert after_two is not None
         assert after_two.meta["audio_fail_count"] == 2
+
+    def test_failure_stamp_killed_leaves_the_counter_untouched(
+        self, store: Any
+    ) -> None:
+        """A signal-killed render (``killed=True``) stamps the reselect
+        cooldown but must not advance the backoff exponent — that's the
+        whole point of distinguishing a collateral kill from a genuine
+        render failure."""
+        now = datetime.now(UTC)
+        ref = _make_cast_draft(store)
+        store.update_ref(ref.id, meta_patch={"audio_fail_count": 3})
+        ref = store.get_ref(kind="draft", id=ref.id)
+        assert ref is not None
+
+        cast_audio._stamp_failure(store, ref, now, killed=True)
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert after.meta["audio_fail_count"] == 3  # unchanged
+        assert after.meta["audio_failed_at"] == now.isoformat()
+
+    def test_failure_stamp_killed_with_no_prior_counter_stays_absent(
+        self, store: Any
+    ) -> None:
+        now = datetime.now(UTC)
+        ref = _make_cast_draft(store)
+        cast_audio._stamp_failure(store, ref, now, killed=True)
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert "audio_fail_count" not in after.meta
+        assert after.meta["audio_failed_at"] == now.isoformat()
 
     def test_failure_stamp_survives_a_garbled_counter(self, store: Any) -> None:
         """Runs on the failure path — a bad meta value must not escalate a
@@ -219,6 +250,150 @@ class TestNarrateTail:
         )
 
         assert "pause_s" not in captured_kw
+
+
+class TestKilledRenderBackoff:
+    """A signal-killed container render (a worker restart SIGTERMs the
+    ``podman run`` child mid-flight → exit 143) must not escalate the
+    backoff counter the way a genuinely broken render does — otherwise a
+    rocky deploy window pushes a healthy draft to the hourly ceiling. These
+    drive the real :func:`precis.tts.render.render_via_container` path (via
+    an injected ``run`` that raises ``CalledProcessError``) so the actual
+    ``ContainerRenderError`` classification is exercised, not a hand-rolled
+    stand-in."""
+
+    def _fake_run(self, returncode: int, stderr: str = "boom") -> Any:
+        def run(argv: Any, **kw: Any) -> Any:
+            raise subprocess.CalledProcessError(
+                returncode, argv, output="", stderr=stderr
+            )
+
+        return run
+
+    def test_signal_killed_render_leaves_fail_count_unchanged(self, store: Any) -> None:
+        ref = _make_cast_draft(store)
+        store.update_ref(ref.id, meta_patch={"audio_fail_count": 3})
+        ref = store.get_ref(kind="draft", id=ref.id)
+        assert ref is not None
+
+        r = cast_audio.narrate_cast_ref(
+            store,
+            ref,
+            image="fake-tts-image",
+            synth=None,
+            podcast_dir="/tmp/pods",
+            run=self._fake_run(143, "SIGTERM"),
+        )
+
+        assert r["published"] is False
+        assert r["reason"].startswith("render-killed")
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert after.meta["audio_fail_count"] == 3  # unchanged, not 4
+        assert "audio_failed_at" in after.meta
+
+    def test_signal_killed_render_with_no_prior_count_stays_absent(
+        self, store: Any
+    ) -> None:
+        ref = _make_cast_draft(store)  # no prior audio_fail_count
+
+        r = cast_audio.narrate_cast_ref(
+            store,
+            ref,
+            image="fake-tts-image",
+            synth=None,
+            podcast_dir="/tmp/pods",
+            run=self._fake_run(143, "SIGTERM"),
+        )
+
+        assert r["reason"].startswith("render-killed")
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert "audio_fail_count" not in after.meta
+        assert "audio_failed_at" in after.meta
+
+    def test_sigkill_137_escalates_not_treated_as_collateral(self, store: Any) -> None:
+        """Exit 137 (SIGKILL) is ambiguous — a cgroup OOM-kill of an oversized
+        render produces the same code as a hard bounce, so it must NOT get the
+        no-escalate pass, or an OOM-looping draft would respin every ~2 minutes
+        for 48h. Only 143 (SIGTERM) is the collateral case."""
+        ref = _make_cast_draft(store)  # no prior audio_fail_count
+
+        r = cast_audio.narrate_cast_ref(
+            store,
+            ref,
+            image="fake-tts-image",
+            synth=None,
+            podcast_dir="/tmp/pods",
+            run=self._fake_run(137, "SIGKILL"),
+        )
+
+        assert r["reason"].startswith("render-failed")
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert after.meta["audio_fail_count"] == 1
+
+    def test_genuine_render_failure_escalates_fail_count(self, store: Any) -> None:
+        ref = _make_cast_draft(store)
+        store.update_ref(ref.id, meta_patch={"audio_fail_count": 3})
+        ref = store.get_ref(kind="draft", id=ref.id)
+        assert ref is not None
+
+        r = cast_audio.narrate_cast_ref(
+            store,
+            ref,
+            image="fake-tts-image",
+            synth=None,
+            podcast_dir="/tmp/pods",
+            run=self._fake_run(1, "Traceback (most recent call last): ..."),
+        )
+
+        assert r["published"] is False
+        assert r["reason"].startswith("render-failed")
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert after.meta["audio_fail_count"] == 4
+
+    def test_genuine_render_failure_with_no_prior_count_starts_at_one(
+        self, store: Any
+    ) -> None:
+        ref = _make_cast_draft(store)
+
+        r = cast_audio.narrate_cast_ref(
+            store,
+            ref,
+            image="fake-tts-image",
+            synth=None,
+            podcast_dir="/tmp/pods",
+            run=self._fake_run(1, "Traceback (most recent call last): ..."),
+        )
+
+        assert r["reason"].startswith("render-failed")
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert after.meta["audio_fail_count"] == 1
+
+    def test_plain_runtime_error_is_not_mistaken_for_a_kill(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A non-``ContainerRenderError`` exception (e.g. a dead in-process
+        synth) must still escalate the counter — only the specific killed
+        returncodes get the pass."""
+
+        def fake_render_episode(segments: Any, out: Any, **kw: Any) -> Any:
+            raise RuntimeError("synth exploded")
+
+        monkeypatch.setattr(cast_audio, "render_episode", fake_render_episode)
+        ref = _make_cast_draft(store)
+
+        r = cast_audio.narrate_cast_ref(
+            store, ref, image=None, synth=object(), podcast_dir="/tmp/pods"
+        )
+
+        assert r["reason"].startswith("render-failed")
+        after = store.get_ref(kind="draft", id=ref.id)
+        assert after is not None
+        assert after.meta["audio_fail_count"] == 1
 
 
 class TestNewsLeadIn:

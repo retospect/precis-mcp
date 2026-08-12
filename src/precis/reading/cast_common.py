@@ -114,7 +114,10 @@ CAST_PROFILES: dict[str, CastProfile] = {
         voice="bm_george",
         wpm=150,
         target_minutes=20,
-        cron="0 7 * * *",
+        # 06:30 UTC compose so the (short) render lands the episode ~07:00 — the
+        # cron is the *start*, and the schedule is UTC-anchored (no tz), so this
+        # buys the compose+narrate pipeline a lead over the target land time.
+        cron="30 6 * * *",
         job_type="reading_brief",
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅
@@ -127,7 +130,11 @@ CAST_PROFILES: dict[str, CastProfile] = {
         voice="af_nicole",
         wpm=110,
         target_minutes=45,
-        cron="0 21 * * *",
+        # 19:00 UTC compose: the ~45-min nidra is a long segmented compose + a
+        # long TTS render, so a 21:00 start landed it late-evening/after-midnight.
+        # Starting two hours ahead lands the episode in the ~21:00–22:00 window
+        # even when the render is slow. Schedule is UTC-anchored (no tz).
+        cron="0 19 * * *",
         job_type="meditation",
         slug_prefix="cast-nidra",
         title="\U0001f319 Evening meditation",  # 🌙
@@ -220,6 +227,28 @@ def export_basename_for_meta(meta: dict[str, Any] | None) -> str | None:
     if profile is None or not date_tag:
         return None
     return export_stem(profile, date_tag)
+
+
+#: Leading ``YYYY-MM-DD`` of a scheduled-tick stamp (``2026-08-11T21:00``).
+_TICK_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+
+def tick_date_tag(meta: dict[str, Any] | None) -> str | None:
+    """The scheduled-tick date (``YYYY-MM-DD``) a cast job should stamp, or ``None``.
+
+    A recurring watch stamps each spawned child with
+    ``meta.spawned_for_tick='YYYY-MM-DDTHH:MM'`` (UTC). A cast producer dates its
+    episode off *that* scheduled tick rather than ``datetime.now(UTC)`` at compose
+    time, so the date stays stable when the compose/render runs late and crosses
+    midnight UTC — an evening cast that slips past 00:00 UTC otherwise stamps the
+    *next* day (the "podcast date is a day off" symptom). Returns ``None`` for a
+    manual/one-off run with no tick, so the composer falls back to today's date.
+    """
+    tick = (meta or {}).get("spawned_for_tick")
+    if not isinstance(tick, str):
+        return None
+    m = _TICK_DATE.match(tick.strip())
+    return m.group(1) if m else None
 
 
 def ensure_cast_folder(store: Any, profile: CastProfile) -> int | None:

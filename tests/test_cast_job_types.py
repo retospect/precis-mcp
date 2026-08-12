@@ -70,6 +70,41 @@ class TestReadingBriefDispatch:
         rb_jt._dispatch(ctx, rb_jt.SPEC)
         assert ctx.failure is not None and "kaboom" in ctx.failure
 
+    def test_dates_off_the_scheduled_tick(self, monkeypatch: Any) -> None:
+        """A recurring watch stamps ``meta.spawned_for_tick`` on each spawned
+        child — the composer must be dated off *that*, not compose time, so a
+        late run that crosses midnight UTC still stamps the day the watch
+        actually fired for."""
+        import precis.reading.briefing_cast as bc
+
+        seen: dict[str, Any] = {}
+
+        def fake_build(store: Any, **k: Any) -> int:
+            seen.update(k)
+            return 1
+
+        monkeypatch.setattr(bc, "build_reading_briefing", fake_build)
+        ctx = _FakeCtx(meta={"spawned_for_tick": "2026-08-11T21:00"})
+        rb_jt._dispatch(ctx, rb_jt.SPEC)
+        assert seen["date_tag"] == "2026-08-11"
+
+    def test_no_scheduled_tick_omits_date_tag(self, monkeypatch: Any) -> None:
+        """A manual/one-off dispatch (no ``spawned_for_tick``) passes no
+        ``date_tag`` at all, so the composer falls back to its own default
+        (today's date)."""
+        import precis.reading.briefing_cast as bc
+
+        seen: dict[str, Any] = {}
+
+        def fake_build(store: Any, **k: Any) -> int:
+            seen.update(k)
+            return 1
+
+        monkeypatch.setattr(bc, "build_reading_briefing", fake_build)
+        ctx = _FakeCtx()  # no meta at all
+        rb_jt._dispatch(ctx, rb_jt.SPEC)
+        assert "date_tag" not in seen
+
 
 class TestMeditationDispatch:
     def test_passes_params_through(self, monkeypatch: Any) -> None:
@@ -91,6 +126,34 @@ class TestMeditationDispatch:
         assert "skill_preamble" in seen
         assert "Numbers: spell" not in seen["skill_preamble"]
         assert ctx.metas["draft_ref_id"] == 7
+
+    def test_dates_off_the_scheduled_tick(self, monkeypatch: Any) -> None:
+        import precis.reading.meditation as m
+
+        seen: dict[str, Any] = {}
+
+        def fake_build(store: Any, **k: Any) -> int:
+            seen.update(k)
+            return 7
+
+        monkeypatch.setattr(m, "build_meditation", fake_build)
+        ctx = _FakeCtx(meta={"spawned_for_tick": "2026-08-11T21:00"})
+        md_jt._dispatch(ctx, md_jt.SPEC)
+        assert seen["date_tag"] == "2026-08-11"
+
+    def test_no_scheduled_tick_omits_date_tag(self, monkeypatch: Any) -> None:
+        import precis.reading.meditation as m
+
+        seen: dict[str, Any] = {}
+
+        def fake_build(store: Any, **k: Any) -> int:
+            seen.update(k)
+            return 7
+
+        monkeypatch.setattr(m, "build_meditation", fake_build)
+        ctx = _FakeCtx()  # no meta at all
+        md_jt._dispatch(ctx, md_jt.SPEC)
+        assert "date_tag" not in seen
 
 
 class TestCardForgeDispatch:

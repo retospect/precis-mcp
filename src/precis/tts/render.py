@@ -39,6 +39,40 @@ from precis.utils.container_limits import container_limit_flags
 log = logging.getLogger(__name__)
 
 
+#: Container exit codes that mean the render was **collaterally killed** — a
+#: graceful signal from outside the render, not a broken draft: 143 = 128+SIGTERM
+#: (15). A worker restart (a deploy, a jetsam cull, a manual bounce) SIGTERMs the
+#: worker's cgroup, which reaches the in-flight ``docker/podman run`` child, so the
+#: container exits 143 — this is the collateral case the cast_audio backoff must
+#: not escalate on (see ``precis.workers.cast_audio._stamp_failure``). ``subprocess``
+#: can also surface SIGTERM as the negative ``-15``, so accept both encodings.
+#:
+#: **SIGKILL (137 / -9) is deliberately excluded**: it is ambiguous — a cgroup
+#: OOM-killer kills a genuinely-oversized render with the *same* 137 a hard bounce
+#: produces, and nothing bounds a single draft's memory (``container_limit_flags``
+#: sets CPU only). Since the observed prod restart-kills are all 143 (SIGTERM,
+#: zero 137s), treating 137 as a genuine failure is the safe default: an OOM-
+#: looping draft correctly backs off to the hourly ceiling instead of respinning a
+#: container every ~2 minutes for 48h.
+SIGNAL_KILL_RETURNCODES = frozenset({143, -15})
+
+
+class ContainerRenderError(RuntimeError):
+    """A ``precis-tts`` container run exited non-zero.
+
+    Carries the container's ``returncode`` so a caller can distinguish a *killed*
+    render (:data:`SIGNAL_KILL_RETURNCODES`) from a genuine render failure (exit
+    1 with a traceback in ``stderr``). The message keeps the historical
+    ``precis-tts container exited N: <stderr>`` shape so existing log-greps and
+    the captured container stderr are unchanged.
+    """
+
+    def __init__(self, returncode: int | None, stderr: str) -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(f"precis-tts container exited {returncode}: {stderr}")
+
+
 def render_via_container(
     segments: Sequence[Any],
     out_audio: str | Path,
@@ -111,9 +145,7 @@ def render_via_container(
             stderr = (getattr(exc, "stderr", "") or "")[-2000:]
             if not stderr:
                 stderr = (getattr(exc, "stdout", "") or "")[-2000:]
-            raise RuntimeError(
-                f"precis-tts container exited {exc.returncode}: {stderr}"
-            ) from exc
+            raise ContainerRenderError(exc.returncode, stderr) from exc
         # Prefer the mp3 the current image writes; fall back to an m4a from an
         # older, un-rebuilt image so a code deploy never dark-holes episodes.
         produced = next(
@@ -193,4 +225,9 @@ def render_episode(
     }
 
 
-__all__ = ["render_episode", "render_via_container"]
+__all__ = [
+    "SIGNAL_KILL_RETURNCODES",
+    "ContainerRenderError",
+    "render_episode",
+    "render_via_container",
+]

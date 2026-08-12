@@ -31,7 +31,11 @@ from pathlib import Path
 from typing import Any
 
 from precis.reading.cast_common import CAST_PROFILES, export_stem
-from precis.tts.render import render_episode
+from precis.tts.render import (
+    SIGNAL_KILL_RETURNCODES,
+    ContainerRenderError,
+    render_episode,
+)
 
 log = logging.getLogger(__name__)
 
@@ -134,25 +138,32 @@ def has_pending_cast(
     )
 
 
-def _stamp_failure(store: Any, ref: Any, now: datetime) -> None:
+def _stamp_failure(
+    store: Any, ref: Any, now: datetime, *, killed: bool = False
+) -> None:
     """Record a render failure on ``ref`` and bump the attempt counter that
     chooses the next backoff step (see :func:`_latest_unnarrated_cast`).
+
+    ``killed=True`` marks a render that was **signal-killed** mid-flight (a worker
+    restart SIGTERMed the container → exit 143), not a broken draft. The short
+    first backoff step already makes one kill cheap, but *counting* it would let a
+    rocky deploy window (several restarts in a row) escalate a healthy draft's
+    cooldown toward the full hour. So a kill stamps ``audio_failed_at`` (keeping
+    the ~2-minute reselect cooldown) but leaves ``audio_fail_count`` untouched —
+    only a genuine render failure advances the exponent.
 
     Tolerant of a missing/garbled counter — this runs on the failure path, and a
     bad meta value must not turn a recoverable render failure into a crashed
     worker tick.
     """
-    try:
-        prior = int((ref.meta or {}).get("audio_fail_count") or 0)
-    except (TypeError, ValueError):
-        prior = 0
-    store.update_ref(
-        ref.id,
-        meta_patch={
-            "audio_failed_at": now.isoformat(),
-            "audio_fail_count": prior + 1,
-        },
-    )
+    patch: dict[str, Any] = {"audio_failed_at": now.isoformat()}
+    if not killed:
+        try:
+            prior = int((ref.meta or {}).get("audio_fail_count") or 0)
+        except (TypeError, ValueError):
+            prior = 0
+        patch["audio_fail_count"] = prior + 1
+    store.update_ref(ref.id, meta_patch=patch)
 
 
 def _empty(reason: str, ref_id: int | None = None) -> dict[str, Any]:
@@ -306,9 +317,23 @@ def narrate_cast_ref(
                 **render_kw,
             )
         except Exception as exc:  # a bad image / dead synth mustn't crash the tick
-            log.warning("cast_audio: render failed for ref %s (%s)", ref.id, exc)
-            _stamp_failure(store, ref, now)
-            return _empty(f"render-failed: {exc}", ref.id)
+            # A signal-killed render (worker restart SIGTERMs the container mid-
+            # flight → exit 143) is collateral, not a broken draft: stamp the
+            # short reselect cooldown but don't advance the backoff exponent, so a
+            # rocky deploy window can't push a healthy cast to the hourly ceiling.
+            killed = (
+                isinstance(exc, ContainerRenderError)
+                and exc.returncode in SIGNAL_KILL_RETURNCODES
+            )
+            log.warning(
+                "cast_audio: render %s for ref %s (%s)",
+                "killed mid-flight" if killed else "failed",
+                ref.id,
+                exc,
+            )
+            _stamp_failure(store, ref, now, killed=killed)
+            reason = "render-killed" if killed else "render-failed"
+            return _empty(f"{reason}: {exc}", ref.id)
 
         seg_n = int(result.get("segments", len(segments)))
         dur = float(result.get("duration_s", 0.0))

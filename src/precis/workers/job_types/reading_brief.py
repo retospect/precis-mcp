@@ -4,7 +4,7 @@ Deterministic in-process producer, run under ``claude_inproc`` (the melchior age
 worker) — the same executor + host as the news ``briefing`` job, because the
 compose call uses a **nice model** (``claude-opus`` via the litellm proxy, which is
 melchior-loopback-only). Driven by a recurring (``meta.schedule`` set) todo
-(``meta.schedule={'cron':'0 6 * * *'}``, ``meta.executor='claude_inproc'``,
+(``meta.schedule={'cron':'30 6 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='reading_brief'``). Calls
 :func:`precis.reading.briefing_cast.build_reading_briefing`, which unions the
 activity/reading/recall lanes into a standalone dated ``draft``; the ``cast_audio``
@@ -36,9 +36,17 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job."""
     from precis.reading.briefing_cast import build_reading_briefing
+    from precis.reading.cast_common import tick_date_tag
+
+    # Date the episode off the scheduled tick, not compose time, so a late run
+    # that crosses midnight UTC still stamps the day it belongs to.
+    kwargs: dict[str, Any] = {}
+    date_tag = tick_date_tag(ctx.meta)
+    if date_tag:
+        kwargs["date_tag"] = date_tag
 
     try:
-        draft_id = build_reading_briefing(ctx.store)
+        draft_id = build_reading_briefing(ctx.store, **kwargs)
     except Exception as exc:
         log.warning("reading_brief job: pass raised", exc_info=True)
         ctx.record_failure(f"reading_brief: pass raised: {exc}")

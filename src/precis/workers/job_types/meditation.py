@@ -4,7 +4,7 @@ The evening sibling of :mod:`precis.workers.job_types.reading_brief`. Determinis
 in-process producer under ``claude_inproc`` (melchior), so the ~45-min segmented
 walk is composed by a **nice model** (``claude-opus`` via the melchior-loopback
 litellm proxy). Driven by a recurring (``meta.schedule`` set) todo
-(``meta.schedule={'cron':'0 21 * * *'}``, ``meta.executor='claude_inproc'``,
+(``meta.schedule={'cron':'0 19 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='meditation'``). Calls
 :func:`precis.reading.meditation.build_meditation`, which walks the concept graph
 into a standalone dated ``draft`` (voice ``af_nicole``); the ``cast_audio`` pass on
@@ -39,7 +39,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job."""
-    from precis.reading.cast_common import voice_skill_preamble
+    from precis.reading.cast_common import tick_date_tag, voice_skill_preamble
     from precis.reading.meditation import build_meditation
 
     params = (ctx.meta or {}).get("params") or {}
@@ -48,6 +48,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         kwargs["cohort"] = str(params["cohort"])
     if params.get("target_minutes"):
         kwargs["target_minutes"] = int(params["target_minutes"])
+    # Date the episode off the scheduled tick, not compose time, so a late run
+    # that crosses midnight UTC still stamps the evening it belongs to.
+    date_tag = tick_date_tag(ctx.meta)
+    if date_tag:
+        kwargs["date_tag"] = date_tag
 
     try:
         draft_id = build_meditation(

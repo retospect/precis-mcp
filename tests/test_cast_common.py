@@ -11,6 +11,7 @@ from precis.reading.cast_common import (
     compose_max_tokens,
     create_cast_draft,
     find_cast_draft,
+    tick_date_tag,
     word_budget,
 )
 
@@ -39,6 +40,30 @@ class TestBudgets:
         sources = {name: p.source for name, p in CAST_PROFILES.items()}
         assert sources == {"reading": "brief", "nidra": "meditation"}
         assert len(set(sources.values())) == len(sources)  # all distinct
+
+
+class TestTickDateTag:
+    """The scheduled-tick date a cast job dates its episode off, so a late
+    compose/render that crosses midnight UTC still stamps the day the watch
+    actually fired for (not the day it happened to finish)."""
+
+    def test_leading_date_extracted_from_a_tick_stamp(self) -> None:
+        assert tick_date_tag({"spawned_for_tick": "2026-08-11T21:00"}) == "2026-08-11"
+
+    def test_missing_key_is_none(self) -> None:
+        assert tick_date_tag({}) is None
+        assert tick_date_tag(None) is None
+
+    def test_non_string_value_is_none(self) -> None:
+        assert tick_date_tag({"spawned_for_tick": 12345}) is None
+        assert tick_date_tag({"spawned_for_tick": None}) is None
+
+    def test_garbage_string_is_none(self) -> None:
+        assert tick_date_tag({"spawned_for_tick": "not-a-date"}) is None
+        assert tick_date_tag({"spawned_for_tick": "2026-13"}) is None
+
+    def test_bare_date_with_no_time_component_still_matches(self) -> None:
+        assert tick_date_tag({"spawned_for_tick": "2026-08-11"}) == "2026-08-11"
 
 
 class TestCreateCastDraft:
