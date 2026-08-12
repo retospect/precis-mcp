@@ -371,8 +371,14 @@ start-of-work** (motivation, scope, acceptance criteria, blast radius);
 this doc stays the cross-slice record and is trimmed as slices ship.
 
 1. **Claim registry + epoch on slot holds & agentlogs** (handoff Part A)
-   — kills the every-deploy orphan pain; acceptance criteria in the
-   handoff.
+   — ✅ SHIPPED 2026-08-12: `precis.liveness` (the extracted shared
+   predicate — explicit `(boot_id, host, process)` params, callers keep
+   their storage-key mapping), migration 0123 (`holder_*` columns),
+   identity stamped at `insert_slot_hold` + `open_log` (`meta.worker`),
+   `workers/reaper.py` declarative epoch-arm pass in the sweeper
+   (slot holds: delete + capped refund; agentlogs: finalize
+   `status='aborted'`), 10-min age floor, in-transaction re-verify,
+   uniform grep line. Job leases untouched (in-claim machinery).
 2. **Graceful drain + single-restart deploy** (handoff Part B) — stops
    minting orphans; zero `stop-sigterm timed out` in journal.
 3. **`bounded_heal` extraction + condition registry + first new rows**

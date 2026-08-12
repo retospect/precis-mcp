@@ -174,6 +174,17 @@ Notable pass mechanics
   latched behind a ``child-failed:*`` bubble (:mod:`precis.handlers._job_bubble`)
   gets up to ``UNPARK_CAP`` autonomous, cool-down-gated re-arms before
   latching the terminal ``child-failed-final`` tag.
+* ``reaper`` (:mod:`.reaper`, run inside the sweeper pass) is the
+  claim-registry epoch arm: one declarative row list over every claim
+  type stamped with boot-epoch identity (``resource_slot_holds``,
+  agentlogs) — the shared predicate is :mod:`precis.liveness`, extracted
+  from the job-lease machinery, never forked. Reclaims the moment a
+  holder's generation is provably replaced (deploy SIGKILL) instead of
+  waiting out the slot-hold TTL — or, for zombie agentlogs, forever.
+  Age-floored (``PRECIS_CLAIM_REAPER_MIN_AGE_S``) so a just-booted
+  worker's claims survive the pre-first-heartbeat window; every action
+  re-verifies non-liveness inside its own transaction. Design:
+  ``docs/backlog/self-healing-spine.md`` Layer 1.
 * ``corpus_reconcile`` (per-host ``pdf_locations`` presence ledger),
   ``paper_reconcile`` (standing dedup + hygiene heals), ``openalex_enrich``
   (abstract fill + card rebuild), and ``paper_meta_enrich`` (Crossref/

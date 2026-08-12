@@ -160,8 +160,10 @@ def release_resource_slots(
 # leaking `free` forever (2026-08-10 fleet-wide outage).
 
 _INSERT_HOLD = (
-    "INSERT INTO resource_slot_holds (host, resource, units, holder, expires_at) "
-    "VALUES (%s, %s, %s, %s, now() + make_interval(secs => %s)) "
+    "INSERT INTO resource_slot_holds "
+    "(host, resource, units, holder, expires_at, "
+    " holder_host, holder_process, holder_boot_id) "
+    "VALUES (%s, %s, %s, %s, now() + make_interval(secs => %s), %s, %s, %s) "
     "RETURNING id"
 )
 
@@ -195,13 +197,36 @@ _RECLAIM_EXPIRED_HOLDS = (
 
 
 def insert_slot_hold(
-    conn: Connection, host: str, resource: str, units: int, holder: str, ttl_s: float
+    conn: Connection,
+    host: str,
+    resource: str,
+    units: int,
+    holder: str,
+    ttl_s: float,
+    *,
+    holder_identity: tuple[str | None, str | None, str | None] | None = None,
 ) -> int:
     """Open a TTL hold bracketing a reservation. ``holder`` is a free-text
     identity (``host:pid``) for operator debugging only — reclaim doesn't
-    consult it. Returns the new hold's id."""
+    consult it. ``holder_identity`` is the ``(boot_id, process, host)``
+    triple from :func:`precis.liveness.worker_identity`: when non-NULL the
+    reaper's epoch arm can reclaim this hold the moment the holder's
+    generation is provably replaced, instead of waiting out the TTL; NULL
+    (CLI / unadvertised worker) keeps TTL-only reclaim. Returns the new
+    hold's id."""
+    boot_id, process, holder_host = holder_identity or (None, None, None)
     row = conn.execute(
-        _INSERT_HOLD, (host, resource, int(units), holder, float(ttl_s))
+        _INSERT_HOLD,
+        (
+            host,
+            resource,
+            int(units),
+            holder,
+            float(ttl_s),
+            holder_host,
+            process,
+            boot_id,
+        ),
     ).fetchone()
     assert row is not None  # INSERT ... RETURNING always yields a row
     return int(row[0])

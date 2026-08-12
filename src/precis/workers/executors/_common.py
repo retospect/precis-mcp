@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +28,14 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.handlers._todo_views import _doable_exclusion_clause
+from precis.liveness import (
+    NO_ADVERTISED_BOOT_ID,
+    RECLAIM_WHY_EPOCH,
+    RECLAIM_WHY_EXPIRY,
+    reclaim_reason,
+    worker_identity,
+)
+from precis.liveness import advertised_boot_ids as _advertised_boot_ids
 from precis.store._resource_slots_ops import (
     release_resource_slots,
     reserve_resource_slots,
@@ -87,27 +94,15 @@ LLM_AFFINITY_GRACE_MIN = 10
 #: ``FOR UPDATE`` lock set. 1 (or no ``resource_slots``) ⇒ pre-6d behaviour.
 _CLAIM_OVERFETCH = 3
 
-#: Sentinel used where SQL needs a value that can never equal a real
-#: ``lease_boot_id`` (a uuid4 hex, always 32 lowercase hex chars — see
-#: :func:`precis.workers.heartbeat.mint_boot_id`) — so
-#: ``COALESCE(<no live advertisement>, this)`` reliably compares UNEQUAL and
-#: the epoch-reclaim arm fires when there's no live (host, process) row to
-#: compare against at all (host_heartbeat missing the host, or missing that
-#: process's entry — the generation is provably not currently advertised,
-#: which is the same "provably gone" signal as an explicit mismatch). Must
-#: be a plain SQL-safe string (NUL bytes aren't valid in a postgres ``text``
-#: value/param).
-_NO_ADVERTISED_BOOT_ID = "__no_advertised_boot_id__"
+# Boot-epoch machinery: extracted to precis.liveness (self-healing-spine
+# Layer 1 slice 1) so slot holds and agentlogs share the same predicate.
+# The names below keep their meaning; the "why" docstrings live there now.
+_NO_ADVERTISED_BOOT_ID = NO_ADVERTISED_BOOT_ID
 
 # ── Attempt cap (§H piece 3, generalized from ssh_node's original guard) ──
-
-#: Reclaim-reason tags stamped onto ``meta.reclaims`` (forensic, capped list)
-#: — ``EPOCH`` = the holder was provably replaced (redeploy/bounce), does
-#: NOT burn the poison guard; ``EXPIRY`` = the lease itself ran out with no
-#: proof the holder changed (a hang, or no successor info), DOES count
-#: toward ``meta.attempts``. See :func:`claim_executor_jobs`'s docstring.
-RECLAIM_WHY_EPOCH = "epoch"
-RECLAIM_WHY_EXPIRY = "expiry"
+# RECLAIM_WHY_EPOCH does NOT burn the poison guard; RECLAIM_WHY_EXPIRY DOES
+# count toward ``meta.attempts``. See :func:`claim_executor_jobs`'s docstring
+# (both re-exported from precis.liveness).
 
 #: Cap on ``meta.reclaims`` length — forensics, not an unbounded log.
 _RECLAIMS_CAP = 10
@@ -160,46 +155,21 @@ def _scarcity(requires: dict[str, int], host_count: dict[str, int]) -> float:
 def reserve_host() -> str:
     """This host's identity for resource reservation (slice 6c).
 
-    Must match the key the ``heartbeat`` self-probe writes ``resource_slots``
-    under (``PRECIS_HOST_NAME`` or the hostname) — the reservation host is
-    the *heartbeat* identity, not the ``PRECIS_NODE`` claim-gate identity,
-    so a decrement lands on the same row the probe advertised.
+    Delegates to :func:`precis.liveness.reserve_host` — the reservation
+    host is the *heartbeat* identity, not the ``PRECIS_NODE`` claim-gate
+    identity, so a decrement lands on the same row the probe advertised.
     """
-    return os.environ.get("PRECIS_HOST_NAME") or socket.gethostname()
+    from precis.liveness import reserve_host as _impl
+
+    return _impl()
 
 
 def _this_worker_lease_identity() -> tuple[str | None, str | None, str | None]:
     """``(boot_id, process, host)`` this worker stamps onto every job it
-    claims (the worker boot epoch / lease-identity stamp).
-
-    Returns the real triple ONLY when BOTH a boot_id has been minted AND a
-    ``PRECIS_PROCESS`` is set — i.e. only when this worker's boot_id is
-    actually *advertised* in ``host_heartbeat.meta.boot_ids`` (see
-    ``heartbeat._own_boot_ids_meta``, which requires the same two things).
-    Otherwise returns ``(None, None, None)`` so the claimed row stamps no
-    ``lease_boot_id`` at all and falls to the safe expiry-only arm.
-
-    This asymmetry matters: ``mint_boot_id()`` can succeed (return a
-    non-null id) even when ``process`` is ``None`` — a worker started
-    without ``PRECIS_PROCESS`` — but ``_own_boot_ids_meta`` then never
-    advertises that id under any ``(host, process)`` key. Before this
-    guard, such a worker still stamped its (unadvertised) boot_id onto
-    every row it claimed; the SQL epoch arm's COALESCE-sentinel then read
-    "no live advertisement for this (host, process)" as "provably gone"
-    and stole the row out from under a genuinely live holder on the very
-    next claim pass. Returning ``(None, None, None)`` here means an
-    unadvertised worker's claims are indistinguishable from a pre-epoch
-    caller's — correct, since neither can be proven-replaced by the epoch
-    arm — and they fall back to the pre-existing lease-expiry arm, exactly
-    like a null-boot_id row always has.
+    claims — :func:`precis.liveness.worker_identity` (the
+    unadvertised-must-not-stamp guard and its rationale live there).
     """
-    from precis.workers.heartbeat import current_boot_id
-
-    process = os.environ.get("PRECIS_PROCESS") or None
-    boot_id = current_boot_id()
-    if boot_id is None or process is None:
-        return None, None, None
-    return boot_id, process, reserve_host()
+    return worker_identity()
 
 
 def effective_requires(meta: dict[str, Any]) -> dict[str, int]:
@@ -239,46 +209,20 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     return out
 
 
-def _advertised_boot_ids(conn: Connection) -> dict[tuple[str, str], str]:
-    """``(host, process) -> currently-advertised boot_id`` from
-    ``host_heartbeat.meta.boot_ids`` (the worker boot epoch).
-
-    Mirrors the SQL epoch-arm's correlated subquery (kept as a Python
-    lookup here so the reclaim-reason classification below — which needs
-    to run in Python either way, to decide expiry-vs-epoch for the attempt
-    bump — doesn't re-query per row).
-    """
-    rows = conn.execute(
-        "SELECT host, meta -> 'boot_ids' FROM host_heartbeat"
-    ).fetchall()
-    out: dict[tuple[str, str], str] = {}
-    for host, boot_ids in rows:
-        if not boot_ids:
-            continue
-        for process, boot_id in dict(boot_ids).items():
-            out[(str(host), str(process))] = str(boot_id)
-    return out
-
-
 def _reclaim_reason(
     meta: dict[str, Any], advertised_boot_ids: dict[tuple[str, str], str]
 ) -> str:
     """Classify a running row's reclaim as ``epoch`` or ``expiry`` (§H piece
-    3) — the SAME predicate the SQL epoch arm uses (a non-null
-    ``lease_boot_id`` that doesn't match the currently-advertised generation
-    for its ``(lease_host, lease_process)``), just evaluated in Python so the
-    attempt-bump decision can be made once per claimed row instead of
-    per-row SQL. A row with no ``lease_boot_id`` (or one that still matches
-    the live advertisement — the plain-hang case) is an ``expiry`` reclaim.
+    3) — :func:`precis.liveness.reclaim_reason` with the job-lease
+    ``meta.lease_*`` key mapping applied (the storage-key names stay HERE,
+    per the liveness module's interface contract).
     """
-    lease_boot_id = meta.get("lease_boot_id")
-    if lease_boot_id:
-        current = advertised_boot_ids.get(
-            (str(meta.get("lease_host")), str(meta.get("lease_process")))
-        )
-        if current != lease_boot_id:
-            return RECLAIM_WHY_EPOCH
-    return RECLAIM_WHY_EXPIRY
+    return reclaim_reason(
+        meta.get("lease_boot_id"),
+        meta.get("lease_host"),
+        meta.get("lease_process"),
+        advertised_boot_ids,
+    )
 
 
 def _mem_pressured_hosts(conn: Connection) -> set[str]:

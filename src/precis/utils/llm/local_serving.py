@@ -362,6 +362,8 @@ def acquire(model: str) -> LocalSlot | None:
                     with conn.transaction():
                         ok = reserve_resource_slots(conn, remote_host, {resource: 1})
                         if ok:
+                            from precis.liveness import worker_identity
+
                             hold_id = insert_slot_hold(
                                 conn,
                                 remote_host,
@@ -369,6 +371,7 @@ def acquire(model: str) -> LocalSlot | None:
                                 1,
                                 f"{_local_host()}:{os.getpid()}",
                                 _hold_ttl_s(),
+                                holder_identity=worker_identity(),
                             )
             except Exception:  # pragma: no cover — must never break dispatch
                 log.warning(
@@ -430,6 +433,8 @@ def acquire(model: str) -> LocalSlot | None:
             with conn.transaction():
                 ok = reserve_resource_slots(conn, host, {resource: 1})
                 if ok:
+                    from precis.liveness import worker_identity
+
                     hold_id = insert_slot_hold(
                         conn,
                         host,
@@ -437,6 +442,7 @@ def acquire(model: str) -> LocalSlot | None:
                         1,
                         f"{_local_host()}:{os.getpid()}",
                         _hold_ttl_s(),
+                        holder_identity=worker_identity(),
                     )
     except Exception:  # pragma: no cover — reservation must never break dispatch
         log.warning("local_serving: reserve failed for %s", resource, exc_info=True)

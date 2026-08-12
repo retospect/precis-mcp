@@ -82,6 +82,15 @@ def open_log(
         "source": source,
         "started_at": _now_iso(store),
     }
+    # Boot-epoch identity (self-healing-spine Layer 1): lets the reaper
+    # finalize a zombie log (worker SIGKILLed mid-run) as 'aborted' the
+    # moment the generation is provably replaced. All-None (CLI /
+    # unadvertised worker) stamps nothing — no epoch reclaim, as before.
+    from precis.liveness import worker_identity
+
+    boot_id, process, host = worker_identity()
+    if boot_id is not None:
+        meta["worker"] = {"host": host, "process": process, "boot_id": boot_id}
     if model is not None:
         meta["model"] = model
     if prompt is not None:

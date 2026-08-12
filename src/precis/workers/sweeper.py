@@ -698,6 +698,20 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
             "safety threshold (gripe 50905)",
             reaped_dft,
         )
+    # Claim-registry epoch arm (self-healing-spine Layer 1 slice 1) — one
+    # declarative pass over every claim type carrying boot-epoch identity
+    # (slot holds, agentlogs); reclaims the moment a holder's generation is
+    # provably replaced instead of waiting out a TTL (or, for agentlogs,
+    # forever). Job leases keep their in-claim machinery (`executors/
+    # _common.py`) — see `workers/reaper.py`.
+    from precis.workers.reaper import run_claim_reaper
+
+    reclaimed_claims = run_claim_reaper(store)
+    if reclaimed_claims:
+        log.warning(
+            "sweeper: claim reaper reclaimed %d epoch-dead claim(s)",
+            reclaimed_claims,
+        )
     # Dead-node compute-lane reap (gr172886 part-b) — a DISTINCT pass from the
     # generic timeout sweep below, which excludes ``ssh_node`` entirely (see
     # ``_enumerate_orphans``). Runs every pass, fleet-wide, not gated behind
