@@ -5,7 +5,12 @@
 
 {# ── Header strip — title + status/Ea/version badges ────────────────── #}
 <div class="mt-2 mb-4">
-  <h1 class="text-lg font-semibold break-all">{{ ref.title }}</h1>
+  <h1 class="text-lg font-semibold break-all flex items-center gap-2">
+    {# gr161575: the cat-on-a-path icon — static/icons/ is the (minimal)
+       SVG asset convention; _KIND_ICON stays emoji-only for Drive rows. #}
+    <img src="/static/icons/catpath.svg" alt="" class="h-7 w-7 shrink-0" />
+    <span>{{ ref.title }}</span>
+  </h1>
   <p class="mt-2 text-sm text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
     {% if ref.slug %}<span class="font-mono">{{ ref.slug }}</span>{% else %}<span class="font-mono">#{{ ref.id }}</span>{% endif %}
     {% if status %}
@@ -204,7 +209,7 @@
           <div class="space-y-0.5">
             {% for row in sect.rows %}
             {% set sid = row.id %}
-            <div class="pw-state-node flex items-center gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-sky-50"
+            <div class="pw-state-node flex items-center gap-2 flex-wrap text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-sky-50"
                  data-state="{{ sid }}" role="button" tabindex="0">
               <span class="font-mono text-slate-700">{{ sid }}</span>
               {% if row.annotation %}
@@ -223,6 +228,13 @@
               <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">geometry</span>
               {% else %}
               <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">no geometry linked</span>
+              {% endif %}
+              {# gripe 161576 remainder: what calculator produced this state's
+                 numbers — a computed run's model, or an external import's
+                 method fingerprint + explicit "external" marker. Absent
+                 (never invented) when the linked structure has no run row. #}
+              {% if state_calc.get(sid) %}
+              <span class="w-full basis-full text-[10px] text-slate-400 font-mono" title="calculator identity for this state's linked structure">{{ state_calc[sid] }}</span>
               {% endif %}
             </div>
             {% endfor %}

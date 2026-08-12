@@ -1167,6 +1167,84 @@ def test_pathway_detail_run_jobs_degrade_cleanly_without_pool_support(
     assert "run job #" not in resp.text
 
 
+# ── calculator identity (gripe 161576 remainder) ─────────────────────────
+
+
+class _StructRunsConn:
+    """Answers ONLY the calc-identity SELECT
+    (``_pathway_state_calc_identities``) with canned rows; every other query
+    degrades the same as the base ``FakeStore``'s ``_FakeConn`` (empty).
+    Mirrors ``_RunJobsConn`` for a single-query pool override."""
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def execute(self, sql: str, params: Any = None) -> Any:
+        rows = list(self._rows) if "FROM struct_runs" in sql else []
+        return SimpleNamespace(
+            fetchall=lambda: rows, fetchone=lambda: rows[0] if rows else None
+        )
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+
+class _StructRunsPool:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    @contextmanager
+    def connection(self):
+        yield _StructRunsConn(self._rows)
+
+
+def test_pathway_state_panel_shows_calc_identity_when_run_data_exists(
+    client, runtime
+) -> None:
+    """Each state's panel row gets a compact ``calc:`` line — the same
+    identity string ``view='atom'`` shows on the structure handler
+    (``format_calc_identity``, shared) — a computed run's model+params
+    digest, or an external import's method fingerprint + marker. A state
+    with no run row (s3 here) gets none — never invented."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    runtime.store.pool = _StructRunsPool(
+        [
+            (900001, "computed", "mace_mp", {"steps": 200}, None),
+            (900002, "external", None, None, {"functional": "PBE", "cutoff_eV": 500}),
+        ]
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "calc: mace_mp (steps=200)" in resp.text
+    assert "calc: PBE/500eV — external" in resp.text
+    # exactly the two seeded rows — s3 (900003) has none.
+    assert resp.text.count("calc:") == 2
+
+
+def test_pathway_state_panel_calc_identity_absent_without_a_run(
+    client, runtime
+) -> None:
+    """The default fake pool answers every query empty (no struct_runs rows
+    at all) -> no ``calc:`` line anywhere, no crash."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "calc:" not in resp.text
+
+
 # ── potential lever (the explorer's CHE U-slider) ─────────────────────────
 
 #: ``_GRAPH3`` with a per-node ``n_H`` (reservoir H atoms absorbed relative

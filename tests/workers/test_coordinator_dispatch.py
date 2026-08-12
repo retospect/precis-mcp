@@ -8,6 +8,7 @@ can be asserted without a live Postgres.
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -495,3 +496,113 @@ class TestWaitingStatusVocab:
         ):
             tag = Tag.parse_strict(f"STATUS:{value}")
             assert tag.value == value
+
+
+# ── Lease keepalive (gr204309) ─────────────────────────────────────
+#
+# The coordinator sets meta.lease_until ONCE at claim, sized to
+# _LEASE_MINUTES — a slice that genuinely runs longer than that must not
+# be mistaken for dead by an external reaper (the quest-loop reconciler
+# cancelled live work on exactly this false signal, gr204309). These
+# tests exercise _LeaseKeepalive directly against a fake store/pool, and
+# then the wiring that engages it around every claimed slice.
+
+
+class TestLeaseKeepalive:
+    def test_keepalive_renews_the_lease_repeatedly_while_the_slice_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(coordinator, "_LEASE_KEEPALIVE_INTERVAL_S", 0.02)
+        renewals: list[dict[str, Any]] = []
+
+        def _fake_renew(
+            conn: Any, ref_id: int, meta: dict[str, Any], lease_seconds: int
+        ) -> bool:
+            renewals.append({"ref_id": ref_id, "lease_seconds": lease_seconds})
+            return True
+
+        monkeypatch.setattr(coordinator, "_renew_lease_if_mine", _fake_renew)
+
+        store = _FakeStore()
+        with coordinator._LeaseKeepalive(store, 55, {"lease_boot_id": "b"}):
+            time.sleep(0.09)  # several ticks at a 0.02s interval
+
+        # Renewed more than once (the whole point — a single claim-time
+        # stamp wouldn't need a keepalive at all), always for the right
+        # job, always sized to the full lease window (not the interval).
+        assert len(renewals) >= 2
+        assert all(r["ref_id"] == 55 for r in renewals)
+        assert all(
+            r["lease_seconds"] == coordinator._LEASE_MINUTES * 60 for r in renewals
+        )
+
+    def test_keepalive_thread_is_not_left_running_after_the_slice_ends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(coordinator, "_LEASE_KEEPALIVE_INTERVAL_S", 0.02)
+        monkeypatch.setattr(coordinator, "_renew_lease_if_mine", lambda *_a, **_k: True)
+
+        store = _FakeStore()
+        ka = coordinator._LeaseKeepalive(store, 1, {})
+        with ka:
+            time.sleep(0.05)
+
+        # __exit__ joins and clears the thread — nothing left running.
+        assert ka._thread is None
+
+    def test_keepalive_stops_renewing_once_identity_is_lost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """renew_lease_if_mine returning False means another worker
+        generation already reclaimed the job — the keepalive must stop
+        calling it (and must NOT touch the still-running slice itself)."""
+        monkeypatch.setattr(coordinator, "_LEASE_KEEPALIVE_INTERVAL_S", 0.02)
+        calls: list[int] = []
+
+        def _fake_renew(*_a: Any, **_k: Any) -> bool:
+            calls.append(1)
+            return False
+
+        monkeypatch.setattr(coordinator, "_renew_lease_if_mine", _fake_renew)
+
+        store = _FakeStore()
+        with coordinator._LeaseKeepalive(store, 9, {}):
+            time.sleep(0.09)  # would be several more ticks if it kept going
+
+        assert len(calls) == 1
+
+    def test_run_coordinator_pass_wraps_each_slice_in_a_keepalive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wiring itself: run_coordinator_pass's sequential loop must
+        actually engage `_LeaseKeepalive` around `_run_one` — not merely
+        have the class exist unused."""
+        entered: list[int] = []
+        exited: list[int] = []
+
+        class _SpyKeepalive:
+            def __init__(self, _store: Any, ref_id: int, _meta: dict[str, Any]) -> None:
+                self._ref_id = ref_id
+
+            def __enter__(self) -> _SpyKeepalive:
+                entered.append(self._ref_id)
+                return self
+
+            def __exit__(self, *_exc_info: Any) -> None:
+                exited.append(self._ref_id)
+
+        monkeypatch.setattr(coordinator, "_LeaseKeepalive", _SpyKeepalive)
+        monkeypatch.setattr(
+            coordinator,
+            "_claim_jobs",
+            lambda conn, *, limit: [(1, "t", {"job_type": "x"})],
+        )
+        monkeypatch.setattr(coordinator, "_set_status", lambda *_a, **_k: None)
+        monkeypatch.setattr(coordinator, "_run_one", lambda *_a, **_k: None)
+
+        store = _FakeStore()
+        out = coordinator.run_coordinator_pass(store)
+
+        assert entered == [1]
+        assert exited == [1]
+        assert out == {"claimed": 1, "ok": 1, "failed": 0}

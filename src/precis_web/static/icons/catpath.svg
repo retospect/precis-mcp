@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 8 64 64" role="img" aria-label="catpath — a cat walking on a path">
+  <!-- gr161575: the literal visual pun — a cat on a (reaction) path.
+       Palette matches the web UI's tailwind slates: path slate-300/400,
+       cat slate-700. Hand-authored; keep it dependency-free. -->
+  <!-- the path: a foreground band with a dashed centerline -->
+  <path d="M2 52 C 18 46.5, 46 46.5, 62 52" fill="none" stroke="#cbd5e1" stroke-width="8" stroke-linecap="round"/>
+  <path d="M2 52 C 18 46.5, 46 46.5, 62 52" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3 4.5" stroke-linecap="round"/>
+  <!-- paw prints ahead of the cat -->
+  <g fill="#64748b">
+    <ellipse cx="50" cy="49.6" rx="1.15" ry="0.85"/>
+    <ellipse cx="54.5" cy="50.6" rx="1.15" ry="0.85"/>
+  </g>
+  <!-- the cat: walking right, tail up -->
+  <g fill="#334155" stroke="none">
+    <ellipse cx="30.5" cy="39.5" rx="10.5" ry="5.2"/>
+    <circle cx="42.5" cy="32.5" r="5"/>
+    <path d="M39.5 29.5 L40.5 24 L43.5 27.5 Z"/>
+    <path d="M43.5 27.5 L46.8 24.8 L46.8 30 Z"/>
+  </g>
+  <g fill="none" stroke="#334155" stroke-linecap="round">
+    <!-- legs, mid-stride -->
+    <path d="M22.5 42 L21.5 48.6 M26.5 42.5 L27 49 M35 42.5 L34.3 49 M38.5 42 L39.8 48.4" stroke-width="2.4"/>
+    <!-- tail, curled up -->
+    <path d="M21 38.5 C 14.5 36.5, 13.5 29.5, 18.5 26.5" stroke-width="2.6"/>
+  </g>
+</svg>

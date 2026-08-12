@@ -124,6 +124,36 @@ def _arm_orphan(store: Store, quest_id: int, *, lease_sql: str) -> int:
     return job_id
 
 
+def _insert_chunk(store: Store, job_id: int, *, age_sql: str) -> None:
+    """Insert one body chunk for ``job_id``, backdated by ``age_sql`` (e.g.
+    ``'2 minutes'``) — simulates a coordinator slice's evidence-of-life
+    write (gr204309: a job that's still writing chunks must never be
+    mistaken for a reboot orphan, lease notwithstanding)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO chunks (ref_id, ord, chunk_kind, text, created_at)
+            VALUES (%s, 0, 'job_event', 'slice progress', now() - (%s)::interval)
+            """,
+            (job_id, age_sql),
+        )
+        conn.commit()
+
+
+def _last_reap_event_payload(store: Store, job_id: int) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT payload FROM ref_events
+             WHERE ref_id = %s AND event = 'loop-reaped'
+             ORDER BY event_id DESC LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+    assert row is not None, f"no loop-reaped event for job {job_id}"
+    return dict(row[0] or {})
+
+
 class TestEnsureQuestLoop:
     def test_first_call_mints_a_coordinator_loop(self, store: Store) -> None:
         q = _mk_quest(store, "A striving")
@@ -362,6 +392,62 @@ class TestReapOrphanedLoop:
         assert out["minted"] == 0
         assert _current_status(store, live_id) == "running"
         assert _non_terminal_loop_ids(store, q) == [live_id]
+
+    def test_lease_expired_but_recent_chunk_is_not_reaped(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr204309: a lease past the grace window is NOT proof of death on
+        its own — a chunk written inside the grace window is direct
+        evidence the slice is still alive (the exact prod scenario: job
+        204379 wrote a chunk 37 minutes after its lease had "expired")."""
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_ORPHAN_GRACE_S", "600")
+        q = self._make_active_quest(store)
+        live_id = _arm_orphan(store, q, lease_sql="now() - interval '1 hour'")
+        _insert_chunk(store, live_id, age_sql="1 minute")
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 0
+        assert out["minted"] == 0
+        assert _current_status(store, live_id) == "running"
+        assert _non_terminal_loop_ids(store, q) == [live_id]
+
+    def test_lease_expired_and_no_recent_chunk_is_still_reaped(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """A lease-expired-beyond-grace loop with a STALE (outside-grace)
+        chunk — or none at all — is still a provable orphan; the event
+        payload carries the lease/chunk evidence for observability."""
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_ORPHAN_GRACE_S", "600")
+        q = self._make_active_quest(store)
+        orphan_id = _arm_orphan(store, q, lease_sql="now() - interval '1 hour'")
+        _insert_chunk(store, orphan_id, age_sql="2 hours")  # stale, outside grace
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 1
+        assert out["minted"] == 1
+        assert _current_status(store, orphan_id) == "cancelled"
+
+        payload = _last_reap_event_payload(store, orphan_id)
+        assert payload["lease_until"] is not None
+        assert payload["last_chunk_at"] is not None
+
+        meta = _job_meta(store, orphan_id)
+        assert meta.get("reap_note")
+
+    def test_reap_event_payload_has_null_last_chunk_when_never_written(
+        self, store: Store
+    ) -> None:
+        q = self._make_active_quest(store)
+        orphan_id = _arm_orphan(store, q, lease_sql="now() - interval '1 hour'")
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["reaped"] == 1
+        payload = _last_reap_event_payload(store, orphan_id)
+        assert payload["last_chunk_at"] is None
+        assert payload["lease_until"] is not None
 
 
 class TestFailedRestBackoff:

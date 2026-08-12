@@ -42,6 +42,7 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
+from precis.handlers.structure import format_calc_identity
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry, mentions
@@ -1290,6 +1291,58 @@ def _pathway_state_geoms_and_measures(
     return geoms, measures_out
 
 
+def _pathway_state_calc_identities(
+    store: Any, state_ids: list[str], structure_refs: dict[str, Any]
+) -> dict[str, str]:
+    """One ``calc:`` line per state (gripe 161576 remainder) — the same
+    ``format_calc_identity`` label ``view='atom'`` shows on the structure
+    handler (``precis.handlers.structure``), with the same run selection as
+    its no-``run=`` fallback (``_atom_view_calc_row``): the latest
+    ``struct_runs`` row at each structure's CURRENT version
+    (``refs.meta->>'version'``, default 0) — not the globally-latest row,
+    which could describe a superseded geometry. Batched: one query over
+    every state's structure id (never N), via the same raw-SQL seam
+    ``_pathway_run_jobs`` uses for a struct_runs read the store's own
+    helpers don't expose. A state with no linked structure,
+    or a structure with no run row yet, is simply absent from the returned
+    dict (never invented) — the template checks membership."""
+    sids = sorted({sid for sid in structure_refs.values() if sid is not None})
+    if not sids:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (sr.ref_id) sr.ref_id, sr.provenance, "
+                "sr.model, sr.params, sr.method "
+                "FROM struct_runs sr JOIN refs r ON r.ref_id = sr.ref_id "
+                "WHERE sr.ref_id = ANY(%s) "
+                "AND sr.on_version = COALESCE((r.meta->>'version')::int, 0) "
+                "ORDER BY sr.ref_id, sr.id DESC",
+                (sids,),
+            ).fetchall()
+    except Exception:
+        log.warning("pathway state calc-identity query failed", exc_info=True)
+        return {}
+    by_ref_id: dict[int, str] = {}
+    for ref_id, provenance, model, params, method in rows:
+        label = format_calc_identity(
+            {
+                "provenance": provenance,
+                "model": model,
+                "params": params,
+                "method": method,
+            }
+        )
+        if label:
+            by_ref_id[int(ref_id)] = label
+    out: dict[str, str] = {}
+    for state_id in state_ids:
+        sid = structure_refs.get(state_id)
+        if sid is not None and sid in by_ref_id:
+            out[state_id] = by_ref_id[sid]
+    return out
+
+
 #: The candidate-structure / pathway slug naming convention
 #: (``precis.quest.compute._candidate_slug`` -> ``q<quest_id>cand-<digest>``,
 #: and ``dispatch_autocatpath``'s own ``pslug = f"{candidate.slug}-rx-{key}"``)
@@ -1798,6 +1851,9 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
     state_geoms, measures_summary = _pathway_state_geoms_and_measures(
         store, state_ids, structure_refs, measure_defs
     )
+    # gripe 161576 remainder: which calculator produced each state's
+    # energetics — batched over every state's structure id, never N queries.
+    state_calc = _pathway_state_calc_identities(store, state_ids, structure_refs)
     n_states_with_geom = sum(1 for g in state_geoms.values() if g is not None)
     # A state's ``rel_energy`` may be recorded as explicitly null (computed
     # but not yet available, distinct from "no graph node at all") — the
@@ -1862,6 +1918,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
             "state_ids": state_ids,
             "state_sections": state_sections,
             "state_geoms": state_geoms,
+            "state_calc": state_calc,
             "state_warnings": state_warnings,
             "n_states_with_geom": n_states_with_geom,
             "states_missing_energy": states_missing_energy,

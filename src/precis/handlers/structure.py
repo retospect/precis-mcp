@@ -408,6 +408,70 @@ def _method_key(run: Mapping[str, Any]) -> tuple[str, Any]:
     return ("computed", run.get("model"))
 
 
+# ── calculator identity (gripe 161576 remainder) ──
+#
+# Energetics surface everywhere (view='atom', pathway barriers) but never
+# said WHAT produced the numbers. ``format_calc_identity`` is the one place
+# that turns a struct_runs row into the compact "calc: …" label both
+# view='atom' below and the pathway web explorer
+# (precis_web.routes.refs._pathway_state_calc_identities) show — a shared
+# pure function so the two surfaces can't drift on how they describe a run.
+
+#: Keys worth surfacing from a computed run's ``params`` jsonb in the
+#: ``calc:`` header — a hand-picked, load-bearing subset; most of what
+#: lands in ``params`` today (e.g. ``cached``) is audit bookkeeping, not
+#: part of the calculator's identity, and the column is otherwise a
+#: free-form jsonb blob not worth dumping wholesale.
+_CALC_PARAM_DIGEST_KEYS = ("steps", "fmax", "cutoff_eV", "kmesh", "spin", "cell")
+
+
+def _format_params_digest(params: Mapping[str, Any] | None) -> str:
+    """Comma-joined ``key=value`` for the few ``_CALC_PARAM_DIGEST_KEYS``
+    present in ``params`` — ``''`` when none of them were recorded (most
+    runs today carry an empty or near-empty ``params``, e.g. just
+    ``{"cached": True}``, which isn't load-bearing enough to show here)."""
+    if not params:
+        return ""
+    parts = [
+        f"{k}={params[k]}" for k in _CALC_PARAM_DIGEST_KEYS if params.get(k) is not None
+    ]
+    return ", ".join(parts)
+
+
+def format_calc_identity(run: Mapping[str, Any] | None) -> str | None:
+    """Compact ``calc: …`` header naming what produced a run's numbers.
+
+    A computed run (our relax/NEB pipeline, migration 0043) shows its
+    ``model`` plus a short digest of the few load-bearing ``params``. An
+    external row (an imported OC20/Materials Project entry, migration 0084)
+    shows its method fingerprint (functional/cutoff/kmesh — whichever were
+    recorded) plus an explicit ``external`` marker and its ``dataset_doi``
+    when present, so an imported PBE energy is never mistaken for one we
+    computed. ``None`` when ``run`` is ``None`` — no run row, no line, never
+    invented.
+
+    ``run`` is the plain ``{"provenance", "model", "params", "method"}``
+    shape each call site assembles from its own ``struct_runs`` read."""
+    if run is None:
+        return None
+    if run.get("provenance") == "external":
+        method = run.get("method") or {}
+        parts = []
+        if method.get("functional"):
+            parts.append(str(method["functional"]))
+        if method.get("cutoff_eV") is not None:
+            parts.append(f"{method['cutoff_eV']}eV")
+        if method.get("kmesh"):
+            parts.append(f"kmesh {method['kmesh']}")
+        fingerprint = "/".join(parts) if parts else "?"
+        doi = method.get("dataset_doi")
+        tail = f"external — {doi}" if doi else "external"
+        return f"calc: {fingerprint} — {tail}"
+    model = run.get("model") or "?"
+    digest = _format_params_digest(run.get("params"))
+    return f"calc: {model}" + (f" ({digest})" if digest else "")
+
+
 def guard_energy_comparable(run_a: Mapping[str, Any], run_b: Mapping[str, Any]) -> None:
     """Refuse a ΔE across two runs produced by different methods — mixing functionals/cutoffs, or an external dataset energy against
     a differently-modeled computed relax, is a category error, not a real
@@ -970,6 +1034,42 @@ class StructureHandler(Handler):
                 (run_ids,),
             ).fetchall()
         return {int(rid): (prov, method) for rid, prov, method in rows}
+
+    def _atom_view_calc_row(
+        self, ref_id: int, *, run_id: int | None, on_version: int
+    ) -> dict[str, Any] | None:
+        """The struct_runs row backing view='atom''s ``calc:`` header (gripe
+        161576 remainder) — same run selection as ``_resolve_forces`` (a
+        pinned ``run_id``, else the latest run at the design's CURRENT
+        version, FIX 2), but NOT restricted to force-bearing rows: an
+        external import's energy-only row, or a computed run whose per-atom
+        forces never landed, still deserves a calculator-identity line. One
+        direct ``struct_runs`` query, the same rationale as
+        ``_external_provenance`` above — provenance/method (0084) aren't in
+        ``structure_run_forces``'s own column list."""
+        with self.store.pool.connection() as conn:
+            if run_id is not None:
+                row = conn.execute(
+                    "SELECT provenance, model, params, method FROM struct_runs "
+                    "WHERE id = %s AND ref_id = %s",
+                    (run_id, ref_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT provenance, model, params, method FROM struct_runs "
+                    "WHERE ref_id = %s AND on_version = %s "
+                    "ORDER BY id DESC LIMIT 1",
+                    (ref_id, on_version),
+                ).fetchone()
+        if row is None:
+            return None
+        provenance, model, params, method = row
+        return {
+            "provenance": provenance,
+            "model": model,
+            "params": params,
+            "method": method,
+        }
 
     def _render_runs(self, ref: Any) -> Response:
         """The design's compute history — the fidelity ladder over time (§9),
@@ -1835,6 +1935,20 @@ class StructureHandler(Handler):
                 f"· coord {probe.coordination(scene, label)} · "
                 f"fixed={'yes' if atom.fixed else 'no'}"
             )
+            # gripe 161576 remainder: a "calc: …" line naming what produced
+            # this design's numbers — the same struct_runs row selection as
+            # the force readout below (pinned run=, else latest at the
+            # CURRENT design version), but not restricted to force-bearing
+            # rows (an external import's energy-only row still gets one).
+            run_id = self._parse_run_arg(args.get("run"))
+            calc_row = self._atom_view_calc_row(
+                ref.id,
+                run_id=run_id,
+                on_version=int((ref.meta or {}).get("version", 0)),
+            )
+            calc_line = format_calc_identity(calc_row)
+            if calc_line:
+                head += "\n" + calc_line
             # gripe 161576: per-atom force readout — |F| + vector, joined from
             # a run's stored ``forces`` BY LABEL (``run=`` pins one), or a
             # cheap on-demand EMT estimate when no current-version run

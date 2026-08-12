@@ -39,17 +39,22 @@ be disabled).
 **Why a grace margin, not the bare ssh_node predicate.** The claim-side
 lease-steal (``claim_executor_jobs(reclaim_stale_running=True)``) treats
 `lease < now()` alone as safe because an ssh_node lease is ~1h — longer than any
-live dispatch. A *coordinator* lease is only 5 min and is set once at claim, not
-renewed mid-slice (:mod:`precis.workers.executors.coordinator`), so a live but
-slow ``quest_tick`` slice (its `big`-tier review/propose LLM call under spark
-contention) can outlive its lease *while genuinely running*. Cancelling that
-would re-mint a second loop while the old slice finishes and re-parks — the very
-double-drive this module prevents. So a loop is only reaped once its lease is
-stale beyond ``PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`` (default 600 s), which no live
-slice reaches. Reap terminalizes to ``STATUS:cancelled`` — distinct from a real
-``failed`` rest, so it never feeds the (out-of-scope, RC1) failed-loop re-mint
-question: this change only recovers *reboot* orphans, never a loop that a real
-error rested.
+live dispatch. A *coordinator* lease is only 5 min
+(:mod:`precis.workers.executors.coordinator`'s ``_LEASE_MINUTES``), so a live
+but slow ``quest_tick`` slice (its `big`-tier review/propose LLM call under
+spark contention) can run well past that raw window. The coordinator now
+renews its own lease mid-slice (``_LeaseKeepalive``, gr204309) precisely to
+keep a live slice's lease fresh — but this reaper does not rely on that alone:
+it is only reaped once its lease is stale beyond
+``PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`` (default 600 s, longer than the keepalive's
+own renewal cadence) **AND** it shows no evidence of life — no ``chunks`` row
+written for it more recently than that same grace window (gr204309 — a lease
+that stopped renewing is not, on its own, proof of death; a slow-but-writing
+slice isn't either). Either signal alone (a fresh chunk, or a lease still
+inside grace) is enough to hold off. Reap terminalizes to ``STATUS:cancelled``
+— distinct from a real ``failed`` rest, so it never feeds the (out-of-scope,
+RC1) failed-loop re-mint question: this change only recovers *reboot* orphans,
+never a loop that a real error rested.
 
 **Teardown is no longer purely passive (RC2).** A quest that goes
 `dormant`/`abandoned` stops being re-minted here; this reconciler still does
@@ -443,27 +448,46 @@ def _reap_orphaned_loop(store: Any, quest_id: int, *, grace_s: int) -> int | Non
     """Cancel ``quest_id``'s coordinator loop iff it is a provable reboot orphan.
 
     An orphan = the ``idem_key=quest_tick:<id>`` job that is (a) still
-    non-terminal — so it blocks a re-mint — yet (b) has a ``meta.lease_until``
-    that is non-null and expired by more than ``grace_s`` (no live executor
-    could still be holding it). Such a job's slice died mid-run and nothing
-    else will transition it promptly. We terminalize it to ``STATUS:cancelled``
-    (not ``failed``: a reboot is not a real error) so the next
-    ``ensure_quest_loop`` re-mints a fresh loop this same pass.
+    non-terminal — so it blocks a re-mint — AND (b) has a ``meta.lease_until``
+    that is non-null and expired by more than ``grace_s`` — AND (c) has no
+    ``chunks`` row for it created within that same ``grace_s`` window.
+
+    Both (b) and (c) are required (gr204309). Before this fix the lease-expiry
+    arm alone was treated as "no live executor could still be holding it" —
+    that claim was false: :mod:`precis.workers.executors.coordinator` set
+    ``meta.lease_until`` once at claim and never renewed it mid-slice, so a
+    genuinely long-running (tens-of-minutes) slice would read as expired while
+    still doing real work, and got cancelled out from under itself (prod: job
+    204379 wrote a chunk 37 minutes after its lease had "expired", then was
+    reaped anyway; 328 quest_tick jobs for quest 164903 mint→claim→reap→re-mint
+    spun this way since 2026-07-24). The coordinator now renews its own lease
+    mid-slice (``_LeaseKeepalive``), which should keep (b) from firing on a
+    live slice going forward — but (c) stays as defense in depth against any
+    *other* non-renewing executor a future ``idem_key=quest_tick:*`` coordinator
+    might run under: a chunk written inside the grace window is direct evidence
+    the slice is alive regardless of what its lease says, so it is never
+    cancelled out from under itself. Such a job's slice died mid-run and
+    nothing else will transition it promptly. We terminalize it to
+    ``STATUS:cancelled`` (not ``failed``: a reboot is not a real error) so the
+    next ``ensure_quest_loop`` re-mints a fresh loop this same pass.
 
     Race- and re-run-safe: the candidate is re-checked ``FOR UPDATE`` inside
-    the write tx, and a bare-``queued`` re-mint (null lease) or a live-lease
-    loop can never match. Returns the cancelled job id, or ``None`` when there
-    is nothing to reap. Never raises — a single quest's reap failure must not
-    crash the reconcile cycle.
+    the write tx, and a bare-``queued`` re-mint (null lease), a live-lease
+    loop, or a loop with a recent chunk can never match. Returns the cancelled
+    job id, or ``None`` when there is nothing to reap. Never raises — a single
+    quest's reap failure must not crash the reconcile cycle.
     """
     try:
         from precis.store.types import Tag
 
         idem = f"quest_tick:{quest_id}"
+        grace_interval = f"{grace_s} seconds"
         with store.tx() as conn:
             row = conn.execute(
                 """
-                SELECT r.ref_id
+                SELECT r.ref_id, r.meta->>'lease_until' AS lease_until,
+                       (SELECT MAX(c.created_at) FROM chunks c
+                         WHERE c.ref_id = r.ref_id) AS last_chunk_at
                   FROM refs r
                  WHERE r.kind = 'job'
                    AND r.deleted_at IS NULL
@@ -471,6 +495,11 @@ def _reap_orphaned_loop(store: Any, quest_id: int, *, grace_s: int) -> int | Non
                    AND r.meta->>'executor' = 'coordinator'
                    AND (r.meta->>'lease_until') IS NOT NULL
                    AND (r.meta->>'lease_until')::timestamptz < now() - %s::interval
+                   AND NOT EXISTS (
+                         SELECT 1 FROM chunks c
+                          WHERE c.ref_id = r.ref_id
+                            AND c.created_at > now() - %s::interval
+                       )
                    AND NOT EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = r.ref_id
@@ -481,11 +510,24 @@ def _reap_orphaned_loop(store: Any, quest_id: int, *, grace_s: int) -> int | Non
                  LIMIT 1
                    FOR UPDATE OF r SKIP LOCKED
                 """,
-                (idem, f"{grace_s} seconds", list(_TERMINAL_STATUSES)),
+                (
+                    idem,
+                    grace_interval,
+                    grace_interval,
+                    list(_TERMINAL_STATUSES),
+                ),
             ).fetchone()
             if row is None:
                 return None
             job_id = int(row[0])
+            lease_until = row[1]
+            last_chunk_at = row[2]
+            last_chunk_iso = last_chunk_at.isoformat() if last_chunk_at else None
+            reap_note = (
+                f"reaped: lease_until={lease_until} expired beyond the "
+                f"{grace_s}s grace window; last chunk "
+                f"{'at ' + last_chunk_iso if last_chunk_iso else 'never written'}"
+            )
             # Replace whatever non-terminal STATUS:* it carries with
             # cancelled, in one shot (replace_prefix), then mark *why* with a
             # searchable open tag — distinct from the sweeper's
@@ -503,16 +545,22 @@ def _reap_orphaned_loop(store: Any, quest_id: int, *, grace_s: int) -> int | Non
                 set_by="system",
                 conn=conn,
             )
+            store.update_ref(job_id, meta_patch={"reap_note": reap_note}, conn=conn)
             store.append_event(
                 job_id,
                 source="quest-loop-reconcile",
                 event="loop-reaped",
-                payload={"quest_id": quest_id, "cause": "reboot-orphan"},
+                payload={
+                    "quest_id": quest_id,
+                    "cause": "reboot-orphan",
+                    "lease_until": lease_until,
+                    "last_chunk_at": last_chunk_iso,
+                },
                 conn=conn,
             )
         log.info(
             "reconcile_quest_loops: reaped orphaned loop %d for quest %s "
-            "(expired lease, no live executor)",
+            "(expired lease beyond grace, no recent chunk)",
             job_id,
             quest_id,
         )

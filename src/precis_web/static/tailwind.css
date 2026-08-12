@@ -931,6 +931,10 @@ video {
   height: 1.5rem;
 }
 
+.h-7 {
+  height: 1.75rem;
+}
+
 .h-\[1\.1rem\] {
   height: 1.1rem;
 }
@@ -1119,6 +1123,10 @@ video {
   width: 16rem;
 }
 
+.w-7 {
+  width: 1.75rem;
+}
+
 .w-72 {
   width: 18rem;
 }
@@ -1245,6 +1253,10 @@ video {
 
 .grow {
   flex-grow: 1;
+}
+
+.basis-full {
+  flex-basis: 100%;
 }
 
 .border-collapse {

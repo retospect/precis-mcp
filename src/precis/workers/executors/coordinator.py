@@ -14,8 +14,15 @@ of the same helpers (``_set_status`` / ``_append_chunk`` / …).
 Differences from ``claude_inproc``:
 
 - ``meta.executor = 'coordinator'`` (not ``'claude_inproc'``).
-- Short lease (5 minutes per slice). Each yield/resume cycle
-  brings the lease back; the cumulative lifetime is unbounded.
+- Short lease (5 minutes per slice), but renewed periodically WHILE the
+  slice runs by a background keepalive thread (:class:`_LeaseKeepalive`,
+  gr204309) — a legitimately long-running dispatch (e.g. a ``big``/
+  ``frontier`` LLM call under contention) that outlives the raw lease
+  window no longer looks lease-expired to an external reaper (the
+  quest-loop reconciler's orphan check was cancelling live slices on
+  exactly this false signal). Each yield/resume cycle also brings the
+  lease back fresh at the next claim; the cumulative lifetime is
+  unbounded.
 - The claim SQL excludes ``ask-user:*`` / ``halt:*``
   open-namespace exclusion tags via the existing
   :func:`precis.handlers._todo_views._doable_exclusion_clause`
@@ -46,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -94,6 +102,9 @@ from precis.workers.executors._common import (
     record_failure as _record_failure,
 )
 from precis.workers.executors._common import (
+    renew_lease_if_mine as _renew_lease_if_mine,
+)
+from precis.workers.executors._common import (
     set_meta as _set_meta,
 )
 from precis.workers.executors._common import (
@@ -130,6 +141,18 @@ _STATUS_FOR_WAKE_KIND: dict[str, str] = {
 # The cumulative job lifetime is unbounded because each yield
 # releases the slot.
 _LEASE_MINUTES = 5
+
+#: Keepalive renewal cadence (seconds) — half the lease window, so a
+#: single missed/delayed renewal still leaves margin before the lease
+#: would otherwise read as expired. Read fresh from the module namespace
+#: on every tick (never baked into a default argument) so a test can
+#: shrink it via ``monkeypatch.setattr`` instead of sleeping for minutes.
+_LEASE_KEEPALIVE_INTERVAL_S = (_LEASE_MINUTES * 60) / 2
+
+#: How long ``_LeaseKeepalive.__exit__`` waits for the background thread
+#: to notice ``stop`` and return before giving up — bounds how long a
+#: slice's completion can be held up by the keepalive teardown itself.
+_LEASE_KEEPALIVE_JOIN_TIMEOUT_S = 5.0
 
 #: Margin (seconds) ADDED on top of the known max child wall-budget before
 #: a ``children_done`` wake-deadline fires (§H piece 5, compute-lane-
@@ -228,6 +251,99 @@ def _claim_jobs(
     )
 
 
+# ── Lease keepalive (gr204309) ─────────────────────────────────────
+
+
+class _LeaseKeepalive:
+    """Background lease-renewal for the duration of ONE claimed slice.
+
+    ``run_coordinator_pass`` stamps ``meta.lease_until`` ONCE, at claim,
+    sized to ``_LEASE_MINUTES`` — but the dispatched slice itself
+    (``spec.dispatch``) can legitimately run far longer than that (a
+    ``big``/``frontier`` LLM call under contention, e.g.). Nothing ever
+    renewed the lease mid-slice, so an external reaper reading a stale
+    ``lease_until`` as "provably dead" could — and in prod did — cancel a
+    job that was still doing real work (gr204309; see
+    :func:`precis.quest.loop._reap_orphaned_loop`).
+
+    Used as a context manager wrapping one ``_run_one`` call: a daemon
+    thread wakes every :data:`_LEASE_KEEPALIVE_INTERVAL_S` and calls
+    :func:`~precis.workers.executors._common.renew_lease_if_mine` on its
+    OWN pool connection — never the caller's; the pass's connection is
+    not thread-safe to share. ``renew_lease_if_mine`` returning ``False``
+    means another worker generation has already reclaimed this job
+    (epoch or expiry arm) while this slice kept running: per that
+    helper's docstring, the new claimant now owns the job, so the thread
+    logs a warning and just stops renewing — it must NOT cancel or
+    otherwise touch the still-running slice, only avoid racing the new
+    claimant with a stale write. On ``__exit__`` (success or exception)
+    the thread is signalled to stop and given
+    :data:`_LEASE_KEEPALIVE_JOIN_TIMEOUT_S` to join — a renewal blocked
+    in DB I/O when the slice ends can briefly outlive the ``with`` block,
+    then self-terminates on its next stop-check (it's a daemon thread and
+    at worst performs one extra harmless renewal).
+    """
+
+    def __init__(self, store: Any, ref_id: int, meta: dict[str, Any]) -> None:
+        self._store = store
+        self._ref_id = ref_id
+        # Snapshot the claim-time lease identity rather than aliasing the
+        # live ``meta`` dict: ``_run_one`` hands that same dict to the
+        # dispatcher as ``ctx.meta``, which plugins are licensed to mutate
+        # in place — an unsynchronized cross-thread read of it could see a
+        # corrupted identity mid-renewal. renew_lease_if_mine only reads
+        # these three keys.
+        self._identity = {
+            k: meta.get(k) for k in ("lease_boot_id", "lease_process", "lease_host")
+        }
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _renew_once(self) -> bool:
+        with self._store.pool.connection() as conn:
+            ok = _renew_lease_if_mine(
+                conn, self._ref_id, self._identity, _LEASE_MINUTES * 60
+            )
+            conn.commit()
+        return ok
+
+    def _run(self) -> None:
+        while not self._stop.wait(_LEASE_KEEPALIVE_INTERVAL_S):
+            try:
+                ok = self._renew_once()
+            except Exception:
+                log.warning(
+                    "coordinator: lease keepalive renewal errored for job "
+                    "%d (will retry next tick)",
+                    self._ref_id,
+                    exc_info=True,
+                )
+                continue
+            if not ok:
+                log.warning(
+                    "coordinator: lease keepalive lost identity for job %d "
+                    "— another worker generation already reclaimed it; "
+                    "stopping renewal without touching the running slice",
+                    self._ref_id,
+                )
+                return
+
+    def __enter__(self) -> _LeaseKeepalive:
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"coordinator-lease-keepalive-{self._ref_id}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=_LEASE_KEEPALIVE_JOIN_TIMEOUT_S)
+            self._thread = None
+
+
 # ── Pass entry point ──────────────────────────────────────────────
 
 
@@ -269,7 +385,11 @@ def run_coordinator_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
     failed = 0
     for ref_id, title, meta in rows:
         try:
-            _run_one(store, ref_id, title, meta)
+            # gr204309: keep the claim-time lease alive for the whole
+            # slice, not just its first _LEASE_MINUTES — see
+            # _LeaseKeepalive's docstring.
+            with _LeaseKeepalive(store, ref_id, meta):
+                _run_one(store, ref_id, title, meta)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1

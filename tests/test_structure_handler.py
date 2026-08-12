@@ -924,6 +924,64 @@ def test_runs_view_labels_provenance_and_method(structure, store):
     assert "PBE" not in computed_resp.body
 
 
+# -- calculator identity (gripe 161576 remainder) ---------------------------
+
+
+def test_view_atom_shows_calc_identity_with_params_digest_for_computed_run(structure):
+    """A run we computed (0043) surfaces its model plus a short digest of
+    its load-bearing ``params`` — never the whole jsonb blob."""
+    from precis.structure import cache as relax_cache
+
+    structure.put(id="pd_pair_calc", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_calc")
+    scene, _ = structure.store.structure_load(ref.id)
+    order = relax_cache.canonical_order(scene)
+    structure.store.structure_record_run(
+        ref.id,
+        fidelity="ml",
+        on_version=structure.store.structure_version(ref.id),
+        converged=True,
+        n_steps=7,
+        max_disp=0.02,
+        energy=-3.21,
+        max_force=0.04,
+        model="mace_mp",
+        curve=[0.5, 0.1, 0.04],
+        cache_key="calc-identity-computed",
+        structure_sha=relax_cache.structure_sha(scene),
+        final_geometry=relax_cache.serialize_geometry(scene, order),
+        params={"steps": 200},
+    )
+    resp = structure.get(id="pd_pair_calc", view="atom", args={"atom": "aPd1"})
+    assert "calc: mace_mp (steps=200)" in resp.body
+
+
+def test_view_atom_shows_calc_identity_for_an_external_run(structure, store):
+    """An imported dataset row (0084) surfaces its method fingerprint plus
+    an explicit ``external`` marker + its dataset DOI — a PBE energy is
+    never mistaken for one we computed."""
+    structure.put(id="oc20_calc", text=_PD)
+    ref = store.get_ref(kind="structure", id="oc20_calc")
+    _insert_external_run(
+        store,
+        ref.id,
+        method={
+            "functional": "PBE",
+            "cutoff_eV": 500,
+            "dataset_doi": "10.1038/s41597-020-00554-8",
+        },
+    )
+    resp = structure.get(id="oc20_calc", view="atom", args={"atom": "aPd1"})
+    assert "calc: PBE/500eV — external — 10.1038/s41597-020-00554-8" in resp.body
+
+
+def test_view_atom_calc_identity_absent_without_a_run(structure):
+    """No struct_runs row at all -> no ``calc:`` header — never invented."""
+    structure.put(id="pd_pair_norun", text=_PD)
+    resp = structure.get(id="pd_pair_norun", view="atom", args={"atom": "aPd1"})
+    assert "calc:" not in resp.body
+
+
 def test_guard_energy_comparable_refuses_a_mismatched_fingerprint():
     external_pbe = {
         "provenance": "external",
