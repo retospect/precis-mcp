@@ -123,6 +123,13 @@ class DraftChunk:
     #: drafts stay ``dc<id>``. The chunk *columns* are identical; only the
     #: handle namespace differs.
     kind: str = "draft"
+    #: ``retired_at IS NOT NULL`` — the chunk is no longer part of the draft
+    #: (excluded from reading order, search, and export) but stays directly
+    #: addressable by handle (:meth:`get_draft_chunk` is live-or-retired,
+    #: gripe 49153). Only populated on the direct-address path; bulk readers
+    #: filter retired rows in SQL and leave the default False (gr192827:
+    #: an undisclosed retired chunk reads as a search bug).
+    retired: bool = False
 
     @property
     def dc(self) -> str:
@@ -455,7 +462,7 @@ class DraftMixin:
         with self.pool.connection() as conn:
             row = conn.execute(
                 f"""SELECT chunk_id, handle, chunk_kind, text, pos,
-                          parent_chunk_id, ref_id, meta
+                          parent_chunk_id, ref_id, meta, retired_at
                      FROM chunks WHERE {where}""",
                 (key,),
             ).fetchone()
@@ -472,6 +479,7 @@ class DraftMixin:
             depth=0,
             meta=dict(row[7] or {}),
             kind=kind,
+            retired=row[8] is not None,
         )
 
     def draft_relative_chunk_ids(

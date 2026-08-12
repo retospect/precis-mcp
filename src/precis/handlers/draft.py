@@ -736,7 +736,11 @@ class DraftHandler(Handler):
     ) -> Response:
         """``mode='regex'`` grep: run ``pattern`` over chunk text in scope and
         list every hit with its handle, line, and the matched span. Read-only
-        — table/figure chunks are matched too (their derived/caption text)."""
+        — table/figure chunks are matched on their stored ``text`` (derived
+        markdown, or raw LaTeX for tex-imported tables). Scope is the live
+        draft only: a retired chunk never matches even though its ``dc<id>``
+        still reads (gr192827 finding 8 — the read path now discloses
+        retired state so a miss here is explicable)."""
         rx = draft_regex.compile_pattern(pattern, flags)
         pairs, where = self._scope_chunks(raw_scope, allow_all=True)
         hits: list[tuple[str, Any, list[draft_regex.Match]]] = []
@@ -2593,10 +2597,22 @@ class DraftHandler(Handler):
         # is needlessly long on every line. ``edit`` matches by prefix, so
         # a full 64-char sha still works.
         blocks = [
-            f"{c.dc}  [{c.chunk_kind}]  sha:{content_sha(c.text)[:12]}\n{c.text}"
+            f"{c.dc}  [{c.chunk_kind}]"
+            f"{'  ⚠ RETIRED' if c.retired else ''}"
+            f"  sha:{content_sha(c.text)[:12]}\n{c.text}"
             for c in window
         ]
         body = "\n\n".join(blocks)
+        if any(c.retired for c in window):
+            # A retired chunk stays readable by direct handle (gripe 49153)
+            # but is no longer part of the draft — without this notice a
+            # reader can't tell why search/reading-order/export skip text
+            # they can plainly see (gr192827 finding 8).
+            body += (
+                "\n\n⚠ RETIRED chunk(s) above: no longer part of the draft — "
+                "excluded from reading order, search (all modes), and export. "
+                "A live replacement may exist; read the enclosing section."
+            )
         window_text = "\n\n".join(c.text for c in window)
         body += self._dangling_finding_hint(window_text)
         body += self._dangling_chunk_hint(window_text)

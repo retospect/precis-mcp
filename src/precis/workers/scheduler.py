@@ -26,14 +26,20 @@ elsewhere calling this pass "DARK" is stale.
 **Host affinity + local eligibility (§A).** Not every cadence is host-agnostic
 like ``cron_tick``/``watch_poll``. A cadence pinned via ``host_affinity`` is
 only *attempted* on that host — the claim call itself is skipped elsewhere, so
-the lease is never advanced by a host that can't do the work. A cadence's
+the lease is never *advanced* by a host that can't do the work. A cadence's
 ``eligible`` callable is a further, cheaper-than-the-claim local gate (env/file
 presence) checked *before* attempting the claim: an ineligible worker must
 never win the lease, or a host that merely happens to run first (e.g.
 melchior's *system*-profile worker, which lacks the OAuth/env the dream
 cadence needs) would burn the fire the truly-capable process needed. Both
-checks are pure short-circuits ahead of :meth:`Store.claim_scheduler_lease` —
-skipping them never touches ``scheduler_leases``.
+checks are short-circuits ahead of :meth:`Store.claim_scheduler_lease` — the
+claim (and its win) is skipped, but the row is still *seeded*
+(:meth:`Store.seed_scheduler_lease`, gr194430) unconditionally, before either
+gate: health_digest's cadence-staleness check (§D) iterates existing
+``scheduler_leases`` rows only, so a cadence whose ``eligible`` gate reads
+False on every host in the fleet (e.g. a deploy regression that drops the
+enable env everywhere) must still have a row to go stale and alarm on — a
+row that's never advanced, not a row that's absent.
 
 *The affinity contract*: a pinned cadence stalls while its pinned host is
 down — that is the contract, not a bug. The lease's ``next_fire_at <=
@@ -466,6 +472,19 @@ def run_scheduler_pass(
     claimed = ok = failed = 0
 
     for cad in cadences:
+        # gr194430: seed the row BEFORE either gate, unconditionally — a
+        # cadence whose eligible() (or host_affinity) is never satisfied
+        # anywhere in the fleet (e.g. a deploy regression dropping the
+        # enable env fleet-wide) must still surface a scheduler_leases row
+        # for health_digest's cadence-staleness check to go stale on; a
+        # gated cadence that never seeds is invisible to that alarm.
+        # Seeded with the cadence's static interval_s, not resolve_interval
+        # (which may be a callable with DB-query side effects) — fine for
+        # staleness margins, which don't need the live-resolved value.
+        try:
+            store.seed_scheduler_lease(cad.name, cad.interval_s)
+        except Exception:  # pragma: no cover — a seed blip must not wedge the loop
+            log.warning("scheduler: lease seed failed for %s", cad.name, exc_info=True)
         if cad.host_affinity is not None and host != cad.host_affinity:
             continue
         if cad.eligible is not None:

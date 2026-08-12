@@ -2817,6 +2817,56 @@ class TestDispatchAutocatpath:
         assert len(self._agg_todo_ids(store, sid)) == 2
         assert len(self._seed_jobs(store, sid)) == 6
 
+    def test_content_key_change_supersedes_stale_computing_pathway(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr197692: an engine bump (or any content-key change) for the SAME
+        (candidate, tier) mints a fresh content-addressed pathway rather than
+        reusing the old one — the prior still-"computing" pathway must be
+        stamped superseded in the same mint, or it's stranded forever
+        (nothing else ever writes it to a terminal state)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        first_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert first_id is not None
+
+        # Same geometry + config, but the engine was redeployed → new token.
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        second_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert second_id is not None and second_id != first_id
+
+        first_meta = store.fetch_refs_by_ids({first_id})[first_id].meta or {}
+        assert first_meta.get("status") == "superseded"
+        assert first_meta.get("superseded_by") == second_id
+
+        second_meta = store.fetch_refs_by_ids({second_id})[second_id].meta or {}
+        assert second_meta.get("status") == "computing"
+
+    def test_ready_prior_tier_pathway_is_never_touched(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A "ready" prior tier result feeds `_pathway_tier_sibling` and
+        `handler._compare`'s status='ready' SQL — the supersede stamp must
+        only ever touch a stale in-flight "computing" prior, never a
+        completed tier result."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        first_id = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert first_id is not None
+        store.stamp_ref_meta(first_id, {"status": "ready"})
+
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+
+        first_meta = store.fetch_refs_by_ids({first_id})[first_id].meta or {}
+        assert first_meta.get("status") == "ready"
+        assert "superseded_by" not in first_meta
+
     def test_redispatch_candidates_reevaluates_all_non_ruled_out(
         self, store: Any, monkeypatch: Any
     ) -> None:

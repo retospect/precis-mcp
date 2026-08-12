@@ -127,11 +127,12 @@ def test_host_affinity_non_pinned_host_never_claims(store) -> None:
     r_wrong_host = run_scheduler_pass(store, host="caspar", cadences=(cad,))
     assert (r_wrong_host.claimed, r_wrong_host.ok, r_wrong_host.failed) == (0, 0, 0)
     assert ran == []
-    # the lease was never even seeded — a fresh/absent row isn't in
-    # scheduler_leases at all yet, proving the claim call was skipped, not
-    # attempted-and-lost.
-    names = {lease.name for lease in store.scheduler_leases()}
-    assert cad.name not in names
+    # gr194430: the row IS seeded (health_digest's staleness check needs it
+    # to exist), but never advanced — no last_fired_at, proving the claim
+    # itself was skipped, not attempted-and-lost.
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None
+    assert lease.last_host is None
 
     r_right_host = run_scheduler_pass(store, host="melchior", cadences=(cad,))
     assert (r_right_host.claimed, r_right_host.ok, r_right_host.failed) == (1, 1, 0)
@@ -153,13 +154,31 @@ def test_ineligible_worker_skips_without_advancing_lease(store) -> None:
     r1 = run_scheduler_pass(store, host="h", cadences=(cad,))
     assert (r1.claimed, r1.ok, r1.failed) == (0, 0, 0)
     assert ran == []
-    names = {lease.name for lease in store.scheduler_leases()}
-    assert cad.name not in names  # eligibility gate is checked before any claim
+    # gr194430: seeded (visible to health_digest) but never claimed.
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None
+    assert lease.last_host is None
 
     is_eligible = True
     r2 = run_scheduler_pass(store, host="h", cadences=(cad,))
     assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
     assert ran == ["fired"]
+
+
+def test_ineligible_everywhere_cadence_still_seeds_a_row_for_health_digest(
+    store,
+) -> None:
+    """gr194430: a cadence that is *never* eligible on any host (e.g. a
+    deploy regression that drops the enable env fleet-wide) must still seed a
+    ``scheduler_leases`` row — health_digest's cadence-staleness check (§D)
+    only iterates existing rows, so a cadence that never seeds is invisible
+    to that alarm and silently never fires with nothing to alert."""
+    cad = _pinned_cad(lambda s, b: None, host_affinity=None, eligible=lambda: False)
+
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    names = {lease.name for lease in store.scheduler_leases()}
+    assert cad.name in names
 
 
 def test_exactly_once_under_two_concurrent_claimants(store) -> None:
@@ -423,17 +442,18 @@ def test_deep_review_cadence_eligible_follows_the_review_gate_env(
 def test_structural_cadence_ineligible_by_default_skips_without_claiming(
     store, monkeypatch
 ) -> None:
-    """End to end via ``run_scheduler_pass``: unset env ⇒ drop-no-fire, the
-    lease is never even seeded (a later eligible host still gets the
-    fire)."""
+    """End to end via ``run_scheduler_pass``: unset env ⇒ drop-no-fire — the
+    lease row IS seeded (gr194430: health_digest needs it to go stale on) but
+    never claimed (a later eligible host still gets the fire)."""
     monkeypatch.delenv("PRECIS_STRUCTURAL_REVIEW", raising=False)
     from precis.workers.scheduler import CADENCES
 
     cad = next(c for c in CADENCES if c.name == "structural")
     r = run_scheduler_pass(store, host="h", cadences=(cad,))
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
-    names = {lease.name for lease in store.scheduler_leases()}
-    assert cad.name not in names
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None
+    assert lease.last_host is None
 
 
 def test_structural_cadence_fires_the_pass(store, monkeypatch) -> None:
@@ -558,5 +578,7 @@ def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
 
     r = run_scheduler_pass(store, host="melchior", cadences=(anki_cad,))
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
-    names = {lease.name for lease in store.scheduler_leases()}
-    assert anki_cad.name not in names
+    # gr194430: seeded (visible to health_digest) but never claimed.
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[anki_cad.name]
+    assert lease.last_fired_at is None
+    assert lease.last_host is None

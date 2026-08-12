@@ -100,6 +100,16 @@ class SchedulerLeasesMixin:
             with c.transaction():
                 return _apply(c)
 
+    def seed_scheduler_lease(self, name: str, interval_s: int) -> None:
+        """Ensure a ``scheduler_leases`` row exists for ``name`` without
+        attempting a claim — health_digest's cadence-staleness check iterates
+        existing rows only, so an eligibility-gated cadence that no host ever
+        claims (enable env lost fleet-wide) must still have a row to go stale
+        (gr194430)."""
+        with self.pool.connection() as c:
+            with c.transaction():
+                c.execute(_SEED_LEASE, (name, interval_s))
+
     def scheduler_leases(self) -> list[SchedulerLease]:
         """Every cadence's lease clock, ordered by name (console + tests)."""
         sql = f"SELECT {_LEASE_COLS} FROM scheduler_leases ORDER BY name"

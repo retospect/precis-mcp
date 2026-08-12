@@ -792,7 +792,13 @@ def dispatch_autocatpath(
     call, content-addressed onto its own job/pathway rather than clobbering
     the prior tier's. The pathway ref this call ensures/reuses is stamped
     ``meta.tier`` at creation (read back by :func:`_find_tier_pathway`, the
-    promotion-eligibility + `refines`-lineage seam).
+    promotion-eligibility + `refines`-lineage seam). A re-dispatch of the
+    SAME (candidate, tier) under a changed config/geometry/engine mints a
+    new content-addressed pathway rather than reusing the old one — the
+    mint stamps any prior still-``"computing"`` pathway for that (candidate,
+    tier) ``meta.status = "superseded"`` / ``meta.superseded_by = <new id>``
+    in the same transaction, so it never sits unreachable forever
+    (gr197692). A ``"ready"`` prior tier result is never touched by this.
 
     §B-1 (gr180096, the spark wedge fix): exports the candidate's (relaxed)
     geometry as extxyz, ensures a `pathway` ref for the write-back, then
@@ -951,6 +957,13 @@ def dispatch_autocatpath(
     key = _autocatpath_content_key(run_config, slab_extxyz)
     pslug = f"{ref.slug}-rx-{key[:10]}"
 
+    # A prior pathway for this (candidate, tier), if any — captured BEFORE
+    # the mint below, since `_find_tier_pathway` matches on meta.tier and
+    # would otherwise also match the new ref we're about to insert (same
+    # tier). Used to supersede a stale in-flight prior after a content-key
+    # change (gr197692, see the comment at the stamp site below).
+    prior_pathway_id = _find_tier_pathway(store, structure_ref_id, tier)
+
     # Ensure the pathway ref (status=computing) the job writes its graph back onto.
     try:
         existing = store.get_ref(kind="pathway", id=pslug)
@@ -975,7 +988,33 @@ def dispatch_autocatpath(
                     },
                     conn=conn,
                 )
-            pathway_ref_id = int(pref.id)
+                pathway_ref_id = int(pref.id)
+                # A content key change for this (candidate, tier) — config,
+                # geometry, or engine version — means the prior pathway's
+                # content_key is now stale: no future dispatch will ever
+                # recompute it (the get-or-create above is keyed on the NEW
+                # key), so a prior still-"computing" pathway would sit
+                # unreachable, permanently, from here on (gr197692). Stamp
+                # it superseded in the SAME tx as the mint so the two never
+                # diverge. A "ready" prior is left strictly alone — it's a
+                # completed tier result that `_pathway_tier_sibling` and
+                # `handler._compare`'s status='ready' SQL still read; only a
+                # stale in-flight "computing" pathway is debris.
+                if prior_pathway_id is not None and prior_pathway_id != pathway_ref_id:
+                    row = conn.execute(
+                        "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'pathway'",
+                        (prior_pathway_id,),
+                    ).fetchone()
+                    prior_meta = dict(row[0] or {}) if row else {}
+                    if prior_meta.get("status") == "computing":
+                        store.stamp_ref_meta(
+                            prior_pathway_id,
+                            {
+                                "status": "superseded",
+                                "superseded_by": pathway_ref_id,
+                            },
+                            conn=conn,
+                        )
     except Exception as e:
         return f"autocatpath dispatch failed for {ref.slug}: pathway ref ({e})"
 
@@ -1258,6 +1297,15 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     never gates trust on its own). Counts warnings mentioning a non-converged
     NEB edge, a desorbed adsorbate, and a wrong-site (mis-bound) endpoint;
     ``barrier_trusted`` is False iff any of those counts is nonzero.
+
+    The verdict lands on the candidate **structure** ref only:
+    :func:`harvest_measures` stamps these keys onto the structure's meta and
+    never back onto the ``pathway`` ref it read them from —
+    :func:`precis_pathway.persist.persist_result` writes just the raw compute
+    outputs (rate_Ea/low_confidence/span/…) there. Querying a ``pathway`` ref
+    for ``barrier_trusted`` therefore always reads absent/false, even when the
+    mirrored structure carries the correct verdict (gr194391 — this asymmetry
+    once drove a full false-alarm root-cause hunt).
     """
     warnings = meta.get("warnings")
     warnings = warnings if isinstance(warnings, list) else []

@@ -671,6 +671,37 @@ def test_chunk_read_surfaces_sha(draft: DraftHandler, hub: Hub) -> None:
     assert content_sha("T") not in out  # full digest is not shown
 
 
+def test_retired_chunk_read_discloses_retired_state(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr192827(8): a retired chunk stays readable by direct ``dc<id>`` handle
+    (gripe 49153) but is invisible to search and reading order — undisclosed,
+    that asymmetry reads as a search bug (text you can plainly read that
+    ``mode='regex'`` won't match). The read must say the chunk is retired."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="centering payload", at={"last": True}
+    )
+    para_h = _dc(para.body)
+    hub.store.retire_chunk(hub.store.get_draft_chunk(para_h).handle)
+
+    out = draft.get(id=para_h).body
+    assert "⚠ RETIRED" in out
+    assert "excluded from reading order, search" in out
+    # the text itself still reads (live-or-retired direct address)
+    assert "centering payload" in out
+
+    # regex search over the draft correctly skips it — the disclosure above
+    # is what makes this a non-surprise
+    r = draft.search(q="centering", mode="regex", scope="nt")
+    assert "no draft chunk matches" in r.body
+
+    # a live chunk carries no retired marker
+    live = draft.get(id=f"¶{_order(hub, 'nt')[0].handle}").body
+    assert "RETIRED" not in live
+
+
 def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:
     """The 12-char prefix shown on read is a valid base_sha; a full
     64-char digest still works too (prefix match)."""
