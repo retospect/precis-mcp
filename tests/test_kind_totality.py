@@ -148,11 +148,11 @@ def test_taproot_evidence_src_kinds_is_a_corpus_role_evidence_subset() -> None:
        module treats as evidence-worthy really IS flagged
        ``corpus_role='evidence'`` in ``KindSpec`` — a kind here that isn't
        flagged evidence at all would be a real bug, not a scope call.
-    2. The exact, currently-known divergence (``datasheet``/``edgar`` are
-       evidence-shaped documents not yet approved as claim-hub evidence),
-       so a THIRD kind silently joining ``corpus_role='evidence'`` without
-       a matching call on Taproot's evidence set fails here instead of
-       nobody noticing.
+    2. The exact, currently-known divergence (``datasheet`` is an
+       evidence-shaped document not yet approved as claim-hub evidence;
+       ``edgar`` WAS approved and is in the set), so another kind silently
+       joining ``corpus_role='evidence'`` without a matching call on
+       Taproot's evidence set fails here instead of nobody noticing.
 
     ``precis.taproot.authoring._SUPPORTER_KINDS`` is asserted equal to
     ``EVIDENCE_SRC_KINDS`` — it's now a direct import (single definition),
@@ -161,21 +161,22 @@ def test_taproot_evidence_src_kinds_is_a_corpus_role_evidence_subset() -> None:
     live_evidence = kind_facts.corpus_role_kinds(_specs(), "evidence")
     assert live_evidence >= EVIDENCE_SRC_KINDS
     assert _SUPPORTER_KINDS == EVIDENCE_SRC_KINDS
-    assert live_evidence - EVIDENCE_SRC_KINDS == frozenset({"datasheet", "edgar"})
+    assert live_evidence - EVIDENCE_SRC_KINDS == frozenset({"datasheet"})
 
 
 def test_doc_kinds_diverges_from_corpus_role_only_by_known_gaps() -> None:
     """``precis.utils.eye_render._DOC_KINDS`` is hand-maintained on purpose
     (see that module's docstring: a pure ``corpus_role`` derivation would
     DROP ``web``, which has no ``corpus_role`` but genuinely belongs). This
-    pins the exact, currently-known two-way divergence so either side
-    growing silently fails here:
+    pins the exact, currently-known divergence so either side growing
+    silently fails here:
 
     * ``_DOC_KINDS`` has ``web`` that ``corpus_role`` doesn't cover
       (by design, kept).
-    * ``corpus_role`` has ``edgar`` that ``_DOC_KINDS`` doesn't yet include
-      (a reported gap, not applied — see that module's docstring).
+    * every ``corpus_role`` doc kind is otherwise covered (``edgar`` joined
+      by human call — a new doc-family kind must be added here too, or the
+      second assertion flags it).
     """
     corpus_doc = kind_facts.corpus_role_kinds(_specs(), "evidence", "spec")
     assert _DOC_KINDS - corpus_doc == frozenset({"web"})
-    assert corpus_doc - _DOC_KINDS == frozenset({"edgar"})
+    assert corpus_doc - _DOC_KINDS == frozenset()

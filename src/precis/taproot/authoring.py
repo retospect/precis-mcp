@@ -57,8 +57,9 @@ def resolve_paper_ref_id(store: Any, paper: int | str) -> int:
 
     Raises:
         BadInput: ``paper`` doesn't resolve to a live ref, or resolves to a
-            live ref that isn't a ``paper``/``patent`` (a typo'd/wrong handle
-            must never mint a non-paper-sourced evidence edge — open #15).
+            live ref whose kind isn't in :data:`_SUPPORTER_KINDS` (a typo'd/
+            wrong handle must never mint a non-evidence-sourced edge —
+            open #15).
     """
     if isinstance(paper, bool):  # bool is an int subclass -- guard the footgun
         raise BadInput(f"cannot resolve supporter paper: {paper!r}")
@@ -81,10 +82,11 @@ def resolve_paper_ref_id(store: Any, paper: int | str) -> int:
             if live.kind not in _SUPPORTER_KINDS:
                 raise BadInput(
                     f"supporter {paper!r} resolved to a {live.kind!r} ref "
-                    f"(ref_id={ref_id}), not a paper/patent",
+                    f"(ref_id={ref_id}), not an evidence-source kind",
                     next=(
-                        "supporters must be paper-sourced (kind 'paper' or "
-                        "'patent') — check for a typo'd/wrong handle"
+                        "supporters must be evidence-sourced (kind "
+                        f"{'/'.join(sorted(_SUPPORTER_KINDS))}) — check for "
+                        "a typo'd/wrong handle"
                     ),
                 )
             return ref_id

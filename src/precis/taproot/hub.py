@@ -15,7 +15,7 @@ Four functions:
    paper-grounded claim (open #15: only paper-sourced claims become hubs).
 2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
    in :data:`HUB_ROLES`, guarding the target is actually a claim hub and the
-   source is a paper/patent ref (:data:`EVIDENCE_SRC_KINDS` backstop).
+   source is an evidence-source ref (:data:`EVIDENCE_SRC_KINDS` backstop).
    Also the single choke point for the deterministic prophetic-example
    caveat (patent-evidence-parity phase 4): a patent source whose grounding
    chunk carries ``PATENT_EXAMPLE:prophetic`` (``data/axes/
@@ -92,16 +92,17 @@ _DEFAULT_ROLE = "corroborates"
 #:
 #: **Deliberately NOT derived from ``KindSpec.corpus_role``.** Every kind
 #: flagged ``corpus_role="evidence"`` is ``{paper, patent, datasheet,
-#: edgar}`` — a pure derivation would silently let a datasheet or an SEC
-#: filing become scientific-claim evidence, which is a scope call on what
-#: "evidence" means for a Taproot claim hub (taproot.md open #15: "only
-#: paper-sourced claims become hubs"; the patent addition itself came from
-#: a deliberate design doc, docs/backlog/patent-evidence-parity.md), not a
-#: mechanical fact this codebase already declared elsewhere. Flagged here
-#: for a human call rather than auto-widened; see also
-#: :mod:`precis.taproot.seniority`'s read-query docstring, which needs the
-#: same set to stay in lock-step with whatever this evolves to.
-EVIDENCE_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent"})
+#: edgar}`` — a pure derivation would silently widen what counts as
+#: scientific-claim evidence, which is a scope call on what "evidence"
+#: means for a Taproot claim hub (taproot.md open #15: "only paper-sourced
+#: claims become hubs"; the patent addition itself came from a deliberate
+#: design doc, docs/backlog/patent-evidence-parity.md; ``edgar`` was
+#: approved as an evidence source by a matching human call), not a
+#: mechanical fact this codebase already declared elsewhere. ``datasheet``
+#: remains excluded pending its own call — widening stays a human decision;
+#: see also :mod:`precis.taproot.seniority`'s read-query docstring, which
+#: needs the same set to stay in lock-step with whatever this evolves to.
+EVIDENCE_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent", "edgar"})
 
 _STATUS_NS = "STATUS"
 _STATUS_CANONICAL = "canonical"

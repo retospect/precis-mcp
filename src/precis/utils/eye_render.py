@@ -71,12 +71,12 @@ _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 #: "spec")`` derivation would therefore *drop* ``web`` from this set, which
 #: is exactly the dangerous direction ("derived set removes a hand-
 #: maintained member") that stays a hand call rather than an auto-swap.
-#: Flagged for a human call (not applied here): ``edgar`` shares
-#: ``corpus_role="evidence"`` with paper/patent/datasheet and looks like it
-#: belongs in this set too (a long SEC filing with section-labelled body
-#: chunks, same shape as a patent) — today an ``eg<id>`` eye falls through
-#: to the link-kind note renderer instead of the cluster-TOC one.
-_DOC_KINDS: frozenset[str] = frozenset({"paper", "patent", "web", "datasheet", "cfp"})
+#: ``edgar`` is here by the matching human call: a long SEC filing with
+#: section-labelled body chunks is the same shape as a patent, so an
+#: ``eg<id>`` eye gets the cluster-TOC renderer, not the link-kind note one.
+_DOC_KINDS: frozenset[str] = frozenset(
+    {"paper", "patent", "web", "datasheet", "cfp", "edgar"}
+)
 
 _SUMMARY_CAP = 300
 _VERBATIM_CAP = 4000

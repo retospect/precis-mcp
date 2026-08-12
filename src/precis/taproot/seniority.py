@@ -240,7 +240,7 @@ def _fetch_evidence_rows(
     branch writes) shares the same slug too and would otherwise surface
     the *other hub* (a finding, not a paper) as a contradictor. Both are
     excluded by joining ``refs`` and requiring the stored source endpoint
-    be one of :data:`_EVIDENCE_SRC_KINDS` (paper/patent) — taproot.md
+    be one of :data:`_EVIDENCE_SRC_KINDS` — taproot.md
     decision #2: "endpoint kinds disambiguate," extended to cover a
     patent evidence source (``hub.attach_evidence`` accepts one; a hub is
     neither, so it stays excluded). ``establishes``/``corroborates`` have
