@@ -58,8 +58,15 @@ def summary_line(body: str) -> str:
     return ""
 
 
+# Backlog priority buckets → sort rank (high first). Unset/unknown = normal.
+_PRIO_RANK = {"high": 0, "normal": 1, "low": 2}
+
+
 def md_index(directory: Path, with_status: bool) -> list[str]:
-    rows = []
+    # (rank, filename, row): sort high-priority first, then filename for a
+    # stable order within a bucket. Runbooks (with_status=False) all get
+    # rank 0, so they stay in pure filename order as before.
+    entries: list[tuple[int, str, str]] = []
     for f in sorted(directory.glob("*.md")):
         if f.name in ("README.md", "INDEX.md", "TEMPLATE.md"):
             continue
@@ -67,10 +74,14 @@ def md_index(directory: Path, with_status: bool) -> list[str]:
         summary = fm.get("summary") or summary_line(body)
         if with_status:
             status = fm.get("status", "idea")
-            rows.append(f"- [`{f.stem}`](./{f.name}) **{status}** — {summary}")
+            prio = (fm.get("prio") or "normal").lower()
+            marker = f" ·{prio}·" if prio in ("high", "low") else ""
+            row = f"- [`{f.stem}`](./{f.name}) **{status}**{marker} — {summary}"
+            entries.append((_PRIO_RANK.get(prio, 1), f.name, row))
         else:
-            rows.append(f"- [`{f.stem}`](./{f.name}) — {summary}")
-    return rows
+            entries.append((0, f.name, f"- [`{f.stem}`](./{f.name}) — {summary}"))
+    entries.sort(key=lambda e: (e[0], e[1]))
+    return [row for _, _, row in entries]
 
 
 def docstring_first_line(init: Path) -> str | None:

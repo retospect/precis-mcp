@@ -41,6 +41,7 @@ from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
+from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
 from precis.protocol import KindSpec
 from precis.quest.logbook import (
     BY_VALUES as _BY_VALUES,
@@ -70,35 +71,12 @@ from precis.utils.next_block import render_next_section
 #: parser (which only gates *which* axes a kind may carry).
 _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
 
-#: ``PRIO:`` tag → the canonical ``refs.prio`` column (1..10, lower = hotter) —
-#: the same striving-weight scale the todo tree rotates on and slice 2's
-#: reweighting reads (:mod:`precis.quest.reweight`). Mirrors the todo handler's
-#: back-compat map so a quest's priority is a real column, not a decorative tag.
-_PRIO_TAG_TO_INT: dict[str, int] = {
-    "PRIO:urgent": 1,
-    "PRIO:high": 3,
-    "PRIO:normal": 5,
-    "PRIO:low": 8,
-}
-
-
-def _split_prio(tags: list[str] | None) -> tuple[list[str] | None, int | None]:
-    """Pull the last ``PRIO:`` tag out of ``tags`` and translate it to an int.
-
-    Returns ``(tags_without_prio, prio_or_none)`` — the ``PRIO:`` alias is
-    stripped so it never lands as a redundant closed-tag row alongside the
-    column write. Unknown ``PRIO:`` values pass through untouched so the strict
-    validator surfaces the typo with its options list."""
-    if not tags:
-        return tags, None
-    out: list[str] = []
-    found: int | None = None
-    for t in tags:
-        if t in _PRIO_TAG_TO_INT:
-            found = _PRIO_TAG_TO_INT[t]
-            continue
-        out.append(t)
-    return (out if out else None), found
+#: ``PRIO:`` tag ↔ ``refs.prio`` column translation — the striving-weight
+#: scale the todo tree rotates on and slice 2's reweighting reads
+#: (:mod:`precis.quest.reweight`). Shared with the gripe handler; see
+#: :mod:`precis.handlers._prio_tag`.
+_PRIO_TAG_TO_INT = PRIO_TAG_TO_INT
+_split_prio = split_prio
 
 
 #: Recursion guard for the tree rollup — a striving DAG can ladder deep and

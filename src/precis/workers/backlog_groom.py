@@ -171,10 +171,20 @@ def _ensure_root(store: Store) -> int:
     return int(root.id)
 
 
+#: Fallback prio for a minted fix todo when the gripe carries none — a hair
+#: above the default 5, so unscored bug-fixes still edge out routine work.
+_DEFAULT_FIX_PRIO = 4
+
+
 def _mint_todo_for_gripe(
-    store: Store, root_id: int, gripe_id: int, summary: str
+    store: Store, root_id: int, gripe_id: int, summary: str, gripe_prio: int | None
 ) -> int:
-    """Mint one dispatchable ``fix_gripe`` todo under the groomer root."""
+    """Mint one dispatchable ``fix_gripe`` todo under the groomer root.
+
+    The todo inherits the gripe's ``prio`` (so a human tagging a gripe
+    ``PRIO:high`` actually moves its fix up the fixer's doable-view queue);
+    falls back to ``_DEFAULT_FIX_PRIO`` when the gripe is unscored.
+    """
     title = f"fix gr{gripe_id}: {summary}".strip()
     if len(title) > 160:
         title = title[:157].rstrip() + "…"
@@ -191,7 +201,7 @@ def _mint_todo_for_gripe(
                 "source": "backlog_groom",
             },
             parent_id=root_id,
-            prio=4,
+            prio=gripe_prio if gripe_prio is not None else _DEFAULT_FIX_PRIO,
             conn=conn,
         )
         store.add_tag(
@@ -256,13 +266,14 @@ def run_backlog_groom_pass(store: Store, *, batch_size: int = 16) -> BatchResult
 
             # Select eligible gripes: open, not already groomed, not
             # human-opted-out via the ``no-groom`` tag. Bound to batch_size.
-            selected: list[tuple[int, str]] = []
+            # Carry each gripe's ``prio`` so the minted fix todo inherits it.
+            selected: list[tuple[int, str, int | None]] = []
             for g in open_gripes:
                 if g.id in already:
                     continue
                 if store.has_tag(int(g.id), "OPEN", _OPT_OUT_TAG):
                     continue
-                selected.append((int(g.id), g.title or f"gripe {g.id}"))
+                selected.append((int(g.id), g.title or f"gripe {g.id}", g.prio))
                 if len(selected) >= batch_size:
                     break
 
@@ -273,9 +284,9 @@ def run_backlog_groom_pass(store: Store, *, batch_size: int = 16) -> BatchResult
             root_id = _ensure_root(store)
             minted = 0
             failed = 0
-            for gripe_id, summary in selected:
+            for gripe_id, summary, gripe_prio in selected:
                 try:
-                    _mint_todo_for_gripe(store, root_id, gripe_id, summary)
+                    _mint_todo_for_gripe(store, root_id, gripe_id, summary, gripe_prio)
                     minted += 1
                 except Exception:  # pragma: no cover - defensive
                     log.exception(

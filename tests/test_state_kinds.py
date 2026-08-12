@@ -89,6 +89,26 @@ class TestGripe:
             ref_id, Tag.closed("STATUS", value), replace_prefix=True, set_by="agent"
         )
 
+    def test_prio_tag_syncs_to_column(self, gripe: GripeHandler) -> None:
+        """A ``PRIO:`` tag on a gripe writes the canonical ``prio`` column
+        (not a decorative tag row) — the trigger the backlog groomer reads."""
+        gripe.put(text="ingest drops the last page of long PDFs")
+        gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
+
+        gripe.tag(id=gid, add=["PRIO:high"])
+        ref = gripe.store.get_ref(kind="gripe", id=gid)
+        assert ref is not None and ref.prio == 3  # PRIO:high → 3
+
+        # A bare PRIO:* in remove clears the column back to NULL.
+        gripe.tag(id=gid, remove=["PRIO:high"])
+        ref = gripe.store.get_ref(kind="gripe", id=gid)
+        assert ref is not None and ref.prio is None
+
+    def test_prio_tag_at_create_syncs_to_column(self, gripe: GripeHandler) -> None:
+        gripe.put(text="search 500s on a bare percent sign", tags=["PRIO:urgent"])
+        ref = gripe.store.list_refs(kind="gripe", limit=1)[0]
+        assert ref.prio == 1  # PRIO:urgent → 1
+
     def test_search_defaults_to_status_open(self, gripe: GripeHandler) -> None:
         """A bare gripe search filters to STATUS:open — the everyday
         'what's still open?' shape — and says so in the header."""

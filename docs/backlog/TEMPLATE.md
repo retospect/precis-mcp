@@ -1,6 +1,8 @@
 ---
 status: draft
 title: <one-line intent>
+prio: <optional — high | normal | low; unset ⇒ normal. Sorts the INDEX and
+  the fixer's pick order high-first.>
 model: <optional — sonnet | opus | haiku; unset ⇒ fixer default (claude-sonnet-5)>
 blocked-by: <optional — slug of a backlog item that must ship first>
 snooze-until: <optional — YYYY-MM-DD; skipped by triage until then>

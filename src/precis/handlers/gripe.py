@@ -33,6 +33,7 @@ from psycopg.errors import ForeignKeyViolation
 
 from precis.errors import BadInput, Upstream
 from precis.handlers._numeric_ref import NumericRefHandler
+from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
@@ -162,6 +163,42 @@ class GripeHandler(NumericRefHandler):
             rel=rel,
         )
 
+    # ── tag: sync a PRIO: alias into the canonical prio column ───────
+
+    def tag(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        # ``PRIO:`` → the canonical prio column (which the backlog groomer
+        # inherits onto the minted fix_gripe todo, so a human tagging a gripe
+        # PRIO:high actually hastens its fix), stripped from the tag set like
+        # quest/todo. A bare ``PRIO:*`` in remove clears the column back to
+        # the sort-time default. Mirrors QuestHandler.tag.
+        add, prio_from_tag = split_prio(add)
+        clear_prio = False
+        if remove:
+            kept = [t for t in remove if t not in PRIO_TAG_TO_INT]
+            clear_prio = len(kept) != len(remove)
+            remove = kept or None
+        if prio_from_tag is not None or clear_prio:
+            ref_id = self._coerce_id(id)
+            self._resolve_live_ref(ref_id)
+            self.store.set_prio(ref_id, None if clear_prio else prio_from_tag)
+            if not add and not remove:
+                # Only a prio write happened — the base tag() would reject an
+                # otherwise-empty call.
+                return Response(
+                    body=(
+                        f"set prio={None if clear_prio else prio_from_tag} "
+                        f"on {self._sense()} id={ref_id}"
+                    )
+                )
+        return super().tag(id=id, add=add, remove=remove, **_kw)
+
     # ── create: ref + body chunk + default tags + (optional) link ──
 
     def _create(
@@ -204,6 +241,10 @@ class GripeHandler(NumericRefHandler):
             )
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
+        # A create-time ``PRIO:`` alias syncs to the canonical prio column
+        # (which the backlog groomer inherits onto the fix todo), not a
+        # decorative tag row. Strip it before strict tag parsing.
+        tags, prio_from_tag = split_prio(tags)
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
 
         with self.store.tx() as conn:
@@ -212,6 +253,8 @@ class GripeHandler(NumericRefHandler):
             ).fetchone()
             assert row is not None
             ref_id = int(row[0])
+            if prio_from_tag is not None:
+                self.store.set_prio(ref_id, prio_from_tag, conn=conn)
             for tag in parsed_extra_tags:
                 self.store.add_tag(
                     ref_id,

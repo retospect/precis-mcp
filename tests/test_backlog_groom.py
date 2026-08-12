@@ -21,9 +21,9 @@ from precis.workers.backlog_groom import (
 from precis.workers.dispatch import run_dispatch_pass
 
 
-def _open_gripe(store: Store, title: str) -> int:
+def _open_gripe(store: Store, title: str, *, prio: int | None = None) -> int:
     """Insert a live gripe tagged STATUS:open; return its id."""
-    ref = store.insert_ref(kind="gripe", slug=None, title=title, meta={})
+    ref = store.insert_ref(kind="gripe", slug=None, title=title, meta={}, prio=prio)
     store.add_tag(
         ref.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
     )
@@ -35,14 +35,15 @@ def _groomer_todos(store: Store) -> list[dict]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT ref_id, title, meta, parent_id FROM refs
+            SELECT ref_id, title, meta, parent_id, prio FROM refs
              WHERE kind = 'todo' AND deleted_at IS NULL
                AND meta -> 'params' ? 'gripe_id'
              ORDER BY ref_id
             """
         ).fetchall()
     return [
-        {"id": int(r[0]), "title": r[1], "meta": r[2], "parent_id": r[3]} for r in rows
+        {"id": int(r[0]), "title": r[1], "meta": r[2], "parent_id": r[3], "prio": r[4]}
+        for r in rows
     ]
 
 
@@ -93,6 +94,23 @@ def test_root_is_strategic_and_reused(store: Store) -> None:
     run_backlog_groom_pass(store)
     roots = {t["parent_id"] for t in _groomer_todos(store)}
     assert roots == {root_id}
+
+
+# ── priority inheritance ─────────────────────────────────────────
+
+
+def test_minted_todo_inherits_gripe_prio(store: Store) -> None:
+    """A prioritised gripe hands its prio to the minted fix todo."""
+    _open_gripe(store, "high-prio bug", prio=3)
+    run_backlog_groom_pass(store)
+    assert _groomer_todos(store)[0]["prio"] == 3
+
+
+def test_minted_todo_defaults_prio_when_gripe_unscored(store: Store) -> None:
+    """An unscored gripe (prio NULL) yields the default fix prio, not NULL."""
+    _open_gripe(store, "unscored bug")
+    run_backlog_groom_pass(store)
+    assert _groomer_todos(store)[0]["prio"] == 4
 
 
 # ── dedup ────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ class WorkItem:
     source_path: Path | None = None
     model: str | None = None  # front-matter "model:" tier (sonnet/opus/haiku)
     blocked_by: str | None = None  # front-matter "blocked-by:" predecessor slug
+    prio: str = "normal"  # front-matter "prio:" bucket — high | normal | low
 
 
 def parse_front_matter(text: str) -> dict[str, str]:
@@ -92,11 +93,18 @@ def _title_from_body(text: str, fallback: str) -> str:
     return fallback
 
 
-def ready_items(backlog_dir: Path) -> list[WorkItem]:
-    """All ``status: ready`` proposals, sorted by filename (stable).
+#: Priority bucket → sort rank (high first); unset/unknown falls to normal.
+_PRIO_ORDER = {"high": 0, "normal": 1, "low": 2}
 
-    A missing directory yields ``[]`` (the MVP may run before any
-    proposal exists). ``TEMPLATE.md`` / ``README.md`` are skipped.
+
+def ready_items(backlog_dir: Path) -> list[WorkItem]:
+    """All ``status: ready`` proposals, highest ``prio:`` first.
+
+    Ordered by priority bucket (``high`` → ``normal`` → ``low``), then by
+    filename within a bucket — the fixer picks the most important ready item
+    first, not the alphabetically first. A missing directory yields ``[]``
+    (the MVP may run before any proposal exists). ``TEMPLATE.md`` /
+    ``README.md`` are skipped.
     """
     if not backlog_dir.is_dir():
         return []
@@ -110,6 +118,7 @@ def ready_items(backlog_dir: Path) -> list[WorkItem]:
             continue
         slug = _slugify(path.stem)
         title = fm.get("title") or _title_from_body(text, slug)
+        prio = (fm.get("prio") or "normal").lower()
         items.append(
             WorkItem(
                 kind="proposal",
@@ -120,8 +129,11 @@ def ready_items(backlog_dir: Path) -> list[WorkItem]:
                 source_path=path,
                 model=fm.get("model") or None,
                 blocked_by=fm.get("blocked-by") or None,
+                prio=prio if prio in _PRIO_ORDER else "normal",
             )
         )
+    # Stable sort keeps filename order within a priority bucket.
+    items.sort(key=lambda it: _PRIO_ORDER[it.prio])
     return items
 
 

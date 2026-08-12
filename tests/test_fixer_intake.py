@@ -77,6 +77,37 @@ def test_ready_items_parses_model_and_blocked_by(tmp_path: Path) -> None:
     assert item.blocked_by == "some-earlier-thing"
 
 
+def test_ready_items_prio_defaults_to_normal(tmp_path: Path) -> None:
+    _write(tmp_path, "x.md", "---\nstatus: ready\n---\n\n# X\n")
+    (item,) = ready_items(tmp_path)
+    assert item.prio == "normal"
+
+
+def test_ready_items_unknown_prio_falls_to_normal(tmp_path: Path) -> None:
+    _write(tmp_path, "x.md", "---\nstatus: ready\nprio: urgent\n---\n\n# X\n")
+    (item,) = ready_items(tmp_path)
+    assert item.prio == "normal"
+
+
+def test_ready_items_sorted_high_prio_first(tmp_path: Path) -> None:
+    # Filenames are deliberately reverse-alphabetical to the desired order,
+    # proving priority — not filename — drives the sort.
+    _write(tmp_path, "a-low.md", "---\nstatus: ready\nprio: low\n---\n\n# low\n")
+    _write(tmp_path, "b-norm.md", "---\nstatus: ready\n---\n\n# norm\n")
+    _write(tmp_path, "c-high.md", "---\nstatus: ready\nprio: high\n---\n\n# high\n")
+
+    slugs = [i.slug for i in ready_items(tmp_path)]
+    assert slugs == ["c-high", "b-norm", "a-low"]
+
+
+def test_ready_items_filename_order_within_a_bucket(tmp_path: Path) -> None:
+    _write(tmp_path, "z-high.md", "---\nstatus: ready\nprio: high\n---\n\n# z\n")
+    _write(tmp_path, "a-high.md", "---\nstatus: ready\nprio: high\n---\n\n# a\n")
+
+    slugs = [i.slug for i in ready_items(tmp_path)]
+    assert slugs == ["a-high", "z-high"]
+
+
 def _item(
     slug: str, *, blocked_by: str | None = None, model: str | None = None
 ) -> WorkItem:
