@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import UniqueViolation
 
@@ -48,13 +48,16 @@ from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.ingest.provenance import check_ref_retraction
-from precis.store.types import BlockInsert, Tag
+from precis.store.types import ActorSlug, BlockInsert, Tag
 from precis.taproot.canon import (
     TAPROOT_CLAIM,
     TAPROOT_NAMESPACE,
     CanonicalClaim,
     Placement,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +112,7 @@ _STATUS_CANONICAL = "canonical"
 
 
 def _grounding_chunk_ord(
-    store: Any, *, paper_ref_id: int, meta: dict[str, Any] | None
+    store: Store, *, paper_ref_id: int, meta: dict[str, Any] | None
 ) -> int | None:
     """Resolve an evidence edge's grounding chunk to its ``ord``, or ``None``.
 
@@ -232,7 +235,7 @@ def _prophetic_caveat(c: Any, *, ref_id: int, ord_: int | None) -> str | None:
     return PROPHETIC_EXAMPLE_CAVEAT if row is not None else None
 
 
-def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
+def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
     """True iff ``ref_id`` is a live ``finding`` carrying ``TAPROOT:claim``."""
     row = conn.execute(
         """
@@ -250,10 +253,10 @@ def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
 
 
 def mint_hub(
-    store: Any,
+    store: Store,
     claim: CanonicalClaim,
     *,
-    set_by: str = "agent",
+    set_by: ActorSlug = "agent",
     conn: Any = None,
 ) -> int:
     """Create a new ``TAPROOT:claim`` ``finding`` hub. Returns its ref_id.
@@ -397,7 +400,7 @@ def mint_hub(
 
 
 def refine_claim_sentence(
-    store: Any,
+    store: Store,
     hub_ref_id: int,
     sentence: str,
     *,
@@ -476,7 +479,7 @@ def refine_claim_sentence(
         raise ValueError("refine_claim_sentence requires a non-empty sentence")
 
     def _do(c: Any) -> dict[str, Any]:
-        if not _is_claim_hub(store, hub_ref_id, conn=c):
+        if not _is_claim_hub(hub_ref_id, conn=c):
             raise ValueError(f"ref_id={hub_ref_id} is not a TAPROOT:claim hub")
 
         row = c.execute(
@@ -559,7 +562,7 @@ def refine_claim_sentence(
 
 
 def run_retraction_checks(
-    store: Any, paper_ref_ids: list[int], *, hub_ref_id: int | None = None
+    store: Store, paper_ref_ids: list[int], *, hub_ref_id: int | None = None
 ) -> None:
     """Drain deferred trigger-1 checks. **Call only outside a transaction.**
 
@@ -583,7 +586,7 @@ def run_retraction_checks(
 
 
 def attach_evidence(
-    store: Any,
+    store: Store,
     *,
     hub_ref_id: int,
     paper_ref_id: int,
@@ -648,7 +651,7 @@ def attach_evidence(
     src_kind_box: dict[str, str] = {}
 
     def _do(c: Any) -> None:
-        if not _is_claim_hub(store, hub_ref_id, conn=c):
+        if not _is_claim_hub(hub_ref_id, conn=c):
             raise BadInput(
                 f"hub_ref_id={hub_ref_id} is not a TAPROOT:claim finding",
                 next=(
@@ -723,7 +726,7 @@ def attach_evidence(
 
 
 def link_claims(
-    store: Any,
+    store: Store,
     *,
     from_hub_ref_id: int,
     to_hub_ref_id: int,
@@ -765,7 +768,7 @@ def link_claims(
 
     def _do(c: Any) -> bool:
         for ref_id, label in ((from_hub_ref_id, "from"), (to_hub_ref_id, "to")):
-            if not _is_claim_hub(store, ref_id, conn=c):
+            if not _is_claim_hub(ref_id, conn=c):
                 raise BadInput(
                     f"{label}_hub_ref_id={ref_id} is not a TAPROOT:claim finding",
                     next=(
@@ -802,7 +805,7 @@ def link_claims(
 
 
 def apply_placement(
-    store: Any,
+    store: Store,
     claim: CanonicalClaim,
     placement: Placement,
     *,
@@ -810,7 +813,7 @@ def apply_placement(
     role: str = _DEFAULT_ROLE,
     meta: dict[str, Any] | None = None,
     todo_fn: Callable[[CanonicalClaim, Placement], Any] | None = None,
-    set_by: str = "agent",
+    set_by: ActorSlug = "agent",
     conn: Any = None,
     pending_checks: list[int] | None = None,
 ) -> int | None:

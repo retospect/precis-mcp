@@ -16,7 +16,45 @@ without cycles.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from psycopg import Connection
+
+    from precis.store.types import Ref, Tag
+
+
+class PoolStore(Protocol):
+    """The raw-SQL escape hatch: all the caller does is
+    ``store.pool.connection()``. ``pool`` is ``Any`` rather than
+    ``ConnectionPool`` so test fakes can hand back a stub connection
+    context manager without subclassing psycopg_pool."""
+
+    pool: Any
+
+
+class ClaimTrustStore(PoolStore, Protocol):
+    """What taproot's trust derivation reads: tags (lifecycle status),
+    refs (kind/meta), cite-key aliases, plus raw SQL for the seniority
+    queries (via :class:`PoolStore`)."""
+
+    def tags_for(self, ref_id: int, *, pos: int | None = ...) -> list[Tag]: ...
+    def fetch_refs_by_ids(
+        self, ref_ids: Iterable[int], *, include_deleted: bool = ...
+    ) -> dict[int, Ref]: ...
+    def ref_cite_keys(
+        self, ref_id: int, *, conn: Connection | None = ...
+    ) -> list[str]: ...
+    def ref_cite_keys_bulk(self, ref_ids: Iterable[int]) -> dict[int, list[str]]: ...
+
+
+class SettingsStore(Protocol):
+    """The ``app_state`` key/value surface (cursor bookkeeping)."""
+
+    def get_setting(self, key: str) -> str | None: ...
+    def set_setting(self, key: str, value: str) -> None: ...
 
 
 class ReadingOrderStore(Protocol):

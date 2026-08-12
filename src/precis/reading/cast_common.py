@@ -32,7 +32,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +47,7 @@ Source = tuple[int, str]
 
 
 def link_sources(
-    store: Any,
+    store: Store,
     draft_id: int,
     sources: list[Source],
     *,
@@ -251,7 +254,7 @@ def tick_date_tag(meta: dict[str, Any] | None) -> str | None:
     return m.group(1) if m else None
 
 
-def ensure_cast_folder(store: Any, profile: CastProfile) -> int | None:
+def ensure_cast_folder(store: Store, profile: CastProfile) -> int | None:
     """Find (or create) the Drive folder this cast files its drafts under.
 
     Idempotent on the folder title: an existing ``kind='folder'`` with the
@@ -275,13 +278,13 @@ def ensure_cast_folder(store: Any, profile: CastProfile) -> int | None:
         return None
 
 
-def find_cast_draft(store: Any, profile: CastProfile, date_tag: str) -> Any | None:
+def find_cast_draft(store: Store, profile: CastProfile, date_tag: str) -> Any | None:
     """The existing cast draft for ``(cast, date)``, or ``None``."""
     return store.get_ref(kind="draft", id=cast_slug(profile, date_tag))
 
 
 def create_cast_draft(
-    store: Any,
+    store: Store,
     *,
     profile: CastProfile,
     date_tag: str,

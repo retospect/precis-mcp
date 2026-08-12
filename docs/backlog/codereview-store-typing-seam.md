@@ -7,26 +7,32 @@ consolidated/deleted; the two MRO-luck runtime stubs in
 `store/_refs_ops.py` / `_cache_ops.py` retired to `TYPE_CHECKING`;
 `ActorSlug` widened to include the seeded `chase` actor.
 
+Wave 1 shipped: taproot/reading/backfill packages fully converted
+(~77 sites; new role protocols `PoolStore`/`ClaimTrustStore`/
+`SettingsStore`; `refeye._Chunk` → `@property` members). Conversion
+recipe that worked: role protocol where tests pass a fake
+(`test_export_latex._FindingStore`, `test_briefing_cast._NudgeStore`/
+`_AlertLaneStore`), plain `Store` under `TYPE_CHECKING` elsewhere;
+`briefing_cast._lane_quest`/`_lane_system_activity` stay `Any` (their
+fakes are narrower than the `Store`-typed callees they forward into —
+commented in place).
+
 REMAINING — the long tail, convertible incrementally (each batch its
 own ship):
 
-- ~600 `store: Any` parameter sites across handlers/workers/web —
-  convert to `Store` or the narrowest role Protocol in
-  `store/protocols.py` (grow it as needed), deleting dead defensive
-  `getattr` fallbacks as they go (e.g. `precis_web/routes/refs.py::_row`
-  null-guarding non-optional `datetime` fields;
-  `diagram/doc_context.py`'s `getattr(store, "figure_owning_draft"/
-  "get_ref"/"block_views", …)` variance shims).
+- ~570 `store: Any` parameter sites across handlers/workers/web —
+  same recipe, deleting dead defensive `getattr` fallbacks as they go
+  (e.g. `precis_web/routes/refs.py::_row` null-guarding non-optional
+  `datetime` fields; `diagram/doc_context.py`'s `getattr(store,
+  "figure_owning_draft"/"get_ref"/"block_views", …)` variance shims).
 - `upsert_stub_paper(set_by: str)` and friends take plain `str` for
   actor slugs that land in FK-checked columns elsewhere — audit which
-  `set_by` params should be `ActorSlug` (note: `dream`/`weave`/`orcid`
+  `set_by` params should be `ActorSlug` (wave 1 already widened the
+  taproot write doors: `mint_hub`/`apply_placement`/`seed_claim_hub`/
+  `apply_chunk`/`_file_review_todo`). Note: `dream`/`weave`/`orcid`
   are used as `set_by=` strings but are NOT seeded actors; they only
   work because those params never hit the `actors` FK — decide seed vs
-  rename before typing them).
-- `refeye._Chunk` Protocol declares mutable attributes, so frozen
-  dataclasses (`DraftChunk`) can't satisfy it — convert to `@property`
-  members (same fix as `utils/wordcount.py::_ChunkLike`, shipped) and
-  then drop the `Any`-typed locals in `tests/test_refeye.py`.
+  rename before typing them.
 
 Related: [codereview-store-decomposition] (the facade work will keep
 these protocols as its public role surface).

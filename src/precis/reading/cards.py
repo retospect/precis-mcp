@@ -39,7 +39,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.handlers.anki import _CLOZE_RE, _split_extra, _strip_cloze
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
@@ -50,6 +50,9 @@ from precis.reading.mastery import (
     LEECH_LAPSES,
     _env_float,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +185,7 @@ def cloze_skill_preamble() -> str:
 
 
 def author_card(
-    store: Any,
+    store: Store,
     *,
     text: str,
     concept_id: int,
@@ -224,7 +227,7 @@ def _deck_for(cohort: str | None) -> str:
     return f"Precis::{cohort}" if cohort else "Precis::reading"
 
 
-def _minted_today(store: Any, now: datetime, *, cohort: str | None = None) -> int:
+def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> int:
     """Concepts already carded today by this pass — makes a re-run top up to
     the cap instead of doubling it. Scoped to the cohort when given (a
     cohort-scoped forge isn't starved by another cohort's mints)."""
@@ -246,11 +249,11 @@ def _minted_today(store: Any, now: datetime, *, cohort: str | None = None) -> in
             f"AND a.meta->>'authored_by' = %s AND a.created_at >= %s {cohort_clause}",
             params,
         ).fetchone()
-    return int(row[0] or 0)
+    return int(row[0] or 0) if row else 0
 
 
 def _cardless_concepts(
-    store: Any, *, cohort: str | None, limit: int
+    store: Store, *, cohort: str | None, limit: int
 ) -> list[tuple[int, str, str]]:
     """Unmastered concepts with no live card yet, newest first. A concept the
     mint pass has judged un-cardable (``meta.card_forge_skip``) is excluded so
@@ -278,7 +281,7 @@ def _cardless_concepts(
     return [(int(r[0]), r[1] or "", r[2] or "") for r in rows]
 
 
-def _neighbor_names(store: Any, concept_id: int, *, mastered_only: bool) -> list[str]:
+def _neighbor_names(store: Store, concept_id: int, *, mastered_only: bool) -> list[str]:
     """Names of graph-adjacent concepts (optionally only mastered ones) — the
     context a new didactic can lean on."""
     sql = """
@@ -299,7 +302,7 @@ def _neighbor_names(store: Any, concept_id: int, *, mastered_only: bool) -> list
 
 
 def mint_daily_cards(
-    store: Any,
+    store: Store,
     *,
     client: Any,
     per_day: int = DEFAULT_CARDS_PER_DAY,
@@ -365,7 +368,7 @@ def mint_daily_cards(
 
 
 def _stale_leeches(
-    store: Any, *, min_age_days: float, now: datetime
+    store: Store, *, min_age_days: float, now: datetime
 ) -> list[tuple[int, int, str, dict[str, Any]]]:
     """Precis-authored, concept-linked cards past their proving window that the
     `/leeches` heuristic flags: ``(card_id, concept_id, cloze_text, stats)``."""
@@ -396,7 +399,7 @@ def _stale_leeches(
 
 
 def _weak_prereq(
-    store: Any, concept_id: int, *, threshold: float
+    store: Store, concept_id: int, *, threshold: float
 ) -> tuple[int, str] | None:
     """An unlearned prerequisite of this concept, or None."""
     sql = """
@@ -423,7 +426,7 @@ def _weak_prereq(
 
 
 def rework_stale_cards(
-    store: Any,
+    store: Store,
     *,
     client: Any,
     min_age_days: float = DEFAULT_MIN_AGE_DAYS,
@@ -591,7 +594,7 @@ def _default_client() -> Any:
 
 
 def run_card_forge(
-    store: Any,
+    store: Store,
     *,
     client: Any | None = None,
     cohort: str | None = None,

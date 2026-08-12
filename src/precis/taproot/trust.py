@@ -44,6 +44,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from precis.store.protocols import ClaimTrustStore
 from precis.taproot.cite import finding_cite_keys, hub_cite_keys
 from precis.taproot.seniority import (
     HubEvidence,
@@ -130,7 +131,7 @@ class TrustState:
     status: str
 
 
-def _status_of(store: Any, ref_id: int) -> str | None:
+def _status_of(store: ClaimTrustStore, ref_id: int) -> str | None:
     """The STATUS:* tag value on ``ref_id``, or ``None`` if untagged."""
     for tag in store.tags_for(ref_id):
         if getattr(tag, "namespace", None) == "closed" and (
@@ -141,7 +142,7 @@ def _status_of(store: Any, ref_id: int) -> str | None:
 
 
 def _hub_trust(
-    store: Any,
+    store: ClaimTrustStore,
     ref_id: int,
     *,
     evidence: HubEvidence | None = None,
@@ -171,7 +172,7 @@ def _hub_trust(
 
 
 def _lifecycle_trust(
-    store: Any, ref_id: int, meta: dict[str, Any]
+    store: ClaimTrustStore, ref_id: int, meta: dict[str, Any]
 ) -> tuple[TrustLabel, str | None, str]:
     """A plain (non-hub) finding's trust, derived from its STATUS tag."""
     status = _status_of(store, ref_id) or "tracing"
@@ -199,7 +200,7 @@ def _lifecycle_trust(
 
 
 def claim_trust(
-    store: Any,
+    store: ClaimTrustStore,
     finding_ref_id: int,
     *,
     evidence: HubEvidence | None = None,
@@ -308,7 +309,9 @@ def claim_trust(
     return TrustState(label=label, note=note, overridden=False, status=status)
 
 
-def _source_paper_override(store: Any, meta: dict[str, Any]) -> dict[str, Any] | None:
+def _source_paper_override(
+    store: ClaimTrustStore, meta: dict[str, Any]
+) -> dict[str, Any] | None:
     """The paper-level ``unacquirable_override`` (``{note, by, at}``, no
     ``mode``) on a lifecycle finding's *source paper* — the read-through
     that lets rule 2 in :func:`claim_trust` enrich an unverified finding's
@@ -335,7 +338,7 @@ def _source_paper_override(store: Any, meta: dict[str, Any]) -> dict[str, Any] |
 
 
 def _has_cite_key(
-    store: Any, paper_ref_id: int, cite_key_map: dict[int, list[str]] | None
+    store: ClaimTrustStore, paper_ref_id: int, cite_key_map: dict[int, list[str]] | None
 ) -> bool:
     """Whether a supporter paper is *print-visible* — has a resolvable
     cite_key. Mirrors :func:`~precis.taproot.cite._cite_keys_for_group`'s
@@ -349,7 +352,7 @@ def _has_cite_key(
 
 
 def _hub_grounding_unacquirable(
-    store: Any,
+    store: ClaimTrustStore,
     evidence: HubEvidence,
     cite_key_map: dict[int, list[str]] | None,
     paper_refs: dict[int, Any] | None = None,
@@ -389,7 +392,7 @@ def _hub_grounding_unacquirable(
 
 
 def claim_trust_bulk(
-    store: Any, finding_ref_ids: Iterable[int]
+    store: ClaimTrustStore, finding_ref_ids: Iterable[int]
 ) -> dict[int, TrustState]:
     """Bulk twin of :func:`claim_trust` — resolve many findings' trust in a
     handful of queries instead of one ``claim_trust`` call (~7 round trips

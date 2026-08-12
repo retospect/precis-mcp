@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.errors import BadInput
+from precis.store.protocols import PoolStore
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
 from precis.taproot.hub import EVIDENCE_SRC_KINDS
 from precis.utils import handle_registry
@@ -137,7 +138,7 @@ class HubEvidence:
     grounding: list[GroundingRef] = field(default_factory=list)
 
 
-def _is_claim_hub(store: Any, ref_id: int) -> bool:
+def _is_claim_hub(store: PoolStore, ref_id: int) -> bool:
     """True iff ``ref_id`` is a live ``finding`` carrying ``TAPROOT:claim``.
 
     Mirrors :func:`precis.taproot.hub._is_claim_hub`'s guard (kept as a
@@ -160,14 +161,14 @@ def _is_claim_hub(store: Any, ref_id: int) -> bool:
     return row is not None
 
 
-def is_claim_hub(store: Any, ref_id: int) -> bool:
+def is_claim_hub(store: PoolStore, ref_id: int) -> bool:
     """Public wrapper over :func:`_is_claim_hub` — the one hub-detection
     check other modules (e.g. :mod:`precis.taproot.cite`) should call
     rather than reaching into the private name."""
     return _is_claim_hub(store, ref_id)
 
 
-def is_claim_hub_bulk(store: Any, ref_ids: Iterable[int]) -> dict[int, bool]:
+def is_claim_hub_bulk(store: PoolStore, ref_ids: Iterable[int]) -> dict[int, bool]:
     """Bulk twin of :func:`is_claim_hub` — one query for many ``ref_ids``
     instead of one per id (the smartdraft reader's Claims rail resolves a
     whole render-window's worth of distinct cite heads in one pass; the
@@ -193,7 +194,7 @@ def is_claim_hub_bulk(store: Any, ref_ids: Iterable[int]) -> dict[int, bool]:
     return {rid: rid in hub_ids for rid in ids}
 
 
-def _find_originators(store: Any, supporter_ids: list[int]) -> set[int]:
+def _find_originators(store: PoolStore, supporter_ids: list[int]) -> set[int]:
     """Supporters cited by at least one *other* supporter.
 
     One bounded query over the ``links`` table rather than N per-paper
@@ -225,7 +226,7 @@ def _grounding_handle(src_chunk_id: int | None, meta: dict[str, Any]) -> str | N
 
 
 def _fetch_evidence_rows(
-    store: Any, hub_ref_id: int
+    store: PoolStore, hub_ref_id: int
 ) -> list[tuple[int, int | None, str, dict[str, Any]]]:
     """Direct ``paper -> hub`` read: ``(src_ref_id, src_chunk_id, relation,
     meta)`` rows.
@@ -268,7 +269,7 @@ def _fetch_evidence_rows(
 
 
 def _fetch_paper_facts(
-    store: Any, ref_ids: set[int]
+    store: PoolStore, ref_ids: set[int]
 ) -> dict[int, tuple[str, int | None, str | None]]:
     """Bulk-fetch ``(title, year, retraction_status)`` per paper ref_id.
 
@@ -363,7 +364,7 @@ class ClaimLinks:
     refined_by: list[ClaimRef]
 
 
-def derive_refines(store: Any, hub_ref_id: int) -> ClaimLinks:
+def derive_refines(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
     """Read a claim hub's ``refines`` neighbours in both directions.
 
     Pure read. Only live ``TAPROOT:claim`` finding neighbours are returned
@@ -436,7 +437,7 @@ class CiterEdge:
 _CITES_INBOUND_ROLE = "cites"
 
 
-def hub_citers(store: Any, hub_ref_id: int) -> list[CiterEdge]:
+def hub_citers(store: PoolStore, hub_ref_id: int) -> list[CiterEdge]:
     """Everything that cites a claim hub — its inbound ``cites`` edges, joined
     to the citing ref's kind/title/year. Pure read.
 
@@ -466,7 +467,7 @@ def hub_citers(store: Any, hub_ref_id: int) -> list[CiterEdge]:
 
 
 def derive_evidence(
-    store: Any, hub_ref_id: int, *, assume_hub: bool = False
+    store: PoolStore, hub_ref_id: int, *, assume_hub: bool = False
 ) -> HubEvidence:
     """Derive a claim hub's evidence, split into originators/corroborators/
     contradictors. Pure read — writes nothing.
@@ -551,7 +552,7 @@ def derive_evidence(
 
 
 def _fetch_evidence_rows_bulk(
-    store: Any, hub_ref_ids: list[int]
+    store: PoolStore, hub_ref_ids: list[int]
 ) -> dict[int, list[tuple[int, int | None, str, dict[str, Any]]]]:
     """Bulk twin of :func:`_fetch_evidence_rows` — one query for every hub
     in ``hub_ref_ids`` instead of one per hub. Same
@@ -587,7 +588,7 @@ def _fetch_evidence_rows_bulk(
 
 
 def _find_originators_bulk(
-    store: Any, supporters_by_hub: dict[int, list[int]]
+    store: PoolStore, supporters_by_hub: dict[int, list[int]]
 ) -> dict[int, set[int]]:
     """Bulk twin of :func:`_find_originators` — one ``cites`` query across
     the UNION of every hub's supporter set, then re-partitioned per hub.
@@ -615,7 +616,7 @@ def _find_originators_bulk(
 
 
 def derive_evidence_bulk(
-    store: Any, hub_ref_ids: Iterable[int]
+    store: PoolStore, hub_ref_ids: Iterable[int]
 ) -> dict[int, HubEvidence]:
     """Bulk twin of :func:`derive_evidence` — resolve many hubs' evidence in
     THREE queries total (evidence rows, intra-set ``cites``, paper facts),

@@ -61,9 +61,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
+from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     Candidate,
     CanonicalClaim,
@@ -77,6 +78,9 @@ from precis.taproot.canon import (
 )
 from precis.utils.draft_markup import strip_markers
 from precis.utils.mentions import DRAFT_MARKUP_PATTERN
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 __all__ = [
     "ChunkBackfill",
@@ -255,7 +259,7 @@ def _default_locate(
     )
 
 
-def _read_paper_chunks(store: Any, ref_id: int) -> list[tuple[int, int, str]]:
+def _read_paper_chunks(store: Store, ref_id: int) -> list[tuple[int, int, str]]:
     """Live body chunks ``(chunk_id, ord, text)`` of a paper ref, ord order.
     Read-only; the candidate pool a re-ground's :data:`LocateFn` picks from."""
     with store.pool.connection() as conn:
@@ -355,7 +359,7 @@ def segment_cite_groups(text: str) -> list[CiteGroup]:
 # ── chunk read ───────────────────────────────────────────────────────────
 
 
-def _read_draft_chunk(store: Any, chunk_id: int) -> tuple[str, int]:
+def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int]:
     """``(text, draft_ref_id)`` for a live draft body chunk. Read-only.
 
     Raises:
@@ -386,7 +390,7 @@ def _read_draft_chunk(store: Any, chunk_id: int) -> tuple[str, int]:
 
 
 def _run_cascade(
-    store: Any,
+    store: Store,
     embedder: Any,
     group: CiteGroup,
     supporters: list[tuple[str, int]],
@@ -425,7 +429,7 @@ def _run_cascade(
 
 
 def _plan_reground(
-    store: Any,
+    store: Store,
     group: CiteGroup,
     fetched: list[tuple[str, int]],
     *,
@@ -467,7 +471,7 @@ def _plan_reground(
 
 
 def _plan_pa_group(
-    store: Any,
+    store: Store,
     embedder: Any,
     group: CiteGroup,
     supporters: list[tuple[str, int]],
@@ -536,7 +540,7 @@ def _plan_pa_group(
 
 
 def _plan_group(
-    store: Any,
+    store: Store,
     embedder: Any,
     group: CiteGroup,
     *,
@@ -621,7 +625,7 @@ def _plan_group(
 
 
 def plan_chunk(
-    store: Any,
+    store: Store,
     embedder: Any,
     chunk_id: int,
     *,
@@ -665,12 +669,12 @@ def plan_chunk(
 
 
 def _file_review_todo(
-    store: Any,
+    store: Store,
     claim: CanonicalClaim,
     placement: Placement,
     *,
     chunk_id: int,
-    set_by: str,
+    set_by: ActorSlug,
 ) -> None:
     """A ``kind='todo'`` for a risky (``needs_review``) merge the backfill
     declined to auto-apply — mirrors
@@ -707,12 +711,12 @@ def _file_review_todo(
 
 
 def apply_chunk(
-    store: Any,
+    store: Store,
     embedder: Any,
     draft_handler: Any,
     chunk_id: int,
     *,
-    set_by: str = "agent",
+    set_by: ActorSlug = "agent",
     ref_level: bool = False,
     extract_fn: ExtractFn = extract_claim,
     block_fn: BlockFn = block,

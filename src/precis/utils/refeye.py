@@ -38,6 +38,7 @@ node), capped per group with a visible overflow line — no silent truncation.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from precis.taproot.seniority import (
@@ -93,13 +94,19 @@ _RING_CAP = 8
 
 
 class _Chunk(Protocol):
-    chunk_id: int
-    ref_id: int
-    text: str
-    parent_chunk_id: int | None
+    # Read-only properties, not plain attributes — frozen dataclasses
+    # (DraftChunk) don't satisfy a mutable-attribute protocol.
+    @property
+    def chunk_id(self) -> int: ...
+    @property
+    def ref_id(self) -> int: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def parent_chunk_id(self) -> int | None: ...
 
 
-def _subtree(chunks: list[_Chunk], target: _Chunk) -> list[_Chunk]:
+def _subtree(chunks: Sequence[_Chunk], target: _Chunk) -> list[_Chunk]:
     """The target node + its descendants, in reading order — a "section" is a
     heading and everything under it."""
     by_id = {c.chunk_id: c for c in chunks}
@@ -300,7 +307,7 @@ _HANDLE_BARE_RE = re.compile(r"^[a-z]{2}\d+$")
 
 
 def _mine_claim_hub_ids(
-    store: Any, span: list[_Chunk], *, exclude_ref_id: int
+    store: Any, span: Sequence[_Chunk], *, exclude_ref_id: int
 ) -> list[tuple[int, str | None, list[str]]]:
     """First-seen-ordered ``(hub_ref_id, pin_op, pin_handles)`` cited via a
     content-hash ``[pub_id]`` or a finding handle ``[fi<id>]`` (either
@@ -449,7 +456,7 @@ def _render_claims_group(
 def render_reference_ring(
     store: Any,
     target: _Chunk,
-    chunks: list[_Chunk],
+    chunks: Sequence[_Chunk],
     *,
     cap: int = _RING_CAP,
 ) -> str:
@@ -465,7 +472,7 @@ def render_reference_ring(
 def collect_ring(
     store: Any,
     target: _Chunk,
-    chunks: list[_Chunk],
+    chunks: Sequence[_Chunk],
     *,
     cap: int = _RING_CAP,
 ) -> dict[str, list[tuple[int, str]]]:

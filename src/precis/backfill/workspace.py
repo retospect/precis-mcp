@@ -14,7 +14,7 @@ self-describing (slice 2). A per-target ``grounding`` block names ✓ cited /
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.backfill.candidates import (
     Candidate,
@@ -28,8 +28,11 @@ from precis.utils import handle_registry
 from precis.utils.working_set_render import render_working_set
 from precis.workers.working_set import Provenance, WorkingSet
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
-def recall_embedder(store: Any = None) -> Any | None:
+
+def recall_embedder(store: Store | None = None) -> Any | None:
     """A cheap embedder for tick-time recall's **semantic** leg, or ``None`` (→
     lexical + citation-graph only).
 
@@ -55,7 +58,7 @@ def recall_embedder(store: Any = None) -> Any | None:
         return None
 
 
-def _resolve_targets(store: Any, targets: list[str], *, kind: str) -> list[Any]:
+def _resolve_targets(store: Store, targets: list[str], *, kind: str) -> list[Any]:
     """Resolve target handles to live draft chunks, skipping any that don't
     resolve (the MCP layer validates + names the bad handle before we get
     here)."""
@@ -67,7 +70,9 @@ def _resolve_targets(store: Any, targets: list[str], *, kind: str) -> list[Any]:
     return resolved
 
 
-def _target_cited_refs(store: Any, target_chunks: list[Any], *, kind: str) -> set[int]:
+def _target_cited_refs(
+    store: Store, target_chunks: list[Any], *, kind: str
+) -> set[int]:
     """Ref-ids of the papers the *target sections* cite — rendered as summary
     cluster-TOC eyes (the ``★`` chunk highlight lands in slice 2). Uses the
     reference ring's ``Cited`` group per section."""
@@ -82,7 +87,7 @@ def _target_cited_refs(store: Any, target_chunks: list[Any], *, kind: str) -> se
 
 
 def assemble(
-    store: Any,
+    store: Store,
     embedder: Any,
     targets: list[str],
     *,
@@ -192,7 +197,7 @@ def _support_overlay(support: tuple[str, ...]) -> tuple[str, str]:
 
 
 def _backfill_marks(
-    store: Any,
+    store: Store,
     target_chunks: list[Any],
     candidates: list[Candidate],
     *,
@@ -233,7 +238,7 @@ def _backfill_marks(
     return marks
 
 
-def _render_grounding(store: Any, target_chunks: list[Any], *, kind: str) -> str:
+def _render_grounding(store: Store, target_chunks: list[Any], *, kind: str) -> str:
     """Per target: the papers grounding it as ``✓`` short-cites, or a ``⚠``
     coverage warning when the claim is under-sourced. The turn-1 "which papers
     back this section" diagnostic — ``⚠ single-source`` / ``⚠ uncited
@@ -262,7 +267,7 @@ def _render_grounding(store: Any, target_chunks: list[Any], *, kind: str) -> str
 
 
 def render_backfill(
-    store: Any,
+    store: Store,
     embedder: Any,
     targets: list[str],
     *,
@@ -295,7 +300,7 @@ def render_backfill(
 # ── whole-draft roll-up (Build 2 §G2) ─────────────────────────────────
 
 
-def _top_level_section_handles(store: Any, ref_id: int, *, kind: str) -> list[str]:
+def _top_level_section_handles(store: Store, ref_id: int, *, kind: str) -> list[str]:
     """The whole-draft roll-up's per-section targets — every depth-0
     (top-level) heading's ``.dc`` handle. A heading-less/flat draft (no
     sub-headings at all) falls back to every top-level body chunk, so a
@@ -311,7 +316,7 @@ def _top_level_section_handles(store: Any, ref_id: int, *, kind: str) -> list[st
 
 
 def assemble_draft(
-    store: Any,
+    store: Store,
     embedder: Any,
     ref_id: int,
     *,
@@ -357,7 +362,7 @@ def assemble_draft(
 
 
 def render_backfill_draft(
-    store: Any,
+    store: Store,
     embedder: Any,
     ref: Any,
     *,

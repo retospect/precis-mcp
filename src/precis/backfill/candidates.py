@@ -15,13 +15,16 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.backfill.provenance import SOURCE_KINDS, tier_for
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import resolve_link_targets
 from precis.utils.refeye import _CITED_KINDS
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Recall-lens ids. Slice 1 ships ``text``; slice 3 adds ``citation`` (the
 #: citation-graph provable-omission lens); ``topic`` (Build 2 §G3) confirms a
@@ -118,7 +121,7 @@ def _subtree_chunks(chunks: list[Any], target: Any) -> list[Any]:
     return [c for c in chunks if in_section(c)]
 
 
-def draft_cited_ref_ids(store: Any, ref_id: int, *, kind: str = "draft") -> set[int]:
+def draft_cited_ref_ids(store: Store, ref_id: int, *, kind: str = "draft") -> set[int]:
     """The cited-source ref_ids a draft already points at — mined from every
     chunk's body (``resolve_link_targets``, the reference ring's path), filtered
     to citeable kinds (paper/datasheet/patent/cfp) and to live refs, **plus**
@@ -144,7 +147,7 @@ def draft_cited_ref_ids(store: Any, ref_id: int, *, kind: str = "draft") -> set[
     return cited | _hub_supporter_ref_ids(store, chunks)
 
 
-def _hub_supporter_ref_ids(store: Any, chunks: list[Any]) -> set[int]:
+def _hub_supporter_ref_ids(store: Store, chunks: list[Any]) -> set[int]:
     """The evidence-supporter papers of every ``[fi]`` claim-hub these chunks
     cite (Build 2 §G1 — the load-bearing closure fix). A hub already backs
     its claim with these papers, so once ``[pc]``/``[pa]`` cites backfill to
@@ -176,7 +179,7 @@ def _hub_supporter_ref_ids(store: Any, chunks: list[Any]) -> set[int]:
 
 
 def seed_from_targets(
-    store: Any, target_chunks: list[Any], *, kind: str = "draft"
+    store: Store, target_chunks: list[Any], *, kind: str = "draft"
 ) -> tuple[list[str], str]:
     """Derive ``(keyword legs, seed text)`` from the target subtrees — the
     section programs its own recall. Keywords (from ``block_views``) become
@@ -205,7 +208,7 @@ def seed_from_targets(
 
 
 def _text_lens(
-    store: Any,
+    store: Store,
     embedder: Any,
     target_chunks: list[Any],
     *,
@@ -290,7 +293,7 @@ def merge_recurrence(
 
 
 def find_candidates(
-    store: Any,
+    store: Store,
     embedder: Any,
     target_chunks: list[Any],
     *,
@@ -394,7 +397,7 @@ def _topic_slugs(tag_pairs: list[tuple[str, str]]) -> set[str]:
     }
 
 
-def draft_topic_slugs(store: Any, cited_ref_ids: set[int]) -> set[str]:
+def draft_topic_slugs(store: Store, cited_ref_ids: set[int]) -> set[str]:
     """The draft's topic-category domain (Build 2 §G3) — the ``topic:<slug>``
     tag(s) **dominant** among ``cited_ref_ids`` (the citation closure): the
     slug(s) tied for the highest occurrence count across the cited papers'
@@ -415,7 +418,7 @@ def draft_topic_slugs(store: Any, cited_ref_ids: set[int]) -> set[str]:
 
 
 def _apply_topic_gate(
-    store: Any, candidates: list[Candidate], draft_topics: set[str]
+    store: Store, candidates: list[Candidate], draft_topics: set[str]
 ) -> list[Candidate]:
     """The stay-in-scope precision gate (Build 2 §G3): partitions
     ``candidates`` into on-domain (a ``topic:`` tag in ``draft_topics`` —
@@ -442,7 +445,7 @@ def _apply_topic_gate(
 
 
 def _merge_citation_lens(
-    store: Any,
+    store: Store,
     out: list[Candidate],
     citation_seed_ref_ids: set[int] | None,
     exclude_ref_ids: set[int],

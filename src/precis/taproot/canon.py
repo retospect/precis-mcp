@@ -34,9 +34,12 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from precis.utils.llm.router import LlmRequest, Tier, dispatch
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -275,7 +278,7 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
 
 def block(
     claim: CanonicalClaim,
-    store: Any,
+    store: Store,
     embedder: Any,
     *,
     k: int = 10,

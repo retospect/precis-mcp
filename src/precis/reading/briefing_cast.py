@@ -48,7 +48,7 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.reading.cast_common import (
     CAST_PROFILES,
@@ -60,9 +60,13 @@ from precis.reading.cast_common import (
     link_sources,
     voice_skill_preamble,
 )
+from precis.store.protocols import SettingsStore
 from precis.utils import handle_registry
 from precis.utils.llm.router import DispatchClient, Tier
 from precis.workers.briefing import _complete_with_retry
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +243,7 @@ def _collect(sources: list[Source] | None, refs: list[Any], relation: str) -> No
             sources.append((int(rid), relation))
 
 
-def _news_brief_text(store: Any, ref_id: int) -> str:
+def _news_brief_text(store: Store, ref_id: int) -> str:
     """Reconstruct a news ref's body (``ord >= 0``) — the composed brief text."""
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -334,7 +338,7 @@ def _render_papers(papers: list[Any], *, total: int | None = None) -> str:
     return f"Papers acquired or updated ({count}){extra}:\n" + "\n".join(lines)
 
 
-def _count_papers_since(store: Any, cutoff: datetime) -> int:
+def _count_papers_since(store: Store, cutoff: datetime) -> int:
     """The true count of papers acquired/updated since ``cutoff``.
 
     :func:`_render_papers` only *names* up to :data:`_LANE_ITEM_CAP`, so the
@@ -362,7 +366,15 @@ def _lane_system_activity(
     now: datetime,
     sources: list[Source] | None = None,
 ) -> str:
-    """What the untiring collaborator did overnight (LIVE)."""
+    """What the untiring collaborator did overnight (LIVE).
+
+    ``store`` stays ``Any``: tests exercise this lane directly with narrow
+    fakes (``_AlertLaneStore`` here, ``_NudgeStore`` on the quest lane below)
+    that satisfy only the calls this lane makes, but the lane also forwards
+    ``store`` into ``Store``-typed callees (``_count_papers_since``,
+    ``precis.alerts.list_open_alerts``, ``_todo_views._attention_*``) — no
+    honest narrow protocol covers that mixed surface yet.
+    """
     parts: list[str] = []
 
     papers = store.list_refs(kind="paper", updated_after=cutoff, limit=_LANE_ITEM_CAP)
@@ -427,7 +439,7 @@ def _lane_system_activity(
     return "SYSTEM ACTIVITY OVERNIGHT:\n" + "\n".join(f"- {p}" for p in parts)
 
 
-def _lane_recall(store: Any, *, cutoff: datetime) -> str:
+def _lane_recall(store: Store, *, cutoff: datetime) -> str:
     """Today's recall surface — Anki leeches + newly-seen concepts (PARTIAL)."""
     parts: list[str] = []
 
@@ -524,7 +536,7 @@ def _lane_recall(store: Any, *, cutoff: datetime) -> str:
 
 
 def _lane_reading(
-    store: Any, *, now: datetime, sources: list[Source] | None = None
+    store: Store, *, now: datetime, sources: list[Source] | None = None
 ) -> str:
     """Papers the human has actually opened recently — "where you left off".
 
@@ -577,7 +589,7 @@ def _lane_reading(
     )
 
 
-def _quest_report(store: Any, quest: Any, *, status: str) -> str:
+def _quest_report(store: Store, quest: Any, *, status: str) -> str:
     """One quest → its striving, lifecycle, momentum, and latest deed (or quiet)."""
     from precis.quest.gaps import quest_momentum
     from precis.quest.logbook import LOG_KIND
@@ -627,7 +639,7 @@ def _quest_report(store: Any, quest: Any, *, status: str) -> str:
     return "\n".join(lines)
 
 
-def _read_nudge_cursor(store: Any) -> tuple[str | None, int]:
+def _read_nudge_cursor(store: SettingsStore) -> tuple[str | None, int]:
     """The dormant-nudge cursor from ``app_state`` → ``(last_fired_iso, fires)``.
 
     Degrades to ``(None, 0)`` (fire-now) on any read/parse problem.
@@ -643,7 +655,7 @@ def _read_nudge_cursor(store: Any) -> tuple[str | None, int]:
         return None, 0
 
 
-def _clear_nudge_cursor(store: Any) -> None:
+def _clear_nudge_cursor(store: SettingsStore) -> None:
     """Reset the decay so the *next* dormancy nudges from scratch. Called the
     moment a quest is active again (the human re-engaged)."""
     try:
@@ -656,7 +668,7 @@ def _clear_nudge_cursor(store: Any) -> None:
 
 
 def _dormant_nudge(
-    store: Any,
+    store: SettingsStore,
     dormant: list[Any],
     *,
     now: datetime,
@@ -717,7 +729,13 @@ def _lane_quest(
     the full momentum + latest-deed treatment; when none is active, a *decaying*
     nudge about the dormant strivings takes its place (and goes quiet again on the
     off-cadence mornings). ``abandoned`` quests are never mentioned. LIVE once
-    quests exist; degrades to empty otherwise. See ``quest-layer`` (git-only)."""
+    quests exist; degrades to empty otherwise. See ``quest-layer`` (git-only).
+
+    ``store`` stays ``Any``: tests drive this lane with the narrow ``_NudgeStore``
+    fake (``list_refs`` + the ``SettingsStore`` get/set pair only), but the lane
+    also forwards ``store`` into ``Store``-typed callees (``_quest_report``,
+    ``_dormant_nudge``) — no honest narrow protocol covers that mixed surface yet.
+    """
     try:
         active = store.list_refs(
             kind="quest", tags=["STATUS:active"], limit=_LANE_ITEM_CAP
@@ -753,7 +771,7 @@ def _lane_quest(
 
 
 def _gather_lanes(
-    store: Any, *, date_tag: str, cutoff: datetime, now: datetime
+    store: Store, *, date_tag: str, cutoff: datetime, now: datetime
 ) -> tuple[dict[str, str], list[Source]]:
     """All lanes, each degrading to ``""``. Keys preserve reading order.
 
@@ -811,7 +829,7 @@ def _compose(
 
 
 def build_reading_briefing(
-    store: Any,
+    store: Store,
     *,
     client: Any = None,  # any object with .complete(messages); tests inject a fake
     now: datetime | None = None,

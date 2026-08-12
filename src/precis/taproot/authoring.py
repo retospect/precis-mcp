@@ -18,10 +18,11 @@ re-attaching an evidence edge that already exists (checked directly against
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
+from precis.store.types import ActorSlug
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import (
     _DEFAULT_ROLE,
@@ -32,6 +33,9 @@ from precis.taproot.hub import (
     mint_hub,
 )
 from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 __all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
 
@@ -46,7 +50,7 @@ __all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
 _SUPPORTER_KINDS: frozenset[str] = EVIDENCE_SRC_KINDS
 
 
-def resolve_paper_ref_id(store: Any, paper: int | str) -> int:
+def resolve_paper_ref_id(store: Store, paper: int | str) -> int:
     """Resolve a supporter's ``paper`` to a live ``ref_id``.
 
     Accepts a bare ``ref_id`` (``int``), a universal handle (``pa5``), a
@@ -100,7 +104,7 @@ def resolve_paper_ref_id(store: Any, paper: int | str) -> int:
     )
 
 
-def resolve_hub_ref_id(store: Any, hub: int | str) -> int:
+def resolve_hub_ref_id(store: Store, hub: int | str) -> int:
     """Resolve a claim-hub reference to a live ``TAPROOT:claim`` hub ref_id.
 
     Accepts a bare ``ref_id`` (``int``), a ``fi<id>`` finding handle, a
@@ -147,7 +151,7 @@ def resolve_hub_ref_id(store: Any, hub: int | str) -> int:
 
 
 def _evidence_edge_exists(
-    store: Any,
+    store: Store,
     *,
     paper_ref_id: int,
     hub_ref_id: int,
@@ -188,7 +192,7 @@ def _evidence_edge_exists(
         return _query(own_conn)
 
 
-def find_hub_by_pub_id(store: Any, pub_id: str) -> int | None:
+def find_hub_by_pub_id(store: Store, pub_id: str) -> int | None:
     """Look up a claim hub's ``ref_id`` by its ``pub_id`` — read-only.
 
     Mirrors :func:`precis.taproot.hub.mint_hub`'s internal converge-to-attach
@@ -204,12 +208,12 @@ def find_hub_by_pub_id(store: Any, pub_id: str) -> int | None:
 
 
 def seed_claim_hub(
-    store: Any,
+    store: Store,
     *,
     sentence: str,
     scope: dict[str, str],
     supporters: list[dict[str, Any]],
-    set_by: str = "agent",
+    set_by: ActorSlug = "agent",
 ) -> dict[str, Any]:
     """Mint (or converge onto) a claim hub for ``sentence``/``scope`` and
     attach each of ``supporters`` as evidence.
