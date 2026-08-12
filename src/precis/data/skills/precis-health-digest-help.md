@@ -33,7 +33,7 @@ precis worker --only health_digest --once
 
 In production it fires once an hour, wherever the cadence lease lands.
 
-## Three check sources, every fire
+## Four check sources, every fire
 
 1. **Curated Layer-1 outcome checks** — ~13 end-to-end outcomes (papers
    ingesting, chunks extracted/embedded/keyworded/classified, news, morning
@@ -64,6 +64,19 @@ In production it fires once an hour, wherever the cadence lease lands.
    override on any host) with **zero** `worker_logs` rows in 24h reads
    "intended-on but silent". Straight from the registry × `service_config`
    × `worker_logs` — a new pass needs **zero** edits here.
+4. **Condition registry** (`workers/conditions.py`, spine Layer 2) —
+   declarative probe rows under group `condition`: `pass-dead-on-host`
+   (a handler silent past budget on ONE live host — per-`(host, process,
+   handler)`, the resolution source 3 deliberately lacks; exact because
+   every registered pass logs a `worker_logs` row every cycle),
+   `rescue-pass-cadence` (fleet-wide SLO on sweeper/nursery/
+   quest_loop_reconcile), `pass-wedged` (fresh heartbeat + stale
+   `meta.activity.since`), `llm-degraded` (per model/transport/placement
+   error rate), `dead-generation-claims` (epoch-dead claims outliving the
+   claim reaper — the reclaim lane's own watchdog). Findings with a
+   whitelisted heal run through `workers/bounded_heal.py`
+   (attempts/cooldown/cap-then-gripe); the only action is restart-once
+   (`cap=1`), dark until `PRECIS_RESTART_ONCE_ENABLED=1`.
 
 ## Findings → alerts
 

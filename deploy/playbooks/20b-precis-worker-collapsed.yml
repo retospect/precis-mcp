@@ -315,6 +315,9 @@
         # only because the split agent unit never ran those passes.
         service_unit_working_dir: /tmp
         service_unit_process_type: Interactive   # jetsam band (RAM-pressured host)
+        # 60s drain before SIGKILL (spine slice 2): SIGTERM aborts streamed
+        # LLM calls between SSE chunks, finalizes partials, releases holds.
+        service_unit_timeout_stop_sec: 60
         service_unit_schedule:
           mode: keepalive
         service_unit_exec: >-

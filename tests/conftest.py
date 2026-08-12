@@ -358,6 +358,23 @@ def _force_mock_embedder_for_tests() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_drain_flag() -> Iterator[None]:
+    """Clear the process-wide worker drain flag after every test.
+
+    ``precis.liveness._DRAIN`` is a module-global ``threading.Event``
+    (deliberately — one process, one generation), so a test that flips it
+    via ``request_drain()`` and forgets a ``finally`` would otherwise
+    poison every later streamed-LLM/agent-loop test in the same xdist
+    worker with spurious drain aborts. Lazy import keeps DB-free test
+    modules unaffected.
+    """
+    yield
+    from precis import liveness
+
+    liveness._DRAIN.clear()
+
+
+@pytest.fixture(autouse=True)
 def _pin_load_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neutralise the 1-min load-average gate so load-gated worker passes
     run deterministically under parallel test load.

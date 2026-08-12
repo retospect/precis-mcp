@@ -2530,12 +2530,24 @@ def _install_signal_handlers() -> dict[str, bool]:
     A dict-of-bool — boring but works as a closure cell across the
     signal handlers and ``run_loop``'s ``should_stop`` callable
     without having to introduce a singleton or threading.Event.
+
+    Also flips the process-wide drain flag (:func:`precis.liveness.
+    request_drain`) so an in-flight streamed LLM call aborts between SSE
+    chunks (partial salvaged, hold released) instead of running out its
+    full timeout into the unit's stop-timeout SIGKILL — the graceful
+    drain of self-healing-spine Layer 1, slice 2.
     """
+    from precis.liveness import request_drain
+
     flag = {"stop": False}
 
     def _handler(signum: int, _frame: object) -> None:
-        log.info("worker: signal %d received; finishing batch", signum)
+        log.info(
+            "worker: signal %d received; draining (batch ends, streams abort)",
+            signum,
+        )
         flag["stop"] = True
+        request_drain()
 
     # SIGINT for interactive Ctrl-C; SIGTERM for systemd / docker
     # stop. We deliberately do NOT install SIGHUP — most operators

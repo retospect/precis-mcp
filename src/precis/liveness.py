@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 
 from psycopg import Connection
 
@@ -47,6 +48,33 @@ NO_ADVERTISED_BOOT_ID = "__no_advertised_boot_id__"
 #: (only EXPIRY burns it — see ``claim_executor_jobs``).
 RECLAIM_WHY_EPOCH = "epoch"
 RECLAIM_WHY_EXPIRY = "expiry"
+
+
+# ── drain (this process's own generation ending) ────────────────────────
+# The flip side of the epoch predicate above: liveness is "is that OTHER
+# holder's generation gone"; drain is "THIS generation is ending — stop
+# starting long work and abort what can be aborted cleanly". Set by the
+# worker's SIGTERM/SIGINT handler; polled between SSE chunks / agent-loop
+# turns so an in-flight LLM stream aborts within one chunk instead of
+# holding the unit past its stop timeout into SIGKILL (which is what
+# minted the orphaned claims the reaper exists to clean up — spine
+# Layer 1, slice 2: stop creating orphans).
+#
+# Module-global and one-way by design (one process = one generation; a
+# draining worker never un-drains). Tests that set it MUST clear it —
+# tests/conftest.py has an autouse fixture doing exactly that, so a leaked
+# flag can't poison later streamed-LLM tests in the same pytest worker.
+_DRAIN = threading.Event()
+
+
+def request_drain() -> None:
+    """Mark this process as draining (idempotent, thread/signal-safe)."""
+    _DRAIN.set()
+
+
+def drain_requested() -> bool:
+    """True once :func:`request_drain` has been called in this process."""
+    return _DRAIN.is_set()
 
 
 def reserve_host() -> str:

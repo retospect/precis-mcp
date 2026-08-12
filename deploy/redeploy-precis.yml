@@ -283,6 +283,40 @@
 - name: "Re-assert worker-log rotation      (gr191008 — copy-truncate cron)"
   ansible.builtin.import_playbook: playbooks/15-logrotate.yml
 
+# ── restart-once sudoers grant (self-healing-spine Layer 2, slice 3) ──
+# The condition registry's ONE whitelisted cross-host heal: a healthy host
+# may bounce a provably-wedged worker (dead handler in a live rotation —
+# gr204385 sat 4 days because no agent path could do this). The grant is
+# scoped to EXACTLY one command per platform — nothing else runs as root.
+# The code side (workers/conditions.py::_restart_worker_cmd) must stay
+# byte-aligned with these lines. Re-asserted every deploy (same
+# silent-drift reasoning as 19-pgpass / 15-logrotate above). The heal arm
+# itself stays dark until PRECIS_RESTART_ONCE_ENABLED=1 on the workers —
+# this grant also unblocks a manual/cluster-admin bounce in the meantime.
+- name: "Provision restart-once sudoers grant (deploy → one worker bounce)"
+  hosts:
+    - gateway
+    - scheduler
+    - inference
+    - serving
+  become: true
+  tags: [restart-once, precis]
+  tasks:
+    - name: Grant deploy the one vetted worker-restart command
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/precis-restart-once
+        mode: "0440"
+        owner: root
+        validate: "visudo -cf %s"
+        content: |
+          # Managed by ansible (redeploy-precis.yml) — self-healing-spine
+          # slice 3 restart-once. Exactly one command; do not widen.
+          {% if os_family == 'darwin' %}
+          deploy ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/com.precis.worker
+          {% else %}
+          deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart precis-worker
+          {% endif %}
+
 # §L-b (2026-08-04): the COLLAPSED worker playbook replaced
 # 20-precis-worker.yml here — one `precis worker --profile all` unit per
 # host (same com.precis.worker / precis-worker.service label, rendered via
@@ -345,6 +379,14 @@
 # competing agent daemon alongside the collapsed unit.
 
 # ── 2. Force-bounce every precis daemon so fresh code is in memory ──
+# THE one restart per deploy (spine slice 2, gr51351 part 3): the
+# install-notify handlers in precis_worker / precis_embedder / precis_web
+# skip when `precis_deploy_changed` is defined-and-true (this playbook's
+# pre-flight sets it), so a code deploy restarts each unit exactly ONCE —
+# here. Known, accepted exception: a deploy that also changes a
+# service_unit-rendered UNIT FILE double-bounces the collapsed worker
+# (roles/service_unit reloads on unit change unconditionally — that reload
+# is what makes launchd env changes take, so it stays).
 # `data` (the DB node) is deliberately NOT bounced (excluded 2026-08-11): it
 # runs NO precis daemon (worker 20b, embedder 19a, watchdog 41 all exclude it
 # — DB node, RAM pressure). This play `find`s and bootstraps *any* leftover
@@ -520,6 +562,11 @@
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: restarted
+        # Pick up unit-file changes too (e.g. TimeoutStopSec) — this play is
+        # the ONE restart per deploy (spine slice 2: the install-notify
+        # handlers in precis_worker/precis_embedder/precis_web skip under
+        # redeploy), so it must also refresh systemd's view of the unit.
+        daemon_reload: true
       loop: "{{ precis_units.stdout_lines | select | list }}"
       failed_when: false
 

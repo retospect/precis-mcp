@@ -379,15 +379,49 @@ this doc stays the cross-slice record and is trimmed as slices ship.
    (slot holds: delete + capped refund; agentlogs: finalize
    `status='aborted'`), 10-min age floor, in-transaction re-verify,
    uniform grep line. Job leases untouched (in-claim machinery).
-2. **Graceful drain + single-restart deploy** (handoff Part B) — stops
-   minting orphans; zero `stop-sigterm timed out` in journal.
-3. **`bounded_heal` extraction + condition registry + first new rows**
-   (per-lane probes, llm_call_log rates, restart-once, missing-pass,
-   fair sampling) + claims-vs-liveness panel + set
-   `PRECIS_OPS_ALERT_TARGET`. **Acceptance case: gr204385** (classify
-   handler silently dead in a live melchior worker since 2026-08-08,
-   damming embed; unnoticed ~4 days) — this slice must detect it within
-   one hourly window, bounce once, and surface it in the report.
+2. **Graceful drain + single-restart deploy** (handoff Part B) —
+   ✅ SHIPPED 2026-08-12: `precis.liveness.request_drain/drain_requested`
+   (process-wide drain flag, flipped by the worker's SIGTERM/SIGINT
+   handler), polled between SSE chunks (`ToolChatClient(abort_check=…)`)
+   and between agent-loop turns (`run_tool_loop(abort_check=…)`) — an
+   in-flight streamed LLM call aborts with its partial salvaged via the
+   existing `StreamTimeout`/`paused` retry path; `service_unit` grew
+   `service_unit_timeout_stop_sec` (systemd `TimeoutStopSec` / launchd
+   `ExitTimeOut`), set to 60 s on the worker units; the install-notify
+   handlers (worker/embedder/web) skip under `redeploy-precis.yml`, whose
+   step-2 bounce is now THE one restart per code deploy (accepted
+   exception: a unit-file-changing deploy double-bounces once via
+   `service_unit`'s own reload — that reload is what makes launchd env
+   changes take). Blocking (non-streamed) calls still ride out their
+   timeout — the drain helps exactly the long streamed calls that used
+   to hold units into SIGKILL. Verify post-deploy: zero
+   `stop-sigterm timed out` in the journal.
+3. **`bounded_heal` extraction + condition registry + first new rows** —
+   ✅ core SHIPPED 2026-08-12: `workers/bounded_heal.py` (the unpark
+   shape as a shared primitive — attempts + exponential cooldown + cap +
+   terminal latch + one cap gripe; state in `app_settings` with a CAS
+   bump so concurrent evaluators can't double-fire) and
+   `workers/conditions.py` (registry evaluated on `health_digest`'s
+   hourly lane, findings ride the existing alert-sync/router; rows:
+   `pass-dead-on-host` — exact because every registered pass logs a
+   `worker_logs` row every cycle, `rescue-pass-cadence`, `pass-wedged`,
+   `llm-degraded`, `dead-generation-claims` — the claims-vs-liveness
+   panel as a row). **restart-once** ships with the sudoers grant
+   provisioned per deploy (`redeploy-precis.yml`, scoped to exactly one
+   command per platform) but the heal arm is DARK until
+   `PRECIS_RESTART_ONCE_ENABLED=1` — arming needs the deploy→deploy ssh
+   mesh verified per host first. `PRECIS_OPS_ALERT_TARGET` turned out to
+   be ALREADY SET (overlay `group_vars/all/precis_env.yml` →
+   #systems-notifications; the doc's "dark today" was stale). Deferred
+   from this slice (filed): fair sampling on capped detectors, the
+   advisory-lock library helper, registering unpark/transient-reopen as
+   bounded_heal rows (proven inline machinery — migrate, don't fork),
+   fast-lane (nursery) wiring for future per-minute rows.
+   **Acceptance case: gr204385** (classify handler silently dead in a
+   live melchior worker since 2026-08-08, damming embed; unnoticed
+   ~4 days) — `pass-dead-on-host` detects the class within one hourly
+   window after its 4 h budget; the bounce stays manual until
+   restart-once is armed.
 4. **`doctor_tick` at `report`** + reporting-spine cutover (doctor
    authors the digest, template becomes fallback; brief lane;
    transcript persistence for agent job types).

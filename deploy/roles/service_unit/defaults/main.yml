@@ -108,3 +108,11 @@ service_unit_timeout_start_sec: ""
 # minutes — set both explicitly whenever service_unit_exec_start_pre does.
 service_unit_start_limit_interval_sec: ""
 service_unit_start_limit_burst: ""
+# Stop-timeout — how long a SIGTERM'd daemon gets to drain before the
+# SIGKILL that orphans its claims (self-healing-spine Layer 1, slice 2).
+# Renders TimeoutStopSec= on systemd and <ExitTimeOut> on launchd (whose
+# default is a tight 20s). Set on worker units to comfortably cover the
+# graceful drain (streamed LLM calls abort between SSE chunks on SIGTERM,
+# then finalize partial + release holds); empty = platform default
+# (systemd 90s / launchd 20s), today's behaviour.
+service_unit_timeout_stop_sec: ""

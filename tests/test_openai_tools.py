@@ -379,6 +379,46 @@ def test_stream_flag_falls_back_without_post_sse() -> None:
     assert "stream" not in tx.sent[0]
 
 
+def test_streaming_abort_check_aborts_between_chunks() -> None:
+    """The injected abort_check (the worker's drain flag) aborts the stream
+    between chunks with the partials attached — same salvage path as an
+    idle timeout, but immediate (spine slice 2: graceful drain)."""
+    seen = {"n": 0}
+
+    def _drain_after_two() -> bool:
+        seen["n"] += 1
+        return seen["n"] > 2
+
+    tx = _FakeSseTransport([_delta("par"), _delta("tial"), _delta("never")])
+    client = ToolChatClient(
+        url="http://x/v1",
+        api_key="k",
+        model="m",
+        transport=tx,
+        stream=True,
+        abort_check=_drain_after_two,
+    )
+    with pytest.raises(StreamTimeout) as exc_info:
+        client.chat([{"role": "user", "content": "hi"}])
+    assert exc_info.value.partial_text == "partial"
+    assert "draining" in str(exc_info.value)
+
+
+def test_streaming_abort_check_false_is_noop() -> None:
+    tx = _FakeSseTransport(
+        [_delta("ok"), {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+    )
+    client = ToolChatClient(
+        url="http://x/v1",
+        api_key="k",
+        model="m",
+        transport=tx,
+        stream=True,
+        abort_check=lambda: False,
+    )
+    assert client.chat([{"role": "user", "content": "hi"}]).content == "ok"
+
+
 def test_partial_artifact_formats_both_sections() -> None:
     exc = StreamTimeout("t", partial_text="ans", partial_reasoning="why")
     art = partial_artifact(exc)
@@ -610,6 +650,57 @@ def test_loop_4xx_stays_unpaused() -> None:
     )
     assert out.stop_reason == "error"
     assert out.paused is False
+
+
+def test_loop_abort_check_stops_before_next_turn() -> None:
+    """A draining worker stops the agent loop before the NEXT turn starts
+    (spine slice 2): the text so far is kept, and the result is a ``paused``
+    unavailability so the job retries under the next worker generation."""
+    call = ToolCall("c1", "get", {"id": 7})
+    client = _ScriptedClient([_toolcall_turn(call), _content_turn("never sent")])
+    drained = {"on": False}
+
+    def _execute(name: str, args: Any) -> str:
+        drained["on"] = True  # SIGTERM lands while the tool runs
+        return "ok"
+
+    out = run_tool_loop(
+        client,
+        prompt="q",
+        tools=[ToolSpec("get", "d", {"type": "object"})],
+        execute=_execute,
+        max_turns=5,
+        abort_check=lambda: drained["on"],
+    )
+    assert out.stop_reason == "error"
+    assert out.error is not None and "draining" in out.error
+    assert out.paused is True
+    assert out.turns_used == 1
+
+
+def test_worker_sigterm_flips_the_drain_flag() -> None:
+    """The worker's signal handler both stops the batch loop AND flips the
+    process-wide drain flag ``run_oss_tool_loop`` injects as abort_check."""
+    import signal as _signal
+
+    from precis import liveness
+    from precis.cli.worker import _install_signal_handlers
+
+    old_int = _signal.getsignal(_signal.SIGINT)
+    old_term = _signal.getsignal(_signal.SIGTERM)
+    liveness._DRAIN.clear()
+    try:
+        flag = _install_signal_handlers()
+        assert liveness.drain_requested() is False
+        handler = _signal.getsignal(_signal.SIGTERM)
+        assert callable(handler)
+        handler(_signal.SIGTERM, None)
+        assert flag["stop"] is True
+        assert liveness.drain_requested() is True
+    finally:
+        _signal.signal(_signal.SIGINT, old_int)
+        _signal.signal(_signal.SIGTERM, old_term)
+        liveness._DRAIN.clear()
 
 
 # ── cost accumulation (Part 2 — meter OpenRouter spend) ────────────────

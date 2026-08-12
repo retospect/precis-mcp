@@ -259,6 +259,7 @@ class ToolChatClient:
         transport: HttpTransport | None = None,
         stream: bool = False,
         idle_timeout: float = 120.0,
+        abort_check: Callable[[], bool] | None = None,
     ) -> None:
         self._url = url.rstrip("/") + "/chat/completions"
         self._api_key = api_key
@@ -288,6 +289,14 @@ class ToolChatClient:
         #: :func:`~precis.utils.llm.router.openrouter_routing`). ``None`` ⇒
         #: no-op, today's behaviour.
         self._extra_body = extra_body
+        #: Polled between SSE events on the streaming path (injected, so this
+        #: module stays precis-agnostic — the worker passes
+        #: ``precis.liveness.drain_requested``). When it flips True the turn
+        #: aborts with a :class:`StreamTimeout` carrying the partials, riding
+        #: the exact salvage path an idle-timeout abort already takes
+        #: (partial kept → ``paused`` → retry by the next worker generation).
+        #: ``None`` (the default) = never aborts, today's behaviour.
+        self._abort_check = abort_check
         self._transport: HttpTransport = transport or _UrllibTransport()
 
     def chat(
@@ -379,6 +388,10 @@ class ToolChatClient:
             for event in sse(
                 self._url, payload, headers=headers, idle_timeout=self._idle_timeout
             ):
+                if self._abort_check is not None and self._abort_check():
+                    raise _abort(
+                        "worker draining: stream aborted between chunks (partial kept)"
+                    )
                 usage = event.get("usage") or {}
                 if isinstance(usage.get("total_tokens"), int):
                     total = usage["total_tokens"]
@@ -516,6 +529,7 @@ def run_tool_loop(
     max_turns: int = 20,
     max_total_tokens: int | None = None,
     seed_messages: list[dict[str, Any]] | None = None,
+    abort_check: Callable[[], bool] | None = None,
 ) -> AgentLoopResult:
     """Drive ``client`` through a tool-calling conversation until it answers.
 
@@ -527,6 +541,12 @@ def run_tool_loop(
 
     ``execute`` and ``tools`` are injected — the engine never imports precis,
     so it is unit-testable with a scripted client + a dict-backed executor.
+
+    ``abort_check`` (injected, same seam as :class:`ToolChatClient`'s) is
+    polled before each turn: a draining worker stops starting new turns and
+    returns the text so far as a ``paused`` unavailability (``stop_reason=
+    'error'``) — the job retries under the next worker generation instead of
+    holding this one past its stop timeout.
     """
     messages: list[dict[str, Any]] = list(seed_messages or [])
     if system_prompt:
@@ -547,6 +567,17 @@ def run_tool_loop(
             total_cost = (total_cost or 0.0) + turn_cost
 
     for turn_no in range(1, max_turns + 1):
+        if abort_check is not None and abort_check():
+            return AgentLoopResult(
+                final_text=last_text,
+                turns_used=turn_no - 1,
+                tool_calls_made=calls_made,
+                total_tokens=total_tokens,
+                stop_reason="error",
+                error="worker draining: agent loop aborted before next turn",
+                paused=True,
+                cost_usd=total_cost,
+            )
         try:
             turn = client.chat(messages, tools=tools_param)
         except (RuntimeError, OSError) as exc:

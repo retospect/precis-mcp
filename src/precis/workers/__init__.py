@@ -184,7 +184,29 @@ Notable pass mechanics
   Age-floored (``PRECIS_CLAIM_REAPER_MIN_AGE_S``) so a just-booted
   worker's claims survive the pre-first-heartbeat window; every action
   re-verifies non-liveness inside its own transaction. Design:
-  ``docs/backlog/self-healing-spine.md`` Layer 1.
+  ``docs/backlog/self-healing-spine.md`` Layer 1. Its flip side is the
+  graceful drain: the worker's SIGTERM handler flips
+  :func:`precis.liveness.request_drain`, which the streamed LLM client
+  polls between SSE chunks and the OSS agent loop polls between turns —
+  an in-flight call aborts with its partial salvaged (the
+  ``StreamTimeout``/``paused`` retry path) instead of holding the unit
+  into the stop-timeout SIGKILL that minted the orphans in the first
+  place.
+* ``conditions`` (:mod:`.conditions`, evaluated on ``health_digest``'s
+  hourly lane) is the condition registry (spine Layer 2): declarative
+  probe rows — pass-dead-on-host (a handler silent past budget on a
+  live host: every registered pass logs a ``worker_logs`` row every
+  cycle, so silence is death, not quiet), rescue-pass-cadence,
+  pass-wedged (fresh heartbeat, stale ``meta.activity.since``),
+  llm-degraded, dead-generation-claims — whose findings ride the
+  digest's alert-sync/router unchanged. Its heal arm is
+  :mod:`.bounded_heal` (the unpark shape as a shared primitive:
+  attempts + exponential cooldown + cap + terminal latch + one
+  cap-escalation gripe, state in ``app_settings`` with a CAS bump so
+  concurrent evaluators can't double-fire); the one whitelisted action
+  is **restart-once** (``cap=1``) — ssh + a sudoers grant scoped to
+  exactly one worker-bounce command per platform (provisioned by
+  ``redeploy-precis.yml``), dark until ``PRECIS_RESTART_ONCE_ENABLED=1``.
 * ``corpus_reconcile`` (per-host ``pdf_locations`` presence ledger),
   ``paper_reconcile`` (standing dedup + hygiene heals), ``openalex_enrich``
   (abstract fill + card rebuild), and ``paper_meta_enrich`` (Crossref/

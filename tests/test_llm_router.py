@@ -794,6 +794,7 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
             extra_body: dict[str, object] | None = None,
             stream: bool = False,
             idle_timeout: float = 120.0,
+            abort_check: object = None,
         ) -> None:
             seen["url"] = url
             seen["api_key"] = api_key
@@ -851,6 +852,7 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
             extra_body: dict[str, object] | None = None,
             stream: bool = False,
             idle_timeout: float = 120.0,
+            abort_check: object = None,
         ) -> None:
             seen["temperature"] = temperature
             seen["extra_body"] = extra_body

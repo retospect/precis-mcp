@@ -1844,6 +1844,22 @@ def run_health_digest_pass(
     ok=<checks ok>, failed=<checks stale>)``.
     """
     checks = _evaluate_checks(store, specs=specs)
+
+    # Condition registry (self-healing-spine Layer 2, slice 3) — declarative
+    # probes evaluated on this hourly lane; their findings ride the same
+    # alert-sync / router / push machinery as every other check (group
+    # `condition`, source `watchdog:condition`). Lazy import: conditions.py
+    # imports CheckResult from this module. Best-effort like every sibling
+    # stage — a broken registry must not take the digest down with it.
+    cond_findings: list[Any] = []
+    try:
+        from precis.workers.conditions import run_condition_checks
+
+        cond_checks, cond_findings = run_condition_checks(store)
+        checks = checks + cond_checks
+    except Exception:
+        log.exception("health_digest: condition registry raised")
+
     stale_n = sum(1 for c in checks if c.status == "stale")
     ok_n = sum(1 for c in checks if c.status == "ok")
 
@@ -1852,6 +1868,16 @@ def run_health_digest_pass(
         _raised, _resolved, degraded = _sync_alerts(store, checks)
     except Exception:
         log.exception("health_digest: alert sync raised")
+
+    # The bounded heal arm (restart-once et al) — dark until
+    # PRECIS_RESTART_ONCE_ENABLED=1; runs AFTER the alert sync so the
+    # finding is on record before anything is bounced.
+    try:
+        from precis.workers.conditions import run_condition_heals
+
+        run_condition_heals(store, cond_findings)
+    except Exception:
+        log.exception("health_digest: condition heal arm raised")
 
     routed: frozenset[tuple[str, str]] = frozenset()
     try:

@@ -2976,6 +2976,7 @@ def run_oss_tool_loop(
     NOTE in :func:`_dispatch_local` — the key llama.cpp/llama-swap itself
     honors for this is unconfirmed).
     """
+    from precis.liveness import drain_requested
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
     from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
 
@@ -3003,6 +3004,10 @@ def run_oss_tool_loop(
         extra_body=extra_body,
         stream=stream,
         idle_timeout=_stream_idle_timeout_s(),
+        # Graceful drain (spine Layer 1, slice 2): a SIGTERM'd worker aborts
+        # the in-flight stream between SSE chunks — partial salvaged via the
+        # StreamTimeout path, job retries under the next generation.
+        abort_check=drain_requested,
     )
     return run_tool_loop(
         client,
@@ -3011,6 +3016,7 @@ def run_oss_tool_loop(
         execute=runtime_executor(),
         system_prompt=_read_system_prompt(system_prompt),
         max_turns=max_turns,
+        abort_check=drain_requested,
     )
 
 

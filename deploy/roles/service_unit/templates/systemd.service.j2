@@ -37,6 +37,9 @@ ExecStart={{ service_unit_exec }}
 {% if service_unit_timeout_start_sec %}
 TimeoutStartSec={{ service_unit_timeout_start_sec }}
 {% endif %}
+{% if service_unit_timeout_stop_sec %}
+TimeoutStopSec={{ service_unit_timeout_stop_sec }}
+{% endif %}
 
 Restart=always
 RestartSec={{ service_unit_throttle_seconds }}

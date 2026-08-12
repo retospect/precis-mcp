@@ -4,12 +4,19 @@
 # never re-read the plist nor verified the daemon came up — gripe
 # #48490). A pid appears immediately on launch even while bge-m3 is
 # still warming; readiness is gated separately in redeploy-precis.yml.
+# ONE-restart deploy (spine slice 2): under redeploy-precis.yml the step-2
+# bounce play restarts the embedder itself (first, with the /healthz gate),
+# so this install-notify handler skips there — see the precis_worker
+# handlers for the full `precis_deploy_changed` tri-state rationale.
 - name: reload precis embedder (macos)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
   vars:
     reload_unit: com.precis.embedder
     reload_persistent: true
-  when: os_family == "darwin"
+  when: >-
+    os_family == "darwin"
+    and (precis_deploy_changed is not defined
+         or not (precis_deploy_changed | bool))
 
 - name: reload precis embedder (linux)
   ansible.builtin.systemd:
@@ -17,4 +24,7 @@
     daemon_reload: true
     state: restarted
   become: true
-  when: os_family == "linux"
+  when: >-
+    os_family == "linux"
+    and (precis_deploy_changed is not defined
+         or not (precis_deploy_changed | bool))

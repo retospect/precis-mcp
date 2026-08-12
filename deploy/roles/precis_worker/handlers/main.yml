@@ -15,7 +15,21 @@
     reload_persistent: true
   # OS-guarded: the code-install task notifies BOTH handlers (it has no
   # os_family guard), so each must skip on the other family.
-  when: os_family == "darwin"
+  #
+  # ONE-restart deploy (spine slice 2): under redeploy-precis.yml the
+  # step-2 bounce play is the single authoritative restart, so this
+  # install-notify handler must not ALSO bounce (each deploy restarted
+  # every worker twice — the orphaned-claim multiplier). Same idiom as
+  # 43-precis-worker-compute.yml: `precis_deploy_changed` is set_fact'd
+  # only by redeploy's pre-flight, so `is not defined` == a standalone
+  # run (site.yml / direct playbook / the serving hosts step 2 skips) —
+  # bounce as before. Defined-and-false == redeploy decided nothing
+  # moved; a notify then can only be a unit/env render change step 2
+  # won't cover — bounce. Defined-and-true == step 2 will bounce — skip.
+  when: >-
+    os_family == "darwin"
+    and (precis_deploy_changed is not defined
+         or not (precis_deploy_changed | bool))
 
 - name: reload precis worker (linux)
   ansible.builtin.systemd:
@@ -23,4 +37,7 @@
     daemon_reload: true
     state: restarted
   become: true
-  when: os_family == "linux"
+  when: >-
+    os_family == "linux"
+    and (precis_deploy_changed is not defined
+         or not (precis_deploy_changed | bool))

@@ -187,6 +187,10 @@
         # meant the burst window always reset before it could ever trip).
         service_unit_start_limit_interval_sec: 600
         service_unit_start_limit_burst: 8
+        # 60s drain before SIGKILL (spine slice 2) — the lane's ssh_node
+        # jobs are detached and survive a worker bounce; this just gives
+        # the claim/batch loop time to exit cleanly on SIGTERM.
+        service_unit_timeout_stop_sec: 60
         # --only job_ssh_node: this lane runs exactly one pass, the submit/poll
         # executor. --batch-size 1: one NEW claim per tick (the gpu slot
         # capacity=1 caps concurrent compute regardless); the step-0 poll of

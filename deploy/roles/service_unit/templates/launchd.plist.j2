@@ -56,6 +56,13 @@
   </dict>
 {% endif %}
 
+{% if service_unit_timeout_stop_sec %}
+  {# Drain window: launchd waits this long after SIGTERM before SIGKILL
+     (default 20s). Sized to the worker's graceful drain — spine slice 2. #}
+  <key>ExitTimeOut</key>
+  <integer>{{ service_unit_timeout_stop_sec }}</integer>
+{% endif %}
+
 {% if service_unit_process_type %}
   {# Jetsam band — cull this daemon last under RAM pressure (and disable
      App-Nap). Cheap; harmless on unpressured hosts. #}
