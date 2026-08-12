@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -157,7 +158,7 @@ class TestPrecisAddFresh:
     def test_unsupported_input_type_raises(self, store):
         # Pass a raw string — not one of the tagged-union variants.
         with pytest.raises(TypeError):
-            precis_add("not-a-tagged-union", store=store)  # type: ignore[arg-type]
+            precis_add(cast(Any, "not-a-tagged-union"), store=store)
 
 
 # ---------------------------------------------------------------------------

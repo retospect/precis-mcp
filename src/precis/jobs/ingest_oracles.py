@@ -167,7 +167,7 @@ def _validate_doc(yaml_path: Path, doc: Any) -> dict[str, Any]:
 def ingest_paper(
     yaml_path: Path,
     *,
-    store: Store,
+    store: Store | None,
     embedder: Embedder | None,
     overwrite: bool = False,
     dry_run: bool = False,
@@ -219,6 +219,8 @@ def ingest_paper(
         stats["chunks"] = len(entries)
         return stats
 
+    # Past the dry-run guard the DB is always live (only dry-run passes None).
+    assert store is not None
     existing = store.get_ref(kind="oracle", id=slug)
     if existing is not None and not overwrite:
         stats["skipped"] = 1
@@ -331,7 +333,7 @@ def ingest_paper(
 def ingest_directory(
     src_dir: Path,
     *,
-    store: Store,
+    store: Store | None,
     embedder: Embedder | None,
     overwrite: bool = False,
     dry_run: bool = False,

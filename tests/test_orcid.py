@@ -12,7 +12,7 @@ Split into:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -21,6 +21,7 @@ from precis.handlers import orcid as orcid_handler
 from precis.handlers.orcid import enqueue_authored_works
 from precis.handlers.semanticscholar import _format_author
 from precis.ingest import orcid as orcid_api
+from precis.store import Store
 
 # A real, checksum-valid ORCID iD (Stephen Hawking's public iD).
 _VALID_ID = "0000-0002-1825-0097"
@@ -233,7 +234,7 @@ def test_enqueue_links_held_unconditionally_counts_missing() -> None:
         {"arxiv": "2401.00002", "title": "Preprint", "year": 2024},
         {"title": "No identifier", "year": 2019},
     ]
-    summary = enqueue_authored_works(store, 1, works)  # type: ignore[arg-type]
+    summary = enqueue_authored_works(cast(Store, store), 1, works)
     assert summary["linked"] == 1
     assert summary["stubbed"] == 0  # gated off by default
     assert summary["missing_with_id"] == 2
@@ -247,7 +248,7 @@ def test_enqueue_links_held_unconditionally_counts_missing() -> None:
 def test_enqueue_mints_up_to_limit() -> None:
     store = _FakeStore()
     works = [{"doi": f"10.9/p{i}", "title": f"P{i}"} for i in range(10)]
-    summary = enqueue_authored_works(store, 1, works, limit=3)  # type: ignore[arg-type]
+    summary = enqueue_authored_works(cast(Store, store), 1, works, limit=3)
     assert summary["stubbed"] == 3
     assert summary["missing_with_id"] == 10
     assert summary["remaining"] == 7
@@ -257,7 +258,7 @@ def test_enqueue_mints_up_to_limit() -> None:
 def test_enqueue_all_mints_every_missing() -> None:
     store = _FakeStore(held={"10.1/held": 7})
     works = [{"doi": "10.1/held"}] + [{"doi": f"10.9/p{i}"} for i in range(4)]
-    summary = enqueue_authored_works(store, 1, works, limit=len(works))  # type: ignore[arg-type]
+    summary = enqueue_authored_works(cast(Store, store), 1, works, limit=len(works))
     assert summary["linked"] == 1
     assert summary["stubbed"] == 4
     assert summary["remaining"] == 0

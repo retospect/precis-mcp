@@ -277,6 +277,8 @@ class TestWritePres:
 
     def test_requires_slug_and_title(self):
         with pytest.raises(ValueError, match="slug"):
+            # write_pres validates slug/title before touching `conn`, so
+            # None is sound here even though the param isn't Optional.
             write_pres(_sample_pres(slug=""), conn=None)  # type: ignore[arg-type]
 
 

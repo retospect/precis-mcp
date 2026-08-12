@@ -17,7 +17,7 @@ import pytest
 
 from precis.workers.executors import coordinator
 from precis.workers.executors._context import DispatchContext
-from precis.workers.executors._yield import Done, WakeWhen, Yield
+from precis.workers.executors._yield import Done, WakeKind, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec, _reset_plugin_cache
 
 
@@ -364,7 +364,7 @@ class TestCoordinatorPersistsReturn:
             monkeypatch,
             lambda ctx, spec: Yield(
                 state={},
-                wake_when=WakeWhen(kind="not_a_real_kind", payload={}),  # type: ignore[arg-type]
+                wake_when=WakeWhen(kind=cast(WakeKind, "not_a_real_kind"), payload={}),
             ),
         )
         assert len(calls["failures"]) == 1

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from precis.errors import BadInput
@@ -114,7 +116,7 @@ class TestRejections:
 
     def test_non_string_input_rejected(self) -> None:
         with pytest.raises(BadInput):
-            parse_accession(None)  # type: ignore[arg-type]
+            parse_accession(cast(str, None))
 
     def test_hint_shows_canonical_form(self) -> None:
         with pytest.raises(BadInput) as exc:

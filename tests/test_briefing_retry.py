@@ -10,6 +10,7 @@ retired ``opus`` alias) so misconfiguration surfaces immediately.
 from __future__ import annotations
 
 import urllib.error
+from email.message import Message
 from typing import cast
 
 import pytest
@@ -44,7 +45,7 @@ def _run(llm: _FlakyLlm, *, attempts: int = 3) -> LlmResult:
 
 
 def _http(code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError("http://proxy/v1", code, "err", {}, None)  # type: ignore[arg-type]
+    return urllib.error.HTTPError("http://proxy/v1", code, "err", Message(), None)
 
 
 def test_retries_transient_then_succeeds() -> None:

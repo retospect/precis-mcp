@@ -14,11 +14,46 @@ offset on ``j`` (the ``to_jimage`` of the structure atomistic IR).
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
 ImageOffset = tuple[int, int, int]
+
+
+def as_pbc3(
+    value: Iterable[object] | None,
+    default: tuple[bool, bool, bool] = (True, True, True),
+) -> tuple[bool, bool, bool]:
+    """Coerce a dynamic (op-dict / JSON / DB-meta) value to a checked 3-axis PBC.
+
+    Callers pull ``pbc`` out of untyped dicts, so the raw value is only known
+    to be *some* iterable — ``tuple(value)`` would give mypy a ``tuple[Any,
+    ...]`` that never satisfies :attr:`Cell.pbc`'s fixed-length type. Explicit
+    unpacking both gives a real ``tuple[bool, bool, bool]`` and raises a clear
+    error if the caller sent the wrong number of axes instead of silently
+    truncating/padding.
+    """
+    if not value:  # None or empty → default (matches ``as_float3``)
+        return default
+    x, y, z = (bool(v) for v in value)
+    return (x, y, z)
+
+
+def as_image3(
+    value: Iterable[Any] | None, default: ImageOffset = (0, 0, 0)
+) -> ImageOffset:
+    """Coerce a dynamic value to a checked 3-axis integer image offset.
+
+    Same rationale as :func:`as_pbc3`, for :attr:`Bond.image` /
+    ``to_jimage``-shaped triples.
+    """
+    if not value:  # None or empty → default (matches ``as_float3``)
+        return default
+    x, y, z = (int(v) for v in value)
+    return (x, y, z)
 
 
 @dataclass(frozen=True)

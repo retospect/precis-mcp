@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 from precis.handlers._provenance_report import render_single
 from precis.ingest.provenance import (
     Notice,
+    RetractionStatus,
+    Severity,
     _classify_rw_nature,
     _merge_crossref_and_rw_notices,
     _rw_row_to_notice,
@@ -117,13 +119,13 @@ class TestRwRowToNotice:
 
 def _crossref_notice(
     notice_doi: str = "10.x/foo-r1",
-    severity: str = "blocker",
-    status: str = "retracted",
+    severity: Severity = "blocker",
+    status: RetractionStatus = "retracted",
 ) -> Notice:
     return Notice(
         update_type="retraction",
-        severity=severity,  # type: ignore[arg-type]
-        status=status,  # type: ignore[arg-type]
+        severity=severity,
+        status=status,
         relation="retracted-by",
         notice_doi=notice_doi,
         notice_date=datetime(2022, 8, 14),

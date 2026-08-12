@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from precis.structure.importers import (
+    Adapter,
     ExternalId,
     ExternalRun,
     get_adapter,
@@ -70,7 +73,8 @@ def test_register_and_get_adapter_round_trip() -> None:
 
 
 def test_get_adapter_unknown_name_raises_with_known_names() -> None:
-    register_adapter("known-source", lambda raw: None)  # type: ignore[arg-type]
+    # never invoked here — only the registration name is exercised.
+    register_adapter("known-source", cast(Adapter, lambda raw: None))
     try:
         with pytest.raises(ValueError, match="known-source"):
             get_adapter("nope")

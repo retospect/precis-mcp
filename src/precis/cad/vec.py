@@ -16,7 +16,9 @@ handler both lower poses through :func:`rotation`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -40,6 +42,24 @@ def as_vec3(v: object) -> Vec3:
     """Coerce a 3-sequence to a float64 vec3 of shape (3,)."""
     arr = np.asarray(v, dtype=np.float64).reshape(3)
     return arr
+
+
+def as_float3(
+    value: Iterable[Any] | None, default: tuple[float, float, float] = (0.0, 0.0, 0.0)
+) -> tuple[float, float, float]:
+    """Coerce a dynamic (DB-row) value to a checked ``(x, y, z)`` float triple.
+
+    Used for :class:`~precis.cad.scene.NodeSpec`'s ``loc``/``rot`` fields,
+    which — unlike :data:`Vec3` — are plain fixed-length tuples. ``tuple(x
+    for ...)`` would give mypy a ``tuple[float, ...]`` that never satisfies
+    the fixed-length field type; explicit unpacking gives a real
+    ``tuple[float, float, float]`` and raises if the row has the wrong
+    number of axes instead of silently truncating/padding.
+    """
+    if not value:
+        return default
+    x, y, z = (float(v) for v in value)
+    return (x, y, z)
 
 
 def deg2rad(deg: float) -> float:

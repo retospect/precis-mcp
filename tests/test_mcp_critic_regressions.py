@@ -9,7 +9,7 @@ matching changelog entry.
 from __future__ import annotations
 
 from datetime import UTC
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -937,7 +937,7 @@ def _runtime_with_root(
     # PrecisRuntime is a dataclass with ``config`` + ``hub`` fields; any
     # object with a ``kinds`` attribute satisfies the call sites in
     # ``_build_instructions``.
-    return PrecisRuntime(config=config, hub=hub)  # type: ignore[arg-type]
+    return PrecisRuntime(config=config, hub=cast(Hub, hub))
 
 
 def test_build_instructions_returns_static_core_when_root_unset() -> None:

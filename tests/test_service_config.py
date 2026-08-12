@@ -234,7 +234,7 @@ def test_run_loop_no_gate_runs_everything() -> None:
 
     run_loop(
         handlers=[],
-        store=None,  # type: ignore[arg-type]
+        store=None,  # type: ignore[arg-type]  # ref-only loop never touches store
         once=True,
         ref_passes=[_alpha_pass, _beta_pass],
     )
@@ -259,7 +259,7 @@ def test_run_loop_stamps_activity_around_each_ref_pass(monkeypatch) -> None:
 
     run_loop(
         handlers=[],
-        store=None,  # type: ignore[arg-type]
+        store=None,  # type: ignore[arg-type]  # ref-only loop never touches store
         once=True,
         ref_passes=[_alpha_pass],
     )
@@ -282,7 +282,7 @@ def test_run_loop_clears_activity_even_when_a_pass_raises(monkeypatch) -> None:
 
     run_loop(
         handlers=[],
-        store=None,  # type: ignore[arg-type]
+        store=None,  # type: ignore[arg-type]  # ref-only loop never touches store
         once=True,
         ref_passes=[_boom_pass],
     )

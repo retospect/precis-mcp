@@ -3,7 +3,7 @@ JSON + derived markdown ``text``, inert ``meta.regen``. No execution."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -284,7 +284,7 @@ def test_parse_cell_address_out_of_range_and_malformed() -> None:
     with pytest.raises(BadInput, match="must have both"):
         parse_cell_address({"row": 1}, n_rows=2, n_cols=2)
     with pytest.raises(BadInput, match="A1 string or"):
-        parse_cell_address(1.5, n_rows=2, n_cols=2)  # type: ignore[arg-type]
+        parse_cell_address(cast(Any, 1.5), n_rows=2, n_cols=2)
 
 
 def test_set_cell_header_and_data_cell() -> None:

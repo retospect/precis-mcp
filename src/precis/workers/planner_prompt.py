@@ -157,6 +157,10 @@ def _load_skill_verbatim(skill_id: str, store: Store | None = None) -> str:
     try:
         from precis.handlers.skill import SkillHandler
 
+        # SkillHandler.__init__ is typed ``hub: Hub`` (no Optional) but
+        # discards the value (``_ = hub``) — hub is only planted post-init
+        # via ``_register_with``, which we deliberately skip for this
+        # lightweight standalone load. None is sound at runtime.
         handler = SkillHandler(hub=None)  # type: ignore[arg-type]
         resp = handler.get(id=skill_id)
         return resp.body
@@ -1510,6 +1514,9 @@ def _render_section_style(store: Store, ref_id: int) -> str:
     try:
         from precis.handlers.skill import SkillHandler
 
+        # See _load_skill_verbatim: hub is unused by SkillHandler.__init__
+        # (only planted post-init by _register_with), so None is sound here
+        # despite the non-Optional ``hub: Hub`` annotation.
         body = SkillHandler(hub=None).get(id=style).body  # type: ignore[arg-type]
     except Exception:
         return (
@@ -2068,6 +2075,9 @@ def _load_review_persona(lens: str | None, author: bool) -> str:
     try:
         from precis.handlers.skill import SkillHandler
 
+        # See _load_skill_verbatim: hub is unused by SkillHandler.__init__
+        # (only planted post-init by _register_with), so None is sound here
+        # despite the non-Optional ``hub: Hub`` annotation.
         return SkillHandler(hub=None).get(id=skill_id).body  # type: ignore[arg-type]
     except Exception:
         log.exception("planner_prompt: failed to load %s persona", skill_id)

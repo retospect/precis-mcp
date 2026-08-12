@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from precis.errors import BadInput
@@ -98,7 +100,7 @@ class TestRejections:
 
     def test_non_string_input_rejected(self) -> None:
         with pytest.raises(BadInput):
-            parse_docdb_id(None)  # type: ignore[arg-type]
+            parse_docdb_id(cast(str, None))
 
 
 class TestDataclass:

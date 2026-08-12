@@ -81,6 +81,8 @@ def test_workspace_from_meta_tolerates_non_dict_meta() -> None:
     # on ``str.get`` — one bad ref was 500-ing the whole /tasks dashboard.
     assert Workspace.from_meta(None) is None
     assert Workspace.from_meta({}) is None
+    # deliberately outside the declared dict | None to exercise the
+    # isinstance(meta, dict) runtime guard against a malformed ref.
     assert Workspace.from_meta("just a string") is None  # type: ignore[arg-type]
     assert Workspace.from_meta(["a", "list"]) is None  # type: ignore[arg-type]
     # A non-dict ``workspace`` value inside a valid dict is still None.

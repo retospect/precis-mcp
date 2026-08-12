@@ -359,6 +359,9 @@ def test_run_loop_pass_gate_distinguishes_same_named_axis_closures() -> None:
 
     run_loop(
         handlers=[],
+        # handlers=[] means run_loop never dereferences store (only
+        # run_handler_once, over `handlers`, would); ref_passes below
+        # take only batch_size.
         store=None,  # type: ignore[arg-type]
         once=True,
         ref_passes=[_axis_pass, _axis_pass2],

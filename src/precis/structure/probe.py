@@ -321,8 +321,13 @@ def path(scene: Scene, a: str, b: str) -> list[str] | None:
         cur = queue.pop(0)
         if cur == b:
             chain = [cur]
-            while prev[chain[-1]] is not None:
-                chain.append(prev[chain[-1]])  # type: ignore[arg-type]
+            while True:
+                # indexed lookup, not the loop var, so mypy can't narrow the
+                # `while` guard's None-check into the body — capture once.
+                nxt = prev[chain[-1]]
+                if nxt is None:
+                    break
+                chain.append(nxt)
             return list(reversed(chain))
         for nxt in adj[cur]:
             if nxt not in prev:
@@ -391,8 +396,11 @@ def rings(scene: Scene, max_size: int = 8) -> list[list[str]]:
         if not hit:
             continue
         chain = [j]
-        while prev.get(chain[-1]) is not None:
-            chain.append(prev[chain[-1]])  # type: ignore[arg-type]
+        while True:
+            parent = prev.get(chain[-1])
+            if parent is None:
+                break
+            chain.append(parent)
         ring = list(reversed(chain))
         if len(ring) <= max_size:
             found.setdefault(frozenset(ring), ring)

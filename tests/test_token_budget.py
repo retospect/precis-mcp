@@ -214,8 +214,11 @@ def _instructions_for_clean_runtime() -> str:
     must respect; per-deployment additions go on top but never
     materially.
     """
+    from typing import cast
+
     from precis import server
     from precis.config import PrecisConfig
+    from precis.dispatch import Hub
     from precis.runtime import PrecisRuntime
 
     class _FakeHub:
@@ -223,7 +226,7 @@ def _instructions_for_clean_runtime() -> str:
         loadabilities: dict = {}
 
     return server._build_instructions(
-        PrecisRuntime(config=PrecisConfig(), hub=_FakeHub())  # type: ignore[arg-type]
+        PrecisRuntime(config=PrecisConfig(), hub=cast(Hub, _FakeHub()))
     )
 
 
@@ -260,8 +263,11 @@ def test_instructions_under_relaxed_budget_with_features() -> None:
     cold-start banner well under any sane MCP client's context
     budget.
     """
+    from typing import cast
+
     from precis import server
     from precis.config import PrecisConfig
+    from precis.dispatch import Hub
     from precis.kind_gate import Loadability
     from precis.runtime import PrecisRuntime
 
@@ -277,7 +283,7 @@ def test_instructions_under_relaxed_budget_with_features() -> None:
         startup_skills_cap_kb=50,
         kinds_disabled="patent",
     )
-    rt = PrecisRuntime(config=config, hub=_FakeHub())  # type: ignore[arg-type]
+    rt = PrecisRuntime(config=config, hub=cast(Hub, _FakeHub()))
     text = server._build_instructions(rt)
     size = len(text.encode("utf-8"))
     assert size < 4 * 1024, (

@@ -155,9 +155,8 @@ def _parse_id(raw: str) -> _ParsedId:
     # Split off the trailing `~SELECTOR` if present. We keep splitting
     # before `::` and `/` because those separators only matter on the
     # alias-side base.
-    base, sep, selector = raw.partition("~")
-    if not sep:
-        selector = None  # type: ignore[assignment]
+    base, sep, raw_selector = raw.partition("~")
+    selector: str | None = raw_selector if sep else None
 
     # Symbol address: `<alias>::<qualname>`. Selectors not allowed here
     # in v1 — symbols already have a fully-qualified handle.
@@ -869,6 +868,11 @@ class PythonHandler(Handler):
             )
             region_label = f"{parsed.alias}/{parsed.file or mod.file}~{sel_token}"
 
+        # where/match arrive as plain str from the wire (agent-supplied
+        # kwargs); EditOp fields are the narrower InsertWhere/MatchPolicy
+        # Literals. EditOp.__post_init__ validates both against the exact
+        # same literal sets and raises BadInput on a bad value, so this is
+        # sound at runtime even though it's untyped here.
         op = EditOp(
             op="edit" if op_kind == "edit" else "insert",
             find=find,

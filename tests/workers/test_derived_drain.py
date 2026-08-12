@@ -11,10 +11,11 @@ wiring (job_inproc + renew_own_lease) by ``test_job_inproc_executor.py``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from precis.workers.executors._context import DispatchContext
 from precis.workers.job_types import derived_drain as dd
 
 
@@ -70,7 +71,7 @@ def _summary(ctx: _FakeCtx) -> str | None:
 
 def test_unknown_pass_records_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _FakeCtx({"pass": "nope"})
-    dd._dispatch(ctx, dd.SPEC)  # type: ignore[arg-type]
+    dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
     assert ctx.failures and "unknown/absent" in ctx.failures[0][0]
     assert ctx.failures[0][1] == "infra"
     assert _summary(ctx) is None
@@ -79,7 +80,7 @@ def test_unknown_pass_records_failure(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_nonpositive_limit_records_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     _script_runner(monkeypatch, "classify", [{"claimed": 0}])
     ctx = _FakeCtx({"pass": "classify", "limit": 0})
-    dd._dispatch(ctx, dd.SPEC)  # type: ignore[arg-type]
+    dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
     assert ctx.failures and "must be positive" in ctx.failures[0][0]
 
 
@@ -94,7 +95,7 @@ def test_drains_until_queue_empty(monkeypatch: pytest.MonkeyPatch) -> None:
         ],
     )
     ctx = _FakeCtx({"pass": "classify", "limit": 500, "concurrency": 6})
-    dd._dispatch(ctx, dd.SPEC)  # type: ignore[arg-type]
+    dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
 
     assert not ctx.failures
     # 3 calls: two productive + the empty one that breaks the loop.
@@ -115,7 +116,7 @@ def test_respects_limit_with_decreasing_final_batch(
         [{"claimed": 16, "ok": 16}, {"claimed": 4, "ok": 4}],
     )
     ctx = _FakeCtx({"pass": "classify", "limit": 20})
-    dd._dispatch(ctx, dd.SPEC)  # type: ignore[arg-type]
+    dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
 
     assert [c["batch_size"] for c in calls] == [16, 4]
     summary = _summary(ctx)
@@ -128,7 +129,7 @@ def test_lease_loss_stops_without_terminal_summary(
     _script_runner(monkeypatch, "classify", [{"claimed": 16, "ok": 16}])
     monkeypatch.setattr(dd, "renew_own_lease", lambda *_a: False)  # lease lost
     ctx = _FakeCtx({"pass": "classify", "limit": 500})
-    dd._dispatch(ctx, dd.SPEC)  # type: ignore[arg-type]
+    dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
 
     # No terminal job_summary — the new owner drives it; a job_event explains.
     assert _summary(ctx) is None
@@ -145,7 +146,7 @@ def test_no_progress_breaker_bails_early(monkeypatch: pytest.MonkeyPatch) -> Non
         [{"claimed": 16, "ok": 0, "failed": 16}],  # repeats (last-value)
     )
     ctx = _FakeCtx({"pass": "llm_summarize", "limit": 5000})
-    dd._dispatch(ctx, dd.SPEC)  # type: ignore[arg-type]
+    dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
 
     assert len(calls) == dd._MAX_NO_PROGRESS
     assert any(k == "job_event" and "no progress" in t for k, t in ctx.chunks)

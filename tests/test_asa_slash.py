@@ -74,6 +74,9 @@ class _FakeSendTarget:
 
 
 def _make_ctx(positional: list[str], sink: list[str]) -> SlashContext:
+    # message/precis/config are unused placeholders here: cmd_model only
+    # touches positional/runtime/send (and config, but only on the
+    # empty-positional branch, which these tests don't exercise).
     return SlashContext(
         message=object(),  # type: ignore[arg-type]
         positional=positional,

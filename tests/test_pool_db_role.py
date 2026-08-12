@@ -14,7 +14,10 @@ subprocess today — so its mere presence must NOT turn isolation on.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
+from psycopg import Connection
 
 from precis.store import pool as poolmod
 
@@ -54,7 +57,7 @@ def test_set_role_issues_safely_quoted_statement(store, monkeypatch) -> None:
         def execute(self, query, *a, **k):
             captured.append(query)
 
-    poolmod._apply_db_role(_Capture())  # type: ignore[arg-type]
+    poolmod._apply_db_role(cast(Connection, _Capture()))
     assert len(captured) == 1
     with store.pool.connection() as conn:
         rendered = captured[0].as_string(conn)  # type: ignore[attr-defined]
@@ -82,10 +85,10 @@ def test_invalid_role_name_rejected(monkeypatch, bad) -> None:
 
     if bad == "":
         # empty is a clean no-op (nothing to assume), not an error.
-        poolmod._apply_db_role(_NoExec())  # type: ignore[arg-type]
+        poolmod._apply_db_role(cast(Connection, _NoExec()))
     else:
         with pytest.raises(ValueError):
-            poolmod._apply_db_role(_NoExec())  # type: ignore[arg-type]
+            poolmod._apply_db_role(cast(Connection, _NoExec()))
 
 
 def test_enforce_flag_parsing(monkeypatch) -> None:

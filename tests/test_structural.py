@@ -7,6 +7,8 @@ the model's output.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -369,11 +371,11 @@ def test_pass_writes_empty_digest_with_placeholder_title(
 # ── empty-result assertion (OPEN-ITEMS §🔇) ──────────────────────
 
 
-def _stub_agent(monkeypatch: pytest.MonkeyPatch, **fields: object) -> None:
+def _stub_agent(monkeypatch: pytest.MonkeyPatch, **fields: Any) -> None:
     """Patch the dispatch transport to return one stubbed AgentResult."""
 
     def _call(*a: object, **kw: object) -> AgentResult:
-        return AgentResult(**fields)  # type: ignore[arg-type]
+        return AgentResult(**fields)
 
     monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _call)
 

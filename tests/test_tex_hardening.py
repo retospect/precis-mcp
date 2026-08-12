@@ -120,6 +120,8 @@ def test_compile_guard_injects_trusted_rc(monkeypatch, tmp_path: Path) -> None:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(cg.subprocess, "run", fake_run)
+    # `store` is only ever forwarded to `_load_workspace`/`_has_live_child_todos`,
+    # both monkeypatched above, so None never actually hits real store code.
     cg.check_workspace_compiles(None, 1, ["STATUS:done"], precis_root=tmp_path)  # type: ignore[arg-type]
     cmd = captured["cmd"]
     assert isinstance(cmd, list)

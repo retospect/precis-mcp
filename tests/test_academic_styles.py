@@ -25,6 +25,9 @@ _SCI_STYLES = [
 @pytest.mark.parametrize("slug", _SCI_STYLES)
 def test_sci_style_skill_loads(slug: str) -> None:
     """Each sci-* style is addressable by its slug and has a real body."""
+    # SkillHandler.__init__ never touches `hub` (see its docstring); None
+    # is genuinely sound here, matching the same pattern in
+    # planner_prompt.py's SkillHandler(hub=None) call sites.
     body = SkillHandler(hub=None).get(id=slug).body  # type: ignore[arg-type]
     assert len(body) > 150
     assert "section style" in body.lower() or "you are writing" in body.lower()

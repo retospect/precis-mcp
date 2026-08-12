@@ -7,6 +7,8 @@ so a model swap re-embeds the corpus.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.store import Store
@@ -231,10 +233,10 @@ def test_per_tag_write_failure_counts_failed(
 
     orig_write = Store.write_tag_embedding
 
-    def fake_write(self: Store, **kw: object) -> None:
+    def fake_write(self: Store, **kw: Any) -> None:
         if kw.get("value") == "topic:break":
             raise RuntimeError("simulated failure")
-        return orig_write(self, **kw)  # type: ignore[arg-type]
+        return orig_write(self, **kw)
 
     monkeypatch.setattr(Store, "write_tag_embedding", fake_write)
     result = run_tag_embeddings_pass(store, make_mock_bge_m3(), batch_size=10)

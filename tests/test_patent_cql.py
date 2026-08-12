@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from precis.errors import BadInput
@@ -206,7 +208,7 @@ class TestValidateStrictCQL:
 
     def test_non_string_rejected(self) -> None:
         with pytest.raises(BadInput, match="must be a string"):
-            validate_strict_cql(None)  # type: ignore[arg-type]
+            validate_strict_cql(cast(str, None))
 
     def test_recovery_hint_present(self) -> None:
         # Bare keyword case must point at explicit-field examples.

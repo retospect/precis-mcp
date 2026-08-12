@@ -22,6 +22,7 @@ from __future__ import annotations
 import subprocess
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -52,8 +53,8 @@ def _cfg(tmp_path: Path, repo_root: Path, autonomy: Autonomy) -> FixerConfig:
     )
 
 
-def _item(**kwargs: object) -> WorkItem:
-    base: dict[str, object] = dict(
+def _item(**kwargs: Any) -> WorkItem:
+    base: dict[str, Any] = dict(
         kind="proposal",
         slug="do-the-thing",
         title="Do the thing",
@@ -61,7 +62,7 @@ def _item(**kwargs: object) -> WorkItem:
         spec_text="x",
     )
     base.update(kwargs)
-    return WorkItem(**base)  # type: ignore[arg-type]
+    return WorkItem(**base)
 
 
 # ── model resolution ────────────────────────────────────────────────

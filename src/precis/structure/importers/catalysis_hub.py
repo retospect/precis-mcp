@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..cell import Cell
+from ..cell import Cell, as_pbc3
 from ..scene import FIX_ALL, Atom, Scene
 from . import ExternalId, ExternalRun, register_adapter
 
@@ -106,8 +106,7 @@ def _scene_from_input_file(geom: dict[str, Any]) -> Scene:
     ``InputFile(format: "json")`` field returns (ASE's own db-json writer).
     """
     lattice = np.asarray(geom["cell"], dtype=float)
-    pbc = tuple(bool(p) for p in geom.get("pbc", (True, True, True)))
-    cell = Cell(lattice, pbc)  # type: ignore[arg-type]
+    cell = Cell(lattice, as_pbc3(geom.get("pbc")))
 
     fixed_indices: set[int] = set()
     for con in geom.get("constraints") or []:

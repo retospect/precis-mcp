@@ -722,9 +722,11 @@ class PaperHandler(Handler):
                     "pass title= or author=, not both",
                     next="search(kind='paper', author='Vaswani')",
                 )
+            q_byline = title_q or author_q
+            assert q_byline is not None  # exactly one is set (guarded above)
             return BylineSearch(store=self.store).run(
                 field="title" if title_q else "author",
-                q=title_q or author_q,  # type: ignore[arg-type]
+                q=q_byline,
                 page=page,
                 page_size=page_size,
                 kind=kind,

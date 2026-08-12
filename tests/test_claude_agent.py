@@ -15,10 +15,11 @@ import stat
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from precis.store import Store
 from precis.utils.claude_agent import (
     AgentResult,
     ClaudeAgentError,
@@ -688,7 +689,7 @@ def test_log_event_writes_on_success(stub_bin: Path) -> None:
     store = _FakeStore()
     call_claude_agent(
         "do",
-        log_event=(store, 42, "structural-reviewer"),  # type: ignore[arg-type]
+        log_event=(cast(Store, store), 42, "structural-reviewer"),
     )
     assert len(store.events) == 1
     evt = store.events[0]
@@ -710,7 +711,7 @@ def test_log_event_swallows_store_errors(stub_bin: Path) -> None:
     # Should not raise.
     res = call_claude_agent(
         "do",
-        log_event=(_BrokenStore(), 42, "src"),  # type: ignore[arg-type]
+        log_event=(cast(Store, _BrokenStore()), 42, "src"),
     )
     assert res.final_text.strip() == "done"
 

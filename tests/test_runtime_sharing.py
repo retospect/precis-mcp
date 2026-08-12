@@ -13,7 +13,10 @@ runtime with the tool path via ``core.set_runtime``.
 
 from __future__ import annotations
 
+from typing import cast
+
 import precis.tools.core as core
+from precis.runtime import PrecisRuntime
 
 
 def test_set_runtime_is_reused_without_rebuilding(monkeypatch):
@@ -24,7 +27,8 @@ def test_set_runtime_is_reused_without_rebuilding(monkeypatch):
 
     monkeypatch.setattr(core, "_runtime", None)
     monkeypatch.setattr("precis.runtime.build_runtime", _boom)
-    core.set_runtime(sentinel)  # type: ignore[arg-type]  # plain sentinel; only identity matters here
+    # plain sentinel; only identity matters here
+    core.set_runtime(cast(PrecisRuntime, sentinel))
     assert core._get_runtime() is sentinel
 
 

@@ -232,8 +232,13 @@ class ConnectivityResult:
                 prev[nxt] = cur
                 if nxt == b:
                     chain = [b]
-                    while prev[chain[-1]] is not None:
-                        chain.append(prev[chain[-1]])  # type: ignore[arg-type]
+                    while True:
+                        # indexed lookup, not the loop var, so mypy can't
+                        # narrow the `while` guard's None-check into the body.
+                        parent = prev[chain[-1]]
+                        if parent is None:
+                            break
+                        chain.append(parent)
                     return list(reversed(chain))
                 q.append(nxt)
         return None

@@ -173,6 +173,8 @@ class TestRunHandlerOnce:
             def model(self) -> str:
                 raise EmbedderUnavailable("all embedder endpoints failed")
 
+        # Deliberately partial: only `model` is implemented (raising), which
+        # is all this test exercises; a full Embedder fake is unnecessary here.
         h = EmbedHandler(_DownEmbedder())  # type: ignore[arg-type]
         # The label must resolve to a static fallback — never raise.
         assert h.name == "embed:<embedder-unavailable>"
@@ -197,6 +199,8 @@ class TestRunHandlerOnce:
             def model(self) -> str:
                 raise EmbedderUnavailable("all embedder endpoints failed")
 
+        # Deliberately partial: only `model` is implemented (raising), which
+        # is all this test exercises; a full Embedder fake is unnecessary here.
         h = EmbedHandler(_FullyDownEmbedder())  # type: ignore[arg-type]
         # Must return, not raise/exit. Before the fix this propagated
         # EmbedderUnavailable out of run_loop.

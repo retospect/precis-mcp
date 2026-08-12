@@ -243,6 +243,9 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
         fields_in["invokes_personas"] = (ip,) if ip else ()
     # else already tuple from the parser
 
+    # fields_in is dict[str, object] (frontmatter is parsed dynamically);
+    # unpacking it into SkillFrontmatter's typed fields can't be checked
+    # statically. Each value is coerced/validated above before landing here.
     return SkillFrontmatter(extra=extra, **fields_in)  # type: ignore[arg-type]
 
 

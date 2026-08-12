@@ -23,6 +23,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from precis.cad.scene import NodeSpec, SceneSpec, coerce_pattern
+from precis.cad.vec import as_float3
 
 
 class CadMixin:
@@ -115,8 +116,8 @@ class CadMixin:
                     op=str(op),
                     config=str(config),
                     component=str(component),
-                    loc=tuple(float(x) for x in (loc or [0, 0, 0])),  # type: ignore[arg-type]
-                    rot=tuple(float(x) for x in (rot or [0, 0, 0])),  # type: ignore[arg-type]
+                    loc=as_float3(loc),
+                    rot=as_float3(rot),
                     pattern=coerce_pattern(pattern),
                 )
             )

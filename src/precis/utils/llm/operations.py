@@ -227,7 +227,7 @@ def resolve_op(source: str | None) -> tuple[Tier, str | None] | None:
     # Runtime DB override — the operator's live control, top priority.
     from precis.utils.llm import live_config
 
-    override = live_config.op_override(source)  # type: ignore[arg-type]
+    override = live_config.op_override(source or "")
     if override:
         ov_tier = override.get("tier")
         if ov_tier:

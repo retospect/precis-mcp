@@ -211,7 +211,10 @@ def _runtime_with_startup_skills(
     value and a fake hub. The hub's ``kinds`` is irrelevant to the
     pinned-skill rendering, so we leave it empty.
     """
+    from typing import cast
+
     from precis.config import PrecisConfig
+    from precis.dispatch import Hub
     from precis.runtime import PrecisRuntime
 
     config = PrecisConfig(
@@ -222,7 +225,7 @@ def _runtime_with_startup_skills(
     class _FakeHub:
         kinds: set[str] = set()
 
-    return PrecisRuntime(config=config, hub=_FakeHub())  # type: ignore[arg-type]
+    return PrecisRuntime(config=config, hub=cast(Hub, _FakeHub()))
 
 
 def test_build_instructions_omits_banner_when_env_var_unset() -> None:
@@ -349,8 +352,11 @@ def test_format_banner_surfaces_kind_unavailable() -> None:
 def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
     """End-to-end: PRECIS_STARTUP_SKILLS pins a skill whose subject
     kind is in PRECIS_KINDS_DISABLED → banner carries the warning."""
+    from typing import cast
+
     from precis import server
     from precis.config import PrecisConfig
+    from precis.dispatch import Hub
     from precis.kind_gate import Loadability
     from precis.runtime import PrecisRuntime
 
@@ -366,7 +372,7 @@ def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
             "patent": Loadability("patent", False, "prohibited"),
         }
 
-    rt = PrecisRuntime(config=config, hub=_FakeHub())  # type: ignore[arg-type]
+    rt = PrecisRuntime(config=config, hub=cast(Hub, _FakeHub()))
     out = server._build_instructions(rt)
     assert "Kinds unavailable: patent (prohibited)." in out
     assert "skills for unavailable kinds: precis-patent-help" in out

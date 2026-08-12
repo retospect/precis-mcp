@@ -399,6 +399,9 @@ def _add_skill_resource(
         return _read_resource(runtime, uri)
 
     res = FunctionResource(
+        # FunctionResource.uri is typed pydantic AnyUrl, but its field
+        # validator coerces a plain str at construction — the stub is
+        # narrower than the runtime, so passing our str URI is sound.
         uri=uri,  # type: ignore[arg-type]
         name=slug,
         description=description,

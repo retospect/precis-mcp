@@ -28,7 +28,7 @@ import numpy as np
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from precis.structure.cell import Cell
+from precis.structure.cell import Cell, as_image3
 from precis.structure.importers import ExternalId, ExternalRun
 from precis.structure.measures import evaluate as _evaluate_measure
 from precis.structure.scene import Atom, Bond, Measure, Scene
@@ -402,7 +402,7 @@ class StructureMixin:
                     order=float(order),
                     kind=str(kind),
                     provenance=str(prov),
-                    image=tuple(int(x) for x in (image or [0, 0, 0])),  # type: ignore[arg-type]
+                    image=as_image3(image),
                 )
             )
         for mkind, direction, goal, strength, operands, embodiment, for_ in mrows:

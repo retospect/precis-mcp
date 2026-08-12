@@ -98,7 +98,7 @@ def test_bib_paths_in_reads_declared_bibs(tmp_path) -> None:
     ]
 
 
-def test_resolve_key_matches_cite_key_alias() -> None:
+def test_resolve_key_matches_cite_key_alias(monkeypatch) -> None:
     """A plain bib key (no DOI/arXiv shape) resolves by matching a paper's
     ``cite_key`` alias directly — not only via the .bib's DOI."""
     import types
@@ -132,13 +132,8 @@ def test_resolve_key_matches_cite_key_alias() -> None:
     # _ref_cite_key reads the slug via the pool; stub it on the namespace path
     import precis.draftimport.resolve as R
 
-    orig = R._ref_cite_key
-    # test monkeypatch of a module fn (restored in the finally below)
-    R._ref_cite_key = lambda s, rid: "zhao2024pdinco"  # type: ignore[assignment]
-    try:
-        slug, via, ref_id = resolve_key(store, "zhao2024PdInCo", None)
-    finally:
-        R._ref_cite_key = orig
+    monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "zhao2024pdinco")
+    slug, via, ref_id = resolve_key(store, "zhao2024PdInCo", None)
     assert ref_id == 5155 and via == "cite_key"
     assert ("cite_key", "zhao2024PdInCo", "paper") in calls["cite_key"]
 

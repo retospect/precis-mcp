@@ -22,6 +22,7 @@ those live in sibling test files.
 from __future__ import annotations
 
 import math
+from typing import Any, cast
 
 import pytest
 
@@ -224,7 +225,7 @@ class TestSeparatorOverride:
 class TestErrors:
     def test_non_list_non_dict_input_raises(self):
         with pytest.raises(TypeError):
-            dump("not a row")  # type: ignore[arg-type]
+            dump(cast(Any, "not a row"))
 
     def test_list_of_non_dicts_raises(self):
         with pytest.raises(TypeError):

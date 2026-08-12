@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,6 +36,7 @@ from precis.cli.watch import (
 )
 from precis.ingest.add import IngestResult, MarkupTriggerSpent
 from precis.ingest.fetch_sidecar import sidecar_path, write_sidecar
+from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # _is_pdf / _should_skip — pure
@@ -663,7 +664,7 @@ class TestProcessPdf:
         with patch("precis.cli.watch.precis_add", return_value=fake_result):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -740,7 +741,7 @@ class TestProcessPdf:
         ):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -774,7 +775,7 @@ class TestProcessPdf:
         with patch("precis.cli.watch.precis_add") as m:
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -800,7 +801,7 @@ class TestProcessPdf:
         with patch("precis.cli.watch.precis_add", side_effect=vanish_then_raise):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -830,7 +831,7 @@ class TestProcessPdf:
         ):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -864,7 +865,7 @@ class TestProcessPdf:
         ):
             dest = process_pdf(
                 pdf,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -908,7 +909,7 @@ class TestProcessPdf:
         ):
             dest = process_pdf(
                 xml,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",
@@ -949,7 +950,7 @@ class TestProcessPdf:
         ):
             dest = process_pdf(
                 xml,
-                store=object(),  # type: ignore[arg-type]
+                store=cast(Store, object()),
                 watch_dir=watch_dir,
                 corpus_dir=corpus_dir,
                 corpus_pres_dir=corpus_dir.parent / "corpus_pres",

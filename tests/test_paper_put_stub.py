@@ -11,9 +11,11 @@ covered by the DB-backed ``test_acquire.py`` / ``test_stubs.py``.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.response import Response
@@ -22,7 +24,7 @@ from precis.response import Response
 def _handler() -> PaperHandler:
     # __init__ only needs a non-None store + an embedder attribute.
     hub = SimpleNamespace(store=object(), embedder=None)
-    return PaperHandler(hub=hub)  # type: ignore[arg-type]
+    return PaperHandler(hub=cast(Hub, hub))
 
 
 def _capturing_handler() -> tuple[PaperHandler, dict]:

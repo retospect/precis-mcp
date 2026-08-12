@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from precis.tts.kokoro import KokoroSynth
 
 
@@ -31,23 +33,25 @@ class _FakeK:
         return [0.0], 24000
 
 
-def _synth() -> KokoroSynth:
+def _synth(monkeypatch: pytest.MonkeyPatch) -> KokoroSynth:
     s = object.__new__(KokoroSynth)  # skip __init__ (no kokoro-onnx on host)
-    s._k = _FakeK()  # type: ignore[assignment]
+    # raising=False: _k isn't set yet on this bare __new__ instance (the
+    # original bare assignment created it).
+    monkeypatch.setattr(s, "_k", _FakeK(), raising=False)
     s._speed = 1.0
     s._g2p = {}
     return s
 
 
-def test_english_uses_espeak_path():
-    s = _synth()
+def test_english_uses_espeak_path(monkeypatch):
+    s = _synth(monkeypatch)
     s.synthesize("hello", voice="af_heart", lang="en-us")
     c = s._k.calls[0]  # type: ignore[attr-defined]
     assert c["text"] == "hello" and c["lang"] == "en-us" and c["is_phonemes"] is False
 
 
 def test_mandarin_routes_through_misaki(monkeypatch):
-    s = _synth()
+    s = _synth(monkeypatch)
     monkeypatch.setattr(s, "_misaki_g2p", lambda lang: lambda t: ("PHON↓", None))
     s.synthesize("你好", voice="zf_xiaoxiao", lang="cmn")
     c = s._k.calls[0]  # type: ignore[attr-defined]
@@ -56,7 +60,7 @@ def test_mandarin_routes_through_misaki(monkeypatch):
 
 
 def test_falls_back_to_espeak_when_misaki_absent(monkeypatch):
-    s = _synth()
+    s = _synth(monkeypatch)
     monkeypatch.setattr(s, "_misaki_g2p", lambda lang: None)  # not installed
     s.synthesize("你好", voice="zf_xiaoxiao", lang="cmn")
     c = s._k.calls[0]  # type: ignore[attr-defined]
@@ -64,7 +68,7 @@ def test_falls_back_to_espeak_when_misaki_absent(monkeypatch):
 
 
 def test_g2p_error_falls_back_never_raises(monkeypatch):
-    s = _synth()
+    s = _synth(monkeypatch)
 
     def _boom(_t):
         raise RuntimeError("g2p exploded")
@@ -75,25 +79,25 @@ def test_g2p_error_falls_back_never_raises(monkeypatch):
     assert c["lang"] == "ja" and c["is_phonemes"] is False  # espeak fallback
 
 
-def test_unspeakable_text_returns_silence_without_calling_create():
+def test_unspeakable_text_returns_silence_without_calling_create(monkeypatch):
     # A "---" block (or other punctuation-only text that slipped through
     # narrate.py's filter) has nothing for Kokoro to say — return silence
     # instead of handing it to the model, where it phonemizes to zero
     # batches and np.concatenate dies (the cast_audio crash-loop).
-    s = _synth()
+    s = _synth(monkeypatch)
     samples, sr = s.synthesize("---", voice="af_heart", lang="en-us")
     assert sr == 24000
     assert len(samples) == 0
     assert s._k.calls == []  # type: ignore[attr-defined]
 
 
-def test_kokoro_empty_concatenate_error_returns_silence():
+def test_kokoro_empty_concatenate_error_returns_silence(monkeypatch):
     # The model itself raises this ValueError for text it can't phonemize —
     # the belt-and-suspenders case for text that passes the pre-check (has a
     # letter/digit) but kokoro-onnx still can't produce a batch for
     # (np.concatenate on zero batches). The synth must return empty audio
     # instead of propagating the crash.
-    s = _synth()
+    s = _synth(monkeypatch)
 
     def _boom(*_a, **_kw):
         raise ValueError("need at least one array to concatenate")
@@ -129,9 +133,9 @@ class _FakeSplitK:
         return [1.0] * len(text), 24000
 
 
-def test_long_text_split_on_indexerror_returns_concatenated_audio():
-    s = _synth()
-    s._k = _FakeSplitK(max_len=20)  # type: ignore[assignment]
+def test_long_text_split_on_indexerror_returns_concatenated_audio(monkeypatch):
+    s = _synth(monkeypatch)
+    monkeypatch.setattr(s, "_k", _FakeSplitK(max_len=20))
     text = (
         "This is sentence one. This is sentence two, which is also fairly "
         "long and needs another split."
@@ -145,9 +149,9 @@ def test_long_text_split_on_indexerror_returns_concatenated_audio():
     assert len(s._k.calls) > 1  # type: ignore[attr-defined]
 
 
-def test_unsplittable_text_returns_silence_without_raising():
-    s = _synth()
-    s._k = _FakeSplitK(max_len=5)  # type: ignore[assignment]
+def test_unsplittable_text_returns_silence_without_raising(monkeypatch):
+    s = _synth(monkeypatch)
+    monkeypatch.setattr(s, "_k", _FakeSplitK(max_len=5))
     samples, sr = s.synthesize(
         "supercalifragilisticexpialidocious", voice="af_heart", lang="en-us"
     )
@@ -155,8 +159,8 @@ def test_unsplittable_text_returns_silence_without_raising():
     assert len(samples) == 0
 
 
-def test_kokoro_other_value_error_still_raises():
-    s = _synth()
+def test_kokoro_other_value_error_still_raises(monkeypatch):
+    s = _synth(monkeypatch)
 
     def _boom(*_a, **_kw):
         raise ValueError("some other kokoro failure")

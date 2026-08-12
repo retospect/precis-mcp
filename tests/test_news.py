@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from precis.errors import BadInput
 from precis.handlers._cache_base import CacheBackedHandler
 from precis.handlers.news import article_blocks, canonical_url
+from precis.store import Store
 from precis.workers import briefing, news_poll
 
 # ── canonical_url ──────────────────────────────────────────────────────
@@ -174,7 +176,7 @@ def test_deliver_queues_message_and_notifies() -> None:
     import json
 
     store = _FakeDeliverStore()
-    briefing._deliver(store, "discord/1/2/2", "Brief text", "2026-06-23")  # type: ignore[arg-type]
+    briefing._deliver(cast(Store, store), "discord/1/2/2", "Brief text", "2026-06-23")
     # a message ref was created, targeted + date-stamped for idempotency
     assert store.inserted and store.inserted[0]["kind"] == "message"
     assert store.inserted[0]["meta"]["target"] == "discord/1/2/2"
@@ -194,7 +196,7 @@ def test_deliver_queues_message_and_notifies() -> None:
 def test_deliver_idempotent_skips_when_already_sent() -> None:
     # existence probe returns a row → today's brief already queued
     store = _FakeDeliverStore(existing=(1,))
-    briefing._deliver(store, "discord/1/2/2", "Brief text", "2026-06-23")  # type: ignore[arg-type]
+    briefing._deliver(cast(Store, store), "discord/1/2/2", "Brief text", "2026-06-23")
     assert not store.inserted, "must not create a second delivery message"
     assert not any("precis.messages" in c[0] for c in store.conn.calls)
 
@@ -210,7 +212,7 @@ def test_deliver_splits_long_brief_into_multiple_messages() -> None:
     store = _FakeDeliverStore()
     long_brief = "\n".join(f"- item number {i} in the digest" for i in range(400))
     assert len(long_brief) > DISCORD_MAX_CHARS
-    briefing._deliver(store, "discord/1/2/2", long_brief, "2026-06-23")  # type: ignore[arg-type]
+    briefing._deliver(cast(Store, store), "discord/1/2/2", long_brief, "2026-06-23")
 
     assert len(store.inserted) > 1, "long brief should split into >1 message"
     total = len(store.inserted)
@@ -322,7 +324,7 @@ def test_guid_dedup_skips_already_seen_story(
     monkeypatch.setattr(news_poll, "apply_tag_ops", lambda *a, **k: None)
     store = _PassStore([_src_row()], seen_guids={"bbc:g-old"})
     feed = _feed([_e("http://x/old", "g-old"), _e("http://x/new", "g-new")])
-    r = news_poll.run_news_pass(store, parse_feed=lambda url, **kw: feed)  # type: ignore[arg-type]
+    r = news_poll.run_news_pass(cast(Store, store), parse_feed=lambda url, **kw: feed)
     assert r["ok"] == 1  # only the unseen story minted
     assert len(store.minted) == 1
     # the new story's source-scoped guid is recorded for future dedup
@@ -348,7 +350,7 @@ def test_minted_article_carries_tier0_inject_stamp(
             ),
         ]
     )
-    r = news_poll.run_news_pass(store, parse_feed=lambda url, **kw: feed)  # type: ignore[arg-type]
+    r = news_poll.run_news_pass(cast(Store, store), parse_feed=lambda url, **kw: feed)
     assert r["ok"] == 2 and len(store.minted) == 2
     benign, evil = store.minted
     assert benign["cache_meta"]["inject"]["verdict"] == "clean"
@@ -362,7 +364,7 @@ def test_304_not_modified_mints_nothing(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(news_poll, "apply_tag_ops", lambda *a, **k: None)
     store = _PassStore([_src_row(etag="etag-1")])
     feed = _feed([_e("http://x/a", "g")], status=304)
-    r = news_poll.run_news_pass(store, parse_feed=lambda url, **kw: feed)  # type: ignore[arg-type]
+    r = news_poll.run_news_pass(cast(Store, store), parse_feed=lambda url, **kw: feed)
     assert r == {"claimed": 1, "ok": 0, "failed": 0}
     assert store.minted == []
 
@@ -378,7 +380,7 @@ def test_conditional_get_sends_and_saves_validators(
         seen["etag"], seen["modified"] = etag, modified
         return _feed([], etag="new-etag", modified="new-mod")
 
-    news_poll.run_news_pass(store, parse_feed=parse)  # type: ignore[arg-type]
+    news_poll.run_news_pass(cast(Store, store), parse_feed=parse)
     assert seen == {"etag": "old-etag", "modified": "old-mod"}  # sent stored validators
     upd = store.conn.updates[-1]  # _record_status UPDATE params
     assert "new-etag" in upd and "new-mod" in upd  # persisted the new ones

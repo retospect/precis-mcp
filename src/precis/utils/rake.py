@@ -333,15 +333,17 @@ def keyword_summary(
     top_k: int = 5,
     separator: str = ", ",
     abbreviations: dict[str, str] | None = None,
-    **kwargs: object,
+    min_phrase_words: int = 1,
+    max_phrase_words: int = 4,
+    stopwords: frozenset[str] = _STOPWORDS,
 ) -> str:
     """Agent-facing convenience: ``extract_keywords`` joined for display.
 
     Returns the empty string when no keywords could be extracted so
     callers can drop the column safely in TOON output. ``top_k`` maps
-    to RAKE's ``max_keywords`` parameter; ``**kwargs`` forwards to
-    :func:`extract_keywords` for ``min_phrase_words`` /
-    ``max_phrase_words`` / ``stopwords``.
+    to RAKE's ``max_keywords`` parameter; ``min_phrase_words`` /
+    ``max_phrase_words`` / ``stopwords`` forward to
+    :func:`extract_keywords`.
 
     ``abbreviations`` (optional): a ``{SHORT: long-form}`` dict from
     :mod:`precis.utils.abbreviations`. When supplied, every long-form
@@ -355,7 +357,13 @@ def keyword_summary(
         from precis.utils.abbreviations import substitute
 
         text = substitute(text, abbreviations)
-    keywords = extract_keywords(text, max_keywords=top_k, **kwargs)  # type: ignore[arg-type]
+    keywords = extract_keywords(
+        text,
+        max_keywords=top_k,
+        min_phrase_words=min_phrase_words,
+        max_phrase_words=max_phrase_words,
+        stopwords=stopwords,
+    )
     return separator.join(keywords) if keywords else ""
 
 

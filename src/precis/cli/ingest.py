@@ -384,7 +384,7 @@ def run_oracles(args: argparse.Namespace) -> None:
         try:
             agg = ingest_directory(
                 src,
-                store=None,  # type: ignore[arg-type]
+                store=None,
                 embedder=None,
                 overwrite=args.overwrite,
                 dry_run=True,

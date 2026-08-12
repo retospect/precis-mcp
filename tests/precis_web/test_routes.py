@@ -4493,7 +4493,9 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
         tasks_mod._load_tags = original_tags
 
 
-def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
+def test_dashboard_child_failed_shows_reason_and_retry(
+    client, runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A parent todo behind a ``child-failed:<job>`` bubble shows *why* the
     child failed (its job_summary) plus a ▶ restart form + model picker —
     the bare chip is replaced, not just listed."""
@@ -4501,13 +4503,6 @@ def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
 
     runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
     import precis_web.routes.tasks as tasks_mod
-
-    original = {
-        "child": tasks_mod._child_jobs,
-        "tags": tasks_mod._load_tags,
-        "free": tasks_mod._load_freeform_tags,
-        "notes": tasks_mod._job_notes,
-    }
 
     def child_jobs(store, todo_ids):
         return (
@@ -4534,38 +4529,32 @@ def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
             }
         }
 
-    tasks_mod._child_jobs = child_jobs
-    tasks_mod._load_tags = load_tags
-    tasks_mod._load_freeform_tags = load_freeform
-    tasks_mod._job_notes = job_notes
-    try:
-        resp = client.get("/tasks")
-        assert resp.status_code == 200
-        # The reason is surfaced inline…
-        assert "⚠ failed" in resp.text
-        assert "API Error: Claude Code is unable to respond" in resp.text
-        # …with a ▶ restart form posting to the *job* retry endpoint…
-        assert 'action="/tasks/99/retry"' in resp.text
-        assert "▶" in resp.text
-        # …and a model picker sourced from the router's 4 canonical
-        # capability tiers (each labelled with the model it resolves to) —
-        # the legacy opus/sonnet/haiku/local aliases are retired from this
-        # plain retry picker.
-        assert 'name="model"' in resp.text
-        assert 'value="frontier"' in resp.text
-        assert 'value="big"' in resp.text
-        assert 'value="opus"' not in resp.text
-        assert 'value="local"' not in resp.text
-        # Exactly the 4 canonical tiers, no more.
-        for tier in ("small", "medium", "big", "frontier"):
-            assert resp.text.count(f'value="{tier}"') == 1
-        # The bare chip is not also rendered as a plain removable tag.
-        assert ">child-failed:99<" not in resp.text
-    finally:
-        tasks_mod._child_jobs = original["child"]  # type: ignore[assignment]
-        tasks_mod._load_tags = original["tags"]  # type: ignore[assignment]
-        tasks_mod._load_freeform_tags = original["free"]  # type: ignore[assignment]
-        tasks_mod._job_notes = original["notes"]  # type: ignore[assignment]
+    monkeypatch.setattr(tasks_mod, "_child_jobs", child_jobs)
+    monkeypatch.setattr(tasks_mod, "_load_tags", load_tags)
+    monkeypatch.setattr(tasks_mod, "_load_freeform_tags", load_freeform)
+    monkeypatch.setattr(tasks_mod, "_job_notes", job_notes)
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    # The reason is surfaced inline…
+    assert "⚠ failed" in resp.text
+    assert "API Error: Claude Code is unable to respond" in resp.text
+    # …with a ▶ restart form posting to the *job* retry endpoint…
+    assert 'action="/tasks/99/retry"' in resp.text
+    assert "▶" in resp.text
+    # …and a model picker sourced from the router's 4 canonical
+    # capability tiers (each labelled with the model it resolves to) —
+    # the legacy opus/sonnet/haiku/local aliases are retired from this
+    # plain retry picker.
+    assert 'name="model"' in resp.text
+    assert 'value="frontier"' in resp.text
+    assert 'value="big"' in resp.text
+    assert 'value="opus"' not in resp.text
+    assert 'value="local"' not in resp.text
+    # Exactly the 4 canonical tiers, no more.
+    for tier in ("small", "medium", "big", "frontier"):
+        assert resp.text.count(f'value="{tier}"') == 1
+    # The bare chip is not also rendered as a plain removable tag.
+    assert ">child-failed:99<" not in resp.text
 
 
 def test_reason_from_summary_flattens_and_caps() -> None:
@@ -4583,7 +4572,7 @@ def test_reason_from_summary_flattens_and_caps() -> None:
 
 
 def test_dashboard_child_failed_prefers_job_summary_over_job_event(
-    client, runtime
+    client, runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When a ``child-failed:<job>`` job has BOTH a ``job_summary`` and a
     ``job_event`` chunk, the dashboard reason still comes from the
@@ -4593,13 +4582,6 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
 
     runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
     import precis_web.routes.tasks as tasks_mod
-
-    original = {
-        "child": tasks_mod._child_jobs,
-        "tags": tasks_mod._load_tags,
-        "free": tasks_mod._load_freeform_tags,
-        "notes": tasks_mod._job_notes,
-    }
 
     def child_jobs(store, todo_ids):
         return (
@@ -4626,20 +4608,14 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
             }
         }
 
-    tasks_mod._child_jobs = child_jobs
-    tasks_mod._load_tags = load_tags
-    tasks_mod._load_freeform_tags = load_freeform
-    tasks_mod._job_notes = job_notes
-    try:
-        resp = client.get("/tasks")
-        assert resp.status_code == 200
-        assert "API Error: Claude Code is unable to respond" in resp.text
-        assert "runner: killed at wall-clock deadline" not in resp.text
-    finally:
-        tasks_mod._child_jobs = original["child"]  # type: ignore[assignment]
-        tasks_mod._load_tags = original["tags"]  # type: ignore[assignment]
-        tasks_mod._load_freeform_tags = original["free"]  # type: ignore[assignment]
-        tasks_mod._job_notes = original["notes"]  # type: ignore[assignment]
+    monkeypatch.setattr(tasks_mod, "_child_jobs", child_jobs)
+    monkeypatch.setattr(tasks_mod, "_load_tags", load_tags)
+    monkeypatch.setattr(tasks_mod, "_load_freeform_tags", load_freeform)
+    monkeypatch.setattr(tasks_mod, "_job_notes", job_notes)
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    assert "API Error: Claude Code is unable to respond" in resp.text
+    assert "runner: killed at wall-clock deadline" not in resp.text
 
 
 def test_reason_from_event_takes_first_line_only_and_caps() -> None:
@@ -4662,7 +4638,9 @@ def test_reason_from_event_takes_first_line_only_and_caps() -> None:
     assert out.endswith("…") and len(out) == 201
 
 
-def test_dashboard_child_failed_falls_back_to_job_event_reason(client, runtime) -> None:
+def test_dashboard_child_failed_falls_back_to_job_event_reason(
+    client, runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A ``child-failed:<job>`` job with only a ``job_event`` chunk (no
     ``job_summary`` — the common case: ``record_failure`` writes only a
     job_event, and ``job_summary`` is written on most dispatchers' SUCCESS
@@ -4672,13 +4650,6 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(client, runtime) 
 
     runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
     import precis_web.routes.tasks as tasks_mod
-
-    original = {
-        "child": tasks_mod._child_jobs,
-        "tags": tasks_mod._load_tags,
-        "free": tasks_mod._load_freeform_tags,
-        "notes": tasks_mod._job_notes,
-    }
 
     def child_jobs(store, todo_ids):
         return (
@@ -4709,23 +4680,17 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(client, runtime) 
             }
         }
 
-    tasks_mod._child_jobs = child_jobs
-    tasks_mod._load_tags = load_tags
-    tasks_mod._load_freeform_tags = load_freeform
-    tasks_mod._job_notes = job_notes
-    try:
-        resp = client.get("/tasks")
-        assert resp.status_code == 200
-        assert (
-            "autocatpath_seed: run failed: child process exited without "
-            "writing result.json" in resp.text
-        )
-        assert "raw subprocess output" not in resp.text
-    finally:
-        tasks_mod._child_jobs = original["child"]  # type: ignore[assignment]
-        tasks_mod._load_tags = original["tags"]  # type: ignore[assignment]
-        tasks_mod._load_freeform_tags = original["free"]  # type: ignore[assignment]
-        tasks_mod._job_notes = original["notes"]  # type: ignore[assignment]
+    monkeypatch.setattr(tasks_mod, "_child_jobs", child_jobs)
+    monkeypatch.setattr(tasks_mod, "_load_tags", load_tags)
+    monkeypatch.setattr(tasks_mod, "_load_freeform_tags", load_freeform)
+    monkeypatch.setattr(tasks_mod, "_job_notes", job_notes)
+    resp = client.get("/tasks")
+    assert resp.status_code == 200
+    assert (
+        "autocatpath_seed: run failed: child process exited without "
+        "writing result.json" in resp.text
+    )
+    assert "raw subprocess output" not in resp.text
 
 
 def test_dashboard_status_badge_is_clickable_filter(client) -> None:

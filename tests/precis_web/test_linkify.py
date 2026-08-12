@@ -240,6 +240,8 @@ def test_empty_string_returns_empty() -> None:
 
 
 def test_none_value_returns_empty() -> None:
+    # `value` isn't Optional, but the `if not value` guard makes None a
+    # genuinely handled case (Jinja passes raw, possibly-NULL DB fields).
     assert str(linkify_refs(None)) == ""  # type: ignore[arg-type]
 
 

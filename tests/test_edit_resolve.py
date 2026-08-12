@@ -29,6 +29,7 @@ from precis.utils.edit_resolve import (
 
 def test_editop_rejects_unknown_op() -> None:
     with pytest.raises(BadInput, match="unknown edit op"):
+        # deliberately outside the op= Literal to exercise runtime rejection
         EditOp(op="rewrite", find="x", text="y")  # type: ignore[arg-type]
 
 
@@ -39,6 +40,7 @@ def test_editop_requires_nonempty_find() -> None:
 
 def test_editop_rejects_unknown_match_policy() -> None:
     with pytest.raises(BadInput, match="unknown match policy"):
+        # deliberately outside the MatchPolicy Literal to exercise rejection
         EditOp(op="edit", find="x", text="y", match="random")  # type: ignore[arg-type]
 
 
@@ -374,6 +376,7 @@ def test_normalize_dry_run_rejects_unknown_string() -> None:
 
 def test_normalize_dry_run_rejects_random_type() -> None:
     with pytest.raises(BadInput, match="dry_run must be"):
+        # deliberately wrong type (int) to exercise the else-raise branch
         normalize_dry_run(42)  # type: ignore[arg-type]
 
 

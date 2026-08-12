@@ -316,7 +316,10 @@ def _runtime_with_loadabilities(verdicts: dict[str, Loadability]):
     The runtime's PrecisConfig is constructed with no overrides so
     no env vars leak in.
     """
+    from typing import cast
+
     from precis.config import PrecisConfig
+    from precis.dispatch import Hub
     from precis.runtime import PrecisRuntime
 
     class _FakeHub:
@@ -327,7 +330,7 @@ def _runtime_with_loadabilities(verdicts: dict[str, Loadability]):
 
     return PrecisRuntime(
         config=PrecisConfig(),
-        hub=_FakeHub(verdicts),  # type: ignore[arg-type]
+        hub=cast(Hub, _FakeHub(verdicts)),
     )
 
 
@@ -438,6 +441,9 @@ def test_patent_handler_test_path_unaffected_by_env() -> None:
         ):
             os.environ.pop(env, None)
         # Even with the env unset, explicit kwargs skip the env path.
+        # _FakeOps is an empty identity placeholder (only ops is-not-None
+        # matters here, never a real OPS call) — not a genuine
+        # OpsClientProto implementation, so cast() would misrepresent it.
         h = PatentHandler(
             hub=hub,
             ops=_FakeOps(),  # type: ignore[arg-type]

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
 from precis.cad.dsl import build_config
+from precis.cad.fold import Expr
 from precis.cad.graph import Design
 from precis.cad.vec import Transform, identity, rotation, translation
 
@@ -367,14 +368,12 @@ def _pattern_transforms(node: NodeSpec) -> list[Transform]:
 def build_design(spec: SceneSpec) -> Design:
     """Build a live :class:`Design` from a :class:`SceneSpec`."""
     design = Design()
-    per_component: dict[str, object] = {}
+    per_component: dict[str, Expr] = {}
 
     for node in spec.nodes:
         prim = build_config(node.config)
         if node.pattern is not None:
-            node_expr: object = design.pattern(
-                node.name, prim, _pattern_transforms(node)
-            )
+            node_expr: Expr = design.pattern(node.name, prim, _pattern_transforms(node))
         else:
             node_expr = design.prim(node.name, prim, _node_xform(node.loc, node.rot))
 
@@ -382,15 +381,15 @@ def build_design(spec: SceneSpec) -> Design:
         if cur is None:
             per_component[node.component] = node_expr
         elif node.op == "add":
-            per_component[node.component] = design.merge(cur, node_expr)  # type: ignore[arg-type]
+            per_component[node.component] = design.merge(cur, node_expr)
         elif node.op == "cut":
-            per_component[node.component] = design.subtract(cur, node_expr)  # type: ignore[arg-type]
+            per_component[node.component] = design.subtract(cur, node_expr)
         elif node.op == "intersect":
-            per_component[node.component] = design.intersect(cur, node_expr)  # type: ignore[arg-type]
+            per_component[node.component] = design.intersect(cur, node_expr)
         else:  # pragma: no cover - parser guards op
             raise SceneError(f"unknown op {node.op!r}")
 
     for comp in spec.components:
         if comp in per_component:
-            design.add_component(comp, per_component[comp])  # type: ignore[arg-type]
+            design.add_component(comp, per_component[comp])
     return design

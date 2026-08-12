@@ -28,10 +28,10 @@ from tests._fakes import FakeStore as _FakeStoreBase
 
 
 class _Cursor:
-    def __init__(self, row: tuple) -> None:
+    def __init__(self, row: tuple | None) -> None:
         self._row = row
 
-    def fetchone(self) -> tuple:
+    def fetchone(self) -> tuple | None:
         return self._row
 
 
@@ -589,8 +589,8 @@ class _SqlConn:
         if "app_settings" in sql:
             key = cast("tuple", params)[0] if params else None
             val = self._settings.get(cast("str", key))
-            return _Cursor((val,) if val is not None else None)  # type: ignore[arg-type]
-        return _Cursor(None)  # type: ignore[arg-type]
+            return _Cursor((val,) if val is not None else None)
+        return _Cursor(None)
 
 
 class _SqlPool:

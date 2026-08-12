@@ -98,7 +98,8 @@ class LlmHandler(NumericRefHandler):
     ) -> Response:
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if concrete and view in ("tote", "reviews"):
-            ref = self._ref_for(id)  # type: ignore[arg-type]
+            assert id is not None  # `concrete` already guarantees this
+            ref = self._ref_for(id)
             if view == "tote":
                 return Response(body=self._render_tote(ref))
             return Response(body=self._render_reviews(ref))

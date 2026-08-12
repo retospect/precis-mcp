@@ -1015,6 +1015,11 @@ class PlaintextHandler(Handler):
         # mypy narrows str | None -> str the way it could when this check
         # was inline (the narrowing doesn't cross a function boundary).
         assert find is not None and text is not None
+        # where/match arrive as plain str from the wire (agent-supplied
+        # kwargs); EditOp fields are the narrower InsertWhere/MatchPolicy
+        # Literals. EditOp.__post_init__ validates both against the exact
+        # same literal sets and raises BadInput on a bad value, so this is
+        # sound at runtime even though it's untyped here.
         op = EditOp(
             op="edit" if op_kind == "edit" else "insert",
             find=find,

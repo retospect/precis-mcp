@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -847,7 +847,7 @@ class TestContainsWrite:
         _mint(h, "enclosure")
         _mint(h, "bracket")
         with pytest.raises(BadInput):
-            h.put(id="enclosure", contains="component:bracket", qty=1.5)  # type: ignore[arg-type]
+            h.put(id="enclosure", contains="component:bracket", qty=cast(int, 1.5))
 
 
 # ── assembly tree: view='bom' flatten + rollup ────────────────────────────

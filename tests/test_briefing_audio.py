@@ -205,18 +205,18 @@ def test_dry_run_renders_without_publishing_or_marking(tmp_path):
     )  # not marked → a real run still fires
 
 
-def test_no_briefing_is_a_clean_noop(tmp_path):
+def test_no_briefing_is_a_clean_noop(tmp_path, monkeypatch):
     store = _Store(_Ref(1, {}, _NOW), _BRIEF)
-    store.ref = None  # type: ignore[assignment]
+    monkeypatch.setattr(store, "ref", None)
     r = run_briefing_audio(store, synth=_FakeSynth(), podcast_dir=tmp_path, now=_NOW)
     assert r["published"] is False and r["reason"] == "no-unnarrated-briefing"
 
 
-def test_has_pending_briefing_gates_on_marker_and_presence():
+def test_has_pending_briefing_gates_on_marker_and_presence(monkeypatch):
     # The cheap gate the worker checks before building the (heavy) synth.
     store = _store()
     assert has_pending_briefing(store, now=_NOW) is True
     store.ref.meta["audio_episode_id"] = "news-2026-07-14"  # narrated
     assert has_pending_briefing(store, now=_NOW) is False
-    store.ref = None  # type: ignore[assignment]  # nothing at all
+    monkeypatch.setattr(store, "ref", None)  # nothing at all
     assert has_pending_briefing(store, now=_NOW) is False
