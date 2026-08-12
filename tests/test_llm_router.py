@@ -821,8 +821,10 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen["model"] == "qwen3-235b-thinking-2507-ud-q3_k_xl"
     assert seen["temperature"] is None  # not passed in ⇒ provider default
     # A local endpoint never gets the (unconfirmed) no-thinking directive —
-    # see the NOTE in _dispatch_local / run_oss_tool_loop.
-    assert seen["extra_body"] is None
+    # see the NOTE in _dispatch_local / run_oss_tool_loop — but it DOES get
+    # cache_prompt=false: llama-server's prompt cache served corrupted KV
+    # state for big prompts (2026-08-12 quest-tick incident).
+    assert seen["extra_body"] == {"cache_prompt": False}
     assert seen["stream"] is False  # streaming is opt-in per request
 
 

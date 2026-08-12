@@ -2982,7 +2982,13 @@ def run_oss_tool_loop(
     if local_url:
         base_url = local_url
         api_key = "dummy"
-        extra_body = None
+        # llama-server's prompt cache served CORRUPTED KV state for the
+        # ~20k-char quest-tick prompts (2026-08-12: deepseek answered as if
+        # the user "just typed 'thinking'", hallucinating a different
+        # conversation; the same prompt replayed with cache_prompt=false
+        # read correctly). Bypass the cache per-request — a llama.cpp
+        # extension, only ever sent to the pinned local endpoint.
+        extra_body = {"cache_prompt": False}
     else:
         base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
         api_key = _provider_api_key(base_url)
