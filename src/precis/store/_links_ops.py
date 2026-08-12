@@ -440,6 +440,37 @@ class LinksMixin:
             rows = conn.execute(sql, (ref_ids, ref_ids)).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
 
+    def link_rel_summary_for_refs(
+        self, ref_ids: list[int]
+    ) -> dict[int, dict[tuple[str, str], int]]:
+        """Return ``{ref_id: {(direction, relation): count}}`` for a batch.
+
+        ``direction`` is ``'out'`` when ``ref_id`` is the link's ``src``,
+        ``'in'`` when it's the ``dst`` — the raw stored ``relation``, no
+        inverse-rewrite. One SQL round-trip covers a whole search page,
+        same batching shape as :meth:`count_links_for_refs`. Missing ref
+        ids in the result dict mean zero links.
+        """
+        if not ref_ids:
+            return {}
+        sql = (
+            "SELECT ref_id, dir, relation, COUNT(*)::int FROM ("
+            "  SELECT src_ref_id AS ref_id, 'out' AS dir, relation FROM links "
+            "    WHERE src_ref_id = ANY(%s)"
+            "  UNION ALL"
+            "  SELECT dst_ref_id AS ref_id, 'in' AS dir, relation FROM links "
+            "    WHERE dst_ref_id = ANY(%s)"
+            ") sub GROUP BY ref_id, dir, relation"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (ref_ids, ref_ids)).fetchall()
+        out: dict[int, dict[tuple[str, str], int]] = {}
+        for ref_id, direction, relation, count in rows:
+            out.setdefault(int(ref_id), {})[(str(direction), str(relation))] = int(
+                count
+            )
+        return out
+
     def migrate_links(
         self,
         old_ref_id: int,

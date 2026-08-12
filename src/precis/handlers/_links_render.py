@@ -31,7 +31,7 @@ from precis.response import Response
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
-    from precis.store import Ref, Store
+    from precis.store import Link, Ref, Store
 
 
 # F8: rel-name → inbound-passive-form. Symmetric rels (no passive form)
@@ -49,7 +49,50 @@ _INVERSE_REL: dict[str, str] = {
 }
 
 
-def render_links_section(store: Store, ref: Ref) -> str:
+# Change B: rel-priority order for ``priority=True`` — evidential
+# relations (citation/support/contradiction/correction/retraction
+# chains) surface before the catch-all ``related-to``, which always
+# sorts last regardless of this list. Any relation not listed here
+# (a plugin relation, say) sorts after every listed one but still
+# ahead of ``related-to``.
+_REL_PRIORITY: list[str] = [
+    "cites",
+    "cited-by",
+    "supports",
+    "supported-by",
+    "contradicts",
+    "contradicted-by",
+    "refutes",
+    "refuted-by",
+    "corrects",
+    "corrected-by",
+    "retracts",
+    "retracted-by",
+    "derived-from",
+    "supersedes",
+    "superseded-by",
+]
+_REL_PRIORITY_INDEX: dict[str, int] = {rel: i for i, rel in enumerate(_REL_PRIORITY)}
+
+
+def _priority_sort_key(pair: tuple[Link, str]) -> tuple[int, int]:
+    """Sort key for ``priority=True``: rel-priority bucket, then link.id."""
+    link, _direction = pair
+    rel = link.relation
+    if rel == "related-to":
+        bucket = len(_REL_PRIORITY) + 1
+    else:
+        bucket = _REL_PRIORITY_INDEX.get(rel, len(_REL_PRIORITY))
+    return (bucket, link.id)
+
+
+def render_links_section(
+    store: Store,
+    ref: Ref,
+    *,
+    limit: int | None = None,
+    priority: bool = False,
+) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
     Three columns: ``{related to	keywords	how to get}``. Column 1
@@ -67,6 +110,24 @@ def render_links_section(store: Store, ref: Ref) -> str:
     design called for "keywords" but the project doesn't yet expose a
     ``Store.keywords_for_ref`` helper; title is the portable fallback.
     Upgrade path: swap the call here when a keyword API lands.
+
+    Args:
+        limit: When set and the total link count exceeds it, render
+            only the first ``limit`` rows (after sorting) and append
+            an overflow line pointing at ``view='links'`` for the
+            rest. ``None`` (default) renders every link — unchanged
+            behaviour.
+        priority: When ``True``, sort by evidential-relation priority
+            (see :data:`_REL_PRIORITY`) instead of by link id — used
+            by the Change B paper-overview append so the most
+            load-bearing edges (cites, supports, contradicts, …)
+            surface first under a hard cap. ``False`` (default)
+            preserves the original link-id ordering — unchanged
+            behaviour.
+
+    Both kwargs default to a no-op so every existing callsite (the
+    numeric-ref per-``get()`` append, ``render_links_view``) renders
+    byte-identical output to before this signature grew.
     """
     out_links = store.links_for(ref.id, direction="out")
     in_links = store.links_for(ref.id, direction="in")
@@ -82,7 +143,17 @@ def render_links_section(store: Store, ref: Ref) -> str:
 
     rows: list[dict[str, str]] = []
     combined = [(lnk, "out") for lnk in out_links] + [(lnk, "in") for lnk in in_links]
-    combined.sort(key=lambda pair: pair[0].id)
+    if priority:
+        combined.sort(key=_priority_sort_key)
+    else:
+        combined.sort(key=lambda pair: pair[0].id)
+
+    total = len(combined)
+    truncated = limit is not None and total > limit
+    if truncated:
+        assert limit is not None  # narrows for mypy; guarded by ``truncated``
+        combined = combined[:limit]
+
     for link, direction in combined:
         if direction == "out":
             other_id, other_pos = link.dst_ref_id, link.dst_pos
@@ -107,9 +178,18 @@ def render_links_section(store: Store, ref: Ref) -> str:
 
     from precis.format import render_agent_table
 
-    return "\n\nLinks:\n" + render_agent_table(
+    header = f"Links ({limit} of {total}):" if truncated else "Links:"
+    out = f"\n\n{header}\n" + render_agent_table(
         rows, schema=["related to", "keywords", "how to get"]
     )
+    if truncated:
+        assert limit is not None  # narrows for mypy; guarded by ``truncated``
+        n_more = total - limit
+        handle = handle_registry.try_format(ref.kind, ref.id) or (
+            ref.slug if ref.slug is not None else ref.id
+        )
+        out += f"\n+{n_more} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
+    return out
 
 
 def render_links_view(store: Store, ref: Ref, *, sense: str | None = None) -> Response:

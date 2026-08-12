@@ -232,6 +232,7 @@ def merge_and_render(
     show_label: bool = True,
     empty_body: str | None = None,
     output_shape: _OutputShape = "markdown",
+    link_summary: dict[int, dict[tuple[str, str], int]] | None = None,
 ) -> Response:
     """Merge ranked ``SearchHit`` streams into a single rendered Response.
 
@@ -264,6 +265,11 @@ def merge_and_render(
         empty_body: Override message when every stream is empty
             (or every hit got dedup'd away).  Defaults to
             ``"no <header_noun> matches"``.
+        link_summary: Batch ``{ref_id: {(direction, relation):
+            count}}`` map (see ``Store.link_rel_summary_for_refs``),
+            used only by the ``output_shape="toon"`` renderer to
+            populate the ``links`` column.  Ignored by the markdown
+            and keywords shapes.
 
     Returns:
         ``Response`` whose body is the rendered merge.  Cost is
@@ -299,7 +305,7 @@ def merge_and_render(
         )
     ]
     if output_shape == "toon":
-        lines.append(_render_toon_table(rendered))
+        lines.append(_render_toon_table(rendered, link_summary=link_summary))
     elif output_shape == "keywords":
         lines.append(_render_keywords_table(rendered))
     else:
@@ -401,6 +407,49 @@ _TOON_SUMMARY_MAX_CHARS = 180
 _TOON_SENTENCE_TERMINATORS = (". ", "! ", "? ")
 
 
+def salient_link_label(
+    rel_counts: dict[tuple[str, str], int],
+) -> tuple[int, str | None]:
+    """Pick the (total link count, salient relation label) pair for a hit.
+
+    ``rel_counts`` is one ref's slice of
+    ``Store.link_rel_summary_for_refs`` — ``{(direction, relation):
+    count}``. ``total`` is the sum across every direction/relation.
+
+    Label choice: an inbound ``cites`` edge (someone cites this ref) is
+    always the headline — "cited" — regardless of what else is linked,
+    since it's the strongest cross-kind signal a search result can
+    carry. Otherwise pick the highest-count relation that isn't the
+    generic ``related-to`` catch-all (ties broken by ``(-count, dir,
+    relation)`` for determinism) and render it: outbound uses the
+    relation slug as-is, inbound uses the passive/inverse short form
+    (``_INVERSE_REL``, falling back to ``<-<relation>`` when the
+    inverse isn't known). ``None`` when every entry is ``related-to``
+    (or ``rel_counts`` is empty) — the cell just shows the count.
+    """
+    total = sum(rel_counts.values())
+    if rel_counts.get(("in", "cites"), 0) > 0:
+        return total, "cited"
+
+    candidates = [
+        (direction, relation, count)
+        for (direction, relation), count in rel_counts.items()
+        if relation != "related-to"
+    ]
+    if not candidates:
+        return total, None
+
+    candidates.sort(key=lambda c: (-c[2], c[0], c[1]))
+    direction, relation, _count = candidates[0]
+    if direction == "out":
+        label = relation
+    else:
+        from precis.handlers._links_render import _INVERSE_REL
+
+        label = _INVERSE_REL.get(relation, f"<-{relation}")
+    return total, label
+
+
 def _derive_toon_summary(hit: SearchHit) -> tuple[str, int]:
     """Pick the (summary, remaining_words) cell pair for a hit.
 
@@ -436,16 +485,28 @@ def _derive_toon_summary(hit: SearchHit) -> tuple[str, int]:
     return body.rstrip(), 0
 
 
-def _render_toon_table(hits: list[SearchHit]) -> str:
+def _render_toon_table(
+    hits: list[SearchHit],
+    *,
+    link_summary: dict[int, dict[tuple[str, str], int]] | None = None,
+) -> str:
     """Render cross-kind hits as one TOON table.
 
-    Columns: ``kind | id | summary | remaining_words``. ``id`` is the
-    citation handle (``kind:slug`` for slug kinds, the numeric id for
-    numeric refs, ``slug~pos`` for block-level hits). links/age aren't
-    populated here — those require per-kind queries the per-kind list
-    view already covers; the cross-kind table prioritises the
-    discriminating signal an agent needs to choose a kind to drill
-    into.
+    Columns: ``id | summary | remaining_words | links``. No ``kind``
+    column — ``id`` carries it: the universal handle when the hit was
+    backfilled with one, else a kind-qualified fallback
+    (``kind:slug~pos`` / ``kind:slug`` / ``kind:ref_id``) so the kind
+    is never lost even without a handle. (The per-kind hit-count
+    breakdown line the caller prepends already says which kinds ran —
+    dropping the column from every row loses no information.)
+
+    ``links`` is populated from ``link_summary`` — a batch
+    ``{ref_id: {(direction, relation): count}}`` map, one query per
+    page (see ``Store.link_rel_summary_for_refs``) — rendered via
+    :func:`salient_link_label` as ``"{total} · {label}"`` (or bare
+    ``total`` with no salient relation, or empty when zero/unknown).
+    Per-hit age still isn't populated here — that's a per-kind list-
+    view concern, not this cross-kind table's.
     """
     from precis.format import render_agent_table
 
@@ -464,20 +525,31 @@ def _render_toon_table(hits: list[SearchHit]) -> str:
         if hit.uhandle:
             ident = hit.uhandle  # universal handle when backfilled
         elif hit.slug:
-            ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
+            ident = (
+                f"{hit.kind}:{hit.slug}~{hit.pos}"
+                if hit.pos is not None
+                else f"{hit.kind}:{hit.slug}"
+            )
         elif hit.ref_id is not None:
-            ident = str(hit.ref_id)
+            ident = f"{hit.kind}:{hit.ref_id}"
         else:
             ident = "?"
+        links_cell = ""
+        if link_summary is not None and hit.ref_id is not None:
+            rel_counts = link_summary.get(hit.ref_id)
+            if rel_counts is not None:
+                total, label = salient_link_label(rel_counts)
+                if total:
+                    links_cell = f"{total} · {label}" if label else str(total)
         rows.append(
             {
-                "kind": hit.kind,
                 "id": ident,
                 "summary": summary,
                 "remaining_words": str(remaining_words),
+                "links": links_cell,
             }
         )
-    schema = ["kind", "id", "summary", "remaining_words"]
+    schema = ["id", "summary", "remaining_words", "links"]
     return render_agent_table(rows, schema=schema)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from precis.hints import Hint, HintBus
 from precis.runtime import PrecisRuntime
+from precis.store import Store
 
 
 def test_calc_through_dispatch(runtime: PrecisRuntime) -> None:
@@ -450,6 +451,37 @@ def test_cross_kind_tag_filter_requires_all_listed_tags(
     assert "[error:" not in out
     assert "with-both" in out
     assert "with-one-tag" not in out
+
+
+# ── cross-kind TOON table — Change A links column, no kind column ────
+
+
+def test_cross_kind_toon_table_surfaces_links_column(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The default cross-kind ``search(kind='*', ...)`` shape is TOON —
+    it must carry a ``links`` column (batched via
+    ``Store.link_rel_summary_for_refs``) and drop the ``kind`` column
+    entirely (the id cell is kind-qualified instead)."""
+    out1 = runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "kumquat-specific cited note"}
+    )
+    runtime_with_store.dispatch(
+        "put", {"kind": "memory", "text": "kumquat-specific citing note"}
+    )
+    assert "[error:" not in out1
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'memory' ORDER BY ref_id DESC LIMIT 2"
+        ).fetchall()
+    citer_id, cited_id = int(rows[0][0]), int(rows[1][0])
+    store.add_link(src_ref_id=citer_id, dst_ref_id=cited_id, relation="cites")
+
+    out = runtime_with_store.dispatch("search", {"kind": "*", "q": "kumquat-specific"})
+    assert "[error:" not in out
+    assert "id\tsummary\tremaining_words\tlinks" in out
+    assert "kind\t" not in out
+    assert "1 · cited" in out
 
 
 # ── kind= accepts a handle code ──────────────────────

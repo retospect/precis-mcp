@@ -197,3 +197,77 @@ def test_cad_links_view(hub: Hub) -> None:
 
 def test_patent_links_view_registered_even_without_credentials() -> None:
     assert "links" in PatentHandler.spec.views
+
+
+# ---------------------------------------------------------------------------
+# render_links_section(priority=, limit=) — Change B
+# ---------------------------------------------------------------------------
+
+
+class TestRenderLinksSectionCapAndPriority:
+    def test_default_no_kwargs_is_byte_identical_to_before(self, store: Store) -> None:
+        """Regression: the numeric-ref callsite (and render_links_view)
+        pass no kwargs — the new priority/limit machinery must be
+        fully guarded off in that case, sorting by link.id exactly as
+        it did before this signature grew."""
+        a = store.insert_ref(kind="paper", slug="subj2020", title="subject paper").id
+        b = store.insert_ref(kind="paper", slug="rel2020", title="related paper").id
+        c = store.insert_ref(kind="paper", slug="citer2020", title="citing paper").id
+        # related-to link created first (lower link id); cites second
+        # (higher link id) — priority order would flip these, id order
+        # (the default) must not.
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        store.add_link(src_ref_id=c, dst_ref_id=a, relation="cites")
+        ref = store.get_ref(kind="paper", id=a)
+        assert ref is not None
+
+        no_kwargs = render_links_section(store, ref)
+        explicit_off = render_links_section(store, ref, limit=None, priority=False)
+        assert no_kwargs == explicit_off
+        # Default (id) order: related-to row (link 1) before cites row
+        # (link 2).
+        assert no_kwargs.index("related paper") < no_kwargs.index("citing paper")
+        assert "Links:" in no_kwargs
+        assert "Links (" not in no_kwargs  # no truncation header
+
+    def test_priority_true_sorts_evidential_before_related_to(
+        self, store: Store
+    ) -> None:
+        a = store.insert_ref(kind="paper", slug="subj2020b", title="subject paper").id
+        b = store.insert_ref(kind="paper", slug="rel2020b", title="related paper").id
+        c = store.insert_ref(kind="paper", slug="citer2020b", title="citing paper").id
+        # Same insert order as the id-order test above (related-to
+        # first / lower id) — priority=True must flip it.
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        store.add_link(src_ref_id=c, dst_ref_id=a, relation="cites")
+        ref = store.get_ref(kind="paper", id=a)
+        assert ref is not None
+
+        section = render_links_section(store, ref, priority=True)
+        assert section.index("citing paper") < section.index("related paper")
+
+    def test_limit_truncates_and_emits_overflow_line(self, store: Store) -> None:
+        a = store.insert_ref(kind="paper", slug="subj2020c", title="subject paper").id
+        for i in range(15):
+            target = store.insert_ref(
+                kind="paper", slug=f"target{i}2020c", title=f"target paper {i}"
+            ).id
+            store.add_link(src_ref_id=a, dst_ref_id=target, relation="related-to")
+        ref = store.get_ref(kind="paper", id=a)
+        assert ref is not None
+
+        section = render_links_section(store, ref, limit=12, priority=True)
+        assert "Links (12 of 15):" in section
+        assert "\n+3 more · get(kind='paper', id='pa" in section
+        assert "view='links')" in section
+
+    def test_limit_not_exceeded_keeps_plain_header(self, store: Store) -> None:
+        a = store.insert_ref(kind="paper", slug="subj2020d", title="subject paper").id
+        b = store.insert_ref(kind="paper", slug="rel2020d", title="related paper").id
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        ref = store.get_ref(kind="paper", id=a)
+        assert ref is not None
+
+        section = render_links_section(store, ref, limit=12, priority=True)
+        assert "Links:" in section
+        assert "more ·" not in section

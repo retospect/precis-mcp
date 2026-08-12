@@ -309,6 +309,34 @@ class TestStoreLinkCRUD:
         assert ref_level.dst_chunk_id is None
 
 
+# ── link_rel_summary_for_refs: Change A batch rel-count map ────────
+
+
+class TestLinkRelSummaryForRefs:
+    def test_empty_input_returns_empty_dict(self, store: Store) -> None:
+        assert store.link_rel_summary_for_refs([]) == {}
+
+    def test_counts_out_and_in_separately_per_relation(self, store: Store) -> None:
+        a = _seed_memory(store)
+        b = _seed_memory(store)
+        c = _seed_paper(store, slug="cites-a2020")
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="see-also")
+        store.add_link(src_ref_id=c, dst_ref_id=a, relation="cites")
+
+        summary = store.link_rel_summary_for_refs([a, b])
+        assert summary[a][("out", "related-to")] == 1
+        assert summary[a][("out", "see-also")] == 1
+        assert summary[a][("in", "cites")] == 1
+        assert summary[b][("in", "related-to")] == 1
+        assert summary[b][("in", "see-also")] == 1
+
+    def test_missing_ref_id_absent_from_result(self, store: Store) -> None:
+        a = _seed_memory(store)
+        summary = store.link_rel_summary_for_refs([a])
+        assert summary == {}
+
+
 # ── merge_refs: the duplicate-paper resolver primitive ─────────────
 
 

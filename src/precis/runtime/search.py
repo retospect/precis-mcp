@@ -594,6 +594,17 @@ class SearchMixin(RuntimeShape):
         output_shape: Literal["keywords", "toon"] = (
             "keywords" if view == "keywords" else "toon"
         )
+        # Change A: batch the ref-to-ref link summary across every stream
+        # so the cross-kind TOON table's ``links`` column doesn't need a
+        # per-hit query — one round-trip covers the whole rendered page.
+        # ``hub.store`` can be None in a store-less deployment (in-memory
+        # fixture); degrade to no link data rather than crash.
+        ref_ids = sorted({h.ref_id for s in streams for h in s if h.ref_id is not None})
+        link_summary = (
+            self.hub.store.link_rel_summary_for_refs(ref_ids)
+            if ref_ids and self.hub.store is not None
+            else {}
+        )
         response = merge_and_render(
             streams,
             page_size=top_k,
@@ -602,6 +613,7 @@ class SearchMixin(RuntimeShape):
             mode="rrf",
             empty_body=empty_body,
             output_shape=output_shape,
+            link_summary=link_summary,
         )
 
         # Round-2 picky F-8: prepend a per-kind hit-count line under the

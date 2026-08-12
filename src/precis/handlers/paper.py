@@ -1249,6 +1249,15 @@ class PaperHandler(Handler):
             )
         )
         body += render_next_section(next_steps)
+        # Change B: surface the ref-to-ref link graph on the default
+        # read too — not just ``view='links'`` — so an agent reading a
+        # paper the plain way still sees its evidential edges (cites,
+        # supports, contradicts, …). Capped + priority-sorted so a
+        # heavily-linked paper doesn't blow the response budget; the
+        # overflow line points at ``view='links'`` for the rest.
+        from precis.handlers._links_render import render_links_section
+
+        body += render_links_section(self.store, ref, limit=12, priority=True)
         return Response(body=body)
 
     def _render_view(self, ref: Ref, view: str) -> Response:

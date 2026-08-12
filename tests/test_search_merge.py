@@ -23,6 +23,7 @@ from precis.utils.search_merge import (
     block_hits_to_search_hits,
     merge_and_render,
     ref_hits_to_search_hits,
+    salient_link_label,
 )
 
 # ---------------------------------------------------------------------------
@@ -375,6 +376,135 @@ def test_keywords_shape_renders_compact_table() -> None:
     # Preview / title bodies absent — that's the whole compaction.
     assert "should NOT appear" not in body
     assert "don't surface this" not in body
+
+
+# ---------------------------------------------------------------------------
+# salient_link_label — Change A cross-kind ``links`` column
+# ---------------------------------------------------------------------------
+
+
+def test_salient_label_inbound_cites_wins() -> None:
+    rel_counts = {("in", "cites"): 3, ("out", "related-to"): 5}
+    total, label = salient_link_label(rel_counts)
+    assert total == 8
+    assert label == "cited"
+
+
+def test_salient_label_only_related_to_has_no_label() -> None:
+    rel_counts = {("out", "related-to"): 4, ("in", "related-to"): 1}
+    total, label = salient_link_label(rel_counts)
+    assert total == 5
+    assert label is None
+
+
+def test_salient_label_picks_modal_non_related_to() -> None:
+    # "supports" (3) outranks "related-to" (5, excluded) and
+    # "contradicts" (1).
+    rel_counts = {
+        ("out", "supports"): 3,
+        ("out", "related-to"): 5,
+        ("in", "contradicts"): 1,
+    }
+    total, label = salient_link_label(rel_counts)
+    assert total == 9
+    assert label == "supports"  # outbound rel renders as-is
+
+
+def test_salient_label_inbound_non_cites_uses_inverse_form() -> None:
+    rel_counts = {("in", "supersedes"): 2}
+    total, label = salient_link_label(rel_counts)
+    assert total == 2
+    assert label == "superseded by"
+
+
+def test_salient_label_empty_input() -> None:
+    assert salient_link_label({}) == (0, None)
+
+
+# ---------------------------------------------------------------------------
+# output_shape='toon' cross-kind table — Change A: no kind column, links col
+# ---------------------------------------------------------------------------
+
+
+def test_toon_table_has_no_kind_column_and_uses_uhandle_id() -> None:
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="paper",
+            title="A title",
+            preview="preview",
+            slug="acheson26",
+            pos=5,
+            ref_id=10,
+            uhandle="pc99",
+        )
+    ]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "id\tsummary\tremaining_words\tlinks" in out.body
+    assert "pc99" in out.body
+    # no bare "kind" header column
+    assert "kind\t" not in out.body
+
+
+def test_toon_table_id_falls_back_to_kind_qualified_slug() -> None:
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="paper",
+            title="A title",
+            preview="preview",
+            slug="acheson26",
+            pos=5,
+            ref_id=10,
+        )
+    ]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "paper:acheson26~5" in out.body
+
+
+def test_toon_table_id_falls_back_to_kind_qualified_ref_id() -> None:
+    s1 = [SearchHit(score=0.9, kind="memory", title="t", preview="p", ref_id=42)]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "memory:42" in out.body
+
+
+def test_toon_table_links_column_from_summary() -> None:
+    s1 = [
+        SearchHit(score=0.9, kind="paper", title="t", preview="p", slug="a", ref_id=10)
+    ]
+    link_summary = {10: {("in", "cites"): 18}}
+    out = merge_and_render(
+        [s1],
+        page_size=10,
+        query="q",
+        mode="rrf",
+        output_shape="toon",
+        link_summary=link_summary,
+    )
+    assert "18 · cited" in out.body
+
+
+def test_toon_table_links_column_empty_when_no_summary_entry() -> None:
+    s1 = [
+        SearchHit(score=0.9, kind="paper", title="t", preview="p", slug="a", ref_id=10)
+    ]
+    out = merge_and_render(
+        [s1],
+        page_size=10,
+        query="q",
+        mode="rrf",
+        output_shape="toon",
+        link_summary={},
+    )
+    lines = out.body.splitlines()
+    data_line = lines[-1]
+    assert data_line.endswith("\t")  # links cell empty, trailing tab present
 
 
 # ---------------------------------------------------------------------------
