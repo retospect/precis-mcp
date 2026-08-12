@@ -10,12 +10,13 @@
   ansible.builtin.set_fact:
     uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
-- name: Install precis-mcp[web,docx,pcb,external,mermaid,calc] into shared MCP venv
+- name: Install precis-mcp[web,pcb,external] into shared MCP venv
   when: os_family == "darwin"
-  # The ``docx`` extra (python-docx + latex2mathml) backs the .docx
-  # export route's OMML math — without latex2mathml ``latex_to_omml``
-  # falls back to plain italic text, so the web host needs it too (not
-  # just the worker). cf. CHANGELOG 2026-06-22 export toolchain.
+  # NOTE: docx (python-docx + latex2mathml), mermaid (mermaidx) and calc
+  # (sympy + pint) are core deps now, not extras — the shared venv gets the
+  # .docx OMML-math export route, /mermaid render/validate, and local
+  # get(kind='calc') automatically. See pyproject's "Deterministic, pure-
+  # code, no-API tool deps" note.
   #
   # The ``pcb`` extra (easyeda2kicad) backs the kind='pcb' Flow-B footprint
   # conversion (ADR 0042 §5) — the shared venv runs both precis-web and the
@@ -30,22 +31,11 @@
   # same venv either way; without `external`, trafilatura is absent and the
   # dream cycle's web fetch fails with "[error:Unsupported] trafilatura is
   # not installed" (gr48611). The worker venv already carries it.
-  #
-  # The ``mermaid`` extra (mermaidx = embedded QuickJS + resvg, pure wheels)
-  # backs the kind='mermaid' /mermaid web editor's server-side render/validate
-  # (ADR 0057). Without it the kind still works but render/validate degrade to
-  # accept-as-authored. resvg-py is already pulled by ``docx``.
-  #
-  # The ``calc`` extra (sympy + pint) backs kind='calc' — this shared venv
-  # also runs `precis worker --profile=agent`, so it's an agent-facing calc
-  # surface. sympy rides in transitively via torch, but pint (local unit
-  # conversion, get(kind='calc', q='3 ft to m')) does not, so ``calc`` is
-  # what installs pint here.
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[web,docx,pcb,external,mermaid,calc] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+      'precis-mcp[web,pcb,external] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so

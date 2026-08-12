@@ -440,9 +440,11 @@ CMD ["bash"]
 
 # -----------------------------------------------------------------------------
 # Stage: deps-lite — torch-free venv for serve + worker. Installs the base
-# package plus only the lightweight kind extras (docx/tex/calc/plot/
-# external/patent). Crucially OMITS `paper` (marker→torch) and `embed`
-# (sentence-transformers→torch), so this venv carries no torch at all.
+# package (which now carries the deterministic no-API tool deps — docx/tex/
+# calc/plot/mermaid/cad-export/dft — as core, per pyproject's policy note)
+# plus only the lightweight external/patent extras. Crucially OMITS `paper`
+# (marker→torch) and `embed` (sentence-transformers→torch), so this venv
+# carries no torch at all.
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm@${PYTHON_DIGEST} AS deps-lite
 
@@ -463,11 +465,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 WORKDIR /build/precis-mcp
 COPY pyproject.toml uv.lock /build/precis-mcp/
+# docx / tex / calc / plot are core deps now (deterministic, no-API,
+# torch-free — see pyproject's policy note), so the torch-free serve/worker
+# venv gets them automatically from the base sync; only external + patent
+# remain as extras here.
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv venv /opt/venv && \
     uv sync --frozen --no-install-project \
-        --extra docx --extra tex --extra calc \
-        --extra plot --extra external --extra patent
+        --extra external --extra patent
 
 # -----------------------------------------------------------------------------
 # Stage: builder-lite — install precis-mcp (base only, --no-deps) into the

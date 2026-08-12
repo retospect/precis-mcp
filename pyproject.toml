@@ -136,6 +136,45 @@ dependencies = [
     # module top by ``draft/narrate.py``, which every audio-export path
     # goes through, so it's core rather than the ``tts`` extra.
     "num2words>=0.5.13",
+    # ── Deterministic, pure-code, no-API tool deps — promoted from
+    # optional extras (2026-08-12). Policy: a tool that is *just code* —
+    # local, deterministic, no network/API — lives in core so its kind can
+    # never silently vanish from a venv over a missing extra (the recurring
+    # "extra-gap" class, e.g. asa's /opt/asa venv lacking [calc]). Every
+    # dep below is torch-free, so the slim serve/worker/embeddings venvs
+    # (ADR 0020/0021) stay torch-free — they just carry a little more pure-
+    # Python / compiled-wheel weight. Heavy-but-pure packs (rdkit → [chem],
+    # OCCT → [cad-step], kokoro → [tts]) and everything torch-bound
+    # (embed / paper / dft-ml / catalyst) deliberately stay optional.
+    #
+    # calc kind — sympy CAS + pint's curated unit registry.
+    "sympy>=1.12",
+    "pint>=0.23",
+    # plot / figure render — matplotlib (deterministic raster). pydantic is
+    # already present transitively via pydantic-settings; pinned direct
+    # because the plot spec models import it.
+    "matplotlib>=3.7",
+    "pydantic>=2.0",
+    # docx + tex file handlers — python-docx / latex2mathml (pure-Python)
+    # over the shared lxml (compiled wheel) + resvg-py (Rust SVG raster,
+    # figure→PNG) pair. lxml is also (harmlessly) listed by [patent].
+    "python-docx>=1.1",
+    "latex2mathml>=3.77",
+    "lxml>=5.0",
+    "resvg-py>=0.1",
+    # mermaid kind — mermaidx runs real mermaid.js in embedded QuickJS +
+    # resvg (no Node/Chromium/network). The kind still ships dark behind
+    # PRECIS_MERMAID_ENABLED; core just guarantees the render/validate engine.
+    "mermaidx>=0.8",
+    # cad-export — manifold3d CSG kernel: in-process booleans → STL/3MF, no
+    # external app. Exact-STEP interchange ([cad-step] / OCCT, ~200 MB)
+    # stays optional.
+    "manifold3d>=2.5",
+    # dft (light, torch-free) — ASE + spglib back CIF I/O, symmetry, the EMT
+    # relax rung and slab ops. ase is also (harmlessly) listed by [dft-ml] /
+    # [import]. The MLIP rung ([dft-ml], torch) stays optional.
+    "ase>=3.22",
+    "spglib>=2.1",
 ]
 
 [project.urls]
@@ -223,21 +262,10 @@ paper = [
     # so the ingest image is heavy regardless; serve / worker, which omit
     # both ``paper`` and ``embed``, are the ones that go torch-free.
 ]
-# DOCX file handler. ``resvg-py`` rasterises SVG/canvas figures to PNG for
-# ``add_picture`` (ADR 0057 slice 4) — a self-contained Rust wheel, no cairo.
-docx = ["python-docx>=1.1", "lxml>=5.0", "latex2mathml>=3.77", "resvg-py>=0.1"]
-# LaTeX file handler. ``resvg-py`` rasterises SVG/canvas figures to PNG for
-# ``\includegraphics`` (ADR 0057 slice 4).
-tex = ["lxml>=5.0", "resvg-py>=0.1"]
-# Local calculator: sympy (symbolic CAS) + pint (unit conversion). pint
-# is a small pure-Python dep with a curated, disambiguating unit registry
-# — calc routes a `to`/`in`/`->` clause to it (3 ft to m; 1 ton to kg)
-# before sympy. Missing-pint degrades cleanly: a conversion query raises a
-# clear "install precis-mcp[calc]" BadInput; ordinary math is unaffected.
-calc = ["sympy>=1.12", "pint>=0.23"]
-# DFT / atomistic structures (ADR 0043). ASE for CIF I/O + symmetry (spglib).
-# POSCAR/extXYZ export and the whole probe loop need NONE of this (pure, core).
-dft = ["ase>=3.22", "spglib>=2.1"]
+# NOTE: calc, tex, docx, plot, cad-export, dft, and mermaid were promoted
+# from extras into the core ``dependencies`` block (2026-08-12) — see the
+# "Deterministic, pure-code, no-API tool deps" policy note there. The
+# extras no longer exist; their kinds ship with every install.
 # The rented MLIP relax rung (ADR 0043 §9, `fidelity='ml'`): ASE + a machine-
 # learned potential (MACE-MP-0). torch is heavy — gated out of the default
 # install; rung-0 `clean` geometry repair needs none of this. GPAW/DFT
@@ -262,8 +290,6 @@ catalyst-gpu = [
     "autocatpath[mace]>=0.12.1",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
-# Declarative matplotlib plot renderer.
-plot = ["matplotlib>=3.7", "pydantic>=2.0"]
 # Paid web tools (perplexity / wolfram / youtube transcripts).
 external = [
     "wolframalpha>=5.0",
@@ -287,19 +313,15 @@ web = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
 ]
-# CAD export (ADR 0041 §10). Two tiers, both downstream of the design
-# loop (the kernel + probes need neither). ``cad-export`` is the
-# lightweight printable path: ``manifold3d`` (the same robust CSG kernel
-# OpenSCAD uses) does in-process booleans on tessellated primitives, then
-# precis hand-writes STL (binary) + 3MF (zip/XML) — no external app, no
-# trimesh. ``cad-step`` adds the OpenCASCADE B-rep kernel for *exact* STEP
-# interchange (which a mesh kernel fundamentally cannot emit). We import
-# the **raw** ``OCP`` binding, not ``build123d``, so the dependency is the
-# bare OCCT wheel (``cadquery-ocp-novtk`` — pip-installable, bundles the
-# OCCT libs, no system OpenCASCADE / conda / VTK) rather than build123d's
-# whole jupyter/ezdxf/svg tree. Heavy (~200 MB of bundled libs), so kept
-# out of ``[all]`` like the torch-gated paths.
-cad-export = ["manifold3d>=2.5"]
+# CAD STEP interchange (ADR 0041 §10). The lightweight printable path
+# (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,
+# pure-code, no-API tool deps" note above. ``cad-step`` adds the OpenCASCADE
+# B-rep kernel for *exact* STEP interchange (which a mesh kernel fundamentally
+# cannot emit). We import the **raw** ``OCP`` binding, not ``build123d``, so
+# the dependency is the bare OCCT wheel (``cadquery-ocp-novtk`` — pip-
+# installable, bundles the OCCT libs, no system OpenCASCADE / conda / VTK)
+# rather than build123d's whole jupyter/ezdxf/svg tree. Heavy (~200 MB of
+# bundled libs), so kept out of ``[all]`` like the torch-gated paths.
 cad-step = ["cadquery-ocp-novtk>=7.8"]
 # Electronics / PCB (ADR 0042 §5). Flow-B footprint resolution: LCSC part →
 # KiCad footprint (pads + pin-name map) via ``easyeda2kicad``, cached in
@@ -323,28 +345,21 @@ edgar = ["httpx>=0.27"]
 # (slice 2) — and lands here when that slice does. Kept out of `[all]` (heavy,
 # host-specific, and unused until a node actually runs an engine).
 chem = ["rdkit>=2023.9"]
-# mermaid — the `mermaid` diagram kind (ADR 0057). Pure-Python and
-# self-contained: `mermaidx` runs the real mermaid.js in an embedded QuickJS
-# engine and rasterizes with resvg — no Node, no Chromium, no container. The
-# engine is lazy-imported (only `MermaidLang.parse_error`/`render` touch it)
-# and the kind ships dark behind `PRECIS_MERMAID_ENABLED`, so non-mermaid
-# builds never load it. Kept out of `[all]` until the dev/CI image bakes it —
-# the mermaid tests `pytest.importorskip('mermaidx')`, so the gate stays green
-# without it (mirrors the `anki` dark-extra pattern).
-mermaid = ["mermaidx>=0.8"]
 # External DFT catalyst library import (ADR 0053 §2). The ``structure/
 # importers/`` adapter registry stays dependency-free (a pure
 # ``raw -> (Scene, ExternalRun, ExternalId)`` function per source, testable
 # against a checked-in fixture with zero extras installed); only each
 # source's thin *fetch* layer needs deps, gated behind this extra. ``ase``
-# is already the ``[dft]`` extra (a source that hands back a raw CIF/POSCAR/
-# XYZ blob needs it to decode); ``httpx`` is the shared SSRF-guarded
+# is now a core dep (a source that hands back a raw CIF/POSCAR/XYZ blob needs
+# it to decode) — kept listed here for intent; ``httpx`` is the shared SSRF-guarded
 # outbound-HTTP client (Catalysis-Hub's GraphQL endpoint). Future sources
 # (OC20 LMDB, NCCR/Zenodo tarballs) add their own deps here as they land —
 # kept out of ``[all]`` like the other network-bound / heavy extras
 # (cad/pcb/chem).
 import = ["ase>=3.22", "httpx>=0.27"]
-all = ["precis-mcp[embed,paper,docx,tex,calc,plot,external,patent,edgar,web,cad-export,mermaid]"]
+# calc/tex/docx/plot/cad-export/dft/mermaid are core deps now, not extras —
+# see the "Deterministic, pure-code, no-API tool deps" note above.
+all = ["precis-mcp[embed,paper,external,patent,edgar,web]"]
 
 [project.scripts]
 precis = "precis.cli:main"

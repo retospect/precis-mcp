@@ -3209,18 +3209,30 @@ name = "precis-mcp"
 version = "8.30.2"
 source = { editable = "." }
 dependencies = [
+    { name = "ase" },
     { name = "ftfy" },
+    { name = "latex2mathml" },
+    { name = "lxml" },
+    { name = "manifold3d" },
+    { name = "matplotlib" },
     { name = "mcp", extra = ["cli"] },
+    { name = "mermaidx" },
     { name = "num2words" },
     { name = "numpy" },
     { name = "pgvector" },
+    { name = "pint" },
     { name = "platformdirs" },
     { name = "prompt-toolkit" },
     { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pylatexenc" },
     { name = "pysbd" },
+    { name = "python-docx" },
     { name = "pyyaml" },
+    { name = "resvg-py" },
+    { name = "spglib" },
+    { name = "sympy" },
     { name = "tenacity" },
     { name = "watchdog" },
 ]
@@ -3232,23 +3244,14 @@ all = [
     { name = "habanero" },
     { name = "httpx" },
     { name = "jinja2" },
-    { name = "latex2mathml" },
     { name = "lxml" },
-    { name = "manifold3d" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
-    { name = "matplotlib" },
-    { name = "mermaidx" },
-    { name = "pint" },
-    { name = "pydantic" },
     { name = "pymupdf" },
-    { name = "python-docx" },
     { name = "python-epo-ops-client" },
     { name = "python-multipart" },
     { name = "rapidfuzz" },
-    { name = "resvg-py" },
     { name = "semanticscholar" },
     { name = "sentence-transformers" },
-    { name = "sympy" },
     { name = "trafilatura" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "wolframalpha" },
@@ -3262,15 +3265,8 @@ asa-slack = [
     { name = "slack-bolt" },
     { name = "slack-sdk" },
 ]
-cad-export = [
-    { name = "manifold3d" },
-]
 cad-step = [
     { name = "cadquery-ocp-novtk" },
-]
-calc = [
-    { name = "pint" },
-    { name = "sympy" },
 ]
 catalyst = [
     { name = "autocatpath" },
@@ -3282,19 +3278,9 @@ catalyst-gpu = [
 chem = [
     { name = "rdkit" },
 ]
-dft = [
-    { name = "ase" },
-    { name = "spglib" },
-]
 dft-ml = [
     { name = "ase" },
     { name = "mace-torch" },
-]
-docx = [
-    { name = "latex2mathml" },
-    { name = "lxml" },
-    { name = "python-docx" },
-    { name = "resvg-py" },
 ]
 edgar = [
     { name = "httpx" },
@@ -3313,9 +3299,6 @@ import = [
     { name = "ase" },
     { name = "httpx" },
 ]
-mermaid = [
-    { name = "mermaidx" },
-]
 paper = [
     { name = "habanero" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
@@ -3329,14 +3312,6 @@ patent = [
 ]
 pcb = [
     { name = "easyeda2kicad" },
-]
-plot = [
-    { name = "matplotlib" },
-    { name = "pydantic" },
-]
-tex = [
-    { name = "lxml" },
-    { name = "resvg-py" },
 ]
 tts = [
     { name = "kokoro-onnx" },
@@ -3364,7 +3339,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'asa'", specifier = ">=3.9" },
-    { name = "ase", marker = "extra == 'dft'", specifier = ">=3.22" },
+    { name = "ase", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'import'", specifier = ">=3.22" },
     { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.12.1" },
@@ -3382,44 +3357,42 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'import'", specifier = ">=0.27" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
-    { name = "latex2mathml", marker = "extra == 'docx'", specifier = ">=3.77" },
-    { name = "lxml", marker = "extra == 'docx'", specifier = ">=5.0" },
+    { name = "latex2mathml", specifier = ">=3.77" },
+    { name = "lxml", specifier = ">=5.0" },
     { name = "lxml", marker = "extra == 'patent'", specifier = ">=5.0" },
-    { name = "lxml", marker = "extra == 'tex'", specifier = ">=5.0" },
     { name = "mace-torch", marker = "extra == 'dft-ml'", specifier = ">=0.3" },
-    { name = "manifold3d", marker = "extra == 'cad-export'", specifier = ">=2.5" },
+    { name = "manifold3d", specifier = ">=2.5" },
     { name = "marker-pdf", marker = "sys_platform != 'win32' and extra == 'paper'", specifier = ">=1.0" },
-    { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.7" },
+    { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.0,<2" },
-    { name = "mermaidx", marker = "extra == 'mermaid'", specifier = ">=0.8" },
+    { name = "mermaidx", specifier = ">=0.8" },
     { name = "num2words", specifier = ">=0.5.13" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pgvector", specifier = ">=0.3.0" },
-    { name = "pint", marker = "extra == 'calc'", specifier = ">=0.23" },
+    { name = "pint", specifier = ">=0.23" },
     { name = "platformdirs", specifier = ">=4.0" },
-    { name = "precis-mcp", extras = ["embed", "paper", "docx", "tex", "calc", "plot", "external", "patent", "edgar", "web", "cad-export", "mermaid"], marker = "extra == 'all'" },
+    { name = "precis-mcp", extras = ["embed", "paper", "external", "patent", "edgar", "web"], marker = "extra == 'all'" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
-    { name = "pydantic", marker = "extra == 'plot'", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pymupdf", marker = "extra == 'paper'", specifier = ">=1.24.10" },
     { name = "pysbd", specifier = ">=0.3.4" },
-    { name = "python-docx", marker = "extra == 'docx'", specifier = ">=1.1" },
+    { name = "python-docx", specifier = ">=1.1" },
     { name = "python-epo-ops-client", marker = "extra == 'patent'", specifier = ">=4.0" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rapidfuzz", marker = "extra == 'paper'", specifier = ">=3.0" },
     { name = "rdkit", marker = "extra == 'chem'", specifier = ">=2023.9" },
-    { name = "resvg-py", marker = "extra == 'docx'", specifier = ">=0.1" },
-    { name = "resvg-py", marker = "extra == 'tex'", specifier = ">=0.1" },
+    { name = "resvg-py", specifier = ">=0.1" },
     { name = "semanticscholar", marker = "extra == 'paper'", specifier = ">=0.8" },
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
     { name = "slack-bolt", marker = "extra == 'asa-slack'", specifier = ">=1.20" },
     { name = "slack-sdk", marker = "extra == 'asa-slack'", specifier = ">=3.27" },
     { name = "soundfile", marker = "extra == 'tts'", specifier = ">=0.12" },
-    { name = "spglib", marker = "extra == 'dft'", specifier = ">=2.1" },
-    { name = "sympy", marker = "extra == 'calc'", specifier = ">=1.12" },
+    { name = "spglib", specifier = ">=2.1" },
+    { name = "sympy", specifier = ">=1.12" },
     { name = "tenacity", specifier = ">=8.0" },
     { name = "trafilatura", marker = "extra == 'external'", specifier = ">=1.6" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.29" },
@@ -3427,7 +3400,7 @@ requires-dist = [
     { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
     { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "docx", "tex", "calc", "dft", "dft-ml", "catalyst", "catalyst-gpu", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "edgar", "chem", "mermaid", "import", "all"]
+provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "external", "patent", "web", "cad-step", "pcb", "edgar", "chem", "import", "all"]
 
 [package.metadata.requires-dev]
 dev = [

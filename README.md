@@ -87,36 +87,37 @@ shape (e.g. `notes--meeting~L42-58`).
 pip install 'precis-mcp[all]'
 ```
 
-Extras (each enables its kinds; omit any you don't want):
+**Deterministic, no-API tool kinds ship in core** — no extra needed: `calc`
+(sympy + pint), `plot` / `figure` (matplotlib), `mermaid` (`mermaidx`, no
+Node/Chromium), `docx` + `tex` export (python-docx / latex2mathml / lxml /
+resvg), `cad` STL/3MF export (manifold3d CSG kernel), and `structure` CIF
+I/O + symmetry (ASE + spglib). These are local, deterministic, torch-free
+code, so they live in core rather than behind an extra that could go missing.
+
+Extras cover the rest — network/API tools, torch-bound ML, and heavy or
+host-specific packs (each enables its kinds; omit any you don't want):
 
 | Extra        | Enables                                            | Heavy? |
 |--------------|----------------------------------------------------|--------|
 | `embed`      | In-process bge-m3 embedder (sentence-transformers + torch) — needed for `search` unless you point at a remote embedder | yes (~2 GB model on first load) |
 | `paper`      | `paper` ingest — Marker PDF → chunks + CrossRef/S2 metadata | yes (pulls torch via Marker) |
-| `calc`       | `calc` kind (sympy)                                | no |
 | `external`   | `math` (Wolfram), `youtube`, `web`, Perplexity trio, `news` | no |
 | `patent`     | `patent` kind (EPO Open Patent Services)           | no |
+| `edgar`      | `edgar` kind — SEC EDGAR filings (httpx)           | no |
 | `web`        | `precis web` browser UI (FastAPI + Jinja + HTMX)   | no |
-| `tex`        | `tex` kind — `.tex` files under `PRECIS_ROOT`      | no |
-| `docx`       | DOCX file handler                                  | no |
-| `plot`       | Declarative matplotlib plot renderer               | no |
-| `cad-export` | `cad` STL/3MF export (manifold3d CSG kernel)       | no |
 | `cad-step`   | `cad` exact STEP export (OpenCASCADE B-rep)        | yes (~200 MB OCCT libs) |
 | `pcb`        | `pcb` footprint resolution (LCSC → KiCad)          | no |
-| `dft`        | `structure` CIF I/O + symmetry (ASE + spglib)      | no |
 | `dft-ml`     | `structure` ML-potential relax (ASE + MACE-torch)  | yes (pulls torch) |
-| `edgar`      | `edgar` kind — SEC EDGAR filings (httpx)           | no |
-| `chem`       | `route` kind — retrosynthesis tool-pack (RDKit)    | no |
-| `mermaid`    | `mermaid` diagram kind — pure-Python `mermaidx` (no Node/Chromium) | no |
+| `chem`       | `route` kind — retrosynthesis tool-pack (RDKit)    | yes (~150 MB) |
 | `tts`        | Audio export — local TTS for voice drafts + the morning brief (Kokoro) | yes (host-specific) |
 | `asa`        | `asa-bot` Discord bridge (discord.py)              | no |
-| `all`        | `embed` + `paper` + `docx` + `tex` + `calc` + `plot` + `external` + `patent` + `edgar` + `web` + `cad-export` + `mermaid`. Excludes the heavier / specialized `cad-step`, `dft`, `dft-ml`, `pcb`, `chem`, `tts`, `asa` tiers — install those explicitly. | yes |
+| `all`        | `embed` + `paper` + `external` + `patent` + `edgar` + `web`. Excludes the heavier / specialized `cad-step`, `dft-ml`, `pcb`, `chem`, `tts`, `asa` tiers — install those explicitly. | yes |
 
 A bare `pip install precis-mcp` gives you the state kinds (`todo`,
-`memory`, `gripe`, `anki`, `conv`, `oracle`, `skill`,
-`random`) and the `markdown` / `plaintext` / `python` file kinds.
-(The `tex` file kind also rides on `PRECIS_ROOT`, but its `.tex`
-parsing pulls in the `[tex]` extra's `lxml`.)
+`memory`, `gripe`, `anki`, `conv`, `oracle`, `skill`, `random`), the
+core deterministic tool kinds listed above, and the `markdown` /
+`plaintext` / `python` / `tex` file kinds (the file kinds ride on
+`PRECIS_ROOT`).
 Optional deps surface as `InitError` at boot: the kind silently drops
 off the tool surface with a WARNING, the server stays up.
 

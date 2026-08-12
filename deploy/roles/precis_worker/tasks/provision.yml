@@ -55,7 +55,7 @@
     creates: "{{ precis_worker_venv }}/bin/python"
   become: true
 
-- name: Install precis-mcp[paper,patent,external,mermaid] into worker venv
+- name: Install precis-mcp[paper,patent,external] into worker venv
   # Installing from git+https because the worker subcommand only lives in
   # the v7/v8 line — PyPI is still at 6.0.0 as of 2026-05-31. Point at a
   # branch ref (configurable via precis_worker_git_ref) so a single commit
@@ -66,8 +66,10 @@
   # uv pins the first SHA it ever resolved for the branch and a fresh
   # push doesn't deploy until someone manually clears the cache.
   #
-  # The ``mermaid`` extra (mermaidx, pure wheels) backs the diagram_propose
-  # tick's mermaid render/validate (ADR 0057) on the agent worker.
+  # NOTE: mermaid (mermaidx, pure wheels) is a core dep now — the
+  # diagram_propose tick's render/validate (ADR 0057) works on every worker
+  # without an extra. See pyproject's "Deterministic, pure-code, no-API tool
+  # deps" note.
   #
   # ``catalyst`` (autocatpath_plugin hosts only) pulls the light pure
   # autocatpath engine so PathwayHandler imports — the plist sets
@@ -77,7 +79,7 @@
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[paper,patent,external,mermaid{% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
+      'precis-mcp[paper,patent,external{% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true
   register: precis_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
