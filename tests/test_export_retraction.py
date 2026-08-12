@@ -165,6 +165,61 @@ def test_check_mode_force_is_passed_through(patched_walk):
     assert report.checked is True
 
 
+def test_select_for_check_puts_the_neediest_first(patched_walk):
+    """Never-checked leads, then oldest stamp — the property that makes the
+    button's cap a per-press budget instead of a horizon. A head slice would
+    return ``[fresh, old, never]`` here and strand ``never`` forever."""
+    now = datetime.now(UTC)
+    fresh = _ref(1, "fresh", checked_at=now - timedelta(days=1))
+    old = _ref(2, "old", checked_at=now - timedelta(days=200))
+    never = _ref(3, "never")
+
+    picked = R.select_for_check([fresh, old, never], 2)
+
+    assert [r.slug for r in picked] == ["never", "old"]
+
+
+def test_select_for_check_returns_everything_under_the_cap(patched_walk):
+    """Under the cap there is nothing to prioritise — order is left alone so
+    a small draft's report reads in cited order."""
+    refs = [_ref(1, "a"), _ref(2, "b")]
+
+    assert [r.slug for r in R.select_for_check(refs, 40)] == ["a", "b"]
+    assert [r.slug for r in R.select_for_check(refs, 0)] == ["a", "b"]
+
+
+def test_check_slugs_narrows_the_walk_but_not_the_report(patched_walk):
+    """The subset bounds the *network* walk only. Reporting just the checked
+    subset is what made a half-walked draft look complete: the pane's
+    "N of M never checked" prompt reads off these totals."""
+    seen: dict = {}
+
+    def _check(store, ref_ids, **kw):
+        seen["ref_ids"] = list(ref_ids)
+        return [
+            _FakeCheck(
+                ref_id=r, outcome="checked", status=None, checked_at=datetime.now(UTC)
+            )
+            for r in ref_ids
+        ]
+
+    patched_walk([_ref(1, "a"), _ref(2, "b"), _ref(3, "c")])
+
+    original = R.check_refs_retraction
+    R.check_refs_retraction = _check
+    try:
+        report = R.draft_retraction_report(
+            object(), object(), check=True, check_slugs=["b"]
+        )
+    finally:
+        R.check_refs_retraction = original
+
+    assert seen["ref_ids"] == [2]  # only the selected cite hit the network
+    assert [p.slug for p in report.papers] == ["a", "b", "c"]  # report is whole
+    # The two that weren't walked keep their stored state — here, unchecked.
+    assert [p.slug for p in report.unchecked] == ["a", "c"]
+
+
 def test_unresolved_slugs_are_reported_not_dropped(patched_walk):
     patched_walk([_ref(1, "real")], unresolved=["ghost2020"])
 

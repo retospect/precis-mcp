@@ -1041,14 +1041,15 @@ async def new_draft(
 
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-#: Hard cap on how many cites the retraction-watch button re-checks in one
-#: request (``retraction_check_route``) — a big draft is one Crossref
-#: round-trip per uncached cite, and this is a synchronous request a human
-#: is deliberately waiting on — sync-with-a-cap for v1, rather than
-#: promoting the walk to a background job.
-#: Chosen so a cold-cache walk stays well under a minute; a draft with more
-#: cites than this gets a truncated, clearly-labelled check rather than an
-#: open-ended wait.
+#: How many cites the retraction-watch button re-checks in ONE press
+#: (``retraction_check_route``) — a big draft is one Crossref round-trip
+#: per uncached cite, and this is a synchronous request a human is
+#: deliberately waiting on — sync-with-a-cap for v1, rather than promoting
+#: the walk to a background job.
+#: Chosen so a cold-cache walk stays well under a minute. This is a budget,
+#: not a horizon: ``precis.export.retraction.select_for_check`` picks the
+#: neediest cites, so a draft with more cites than this is walked over
+#: several presses rather than having its tail stranded.
 _RETRACTION_CHECK_CAP = 40
 
 #: Overall wall-clock budget for one retraction-watch walk. habanero's
@@ -1367,13 +1368,23 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
 
     Synchronous-with-a-cap for v1: the user
     is deliberately waiting on this button, but a large draft is one
-    Crossref round-trip per uncached cite. The walk is capped at
-    ``_RETRACTION_CHECK_CAP`` cites and wrapped in an overall wall-clock
-    budget (``_RETRACTION_CHECK_BUDGET_S``) so neither the request nor
-    its worker thread can hang indefinitely on a slow/unreachable
-    Crossref — a truncated walk says so rather than silently
-    under-reporting."""
-    from precis.export.retraction import cited_paper_refs, draft_retraction_report
+    Crossref round-trip per uncached cite. So one press checks at most
+    ``_RETRACTION_CHECK_CAP`` cites, chosen by need
+    (``select_for_check``: never-checked first, then oldest stamp) —
+    a per-press budget, not a horizon, so pressing again continues
+    through the draft. The *report* still covers every cite: the pane's
+    "N of M never checked" prompt reads off it, and scoping the report to
+    the checked subset would make a half-walked draft look complete.
+
+    The whole walk — body render included — runs in one worker thread
+    under a wall-clock budget (``_RETRACTION_CHECK_BUDGET_S``), so
+    neither the event loop nor the request can be pinned by a slow
+    Crossref or a big draft."""
+    from precis.export.retraction import (
+        cited_paper_refs,
+        draft_retraction_report,
+        select_for_check,
+    )
 
     store = get_store(request)
     ref = _draft_ref(store, ident)
@@ -1382,38 +1393,48 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
     form = await request.form()
     force = str(form.get("force") or "") in ("1", "true", "yes", "on")
 
-    refs, unresolved = cited_paper_refs(store, ref)
-    total = len(refs)
-    truncated = total > _RETRACTION_CHECK_CAP
-    selected = refs[:_RETRACTION_CHECK_CAP] if truncated else refs
-    cited_slugs = [r.slug for r in selected]
-
-    def _run() -> Any:
-        return draft_retraction_report(
+    def _run() -> tuple[Any, list[str], int, int]:
+        # ``cited_paper_refs`` renders the draft body to learn what it
+        # cites — seconds on a big draft. It belongs in here, inside the
+        # budget, not on the event loop ahead of it.
+        refs, unresolved = cited_paper_refs(store, ref)
+        selected = select_for_check(refs, _RETRACTION_CHECK_CAP)
+        report = draft_retraction_report(
             store,
             ref,
-            cited_slugs=cited_slugs,
+            cited_slugs=[r.slug for r in refs],
+            check_slugs=[r.slug for r in selected],
             check=True,
             force=force,
             mailto=_crossref_mailto(),
         )
+        return report, unresolved, len(refs), len(selected)
 
     try:
-        report = await asyncio.wait_for(
+        report, unresolved, total, checked_now = await asyncio.wait_for(
             asyncio.to_thread(_run), timeout=_RETRACTION_CHECK_BUDGET_S
         )
     except TimeoutError:
         # asyncio.wait_for cancels our await, but the underlying thread
         # keeps running to completion in the background — it just finishes
-        # unobserved. What matters here is that this request (and the
-        # event loop) doesn't wait on it.
-        log.warning("drafts: retraction-check timed out for %s", ident)
+        # unobserved, stamping as it goes. What matters here is that this
+        # request (and the event loop) doesn't wait on it. Because
+        # selection is by need, whatever it stamped is progress a later
+        # press builds on rather than repeats.
+        log.warning(
+            "drafts: retraction-check exceeded its %.0fs budget for %s "
+            "(walk continues in the background)",
+            _RETRACTION_CHECK_BUDGET_S,
+            ident,
+        )
         return JSONResponse(
             {
                 "ok": False,
                 "error": (
-                    f"timed out after {_RETRACTION_CHECK_BUDGET_S:.0f}s "
-                    "waiting on Crossref — try again shortly"
+                    f"the retraction walk ran past its "
+                    f"{_RETRACTION_CHECK_BUDGET_S:.0f}s budget — whatever it "
+                    "checked before the cutoff is saved; press again to pick up "
+                    "where it left off"
                 ),
             },
             status_code=504,
@@ -1425,14 +1446,16 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
             status_code=502,
         )
 
+    truncated = checked_now < total
     payload = _retraction_report_json(report)
     payload["unresolved"] = unresolved
     payload["truncated"] = truncated
+    payload["checked_now"] = checked_now
     if truncated:
         payload["truncated_total"] = total
         payload["summary"] = (
-            f"checked {len(cited_slugs)} of {total} cited papers (capped) — "
-            f"{report.summary()}"
+            f"re-checked {checked_now} of {total} cited papers this press "
+            f"(per-press cap) — press again to continue. {report.summary()}"
         )
     return JSONResponse(payload)
 

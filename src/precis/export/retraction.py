@@ -11,6 +11,12 @@ download click is the wrong place to find out. The button is the check:
 it is the user deliberately waiting, and it is where stale cites get
 re-fetched (TTL-gated, see ``ingest/provenance.check_ref_retraction``).
 
+A caller that can't afford to walk every cite in one press narrows the
+network side with ``check_slugs`` — :func:`select_for_check` picks the
+neediest — while the report still covers the whole draft. Bounding the
+*report* instead would be the same bug in a different place: a partly
+walked draft that reads as fully checked.
+
 Coverage is sparse by design, so "we never looked" is a first-class
 outcome here, distinct from "we looked and it was fine" — see
 :attr:`DraftRetractionReport.unchecked`. Consumers surface it rather
@@ -19,6 +25,7 @@ than rounding it down to clean.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -147,12 +154,40 @@ def cited_paper_refs(
     return refs, unresolved
 
 
+def select_for_check(refs: Sequence[Any], limit: int) -> list[Any]:
+    """The ``limit`` cites most in need of a network re-check, neediest
+    first: never-checked before checked, then oldest stamp first.
+
+    A caller that can only afford so many Crossref round-trips per press
+    must select by *need*, not by position. A head slice
+    (``refs[:limit]``) re-picks the same cites forever: they come back
+    TTL-fresh, so every later press is a no-op and cites past ``limit``
+    are unreachable through that button at all. Ordering by need makes
+    the cap a per-press budget instead of a horizon — each press pushes
+    what it checked to the back, so repeated presses walk the whole
+    draft.
+    """
+    if limit <= 0 or len(refs) <= limit:
+        return list(refs)
+    # Stable sort: cites with equal need keep their cited order.
+    ordered = sorted(refs, key=_check_need_key)
+    return ordered[:limit]
+
+
+def _check_need_key(r: Any) -> tuple[bool, Any]:
+    """Sort key for :func:`select_for_check` — ``False`` sorts first, so
+    never-checked leads, then oldest ``retraction_checked_at``."""
+    at = getattr(r, "retraction_checked_at", None)
+    return (at is not None, at)
+
+
 def draft_retraction_report(
     store: Any,
     ref: Any,
     *,
     cited_slugs: list[str] | None = None,
     check: bool = False,
+    check_slugs: Collection[str] | None = None,
     force: bool = False,
     ttl_days: int = RETRACTION_TTL_DAYS,
     mailto: str | None = None,
@@ -163,18 +198,31 @@ def draft_retraction_report(
     network. ``check=True`` (the button) re-checks each cite through the
     TTL gate; ``force=True`` additionally ignores the TTL, which is what
     makes pressing the button twice in a day do something.
+
+    ``check_slugs`` narrows the *network* walk to a subset while the
+    report still covers every cite — that split is what lets a caller
+    spend a bounded per-press budget (see :func:`select_for_check`)
+    without truncating what it reports. Truncating the report instead
+    hides the tail: the pane's "N of M never checked" prompt reads off
+    these totals, so a report scoped to the checked subset always looks
+    complete.
     """
     refs, unresolved = cited_paper_refs(store, ref, cited_slugs=cited_slugs)
 
+    to_check = refs
+    if check_slugs is not None:
+        wanted = set(check_slugs)
+        to_check = [r for r in refs if (getattr(r, "slug", "") or "") in wanted]
+
     results: dict[int, Any] = {}
-    if check and refs:
+    if check and to_check:
         # ``Ref.id`` is the ref_id column — the dataclass renamed it in
         # migration 0001; there is no ``.ref_id`` attribute.
         results = {
             c.ref_id: c
             for c in check_refs_retraction(
                 store,
-                [r.id for r in refs],
+                [r.id for r in to_check],
                 force=force,
                 ttl_days=ttl_days,
                 mailto=mailto,
@@ -213,4 +261,5 @@ __all__ = [
     "DraftRetractionReport",
     "cited_paper_refs",
     "draft_retraction_report",
+    "select_for_check",
 ]

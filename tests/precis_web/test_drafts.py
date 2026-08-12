@@ -927,6 +927,7 @@ def test_export_pdf_falls_back_to_draft_ref_when_no_project(tmp_path) -> None:
 # each route body, so the patched binding is picked up fresh per request.
 
 import precis.export.retraction as retraction_mod
+import precis_web.routes.drafts as drafts_mod
 from precis.export.retraction import CitedPaper, DraftRetractionReport
 
 
@@ -1106,8 +1107,10 @@ def test_retraction_check_route_reports_per_paper_status(
     def fake_cited_paper_refs(store, ref, **kw):
         return (
             [
-                SimpleNamespace(ref_id=1, slug="smith2024"),
-                SimpleNamespace(ref_id=2, slug="corrected-paper"),
+                SimpleNamespace(id=1, slug="smith2024", retraction_checked_at=None),
+                SimpleNamespace(
+                    id=2, slug="corrected-paper", retraction_checked_at=None
+                ),
             ],
             [],
         )
@@ -1132,6 +1135,61 @@ def test_retraction_check_route_reports_per_paper_status(
     assert [p["slug"] for p in data["retracted"]] == ["smith2024"]
     assert [p["slug"] for p in data["soft"]] == ["corrected-paper"]
     assert data["truncated"] is False
+    assert data["checked_now"] == 2
+
+
+def test_retraction_check_route_rotates_through_a_capped_draft(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """A draft with more cites than the per-press cap must hand the walk the
+    *neediest* cites, and still report on all of them.
+
+    The bug this pins: the route used to slice ``refs[:cap]``, so every press
+    re-picked the same head — those came back TTL-fresh, later presses were
+    no-ops, and the tail was unreachable through the only user-facing trigger
+    there is (observed on a 95-cite draft in prod, 2026-08-12).
+    """
+    seen: dict = {}
+    now = datetime.now(UTC)
+
+    def fake_cited_paper_refs(store, ref, **kw):
+        # Head is freshly checked, tail never was — a head slice would pick
+        # exactly the wrong two.
+        return (
+            [
+                SimpleNamespace(id=1, slug="fresh-a", retraction_checked_at=now),
+                SimpleNamespace(id=2, slug="fresh-b", retraction_checked_at=now),
+                SimpleNamespace(id=3, slug="never-c", retraction_checked_at=None),
+                SimpleNamespace(id=4, slug="never-d", retraction_checked_at=None),
+            ],
+            [],
+        )
+
+    def fake_report(store, ref, *, cited_slugs=None, check_slugs=None, **kw):
+        seen["cited_slugs"] = list(cited_slugs or [])
+        seen["check_slugs"] = list(check_slugs or [])
+        return DraftRetractionReport(
+            papers=[_cited(s, None, checked_at=None) for s in (cited_slugs or [])],
+            checked=True,
+        )
+
+    monkeypatch.setattr(retraction_mod, "cited_paper_refs", fake_cited_paper_refs)
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(drafts_mod, "_RETRACTION_CHECK_CAP", 2)
+
+    r = draft_client.post("/drafts/nt/retraction-check")
+    assert r.status_code == 200
+    data = r.json()
+
+    # Only the never-checked pair went to Crossref...
+    assert seen["check_slugs"] == ["never-c", "never-d"]
+    # ...but the report — and so the pane's "N of M" prompt — covers all four.
+    assert seen["cited_slugs"] == ["fresh-a", "fresh-b", "never-c", "never-d"]
+    assert data["total"] == 4
+    assert data["truncated"] is True
+    assert data["truncated_total"] == 4
+    assert data["checked_now"] == 2
+    assert "press again to continue" in data["summary"]
 
 
 def test_retraction_check_route_force_flag_passed_through(
@@ -1142,7 +1200,10 @@ def test_retraction_check_route_force_flag_passed_through(
     seen = {}
 
     def fake_cited_paper_refs(store, ref, **kw):
-        return ([SimpleNamespace(ref_id=1, slug="smith2024")], [])
+        return (
+            [SimpleNamespace(id=1, slug="smith2024", retraction_checked_at=None)],
+            [],
+        )
 
     def fake_report(store, ref, *, cited_slugs=None, check=False, force=False, **kw):
         seen["force"] = force
