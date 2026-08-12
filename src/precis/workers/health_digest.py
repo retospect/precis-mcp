@@ -1,5 +1,9 @@
-"""``health_digest`` — the §D liveness net (Phase 1 of
-``docs/backlog/health-watchdog.md``).
+"""``health_digest`` — the slow-rot liveness net.
+
+Design umbrella: ``docs/backlog/self-healing-spine.md`` (Layer 2). The
+``§`` letters below (§A/§D/§F/§L) cite the folded ``health-watchdog.md``
+design this module was built from — deleted into the spine doc; full
+text in git history.
 
 A periodic, outcome-based digest that reaches out (push, not pull) so a
 scheduled producer never rots silently for days: nursery already owns the
@@ -195,8 +199,8 @@ def _hours_since(ts: datetime | None) -> float | None:
 #: activity" probe run in one batch via
 #: :func:`precis.health_checks.fetch_freshness_timestamps`. ``what`` is the
 #: human phrase used in the rendered detail line. Budgets are the design
-#: doc's pulse-probe-seeded values (``docs/backlog/health-watchdog.md``
-#: §A "Layer 1 — Outcomes"), not guesses.
+#: doc's pulse-probe-seeded values (§A "Layer 1 — Outcomes" of the folded
+#: design — see module docstring), not guesses.
 _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
     (
         "papers_ingested",

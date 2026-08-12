@@ -374,7 +374,7 @@ def _over_daily_budget(store: Any, cadence: str) -> bool:
 CADENCES: tuple[Cadence, ...] = (
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
-    # §D (docs/backlog/health-watchdog.md): the liveness-net digest.
+    # docs/backlog/self-healing-spine.md Layer 2: the liveness-net digest.
     # Host-agnostic like cron_tick/watch_poll — any live worker can win it;
     # §A's lease machinery IS the fleet-singleton throttle, so
     # workers/health_digest.py doesn't invent its own.

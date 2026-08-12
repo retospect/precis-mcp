@@ -335,7 +335,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-nursery-help",
     ),
     ServiceSpec(
-        # §D (docs/backlog/health-watchdog.md). Fleet-singleton via the
+        # docs/backlog/self-healing-spine.md Layer 2. Fleet-singleton via the
         # `health_digest` scheduler cadence (workers/scheduler.py, hourly,
         # host-agnostic) — NOT `default_profiles`, mirroring `dream_agent`
         # below: a cadence-fired pass registers here only for a manual

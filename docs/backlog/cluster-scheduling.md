@@ -8,7 +8,7 @@ model: opus
 
 > **The one plan to review.** Subsumes the scheduling framing previously
 > scattered across `factory-console-and-scheduling.md` §15, `gpu-priority.md`,
-> `gpu-cluster-modes.md`, `health-watchdog.md`, and the related residual
+> `gpu-cluster-modes.md`, `self-healing-spine.md`, and the related residual
 > items. Those remain the mechanical sub-specs (reconciliation at the end);
 > this doc is the frame, the target state, the current state, and the
 > ordering. Greenfield where legacy is messy — tied only to what is already
@@ -181,7 +181,7 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
 
 - **§D** — shipped through Phase 2. Remaining: Phase 3 (brief lane, surface
   canaries, alert-triage disposition) + the P6 autonomy rungs. Full spec:
-  `health-watchdog.md`.
+  `self-healing-spine.md`.
 - **§K** — console v2 shipped; only the last-ok/fail click-through
   drill-down remains.
 - **External dead-man's-switch.** An out-of-band `SELECT 1` watcher on a
@@ -340,7 +340,7 @@ This doc is the index + ordering + north-star; the sub-spec wins on
 mechanics, this doc on cross-axis ordering and the laws.
 
 - `gpu-priority.md` → §B (shipped; kept as the design record).
-- `health-watchdog.md` → §D + Pillar 6's ladder.
+- `self-healing-spine.md` → §D + Pillar 6's ladder.
 - `compute-lane-lease-epoch.md` → §H-lifecycle (the epoch).
 - `sim-harness.md` → §H's image-pinning + `precis_access:read`
   requirements (its slice 1 ships independently of this plan).

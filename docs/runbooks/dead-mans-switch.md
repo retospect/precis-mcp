@@ -1,6 +1,6 @@
 # External dead-man's-switch
 
-`health_digest` (§D, `docs/backlog/health-watchdog.md`) covers every
+`health_digest` (`docs/backlog/self-healing-spine.md` Layer 2) covers every
 liveness signal that lives *inside* precis's own Postgres — but a total
 fleet/DB outage can't report itself through a mechanism that died with it.
 The external dead-man's-switch is the one signal that survives that: an

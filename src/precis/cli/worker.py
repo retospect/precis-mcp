@@ -2201,7 +2201,7 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_dream_agent_pass)
 
-        # health_digest — §D (docs/backlog/health-watchdog.md). Same shape
+        # health_digest — docs/backlog/self-healing-spine.md Layer 2. Same shape
         # as dream_agent just above: this registration is for a manual/ad-hoc
         # `--only health_digest` run only (no `default_profiles`, no
         # `enable_env`). The STANDING trigger is the `health_digest`
