@@ -44,6 +44,18 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update \
       espeak-ng ffmpeg tini git curl build-essential cmake \
  && rm -rf /var/lib/apt/lists/*
 
+# Upgrade pip before any install. The base image's stock pip ships an older
+# vendored `packaging` that raises `InvalidVersion: Invalid version: 'all'` the
+# moment its resolver reads a wheel whose Requires-Dist carries an
+# `extra == "all"` marker — it wrongly coerces the extra name "all" to a
+# Version. mermaidx (a CORE dep since the deterministic-no-API-tools
+# consolidation, so `precis-mcp[tts]` now pulls it) is exactly such a wheel.
+# uv's resolver tolerates the marker — which is why every uv-based venv on the
+# cluster installed fine and only this legacy-builder pip path broke. A modern
+# pip parses it correctly. sha-independent, so this layer stays cached across
+# PRECIS_REF bumps.
+RUN pip install --no-cache-dir --upgrade pip
+
 # Warm layer: the TTS engine + G2P + the full precis dep tree at a FLOATING
 # ref — deliberately `@main`, NOT the build-arg, so this layer's cache
 # survives sha bumps. It may go stale (fine: it exists only to keep the deps,
