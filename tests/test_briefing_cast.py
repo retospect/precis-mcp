@@ -14,6 +14,7 @@ from precis.reading.briefing_cast import (
     _dormant_nudge,
     _lane_quest,
     _lane_reading,
+    _lane_recall,
     _lane_system_activity,
     _render_papers,
     build_reading_briefing,
@@ -210,6 +211,38 @@ class TestReadingLane:
         )
         assert "Wired-in paper" in lanes["reading"]
         assert (int(opened.id), "related-to") in sources
+
+
+class TestRecallLane:
+    """The leech lane is scoped to the ``Precis`` deck + its ``Precis::<topic>``
+    sub-decks; cards the human parked in other decks (retired / re-activate
+    piles) must not surface, however bad their recall stats."""
+
+    def _seed_leech(self, store: Any, *, title: str, deck: str) -> Any:
+        return store.insert_ref(
+            kind="anki",
+            slug=None,
+            title=title,
+            meta={
+                "deck": deck,
+                "fields": {"Text": f"body of {title}"},
+                "anki_stats": {"lapses_total": 9, "ease_min": 1.3},
+            },
+        )
+
+    def test_precis_deck_leech_surfaces_but_foreign_deck_does_not(
+        self, store: Any
+    ) -> None:
+        tag = uuid.uuid4().hex[:8]
+        self._seed_leech(store, title=f"precis-top-{tag}", deck="Precis")
+        self._seed_leech(store, title=f"precis-sub-{tag}", deck="Precis::chinese")
+        self._seed_leech(store, title=f"retired-{tag}", deck="z(Re-activate)")
+
+        out = _lane_recall(store, cutoff=datetime.now(UTC))
+
+        assert f"precis-top-{tag}" in out
+        assert f"precis-sub-{tag}" in out
+        assert f"retired-{tag}" not in out
 
 
 class TestBuild:

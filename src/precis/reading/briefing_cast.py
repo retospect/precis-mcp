@@ -434,12 +434,20 @@ def _lane_recall(store: Any, *, cutoff: datetime) -> str:
     # Anki leeches: bad-recall cards (high lapses / collapsed ease). Carry the
     # card body + any back-extra note so the brief can TEACH the idea (the
     # depth-first contract), not merely restate the title.
+    #
+    # Scoped to the Precis deck + its `Precis::<topic>` sub-decks — foreign
+    # imports carry their real deck in ``meta.deck`` (anki/project.py), and the
+    # human parks retired cards in other decks (e.g. ``z(Re-activate)``); those
+    # aren't recall work the brief should nag about.
     try:
         with store.pool.connection() as conn:
             leeches = conn.execute(
                 "SELECT title, meta->'fields'->>'Text', "
                 "       meta->'fields'->>'Back Extra' FROM refs "
                 "WHERE kind='anki' AND deleted_at IS NULL "
+                # ``%%`` — psycopg parses ``%`` in the query text as a
+                # placeholder marker; the literal LIKE wildcard must be doubled.
+                "AND (meta->>'deck' = 'Precis' OR meta->>'deck' LIKE 'Precis::%%') "
                 "AND ( (meta->'anki_stats'->>'lapses_total')::int >= 4 "
                 "   OR (meta->'anki_stats'->>'ease_min')::float <= 2.0 ) "
                 "ORDER BY (meta->'anki_stats'->>'lapses_total')::int DESC NULLS LAST "
