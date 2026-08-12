@@ -73,6 +73,17 @@ def test_cd_dotdot_out_of_worktree_is_denied(monkeypatch) -> None:
     assert reason is not None
 
 
+@_needs_posix_paths
+def test_cd_to_primary_with_trailing_redirect_is_denied(monkeypatch) -> None:
+    _patch(monkeypatch)
+    # `cd <primary> 2>/dev/null; <cmd>` must not smuggle the redirect into the
+    # path and slip past the deny (regression: the greedy path group used to
+    # absorb ` 2>/dev/null`, so `_under` stopped matching the primary tree).
+    reason = evaluate(f"cd {MAIN} 2>/dev/null; grep -rn foo src/", WT)
+    assert reason is not None
+    assert MAIN in reason
+
+
 # ── allowed: no divergence risk ─────────────────────────────────────────────
 
 

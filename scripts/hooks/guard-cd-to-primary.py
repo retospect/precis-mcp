@@ -45,7 +45,14 @@ import sys
 
 # A segment that is *only* a ``cd <path>`` (the caller has already split the
 # command on ``&&`` / ``;`` / ``||`` / newline, so a segment is one command).
-_CD_RE = re.compile(r"""^\s*cd\s+(['\"]?)([^'\"]+)\1\s*$""")
+# A trailing redirection (``2>/dev/null``, ``>/x``, ``2>&1`` …) is tolerated and
+# dropped: without this the greedy path group swallowed the redirect (e.g.
+# ``cd <primary> 2>/dev/null``), yielding a path that ``_under`` no longer saw as
+# inside the primary — so the segment slipped past the deny. An audit caught that
+# exact evasion running live in a worktree session.
+_CD_RE = re.compile(
+    r"""^\s*cd\s+(['\"]?)(?P<path>[^'\"]+?)\1\s*(?:\d*[<>&]+\s*\S+\s*)*$"""
+)
 
 
 def _git(cwd: str, *args: str) -> str:

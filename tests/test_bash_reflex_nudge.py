@@ -28,7 +28,10 @@ def _load(name: str, filename: str):
 _mod = _load("bash_reflex_nudge", "bash-reflex-nudge.py")
 _rule_a = _mod._rule_a
 _rule_b = _mod._rule_b
+_rule_c = _mod._rule_c
 main = _mod.main
+
+_WT = "/repo/.claude/worktrees/wt1"
 
 _coderef_mod = _load("coderef_nudge", "coderef-nudge.py")
 
@@ -132,6 +135,49 @@ def test_prod_psql_fires_rule_b() -> None:
 
 def test_unrelated_command_does_not_fire_rule_b() -> None:
     assert _rule_b("git status") is None
+
+
+# ── Rule C: redundant `cd <own-worktree>; …` prefix -> run bare ─────────────
+
+
+def test_redundant_cd_into_own_worktree_fires_rule_c() -> None:
+    note = _rule_c(f"cd {_WT} && git status", _WT)
+    assert note is not None
+    assert "[cwd]" in note
+
+
+def test_redundant_cd_subdir_with_semicolon_and_redirect_fires() -> None:
+    note = _rule_c(f"cd {_WT}/src 2>/dev/null; ls", _WT)
+    assert note is not None
+
+
+def test_cross_tree_cd_does_not_fire_rule_c() -> None:
+    # Cross-tree cd is the deny-guard's job, not this nudge's.
+    assert _rule_c("cd /repo && ls", _WT) is None
+
+
+def test_git_dash_c_does_not_fire_rule_c() -> None:
+    assert _rule_c(f"git -C {_WT} status", _WT) is None
+
+
+def test_bare_command_does_not_fire_rule_c() -> None:
+    assert _rule_c("git status", _WT) is None
+
+
+def test_rule_c_silent_without_cwd() -> None:
+    assert _rule_c(f"cd {_WT} && ls", "") is None
+
+
+def test_main_fires_rule_c_on_redundant_cd(monkeypatch, capsys) -> None:
+    payload = {
+        "tool_name": "Bash",
+        "cwd": _WT,
+        "tool_input": {"command": f"cd {_WT} && ls"},
+    }
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is not None
+    assert "[cwd]" in out["hookSpecificOutput"]["additionalContext"]
 
 
 # ── main() / stdin-JSON wiring ──────────────────────────────────────────────

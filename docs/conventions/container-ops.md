@@ -30,12 +30,15 @@ prefix is pure redundancy on every single command. It also risks tripping
 the "`cd` in a compound command can trigger a permission prompt" footgun
 for no benefit.
 
-Run commands bare; reach another directory with an **absolute path**
-instead of `cd` (`--git-dir=…`, `ls /Users/reto/precis-mcp`,
-`scripts/prod-psql` with an explicit host var). A log audit found ~60% of
-Bash calls carried a redundant `cd` prefix — the single largest source of
-wasted tokens across the fleet, which is why this is called out explicitly
-rather than left as an assumed default.
+Run commands bare; reach another tree with `git -C <path> …` (the mandated
+way to read the primary checkout or a sibling worktree — a `cd` into the
+primary tree, siblings included, is hard-blocked by `guard-cd-to-primary.py`;
+a `cd` to an unrelated repo is not) or an **absolute path** for
+non-git ops (`ls /Users/reto/precis-mcp`, `scripts/prod-psql` with an
+explicit host var). A log audit found ~60% of Bash calls carried a redundant
+`cd` prefix — the single largest source of wasted tokens across the fleet,
+which is why this is called out explicitly rather than left as an assumed
+default.
 
 ## Ship vs deploy — surfacing lag, never auto-deploying
 

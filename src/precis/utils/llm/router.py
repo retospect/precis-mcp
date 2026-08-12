@@ -2988,7 +2988,7 @@ def run_oss_tool_loop(
         # conversation; the same prompt replayed with cache_prompt=false
         # read correctly). Bypass the cache per-request — a llama.cpp
         # extension, only ever sent to the pinned local endpoint.
-        extra_body = {"cache_prompt": False}
+        extra_body: dict[str, Any] | None = {"cache_prompt": False}
     else:
         base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
         api_key = _provider_api_key(base_url)

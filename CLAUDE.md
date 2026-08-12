@@ -103,9 +103,14 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 - **Run tests via `scripts/test`, never bare pytest** — mounts your
   worktree + test DB; `--impacted` narrows to testmon's affected set, other
   args passthrough. → `docs/conventions/testing.md`.
-- **Container-first; never `cd` into your worktree.** `scripts/dev` → dev
-  shell; `scripts/db` → psql (LOCAL `precis`/`precis_test` only); run
-  commands bare, absolute paths elsewhere. →
+- **Container-first; the shell is already IN your worktree.** `scripts/dev`
+  → dev shell; `scripts/db` → psql (LOCAL `precis`/`precis_test` only). cwd
+  is this worktree and the harness re-anchors it there after **every** Bash
+  call — so a `cd <worktree>; …` prefix is pure token waste on every
+  command; run bare. To read another tree (the primary checkout or a sibling
+  worktree) use `git -C <path> …`, never `cd <path>` — a `cd` into the
+  primary tree (siblings live under it) is hard-blocked by a guard and
+  wastes the whole turn. →
   `docs/conventions/container-ops.md`.
 - **Peeking at prod.** `scripts/prod-psql "SELECT …"` hops via
   caspar/melchior to `precis_prod` behind pgbouncer; `agent_rw` is
@@ -120,6 +125,14 @@ Start at `docs/codebase.md`'s package map, then the owning package's
   **dev-DB** precis (`scripts/dev`), never this MCP.
 - **`rtk` compresses noisy Bash output** via a global PreToolUse hook — what
   you see is a filtered digest, not raw. → `docs/conventions/rtk.md`.
+- **Dedicated tools over shell-util soup in Bash.** Read file ranges with the
+  Read tool (`offset`/`limit`), never `sed -n 'X,Yp'` / `awk '/a/,/b/'` /
+  `cat`; match text with the Grep tool, not `grep -rn` (its output is capped,
+  bash grep dumps the whole hit set into context). Never narrate compound Bash
+  with `echo "=== … ==="` section headers — the tool result is already
+  delimited, so each echo is pure token bloat. These are the top context sinks
+  in dev sessions; `head`/`tail`/`ls`/`find` on a real result belong behind
+  `rtk`.
 - **Semantic code search first** (repo-dev, not product): where-is/how-
   does/what-calls → `search_code`/`navigator` before grep/Read — ranked
   `file:line` across code+docs+tests (`claude-context`/Milvus,
@@ -130,6 +143,13 @@ Start at `docs/codebase.md`'s package map, then the owning package's
   exact, no same-name false positives (`imports|importers` via grimp, `-h`
   verbs). PreToolUse hook nudges bare-symbol greps; Grep still right for
   text/non-Python/unnamed symbols — blind to dynamic dispatch.
+- **Read once; target large files.** A file you already Read this session
+  is still in context — don't re-Read it whole to "refresh" (re-injects the
+  whole thing; edit against what you have). For a large file you need a slice
+  of, pass `offset`/`limit` rather than pulling all of it. Never Read
+  `scripts/ship` (or other gate scripts) to debug a red gate — the failure is
+  printed above the `✖`; read *that*, or `scripts/test <path/-k>`, not the
+  harness.
 - **Skills are runtime docs** — `src/precis/data/skills/` is the
   agent-facing channel, served via `get(kind='skill')`.
 - **Bug intake → triage via the `bug` skill** before fixing — masked root

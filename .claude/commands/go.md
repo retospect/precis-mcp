@@ -64,6 +64,18 @@ Optional ship message from the user: `$ARGUMENTS`
      (same container + test DB, against this worktree). (A lone
      `UniqueViolation` in an unrelated test is usually shared-`precis_test`
      pollution — clean the row, re-run.)
+   - **Flake vs. real — classify before you re-run.** Infra flakes from a
+     concurrent sibling gate look like reds but aren't your code. *Zero
+     output after ruff* / dots stopping mid-run / `gwN crashed` = **OOM-137**;
+     `import file mismatch` / `Different tests collected between gwN` =
+     **colima bind-mount** flake; `database does not exist` / `recovery mode`
+     = **shared test-DB** concurrency. Fix is an **isolated re-run in a quiet
+     window** (let sibling `precis-dev-run` containers clear; optionally
+     `PRECIS_GATE_N=3`) — not churn, log-tail loops, or `PRECIS_GATE_N=0`.
+     Re-touch code only once the failure names *your* changed files. (Full
+     signatures: auto-memory `gate-oom-silent-death`,
+     `gate-mypy-oom-and-pypi-flake`, `gate-pycache-collection-flake`,
+     `shared-test-db-concurrency-flake`.)
    - **Merge conflict** — resolve, `git add -A && git commit`, re-run.
    - **CAS push rejected** — a sibling shipped first; just re-run.
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,

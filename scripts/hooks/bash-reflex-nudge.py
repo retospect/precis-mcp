@@ -32,6 +32,7 @@ Wired in .claude/settings.json (PreToolUse, matcher "Bash").
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import sys
@@ -59,6 +60,13 @@ _TYPE_RE = re.compile(r"(?:--type=|-t\s+)(\S+)")
 _SHELL_BREAK = {"|", "||", "&&", ";"}
 
 _SSH_RE = re.compile(r"\bssh\s+(?:-\S+\s+)*(melchior|caspar|balthazar)\b")
+
+# A leading ``cd <path>`` segment for the redundant-own-tree check. Tolerates a
+# trailing redirect (``2>/dev/null``) and either ``;`` or ``&&`` separator — the
+# exact shapes the audit found the stricter deny-guard regex missing.
+_CD_LEAD = re.compile(
+    r"""^\s*cd\s+(['\"]?)(?P<path>[^'\"]+?)\1\s*(?:\d*[<>&]+\s*\S+\s*)*(?:;|&&)"""
+)
 
 
 def _grep_target_ok(rest: str) -> bool:
@@ -130,6 +138,34 @@ def _rule_b(command: str) -> str | None:
     return None
 
 
+def _rule_c(command: str, cwd: str) -> str | None:
+    """Nudge a redundant ``cd <own-worktree>; …`` prefix.
+
+    cwd is already this worktree and the harness re-anchors it there after every
+    Bash call, so a leading ``cd`` into the current tree is pure token waste on
+    every command. Non-blocking (the deny-guard only ever fires on *cross*-tree
+    cd; this catches the far-more-common same-tree redundancy the prose misses).
+    """
+    if not cwd:
+        return None
+    m = _CD_LEAD.match(command)
+    if not m:
+        return None
+    raw = m.group("path").strip()
+    tgt = os.path.normpath(os.path.expanduser(raw))
+    if not os.path.isabs(tgt):
+        return None
+    cwd_n = os.path.normpath(cwd)
+    if tgt == cwd_n or tgt.startswith(cwd_n + os.sep):
+        return (
+            "[cwd] the shell is already in this worktree and the harness "
+            "re-anchors cwd here after every Bash call — the leading "
+            f"`cd {raw};` is redundant on every command. Run bare; to read "
+            "another tree use `git -C <path> …`."
+        )
+    return None
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -140,8 +176,9 @@ def main() -> int:
     command = (payload.get("tool_input") or {}).get("command")
     if not isinstance(command, str):
         return 0
+    cwd = payload.get("cwd") or ""
 
-    note = _rule_a(command) or _rule_b(command)
+    note = _rule_a(command) or _rule_b(command) or _rule_c(command, cwd)
     if note is None:
         return 0
     print(

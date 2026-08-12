@@ -83,6 +83,20 @@ Optional ship message from the user: `$ARGUMENTS`
      branch-touched code block the ship; a lone `UniqueViolation` /
      stale-row error in an unrelated test is usually shared-`precis_test`
      pollution — clean the stray row and re-run.
+   - **Flake vs. real — classify before you re-run.** Many gate reds are
+     infra flakes from a concurrent sibling gate, not your code. Signatures:
+     *zero output after ruff* / pytest dots stopping mid-run / scattered
+     `gwN crashed` = container mypy or pytest **OOM-137**; `import file
+     mismatch` / `Different tests collected between gwN` = **colima
+     bind-mount** load flake; `database does not exist` / `recovery mode` =
+     **shared test-DB** concurrency. For all of these the fix is an
+     **isolated re-run in a quiet window** (wait for sibling `precis-dev-run`
+     containers to clear; optionally `PRECIS_GATE_N=3`) — **not** immediate
+     churn, log-tail loops, or `PRECIS_GATE_N=0`. Only re-touch code once
+     you've confirmed the failure names *your* changed files. (Full
+     signatures: auto-memory `gate-oom-silent-death`,
+     `gate-mypy-oom-and-pypi-flake`, `gate-pycache-collection-flake`,
+     `shared-test-db-concurrency-flake`.)
    - **CAS push rejected** — a sibling worktree shipped first; just re-run
      `scripts/ship` (it re-syncs onto the new `main`).
    - A `WARNING:` about the primary `main` not fast-forwarding is
