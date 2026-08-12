@@ -29,3 +29,11 @@ class Response:
     #: instead of creating one; ``False`` on a fresh create;
     #: ``None`` when the verb has no idempotency concept.
     reused: bool | None = None
+    #: One-sentence pointer to a cheaper alternative to draining every
+    #: pagination page (e.g. a skill's targeted-section access), passed
+    #: through to :meth:`precis._pagination.PaginationCache.split` as
+    #: ``alt_hint`` when this response gets chunked. ``None`` (the
+    #: default) keeps the pagination footer's loud drain-before-acting
+    #: warning as the only guidance — right for kinds where a partial
+    #: read is genuinely unsafe to act on (e.g. a youtube transcript).
+    pagination_alt_hint: str | None = None

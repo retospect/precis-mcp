@@ -229,6 +229,10 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     blocks = _assemble_reviewer_blocks(reviewer, store)
     _system, prompt = ClaudeAgentAdapter.render(blocks)
+    # Resolved once so the tool-starvation check below (_is_tool_starved) can
+    # tell "no config offered" (never starved) from "config offered, zero
+    # precis calls made" (gr197478) without re-deriving it from the request.
+    mcp_config = _mcp_config_path()
     # Routed through the LLM seam: the reviewer's tier
     # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
@@ -241,7 +245,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             prompt=prompt,
             tools_needed=True,
             model=os.environ.get(f"PRECIS_{reviewer.name.upper()}_MODEL"),
-            mcp_config=_mcp_config_path(),
+            mcp_config=mcp_config,
             max_turns=reviewer.max_turns,
             timeout_s=reviewer.timeout_s,
             # Explicit tier-1 deny (gr179501): read + emit a digest + the
@@ -308,14 +312,34 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         )
         _raise_empty_pass_alert(store, reviewer)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
+    if _is_tool_starved(res, mcp_config):
+        # Tool-starvation assertion (gr197478). The pass completed cleanly and
+        # wrote plausible prose — _is_silent_empty doesn't see this at all —
+        # but a config was on offer and it never called a precis tool. That is
+        # exactly the shape the 2026-08-02 dropped-credential incident took:
+        # `precis serve` couldn't authenticate, so no tool ever registered,
+        # and 21 consecutive passes over ~4.6 days emitted confident-looking
+        # $-spending digests reasoned from the bare prompt alone. Back the
+        # pass off (marker) and raise a visible alert instead of storing the
+        # digest as a normal healthy pass.
+        log.error(
+            "review[%s]: tool-starved pass (mcp_config set, non-empty text, "
+            "0 mcp__precis__* tool calls) — raising alert, not writing digest",
+            reviewer.name,
+        )
+        _write_failure_marker(store, reviewer, "tool-starved: precis MCP never used")
+        _raise_tool_starved_alert(store, reviewer)
+        return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
     # The FULL assembled prompt INPUT, the twin of the
     # ``meta.transcript`` output capture on a plan_tick job ref — reviewers
     # mint no job ref, so the digest memory itself is the closest per-run
     # artifact to attach it to. Never-fatal internally.
     persist_assembled_context(store, digest_id, blocks)
-    # A real digest landed — clear any empty-pass alert this reviewer left open.
+    # A real digest landed — clear any empty-pass / tool-starved alert this
+    # reviewer left open.
     _resolve_empty_pass_alert(store, reviewer)
+    _resolve_tool_starved_alert(store, reviewer)
     log.info(
         "review[%s]: wrote digest memory id=%d cost=$%.4f duration=%.1fs",
         reviewer.name,
@@ -405,6 +429,52 @@ def _is_silent_empty(res: LlmResult) -> bool:
     )
 
 
+def _mcp_precis_tool_calls(res: LlmResult) -> int | None:
+    """Count of ``mcp__precis__*`` tool_use blocks in ``res``, or ``None`` when
+    unknown (a transport without a stream-json trace to parse).
+
+    Reuses :func:`~precis.utils.claude_agent.count_tool_use_events` — the same
+    parser :func:`~precis.workers.job_types.plan_tick._precis_tools_used` uses
+    for the equivalent planner-side guard (891a2d81) — scoped to the precis
+    prefix, so a pass that only reached for a built-in tool (``Read``,
+    ``Bash``, …) still reads as starved. ``res.tool_calls`` is deliberately
+    NOT reused here: it is the *unscoped* total across every tool the pass
+    called (see :func:`~precis.utils.llm.router.result_from_agent`), so a
+    pass that only used non-precis tools would read as "acted" under it.
+    """
+    if not res.raw_text:
+        return None
+    from precis.utils.claude_agent import count_tool_use_events
+
+    return count_tool_use_events(res.raw_text, name_prefix="mcp__precis__")
+
+
+def _is_tool_starved(res: LlmResult, mcp_config: Path | None) -> bool:
+    """True when tools were on offer but the pass never touched precis (gr197478).
+
+    Distinct from :func:`_is_silent_empty`, which only catches a pass that did
+    *nothing at all*. This catches the more dangerous shape: the dispatch
+    reported success, spent turns/money, and wrote real-looking prose — the
+    exact silhouette of the 2026-08-02 incident, where 23ff8cf8 dropped the
+    inline DB password from the MCP config template without pinning
+    ``PGPASSFILE``, so ``precis serve`` never authenticated and no
+    ``mcp__precis__*`` tool ever registered. ``claude -p`` reasoned from the
+    bare prompt alone and produced plausible digests for 21 consecutive
+    passes over ~4.6 days with nothing to show it. Requires an ``mcp_config``
+    was actually offered (no config ⇒ tools were never on the table, not a
+    starvation), non-empty output text (an empty run is already
+    :func:`_is_silent_empty`'s to catch), and a *definitive* zero
+    ``mcp__precis__*`` call count — ``None`` (a transport that can't report a
+    stream trace) never trips it, same never-a-false-zero discipline as
+    :func:`_is_silent_empty`.
+    """
+    if mcp_config is None:
+        return False
+    if not (res.text or "").strip():
+        return False
+    return _mcp_precis_tool_calls(res) == 0
+
+
 def _empty_alert_source(reviewer: Reviewer) -> str:
     """Per-reviewer alert source so a resolve touches only this reviewer."""
     return f"review:empty:{reviewer.name}"
@@ -444,6 +514,49 @@ def _resolve_empty_pass_alert(store: Store, reviewer: Reviewer) -> None:
     """Clear this reviewer's empty-pass alert once it produces a real digest."""
     resolve_stale_alerts(
         store, source=_empty_alert_source(reviewer), live_fingerprints=()
+    )
+
+
+def _tool_starved_alert_source(reviewer: Reviewer) -> str:
+    """Per-reviewer alert source so a resolve touches only this reviewer."""
+    return f"review:tool-starved:{reviewer.name}"
+
+
+def _raise_tool_starved_alert(store: Store, reviewer: Reviewer) -> None:
+    """Surface a tool-starved pass as a ``warn`` alert (gr197478)."""
+    host = _resolve_host_name()
+    # Fingerprint is per-reviewer, NOT per-host — symmetric with the resolve,
+    # same reasoning as :func:`_raise_empty_pass_alert`.
+    fingerprint = f"{reviewer.name}:tool-starved"
+    title = (
+        f"[review-tool-starved] {reviewer.name} wrote a digest with zero "
+        f"precis tool calls on {host}"
+    )
+    detail = (
+        f"The {reviewer.name} reviewer dispatched with an MCP config, "
+        "produced non-empty text, but made zero mcp__precis__* tool calls — "
+        "it reviewed nothing but its own prompt. This is the failure mode "
+        "behind gr197478 (2026-08-02: a dropped inline DB password left "
+        "`precis serve` unable to authenticate, so no tool ever registered "
+        "and 21 consecutive passes over ~4.6 days went undetected). Check "
+        "that the precis MCP server actually registered its tools for this "
+        "host/transport (DB auth, PGPASSFILE, container health). The pass "
+        "is backed off for its normal interval and will retry."
+    )
+    raise_alert(
+        store,
+        source=_tool_starved_alert_source(reviewer),
+        fingerprint=fingerprint,
+        title=title,
+        detail=detail,
+        severity="warn",
+    )
+
+
+def _resolve_tool_starved_alert(store: Store, reviewer: Reviewer) -> None:
+    """Clear this reviewer's tool-starved alert once it uses precis again."""
+    resolve_stale_alerts(
+        store, source=_tool_starved_alert_source(reviewer), live_fingerprints=()
     )
 
 

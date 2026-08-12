@@ -875,3 +875,26 @@ class TestDryRestEscalation:
         q = self._mk_quest(store)
         store.update_ref(q, meta_patch={"ticks_since_frontier_improve": 2})
         assert qt._frontier_improved_this_tick(store, q) is False
+
+
+class TestJobRefIdThreadedForTranscriptPersistence:
+    """gr170252: a quest_tick slice's job-ref transcript persistence
+    (:func:`precis.quest.tick._persist_job_transcript`) only fires because
+    the coordinator threads its OWN ``kind='job'`` ref id through to
+    ``run_quest_tick`` on every tick — slices don't get their own job ref,
+    so this coordinator ref is the only place the conclusion/raw-transcript
+    can land. Regression guard for that wiring: the coordinator tests
+    elsewhere stub ``run_quest_tick`` entirely and would never notice it
+    silently dropped from the call."""
+
+    def test_phase_tick_passes_its_own_ref_id_as_job_ref_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stub_tick(monkeypatch, _Outcome())
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[], [811]])
+        ctx = FakeCtx(_meta())
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Yield)
+        assert len(calls) == 1
+        assert calls[0]["job_ref_id"] == ctx.ref_id

@@ -94,6 +94,125 @@ def _cap_partial(text: str, cap: int = _PARTIAL_RESULT_CAP) -> str:
     return text[:half] + f"\n…[{len(text) - cap} chars elided]…\n" + text[-half:]
 
 
+#: Same 1 MiB cap ``meta.transcript`` uses for a ``plan_tick`` (see
+#: ``workers/executors/claude_inproc.py``'s ``_TRANSCRIPT_CAP``) — head-
+#: preserved, tail-truncated with a matching marker, so a runaway response
+#: can't bloat ``refs.meta``.
+_JOB_TRANSCRIPT_RAW_CAP = 1_000_000
+
+
+def _cap_transcript_raw(text: str, cap: int = _JOB_TRANSCRIPT_RAW_CAP) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap] + "\n…(truncated)"
+
+
+#: Cap on the *accumulated* per-tick digest log below. Digests run ~300
+#: bytes/tick, so this holds a couple hundred ticks — far past any real
+#: coordinator lifetime — while still bounding ``refs.meta`` growth.
+_JOB_TRANSCRIPT_DIGEST_CAP = 65_536
+
+
+def _cap_transcript_digests(text: str, cap: int = _JOB_TRANSCRIPT_DIGEST_CAP) -> str:
+    """Tail-preserving cap for the accumulated digest log — opposite of
+    :func:`_cap_transcript_raw`, because here the *newest* entries (the final
+    state and any escalation) are the ones worth keeping."""
+    if len(text) <= cap:
+        return text
+    return "…(older ticks truncated)\n" + text[-cap:]
+
+
+def _render_tick_conclusion(outcome: QuestTickOutcome) -> str:
+    """Condensed forensic record of one quest_tick LLM slice — the quest-loop
+    analogue of a ``plan_tick``'s ``meta.transcript`` (gr170252: the loop had
+    zero record of what the model saw/did when it misbehaved). Deliberately
+    terse — the full prompt already lives on the tick's ``agentlog`` row; this
+    is only the outcome digest, cheap enough to keep on every tick."""
+    lines = [
+        f"quest_tick #{outcome.quest_id} [{outcome.status}] mode={outcome.mode}",
+        f"note: {outcome.note}",
+        (
+            f"logbook+{outcome.logbook_added} dossier_rewritten="
+            f"{outcome.dossier_rewritten} proposals={outcome.proposals} "
+            f"sims={outcome.sims_dispatched} harvested={outcome.results_harvested} "
+            f"searches={outcome.searches_run} papers_linked={outcome.papers_linked} "
+            f"ledger_added={outcome.ledger_added} graduated={outcome.graduated} "
+            f"ruled_out={outcome.ruled_out}"
+        ),
+    ]
+    if outcome.cost_usd is not None:
+        lines.append(f"cost_usd: {outcome.cost_usd:.4f}")
+    return "\n".join(lines)
+
+
+def _persist_job_transcript(
+    store: Store, job_ref_id: int, outcome: QuestTickOutcome, res: Any
+) -> None:
+    """Persist this slice's outcome onto the owning ``quest_tick`` coordinator
+    job's ``refs.meta`` — the same ``transcript`` / ``transcript_raw`` keys a
+    ``plan_tick`` writes (:mod:`precis.workers.executors.claude_inproc`), so
+    the confusion-mining SQL (``kind='job' AND meta ? 'transcript'``) and the
+    sweeper's retention GC (``workers.sweeper._gc_transcripts``) automatically
+    cover quest_tick without any bespoke query/GC path.
+
+    ``transcript`` (condensed conclusion) is **appended** on every slice,
+    success or failure — the coordinator job ref persists across every
+    ``Yield``/resume of one loop, so a wholesale overwrite would keep only
+    the *last* tick's digest and lose exactly the earlier-tick record this
+    exists to capture. Entries are separated by ``\\n---\\n``, newest last,
+    tail-preserved under :data:`_JOB_TRANSCRIPT_DIGEST_CAP`.
+    ``transcript_raw`` (the model's full raw output, capped, last-failure-
+    wins — raw dumps are too big to accumulate) is added when the slice
+    failed, OR — mirroring ``plan_tick``'s
+    own ``_precis_tools_used`` gate (``workers/job_types/plan_tick.py``) —
+    when it completed with zero precis tool calls on a transport that
+    surfaces ``raw_text`` (quest_tick's own structured-JSON dispatch never
+    does today, so this branch is dormant here, kept for parity if the
+    transport changes). A successful, tool-engaged tick's condensed digest
+    is enough; only the case that actually needs debugging gets the raw dump.
+
+    Slices don't get their own job ref (the coordinator's ``kind='job'`` ref
+    persists across every ``Yield``/resume of the loop), so this always
+    targets ``job_ref_id`` — matching wherever ``plan_tick`` would put a
+    per-slice transcript, since there is no finer-grained ref to write onto
+    here. Best-effort: a write failure must never abort the tick.
+    """
+    from precis.workers.executors._common import set_meta
+
+    fields: dict[str, Any] = {}
+    conclusion = _render_tick_conclusion(outcome)
+    raw_text = getattr(res, "raw_text", None) if res is not None else None
+    no_tool_calls = False
+    if raw_text:
+        from precis.utils.claude_agent import count_tool_use_events
+
+        no_tool_calls = (
+            count_tool_use_events(raw_text, name_prefix="mcp__precis__") == 0
+        )
+    if outcome.status == "failed" or no_tool_calls:
+        text = (getattr(res, "text", "") or "") if res is not None else ""
+        raw = raw_text or text
+        if raw:
+            fields["transcript_raw"] = _cap_transcript_raw(raw)
+    try:
+        with store.tx() as conn:
+            row = conn.execute(
+                "SELECT meta->>'transcript' FROM refs WHERE ref_id = %s",
+                (job_ref_id,),
+            ).fetchone()
+            prior = row[0] if row and row[0] else None
+            fields["transcript"] = _cap_transcript_digests(
+                prior + "\n---\n" + conclusion if prior else conclusion
+            )
+            set_meta(conn, job_ref_id, **fields)
+    except Exception:
+        log.warning(
+            "run_quest_tick: failed to persist job transcript for job #%s",
+            job_ref_id,
+            exc_info=True,
+        )
+
+
 #: A frontier review steps back over accumulated history — a deeper tail than
 #: a cheap local tick.
 _LOGBOOK_TAIL_REVIEW = 20
@@ -1363,6 +1482,11 @@ def run_quest_tick(
                 log.warning(
                     "run_quest_tick: failed to finalize agentlog", exc_info=True
                 )
+        # Job-ref transcript (gr170252 forensic gap) — distinct from the
+        # agentlog record above: this is what the sweeper's existing
+        # transcript GC + confusion-mining SQL already know how to find.
+        if job_ref_id is not None:
+            _persist_job_transcript(store, job_ref_id, outcome, res)
         return outcome
 
     from precis.utils.llm.router import LlmRequest

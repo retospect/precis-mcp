@@ -471,3 +471,189 @@ def test_empty_pass_alert_raise_then_resolve(store: Store) -> None:
     assert len(_empty_alerts(store)) == 1
     _resolve_empty_pass_alert(store, STRUCTURAL)
     assert _empty_alerts(store) == []
+
+
+# ── tool-starvation assertion (gr197478) ─────────────────────────
+#
+# Regression for the 2026-08-02 incident: 23ff8cf8 dropped the inline DB
+# password from the MCP config template without pinning PGPASSFILE, so
+# `precis serve` never authenticated and no `mcp__precis__*` tool ever
+# registered. `_is_silent_empty` didn't catch it — `claude -p` reasoned from
+# the bare prompt and produced plausible-looking, non-empty, non-$0 digests
+# for 21 consecutive passes over ~4.6 days. `_is_tool_starved` catches that
+# shape: an MCP config was offered, the pass wrote real text, but it made
+# zero `mcp__precis__*` tool calls.
+
+
+def _stream(*events: dict[str, object]) -> str:
+    """Join stream-json events into one ``raw_stdout`` blob, mirroring the
+    fixture shape ``count_tool_use_events`` parses (test_claude_agent.py)."""
+    import json
+
+    return "\n".join(json.dumps(e) for e in events)
+
+
+def _assistant_tool_use(*names: str) -> dict[str, object]:
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [{"type": "tool_use", "name": n, "input": {}} for n in names]
+        },
+    }
+
+
+def _tool_starved_alerts(store: Store) -> list[dict[str, object]]:
+    from precis.alerts import list_open_alerts
+
+    return [
+        a
+        for a in list_open_alerts(store)
+        if a["source"] == "review:tool-starved:structural"
+    ]
+
+
+def test_tool_starved_pass_raises_alert_not_digest(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An MCP config was offered, the pass wrote real prose, spent real turns
+    and money — but never called a precis tool (only a built-in ``Read``).
+    That must raise the tool-starvation alert and write NO digest, exactly
+    what the dropped-credential incident needed and didn't have."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="No structural issues found this pass.",
+        cost_usd=0.11,
+        duration_s=9.0,
+        turns_used=4,
+        tool_calls=1,
+        raw_stdout=_stream(_assistant_tool_use("Read")),
+    )
+    result = run_structural_pass(store)
+    assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
+    assert _structural_digest_count(store) == 0
+    alerts = _tool_starved_alerts(store)
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "warn"
+    assert _empty_alerts(store) == []  # the silent-empty alert is distinct
+
+
+def test_pass_using_precis_tool_writes_digest_no_starvation_alert(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A genuine ``mcp__precis__*`` call anywhere in the stream ⇒ never
+    starved, however few calls it made."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="Reviewed the tree; no issues.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=2,
+        tool_calls=1,
+        raw_stdout=_stream(_assistant_tool_use("mcp__precis__search")),
+    )
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (1, 0)
+    assert _structural_digest_count(store) == 1
+    assert _tool_starved_alerts(store) == []
+
+
+def test_tool_starved_check_needs_mcp_config_offered(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No MCP config on the request (the pre-existing in-proc-without-config
+    shape) ⇒ never a starvation, however zero the tool count — tools were
+    never on the table to begin with."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
+    monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
+    _stub_agent(
+        monkeypatch,
+        final_text="Reviewed the tree; no issues.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=2,
+        tool_calls=0,
+        raw_stdout=_stream(_assistant_tool_use("Read")),
+    )
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (1, 0)
+    assert _structural_digest_count(store) == 1
+    assert _tool_starved_alerts(store) == []
+
+
+def test_tool_starved_check_needs_a_definitive_zero(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """No ``raw_stdout`` to parse (a transport that can't report a stream
+    trace) ⇒ ``None``, not a false zero — never trips the guard, mirroring
+    ``_is_silent_empty``'s never-a-false-zero discipline."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="Reviewed the tree; no issues.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=2,
+        tool_calls=None,
+        raw_stdout="",
+    )
+    result = run_structural_pass(store)
+    assert (result.ok, result.failed) == (1, 0)
+    assert _structural_digest_count(store) == 1
+    assert _tool_starved_alerts(store) == []
+
+
+def test_tool_starved_alert_raise_then_resolve(store: Store) -> None:
+    """The per-reviewer alert clears once the reviewer uses a precis tool again."""
+    from precis.workers.review import (
+        _raise_tool_starved_alert,
+        _resolve_tool_starved_alert,
+    )
+    from precis.workers.structural import STRUCTURAL
+
+    _raise_tool_starved_alert(store, STRUCTURAL)
+    assert len(_tool_starved_alerts(store)) == 1
+    _resolve_tool_starved_alert(store, STRUCTURAL)
+    assert _tool_starved_alerts(store) == []
+
+
+# ── _is_silent_empty stays unchanged (guard against cross-guard drift) ────
+
+
+def test_silent_empty_still_fires_even_with_mcp_config_offered(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """``_is_silent_empty`` is untouched by the new tool-starvation guard: a
+    fully-empty pass ($0, 0 turns, 0 tool calls, no text) still trips the
+    empty-pass alert (not the starvation one) even when an MCP config was on
+    offer — the two guards are independent, and the empty-pass conjunction is
+    checked first."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    _stub_agent(
+        monkeypatch,
+        final_text="",
+        cost_usd=0.0,
+        duration_s=0.5,
+        turns_used=0,
+        tool_calls=0,
+        raw_stdout="",
+    )
+    result = run_structural_pass(store)
+    assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
+    assert _structural_digest_count(store) == 0
+    assert len(_empty_alerts(store)) == 1
+    assert _tool_starved_alerts(store) == []

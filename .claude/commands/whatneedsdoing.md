@@ -243,14 +243,18 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    `meta.transcript` (`workers/executors/claude_inproc.py`'s
    `_run_plan_tick`; capped 1 MiB, GC'd after
    `PRECIS_TRANSCRIPT_RETENTION_DAYS` — 30 days by default,
-   `workers/sweeper.py:_gc_transcripts`). `quest_tick` and `dream` dispatch
-   straight to the LLM and discard the raw stream; `cad`/`structure` propose
-   keep only a truncated snippet in a `job_event` chunk on parse failure. So
-   `agentlog` outnumbering transcript-bearing `job` refs by orders of
-   magnitude in any given window is *expected*, not a sign you're querying
-   the wrong table — most runs simply have nothing full-text left to mine
-   yet (a real coverage gap; worth a gripe if you want `quest_tick`/`dream`
-   captured too, but out of scope for this mining pass). Every `[error:...]`
+   `workers/sweeper.py:_gc_transcripts`). `quest_tick` appends a condensed
+   per-tick outcome digest (newest last, tail-capped) to the same
+   `meta.transcript` key, plus the raw model output as `meta.transcript_raw`
+   when a slice fails (or would, on a raw-stream transport, with zero precis
+   tool calls — dormant today) (`quest/tick.py:_persist_job_transcript`,
+   same cap/GC) — so its rows show up in the query below but carry digests,
+   not a tool-call stream. `dream`
+   dispatches straight to the LLM and discards the raw stream; `cad`/
+   `structure` propose keep only a truncated snippet in a `job_event` chunk
+   on parse failure. So `agentlog` outnumbering transcript-bearing `job`
+   refs in any given window is *expected*, not a sign you're querying the
+   wrong table. Every `[error:...]`
    in a transcript is the LLM getting a verb wrong — a fix waiting in a
    skill or in the MCP surface. There is **no** interactive tool-call ledger
    (the live `precis serve` path logs nothing), so `plan_tick`'s job
@@ -258,8 +262,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    SELECT; see CLAUDE.md "Peeking at prod"), pull the last 48h, and rank
    error shapes:
    ```sql
-   -- histogram of confusion, most-frequent first (plan_tick only — the one
-   -- job_type that persists a full transcript; see prose above)
+   -- histogram of confusion, most-frequent first (plan_tick = full stream;
+   -- quest_tick rows = condensed digests + transcript_raw on failure)
    WITH tx AS (
      SELECT meta->>'transcript' t FROM refs
      WHERE kind='job' AND meta ? 'transcript'

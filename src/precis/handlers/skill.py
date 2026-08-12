@@ -234,6 +234,23 @@ def _slug_with_aliases(slug: str) -> str:
     return f"{slug} (alias: {', '.join(aliases)})"
 
 
+def _pagination_alt_hint(slug: str) -> str:
+    """Footer hint pointing a paginated skill body at targeted access.
+
+    A whole skill body can run tens of KB; draining every ``more()``
+    page to read one section is wasteful when the handler already
+    supports ``slug/toc`` (section list) and ``slug~N`` (single
+    section). Passed as ``Response.pagination_alt_hint`` — only file-
+    backed skills reach this (synth skills like ``precis-toc`` have
+    no ``~N``/``/toc`` addressing, so they don't use it).
+    """
+    return (
+        f"get(kind='skill', id='{slug}/toc') lists this skill's sections; "
+        f"get(kind='skill', id='{slug}~N') fetches only section N — usually "
+        f"cheaper than draining all pages."
+    )
+
+
 def _categorise_skills(
     slugs: list[str],
 ) -> tuple[list[tuple[str, list[str]]], list[str]]:
@@ -530,7 +547,7 @@ class SkillHandler(Handler):
         # reader can cross-check their plan against reality.
         # MCP critic MAJOR-C 2026-05-02.
         text = text.rstrip() + "\n\n" + self._live_registry_footer()
-        return Response(body=text)
+        return Response(body=text, pagination_alt_hint=_pagination_alt_hint(slug))
 
     def _live_registry_footer(self) -> str:
         """Markdown footer listing active kinds on this build.

@@ -32,8 +32,12 @@ Package-level invariants (each enforced where named):
   logbook meta so thresholds are tuned from data.
 - **Loop existence is reconciled, not allocated.** ``loop`` guarantees one
   live coordinator per active quest (idempotent re-mint, reboot-orphan reap,
-  failed-rest backoff); ``allocator`` backs only the manual
-  ``precis quest run`` one-shot.
+  failed-rest *and* dry-rest backoff — a ``meta.rest_reason == "dry"``
+  success rest cools on the same exponential window, and once the quest's
+  ``consecutive_dry_rests`` counter reaches its threshold the reconciler
+  skips it for an escalation window + raises an operator alert,
+  auto-recovering (gr170252, see ``loop.py``'s module docstring); ``allocator``
+  backs only the manual ``precis quest run`` one-shot.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite`` and
   ``meta.tier_ladder`` (screening→neb→verify) are written at seed time only.
 - **Engine deploys re-score.** The autocatpath content key folds an

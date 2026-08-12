@@ -29,6 +29,7 @@ from precis.workers.sweeper import (
     _REOPEN_MAX_ATTEMPTS,
     _WORKER_LOG_GC_LOCK,
     UNPARK_CAP,
+    _gc_transcripts,
     _gc_worker_logs,
     _reopen_transient_failed_embeds,
     _reopen_transient_failed_summaries,
@@ -85,6 +86,58 @@ def _upsert_host_heartbeat(store: Store, host: str, *, age_minutes: float) -> No
             (host, age_minutes),
         )
         conn.commit()
+
+
+def _backdate_ref_created_at(store: Store, ref_id: int, *, days: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - %s::interval WHERE ref_id = %s",
+            (f"{days} days", ref_id),
+        )
+        conn.commit()
+
+
+def test_gc_transcripts_strips_transcript_raw_alongside_transcript(
+    store: Store,
+) -> None:
+    # gr170252: quest_tick's job-ref transcript companion
+    # (``meta.transcript_raw``, :func:`precis.quest.tick._persist_job_transcript`)
+    # rides the SAME retention clock as a plan_tick's ``meta.transcript`` — no
+    # separate knob, no separate GC path. A job past the window loses both
+    # keys in the one UPDATE; a fresh job keeps both.
+    old_job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="old quest_tick coordinator",
+        meta={
+            "transcript": "quest_tick #1 [failed] mode=local",
+            "transcript_raw": "raw model output",
+        },
+    )
+    _backdate_ref_created_at(store, old_job.id, days=40)
+
+    fresh_job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="fresh quest_tick coordinator",
+        meta={
+            "transcript": "quest_tick #2 [succeeded] mode=local",
+            "transcript_raw": "raw model output",
+        },
+    )
+
+    reaped = _gc_transcripts(store)
+
+    assert reaped >= 1
+    got_old = store.get_ref(kind="job", id=old_job.id)
+    assert got_old is not None
+    assert "transcript" not in got_old.meta
+    assert "transcript_raw" not in got_old.meta
+
+    got_fresh = store.get_ref(kind="job", id=fresh_job.id)
+    assert got_fresh is not None
+    assert got_fresh.meta.get("transcript")
+    assert got_fresh.meta.get("transcript_raw")
 
 
 def test_gc_worker_logs_prunes_aged_and_is_single_flight(store: Store) -> None:

@@ -1073,6 +1073,143 @@ class TestQuestTickAgentlog:
         assert row["status"] == "failed"
 
 
+class TestQuestTickJobTranscript:
+    """gr170252: a quest_tick slice was a total forensic blind spot — no
+    record of what the model saw/did when the loop misbehaved (unlike
+    ``plan_tick``, which always persists ``meta.transcript``). Each slice now
+    also writes onto the owning ``quest_tick`` coordinator job ref's
+    ``refs.meta`` — the SAME ``transcript`` / ``transcript_raw`` keys a
+    ``plan_tick`` writes (``workers/executors/claude_inproc.py``) — so the
+    existing confusion-mining SQL (``kind='job' AND meta ? 'transcript'``)
+    and the sweeper's existing retention GC (``workers/sweeper.py``'s
+    ``_gc_transcripts``) automatically cover quest_tick too, with no bespoke
+    query/GC path. Distinct from :class:`TestQuestTickAgentlog` above — the
+    agentlog carries the full prompt/session for the ``/agentlogs`` viewer;
+    this is the condensed job-ref record the confusion miner already knows
+    how to find."""
+
+    def _mk_job(self, store: Any) -> int:
+        return int(
+            store.insert_ref(
+                kind="job", slug=None, title="quest_tick coordinator", meta={}
+            ).id
+        )
+
+    def test_successful_tick_persists_condensed_conclusion(self, store: Any) -> None:
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        job_id = self._mk_job(store)
+        payload = {"logbook": [{"entry_type": "note", "text": "thinking"}]}
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(payload), job_ref_id=job_id
+        )
+        assert out.status == "succeeded"
+        ref = store.get_ref(kind="job", id=job_id)
+        assert ref is not None
+        transcript = ref.meta.get("transcript")
+        assert transcript
+        assert f"quest_tick #{qid}" in transcript
+        assert "[succeeded]" in transcript
+        assert "transcript_raw" not in ref.meta  # no raw dump on a clean success
+
+    def test_ticks_accumulate_digests_on_the_shared_coordinator_ref(
+        self, store: Any
+    ) -> None:
+        # The coordinator job ref persists across every Yield/resume of one
+        # loop — a wholesale overwrite would keep only the LAST tick's digest
+        # and lose exactly the earlier-tick record this exists to capture.
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        job_id = self._mk_job(store)
+        payload = {"logbook": [{"entry_type": "note", "text": "thinking"}]}
+        run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(payload), job_ref_id=job_id
+        )
+        run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(None, text="no json in here"),
+            job_ref_id=job_id,
+        )
+        ref = store.get_ref(kind="job", id=job_id)
+        assert ref is not None
+        transcript = ref.meta["transcript"]
+        # Both ticks present, oldest first, separated by the entry marker.
+        assert transcript.count(f"quest_tick #{qid}") == 2
+        assert "\n---\n" in transcript
+        assert transcript.index("[succeeded]") < transcript.index("[failed]")
+
+    def test_accumulated_digests_capped_tail_preserved(self) -> None:
+        # Unit-level: the digest cap keeps the NEWEST entries (final state +
+        # escalation), unlike the raw cap which is head-preserved.
+        capped = tick_mod._cap_transcript_digests("OLD" * 40_000, cap=1_000)
+        assert capped.startswith("…(older ticks truncated)\n")
+        assert len(capped) == 1_000 + len("…(older ticks truncated)\n")
+
+    def test_failed_tick_also_persists_raw_transcript(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        job_id = self._mk_job(store)
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(None, text="no json in here"),
+            job_ref_id=job_id,
+        )
+        assert out.status == "failed"
+        ref = store.get_ref(kind="job", id=job_id)
+        assert ref is not None
+        assert ref.meta.get("transcript")
+        assert "[failed]" in ref.meta["transcript"]
+        assert ref.meta.get("transcript_raw") == "no json in here"
+
+    def test_paused_tick_gets_no_raw_transcript(self, store: Any) -> None:
+        # A breaker/quota pause isn't a failure — the condensed conclusion
+        # still lands (every slice does), but there's nothing raw to dump.
+        qid = _mk_quest(store, "A striving")
+        job_id = self._mk_job(store)
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(None, error="cap", paused=True),
+            job_ref_id=job_id,
+        )
+        assert out.status == "paused"
+        ref = store.get_ref(kind="job", id=job_id)
+        assert ref is not None
+        assert ref.meta.get("transcript")
+        assert "transcript_raw" not in ref.meta
+
+    def test_raw_transcript_capped_at_1mib_with_truncation_marker(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        job_id = self._mk_job(store)
+        huge = "A" * (tick_mod._JOB_TRANSCRIPT_RAW_CAP + 5_000)
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(None, text=huge),
+            job_ref_id=job_id,
+        )
+        assert out.status == "failed"
+        ref = store.get_ref(kind="job", id=job_id)
+        assert ref is not None
+        raw = ref.meta.get("transcript_raw")
+        assert raw is not None
+        assert len(raw) == tick_mod._JOB_TRANSCRIPT_RAW_CAP + len("\n…(truncated)")
+        assert raw.endswith("\n…(truncated)")
+        # head-preserved (mirrors plan_tick's own meta.transcript cap in
+        # workers/executors/claude_inproc.py — truncate the tail, keep the
+        # head, append the same marker).
+        assert raw.startswith("A" * 100)
+
+    def test_no_job_ref_id_is_a_safe_no_op(self, store: Any) -> None:
+        # Manual CLI ticks (no owning coordinator job) must not raise for
+        # lack of anywhere to write a transcript.
+        qid = _mk_quest(store, "A striving")
+        payload = {"logbook": [{"entry_type": "note", "text": "thinking"}]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+
+
 class TestModelCannotFabricateResults:
     """gripes 171148/171149: a local model proposer fabricated a numeric
     barrier ("barrier=0.892 eV") inside a `result` logbook entry — the loop

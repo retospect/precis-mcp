@@ -124,8 +124,13 @@ class DispatchMixin(RuntimeShape):
                 # Chunk over-large bodies so they don't blow the
                 # MCP stdio frame. The pagination cache stashes
                 # the tail under a cursor; the agent calls
-                # ``more(cursor=...)`` to retrieve it.
-                body, _cursor = self.pagination.split(self._render(response))
+                # ``more(cursor=...)`` to retrieve it. A handler may
+                # set ``response.pagination_alt_hint`` to point at a
+                # cheaper alternative to draining every page (e.g.
+                # the skill handler's targeted-section access).
+                body, _cursor = self.pagination.split(
+                    self._render(response), alt_hint=response.pagination_alt_hint
+                )
                 return body, False
             except PrecisError as e:
                 self._maybe_add_skill_hint(e, verb, args)
@@ -960,6 +965,14 @@ class DispatchMixin(RuntimeShape):
         (``pa123~0..5``, ``pa123/toc``), which is reattached to the public
         id so the per-kind handler parses it as it would on a slug.
 
+        A handle whose row is soft-deleted or never existed has nothing
+        for ``resolve_handle`` (a live-row DB lookup) to return, but the
+        handle still *parses*: see the syntactic fallback below, which
+        routes those cases to the per-kind handler instead of falling
+        through to bare-slug inference (gr192827 — a soft-deleted
+        gripe addressed by its own handle produced a misleading
+        "id must be an integer" ``BadInput`` instead of ``Gone``).
+
         Returns ``True`` if it routed the handle, ``False`` otherwise
         (non-handle, unknown/chunk handle, or an explicit ``kind=`` that
         disagrees — left for normal validation to flag), so the caller
@@ -976,7 +989,7 @@ class DispatchMixin(RuntimeShape):
             return False
         resolved = self.store.resolve_handle(normalized)
         if resolved is None:
-            return False
+            return self._maybe_route_unresolved_record_handle(args, normalized, suffix)
         explicit = args.get("kind")
         if explicit is not None and explicit != resolved.kind:
             return False
@@ -999,6 +1012,56 @@ class DispatchMixin(RuntimeShape):
         # store's wired hint bus) if it followed a supersede; nothing to do here.
         args["kind"] = resolved.kind
         args["id"] = resolved.public_id + suffix
+        return True
+
+    def _maybe_route_unresolved_record_handle(
+        self, args: dict[str, Any], normalized: str, suffix: str
+    ) -> bool:
+        """Syntactic fallback for a well-formed record handle whose row
+        ``resolve_handle`` can't find (soft-deleted or never existed).
+
+        ``resolve_handle`` is a DB lookup — it needs a live row (or a
+        merge survivor) to return anything, so it comes back ``None``
+        for both a soft-deleted ref and a ref_id that never existed.
+        Without this fallback, both used to fall through to bare-slug
+        inference, landing on the numeric-ref handler's ``_coerce_id``
+        BadInput ("id must be an integer") instead of the accurate
+        ``Gone`` / ``NotFound`` the per-kind handler would raise given
+        the bare integer id (gr192827).
+
+        :func:`handle_registry.parse` needs no DB row — it decodes the
+        handle's 2-char code + decimal body straight from the string —
+        so it still yields ``(kind, is_chunk, pk)`` here. Routed only
+        for:
+
+        * non-chunk handles — a chunk handle has no per-kind chunk
+          selector to synthesize without the DB row (unchanged: falls
+          through, same as before this fallback existed).
+        * kinds whose ``KindSpec.is_numeric`` is ``True`` — the
+          per-kind public id IS ``str(ref_id)`` for these (memory,
+          todo, gripe, …), so ``str(pk)`` is always a valid ``id=``
+          the handler resolves the same way a live handle's
+          ``resolved.public_id`` would have. Slug-addressed kinds
+          (``is_numeric=False``, e.g. paper) are deliberately left
+          alone: their public id is a slug, not the pk, and there's no
+          live row here to read one from, so this fallback doesn't
+          attempt it — they keep falling through to bare-slug
+          inference (and its own reasonable NotFound).
+        """
+        parsed = handle_registry.parse(normalized)
+        if parsed is None:
+            return False
+        kind, is_chunk, pk = parsed
+        if is_chunk:
+            return False
+        explicit = args.get("kind")
+        if explicit is not None and explicit != kind:
+            return False
+        handler = self.hub.handler_for(kind) if self.hub is not None else None
+        if handler is None or not handler.spec.is_numeric:
+            return False
+        args["kind"] = kind
+        args["id"] = str(pk) + suffix
         return True
 
     def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:

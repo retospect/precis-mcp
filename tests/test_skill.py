@@ -30,6 +30,50 @@ def test_get_existing_skill(skill: SkillHandler) -> None:
     assert len(out.body) > 100  # not empty
 
 
+def test_get_skill_body_sets_pagination_alt_hint(skill: SkillHandler) -> None:
+    """A whole-skill-body ``get`` names the concrete slug in the
+    footer alt_hint so a paginated read is pointed at the cheaper
+    ``/toc`` + ``~N`` targeted access instead of blindly draining
+    every page."""
+    out = skill.get(id="precis-overview")
+    assert out.pagination_alt_hint is not None
+    assert "precis-overview/toc" in out.pagination_alt_hint
+    assert "precis-overview~N" in out.pagination_alt_hint
+
+
+def test_get_skill_toc_omits_pagination_alt_hint(skill: SkillHandler) -> None:
+    """The ``/toc`` view is already the targeted-access affordance —
+    it doesn't need to point at itself."""
+    out = skill.get(id="precis-overview/toc")
+    assert out.pagination_alt_hint is None
+
+
+def test_get_skill_chunk_omits_pagination_alt_hint(skill: SkillHandler) -> None:
+    out = skill.get(id="precis-overview~0")
+    assert out.pagination_alt_hint is None
+
+
+def test_skill_pagination_alt_hint_fits_footer_reserve(skill: SkillHandler) -> None:
+    """The concrete hint text the skill handler emits must round-trip
+    through :meth:`PaginationCache.split` without the head overflowing
+    the configured cap — the reserve calculation has to account for the
+    hint's actual length, not just the base footer."""
+    from precis._pagination import PaginationCache
+
+    out = skill.get(id="precis-overview")
+    assert out.pagination_alt_hint is not None
+
+    cache = PaginationCache()
+    big_body = out.body + ("\n\n## padding\n" + ("x" * 2000)) * 20
+    head, cursor = cache.split(big_body, alt_hint=out.pagination_alt_hint)
+    assert cursor is not None
+    assert "If you only need part of this document:" in head
+    assert out.pagination_alt_hint in head
+    from precis._pagination import _max_body_bytes
+
+    assert len(head.encode("utf-8")) <= _max_body_bytes()
+
+
 def test_get_paper_skill_documents_navigation(skill: SkillHandler) -> None:
     """The phase 3.5 navigation update added a 'Navigate' section."""
     out = skill.get(id="precis-paper-help")

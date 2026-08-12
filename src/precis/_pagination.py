@@ -74,6 +74,54 @@ _FOOTER_TEMPLATE = (
     "content until you have drained every page.\n"
 )
 
+#: Optional trailing sentence appended after :data:`_FOOTER_TEMPLATE` when a
+#: caller supplies ``alt_hint`` to :meth:`PaginationCache.split`. Some kinds
+#: (e.g. ``skill``) support targeted section access that makes draining
+#: every page wasteful — a full drain-before-acting warning is right for a
+#: kind like ``youtube`` (a transcript genuinely needs full context) but
+#: pure overhead for a skill body when one section would do. Kept as a
+#: *separate* template (rather than folded into ``_FOOTER_TEMPLATE``) so
+#: the no-hint case stays byte-identical to the pre-``alt_hint`` footer.
+_ALT_HINT_SENTENCE_TEMPLATE = "If you only need part of this document: {alt_hint}\n"
+
+#: Byte ceiling on ``alt_hint`` content (post-clamp). Bounds the footer-
+#: reserve contribution below to a fixed constant regardless of what a
+#: caller passes — see :func:`_clamp_alt_hint`.
+_ALT_HINT_MAX_BYTES = 320
+
+
+def _clamp_alt_hint(alt_hint: str | None) -> str | None:
+    """Normalise/bound ``alt_hint`` so it can never blow the footer reserve.
+
+    Strips to ``None`` on empty input. Truncates on a UTF-8 char boundary
+    to at most :data:`_ALT_HINT_MAX_BYTES` bytes (ellipsis included) so
+    the reserve computed from a fixed-width placeholder below is always a
+    safe upper bound — a caller passing an unexpectedly long hint degrades
+    to a truncated hint, not a frame overflow.
+    """
+    if not alt_hint:
+        return None
+    hint = alt_hint.strip()
+    if not hint:
+        return None
+    raw = hint.encode("utf-8")
+    if len(raw) <= _ALT_HINT_MAX_BYTES:
+        return hint
+    # Reserve 3 bytes for the "…" marker, then walk back to a valid
+    # UTF-8 char boundary (continuation bytes are 10xxxxxx).
+    cut = _ALT_HINT_MAX_BYTES - 3
+    while cut > 0 and (raw[cut] & 0xC0) == 0x80:
+        cut -= 1
+    return raw[:cut].decode("utf-8", errors="strict") + "…"
+
+
+def _build_footer(*, cursor: str, remaining: str, alt_hint: str | None) -> str:
+    """Render the full pagination footer, with the optional hint sentence."""
+    footer = _FOOTER_TEMPLATE.format(cursor=cursor, remaining=remaining)
+    if alt_hint:
+        footer += _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint=alt_hint)
+    return footer
+
 
 def _human_bytes(n: int) -> str:
     """Render a byte count as a compact human-readable size.
@@ -139,6 +187,11 @@ class _CachedTail:
 
     body: str
     expires_at: float
+    #: The ``alt_hint`` the head page was split with, if any. Carried
+    #: forward so a recursive re-split (tail still oversized) in
+    #: :meth:`PaginationCache.pop` reuses the same hint on the next
+    #: page's footer instead of silently dropping it.
+    alt_hint: str | None = None
 
 
 class PaginationCache:
@@ -187,7 +240,9 @@ class PaginationCache:
             oldest[0],
         )
 
-    def split(self, body: str) -> tuple[str, str | None]:
+    def split(
+        self, body: str, *, alt_hint: str | None = None
+    ) -> tuple[str, str | None]:
         """Split ``body`` into a head + cached tail if oversized.
 
         Returns ``(head, cursor)``. When ``body`` fits inside
@@ -201,12 +256,20 @@ class PaginationCache:
         for the next page. Sections shorter than the limit go to
         one page; a single section longer than the limit falls
         through to a paragraph split, then a hard byte split.
+
+        ``alt_hint``, when given, is appended to the footer as a
+        one-sentence pointer to a cheaper alternative to draining
+        every page (e.g. a skill's targeted-section access). Omitting
+        it (the default) leaves the footer byte-identical to before
+        this parameter existed — see :func:`_clamp_alt_hint` for how
+        it's bounded so it can't blow the footer reserve.
         """
+        alt_hint = _clamp_alt_hint(alt_hint)
         cap = _max_body_bytes()
         if len(body.encode("utf-8")) <= cap:
             return body, None
 
-        head, tail = _greedy_split(body, cap)
+        head, tail = _greedy_split(body, cap, alt_hint=alt_hint)
         if not tail:
             # Body fits after all (multi-byte UTF-8 made the
             # initial check pessimistic). No cursor needed.
@@ -214,7 +277,7 @@ class PaginationCache:
 
         cursor = uuid.uuid4().hex
         remaining = _human_bytes(len(tail.encode("utf-8")))
-        footer = _FOOTER_TEMPLATE.format(cursor=cursor, remaining=remaining)
+        footer = _build_footer(cursor=cursor, remaining=remaining, alt_hint=alt_hint)
         head_with_footer = head + footer
 
         with self._lock:
@@ -223,6 +286,7 @@ class PaginationCache:
             self._entries[cursor] = _CachedTail(
                 body=tail,
                 expires_at=self._now() + _ttl_seconds(),
+                alt_hint=alt_hint,
             )
         return head_with_footer, cursor
 
@@ -245,8 +309,10 @@ class PaginationCache:
             return None
         if entry.expires_at <= self._now():
             return None
-        # Recursive split: the tail may itself overflow.
-        head, _maybe_next_cursor = self.split(entry.body)
+        # Recursive split: the tail may itself overflow. Reuse the
+        # original page's alt_hint so it doesn't silently vanish
+        # after the first ``more()`` call.
+        head, _maybe_next_cursor = self.split(entry.body, alt_hint=entry.alt_hint)
         return head
 
     def __len__(self) -> int:
@@ -272,8 +338,23 @@ _FOOTER_RESERVE_BYTES = len(
     _FOOTER_TEMPLATE.format(cursor="f" * 32, remaining="8888.8 MB").encode("utf-8")
 )
 
+#: Extra reserve for the optional ``alt_hint`` sentence, on top of
+#: :data:`_FOOTER_RESERVE_BYTES`. Derived from the sentence template
+#: rendered with an all-ASCII placeholder at :data:`_ALT_HINT_MAX_BYTES` —
+#: :func:`_clamp_alt_hint` guarantees any hint it passes through encodes
+#: to no more than that many bytes, so this is always a safe upper bound.
+#: Only added to the budget when a call actually supplies ``alt_hint``,
+#: so the no-hint case's reserve (and therefore its footer) is unchanged.
+_ALT_HINT_RESERVE_BYTES = len(
+    _ALT_HINT_SENTENCE_TEMPLATE.format(alt_hint="x" * _ALT_HINT_MAX_BYTES).encode(
+        "utf-8"
+    )
+)
 
-def _greedy_split(body: str, cap_bytes: int) -> tuple[str, str]:
+
+def _greedy_split(
+    body: str, cap_bytes: int, *, alt_hint: str | None = None
+) -> tuple[str, str]:
     """Return ``(head, tail)`` such that head fits inside ``cap_bytes``.
 
     Strategy:
@@ -283,11 +364,15 @@ def _greedy_split(body: str, cap_bytes: int) -> tuple[str, str]:
        section alone exceeds the cap.
     3. Last resort: hard-cut on a UTF-8 char boundary.
     """
-    # Reserve some bytes for the ``more(cursor='...')`` footer;
-    # the rest is available to the head. For very small caps the
-    # reserve can dominate — clamp to a minimum of 1 byte for the
-    # head budget so the chunker still makes forward progress.
-    budget = max(cap_bytes - _FOOTER_RESERVE_BYTES, 1)
+    # Reserve some bytes for the ``more(cursor='...')`` footer (plus
+    # the optional alt_hint sentence, if one was passed); the rest is
+    # available to the head. For very small caps the reserve can
+    # dominate — clamp to a minimum of 1 byte for the head budget so
+    # the chunker still makes forward progress.
+    reserve = _FOOTER_RESERVE_BYTES
+    if alt_hint:
+        reserve += _ALT_HINT_RESERVE_BYTES
+    budget = max(cap_bytes - reserve, 1)
 
     head, tail = _split_on_delimiter(body, _SECTION_DELIMITER, budget)
     if head and tail:

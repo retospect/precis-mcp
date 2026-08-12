@@ -363,18 +363,26 @@ def _transcript_retention_days() -> int:
 
 
 def _gc_transcripts(store: Store) -> int:
-    """Strip ``meta.transcript`` (job refs) and the prompt assembler input-capture
-    pair ``meta.assembled_context`` / ``meta.assembled_context_at`` — the
-    latter lands on a plan_tick's ``kind='job'`` ref or on the digest memory
-    a structural/deep-review pass wrote (see
-    :func:`precis.utils.prompt.persist_assembled_context`) — once older than
-    the retention window. Two cheap UPDATEs on the same clock; returns the
-    combined row count reaped."""
+    """Strip ``meta.transcript`` / ``meta.transcript_raw`` (job refs) and the
+    prompt assembler input-capture pair ``meta.assembled_context`` /
+    ``meta.assembled_context_at`` — the latter lands on a plan_tick's
+    ``kind='job'`` ref or on the digest memory a structural/deep-review pass
+    wrote (see :func:`precis.utils.prompt.persist_assembled_context`) — once
+    older than the retention window.
+
+    ``transcript_raw`` is the quest_tick coordinator's raw-LLM-output
+    companion to ``transcript`` (gr170252, :func:`precis.quest.tick.
+    _persist_job_transcript`) — same key family, same retention clock, no
+    separate knob; stripped in the same UPDATE as ``transcript`` so a job
+    never carries one without the other past the window.
+
+    Two cheap UPDATEs on the same clock; returns the combined row count
+    reaped."""
     days = _transcript_retention_days()
     with store.pool.connection() as conn:
         cur = conn.execute(
-            "UPDATE refs SET meta = meta - 'transcript' "
-            "WHERE kind = 'job' AND meta ? 'transcript' "
+            "UPDATE refs SET meta = meta - 'transcript' - 'transcript_raw' "
+            "WHERE kind = 'job' AND (meta ? 'transcript' OR meta ? 'transcript_raw') "
             "  AND created_at < now() - %s::interval",
             (f"{days} days",),
         )

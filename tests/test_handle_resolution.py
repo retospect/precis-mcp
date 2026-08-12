@@ -316,6 +316,76 @@ def test_surface_get_chunk_handle_routes_to_selector(
     assert via_handle == via_selector
 
 
+# --- syntactic fallback for a soft-deleted / never-existed handle ------
+#
+# resolve_handle only returns a live row (or a merge survivor), so it
+# comes back None for a soft-deleted ref and for a ref_id that never
+# existed alike. Before the fallback, both fell through to bare-slug
+# inference and landed on the numeric-ref handler's "id must be an
+# integer" BadInput — misleading, because the same handle worked fine
+# before the ref was soft-deleted (gr192827).
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_soft_deleted_handle_is_gone(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(kind="gripe", slug=None, title="doomed", meta={})
+    store.soft_delete_ref(ref.id)
+    h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
+    out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
+    assert is_error
+    assert "[error:Gone]" in out
+    assert "soft-deleted" in out
+    assert "must be an integer" not in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_never_existed_handle_is_not_found(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"id": "gr999999999"}
+    )
+    assert is_error
+    assert "[error:NotFound]" in out
+    assert "not found" in out
+    assert "must be an integer" not in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_live_handle_routing_unchanged(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(kind="gripe", slug=None, title="alive", meta={})
+    h = handle_registry.format_handle("gripe", ref.id)
+    via_handle = runtime_with_store.dispatch("get", {"id": h})
+    via_explicit = runtime_with_store.dispatch(
+        "get", {"kind": "gripe", "id": str(ref.id)}
+    )
+    assert via_handle == via_explicit
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_soft_deleted_handle_explicit_mismatched_kind_falls_through(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(kind="gripe", slug=None, title="doomed too", meta={})
+    store.soft_delete_ref(ref.id)
+    h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
+    # An explicit kind= that disagrees with the handle's own type code must
+    # not be silently overridden — the mismatch falls through to normal
+    # validation instead of routing to the (wrong) gripe handler.
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": h}
+    )
+    assert is_error
+    # Falls through to bare-slug inference for kind='memory', which has no
+    # slug matching a gripe handle — a clean not-found, not a Gone routed
+    # to the wrong kind.
+    assert "[error:Gone]" not in out
+
+
 @_NEEDS_PAPER_EXTRA
 def test_surface_get_zero_step_routes_to_the_chunk(
     runtime_with_store: PrecisRuntime, store: Store
