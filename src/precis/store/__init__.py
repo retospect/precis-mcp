@@ -12,6 +12,13 @@ role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
 ``Store | None``; ``Hub.live_store`` narrows it for store-backed paths.
 
+Decomposition (in progress, codereview-store-decomposition): the
+stateful pool/tx lifecycle lives in :class:`precis.store.core.StoreCore`;
+domain sub-stores hold a core and are reached as composed properties —
+``store.drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the
+first. The flat ``Store`` method surface survives as transitional typed
+delegations, deleted per-domain as call sites migrate to the sub-store.
+
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
 """
 

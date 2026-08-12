@@ -1,6 +1,6 @@
 """Guard against silent MRO shadowing across ``Store``'s domain mixins.
 
-``store/store.py::Store`` composes ~22 mixins on convention alone —
+``store/store.py::Store`` composes ~21 mixins on convention alone —
 each mixin is supposed to own a disjoint slice of the persistence
 surface (see the module docstring in ``precis.store.store``). Nothing
 in Python enforces that disjointness; a name collision between two
@@ -9,6 +9,15 @@ implementation with another. This test walks Store's direct mixin
 bases and asserts no method/attribute name is defined by more than
 one of them, so a future copy-paste collision fails CI instead of
 lurking until runtime.
+
+The ``drafts`` domain (``DraftMixin``/``_AbbrevMixin``, now
+:class:`~precis.store._draft_ops.DraftStore`) was carved out of this
+mixin stack into a composed sub-store (``store.drafts`` — see
+``docs/backlog/codereview-store-decomposition.md``) and is no longer
+one of ``Store``'s direct bases, so it's out of scope for *this*
+guard — same original guarantee (no silent MRO shadowing among
+``Store``'s remaining mixins), just over a smaller (and shrinking, as
+more domains are carved out this way) mixin set.
 
 Pure introspection — no DB, no fixtures, import-only and fast.
 """

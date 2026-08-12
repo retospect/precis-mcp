@@ -3,8 +3,19 @@
 Drafts use chunk columns the append-only ingest path never touches —
 `handle` (opaque anchor), `pos` (sibling-scoped fractional order),
 `parent_chunk_id` (adjacency-list hierarchy), `content_sha`,
-`retired_at` — so they get their own mixin rather than overloading
-`insert_blocks`. Every structural write logs a `chunk_events` row.
+`retired_at` — so they get their own composed sub-store,
+:class:`DraftStore`, rather than overloading `insert_blocks`. Every
+structural write logs a `chunk_events` row.
+
+:class:`DraftStore` is the first domain carved out of the flat
+``Store`` mixin stack (see
+``docs/backlog/codereview-store-decomposition.md``) — it holds its own
+:class:`~precis.store.core.StoreCore` reference instead of being mixed
+into ``Store``, and is reached at runtime as ``store.drafts``. The
+``Store`` facade still exposes every method here under its own flat
+name too (``store.get_draft_chunk(...)`` etc.) via a transitional
+delegation block in ``store.py`` — those delegations are deleted one
+by one as call sites migrate to ``store.drafts.*``.
 
 This module ships the create / add / read core; edit / move / retire
 land alongside as the handler grows.
@@ -17,16 +28,22 @@ import hashlib
 import io
 import re
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, Gone, NotFound
+from precis.store.core import StoreCore
 from precis.utils import handle_registry
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Re-exported so review-fanout/rollup code (the lens × chunk-kind
 #: mapping) imports it off the store module rather
@@ -50,7 +67,7 @@ _SEE_CHUNK_RE = re.compile(r"^see-chunk-(\d+)$")
 #: are dropped for very large drafts.
 _ABBREV_INLINE_SCAN_CAP = 300_000
 
-#: Request lifecycle ordering for :meth:`DraftMixin.anchored_todos` — active
+#: Request lifecycle ordering for :meth:`DraftStore.anchored_todos` — active
 #: first, then done/abandoned (which now *persist* so you can click in and
 #: debug the LLM run, rather than vanishing on completion).
 _REQUEST_ORDER = {"open": 0, "scheduled": 1, "doing": 2, "paused": 3}
@@ -189,15 +206,326 @@ def _split_blocks(text: str) -> list[str]:
     return blocks or [text.strip()]
 
 
-class DraftMixin:
-    """Mixin on :class:`precis.store.store.Store` — draft chunk ops."""
+class _AbbrevMixin:
+    """Abbreviation detection + ignore-list ops, mixed into
+    :class:`DraftStore` below. Split out only to keep the abbrev
+    concern legible.
 
-    # provided by Store
+    Private base of :class:`DraftStore` (not composed into ``Store``
+    directly), so ``self`` here is a ``DraftStore`` at runtime; the
+    stubs below are the standard mixin forward-declaration so mypy can
+    type-check this class in isolation."""
+
     pool: Any
     tx: Any
-    insert_ref: Any
-    add_link: Any
-    resolve_handle: Any
+    add_chunks: Any  # provided by DraftStore
+    reading_order: Any  # provided by DraftStore
+    move_chunk: Any  # provided by DraftStore
+    retire_chunk: Any  # provided by DraftStore
+    _children: Any  # provided by DraftStore
+
+    def ensure_glossary_heading(self, ref_id: int) -> str:
+        """Back-compat alias for the glossary registry's home heading. Superseded by :meth:`ensure_registry_heading`; kept for the
+        draft-importer and any legacy caller."""
+        return self.ensure_registry_heading(ref_id, "glossary")
+
+    def ensure_registry_heading(self, ref_id: int, role: str) -> str:
+        """``dc<chunk_id>`` handle of the draft's home heading for ``role``
+        (``glossary`` / ``parts`` / ``components``), which ``term`` leaves of
+        that registry file under.
+
+        The home is found **by ``meta.registry == role``** — a stable tag that
+        survives a heading rename and can't be duplicated by wording (the fix
+        for the two-cluster glossary bug, where a text-only match minted a
+        second "Glossary" whenever the heading was renamed/imported). Failing
+        that it **adopts** a legacy text-matched heading (stamping
+        ``meta.registry`` on it) rather than mint a duplicate, and only mints +
+        stamps a fresh heading as a last resort. A one-per-role reconcile then
+        folds any stragglers."""
+        from precis.draft import registry as _reg
+
+        with self.pool.connection() as conn:
+            # 1. The role-tagged home (earliest by pos if several — the
+            #    reconcile below collapses the rest).
+            row = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'heading' AND retired_at IS NULL "
+                "AND pos IS NOT NULL AND meta->>'registry' = %s "
+                "ORDER BY pos LIMIT 1",
+                (ref_id, role),
+            ).fetchone()
+            if row is None:
+                # 2. Adopt a legacy text-matched heading — stamp the role on it.
+                aliases = list(_reg.LEGACY_HEADING_ALIASES.get(role, frozenset()))
+                if aliases:
+                    row = conn.execute(
+                        "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                        "AND chunk_kind = 'heading' AND retired_at IS NULL "
+                        "AND pos IS NOT NULL AND lower(btrim(text)) = ANY(%s) "
+                        "ORDER BY pos LIMIT 1",
+                        (ref_id, aliases),
+                    ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "UPDATE chunks SET meta = COALESCE(meta, '{}'::jsonb) "
+                        "|| jsonb_build_object('registry', %s::text) "
+                        "WHERE chunk_id = %s",
+                        (role, int(row[0])),
+                    )
+        if row is not None:
+            self._reconcile_registry_headings(ref_id, role)
+            return handle_registry.format_handle("draft", int(row[0]), chunk=True)
+        # 3. Mint + stamp a fresh home heading at the end of the draft.
+        created = self.add_chunks(
+            ref_id=ref_id,
+            chunk_kind="heading",
+            text=_reg.heading_title(role),
+            at={"last": True},
+            meta={"registry": role},
+        )
+        return str(created[0].dc)  # dc handle, matching the lookup/adopt paths
+
+    def _reconcile_registry_headings(self, ref_id: int, role: str) -> None:
+        """Invariant: at most one registry heading per role per draft. If several carry ``meta.registry == role``, keep the earliest-pos
+        one canonical, reparent every other role heading's children under it,
+        and retire the emptied duplicate. The belt is §6's placement-
+        independent projection; this is the suspenders."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, handle FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'heading' AND retired_at IS NULL "
+                "AND pos IS NOT NULL AND meta->>'registry' = %s "
+                "ORDER BY pos",
+                (ref_id, role),
+            ).fetchall()
+        if len(rows) < 2:
+            return  # the common path — one home, nothing to fold
+        canonical_id = int(rows[0][0])
+        canonical = handle_registry.format_handle("draft", canonical_id, chunk=True)
+        # ``move_chunk``/``retire_chunk`` key on the legacy ``chunks.handle``
+        # (via ``_row``), so the *acting* handle must be legacy; the ``into``
+        # target resolves through ``get_draft_chunk`` which accepts ``dc…``.
+        for _dup_id, dup_handle in rows[1:]:
+            with self.pool.connection() as conn:
+                kids = self._children(conn, ref_id, int(_dup_id))
+            # Move each child under the canonical home (its subtree follows).
+            for kid in kids:
+                self.move_chunk(
+                    kid.handle,
+                    {"into": canonical, "last": True},
+                    source={"reconcile": f"registry:{role}"},
+                )
+            # Retire the now-empty duplicate heading (legacy handle).
+            self.retire_chunk(str(dup_handle), source={"reconcile": f"registry:{role}"})
+
+    def parts_callout_map(self, ref_id: int, role: str = "parts") -> dict[str, int]:
+        """``{normalized dc-handle: numeral}`` for an ``assign="render"``
+        registry. The numerals are **display labels derived from
+        reading-order position** — not stored — so inserting/reordering a leaf
+        renumbers the whole series. Empty for a non-render registry."""
+        from precis.draft import registry as _reg
+
+        policy = _reg.policy_for(role)
+        if policy.assign != "render":
+            return {}
+        ordered = [
+            c.dc
+            for c in self.reading_order(ref_id)
+            if c.chunk_kind == "term" and (c.meta or {}).get("registry") == role
+        ]
+        norm = {
+            handle_registry.normalize(h): n
+            for h, n in _reg.render_callouts(ordered, policy).items()
+        }
+        return norm
+
+    def undefined_abbrevs(self, ref_id: int, text: str) -> list[str]:
+        """Acronym-shaped tokens in ``text`` that aren't yet defined for
+        this draft — i.e. not a ``term`` chunk's ``short``, not an inline
+        ``Long Form (ABBR)`` definition anywhere in the prose, and not on
+        the ``meta.abbrev_ignore`` list. The set the write-hint complains
+        about; opus then defines or marks not-an-abbrev."""
+        from precis.utils.abbreviations import find as _sh_find
+        from precis.utils.abbreviations import find_acronyms as _find_acronyms
+
+        cand = _find_acronyms(text)
+        if not cand:
+            return []
+        known: set[str] = set()
+        with self.pool.connection() as conn:
+            for (short,) in conn.execute(
+                "SELECT meta->>'short' FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                if short:
+                    known.add(short)
+            mrow = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            if mrow and mrow[0]:
+                known |= {str(t) for t in mrow[0]}
+            prow = conn.execute(
+                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
+                "AND ord >= 0 AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+        if prow and prow[0]:
+            known |= set(_sh_find(prow[0]).keys())
+        return sorted(cand - known)
+
+    def defined_abbrevs(self, ref_id: int) -> dict[str, str]:
+        """``{short: long}`` for every abbreviation **defined** in this
+        draft — explicit ``term`` chunks (``meta.short`` → chunk text) plus
+        inline ``Long Form (ABBR)`` first-uses found anywhere in the prose
+        (Schwartz-Hearst). Explicit terms win on a clash. Drives the
+        reader's recall highlight: every occurrence of a known ``short``
+        gets a hover-definition. Empty when nothing is defined yet."""
+        from precis.utils.abbreviations import find as _sh_find
+
+        out: dict[str, str] = {}
+        with self.pool.connection() as conn:
+            prow = conn.execute(
+                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
+                "AND ord >= 0 AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            # Inline pairs first; explicit term chunks overwrite them. The
+            # Schwartz-Hearst scan is regex over the *whole* concatenated
+            # prose — multi-second on a huge draft (1M+ chars). Above the
+            # cap, skip it: the abbreviation highlight is a reader nicety,
+            # and explicit ``term`` chunks (below) still give the glossary.
+            if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
+                out.update(_sh_find(prow[0]))
+            for short, long in conn.execute(
+                "SELECT meta->>'short', text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                if short and (long or "").strip():
+                    out[str(short)] = str(long).strip()
+        return out
+
+    def defined_terms(self, ref_id: int) -> dict[str, Any]:
+        """Rich per-**surface** hover records for every registry ``term`` leaf
+        in this draft — the generalization of
+        :meth:`defined_abbrevs`. Returns ``{surface: TermEntry}`` where a leaf
+        is reachable under each of its string surfaces (``meta.short``, every
+        ``meta.surface_forms`` entry, ``meta.mpn``, and ``meta.abbrev``), all
+        mapping to the same record ``{definition, registry?, callout?, mpn?,
+        manufacturer?, url?, ordering?, abbrev?}``. Inline ``Long Form (ABBR)``
+        first-uses (Schwartz-Hearst) contribute bare ``{definition}`` records;
+        explicit ``term`` leaves win on a clash. Drives the reader's rich
+        ``.pa-pop`` hover."""
+        from precis.utils.abbreviations import find as _sh_find
+
+        out: dict[str, dict[str, Any]] = {}
+        with self.pool.connection() as conn:
+            prow = conn.execute(
+                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
+                "AND ord >= 0 AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            # Inline pairs first; explicit term leaves overwrite them (same
+            # precedence + huge-draft cap as ``defined_abbrevs``).
+            if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
+                for short, long in _sh_find(prow[0]).items():
+                    if short and (long or "").strip():
+                        out[str(short)] = {"definition": str(long).strip()}
+            for meta, text in conn.execute(
+                "SELECT meta, text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall():
+                definition = (text or "").strip()
+                if not definition:
+                    continue
+                m = meta or {}
+                entry: dict[str, Any] = {"definition": definition}
+                for key in (
+                    "registry",
+                    "callout",
+                    "mpn",
+                    "manufacturer",
+                    "url",
+                    "ordering",
+                    "abbrev",
+                ):
+                    val = m.get(key)
+                    if val is not None and val != "":
+                        entry[key] = val
+                # Every string surface of the leaf routes to the same record.
+                surfaces: list[str] = []
+                short_form = m.get("short")
+                if short_form:
+                    surfaces.append(str(short_form))
+                for sf in m.get("surface_forms") or []:
+                    if sf:
+                        surfaces.append(str(sf))
+                mpn = m.get("mpn")
+                if mpn:
+                    surfaces.append(str(mpn))
+                # A dedicated acronym surface (gripe 56690), parallel to
+                # ``short`` — lets a term's primary label be the long form
+                # while its abbreviation still hover-resolves in prose.
+                abbrev = m.get("abbrev")
+                if abbrev:
+                    surfaces.append(str(abbrev))
+                for surface in surfaces:
+                    out[surface] = entry
+        return out
+
+    def registry_callouts(self, ref_id: int, role: str) -> list[int]:
+        """The assigned ``meta.callout`` values for a registry's live ``term``
+        leaves — the input to the next ``assign="insert"`` callout."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT (meta->>'callout')::int FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'term' AND retired_at IS NULL "
+                "AND meta->>'registry' = %s AND meta ? 'callout'",
+                (ref_id, role),
+            ).fetchall()
+        return [int(r[0]) for r in rows if r[0] is not None]
+
+    def add_abbrev_ignore(self, ref_id: int, tokens: list[str]) -> None:
+        """Add ``tokens`` to ``refs.meta.abbrev_ignore`` (deduped) — the
+        LLM's "not an abbreviation" silence valve."""
+        clean = [str(t).strip() for t in (tokens or []) if str(t).strip()]
+        if not clean:
+            return
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            existing = list(row[0]) if row and row[0] else []
+            merged = sorted({*existing, *clean})
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_set(meta, '{abbrev_ignore}', "
+                "%s::jsonb, true) WHERE ref_id = %s",
+                (Jsonb(merged), ref_id),
+            )
+
+
+class DraftStore(_AbbrevMixin):
+    """Composed sub-store for draft chunk ops — reached as
+    ``store.drafts``. Holds a reference to the shared
+    :class:`~precis.store.core.StoreCore` (pool/tx lifecycle) rather
+    than its own pool, and a back-reference to the host :class:`Store`
+    for the handful of ops that cross into the refs/links domains
+    (``insert_ref``, ``add_link``, ``resolve_handle``)."""
+
+    def __init__(self, core: StoreCore, *, host: Store) -> None:
+        self._core = core
+        self._host = host
+
+    @property
+    def pool(self) -> ConnectionPool:
+        return self._core.pool
+
+    def tx(self) -> AbstractContextManager[psycopg.Connection]:
+        return self._core.tx()
 
     # -- low-level inserts ---------------------------------------------------
 
@@ -900,7 +1228,7 @@ class DraftMixin:
 
         def _do(c: psycopg.Connection) -> None:
             src_ref = self._ref_of_chunk(c, node_chunk_id)
-            rh = self.resolve_handle(target, conn=c)
+            rh = self._host.resolve_handle(target, conn=c)
             if rh is None:
                 raise BadInput(
                     f"cannot resolve bind target {target!r}",
@@ -967,7 +1295,7 @@ class DraftMixin:
             filt = "src_ref_id = %s AND src_chunk_id = %s AND relation = %s"
             params: list[Any] = [src_ref, node_chunk_id, relation]
             if target is not None:
-                rh = self.resolve_handle(target, conn=c)
+                rh = self._host.resolve_handle(target, conn=c)
                 if rh is None:
                     raise BadInput(f"cannot resolve unbind target {target!r}")
                 filt += " AND dst_ref_id = %s AND dst_chunk_id IS NOT DISTINCT FROM %s"
@@ -1062,7 +1390,7 @@ class DraftMixin:
                 relation = str(spec.get("relation") or "depicts").strip()
                 if not element or not target:
                     continue
-                rh = self.resolve_handle(target, conn=conn)
+                rh = self._host.resolve_handle(target, conn=conn)
                 if rh is None:
                     continue  # skip unresolvable — don't fail the turn
                 canon = self._binding_handle(rh.kind, rh.ref_id, rh.chunk_id)
@@ -1532,7 +1860,7 @@ class DraftMixin:
             ).fetchone()
             if dup is not None:
                 raise ValueError(f"project ref {project_ref_id} already has a {kind}")
-            ref = self.insert_ref(
+            ref = self._host.insert_ref(
                 kind=kind,
                 slug=name,
                 title=title,
@@ -1549,7 +1877,7 @@ class DraftMixin:
                 source={"reason": "draft-title"},
                 kind=kind,
             )
-            self.add_link(
+            self._host.add_link(
                 src_ref_id=ref.id,
                 dst_ref_id=project_ref_id,
                 relation=relation,
@@ -1787,7 +2115,7 @@ class DraftMixin:
                 raise NotFound(f"no live draft ref id={src_ref_id}")
             src_title, src_meta, src_authors, src_year = src_row
 
-            new_ref = self.insert_ref(
+            new_ref = self._host.insert_ref(
                 kind="draft",
                 slug=new_slug,
                 title=title or src_title,
@@ -1966,7 +2294,7 @@ class DraftMixin:
                 )
 
             # -- 5. copy-of provenance (has-copy mirrors at read time) --
-            self.add_link(
+            self._host.add_link(
                 src_ref_id=new_ref.id,
                 dst_ref_id=src_ref_id,
                 relation="copy-of",
@@ -1974,7 +2302,7 @@ class DraftMixin:
             )
 
             # -- 6. bind the new draft to its project (1:1, draft-of) ---
-            self.add_link(
+            self._host.add_link(
                 src_ref_id=new_ref.id,
                 dst_ref_id=project_id,
                 relation="draft-of",
@@ -2216,7 +2544,7 @@ class DraftMixin:
             n = 0
             for dcid in data_chunk_ids:
                 d_ref, d_ord = info[dcid]
-                self.add_link(
+                self._host.add_link(
                     src_ref_id=fig_ref,
                     src_pos=fig_ord,
                     dst_ref_id=d_ref,
@@ -2240,7 +2568,7 @@ class DraftMixin:
             if row is None:
                 raise NotFound(f"no chunk {figure_chunk_id}")
             fig_ref, fig_ord = int(row[0]), int(row[1])
-            self.add_link(
+            self._host.add_link(
                 src_ref_id=fig_ref,
                 src_pos=fig_ord,
                 dst_ref_id=canvas_ref_id,  # ref-level dst (dst_pos=None)
@@ -3497,302 +3825,6 @@ class DraftMixin:
         if move.get("first"):
             return None, None, (roots[0].pos if roots else None)
         return None, (roots[-1].pos if roots else None), None
-
-
-class _AbbrevMixin:
-    """Abbreviation detection + ignore-list ops (mixed into Store with
-    DraftMixin). Split out only to keep the abbrev concern legible."""
-
-    pool: Any
-    tx: Any
-    add_chunks: Any  # provided by DraftMixin
-    reading_order: Any  # provided by DraftMixin
-    move_chunk: Any  # provided by DraftMixin
-    retire_chunk: Any  # provided by DraftMixin
-    _children: Any  # provided by DraftMixin
-
-    def ensure_glossary_heading(self, ref_id: int) -> str:
-        """Back-compat alias for the glossary registry's home heading. Superseded by :meth:`ensure_registry_heading`; kept for the
-        draft-importer and any legacy caller."""
-        return self.ensure_registry_heading(ref_id, "glossary")
-
-    def ensure_registry_heading(self, ref_id: int, role: str) -> str:
-        """``dc<chunk_id>`` handle of the draft's home heading for ``role``
-        (``glossary`` / ``parts`` / ``components``), which ``term`` leaves of
-        that registry file under.
-
-        The home is found **by ``meta.registry == role``** — a stable tag that
-        survives a heading rename and can't be duplicated by wording (the fix
-        for the two-cluster glossary bug, where a text-only match minted a
-        second "Glossary" whenever the heading was renamed/imported). Failing
-        that it **adopts** a legacy text-matched heading (stamping
-        ``meta.registry`` on it) rather than mint a duplicate, and only mints +
-        stamps a fresh heading as a last resort. A one-per-role reconcile then
-        folds any stragglers."""
-        from precis.draft import registry as _reg
-
-        with self.pool.connection() as conn:
-            # 1. The role-tagged home (earliest by pos if several — the
-            #    reconcile below collapses the rest).
-            row = conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
-                "AND chunk_kind = 'heading' AND retired_at IS NULL "
-                "AND pos IS NOT NULL AND meta->>'registry' = %s "
-                "ORDER BY pos LIMIT 1",
-                (ref_id, role),
-            ).fetchone()
-            if row is None:
-                # 2. Adopt a legacy text-matched heading — stamp the role on it.
-                aliases = list(_reg.LEGACY_HEADING_ALIASES.get(role, frozenset()))
-                if aliases:
-                    row = conn.execute(
-                        "SELECT chunk_id FROM chunks WHERE ref_id = %s "
-                        "AND chunk_kind = 'heading' AND retired_at IS NULL "
-                        "AND pos IS NOT NULL AND lower(btrim(text)) = ANY(%s) "
-                        "ORDER BY pos LIMIT 1",
-                        (ref_id, aliases),
-                    ).fetchone()
-                if row is not None:
-                    conn.execute(
-                        "UPDATE chunks SET meta = COALESCE(meta, '{}'::jsonb) "
-                        "|| jsonb_build_object('registry', %s::text) "
-                        "WHERE chunk_id = %s",
-                        (role, int(row[0])),
-                    )
-        if row is not None:
-            self._reconcile_registry_headings(ref_id, role)
-            return handle_registry.format_handle("draft", int(row[0]), chunk=True)
-        # 3. Mint + stamp a fresh home heading at the end of the draft.
-        created = self.add_chunks(
-            ref_id=ref_id,
-            chunk_kind="heading",
-            text=_reg.heading_title(role),
-            at={"last": True},
-            meta={"registry": role},
-        )
-        return str(created[0].dc)  # dc handle, matching the lookup/adopt paths
-
-    def _reconcile_registry_headings(self, ref_id: int, role: str) -> None:
-        """Invariant: at most one registry heading per role per draft. If several carry ``meta.registry == role``, keep the earliest-pos
-        one canonical, reparent every other role heading's children under it,
-        and retire the emptied duplicate. The belt is §6's placement-
-        independent projection; this is the suspenders."""
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT chunk_id, handle FROM chunks WHERE ref_id = %s "
-                "AND chunk_kind = 'heading' AND retired_at IS NULL "
-                "AND pos IS NOT NULL AND meta->>'registry' = %s "
-                "ORDER BY pos",
-                (ref_id, role),
-            ).fetchall()
-        if len(rows) < 2:
-            return  # the common path — one home, nothing to fold
-        canonical_id = int(rows[0][0])
-        canonical = handle_registry.format_handle("draft", canonical_id, chunk=True)
-        # ``move_chunk``/``retire_chunk`` key on the legacy ``chunks.handle``
-        # (via ``_row``), so the *acting* handle must be legacy; the ``into``
-        # target resolves through ``get_draft_chunk`` which accepts ``dc…``.
-        for _dup_id, dup_handle in rows[1:]:
-            with self.pool.connection() as conn:
-                kids = self._children(conn, ref_id, int(_dup_id))
-            # Move each child under the canonical home (its subtree follows).
-            for kid in kids:
-                self.move_chunk(
-                    kid.handle,
-                    {"into": canonical, "last": True},
-                    source={"reconcile": f"registry:{role}"},
-                )
-            # Retire the now-empty duplicate heading (legacy handle).
-            self.retire_chunk(str(dup_handle), source={"reconcile": f"registry:{role}"})
-
-    def parts_callout_map(self, ref_id: int, role: str = "parts") -> dict[str, int]:
-        """``{normalized dc-handle: numeral}`` for an ``assign="render"``
-        registry. The numerals are **display labels derived from
-        reading-order position** — not stored — so inserting/reordering a leaf
-        renumbers the whole series. Empty for a non-render registry."""
-        from precis.draft import registry as _reg
-
-        policy = _reg.policy_for(role)
-        if policy.assign != "render":
-            return {}
-        ordered = [
-            c.dc
-            for c in self.reading_order(ref_id)
-            if c.chunk_kind == "term" and (c.meta or {}).get("registry") == role
-        ]
-        norm = {
-            handle_registry.normalize(h): n
-            for h, n in _reg.render_callouts(ordered, policy).items()
-        }
-        return norm
-
-    def undefined_abbrevs(self, ref_id: int, text: str) -> list[str]:
-        """Acronym-shaped tokens in ``text`` that aren't yet defined for
-        this draft — i.e. not a ``term`` chunk's ``short``, not an inline
-        ``Long Form (ABBR)`` definition anywhere in the prose, and not on
-        the ``meta.abbrev_ignore`` list. The set the write-hint complains
-        about; opus then defines or marks not-an-abbrev."""
-        from precis.utils.abbreviations import find as _sh_find
-        from precis.utils.abbreviations import find_acronyms as _find_acronyms
-
-        cand = _find_acronyms(text)
-        if not cand:
-            return []
-        known: set[str] = set()
-        with self.pool.connection() as conn:
-            for (short,) in conn.execute(
-                "SELECT meta->>'short' FROM chunks WHERE ref_id = %s "
-                "AND chunk_kind = 'term' AND retired_at IS NULL",
-                (ref_id,),
-            ).fetchall():
-                if short:
-                    known.add(short)
-            mrow = conn.execute(
-                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
-                (ref_id,),
-            ).fetchone()
-            if mrow and mrow[0]:
-                known |= {str(t) for t in mrow[0]}
-            prow = conn.execute(
-                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
-                "AND ord >= 0 AND retired_at IS NULL",
-                (ref_id,),
-            ).fetchone()
-        if prow and prow[0]:
-            known |= set(_sh_find(prow[0]).keys())
-        return sorted(cand - known)
-
-    def defined_abbrevs(self, ref_id: int) -> dict[str, str]:
-        """``{short: long}`` for every abbreviation **defined** in this
-        draft — explicit ``term`` chunks (``meta.short`` → chunk text) plus
-        inline ``Long Form (ABBR)`` first-uses found anywhere in the prose
-        (Schwartz-Hearst). Explicit terms win on a clash. Drives the
-        reader's recall highlight: every occurrence of a known ``short``
-        gets a hover-definition. Empty when nothing is defined yet."""
-        from precis.utils.abbreviations import find as _sh_find
-
-        out: dict[str, str] = {}
-        with self.pool.connection() as conn:
-            prow = conn.execute(
-                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
-                "AND ord >= 0 AND retired_at IS NULL",
-                (ref_id,),
-            ).fetchone()
-            # Inline pairs first; explicit term chunks overwrite them. The
-            # Schwartz-Hearst scan is regex over the *whole* concatenated
-            # prose — multi-second on a huge draft (1M+ chars). Above the
-            # cap, skip it: the abbreviation highlight is a reader nicety,
-            # and explicit ``term`` chunks (below) still give the glossary.
-            if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
-                out.update(_sh_find(prow[0]))
-            for short, long in conn.execute(
-                "SELECT meta->>'short', text FROM chunks WHERE ref_id = %s "
-                "AND chunk_kind = 'term' AND retired_at IS NULL",
-                (ref_id,),
-            ).fetchall():
-                if short and (long or "").strip():
-                    out[str(short)] = str(long).strip()
-        return out
-
-    def defined_terms(self, ref_id: int) -> dict[str, Any]:
-        """Rich per-**surface** hover records for every registry ``term`` leaf
-        in this draft — the generalization of
-        :meth:`defined_abbrevs`. Returns ``{surface: TermEntry}`` where a leaf
-        is reachable under each of its string surfaces (``meta.short``, every
-        ``meta.surface_forms`` entry, ``meta.mpn``, and ``meta.abbrev``), all
-        mapping to the same record ``{definition, registry?, callout?, mpn?,
-        manufacturer?, url?, ordering?, abbrev?}``. Inline ``Long Form (ABBR)``
-        first-uses (Schwartz-Hearst) contribute bare ``{definition}`` records;
-        explicit ``term`` leaves win on a clash. Drives the reader's rich
-        ``.pa-pop`` hover."""
-        from precis.utils.abbreviations import find as _sh_find
-
-        out: dict[str, dict[str, Any]] = {}
-        with self.pool.connection() as conn:
-            prow = conn.execute(
-                "SELECT string_agg(text, ' ') FROM chunks WHERE ref_id = %s "
-                "AND ord >= 0 AND retired_at IS NULL",
-                (ref_id,),
-            ).fetchone()
-            # Inline pairs first; explicit term leaves overwrite them (same
-            # precedence + huge-draft cap as ``defined_abbrevs``).
-            if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
-                for short, long in _sh_find(prow[0]).items():
-                    if short and (long or "").strip():
-                        out[str(short)] = {"definition": str(long).strip()}
-            for meta, text in conn.execute(
-                "SELECT meta, text FROM chunks WHERE ref_id = %s "
-                "AND chunk_kind = 'term' AND retired_at IS NULL",
-                (ref_id,),
-            ).fetchall():
-                definition = (text or "").strip()
-                if not definition:
-                    continue
-                m = meta or {}
-                entry: dict[str, Any] = {"definition": definition}
-                for key in (
-                    "registry",
-                    "callout",
-                    "mpn",
-                    "manufacturer",
-                    "url",
-                    "ordering",
-                    "abbrev",
-                ):
-                    val = m.get(key)
-                    if val is not None and val != "":
-                        entry[key] = val
-                # Every string surface of the leaf routes to the same record.
-                surfaces: list[str] = []
-                short_form = m.get("short")
-                if short_form:
-                    surfaces.append(str(short_form))
-                for sf in m.get("surface_forms") or []:
-                    if sf:
-                        surfaces.append(str(sf))
-                mpn = m.get("mpn")
-                if mpn:
-                    surfaces.append(str(mpn))
-                # A dedicated acronym surface (gripe 56690), parallel to
-                # ``short`` — lets a term's primary label be the long form
-                # while its abbreviation still hover-resolves in prose.
-                abbrev = m.get("abbrev")
-                if abbrev:
-                    surfaces.append(str(abbrev))
-                for surface in surfaces:
-                    out[surface] = entry
-        return out
-
-    def registry_callouts(self, ref_id: int, role: str) -> list[int]:
-        """The assigned ``meta.callout`` values for a registry's live ``term``
-        leaves — the input to the next ``assign="insert"`` callout."""
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT (meta->>'callout')::int FROM chunks WHERE ref_id = %s "
-                "AND chunk_kind = 'term' AND retired_at IS NULL "
-                "AND meta->>'registry' = %s AND meta ? 'callout'",
-                (ref_id, role),
-            ).fetchall()
-        return [int(r[0]) for r in rows if r[0] is not None]
-
-    def add_abbrev_ignore(self, ref_id: int, tokens: list[str]) -> None:
-        """Add ``tokens`` to ``refs.meta.abbrev_ignore`` (deduped) — the
-        LLM's "not an abbreviation" silence valve."""
-        clean = [str(t).strip() for t in (tokens or []) if str(t).strip()]
-        if not clean:
-            return
-        with self.tx() as conn:
-            row = conn.execute(
-                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
-                (ref_id,),
-            ).fetchone()
-            existing = list(row[0]) if row and row[0] else []
-            merged = sorted({*existing, *clean})
-            conn.execute(
-                "UPDATE refs SET meta = jsonb_set(meta, '{abbrev_ignore}', "
-                "%s::jsonb, true) WHERE ref_id = %s",
-                (Jsonb(merged), ref_id),
-            )
 
 
 def _bare(handle: str) -> str:
