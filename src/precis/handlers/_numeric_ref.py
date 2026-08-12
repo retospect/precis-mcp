@@ -373,8 +373,14 @@ class NumericRefHandler(Handler):
         status: str | None = None,
         tags: list[str] | None = None,
         page_size: int = 10,
+        page: int = 1,
         **_kw: Any,
     ) -> Response:
+        # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
+        # stray page=0 doesn't blow the query up. Mirrors the convention
+        # in _paper_search.py's ranked search path.
+        offset = max(0, (int(page) - 1) * int(page_size))
+
         # Resolve the per-kind STATUS default (e.g. gripe → 'open') into
         # the effective tag filter. An explicit status= always applies;
         # the implicit default only fires when the caller neither passed
@@ -396,7 +402,11 @@ class NumericRefHandler(Handler):
         if q is None or not q.strip():
             if normalized_tags:
                 return self._list_by_tags(
-                    normalized_tags, page_size=page_size, note=status_note
+                    normalized_tags,
+                    page_size=page_size,
+                    note=status_note,
+                    offset=offset,
+                    page=page,
                 )
             raise BadInput(
                 "search requires q= or tags=",
@@ -414,6 +424,7 @@ class NumericRefHandler(Handler):
                 tags=normalized_tags,
                 page_size=page_size,
                 status_note=status_note,
+                page=page,
             )
 
         hits = self.store.search_refs_lexical(
@@ -553,7 +564,13 @@ class NumericRefHandler(Handler):
         )
 
     def _list_by_tags(
-        self, tags: list[str], *, page_size: int, note: str = ""
+        self,
+        tags: list[str],
+        *,
+        page_size: int,
+        note: str = "",
+        offset: int = 0,
+        page: int = 1,
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -563,9 +580,32 @@ class NumericRefHandler(Handler):
         path for callers who realize they wanted ranking. ``note`` is an
         optional one-liner (e.g. the implicit-status-default hint) shown
         under the header.
+
+        ``offset``/``page`` (1-based) window the recency-ordered list —
+        threaded from ``search()``'s ``page=`` so ``page=2`` actually
+        advances past page 1's rows instead of silently re-showing them
+        (gripe gr204291: ``page=`` was accepted but dropped on the floor
+        for every tag-scoped/status-scoped listing).
         """
-        refs = self.store.list_refs(kind=self.kind, tags=tags, limit=page_size)
+        refs = self.store.list_refs(
+            kind=self.kind, tags=tags, limit=page_size, offset=offset
+        )
+        # Total tagged population (list_refs caps at page_size) so the
+        # header can flag pagination the same way the ranked path does,
+        # and so a beyond-the-end page can say "still N total" rather
+        # than misreporting an empty tag set.
+        total = self.store.count_refs(kind=self.kind, tags=tags)
         if not refs:
+            if page > 1 and total > 0:
+                # Past the last page — total is still positive, so this
+                # is an empty window, not "nothing tagged this way".
+                body = (
+                    f"page {page}: no {self._sense()} entries tagged {tags} "
+                    f"— {total} total"
+                )
+                if note:
+                    body += f"\n{note}"
+                return Response(body=body)
             body = f"no {self._sense()} entries tagged {tags}"
             if note:
                 body += f"\n{note}"
@@ -582,11 +622,18 @@ class NumericRefHandler(Handler):
                 ]
             )
             return Response(body=body)
-        # Total tagged population (list_refs caps at page_size) so the
-        # header can flag pagination the same way the ranked path does.
-        total = self.store.count_refs(kind=self.kind, tags=tags)
         shown = len(refs)
-        count_frag = f"{shown} of {total}" if total > shown else f"{shown}"
+        if page > 1:
+            # "N of K" alone doesn't say *which* N once page > 1 — show
+            # the actual row window so the header can't be misread as
+            # always starting from row 1 (the bug behind gr204291).
+            first_row = offset + 1
+            last_row = offset + shown
+            count_frag = f"rows {first_row}-{last_row} of {total}"
+        elif total > shown:
+            count_frag = f"{shown} of {total}"
+        else:
+            count_frag = f"{shown}"
         header = (
             f"# {count_frag} {self._sense()} entr"
             f"{'y' if total == 1 else 'ies'} tagged {tags} "
@@ -639,7 +686,7 @@ class NumericRefHandler(Handler):
         return flat[:max_chars].rstrip() + "…"
 
     def _best_body_hits(
-        self, q: str, tags: list[str] | None, page_size: int
+        self, q: str, tags: list[str] | None, page_size: int, page: int = 1
     ) -> tuple[list[tuple[Any, Ref, float]], int]:
         """Best-ranked chunk per ref for a lexical body-chunk query.
 
@@ -656,17 +703,25 @@ class NumericRefHandler(Handler):
         approximate ``total`` would mislead the "N of K" headline and,
         worse, the tag-truncation cue that compares it against the full
         tagged population.
+
+        ``page`` (1-based) windows the ref-deduped, rank-sorted list —
+        applied *after* dedup rather than as a DB-level ``offset=`` on
+        the raw chunk query, since an offset there wouldn't line up
+        with ref boundaries once several chunks per ref collapse to
+        one. The over-fetch pool grows with ``page`` so later pages
+        still have enough distinct refs to dedupe from.
         """
         raw = self.store.search_blocks_lexical(
-            q=q, kind=self.kind, tags=tags, limit=page_size * 5
+            q=q, kind=self.kind, tags=tags, limit=page_size * 5 * max(1, page)
         )
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
             existing = best_by_ref.get(ref.id)
             if existing is None or rank > existing[2]:
                 best_by_ref[ref.id] = (block, ref, rank)
+        window_start = max(0, (page - 1) * page_size)
         ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
-            :page_size
+            window_start : window_start + page_size
         ]
         total = self.store.count_blocks_lexical(
             q=q, kind=self.kind, tags=tags, distinct_refs=True
@@ -680,14 +735,22 @@ class NumericRefHandler(Handler):
         tags: list[str] | None,
         page_size: int,
         status_note: str = "",
+        page: int = 1,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
-        hits, total = self._best_body_hits(q, tags, page_size)
+        hits, total = self._best_body_hits(q, tags, page_size, page=page)
         if self.heat_salience_on_body_search:
             self.store.bump_salience(
                 self.store.card_chunk_ids([ref.id for _, ref, _ in hits])
             )
         if not hits:
+            if page > 1 and total > 0:
+                # Past the last page — not a "no matches" (total is still
+                # positive), just an empty window. Say so rather than
+                # implying the search itself came up dry.
+                return Response(
+                    body=f"page {page}: no {self._sense()} entries — {total} total"
+                )
             tag_suffix = f" tagged {tags}" if tags else ""
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
             if status_note:

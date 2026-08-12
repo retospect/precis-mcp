@@ -60,6 +60,8 @@ call)
 | `authors=` | replace the byline — grammar below |
 | `title=` | rename (both `refs.title` and the heading, atomically) |
 | `scaffold=` | append a document class's section skeleton |
+| `word_target=` | a heading's word budget `{'min':…,'max':…}`; `{}` clears |
+| `style=` | stamp a heading with a section-style skill (ADR 0037) |
 | `not_abbrev=` | silence the undefined-abbreviation hint for given tokens |
 | `origin=` / `permission=` | a figure's provenance + clearance paper-trail |
 
@@ -233,6 +235,19 @@ digest — Summary, Key Points, Details, References). Unknown class →
 `dc<id>`/`¶handle` inside it. Never overwrites or reorders — only
 appends; re-scaffolding an already-scaffolded draft adds a second copy,
 so scaffold once, early.
+
+## Length budgets & section styles (heading chunks)
+
+```python
+edit(id="dc<heading>", word_target={"min": 200, "max": 400})  # {} clears
+edit(id="dc<heading>", style="<section-style skill>")  # ADR 0037
+```
+
+`word_target=` bounds are non-negative ints, `min <= max`, either bound
+omittable; counts come from `view='wordcount'` (a section includes its
+subsections) and the web reader badges off-target sections. `style=`
+tells review lenses and scaffolded genres what the section should look
+like. Both are generic draft params, not proposal-specific.
 
 ## Document metadata — rename & byline
 

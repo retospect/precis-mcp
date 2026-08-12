@@ -33,7 +33,19 @@ One fire (:func:`run_health_digest_pass`) does four things:
      :func:`precis.health_checks.compute_backlog_counts` — the exact
      computation ``/status`` renders, so there is one liveness truth, not
      two. No curated cadence-freshness rows live here — see the next
-     bullet.
+     bullet. ``chunks_classified`` (gr204385) is idle-aware on a different
+     axis — not a backlog, but a ``service_config`` gate: the ``classify``
+     PASS is default-OFF (its own module docstring), so a bare "last role3
+     tag" freshness probe alerts stale forever by construction on a fleet
+     where it's never been turned on — the watchdog paging on its own
+     defaults. :func:`_classify_gate_enabled` reuses
+     :func:`_resolve_enabled_somewhere` (the same registry ×
+     ``service_config`` predicate :func:`_layer2_checks` already uses for
+     this exact spec) to override that one check to a non-finding "disabled
+     by config" reading when the gate is off, leaving the 12h staleness
+     semantics untouched when it's on. This is also what lets the watchdog
+     auto-close its own gr204323 child once deployed — the finding was
+     never a real outage, just a check that could never observe a "yes".
    * **Cadence staleness** (:func:`_cadence_staleness_checks`, derived) —
      every ``scheduler_leases`` row where ``next_fire_at`` is overdue past
      its own interval + a margin. Zero per-cadence config: a newly-added
@@ -211,10 +223,20 @@ _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
         "a new paper landing",
     ),
     (
+        # gr204385: overridden to a non-finding "disabled by config" result
+        # in _layer1_checks() when _classify_gate_enabled() is False — this
+        # SQL/budget pair only governs the reading while the classify PASS
+        # is actually turned on somewhere. Namespace is 'ROLE3' uppercase —
+        # mirrors classify.py's OUTPUT_NAMESPACE (not imported, per this
+        # module's don't-depend-on-what-it-watches convention, see
+        # _TAPROOT_HUB_ROLES above); `tags.namespace` is CHECK-constrained
+        # to `namespace = upper(namespace)`, so a lowercase literal here
+        # could never match a row regardless of the gate — a second,
+        # independent cause of "stale forever" gr204385 also fixes.
         "chunks_classified",
         "discovery",
         "SELECT max(ct.created_at) FROM chunk_tags ct "
-        "JOIN tags t ON t.tag_id = ct.tag_id WHERE t.namespace = 'role3'",
+        "JOIN tags t ON t.tag_id = ct.tag_id WHERE t.namespace = 'ROLE3'",
         12.0,
         _WARN,
         "a chunk classified (role3)",
@@ -832,6 +854,46 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
     )
 
 
+#: The registry service name gating the role3 classifier (see
+#: ``workers/registry.py``'s ``classify`` :class:`ServiceSpec`) — the name
+#: :func:`_classify_gate_enabled` looks up.
+_CLASSIFY_SERVICE_NAME = "classify"
+
+
+def _classify_gate_enabled(store: Store) -> bool:
+    """Does ``classify`` resolve enabled on at least one host right now?
+
+    Reuses :func:`_resolve_enabled_somewhere` — the exact registry ×
+    ``service_config`` predicate :func:`_layer2_checks` already uses for
+    this same spec — rather than a second, possibly-drifting config read
+    (gr204385's ask). Best-effort: a missing spec (registry edit gone
+    wrong) or a ``service_config`` read failure (handled inside the
+    helper, which logs and falls back to structural default) both read as
+    "not enabled", matching ``classify``'s own default-OFF posture rather
+    than risking a false "on".
+    """
+    spec = next((s for s in SERVICES if s.name == _CLASSIFY_SERVICE_NAME), None)
+    if spec is None:
+        return False
+    return _resolve_enabled_somewhere(store, [spec]).get(_CLASSIFY_SERVICE_NAME, False)
+
+
+def _idle_classify_check() -> CheckResult:
+    """The ``chunks_classified`` reading when :func:`_classify_gate_enabled`
+    is False — ``status="ok"`` (a non-finding, per :attr:`CheckResult.is_finding`)
+    so a fleet where ``classify`` has simply never been turned on can never
+    alert, mirroring the idle-aware backlog checks' own "empty backlog is
+    healthy" non-finding shape rather than inventing a parallel status."""
+    return CheckResult(
+        "discovery",
+        "chunks_classified",
+        "ok",
+        "a chunk classified (role3): classify is disabled by service_config "
+        "(default-off) — idle by design, not stale",
+        _WARN,
+    )
+
+
 def _layer1_checks(store: Store) -> list[CheckResult]:
     """All curated Layer-1 outcome checks, one connection, best-effort."""
     with store.pool.connection() as conn:
@@ -842,6 +904,10 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_agent_jobs_completing(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))
+    if not _classify_gate_enabled(store):
+        out = [
+            _idle_classify_check() if c.name == "chunks_classified" else c for c in out
+        ]
     return out
 
 

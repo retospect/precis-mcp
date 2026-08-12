@@ -245,9 +245,9 @@ Per-kind gates:
 shared grammar — `move=` (reorder/reparent a chunk), `cell=` (a table
 chunk's cell), `sub=` (regex substitute, dry-run by default), `review=`
 (record a human sign-off), `authoring=` (let review lenses edit inline),
-`authors=` (set the byline), `not_abbrev=` (silence an abbreviation
-hint) — documented in `precis-draft-help`, not here. `word_target=` (a
-heading's word-count budget) is documented in `precis-proposal-help`.
+`authors=` (set the byline), `word_target=` (a heading's length budget),
+`style=` (a heading's section style), `not_abbrev=` (silence an
+abbreviation hint) — all documented in `precis-draft-help`, not here.
 
 `review='human'` (+ optional `verdict=`, default `'approved'`) records that
 you — the human — signed off on a chunk at its *current* text, e.g.

@@ -245,6 +245,58 @@ class TestGripe:
         assert "4 gripe entries tagged" in body
         assert "⚠" not in body  # no q, no truncation
 
+    # ── page= threading on the tag-scoped/status-scoped listing path
+    # (gr204291: page= was accepted by search() but dropped on the
+    # floor for every tag-scoped listing — page=2 silently re-showed
+    # page=1's rows). ────────────────────────────────────────────────
+
+    def test_search_page_default_matches_explicit_page1(
+        self, gripe: GripeHandler
+    ) -> None:
+        """``page=1`` (the default) renders exactly like omitting it."""
+        for i in range(4):
+            gripe.put(text=f"gust entry {i}")
+        default_body = gripe.search(tags=["STATUS:open"], page_size=2).body
+        explicit_body = gripe.search(tags=["STATUS:open"], page_size=2, page=1).body
+        assert default_body == explicit_body
+        assert "2 of 4" in default_body
+        assert "rows" not in default_body  # page=1 keeps the plain "N of K" form
+
+    def test_search_page2_returns_next_rows_disjoint_from_page1(
+        self, gripe: GripeHandler
+    ) -> None:
+        """``page=2`` must advance past page 1's rows, not repeat them."""
+        for i in range(6):
+            gripe.put(text=f"zephyr breeze {i}")
+        page1 = gripe.search(tags=["STATUS:open"], page_size=2, page=1).body
+        page2 = gripe.search(tags=["STATUS:open"], page_size=2, page=2).body
+
+        titles1 = {
+            f"zephyr breeze {i}" for i in range(6) if f"zephyr breeze {i}" in page1
+        }
+        titles2 = {
+            f"zephyr breeze {i}" for i in range(6) if f"zephyr breeze {i}" in page2
+        }
+        assert len(titles1) == 2
+        assert len(titles2) == 2
+        assert titles1.isdisjoint(titles2)
+        # The header must make the window explicit rather than lying
+        # with a bare "2 of 6" that reads as "the first 2".
+        assert "rows 3-4 of 6" in page2
+
+    def test_search_page_beyond_end_is_graceful_with_total(
+        self, gripe: GripeHandler
+    ) -> None:
+        """A page past the last row returns an empty listing, not an
+        error — and still names the total so it can't be misread as
+        an empty tag set."""
+        for i in range(6):
+            gripe.put(text=f"zephyr breeze {i}")
+        body = gripe.search(tags=["STATUS:open"], page_size=2, page=4).body
+        assert "zephyr breeze" not in body
+        assert "6 total" in body
+        assert "page 4" in body
+
     def test_kindspec_is_first_class(self) -> None:
         """Regression guard: the v0 write-only KindSpec was inverted
         in migration 0005 / handler rewrite. If any of these flags

@@ -37,6 +37,7 @@ from precis.workers.health_digest import (
     _check_chunks_extracted,
     _diagnose_embed_pipeline,
     _idle_aware_backlog_checks,
+    _layer1_checks,
     _layer2_checks,
     _maybe_push,
     _open_marker_gripes,
@@ -48,6 +49,7 @@ from precis.workers.health_digest import (
 )
 from precis.workers.registry import ServiceKind, ServiceSpec
 from precis.workers.scheduler import Cadence
+from precis.workers.service_config import set_service_prio
 
 # ── (c) zero-LLM, pure template ──────────────────────────────────────────
 
@@ -542,6 +544,45 @@ def test_chunks_extracted_ignores_card_forge_rewrite(store) -> None:
     with store.pool.connection() as conn:
         result = _check_chunks_extracted(conn)
     assert result.status == "stale"
+
+
+# ── (3) chunks_classified: idle-aware on the classify service_config gate
+# (gr204385) — a bare freshness probe on a default-OFF pass alerts stale
+# forever by construction; the check must read as idle-not-a-finding while
+# the gate is off, and keep its ordinary 12h staleness semantics once on.
+
+
+def _chunks_classified(results: list[CheckResult]) -> CheckResult:
+    return next(r for r in results if r.name == "chunks_classified")
+
+
+def test_chunks_classified_idle_when_gate_disabled(store) -> None:
+    """No service_config row for `classify` -> default-OFF -> non-finding,
+    with a detail line naming the cause (not a bare 'never seen')."""
+    result = _chunks_classified(_layer1_checks(store))
+    assert result.status != "stale"
+    assert not result.is_finding
+    assert "disabled" in result.detail
+    assert "service_config" in result.detail
+
+
+def test_chunks_classified_stale_when_gate_enabled_no_recent_tags(store) -> None:
+    """Gate ON (a live `service_config` wildcard row) + zero role3 tags ever
+    -> stale, exactly the pre-existing freshness semantics."""
+    set_service_prio(store, "*", "classify", 5)
+    result = _chunks_classified(_layer1_checks(store))
+    assert result.status == "stale"
+
+
+def test_chunks_classified_ok_when_gate_enabled_fresh_tag(store) -> None:
+    """Gate ON + a fresh ROLE3 chunk tag -> ok, within the 12h budget."""
+    set_service_prio(store, "*", "classify", 5)
+    paper = _seed_paper(store, hours_ago=1)
+    _seed_chunk(store, paper, ord=0, hours_ago=0.1)
+    store.add_tag(paper, Tag.closed("ROLE3", "own"), pos=0)
+
+    result = _chunks_classified(_layer1_checks(store))
+    assert result.status == "ok"
 
 
 # ── (h) dead-man ping ────────────────────────────────────────────────────
