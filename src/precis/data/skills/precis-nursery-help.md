@@ -32,7 +32,7 @@ Alerts dedup per *condition* instead.
 | `orphan` | open todo whose top-level ancestor doesn't carry `meta.rotation_root=true` | — |
 | `stale-claim` | leaf carries `claimed-by:*` older than threshold | 3 h |
 | `long-wait` | leaf carries `waiting-for:*` older than threshold | 7 d |
-| `stuck-doable` | open leaf, no claim, no wait, no blocker, >threshold old | 24 h |
+| `stuck-doable` | dispatch-candidate open leaf (`meta.executor` / `meta.llm_tier` / `OPEN:executor:*`), no claim, no doable-exclusion tag (`halt`, `waiting-for:`, `ask-user`, `child-failed:` — the shared registry), no blocker, >threshold old | 24 h |
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
 | `spin-loop` | one `(ref_id, source)` emits >threshold `ref_events` in 24 h | 200 / 24 h |
 | `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |

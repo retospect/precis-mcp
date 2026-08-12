@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from precis.draft.narrate import NarrationSegment
-from precis.tts.render import render_episode, render_via_container
+from precis.tts.render import ContainerRenderError, render_episode, render_via_container
 
 # The fake podman helpers below parse a "<host-path>:/work/out"-style bind
 # mount by splitting on the first ':' — Windows host paths carry their own
@@ -150,6 +150,19 @@ def test_render_via_container_includes_stderr_tail_on_failure(tmp_path):
     msg = str(excinfo.value)
     assert "TAIL MARKER" in msg  # the tail, not the head, of stderr is kept
     assert "1" in msg  # return code
+
+
+def test_render_via_container_raises_container_render_error_with_returncode(tmp_path):
+    # gr204287: the raised error must be the typed ContainerRenderError (not a
+    # bare RuntimeError) with .returncode threaded through, so a caller (e.g.
+    # cast_audio) can tell a killed container (143) apart from a real failure.
+    def _boom(cmd, **kw):
+        raise subprocess.CalledProcessError(143, cmd, output="", stderr="killed")
+
+    with pytest.raises(ContainerRenderError) as excinfo:
+        render_via_container(_SEGS, tmp_path / "ep.mp3", image="x", run=_boom)
+    assert excinfo.value.returncode == 143
+    assert "143" in str(excinfo.value)
 
 
 def test_render_via_container_falls_back_to_stdout_when_stderr_empty(tmp_path):

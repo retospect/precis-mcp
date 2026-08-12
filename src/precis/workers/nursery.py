@@ -19,10 +19,21 @@ finding rows):
   source the ingest advisory-lock claim TTL uses.
 * **long waits** — leaves carrying ``waiting-for:*`` for more than
   ``LONG_WAIT_DAYS=7``.
-* **stuck doable** — open leaves with no claim, no waiting tag, and
-  ``created_at`` older than ``STUCK_DOABLE_HOURS=24``. The
-  rotation should have picked these up; if they're still here, the
-  doable filter is rejecting them for a reason worth surfacing.
+* **stuck doable** — open leaves that would actually be autonomous
+  dispatch *candidates* (``meta.executor`` / ``meta.llm_tier`` /
+  ``OPEN:executor:*`` — the same auto-run signal
+  ``dispatch.py::_candidate_parent_ids`` requires), carry none of
+  the shared doable-exclusion tags (gripe 168886's registry, see
+  :func:`precis.handlers._todo_views._doable_exclusion_clause`), and
+  are still sitting with ``created_at`` older than
+  ``STUCK_DOABLE_HOURS=24``. Both gates matter: without the
+  candidacy check, every non-dispatchable leaf (a human-authored
+  note, an ``OPEN:ephemeral`` autocatpath compute-lane internal with
+  no run signal of its own) reads as "stuck" when it was never
+  doable in the first place (gripe 204308 — a live firing was
+  ~100% such false positives). The rotation should have picked up
+  what's left; if it's still here, the doable filter is rejecting it
+  for a reason worth surfacing.
 * **stalled recurrings** — recurring refs (``meta.schedule`` set) whose
   most recent spawned child has been open more than the schedule's
   period. The Slice-4 collision-skip leaves the prior tick on the
@@ -138,6 +149,7 @@ from typing import Any
 
 from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
 from precis.handlers._todo_guards import todo_root_sql
+from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.store import Store
 from precis.workers.runner import BatchResult
 
@@ -595,13 +607,41 @@ def _detect_long_waits(store: Store) -> list[Finding]:
 
 
 def _detect_stuck_doable(store: Store) -> list[Finding]:
-    """Open leaves with no claim, no wait, created >24h ago.
+    """Open leaves that are genuine dispatch *candidates*, with no claim,
+    no wait, created >24h ago.
 
-    These are leaves the doable rotation *could* be picking but isn't.
-    Causes are usually: PRIO 10 buried by louder strategics, paused
-    ancestor that the operator forgot about, or a tag mistake. The
-    digest can't diagnose; it just surfaces the existence so the
-    operator notices.
+    Two gates keep this from over-firing (gripe 204308 — a live
+    firing decomposed as ~100% false positives against these two
+    exact gaps):
+
+    * **Candidacy gate** — mirrors the very first eligibility check
+      in ``dispatch.py::_candidate_parent_ids``: no
+      ``meta.executor`` / ``meta.llm_tier`` / ``OPEN:executor:*``
+      auto-run signal means dispatch would never touch this leaf
+      regardless of anything else — it isn't "stuck", it was never
+      doable to begin with (the ``OPEN:ephemeral`` autocatpath
+      compute-lane internals from the audit were exactly this: no
+      run signal of their own, dispatch only ever mints their child
+      job). This mirrors dispatch.py rather than importing it — the
+      two must move together if the candidacy signal's shape ever
+      changes.
+    * **Exclusion-registry gate** — reuses
+      :func:`precis.handlers._todo_views._doable_exclusion_clause`
+      (the same "robot stay away" registry the doable view and the
+      dispatch worker share) instead of a hand-copied tag list, so a
+      self-halted leaf (``OPEN:halt`` / ``OPEN:halt:*``) or one
+      already parked behind ``child-failed:*`` reads as
+      working-as-designed rather than stuck. ``claimed-by:*`` is
+      checked alongside it but isn't part of the shared registry — a
+      fresh claim is legitimate in-progress work, not a "robot stay
+      away" marker, and a *stale* one already has its own detector
+      (:func:`_detect_stale_claims`).
+
+    What's left after both gates are leaves the doable rotation
+    *could* be picking but isn't. Causes are usually: PRIO 10 buried
+    by louder strategics, a paused ancestor the operator forgot
+    about, or a tag mistake. The digest can't diagnose; it just
+    surfaces the existence so the operator notices.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -621,16 +661,30 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
                     WHERE c.parent_id = r.ref_id
                       AND c.deleted_at IS NULL
                )
-               -- No claim, no wait, no asking, not a recurring root
+               -- Dispatch-candidacy gate — mirrors dispatch.py::
+               -- _candidate_parent_ids' first eligibility check.
+               AND (
+                   r.meta ? 'executor'
+                   OR r.meta ? 'llm_tier'
+                   OR EXISTS (
+                       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = r.ref_id
+                          AND t.namespace = 'OPEN' AND t.value LIKE 'executor:%%'
+                   )
+               )
+               -- Not a recurring root
                AND NOT (r.meta ? 'schedule')
+               -- No claim, and none of the shared doable-exclusion tags
                AND NOT EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN'
-                      AND (t.value LIKE 'claimed-by:%%'
-                           OR t.value LIKE 'waiting-for:%%'
-                           OR t.value = 'ask-user'
-                           OR t.value LIKE 'ask-user:%%')
+                      AND (
+                          t.value LIKE 'claimed-by:%%'
+                          OR """
+            + _doable_exclusion_clause()
+            + """
+                      )
                )
                -- Not blocked
                AND NOT EXISTS (

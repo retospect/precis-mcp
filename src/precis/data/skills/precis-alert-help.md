@@ -99,7 +99,7 @@ condition has cleared, so manual resolution is rarely needed.
 | `nursery:orphan` | nursery (open todo with no strategic ancestor) | info |
 | `nursery:stale-claim` | nursery (`claimed-by:*` > 3h) | warn |
 | `nursery:long-wait` | nursery (`waiting-for:*` > 7d) | info |
-| `nursery:stuck-doable` | nursery (doable leaf idle > 24h) | info |
+| `nursery:stuck-doable` | nursery (dispatch-candidate leaf idle > 24h) | info |
 | `nursery:stalled-recurring` | nursery (recurring's last child stuck) | warn |
 
 The producer surface is generic (`precis.alerts.raise_alert`): more

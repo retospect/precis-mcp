@@ -5,7 +5,8 @@ Five detector categories, plus the fingerprint-dedup path:
 * orphans — open todos with no ``meta.rotation_root`` ancestor
 * stale-claim — ``claimed-by:*`` older than ``STALE_CLAIM_HOURS``
 * long-wait — ``waiting-for:*`` older than ``LONG_WAIT_DAYS``
-* stuck-doable — open leaf, no claim/wait/block, >24h old
+* stuck-doable — dispatch-candidate open leaf, no claim/wait/block/
+  exclusion-tag, >24h old
 * stalled-recurring — recurring whose last spawned child is stuck
 
 Each test backdates ``ref_tags.created_at`` or ``refs.created_at``
@@ -278,10 +279,13 @@ def test_long_wait_detector_ignores_fresh_wait(
 # ── stuck doable ──────────────────────────────────────────────────
 
 
-def test_stuck_doable_detector_flags_old_open_leaf(
+def test_stuck_doable_detector_flags_old_candidate_leaf(
     handler: TodoHandler, store: Store
 ) -> None:
-    r = handler.put(text="Old open leaf")
+    """A genuine dispatch candidate (``meta.llm_tier`` set) that's old,
+    unclaimed, and unblocked is still flagged — the detector's core
+    positive case."""
+    r = handler.put(text="Old open leaf", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
 
@@ -290,10 +294,25 @@ def test_stuck_doable_detector_flags_old_open_leaf(
     assert rid in ids
 
 
+def test_stuck_doable_detector_skips_non_candidate_leaf(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No ``meta.executor`` / ``meta.llm_tier`` / ``OPEN:executor:*`` —
+    dispatch would never touch this leaf, so it was never doable in
+    the first place, not "stuck" (gripe 204308: the candidacy gate)."""
+    r = handler.put(text="Old open leaf, no run signal")
+    rid = _id_of(r.body)
+    _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
+
+    findings = _detect_stuck_doable(store)
+    ids = {f.ref_id for f in findings}
+    assert rid not in ids
+
+
 def test_stuck_doable_detector_skips_claimed_leaf(
     handler: TodoHandler, store: Store
 ) -> None:
-    r = handler.put(text="Old + claimed")
+    r = handler.put(text="Old + claimed", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     store.add_tag(rid, Tag.open("claimed-by:asa-worker"), set_by="agent")
     _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
@@ -306,9 +325,45 @@ def test_stuck_doable_detector_skips_claimed_leaf(
 def test_stuck_doable_detector_skips_waiting_leaf(
     handler: TodoHandler, store: Store
 ) -> None:
-    r = handler.put(text="Old + waiting")
+    r = handler.put(text="Old + waiting", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     store.add_tag(rid, Tag.open("waiting-for:something"), set_by="agent")
+    _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
+
+    findings = _detect_stuck_doable(store)
+    ids = {f.ref_id for f in findings}
+    assert rid not in ids
+
+
+def test_stuck_doable_detector_skips_halted_leaf(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A self-halted candidate (``OPEN:halt:tick-cap``) is working as
+    designed, not stuck — the shared exclusion registry
+    (``_todo_views._doable_exclusion_clause``), not a hand-copied
+    tag list, is what has to catch this."""
+    r = handler.put(text="Old + halted", meta={"llm_tier": "opus"})
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("halt:tick-cap"), set_by="system")
+    _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
+
+    findings = _detect_stuck_doable(store)
+    ids = {f.ref_id for f in findings}
+    assert rid not in ids
+
+
+def test_stuck_doable_detector_skips_ephemeral_compute_leaf(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Mirrors the autocatpath compute-lane shape (``quest/compute.py::
+    _ensure_autocatpath_todo``): an ``OPEN:ephemeral`` leaf with no run
+    signal of its own — dispatch only ever mints its child job.
+    Excluded via the candidacy gate, not a special-case ``ephemeral``
+    tag match (the 2026-08-12 audit's 9 false-positive autocatpath
+    internals were exactly this shape)."""
+    r = handler.put(text="autocatpath seed 3 model#0")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("ephemeral"), set_by="system")
     _backdate_ref(store, rid, STUCK_DOABLE_HOURS + 1)
 
     findings = _detect_stuck_doable(store)
@@ -335,7 +390,9 @@ def test_stuck_doable_detector_reports_true_total_when_capped(store: Store) -> N
     each one carries the true pre-LIMIT total, and the raised alert's
     detail says so."""
     for i in range(55):
-        r = store.insert_ref(kind="todo", slug=None, title=f"Stuck {i}")
+        r = store.insert_ref(
+            kind="todo", slug=None, title=f"Stuck {i}", meta={"llm_tier": "opus"}
+        )
         _backdate_ref(store, r.id, STUCK_DOABLE_HOURS + 1)
 
     findings = _detect_stuck_doable(store)

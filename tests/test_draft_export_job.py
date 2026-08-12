@@ -79,9 +79,15 @@ class _FakeCtx:
         return False
 
 
-def test_dispatch_exports_and_skips_pdf_without_latexmk(hub: Hub) -> None:
-    # latexmk isn't on the test host → export succeeds, PDF is skipped
-    # (the deterministic path we can verify without a TeX toolchain).
+def test_dispatch_exports_and_skips_pdf_without_latexmk(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    # Force the no-toolchain path (the gate image gained TeX when the tex
+    # extra went core, so presence can't be assumed either way) → export
+    # succeeds, PDF is skipped.
+    import precis.export.compile as _compile
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
     _pid, slug = _make_project_and_draft(hub)
     DraftHandler(hub=hub).put(
         id=slug, chunk_kind="paragraph", text="Some prose.", at={"last": True}
@@ -171,6 +177,9 @@ def test_dispatch_targets_project_workspace(
     """With PRECIS_ROOT set and the project owning a workspace, the export
     lands in the workspace dir (where the task-page PDF viewer looks),
     not a temp dir."""
+    import precis.export.compile as _compile
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
     monkeypatch.setenv("PRECIS_ROOT", str(tmp_path))
     pid = int(
         TodoHandler(hub=hub)
