@@ -30,6 +30,7 @@ from precis.cli import (
     classify,
     cron,
     db,
+    doi_backfill,
     draft,
     email,
     enrich_openalex,
@@ -153,6 +154,10 @@ def main() -> None:
 
     if args.cmd == "resolve-metadata":
         resolve_metadata.run(args)
+        return
+
+    if args.cmd == "backfill-dois":
+        doi_backfill.run(args)
         return
 
     if args.cmd == "podcast":
@@ -318,6 +323,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reconcile.add_parser(sub)
     retire_draft_equations.add_parser(sub)
     resolve_metadata.add_parser(sub)
+    doi_backfill.add_parser(sub)
     podcast.add_parser(sub)
     gripe.add_parser(sub)
     add.add_parser(sub)

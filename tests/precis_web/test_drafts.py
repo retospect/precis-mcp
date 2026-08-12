@@ -962,6 +962,24 @@ def test_export_docx_blocked_when_cite_retracted(
     assert "ignore_retractions" in r.text  # tells the user the override name
 
 
+def test_crossref_mailto_falls_back_to_unpaywall_email(monkeypatch) -> None:
+    """The retraction walk must reach Crossref's *polite* pool. Without any
+    mailto a ``_RETRACTION_CHECK_CAP``-wide walk hits the throttled anonymous
+    pool, overruns ``_RETRACTION_CHECK_BUDGET_S`` (measured 94s vs 13s,
+    2026-08-12), and the button loops. ``PRECIS_CROSSREF_MAILTO`` wins when
+    set; otherwise the already-configured ``PRECIS_UNPAYWALL_EMAIL`` is used —
+    never ``None`` when either contact exists."""
+    monkeypatch.delenv("PRECIS_CROSSREF_MAILTO", raising=False)
+    monkeypatch.delenv("PRECIS_UNPAYWALL_EMAIL", raising=False)
+    assert drafts_mod._crossref_mailto() is None
+
+    monkeypatch.setenv("PRECIS_UNPAYWALL_EMAIL", "ops@example.org")
+    assert drafts_mod._crossref_mailto() == "ops@example.org"  # fallback
+
+    monkeypatch.setenv("PRECIS_CROSSREF_MAILTO", "crossref@example.org")
+    assert drafts_mod._crossref_mailto() == "crossref@example.org"  # specific wins
+
+
 def test_export_docx_override_bypasses_block(
     draft_client: TestClient, monkeypatch
 ) -> None:

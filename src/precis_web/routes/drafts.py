@@ -1064,11 +1064,27 @@ _RETRACTION_CHECK_BUDGET_S = 90.0
 
 
 def _crossref_mailto() -> str | None:
-    """Crossref polite-pool contact for a retraction re-check — the same
-    env var the metadata-enrichment sweep reads
-    (``workers/paper_meta_enrich.py``). Read fresh per call (not cached at
-    import time) so rotating it in ops doesn't need a process restart."""
-    return os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+    """Crossref polite-pool contact for a retraction re-check.
+
+    Falls back to ``PRECIS_UNPAYWALL_EMAIL`` when the Crossref-specific
+    ``PRECIS_CROSSREF_MAILTO`` is unset — both are just a contact email
+    Crossref uses to route a request into the *polite* pool, and the
+    difference is not cosmetic: without a mailto a
+    ``_RETRACTION_CHECK_CAP``-wide walk hits the throttled anonymous pool,
+    where a single cite can stall 60s+ and the whole walk overruns
+    ``_RETRACTION_CHECK_BUDGET_S`` (measured 94s vs 13s with a mailto,
+    2026-08-12). That overrun times the button out every press, so the
+    throttled head cite never stamps and the walk re-picks the same batch
+    forever. ``PRECIS_UNPAYWALL_EMAIL`` is a real configured contact, so
+    preferring it over ``None`` is what actually lets the walk complete.
+
+    Read fresh per call (not cached at import) so rotating it in ops
+    doesn't need a process restart."""
+    return (
+        os.environ.get("PRECIS_CROSSREF_MAILTO")
+        or os.environ.get("PRECIS_UNPAYWALL_EMAIL")
+        or None
+    )
 
 
 def _retraction_paper_json(paper: Any) -> dict[str, Any]:
