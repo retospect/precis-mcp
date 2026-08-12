@@ -40,6 +40,35 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# ── mutual exclusion: one deploy at a time, machine-wide (gr203786) ──────
+# Two concurrent deploys (e.g. sibling /go sessions in different worktrees)
+# interleave their installs: each run pins its own sha, so the later run's
+# installs move the venvs under the earlier run's convergence assert →
+# spurious "DEPLOY DID NOT CONVERGE" on a healthy cluster (observed twice
+# 2026-08-11). The playbook's per-run pinning is correct; the missing piece
+# is that runs must not overlap. Lock dir lives in the git COMMON dir so
+# every worktree of this repo shares one lock. mkdir is the atomic acquire
+# (macOS ships no flock); a dead holder's lock is stolen.
+_LOCK_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy.lock"
+_acquire_deploy_lock() {
+    local wait="${PRECIS_DEPLOY_LOCK_WAIT:-1800}" waited=0 holder
+    while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
+        holder="$(cat "${_LOCK_DIR}/pid" 2>/dev/null || true)"
+        if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+            say "stealing deploy lock from dead pid ${holder}"
+            rm -rf "$_LOCK_DIR"
+            continue
+        fi
+        (( waited < wait )) || die "another deploy (pid ${holder:-unknown}) still holds the lock after ${wait}s — investigate it, or rm -rf ${_LOCK_DIR}"
+        (( waited % 60 == 0 )) && say "another deploy (pid ${holder:-starting}) is in flight — waiting (${waited}s/${wait}s)"
+        sleep 10; waited=$((waited + 10))
+    done
+    echo $$ > "${_LOCK_DIR}/pid"
+    trap 'rm -rf "$_LOCK_DIR"' EXIT
+    trap 'exit 130' INT TERM
+}
+_acquire_deploy_lock
+
 # ── freshness guard: ansible renders roles/templates from THIS checkout, while
 # the venvs install precis-mcp@<ref> from git — a local tree behind origin/<ref>
 # deploys NEW code with STALE units (bit us 2026-08-03: workers restarted

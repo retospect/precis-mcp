@@ -278,6 +278,31 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
                 )
                 ok += 1
                 continue
+            if meta.get("submit_started_at"):
+                # gr191673: the prior generation died INSIDE the submit
+                # window — after committing the intent marker, before
+                # persisting the handle. The detached compute may or may
+                # not be running, and there is no handle to adopt or
+                # kill. Re-submitting is exactly the double-launch the
+                # marker exists to prevent — fail loudly instead; the
+                # event chunk is the pointer for finding the orphan.
+                _record_failure(
+                    store,
+                    ref_id,
+                    "submit outcome unknown: worker died between "
+                    "submit() and the compute_handle persist "
+                    f"(submit_started_at={meta.get('submit_started_at')})"
+                    " — a detached compute may be orphaned on the "
+                    "target node; not resubmitting (gr191673)",
+                    gripe_rollback=None,
+                    failure_class="infra",
+                )
+                # Clear the marker so a deliberate requeue can run.
+                with store.pool.connection() as conn:
+                    _set_meta(conn, ref_id, submit_started_at=None)
+                    conn.commit()
+                failed += 1
+                continue
             _run_one(store, ref_id, title, meta)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
@@ -507,8 +532,28 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
             return
 
     if spec.submit is not None and spec.poll is not None:
+        # gr191673: commit a submit-INTENT marker before launching the
+        # detached compute. A worker crash between ``submit()`` and the
+        # handle-persist tx below leaves STATUS:running with no
+        # ``compute_handle`` — invisible to ``_polling_jobs`` — and the
+        # reclaim used to re-enter here and launch a SECOND compute
+        # while the first leaked. With the marker committed first, the
+        # reclaim path can tell "never submitted" (safe to run) from
+        # "submit outcome unknown" (fail loudly, never blind-resubmit).
+        with store.pool.connection() as conn:
+            _set_meta(conn, ref_id, submit_started_at=time.time())
+            conn.commit()
         ctx = _build_dispatch_context(store, ref_id, title, meta)
-        handle = spec.submit(ctx, spec)
+        try:
+            handle = spec.submit(ctx, spec)
+        except BaseException:
+            # In-process submit failure routes to the pass loop's
+            # failure handler (STATUS:failed) — clear the marker so a
+            # deliberate requeue isn't mistaken for a mid-submit crash.
+            with store.pool.connection() as conn:
+                _set_meta(conn, ref_id, submit_started_at=None)
+                conn.commit()
+            raise
         with store.pool.connection() as conn:
             # §H piece 2: stamp a wall-clock kill deadline alongside the
             # handle — see ``_deadline_epoch`` / ``_poll_one``'s docstrings
@@ -519,6 +564,7 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
                 ref_id,
                 compute_handle=handle,
                 deadline=_deadline_epoch(meta),
+                submit_started_at=None,
             )
             conn.commit()
         return

@@ -133,7 +133,7 @@ def test_dispatch_skips_with_halt_reason(handler: TodoHandler, store: Store) -> 
 
 def test_system_prompt_contains_pinned_skill_and_index() -> None:
     """Cached layer carries precis-tasks-help + the skill index header."""
-    out = _build_system_prompt(store=None)  # type: ignore[arg-type]
+    out = _build_system_prompt(store=None)
     assert "Available skills" in out
     # Pinned skill header line.
     assert "precis-tasks-help" in out

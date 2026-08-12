@@ -252,6 +252,7 @@ def _mk_running_job(
     lease_process: str | None = None,
     lease_host: str | None = None,
     compute_handle: Any = None,
+    submit_started_at: float | None = None,
 ) -> int:
     """A STATUS:running job with a lease ``lease_offset_s`` from now (negative =
     expired) — stands in for a job whose worker died mid-dispatch. The
@@ -279,6 +280,8 @@ def _mk_running_job(
         meta["lease_host"] = lease_host
     if compute_handle is not None:
         meta["compute_handle"] = compute_handle
+    if submit_started_at is not None:
+        meta["submit_started_at"] = submit_started_at
     ref = store.insert_ref(
         kind="job", slug=None, title="orphaned running job", meta=meta
     )
@@ -728,6 +731,90 @@ def test_submit_launches_detached_and_never_blocks(
     assert submitted == [rid]
     assert _status(store, rid) == "running"  # NOT auto-finalized — poll's job
     assert _meta(store, rid)["compute_handle"] == "remote-pid-4242"
+    # gr191673: the submit-intent marker is cleared once the handle landed.
+    assert not _meta(store, rid).get("submit_started_at")
+
+
+def test_submit_intent_marker_committed_before_launch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr191673: the submit-intent marker must be VISIBLE IN THE DB before
+    spec.submit launches the detached compute — that ordering is the whole
+    fix (a crash after submit but before the handle persist is otherwise
+    indistinguishable from never-submitted, and gets double-launched)."""
+    seen_at_submit: list[Any] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        seen_at_submit.append(_meta(store, ctx.ref_id).get("submit_started_at"))
+        return "remote-pid-5555"
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=_submit, poll=lambda c, h: False),
+    )
+    _mk_job(store)
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert len(seen_at_submit) == 1 and seen_at_submit[0]  # committed first
+
+
+def test_reclaim_mid_submit_crash_fails_without_resubmitting(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr191673 core: a reclaimed STATUS:running row carrying the
+    submit-intent marker but NO compute_handle means the prior worker died
+    inside the submit window — the detached compute may be alive with no
+    handle to adopt. The reclaim must fail the job loudly (infra), never
+    call submit() again (the double-launch + orphan leak)."""
+    submitted: list[int] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:  # pragma: no cover — must not run
+        submitted.append(ctx.ref_id)
+        return "second-launch"
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=_submit, poll=lambda c, h: False),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=-60, attempts=1, submit_started_at=time.time()
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert submitted == []  # never re-submitted
+    assert _status(store, rid) == "failed"
+    meta = _meta(store, rid)
+    assert meta["failure_class"] == "infra"
+    # Marker cleared so a deliberate requeue gets a fresh submit.
+    assert not meta.get("submit_started_at")
+
+
+def test_submit_raise_clears_intent_marker(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-process submit() exception routes to the normal failure path;
+    the intent marker must not survive it, or a requeue of the failed job
+    would be mistaken for a mid-submit crash and refused."""
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        raise RuntimeError("ssh connect timeout")
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=_submit, poll=lambda c, h: False),
+    )
+    rid = _mk_job(store)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result["failed"] == 1
+    assert not _meta(store, rid).get("submit_started_at")
 
 
 def test_poll_still_running_renews_lease_without_finishing(

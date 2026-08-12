@@ -133,7 +133,7 @@ def _assemble_cached_blocks(store: Store | None) -> list[Block]:
     return assemble(_CACHED_MODULES, ctx)
 
 
-def _build_system_prompt(store: Store) -> str:
+def _build_system_prompt(store: Store | None) -> str:
     """Build the stable, cache-friendly system prompt.
 
     Pinned skill + skill index + tools + kinds + planner contract — the
