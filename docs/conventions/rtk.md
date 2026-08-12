@@ -25,6 +25,25 @@ filtered digest, not the raw stream.** If a detail you need is missing:
 - Or read the teed full log (rtk keeps the unfiltered output alongside the
   digest).
 
+## Don't hand-suppress stderr (`2>/dev/null`)
+
+Under rtk, a blanket `2>/dev/null` is net-negative. rtk's model is *drop
+the noise, keep the error signal* (`rtk err` extracts exactly that), but
+`2>/dev/null` discards stderr **before rtk sees it** — so a failure returns
+silence instead of a digested error, and you burn a round trip re-running
+without the redirect. You pay the cost of blinding yourself to failures to
+solve a noise problem rtk already solves. It's also risky in compound shapes:
+`cd X 2>/dev/null; cmd` is the exact pattern `guard-cd-to-primary.py` had to
+be widened to catch — the redirect gets absorbed into the path and smuggles
+past the guard.
+
+So: run bare and let rtk filter. For a genuinely chatty tool, add a targeted
+rule to `.rtk/filters.toml` (shapes that command's output, keeps errors) —
+not a redirect that also swallows the failure. Reach for `2>/dev/null` only
+when the silence is *control-flow logic* rather than noise reduction — e.g. a
+quiet probe like `command -v foo 2>/dev/null || echo missing`, where you want
+silence regardless of outcome and branch on the exit code.
+
 ## No hook outside Reto's dev Mac
 
 CI and cluster `claude -p` invocations don't have the PreToolUse hook
