@@ -518,6 +518,24 @@ warn_unused_ignores = true
 # Don't reintroduce a disable_error_code list — fix or narrowly ignore
 # at the site instead.
 
+# These modules touch heavy optional deps (kokoro-onnx, torch/transformers,
+# ase, slack SDK, starlette task plumbing) whose types only resolve where
+# the extras are installed — the container gate. There, their site ignores
+# are load-bearing; on a host/CI run without the extras the same ignores
+# read as unused. Exempt exactly these modules from unused-ignore warnings
+# so one mypy config is green in both environments; the suppressions
+# themselves still apply everywhere.
+[[tool.mypy.overrides]]
+module = [
+    "tests.test_tts_kokoro",
+    "tests.precis_web.test_tasks",
+    "tests.test_asa_slash",
+    "precis.ingest.marker",
+    "precis.structure.relax",
+    "precis.structure.preflight",
+]
+warn_unused_ignores = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Fan the suite across cores. It is CPU-bound and was single-threaded
