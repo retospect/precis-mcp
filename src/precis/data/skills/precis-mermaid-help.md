@@ -13,8 +13,8 @@ state, class, …). It is the second instance of the shared diagram core beside
 `figure`: the same draw-with-me turn loop, the same node→chunk bindings — only
 the language is mermaid text instead of SVG. Never exported
 (`corpus_role='none'`); addressed by `mm<ref>` / `mn<chunk>`. A first-class kind
-(the `[mermaid]` extra provides the render/validate engine). Authoring craft:
-`precis-mermaid`.
+— mermaidx (the render/validate engine) is a core dependency, no extra
+needed. Authoring craft: `precis-mermaid`.
 
 ## Diagram types (what the engine renders)
 

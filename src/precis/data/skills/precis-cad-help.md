@@ -252,15 +252,14 @@ get(
 ```
 
 - **`scad`** — pure text, zero deps; drop into the OpenSCAD GUI.
-- **`stl` / `3mf`** — in-process mesh (manifold3d CSG). Needs the
-  `precis-mcp[cad-export]` extra. 3MF carries units/metadata; STL is
-  universal.
+- **`stl` / `3mf`** — in-process mesh (manifold3d CSG, a core dependency —
+  works with no extra). 3MF carries units/metadata; STL is universal.
 - **`step`** — *exact* ISO-10303 B-rep via OpenCASCADE (true cylinders/
   cones, not facets) for mechanical CAD (FreeCAD / Fusion / SolidWorks).
   Needs the heavier `precis-mcp[cad-step]` extra.
 
-A missing extra returns an Unsupported error with the install hint, never
-a crash.
+A missing `[cad-step]` extra returns an Unsupported error with the install
+hint, never a crash.
 
 **Assemblies travel as one file.** Each `component` is exported as a
 separate body where the format supports it — STEP as named
@@ -279,16 +278,15 @@ landing page). It mirrors the DFT editor (`/structure`):
   kernel) and shipped as a binary **glTF** that three.js renders *and* the
   user downloads (same bytes). Parts are coloured per component; `cut` /
   `intersect` features are translucent "tool volumes". A **Solid** toggle
-  shows the true CSG-folded solid when the `[cad-export]` extra is present.
-  Click a feature for its name / part / op / config / pose; hover the
-  feature list or a part chip to glow it.
+  shows the true CSG-folded solid. Click a feature for its name / part /
+  op / config / pose; hover the feature list or a part chip to glow it.
 - **Edit by prompt** — the "Further instructions" box mints a **`cad_propose`**
   job (tool-less `claude -p`): the LLM returns a full rewritten design
   *source*, dry-run-validated (`parse_source` + `build_design`) before you
   see it. Review it, then **Apply** derives a new slug (`CadHandler.derive`,
   linked `derived-from`), optionally soft-deleting the original.
-- **Downloads** — glTF + OpenSCAD always; STL / 3MF with `[cad-export]`;
-  STEP with `[cad-step]`.
+- **Downloads** — glTF + OpenSCAD + STL / 3MF always; STEP with
+  `[cad-step]`.
 - Create a new design straight from Drive's **+ New** dropdown.
 
 ## Delete

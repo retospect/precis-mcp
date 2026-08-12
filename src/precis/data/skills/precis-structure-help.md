@@ -292,14 +292,14 @@ the design and **every run is recorded** (see `view='runs'`).
 | fidelity | backend | needs | when |
 |----------|---------|-------|------|
 | `clean` (default) | pure geometry repair (ours) | nothing | fix overlaps / sub-covalent bonds — "make the stupid geometry sane" |
-| `emt` | ASE EMT + FIRE (ours, torch-free) | `precis-mcp[dft]` | cheap, real-but-approximate energy/forces on the closed fcc-metal set `{Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}` — never dispatches to the GPU node |
+| `emt` | ASE EMT + FIRE (ours, torch-free) | nothing (core dep) | cheap, real-but-approximate energy/forces on the closed fcc-metal set `{Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}` — never dispatches to the GPU node |
 | `ml` | ASE + MACE-MP-0 / CHGNet | `precis-mcp[dft-ml]` | cheap, physical pre-relax before any DFT |
 | `ff` · `xtb` · `dft-fast` · `dft-tight` | rented | (later) | progressively more correct |
 
-`emt` (ADR 0053 §8) is ours like `clean`, just gated behind the light `[dft]`
-extra instead of always-on; an element outside its closed set raises
-`Unsupported` with a "use fidelity='ml'" hint rather than a stray error. No
-variable-cell mode.
+`emt` (ADR 0053 §8) is ours like `clean` and works out of the box (ASE +
+spglib are core deps, not gated behind an extra); an element outside its
+closed set raises `Unsupported` with a "use fidelity='ml'" hint rather than
+a stray error. No variable-cell mode.
 
 ```python
 edit(kind="structure", id="pd111", ops=[{"op": "relax", "fidelity": "clean"}])
@@ -447,11 +447,11 @@ get(
 get(
     kind="structure", id="pd111", view="extxyz"
 )  # extended XYZ (pure; carries cell + pbc + our labels — lossless round-trip)
-get(kind="structure", id="pd111", view="cif")  # CIF via ASE — needs precis-mcp[dft]
+get(kind="structure", id="pd111", view="cif")  # CIF via ASE (core dep)
 ```
 
-POSCAR and extXYZ are pure (zero deps); CIF needs the `[dft]` extra. A
-missing extra returns Unsupported with the install hint.
+POSCAR and extXYZ are pure (zero deps); CIF goes through ASE, a core dep —
+no extra needed.
 
 ## Delete
 

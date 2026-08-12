@@ -62,7 +62,7 @@ Stop and ask before:
   `sentence-transformers`, `psycopg`, `mcp`). Check the lock file's
   current pin and the ecosystem's release cadence. Major-version
   bumps deserve their own ADR.
-- Adding a new optional-extra (`[paper]`, `[docx]`, …). Optional
+- Adding a new optional-extra (`[paper]`, `[chem]`, …). Optional
   extras are part of the public surface; users have install scripts
   that name them.
 - Merging another package into `precis-mcp` (as was done for

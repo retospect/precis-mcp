@@ -5,12 +5,12 @@ For each ``*.cad`` source in this directory, write the four export forms
 into ``out/``:
 
 - ``.scad`` — OpenSCAD source (pure, zero-dependency);
-- ``.stl``  — printable mesh (needs ``precis-mcp[cad-export]``);
-- ``.3mf``  — printable mesh, modern slicer format (same extra);
+- ``.stl``  — printable mesh (manifold3d, a core dependency);
+- ``.3mf``  — printable mesh, modern slicer format (same backend);
 - ``.step`` — exact OpenCASCADE B-rep (needs ``precis-mcp[cad-step]``).
 
-Mesh / STEP formats are skipped (with a note) when their optional backend
-is absent, so this runs everywhere. Usage::
+STEP export is skipped (with a note) when its optional backend is absent,
+so this runs everywhere. Usage::
 
     uv run python examples/cad/generate.py
 """
@@ -38,8 +38,8 @@ def main() -> None:
     have_step = step_available()
     if not have_mesh:
         print(
-            "note: manifold3d absent — skipping .stl/.3mf (pip install "
-            "'precis-mcp[cad-export]')"
+            "note: manifold3d absent — skipping .stl/.3mf (it is a core "
+            "dependency, so a reinstall of precis-mcp should restore it)"
         )
     if not have_step:
         print(

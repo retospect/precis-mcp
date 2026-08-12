@@ -3,12 +3,12 @@
 Hand-authored `cad` designs in the text node-list language, with every
 export artifact regenerated into [`out/`](./out). Each design exports to:
 
-| ext     | what                          | backend (optional extra)        |
-| ------- | ----------------------------- | ------------------------------- |
-| `.scad` | OpenSCAD source               | none — always available         |
-| `.stl`  | printable mesh                | `manifold3d` (`[cad-export]`)   |
-| `.3mf`  | printable mesh (slicer fmt)   | `manifold3d` (`[cad-export]`)   |
-| `.step` | exact ISO-10303 B-rep         | OpenCASCADE (`[cad-step]`)      |
+| ext     | what                          | backend                          |
+| ------- | ----------------------------- | --------------------------------- |
+| `.scad` | OpenSCAD source               | none — always available          |
+| `.stl`  | printable mesh                | `manifold3d` (core dep)          |
+| `.3mf`  | printable mesh (slicer fmt)   | `manifold3d` (core dep)          |
+| `.step` | exact ISO-10303 B-rep         | OpenCASCADE (`[cad-step]` extra) |
 
 Regenerate them all:
 
