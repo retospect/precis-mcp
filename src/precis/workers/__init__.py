@@ -113,7 +113,9 @@ job per draft; clock = min ``created_at`` over live direct paragraphs),
 wedged rotation on one host can't starve a review), ``dream_agent`` /
 ``anki_sync`` (host-pinned + ``eligible()``-gated; a pinned cadence
 stalls while its host is down — that is the contract, §D staleness
-alarms are the backstop). The lease IS the fleet-singleton throttle.
+alarms are the backstop; a registry cadence with no lease row at all is
+flagged ``never-seeded`` by the same check). The lease IS the
+fleet-singleton throttle.
 
 Review tiers
 ------------

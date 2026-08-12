@@ -1441,6 +1441,162 @@ class TestTryOpenalexContent:
         # ...but never the recorded payload.
         assert "SECRET" not in str(out.payload)
 
+    def _open_balance_alerts(self, store: Store) -> list[dict[str, Any]]:
+        return [a for a in list_open_alerts(store) if a["source"] == _BALANCE_SOURCE]
+
+    def test_paid_fetch_402_raises_reactive_balance_alert(
+        self,
+        tmp_path: Path,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # gr162141: a paid fetch failing with 402 Payment Required must
+        # raise the *same* fetch_oa:openalex_balance alert the proactive
+        # credits_remaining poll uses — even though this stub's own
+        # credits_remaining reading (not exercised here) might look
+        # healthy, because the paid content wallet is a separate balance.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+
+        def _boom(url: str, target: Path, **kw: Any) -> int:
+            raise httpx.HTTPStatusError(
+                f"Client error for url '{url}'",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(402),
+            )
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _boom)
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K", store=store
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+
+        open_alerts = self._open_balance_alerts(store)
+        assert len(open_alerts) == 1
+        assert "HTTP 402" in open_alerts[0]["detail"]
+        assert "reactive" in open_alerts[0]["detail"].lower()
+
+    def test_paid_fetch_plain_429_no_alert(
+        self, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A bare 429 is generic rate-limiting (same as _try_unpaywall's
+        # rate_limited classification), not a wallet/balance signal — a
+        # transient throttle must not raise a spurious payment/quota alert.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+
+        def _boom(url: str, target: Path, **kw: Any) -> int:
+            raise httpx.HTTPStatusError(
+                f"Client error for url '{url}'",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(429),
+            )
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _boom)
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K", store=store
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+        assert self._open_balance_alerts(store) == []
+
+    @pytest.mark.parametrize("status_code", [403, 429])
+    def test_paid_fetch_body_signal_raises_reactive_balance_alert(
+        self,
+        tmp_path: Path,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+        status_code: int,
+    ) -> None:
+        # A non-402 status (including 429) whose body says the account is
+        # out of funds still counts — the detector isn't pinned to one
+        # status code, it falls back to the response-body text.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+
+        def _boom(url: str, target: Path, **kw: Any) -> int:
+            raise httpx.HTTPStatusError(
+                f"Client error for url '{url}'",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(
+                    status_code, content=b'{"error": "insufficient credits"}'
+                ),
+            )
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _boom)
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K", store=store
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+        assert len(self._open_balance_alerts(store)) == 1
+
+    def test_paid_fetch_plain_404_500_no_alert(
+        self, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An ordinary not-found / server error is not a payment/quota
+        # signal — must not raise the low-balance alert.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+
+        def _make_boom(status_code: int) -> Any:
+            def _boom(url: str, target: Path, **kw: Any) -> int:
+                raise httpx.HTTPStatusError(
+                    f"Server error for url '{url}'",
+                    request=httpx.Request("GET", url),
+                    response=httpx.Response(status_code),
+                )
+
+            return _boom
+
+        for status_code in (404, 500):
+            monkeypatch.setattr(fetch_oa, "_download_pdf", _make_boom(status_code))
+            out = fetch_oa._try_openalex_content(
+                _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K", store=store
+            )
+            assert out is not None
+            assert out.event == "fetch_failed"
+        assert self._open_balance_alerts(store) == []
+
+    def test_no_store_skips_alert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The manual one-shot CLI (precis fetch-openalex) calls this leg
+        # without a store — the reactive detector must degrade to a no-op
+        # rather than raising on a missing store.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_openalex_content_urls",
+            lambda doi, *, email="": {"pdf": "https://content.openalex.org/W1.pdf"},
+        )
+
+        def _boom(url: str, target: Path, **kw: Any) -> int:
+            raise httpx.HTTPStatusError(
+                f"Client error for url '{url}'",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(402),
+            )
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _boom)
+        out = fetch_oa._try_openalex_content(
+            _stub(doi="10.3390/x"), inbox_dir=tmp_path, api_key="K"
+        )
+        assert out is not None
+        assert out.event == "fetch_failed"
+
     def test_min_credits_default_and_override(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

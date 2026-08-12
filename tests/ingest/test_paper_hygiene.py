@@ -7,6 +7,7 @@ from typing import Any
 from precis.ingest.paper_hygiene import (
     collapse_superseded_chains,
     heal_drifted_cards,
+    is_filename_like_title,
     migrate_dangling_paper_links,
 )
 from precis.store import Store
@@ -353,3 +354,56 @@ def test_metadata_hygiene_stats_is_read_only(store: Store) -> None:
     before = _meta(store, rid)
     metadata_hygiene_stats(store)
     assert _meta(store, rid) == before
+
+
+# ── is_filename_like_title ───────────────────────────────────────
+
+
+def test_is_filename_like_title_catches_word_stamp_and_extensions() -> None:
+    assert is_filename_like_title("Microsoft Word - manuscript_v3.docx")
+    assert is_filename_like_title("Microsoft Word - final draft")
+    assert is_filename_like_title("some_manuscript_final.docx")
+    assert is_filename_like_title("scan_20240102.pdf")
+    assert is_filename_like_title("layout_master.indd")
+
+
+def test_is_filename_like_title_catches_placeholders_pii_and_bare_doi() -> None:
+    assert is_filename_like_title("Untitled")
+    assert is_filename_like_title("untitled document")
+    assert is_filename_like_title("No Job Name")
+    assert is_filename_like_title("PII: S0021-9797(20)31234-5")
+    assert is_filename_like_title("doi:10.1016/j.something.2020.01.001")
+
+
+def test_is_filename_like_title_leaves_real_titles_alone() -> None:
+    assert not is_filename_like_title("Attention Is All You Need")
+    assert not is_filename_like_title(
+        "A Study on Word Embeddings for Document Classification"
+    )
+    assert not is_filename_like_title("The DOI System and Its Discontents")
+    assert not is_filename_like_title("")
+    assert not is_filename_like_title("   ")
+
+
+def test_metadata_hygiene_stats_counts_filename_like_titles(store: Store) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    _paper(store, slug="junk-title-h1", title="Microsoft Word - draft.docx")
+    _paper(store, slug="junk-title-h2", title="Untitled")
+    _paper(store, slug="clean-title-h1", title="A Perfectly Good Title")
+
+    stats = metadata_hygiene_stats(store)
+    assert stats.filename_like_titles == 2
+    assert stats.title_sample_bounded is False
+
+
+def test_metadata_hygiene_stats_title_sample_is_bounded(store: Store) -> None:
+    from precis.ingest.paper_hygiene import metadata_hygiene_stats
+
+    for i in range(3):
+        _paper(store, slug=f"bound-title-h{i}", title="Untitled")
+
+    stats = metadata_hygiene_stats(store, junk_sample_limit=2)
+    assert stats.title_sample_papers == 2
+    assert stats.title_sample_bounded is True
+    assert stats.filename_like_titles == 2  # only the sampled two counted

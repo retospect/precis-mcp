@@ -235,7 +235,9 @@ citable by its finding handle, `[fi<id>]` — the same handle you'd
 `pub_id` (mint-time convergence key: identical claim text always hashes
 to the same `pub_id`, so concurrent mints collapse to one hub); both
 `[fi<id>]` and `[<pub_id>]` resolve to the same hub, but `fi<id>` is
-the form to cite.
+the form to cite. A bare pub_id also works as a get id —
+`get(kind='finding', id='ab12c3')` — handy when all you hold is the
+placeholder token from a citation.
 
 Both a draft cite and `precis resolve` treat a hub cite as a **living
 citation**: it expands to the hub's *current* derived `establishes`

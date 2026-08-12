@@ -59,6 +59,37 @@ slice — the same ``active_quest_ids`` notion this module uses — and
 self-rests (``Done(success=True)``) the moment the quest is non-active, so
 an *awaiting* loop also winds down on its next heartbeat rather than only
 once its dry-tick budget exhausts.
+
+**Cooldown symmetry + escalation (gr170252).** A loop that rests via
+``quest_tick``'s ``_max_dry_ticks`` budget is ``STATUS:succeeded`` — the tick
+ran fine, it just found nothing new to dispatch — so before this fix the
+``_failed_rest_cooldown_active`` "succeeded → re-mint immediately" exemption
+re-armed it on the very next pass: mint → 3 dry ticks → rest → immediate
+re-mint → repeat, spinning forever (the allocator's 12-tick
+``cool_stalled`` backstop never fires because the loop keeps minting).
+Two fixes, both reading state ``quest_tick`` now stamps:
+
+1. :func:`_dry_rest_cooldown_active` is :func:`_failed_rest_cooldown_active`'s
+   sibling: it reads the same ``quest_tick:<id>`` job history, but keys off
+   ``STATUS:succeeded`` *and* ``meta.rest_reason == "dry"`` instead of
+   ``STATUS:failed``, applying the identical ``BASE * 2^(n-1)`` escalating
+   window. A genuinely productive rest or a punt rest never sets
+   ``rest_reason``, so those still re-mint immediately.
+2. A ``consecutive_dry_rests`` counter lives on the *quest* ref itself
+   (``quest_tick``'s ``_register_dry_rest`` / ``_reset_dry_rest_counter``),
+   incremented on each dry rest and reset to 0 by any frontier improvement or
+   any non-dry rest. Once it reaches ``PRECIS_QUEST_DRY_REST_ESCALATE``
+   (default 3) an operator alert has already fired
+   (``quest:dry-rest/<quest_id>``) and :func:`_dry_rest_escalation_active`
+   makes this reconciler hold the quest out of re-minting for a long,
+   fixed cooldown (``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``, default
+   24 h) since its most recent dry rest — **not forever**. A permanent skip
+   would be unrecoverable by construction: every counter-reset path (frontier
+   improvement, a non-dry rest) lives inside ``quest_tick``'s own tick, and no
+   tick can run again once re-minting stops for good. The long cooldown
+   instead lets the quest keep ticking at a low (~daily) cadence; an eventual
+   tick that sees frontier improvement or a non-dry rest resets the counter
+   through the existing reset paths, ending escalation naturally.
 """
 
 from __future__ import annotations
@@ -98,6 +129,28 @@ _FAIL_BACKOFF_BASE_ENV = "PRECIS_QUEST_LOOP_FAIL_BACKOFF_S"
 _DEFAULT_FAIL_BACKOFF_BASE_S = 1800  # 30 min
 _FAIL_BACKOFF_MAX_ENV = "PRECIS_QUEST_LOOP_FAIL_BACKOFF_MAX_S"
 _DEFAULT_FAIL_BACKOFF_MAX_S = 21600  # 6 h
+
+#: gr170252 — consecutive *dry rests* (not dry ticks) before a quest is
+#: treated as stuck on missing input: re-minting backs off to a long cooldown
+#: and an operator alert fires. Same env var ``quest_tick._register_dry_rest``
+#: reads, so the escalate-and-cool-down line never disagrees.
+_DRY_REST_ESCALATE_ENV = "PRECIS_QUEST_DRY_REST_ESCALATE"
+_DEFAULT_DRY_REST_ESCALATE = 3
+
+#: gr170252 review finding #3 — an escalated quest (``consecutive_dry_rests``
+#: at/above threshold) is held out of re-minting for this long since its most
+#: recent dry rest, not forever. A permanent skip would be unrecoverable: every
+#: counter-reset path (frontier improvement, a non-dry rest) lives inside
+#: ``quest_tick``'s own tick, and no tick can ever run again once re-minting
+#: stops — so the quest would be locked out for good the moment it escalates,
+#: contradicting the alert text's promised recovery paths. A long (default
+#: 24 h) cooldown instead lets the quest keep ticking at a low daily cadence;
+#: an eventual tick that sees frontier improvement or a non-dry rest resets
+#: the counter via ``quest_tick``'s existing reset paths, ending escalation
+#: naturally. Same recency source as :func:`_dry_rest_cooldown_active`
+#: (``STATUS:succeeded`` + ``meta.rest_reason == "dry"`` job recency).
+_DRY_REST_ESCALATE_COOLDOWN_ENV = "PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S"
+_DRY_REST_ESCALATED_COOLDOWN_S = 86400  # 24 h
 
 #: Terminal job statuses — a job carrying one of these no longer blocks a
 #: re-mint (mirrors ``JobHandler._lookup_idem``), so it is never an orphan.
@@ -192,6 +245,144 @@ def _failed_rest_cooldown_active(
         return failed_age_s < window_s
     except Exception:
         log.exception("_failed_rest_cooldown_active: failed to read quest %s", quest_id)
+        return False
+
+
+def _dry_rest_cooldown_active(
+    store: Any, quest_id: int, *, base_s: int, max_s: int
+) -> bool:
+    """gr170252 cooldown symmetry: is ``quest_id``'s loop inside a *dry-rest*
+    backoff?
+
+    Sibling of :func:`_failed_rest_cooldown_active`, same job history and
+    same ``BASE * 2^(n-1)`` (capped at ``max_s``) escalation, but keyed on
+    ``STATUS:succeeded`` *and* ``meta.rest_reason == "dry"`` (stamped by
+    ``quest_tick``'s ``_phase_tick`` exactly when it rests via the
+    ``_max_dry_ticks`` budget — see that module) instead of ``STATUS:failed``.
+    A dry rest is a *successful* tick outcome, so without this the plain
+    ``_failed_rest_cooldown_active`` "succeeded → re-mint immediately"
+    exemption re-armed it on the very next reconcile pass — the cooldown
+    asymmetry behind the bug. A productive rest or a punt rest never sets
+    ``rest_reason``, so those are unaffected and still re-mint immediately.
+
+    Never raises — fail-open (``False``) on a read error, same as its
+    sibling.
+    """
+    try:
+        idem = f"quest_tick:{quest_id}"
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      LIMIT 1) AS status,
+                    (SELECT EXTRACT(EPOCH FROM (now() - rt.created_at))::float
+                       FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      LIMIT 1) AS age_s,
+                    r.meta->>'rest_reason' AS rest_reason
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.deleted_at IS NULL
+                   AND r.meta->>'idem_key' = %s
+                   AND r.meta->>'executor' = 'coordinator'
+                 ORDER BY r.ref_id DESC
+                 LIMIT 50
+                """,
+                (idem,),
+            ).fetchall()
+        if not rows or rows[0][0] != "succeeded" or rows[0][2] != "dry":
+            return False
+        dry_age_s = float(rows[0][1] or 0.0)
+        # Trailing run of consecutive dry rests = the escalation exponent —
+        # same construction as _failed_rest_cooldown_active's failed-run count.
+        n = 0
+        for status, _age, reason in rows:
+            if status == "succeeded" and reason == "dry":
+                n += 1
+            else:
+                break
+        window_s = min(base_s * (2 ** min(n - 1, 20)), max_s)
+        return dry_age_s < window_s
+    except Exception:
+        log.exception("_dry_rest_cooldown_active: failed to read quest %s", quest_id)
+        return False
+
+
+def _dry_rest_escalation_active(
+    store: Any, quest_id: int, *, threshold: int, cooldown_s: int
+) -> bool:
+    """gr170252 escalation gate: is ``quest_id`` still inside its escalated
+    dry-rest cooldown?
+
+    Reads ``consecutive_dry_rests`` off the *quest* ref's own ``meta`` —
+    ``quest_tick``'s ``_register_dry_rest`` bumps it on each dry rest and
+    ``_reset_dry_rest_counter`` zeroes it on any frontier improvement or
+    non-dry rest (see that module). Below ``threshold``, this is a no-op
+    (``False``).
+
+    At/above ``threshold``, ``quest_tick`` has already raised the
+    ``quest:dry-rest/<quest_id>`` alert — but re-minting is skipped only for
+    ``cooldown_s`` since the most recent dry rest, not forever: every
+    counter-reset path lives inside a running tick, so a permanent skip would
+    make recovery unreachable. This reads the exact same recency source as
+    :func:`_dry_rest_cooldown_active` (the most-recent ``quest_tick:<id>``
+    coordinator loop's ``STATUS:succeeded`` + ``meta.rest_reason == "dry"``)
+    so the two never disagree about what counts as "the last dry rest". Once
+    ``cooldown_s`` has elapsed, this returns ``False`` and the pass proceeds
+    to the ordinary reap/cooldown/mint path below — by then the much shorter
+    RC1/dry-rest cooldown has certainly also elapsed, so the mint proceeds and
+    the quest gets one more daily-cadence tick to observe recovery.
+
+    Never raises — fail-open (``False``, i.e. keep re-minting) on a read
+    error, so a single quest's read failure can't starve the whole pass.
+    """
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        log.exception("_dry_rest_escalation_active: failed to read quest %s", quest_id)
+        return False
+    if ref is None:
+        return False
+    n = int((ref.meta or {}).get("consecutive_dry_rests", 0) or 0)
+    if n < threshold:
+        return False
+    try:
+        idem = f"quest_tick:{quest_id}"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      LIMIT 1) AS status,
+                    (SELECT EXTRACT(EPOCH FROM (now() - rt.created_at))::float
+                       FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      LIMIT 1) AS age_s,
+                    r.meta->>'rest_reason' AS rest_reason
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.deleted_at IS NULL
+                   AND r.meta->>'idem_key' = %s
+                   AND r.meta->>'executor' = 'coordinator'
+                 ORDER BY r.ref_id DESC
+                 LIMIT 1
+                """,
+                (idem,),
+            ).fetchone()
+        if row is None or row[0] != "succeeded" or row[2] != "dry":
+            # No dry-rest recency to key off — shouldn't happen once
+            # escalated, but fail toward re-minting rather than a lockout.
+            return False
+        dry_age_s = float(row[1] or 0.0)
+        return dry_age_s < cooldown_s
+    except Exception:
+        log.exception(
+            "_dry_rest_escalation_active: failed to read recency for quest %s",
+            quest_id,
+        )
         return False
 
 
@@ -338,23 +529,37 @@ def reconcile_quest_loops(
 
     Gated on ``PRECIS_QUEST_LOOP_ENABLED`` unless ``enabled`` overrides. Cooling
     runs first so a quest that just went cold this pass isn't handed a fresh
-    loop in the same cycle. For each remaining active quest a *reap* step runs
+    loop in the same cycle. For each remaining active quest an *escalation*
+    check runs first: a quest whose ``consecutive_dry_rests`` counter has
+    crossed ``PRECIS_QUEST_DRY_REST_ESCALATE`` (gr170252 —
+    :func:`_dry_rest_escalation_active`) is skipped for a long cooldown
+    (``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``, default 24 h) since its
+    most recent dry rest — no reap/cooldown/mint while the cooldown holds, and
+    an alert is already open on it — but this is not permanent: once the
+    cooldown elapses re-minting resumes at that long cadence, giving the quest
+    a tick that can observe recovery and reset the counter. Otherwise a *reap* step runs
     before the ensure: a reboot-orphaned loop (non-terminal, lease provably
     expired) is cancelled so its idem no longer blocks the re-mint below, and
     the quest self-heals in this pass. A quest whose most-recent loop rested
-    ``failed`` (RC1) is instead held out of the re-mint for an
-    escalating cooldown (:func:`_failed_rest_cooldown_active`). Returns a summary
-    dict: ``cooled`` (quests cooled to dormant), ``reaped`` (orphaned loops
-    cancelled this pass), ``backoff`` (active quests whose re-mint was skipped
-    this pass because a failed rest is still cooling down), ``ensured`` (active
-    quests confirmed to have a live loop, minted or pre-existing), ``minted``
-    (of those, how many were freshly created).
+    ``failed`` (RC1) or rested ``succeeded`` with ``rest_reason: "dry"``
+    (gr170252's cooldown symmetry) is instead held out of the re-mint for an
+    escalating cooldown (:func:`_failed_rest_cooldown_active` /
+    :func:`_dry_rest_cooldown_active`). Returns a summary dict: ``cooled``
+    (quests cooled to dormant), ``escalated`` (active quests skipped this
+    pass because they're past the dry-rest-stuck threshold and still inside
+    the escalated cooldown), ``reaped``
+    (orphaned loops cancelled this pass), ``backoff`` (active quests whose
+    re-mint was skipped this pass because a failed or dry rest is still
+    cooling down), ``ensured`` (active quests confirmed to have a live loop,
+    minted or pre-existing), ``minted`` (of those, how many were freshly
+    created).
     """
     on = quest_loop_enabled() if enabled is None else enabled
     if not on:
         return {
             "enabled": False,
             "cooled": 0,
+            "escalated": 0,
             "reaped": 0,
             "backoff": 0,
             "ensured": 0,
@@ -365,15 +570,32 @@ def reconcile_quest_loops(
     grace_s = _orphan_grace_s()
     base_s = _env_int(_FAIL_BACKOFF_BASE_ENV, _DEFAULT_FAIL_BACKOFF_BASE_S)
     max_s = _env_int(_FAIL_BACKOFF_MAX_ENV, _DEFAULT_FAIL_BACKOFF_MAX_S)
-    reaped = backoff = ensured = minted = 0
+    dry_threshold = _env_int(_DRY_REST_ESCALATE_ENV, _DEFAULT_DRY_REST_ESCALATE)
+    escalate_cooldown_s = _env_int(
+        _DRY_REST_ESCALATE_COOLDOWN_ENV, _DRY_REST_ESCALATED_COOLDOWN_S
+    )
+    escalated = reaped = backoff = ensured = minted = 0
     for qid in active_quest_ids(store):
+        # gr170252: a quest stuck on missing input is held out of the mint —
+        # no reap, no ordinary cooldown — while its escalated cooldown holds.
+        # Checked before everything else so an orphan reap can't accidentally
+        # re-arm it. Not permanent: once the cooldown elapses this returns
+        # False and the quest falls through to the ordinary reap/mint path,
+        # giving it a tick that can observe recovery.
+        if _dry_rest_escalation_active(
+            store, qid, threshold=dry_threshold, cooldown_s=escalate_cooldown_s
+        ):
+            escalated += 1
+            continue
         # A reboot-orphan reap terminalizes to ``cancelled`` and re-mints in this
-        # same pass — it is never a failed rest, so the RC1 backoff can't apply.
-        # A loop that rested ``failed`` (and wasn't reaped) waits out its
+        # same pass — it is never a failed/dry rest, so neither cooldown applies.
+        # A loop that rested ``failed`` or dry (and wasn't reaped) waits out its
         # escalating cooldown before the re-mint below.
         if _reap_orphaned_loop(store, qid, grace_s=grace_s) is not None:
             reaped += 1
-        elif _failed_rest_cooldown_active(store, qid, base_s=base_s, max_s=max_s):
+        elif _failed_rest_cooldown_active(
+            store, qid, base_s=base_s, max_s=max_s
+        ) or _dry_rest_cooldown_active(store, qid, base_s=base_s, max_s=max_s):
             backoff += 1
             continue
         job_id, created = ensure_quest_loop(store, qid, hub=hub)
@@ -384,6 +606,7 @@ def reconcile_quest_loops(
     return {
         "enabled": True,
         "cooled": len(cooled),
+        "escalated": escalated,
         "reaped": reaped,
         "backoff": backoff,
         "ensured": ensured,

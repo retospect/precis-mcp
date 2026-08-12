@@ -196,6 +196,7 @@ class TestReconcileQuestLoops:
         assert out == {
             "enabled": False,
             "cooled": 0,
+            "escalated": 0,
             "reaped": 0,
             "backoff": 0,
             "ensured": 0,
@@ -227,6 +228,7 @@ class TestReconcileQuestLoops:
         assert out == {
             "enabled": True,
             "cooled": 1,
+            "escalated": 0,
             "reaped": 0,
             "backoff": 0,
             "ensured": 3,
@@ -242,6 +244,7 @@ class TestReconcileQuestLoops:
         assert out == {
             "enabled": True,
             "cooled": 0,
+            "escalated": 0,
             "reaped": 0,
             "backoff": 0,
             "ensured": 0,
@@ -268,6 +271,7 @@ class TestReconcileQuestLoops:
         assert out == {
             "enabled": True,
             "cooled": 0,
+            "escalated": 0,
             "reaped": 0,
             "backoff": 0,
             "ensured": 1,
@@ -486,4 +490,229 @@ class TestFailedRestBackoff:
         assert out["backoff"] == 0
         assert out["minted"] == 1
         assert out["ensured"] == 1
+        assert len(_non_terminal_loop_ids(store, q)) == 1
+
+
+class TestDryRestCooldownAndEscalation:
+    """gr170252: a dry rest (``STATUS:succeeded`` + ``rest_reason: "dry"``)
+    gets the SAME escalating cooldown as a real failure, instead of the
+    "succeeded → re-mint immediately" exemption that let the loop spin
+    forever; and a quest whose ``consecutive_dry_rests`` counter crosses
+    ``PRECIS_QUEST_DRY_REST_ESCALATE`` is held out of re-minting for a long
+    fixed cooldown (review finding #3: NOT forever — a running tick is the
+    only thing that can reset the counter, so escalation must stay
+    recoverable) until either the counter resets or the cooldown elapses."""
+
+    def _active_quest(self, store: Store) -> int:
+        q = _mk_quest(store, "A striving")
+        _set_status(store, q, "active")
+        return q
+
+    def _dry_rest(self, store: Store, quest_id: int, *, age: str) -> int:
+        """Mint a loop, rest it exactly as ``quest_tick``'s dry-tick budget
+        does: ``STATUS:succeeded`` + ``meta.rest_reason = "dry"``, backdated."""
+        job_id, _ = loop_mod.ensure_quest_loop(store, quest_id)
+        assert job_id is not None
+        _set_status(store, job_id, "succeeded")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (Jsonb({"rest_reason": "dry"}), job_id),
+            )
+            conn.commit()
+        _age_status(store, job_id, age)
+        return job_id
+
+    # ── (a) dry rest → cooldown applies, no immediate re-mint ─────────
+
+    def test_recent_dry_rest_is_cooling_down(self, store: Store) -> None:
+        q = self._active_quest(store)
+        self._dry_rest(store, q, age="1 minute")  # n=1 → 30-min window
+        assert (
+            loop_mod._dry_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is True
+        )
+
+    def test_elapsed_dry_rest_re_mints(self, store: Store) -> None:
+        q = self._active_quest(store)
+        self._dry_rest(store, q, age="40 minutes")  # > 30-min window at n=1
+        assert (
+            loop_mod._dry_rest_cooldown_active(store, q, base_s=1800, max_s=21600)
+            is False
+        )
+
+    def test_reconcile_skips_immediate_remint_after_a_dry_rest(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = self._active_quest(store)
+        self._dry_rest(store, q, age="1 minute")
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["backoff"] == 1
+        assert out["minted"] == 0
+        # The dry rest stays terminal — no fresh loop minted this pass.
+        assert _non_terminal_loop_ids(store, q) == []
+
+    # ── (d) a productive (or punt/RC2) rest keeps re-minting immediately ──
+
+    def test_productive_rest_without_rest_reason_remints_immediately(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = self._active_quest(store)
+        job_id, _ = loop_mod.ensure_quest_loop(store, q)
+        assert job_id is not None
+        _set_status(store, job_id, "succeeded")  # no rest_reason stamped at all
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["backoff"] == 0
+        assert out["minted"] == 1
+        assert len(_non_terminal_loop_ids(store, q)) == 1
+
+    # ── (b) 3 consecutive dry rests → alert + re-mint held in a long cooldown
+    #        (gr170252 review finding #3: NOT forever — see the elapsed-
+    #        cooldown test below) ────────────────────────────────────────
+
+    def test_three_consecutive_dry_rests_escalate_and_suppress_reminting(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        from precis.alerts import open_alert_severity
+        from precis.workers.job_types import quest_tick as qt
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        q = self._active_quest(store)
+
+        # quest_tick's own counter — 3 consecutive dry rests, backed by a real
+        # recent dry-rested loop (the recency source the escalated cooldown
+        # keys off, same as _dry_rest_cooldown_active).
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        self._dry_rest(store, q, age="1 minute")
+        assert (
+            open_alert_severity(
+                store, source="quest_tick", fingerprint=f"quest:dry-rest/{q}"
+            )
+            == "warn"
+        )
+
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["escalated"] == 1
+        assert out["minted"] == 0
+        assert out["ensured"] == 0
+        assert out["backoff"] == 0
+        assert out["reaped"] == 0
+        # Nothing minted at all — not even a queued loop.
+        assert _non_terminal_loop_ids(store, q) == []
+
+    def test_escalation_re_mints_once_the_escalated_cooldown_elapses(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr170252 review finding #3: escalation is a long cooldown, not a
+        permanent lockout — once ``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``
+        has elapsed since the most recent dry rest, re-minting resumes even
+        though the ``consecutive_dry_rests`` counter itself hasn't reset (only
+        a running tick can reset it, so it must be reachable again)."""
+        from precis.workers.job_types import quest_tick as qt
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S", "3600")
+        q = self._active_quest(store)
+
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        self._dry_rest(store, q, age="2 hours")  # past the 1h escalated cooldown
+
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["escalated"] == 0
+        assert out["minted"] == 1
+        assert len(_non_terminal_loop_ids(store, q)) == 1
+
+    def test_dry_rest_escalation_active_skip_and_elapsed(self, store: Store) -> None:
+        """Unit-level check of :func:`loop_mod._dry_rest_escalation_active`
+        itself, mirroring the neighboring cooldown-function tests above."""
+        q = self._active_quest(store)
+        store.update_ref(q, meta_patch={"consecutive_dry_rests": 3})
+        self._dry_rest(store, q, age="1 hour")
+        assert (
+            loop_mod._dry_rest_escalation_active(
+                store, q, threshold=3, cooldown_s=86400
+            )
+            is True
+        )
+
+        # Advance the same recency source past the (default 24h) cooldown —
+        # the gate opens even though the counter is untouched.
+        self._dry_rest(store, q, age="25 hours")
+        assert (
+            loop_mod._dry_rest_escalation_active(
+                store, q, threshold=3, cooldown_s=86400
+            )
+            is False
+        )
+
+    def test_below_threshold_does_not_escalate(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        from precis.workers.job_types import quest_tick as qt
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        q = self._active_quest(store)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)  # only 2 — below threshold
+
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["escalated"] == 0
+        assert out["minted"] == 1
+
+    # ── (c) frontier improvement resets the counter, re-mint resumes ──────
+
+    def test_frontier_improvement_resets_the_counter_and_remint_resumes(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        from precis.workers.job_types import quest_tick as qt
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        q = self._active_quest(store)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        # 1 hour: past the ordinary dry-rest cooldown's 30-min (n=1) window,
+        # so once the counter resets below only the escalated cooldown could
+        # still be holding it back — but still well inside the (default 24h)
+        # escalated cooldown, so the "blocked" pass below is exercising
+        # escalation specifically, not the ordinary sibling cooldown.
+        self._dry_rest(store, q, age="1 hour")
+
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+        blocked = loop_mod.reconcile_quest_loops(store, enabled=True)
+        assert blocked["escalated"] == 1
+        assert blocked["minted"] == 0
+
+        # A real tick's cascade update would reset ticks_since_frontier_improve
+        # to 0 on genuine progress — simulate that and let quest_tick's own
+        # detector clear the escalation counter.
+        store.update_ref(q, meta_patch={"ticks_since_frontier_improve": 0})
+        assert qt._frontier_improved_this_tick(store, q) is True
+        qt._reset_dry_rest_counter(store, q)
+
+        resumed = loop_mod.reconcile_quest_loops(store, enabled=True)
+        assert resumed["escalated"] == 0
+        assert resumed["minted"] == 1
         assert len(_non_terminal_loop_ids(store, q)) == 1

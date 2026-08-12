@@ -1942,8 +1942,10 @@ def _render_reader_working_set(store: Store, ref_id: int) -> str:
     """Render a hand-curated working set the draft reader attached
     to this change-request as ``meta.working_set`` — the author's **eyes** (pens
     + context + promoted ring targets) composed into one deduplicated context,
-    plus the **edit-these-at-a-minimum** pen hint. Empty when the tick carries no
-    working set (the classic single-anchor path then applies)."""
+    plus the **edit-these-at-a-minimum** pen hint, plus (gr55762) the
+    ``note`` line surfacing an eye-cap overflow the reader hit on save. Empty
+    when the tick carries no working set (the classic single-anchor path then
+    applies)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta->'working_set' FROM refs WHERE ref_id = %s", (ref_id,)
@@ -1980,6 +1982,9 @@ def _render_reader_working_set(store: Store, ref_id: int) -> str:
             "working set below is your read-only grounding."
         )
     parts.append(f"## Working set — the author's eyes in context (§6)\n\n{rendered}")
+    note = ws_meta.get("note")
+    if isinstance(note, str) and note.strip():
+        parts.append(f"## Note\n\n{note}")
     return "\n\n".join(parts)
 
 

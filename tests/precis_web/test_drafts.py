@@ -1306,6 +1306,33 @@ def test_request_ws_threads_structured_selection_onto_llm_select(tmp_path) -> No
     }
 
 
+def test_request_ws_surfaces_the_eye_cap_overflow_note(tmp_path) -> None:
+    """gr55762: when the curated eye set overflows ``_EYE_CAP`` on save, the
+    response carries the "+N more not eyed" note (not just buried in
+    ``meta.working_set`` where nothing renders it to the caller)."""
+    from precis_web import draft_eyes
+
+    rt, client = _ws_client(tmp_path)
+    n = draft_eyes._EYE_CAP + 5
+    handles = [f"dc{9000 + i}" for i in range(n)]
+    r = client.post("/drafts/nt/marks", json={"op": "eye", "handles": handles})
+    assert r.status_code == 200
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert r.json()["note"] == draft_eyes.capped_note(n - draft_eyes._EYE_CAP)
+    verb, args = rt.calls[-1]
+    assert verb == "put"
+    assert args["meta"]["working_set"]["note"] == r.json()["note"]
+
+
+def test_request_ws_omits_note_when_under_the_cap(tmp_path) -> None:
+    rt, client = _ws_client(tmp_path)
+    client.post("/drafts/nt/marks", json={"op": "pen", "handles": ["dc2"]})
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten this"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert "note" not in r.json()
+
+
 def test_request_ws_junk_knobs_leave_llm_select_absent(tmp_path) -> None:
     """A websocket ask must not 500 on a junk knob — it just degrades to no
     ``llm_select`` at all."""

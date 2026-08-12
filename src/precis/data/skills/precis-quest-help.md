@@ -277,8 +277,10 @@ cycle and ensures each active quest has one live `quest_tick` **coordinator
 loop** (not a single scored step): the loop harvests finished sims,
 reviews+proposes via the local model, dispatches the next batch, and yields
 until they land — self-paced by sim completion, not a timer. A loop that rests
-(a bounded run of dry/unproductive slices) is transparently re-armed on the
-next reconcile pass. Runs on the melchior agent worker **only when
+(a bounded run of dry/unproductive slices) is re-armed after a short cooldown;
+consecutive dry rests escalate to a ~daily retry cadence plus a
+`quest:dry-rest/<id>` alert, self-healing on frontier improvement or a
+non-dry rest (thresholds/cooldowns env-tunable, see `precis.quest.loop`). Runs on the melchior agent worker **only when
 `PRECIS_QUEST_LOOP_ENABLED` is set** (dark by default); `precis quest run
 --force` still runs one manual allocator tick by hand, independent of the
 loop. The quest layer is complete. Design of record:

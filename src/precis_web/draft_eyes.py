@@ -18,6 +18,11 @@ edit. On submit the reader copies it onto the change-request todo as
 (``workers.planner_prompt._m_fisheye`` → ``render_working_set``) instead of the
 single-anchor fisheye.
 
+Eyes are capped at ``_EYE_CAP`` on every save — a bulk "eye all" / "§ eye
+section" over a large draft would otherwise store one eye per chunk (gr55762);
+the overflow is counted, not silently dropped, and surfaced as a "+N more not
+eyed" ``note`` on the working-set payload (see ``save_marks``/``capped_note``).
+
 Everything is addressed by universal handles: draft chunks as
 ``dc<id>`` (what ``render_working_set``/``render_eye`` parse), ring targets as
 ``pa<id>`` / ``me<id>`` / ….
@@ -43,6 +48,13 @@ _DEFAULT_DOC_EXTENT = "summary"
 
 #: Doc kinds whose eye is a cluster map (see ``utils.eye_render._DOC_KINDS``).
 _DOC_KINDS = frozenset({"paper", "patent", "web", "datasheet", "cfp"})
+
+#: Hard ceiling on eyes persisted per draft. Without it, "eye all" / "§ eye
+#: section" on a large heading writes one eye per draft chunk into the ref
+#: meta *and* (via ``to_working_set_meta``) into the change-request todo's
+#: ``meta.working_set`` — a 10k-block draft turns into a ~10k-entry blob in
+#: both places (gr55762). Capped, not silently dropped — see ``capped_note``.
+_EYE_CAP = 200
 
 
 def _ttl_hours() -> float:
@@ -73,12 +85,22 @@ def _expired(updated_at: str | None) -> bool:
 
 
 def _empty() -> dict[str, Any]:
-    return {"pens": [], "eyes": {}, "updated_at": None}
+    return {"pens": [], "eyes": {}, "updated_at": None, "capped": 0}
+
+
+def capped_note(overflow: int) -> str:
+    """The visible "+N more not eyed" line for an eye set truncated at
+    ``_EYE_CAP`` (gr55762) — same "no silent cap" idiom as the reference-ring
+    cap's overflow line (``refeye.render_ring_groups``: "+N more — focus to
+    expand")."""
+    return f"+{overflow} more not eyed (cap {_EYE_CAP})"
 
 
 def load_marks(store: Any, ref_id: int) -> dict[str, Any]:
     """The live (non-expired) working set for a draft, or an empty one. Shape:
-    ``{"pens": [dc…], "eyes": {handle: extent, …}, "updated_at": iso|None}``."""
+    ``{"pens": [dc…], "eyes": {handle: extent, …}, "updated_at": iso|None,
+    "capped": int}`` — ``capped`` is the count of eyes dropped by the
+    ``_EYE_CAP`` ceiling on the last save (0 when nothing overflowed)."""
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     raw = (getattr(ref, "meta", None) or {}).get(META_KEY) if ref is not None else None
     if not isinstance(raw, dict) or _expired(raw.get("updated_at")):
@@ -90,16 +112,48 @@ def load_marks(store: Any, ref_id: int) -> dict[str, Any]:
         if isinstance(eyes_raw, dict)
         else {}
     )
-    return {"pens": pens, "eyes": eyes, "updated_at": raw.get("updated_at")}
+    try:
+        capped = int(raw.get("capped") or 0)
+    except (TypeError, ValueError):
+        capped = 0
+    return {
+        "pens": pens,
+        "eyes": eyes,
+        "updated_at": raw.get("updated_at"),
+        "capped": capped,
+    }
 
 
 def save_marks(store: Any, ref_id: int, marks: dict[str, Any]) -> dict[str, Any]:
-    """Persist ``marks`` (stamping ``updated_at``) and return the stored form."""
-    stored = {
-        "pens": list(dict.fromkeys(marks.get("pens") or [])),  # dedup, keep order
-        "eyes": dict(marks.get("eyes") or {}),
+    """Persist ``marks`` (stamping ``updated_at``) and return the stored form.
+
+    Eyes are capped at ``_EYE_CAP`` here — the single funnel every marker op
+    (single toggle, *around here* ring promotion, or a bulk "eye all" / "§ eye
+    section" that loops ``toggle_eye`` over hundreds/thousands of handles)
+    ends at. Penned chunks' eyes are kept first (pens are explicit edit
+    targets — never drop those), then the remainder fills to the cap in
+    insertion order; the rest is dropped but *counted*, not silently lost —
+    the overflow is stored under ``capped`` for ``to_working_set_meta`` /
+    callers to surface as ``capped_note``."""
+    pens = list(dict.fromkeys(marks.get("pens") or []))  # dedup, keep order
+    eyes = dict(marks.get("eyes") or {})
+    overflow = 0
+    if len(eyes) > _EYE_CAP:
+        pen_set = set(pens)
+        kept = {h: e for h, e in eyes.items() if h in pen_set}
+        for h, e in eyes.items():
+            if len(kept) >= _EYE_CAP:
+                break
+            kept.setdefault(h, e)
+        overflow = len(eyes) - len(kept)
+        eyes = kept
+    stored: dict[str, Any] = {
+        "pens": pens,
+        "eyes": eyes,
         "updated_at": _now_iso(),
     }
+    if overflow:
+        stored["capped"] = overflow
     store.stamp_ref_meta(ref_id, {META_KEY: stored})
     return stored
 
@@ -186,11 +240,18 @@ def expand_around(
 
 
 def to_working_set_meta(marks: dict[str, Any]) -> dict[str, Any]:
-    """The change-request payload: ``{eyes: [{handle, extent}], edit_hint: [dc…]}``
-    — the shape ``planner_prompt._m_fisheye`` reads."""
-    return {
+    """The change-request payload: ``{eyes: [{handle, extent}], edit_hint: [dc…],
+    note?: str}`` — the shape ``planner_prompt._m_fisheye`` reads. ``note`` only
+    appears when the sticky set overflowed ``_EYE_CAP`` on save (gr55762): the
+    todo's ``meta.working_set`` gets the capped eye list plus a "+N more not
+    eyed" line instead of one eye per chunk."""
+    out: dict[str, Any] = {
         "eyes": [
             {"handle": h, "extent": e} for h, e in (marks.get("eyes") or {}).items()
         ],
         "edit_hint": list(marks.get("pens") or []),
     }
+    capped = int(marks.get("capped") or 0)
+    if capped:
+        out["note"] = capped_note(capped)
+    return out

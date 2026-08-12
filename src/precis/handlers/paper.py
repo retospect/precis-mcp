@@ -125,6 +125,13 @@ _SUGGEST_CUTOFF = 0.6
 # locality bias and keeps the worst-case cost bounded.
 _SUGGEST_CORPUS_CAP = 5000
 
+# Title-similarity floor for the DOI-edit guard (gr180189): below this
+# Jaccard score, a Crossref-resolved title for the *new* DOI is treated
+# as "a different paper" rather than a formatting/normalisation drift.
+# Matches ``ProvenanceResult.has_metadata_mismatch``'s title threshold
+# in ``precis.ingest.provenance`` — same signal, same cutoff.
+_DOI_EDIT_TITLE_MISMATCH_THRESHOLD = 0.6
+
 
 # ``_coerce_search_year`` / ``_embed_query_batch`` / ``_broad_args_suffix`` used
 # to live here — they're pure ``search()``-only helpers, moved alongside the
@@ -1018,6 +1025,7 @@ class PaperHandler(Handler):
                 arxiv=arxiv if has_arxiv else None,
             )
         changed: list[str] = []
+        doi_edit_check: tuple[str, str] | None = None
         with self.store.tx() as conn:
             updated = self.store.update_paper_fields(
                 ref_id,
@@ -1037,6 +1045,11 @@ class PaperHandler(Handler):
                     )
                 ):
                     changed.append(scheme)
+            if "doi" in changed and updated.title and updated.title.strip():
+                # Just capture inputs here — the Crossref round-trip in
+                # _doi_edit_warning happens after commit (below), never
+                # inside the tx (see its docstring).
+                doi_edit_check = (str(doi).strip(), updated.title)
             # Rewrite the derived search cards so an edit actually changes
             # what title/author/abstract search matches against — otherwise
             # the card_* chunks keep the stale (pre-edit) text. Uses the
@@ -1062,12 +1075,93 @@ class PaperHandler(Handler):
         if new_authors:
             changed.append(f"authors({len(new_authors)})")
         changed.extend(meta_patch.keys())
-        return Response(
-            body=(
-                f"updated paper id={ref_id}: "
-                f"{', '.join(changed) if changed else 'no change'}."
+        changed_str = ", ".join(changed) if changed else "no change"
+        body = f"updated paper id={ref_id}: {changed_str}."
+        if doi_edit_check is not None:
+            # Runs after the tx above has committed — see
+            # _doi_edit_warning's docstring for why.
+            doi_value, current_title = doi_edit_check
+            doi_warning = self._doi_edit_warning(
+                ref_id, doi=doi_value, current_title=current_title
             )
+            if doi_warning:
+                body = f"{body}\n{doi_warning}"
+        return Response(body=body)
+
+    def _doi_edit_warning(self, ref_id: int, *, doi: str, current_title: str) -> str:
+        """Warn when a DOI edit risks a future wrong-paper metadata clobber.
+
+        gr180189: an agent edited a paper's DOI to the wrong record, and
+        the next metadata re-resolve pass (which trusts any DOI on file)
+        overwrote the real title/authors with the other paper's — the
+        stub had no ``authors_resolved_at`` stamp yet, so nothing gated
+        it. This never blocks the edit (a corrected DOI is exactly what
+        the edit affordance is for) — it just makes the risk visible.
+
+        Called **after** the caller's edit transaction has committed —
+        it does a synchronous Crossref HTTP round-trip
+        (:func:`precis.ingest.crossref.lookup_crossref`), and a slow or
+        hung Crossref call must never hold the row lock / pooled
+        connection open on ``refs`` (and risk tripping an
+        idle-in-transaction timeout that rolls back the legitimate DOI
+        edit). Its own ``ref_events`` write below runs on a fresh
+        one-shot connection for the same reason.
+
+        Always records a ``doi_edit_metadata_risk`` ref_event noting the
+        DOI change happened on a paper that already carries an extracted
+        title, so a later re-resolve may replace it. When Crossref is
+        reachable, also does a **best-effort**, no-write lookup of the
+        new DOI (reusing :func:`precis.ingest.crossref.lookup_crossref`
+        — the same lookup :meth:`_render_health` already performs, no
+        new dependency) and compares its title against *current_title*
+        via :func:`precis.ingest._text_norm.best_jaccard`; a score below
+        :data:`_DOI_EDIT_TITLE_MISMATCH_THRESHOLD` sharpens the warning
+        into the actual gr180189 signature ("this DOI looks like a
+        different paper"). A lookup failure/timeout/miss silently falls
+        back to the generic note — never raises.
+        """
+        import os
+
+        warning = (
+            f"note: doi changed to {doi!r} on a paper that already has a "
+            "title — a future metadata re-resolve may overwrite title/"
+            "authors from the new DOI's record"
         )
+        event_payload: dict[str, Any] = {"doi": doi, "title": current_title}
+        try:
+            from precis.ingest._text_norm import best_jaccard
+            from precis.ingest.crossref import lookup_crossref
+
+            mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or ""
+            resolved = lookup_crossref(doi, mailto=mailto)
+            resolved_title = (resolved or {}).get("title")
+            if resolved_title and str(resolved_title).strip():
+                score, _, _ = best_jaccard(current_title, str(resolved_title))
+                event_payload["crossref_title"] = resolved_title
+                event_payload["title_score"] = round(score, 3)
+                if score < _DOI_EDIT_TITLE_MISMATCH_THRESHOLD:
+                    warning = (
+                        f"WARNING: doi {doi!r} resolves on Crossref to "
+                        f"{resolved_title!r}, which looks different from "
+                        f"the stored title {current_title!r} (similarity "
+                        f"{score:.2f}) — this DOI may belong to a "
+                        "different paper; verify before keeping this edit"
+                    )
+        except Exception:
+            pass
+        try:
+            # No conn= — the edit tx has already committed by the time
+            # this runs, so this writes on its own short-lived pooled
+            # connection rather than piggybacking on a (closed) tx.
+            self.store.append_event(
+                ref_id,
+                source="edit",
+                event="doi_edit_metadata_risk",
+                payload=event_payload,
+            )
+        except Exception:
+            pass
+        return warning
 
     def _render_paper_dry_run(
         self,

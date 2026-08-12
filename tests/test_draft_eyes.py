@@ -68,6 +68,64 @@ def test_marks_round_trip_on_ref_meta(hub: Hub) -> None:
     assert loaded["updated_at"] is not None
 
 
+def test_eye_all_over_the_cap_stores_at_most_cap_plus_note(hub: Hub) -> None:
+    """A bulk "eye all" (or "§ eye section" on a big heading) that opens more
+    eyes than ``_EYE_CAP`` must not blow up ref meta storage (gr55762) — it
+    stores at most the cap, plus a visible "+N more not eyed" note that
+    threads through to the change-request payload."""
+    store = hub.live_store
+    ref = store.insert_ref(kind="draft", slug="d-bulk", title="D")
+    n = draft_eyes._EYE_CAP + 137
+    marks: dict[str, Any] = {"pens": [], "eyes": {}}
+    for i in range(n):
+        draft_eyes.toggle_eye(marks, _dc(i))
+    stored = draft_eyes.save_marks(store, ref.id, marks)
+    assert len(stored["eyes"]) == draft_eyes._EYE_CAP
+    assert stored["capped"] == n - draft_eyes._EYE_CAP
+
+    loaded = draft_eyes.load_marks(store, ref.id)
+    assert len(loaded["eyes"]) == draft_eyes._EYE_CAP
+    assert loaded["capped"] == n - draft_eyes._EYE_CAP
+
+    ws = draft_eyes.to_working_set_meta(loaded)
+    assert len(ws["eyes"]) == draft_eyes._EYE_CAP
+    assert ws["note"] == draft_eyes.capped_note(n - draft_eyes._EYE_CAP)
+    assert "not eyed" in ws["note"]  # the note renders, not just a bare count
+
+
+def test_eye_all_under_the_cap_carries_no_note(hub: Hub) -> None:
+    """Under the cap, storage + payload stay byte-identical to before —
+    no ``capped`` key, no ``note``."""
+    store = hub.live_store
+    ref = store.insert_ref(kind="draft", slug="d-small", title="D")
+    marks: dict[str, Any] = {"pens": [], "eyes": {}}
+    for i in range(5):
+        draft_eyes.toggle_eye(marks, _dc(i))
+    stored = draft_eyes.save_marks(store, ref.id, marks)
+    assert len(stored["eyes"]) == 5
+    assert "capped" not in stored
+
+    loaded = draft_eyes.load_marks(store, ref.id)
+    assert loaded["capped"] == 0
+    ws = draft_eyes.to_working_set_meta(loaded)
+    assert "note" not in ws
+
+
+def test_eye_all_cap_keeps_penned_eyes_first(hub: Hub) -> None:
+    """Penned chunks are explicit edit targets — the cap must never drop
+    their eye even when the bulk eye-all overflows."""
+    store = hub.live_store
+    ref = store.insert_ref(kind="draft", slug="d-pen", title="D")
+    marks: dict[str, Any] = {"pens": [], "eyes": {}}
+    pen_dc = _dc(999999)
+    draft_eyes.toggle_pen(marks, pen_dc)
+    for i in range(draft_eyes._EYE_CAP + 50):
+        draft_eyes.toggle_eye(marks, _dc(i))
+    stored = draft_eyes.save_marks(store, ref.id, marks)
+    assert pen_dc in stored["eyes"]
+    assert len(stored["eyes"]) == draft_eyes._EYE_CAP
+
+
 def test_marks_expire_past_ttl(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     store = hub.live_store
     ref = store.insert_ref(kind="draft", slug="d2", title="D")
@@ -126,6 +184,29 @@ def test_planner_renders_the_curated_working_set(hub: Hub) -> None:
     assert "Edit these, at a minimum" in out
     assert section_dc in out  # the pen hint + the rendered eye
     assert "Working set" in out
+
+
+def test_planner_renders_the_eye_cap_overflow_note(hub: Hub) -> None:
+    """gr55762: the "+N more not eyed" note travels from the eye-all cap
+    overflow all the way into the rendered planner working set."""
+    from precis.workers.planner_prompt import _render_reader_working_set
+
+    store = hub.live_store
+    _ref_id, section_dc, _paper_id = _draft_citing_a_paper(hub)
+    todo = store.insert_ref(kind="todo", slug=None, title="fix the section")
+    note = draft_eyes.capped_note(137)
+    store.stamp_ref_meta(
+        todo.id,
+        {
+            "working_set": {
+                "eyes": [{"handle": section_dc, "extent": "fisheye"}],
+                "edit_hint": [],
+                "note": note,
+            }
+        },
+    )
+    out = _render_reader_working_set(store, todo.id)
+    assert note in out
 
 
 def test_planner_working_set_empty_when_no_meta(hub: Hub) -> None:

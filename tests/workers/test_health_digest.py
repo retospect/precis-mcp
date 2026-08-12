@@ -47,6 +47,7 @@ from precis.workers.health_digest import (
     run_health_digest_pass,
 )
 from precis.workers.registry import ServiceKind, ServiceSpec
+from precis.workers.scheduler import Cadence
 
 # ── (c) zero-LLM, pure template ──────────────────────────────────────────
 
@@ -124,6 +125,48 @@ def test_cadence_within_margin_is_ok(store) -> None:
     _seed_lease(store, "c-fresh", interval_s=60, overdue_s=30)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-fresh")
+    assert hit.status == "ok"
+
+
+# ── never-seeded: eligible-everywhere-false blind spot (gr194430) ───────
+
+
+def test_never_seeded_registry_cadence_is_flagged(store, monkeypatch) -> None:
+    """A cadence registered in ``workers/scheduler.py`` whose ``eligible``
+    gate is false on every host never calls ``claim_scheduler_lease`` — no
+    ``scheduler_leases`` row for it ever exists, so the lease-row loop
+    above is blind to it by construction. That sustained absence, not an
+    overdue row, is the gr194430 finding."""
+    fake = Cadence(name="fake-never-seeded", interval_s=60, run=lambda s, b: None)
+    monkeypatch.setattr(health_digest, "CADENCES", (fake,))
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "fake-never-seeded/never-seeded")
+    assert hit.status == "stale"
+    assert "no scheduler_leases row" in hit.detail
+
+
+def test_allowlisted_dark_cadence_is_not_flagged(store, monkeypatch) -> None:
+    """``materialize`` carries no pre-claim gate (it's flag-gated inside the
+    run itself, ``PRECIS_MATERIALIZE_EMBED``) — its lease is always seeded
+    regardless, and the explicit exemption documents that it must never
+    false-positive here even with no lease row."""
+    fake = Cadence(name="materialize", interval_s=300, run=lambda s, b: None)
+    monkeypatch.setattr(health_digest, "CADENCES", (fake,))
+    results = _cadence_staleness_checks(store)
+    assert not any(r.name == "materialize/never-seeded" for r in results)
+
+
+def test_cadence_with_fresh_lease_is_not_flagged_never_seeded(
+    store, monkeypatch
+) -> None:
+    """A cadence that HAS won its lease at least once must not also read as
+    never-seeded — the two conditions are mutually exclusive."""
+    fake = Cadence(name="fake-has-lease", interval_s=60, run=lambda s, b: None)
+    monkeypatch.setattr(health_digest, "CADENCES", (fake,))
+    _seed_lease(store, "fake-has-lease", interval_s=60, overdue_s=30)
+    results = _cadence_staleness_checks(store)
+    assert not any(r.name == "fake-has-lease/never-seeded" for r in results)
+    hit = next(r for r in results if r.name == "fake-has-lease")
     assert hit.status == "ok"
 
 

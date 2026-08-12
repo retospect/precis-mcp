@@ -38,7 +38,13 @@ One fire (:func:`run_health_digest_pass`) does four things:
      interval — a curated Layer-1 row with its own fixed budget would
      contradict this the moment an operator raises the interval (e.g.
      dream's DB-overridable knob), so it is deliberately not duplicated
-     there.
+     there. Plus (gr194430) a **never-seeded** half: a registry cadence
+     whose ``eligible`` gate short-circuits :func:`~precis.workers.scheduler.run_scheduler_pass`
+     *before* ``claim_scheduler_lease`` on every host never seeds a
+     ``scheduler_leases`` row at all, so it's invisible to the loop
+     above by construction — any :data:`CADENCES` entry outside the
+     ``materialize`` exemption with no lease row anywhere is flagged as
+     ``<name>/never-seeded``.
    * **Layer-2 coherence** (:func:`_layer2_checks`, derived) — every
      registered ``PASS`` + ``ref_pass`` :class:`~precis.workers.registry.ServiceSpec`
      that resolves enabled (structural ``default_profiles``, or a live
@@ -117,6 +123,7 @@ from precis.alerts import (
 from precis.store import Store
 from precis.workers.registry import SERVICES, ServiceKind, ServiceSpec
 from precis.workers.runner import BatchResult
+from precis.workers.scheduler import CADENCES
 
 log = logging.getLogger(__name__)
 
@@ -836,15 +843,44 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
 
 # ── derived: cadence staleness (scheduler_leases) ────────────────────────
 
+#: gr194430 §D blind spot: a cadence gated by ``eligible`` (§A) never seeds
+#: a ``scheduler_leases`` row when its eligibility is false on *every*
+#: host — the gate short-circuits ``run_scheduler_pass`` before
+#: ``claim_scheduler_lease`` (see ``workers/scheduler.py``'s docstring), so
+#: the row-per-lease loop above never sees it at all. That's invisible by
+#: omission, not by an overdue row, so it needs its own check below.
+#: ``materialize`` is exempt: it carries no ``eligible``/``host_affinity``
+#: gate (any live worker always attempts the claim), it's flag-gated
+#: *inside* the run instead (``PRECIS_MATERIALIZE_EMBED``,
+#: ``workers/materialize.py``) — its lease is always seeded regardless of
+#: the flag, so it can never legitimately land here, and listing it
+#: defensively documents that a future refactor adding a pre-claim gate to
+#: it must not make this check false-positive.
+_CADENCE_NEVER_SEEDED_EXEMPT = frozenset({"materialize"})
+
 
 def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
-    """Every ``scheduler_leases`` row overdue past ``interval_s + margin``.
+    """Every ``scheduler_leases`` row overdue past ``interval_s + margin``,
+    plus (gr194430) every registry cadence with **no** lease row at all.
 
     Zero per-cadence config — a cadence added to ``workers/scheduler.py``
     is watched the moment it seeds its first lease row, no digest edit.
     ``margin = max(interval_s, 300s)`` — generous enough that a normal
     scheduling jitter never trips it, tight enough that a genuinely-stopped
     cadence trips within about one missed interval.
+
+    The never-seeded half closes §D's blind spot: an ``eligible`` gate
+    (``dream_agent``/``anki_sync``/``structural``/``deep_review``) that's
+    false on every host — e.g. its enabling env lost fleet-wide in a
+    deploy-template regression — means the cadence never wins its first
+    claim, so no ``scheduler_leases`` row ever exists for it to go stale.
+    The lease-row loop above is blind to that by construction (it only
+    iterates rows that exist); the absence itself, sustained past this
+    eval, is the only signal available without reaching into remote hosts'
+    env, so any :data:`CADENCES` entry outside
+    :data:`_CADENCE_NEVER_SEEDED_EXEMPT` with no lease row at all is
+    flagged — distinctly named (``<name>/never-seeded``) so it never
+    collides with that same cadence's ordinary overdue-lease finding above.
     """
     out: list[CheckResult] = []
     try:
@@ -860,6 +896,22 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
                 _WARN,
             )
         ]
+    seeded = {lease.name for lease in leases}
+    for cad in CADENCES:
+        if cad.name in seeded or cad.name in _CADENCE_NEVER_SEEDED_EXEMPT:
+            continue
+        out.append(
+            CheckResult(
+                "cadence",
+                f"{cad.name}/never-seeded",
+                "stale",
+                f"{cad.name}: expected cadence has no scheduler_leases row "
+                "on any host — its eligibility gate may be false fleet-wide "
+                "(enabling env lost in a deploy-template regression), so it "
+                "has never won its first claim",
+                _WARN,
+            )
+        )
     now = datetime.now(UTC)
     for lease in leases:
         margin_s = max(lease.interval_s, 300)

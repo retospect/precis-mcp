@@ -54,7 +54,7 @@ from typing import Any, ClassVar
 
 from psycopg.errors import UniqueViolation
 
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
@@ -969,11 +969,58 @@ class FindingHandler(NumericRefHandler):
         Deliberately kept off ``_BASE_VIEWS`` — it's finding-specific,
         not something every numeric-ref kind should expose.
         """
+        id = self._resolve_pub_id_slug(id)
         if view == "evidence":
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return self._render_evidence_view(ref)
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:
+        """Translate a bare ``pub_id`` slug (e.g. ``'tbx2hd'``) to its ref_id.
+
+        A draft cites a finding/claim-hub via its ``[<pub_id>]`` placeholder
+        token (gr178763 item 1) — the base
+        :meth:`~precis.handlers._numeric_ref.NumericRefHandler._coerce_id`
+        only accepts an integer id (or the ``'finding:<int>'`` link-target
+        form), so an agent holding a pub_id copied out of a citation had no
+        way back to the finding it names. Anything already numeric, a
+        ``self.kind``-prefixed link target, or a list-view path (``'/recent'``)
+        is left untouched; everything else is tried as a pub_id via
+        :func:`precis.taproot.authoring.find_hub_by_pub_id` — a plain
+        ``ref_identifiers`` reverse lookup, not hub-specific despite living
+        in ``taproot/authoring.py``: every finding (hub or plain chase row)
+        gets a ``pub_id`` row at ``put()`` (see this module's docstring).
+        Caveat: the pub_id alphabet is base32 ``[a-z2-7]``, so an all-digit
+        pub_id (every char in ``2-7``, ~1/112k per mint) is shadowed by the
+        numeric-id fast path and can't be resolved by slug — accepted rarity;
+        such a value still resolves via ``get(kind='finding', id=<ref_id>)``.
+
+        Raises:
+            NotFound: ``id`` is a non-numeric string that doesn't match any
+                finding's pub_id.
+        """
+        if not isinstance(id, str):
+            return id
+        s = id.strip()
+        if not s or s.startswith("/"):
+            return id
+        prefix = f"{self.kind}:"
+        body = s[len(prefix) :] if s.startswith(prefix) else s
+        if body.lstrip("-").isdigit():
+            return id
+        ref_id = authoring.find_hub_by_pub_id(self.store, body)
+        if ref_id is None:
+            raise NotFound(
+                f"no finding with pub_id={s!r}",
+                next=(
+                    "pub_id is minted by put(kind='finding', ...) (chase or "
+                    "hub mode) - check for a typo, or "
+                    "search(kind='finding', q='...') if you don't have the "
+                    "exact token"
+                ),
+            )
+        return ref_id
 
     def _render_evidence_view(self, ref: Ref) -> Response:
         """Render ``view='evidence'``: the hub's edges by derived role.

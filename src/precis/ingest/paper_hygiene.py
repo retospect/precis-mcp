@@ -376,6 +376,71 @@ def requeue_stranded_fetches(
 #: corpus regardless.
 _JUNK_SAMPLE_LIMIT_DEFAULT = 5000
 
+# A save-as / "print to PDF" stamp leaking a filename into the title
+# field: "Microsoft Word - manuscript_v3.docx", a trailing document
+# extension left over from an extractor that fell back to the file's
+# ``/Title`` field, InDesign's ``.indd``. Anchored to the start/end of
+# the (stripped) string, not a substring match — a genuine title that
+# happens to end in ".pdf" as prose wouldn't trip this, but nothing in
+# a real title does.
+_MS_WORD_STAMP_RE = re.compile(r"^microsoft\s+word\s*-", re.IGNORECASE)
+_FILENAME_EXT_RE = re.compile(r"\.(docx?|pdf|indd)$", re.IGNORECASE)
+
+# Elsevier's PII (Publisher Item Identifier) stamp, e.g.
+# "PII: S0021-9797(20)31234-5" — leaks in when a scraper grabs the
+# running header instead of the title block.
+_PII_STAMP_RE = re.compile(r"^pii:?\s*s\d", re.IGNORECASE)
+
+# A title that's nothing but a bare DOI — the extractor found an
+# identifier but no title text.
+_DOI_ONLY_RE = re.compile(r"^doi\s*:\s*10\.\d", re.IGNORECASE)
+
+# Bare extraction placeholders — matched against the *whole* string
+# (after stripping trailing punctuation), not a substring, so a real
+# title mentioning "no job name" in a sentence wouldn't trip this
+# (extremely unlikely, but the same conservatism as
+# :func:`~precis.utils.authors.is_junk_author_name`).
+_FILENAME_PLACEHOLDER_STOPWORDS = frozenset(
+    {
+        "untitled",
+        "untitled document",
+        "no job name",
+    }
+)
+
+
+def is_filename_like_title(title: str) -> bool:
+    """True when *title* is an obvious filename/extraction artifact.
+
+    Catches the junk that leaks through PDF/DOCX metadata scraping when
+    the extractor falls back to the file's ``/Title`` field (often the
+    original filename) or a bare placeholder: a Word "save as" stamp
+    ("Microsoft Word - manuscript_v3.docx"), a trailing document
+    extension (``.docx`` / ``.doc`` / ``.pdf`` / ``.indd``), a bare
+    "Untitled" / "No Job Name" placeholder, an Elsevier PII stamp
+    ("PII: S0021-9797(20)31234-5"), or a title that's nothing but a DOI
+    string ("doi:10.1016/..."). Conservative — every pattern anchors to
+    the start or end of the (stripped) string, not a substring, so a
+    genuine title never trips this by coincidence. Blank input is not
+    considered filename-like (that's a *missing*-title signal, a
+    different metric). Pure — never raises. Sibling to
+    :func:`~precis.utils.authors.is_junk_author_name`.
+    """
+    s = title.strip()
+    if not s:
+        return False
+    if _MS_WORD_STAMP_RE.match(s):
+        return True
+    if _FILENAME_EXT_RE.search(s):
+        return True
+    if _PII_STAMP_RE.match(s):
+        return True
+    if _DOI_ONLY_RE.match(s):
+        return True
+    if s.strip(".,:;- ").lower() in _FILENAME_PLACEHOLDER_STOPWORDS:
+        return True
+    return False
+
 
 def _pct(numerator: int, denominator: int) -> float:
     return round(100.0 * numerator / denominator, 1) if denominator else 0.0
@@ -395,6 +460,9 @@ class MetadataHygieneStats:
     junk_author_entries: int = 0
     junk_sample_papers: int = 0
     junk_sample_bounded: bool = False
+    filename_like_titles: int = 0
+    title_sample_papers: int = 0
+    title_sample_bounded: bool = False
 
     @property
     def structured_authors_pct(self) -> float:
@@ -439,6 +507,15 @@ def metadata_hygiene_stats(
       walked and whether the corpus was larger than ``junk_sample_limit``
       (default 5000) — a bounded sample, not a full-corpus count, in that
       case.
+    * ``filename_like_titles`` — count of papers whose title
+      :func:`is_filename_like_title` flags (a "Microsoft Word - ..."
+      save-as stamp, a trailing ``.docx``/``.pdf`` extension, a bare
+      "Untitled" placeholder, a PII stamp, a bare DOI). Same
+      bounded-sample-walk shape as ``junk_author_entries`` (pure Python,
+      can't aggregate in SQL); ``title_sample_papers`` /
+      ``title_sample_bounded`` record the walk's extent. Unlike the
+      author-junk sample, this one isn't restricted to *authored*
+      papers — a filename-title stub commonly has no authors either.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -490,6 +567,22 @@ def metadata_hygiene_stats(
             if name and is_junk_author_name(name):
                 junk += 1
 
+    with store.pool.connection() as conn:
+        title_rows = conn.execute(
+            "SELECT title FROM refs "
+            "WHERE kind = 'paper' AND deleted_at IS NULL "
+            "  AND title IS NOT NULL AND btrim(title) <> '' "
+            "ORDER BY ref_id "
+            "LIMIT %s",
+            (junk_sample_limit + 1,),
+        ).fetchall()
+    title_bounded = len(title_rows) > junk_sample_limit
+    title_rows = title_rows[:junk_sample_limit]
+
+    filename_like = sum(
+        1 for (title,) in title_rows if title and is_filename_like_title(title)
+    )
+
     return MetadataHygieneStats(
         total_papers=total,
         authored_papers=authored,
@@ -500,6 +593,9 @@ def metadata_hygiene_stats(
         junk_author_entries=junk,
         junk_sample_papers=len(sample_rows),
         junk_sample_bounded=bounded,
+        filename_like_titles=filename_like,
+        title_sample_papers=len(title_rows),
+        title_sample_bounded=title_bounded,
     )
 
 
@@ -507,6 +603,7 @@ __all__ = [
     "MetadataHygieneStats",
     "collapse_superseded_chains",
     "heal_drifted_cards",
+    "is_filename_like_title",
     "metadata_hygiene_stats",
     "migrate_dangling_paper_links",
 ]

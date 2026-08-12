@@ -214,6 +214,12 @@ class TestPhaseTick:
         assert out.success is True
         assert out.summary_meta.get("dry_ticks") == qt._max_dry_ticks()
         assert out.summary_meta.get("last_status") == "succeeded"
+        # gr170252: the rest is stamped with WHY, so reconcile_quest_loops can
+        # apply the cooldown-symmetry fix instead of re-minting immediately.
+        # FakeCtx's store is a bare SimpleNamespace (no get_ref/update_ref), so
+        # ``_register_dry_rest`` degrades to 0 rather than crashing the tick.
+        assert out.summary_meta.get("rest_reason") == "dry"
+        assert out.summary_meta.get("consecutive_dry_rests") == 0
 
     def test_productive_tick_after_dry_resets_counter(
         self, monkeypatch: pytest.MonkeyPatch
@@ -728,3 +734,144 @@ class TestSimWaitSetReachesBarrierFanout:
         _qid, cand = self._serving_candidate(store)
         self._nested_seed_job(store, cand)  # non-terminal
         assert qt._queued_sim_count(store) >= 1
+
+
+class TestDryRestEscalation:
+    """gr170252: the quest-side ``consecutive_dry_rests`` counter, its
+    operator alert, and the frontier-improvement reset — exercised against
+    the REAL ``store`` fixture (``_register_dry_rest`` writes real
+    ``refs.meta`` and raises a real ``kind='alert'`` ref)."""
+
+    def _mk_quest(self, store: Any) -> int:
+        ref = store.insert_ref(
+            kind="quest", slug=None, title="A blocked striving", meta={}
+        )
+        return int(ref.id)
+
+    def _mint_dry_rested_job(self, store: Any, quest_id: int, *, age: str) -> int:
+        """Insert a terminal ``quest_tick:<id>`` coordinator job rested dry —
+        the recency source :func:`loop_mod._dry_rest_escalation_active` reads
+        (gr170252 review finding #3), mirroring the shape a real dry rest
+        leaves on the job."""
+        from precis.store import Tag
+
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="quest_tick",
+            meta={
+                "idem_key": f"quest_tick:{quest_id}",
+                "executor": "coordinator",
+                "job_type": "quest_tick",
+                "rest_reason": "dry",
+            },
+            parent_id=quest_id,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+        with store.pool.connection() as conn:
+            conn.execute(
+                """
+                UPDATE ref_tags rt SET created_at = (now() - (%s)::interval)
+                  FROM tags t
+                 WHERE rt.tag_id = t.tag_id AND t.namespace = 'STATUS'
+                   AND rt.ref_id = %s
+                """,
+                (age, job.id),
+            )
+            conn.commit()
+        return int(job.id)
+
+    def test_register_dry_rest_increments(self, store: Any) -> None:
+        q = self._mk_quest(store)
+        assert qt._register_dry_rest(store, q) == 1
+        assert qt._register_dry_rest(store, q) == 2
+        assert qt._register_dry_rest(store, q) == 3
+        ref = store.get_ref(kind="quest", id=q)
+        assert (ref.meta or {}).get("consecutive_dry_rests") == 3
+
+    def test_alert_fires_only_at_threshold(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.alerts import open_alert_severity
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        q = self._mk_quest(store)
+
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        assert (
+            open_alert_severity(
+                store, source="quest_tick", fingerprint=f"quest:dry-rest/{q}"
+            )
+            is None
+        )
+
+        qt._register_dry_rest(store, q)
+        assert (
+            open_alert_severity(
+                store, source="quest_tick", fingerprint=f"quest:dry-rest/{q}"
+            )
+            == "warn"
+        )
+
+    def test_escalation_gate_reads_the_same_counter(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.quest import loop as loop_mod
+
+        monkeypatch.setenv("PRECIS_QUEST_DRY_REST_ESCALATE", "3")
+        q = self._mk_quest(store)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        assert (
+            loop_mod._dry_rest_escalation_active(
+                store, q, threshold=3, cooldown_s=86400
+            )
+            is False
+        )
+        qt._register_dry_rest(store, q)
+        # gr170252 review finding #3: the gate is now a cooldown, keyed off
+        # the most recent dry-rested job's recency, not the bare counter —
+        # mint that job so the (still-active) cooldown has something to read.
+        self._mint_dry_rested_job(store, q, age="1 minute")
+        assert (
+            loop_mod._dry_rest_escalation_active(
+                store, q, threshold=3, cooldown_s=86400
+            )
+            is True
+        )
+        # And once the escalated cooldown elapses, the gate opens again even
+        # though the counter itself is untouched — a running tick is the only
+        # thing that can reset it, so it must remain reachable.
+        self._mint_dry_rested_job(store, q, age="25 hours")
+        assert (
+            loop_mod._dry_rest_escalation_active(
+                store, q, threshold=3, cooldown_s=86400
+            )
+            is False
+        )
+
+    def test_non_dry_reset_clears_the_counter(self, store: Any) -> None:
+        q = self._mk_quest(store)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        qt._reset_dry_rest_counter(store, q)
+        ref = store.get_ref(kind="quest", id=q)
+        assert (ref.meta or {}).get("consecutive_dry_rests", 0) == 0
+
+    def test_frontier_improvement_is_detected_and_resets(self, store: Any) -> None:
+        q = self._mk_quest(store)
+        qt._register_dry_rest(store, q)
+        qt._register_dry_rest(store, q)
+        # A real tick's cascade update resets this to 0 exactly when it made
+        # progress — simulate that without touching cascade.py itself.
+        store.update_ref(q, meta_patch={"ticks_since_frontier_improve": 0})
+        assert qt._frontier_improved_this_tick(store, q) is True
+        qt._reset_dry_rest_counter(store, q)
+        ref = store.get_ref(kind="quest", id=q)
+        assert (ref.meta or {}).get("consecutive_dry_rests", 0) == 0
+
+    def test_no_progress_is_not_mistaken_for_improvement(self, store: Any) -> None:
+        q = self._mk_quest(store)
+        store.update_ref(q, meta_patch={"ticks_since_frontier_improve": 2})
+        assert qt._frontier_improved_this_tick(store, q) is False

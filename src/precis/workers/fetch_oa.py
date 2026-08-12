@@ -784,9 +784,68 @@ _OPENALEX_CONTENT_HOST = "content.openalex.org"
 #: ``credits_remaining`` for the account (content fetch = 100 credits each).
 _OPENALEX_RATE_LIMIT_URL = "https://api.openalex.org/rate-limit"
 
-#: Alert source + stable fingerprint for the low-balance condition.
+#: Alert source + stable fingerprint for the low-balance condition. Shared
+#: between the proactive :func:`check_openalex_balance` poll and the reactive
+#: detector in :func:`_try_openalex_content` (gr162141) — same key, so
+#: whichever trigger fires, the *other* path's healthy reading still
+#: auto-resolves it. Deliberately: OpenAlex's ``/rate-limit`` endpoint
+#: reports ``credits_remaining`` for the metered API, but paid content
+#: downloads may draw against a separate prepaid USD wallet that endpoint
+#: never surfaces — so the wallet can run dry (paid fetches failing) while
+#: ``credits_remaining`` still looks healthy. The reactive trigger below is
+#: the guaranteed-correct fallback: it fires straight off the paid fetch's
+#: own failure, regardless of which balance model OpenAlex is actually
+#: enforcing.
 _OPENALEX_BALANCE_SOURCE = "fetch_oa:openalex_balance"
 _OPENALEX_BALANCE_FINGERPRINT = "openalex-content-credits-low"
+
+#: HTTP status OpenAlex plausibly uses to signal "no more balance" on the
+#: paid content endpoint. 402 Payment Required is the *only* status treated
+#: as a guaranteed-correct signal on its own — 429 Too Many Requests is
+#: generic rate-limiting (the same file's ``_try_unpaywall`` classifies a
+#: bare 429 as ``event="rate_limited"``) and must NOT raise a payment/quota
+#: alert unless the response body actually says so
+#: (:data:`_PAYMENT_QUOTA_SIGNAL_RE`); otherwise a transient throttle would
+#: raise a spurious low-balance alert.
+_PAYMENT_QUOTA_STATUS_CODES = frozenset({402})
+
+#: Response-body / exception-message words that indicate a payment/quota
+#: failure even on a status code we don't special-case above (this is how a
+#: bare 429 — or any other status — still counts: only if the body is
+#: payment-shaped). Loose but scoped to the vocabulary billing APIs actually
+#: use — not so loose it'd match an ordinary 404/500.
+_PAYMENT_QUOTA_SIGNAL_RE = re.compile(
+    r"insufficient\s+(?:funds|credits?)|\bquota\b|\bpayment\b", re.IGNORECASE
+)
+
+
+def _payment_quota_signal(exc: Exception) -> str | None:
+    """Return a short description when ``exc`` looks like a payment/quota
+    failure on the paid OpenAlex content leg, else ``None``.
+
+    Checks, in order: (1) an HTTP status of 402 on ``exc.response``
+    (:data:`_PAYMENT_QUOTA_STATUS_CODES`) — the guaranteed-correct signal,
+    true regardless of which balance model OpenAlex is actually enforcing;
+    then (2) the response body (best-effort — a closed/unread stream just
+    yields ``""``) or the exception's own message for the words insufficient
+    funds/credits, quota, or payment (:data:`_PAYMENT_QUOTA_SIGNAL_RE`). A
+    bare 429 (generic rate-limiting) or a plain 404/500/network error matches
+    neither and returns ``None`` — the caller must not raise the low-balance
+    alert off an unrelated failure or a transient throttle.
+    """
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code in _PAYMENT_QUOTA_STATUS_CODES:
+        return f"HTTP {status_code}"
+    body = ""
+    if response is not None:
+        try:
+            body = response.text
+        except Exception:
+            body = ""
+    if _PAYMENT_QUOTA_SIGNAL_RE.search(f"{body} {exc}"):
+        return "response body mentioned insufficient funds/credits/quota/payment"
+    return None
 
 
 def _openalex_content_key() -> str:
@@ -1313,6 +1372,7 @@ def _try_openalex_content(
     *,
     inbox_dir: Path,
     api_key: str,
+    store: Any = None,
     email: str = "",
 ) -> FetchOutcome | None:
     """Fetch full text from OpenAlex's content cache for one stub.
@@ -1334,6 +1394,22 @@ def _try_openalex_content(
     The ``api_key`` rides in the URL query, not the payload — the recorded
     event keeps the clean (keyless) ``pdf_url`` so the credential never lands
     in ``ref_events``.
+
+    **Reactive balance alert (gr162141).** The paid download's failure path
+    additionally runs it through :func:`_payment_quota_signal`; a
+    402-or-payment-shaped failure raises the *same* ``fetch_oa:openalex_balance``
+    alert :func:`check_openalex_balance` uses (same source + fingerprint, so
+    either path's healthy reading auto-resolves it), with a detail line that
+    says ``"paid fetch failed with payment/quota signal …"`` so it reads as
+    the reactive trigger, distinct from the proactive credits-remaining poll.
+    A bare 429 with no payment-shaped body does *not* raise this alert — it's
+    generic rate-limiting, same as ``_try_unpaywall``'s ``rate_limited``
+    classification, not a wallet/balance signal.
+    This exists because a paid content download can draw against a separate
+    prepaid balance the ``/rate-limit`` endpoint never reports — so
+    ``credits_remaining`` can look healthy while that wallet is dry and every
+    paid fetch is failing. Best-effort and non-fatal: the fetch still records
+    ``fetch_failed`` exactly as before either way.
     """
     if not api_key or not stub.doi or not _DOI_RE.match(stub.doi):
         return None
@@ -1366,6 +1442,41 @@ def _try_openalex_content(
         # error message, so scrub the key before it lands in ``ref_events`` /
         # the CLI. The recorded ``url`` is the clean keyless one.
         err = str(exc).replace(api_key, "***") if api_key else str(exc)
+        signal = _payment_quota_signal(exc)
+        if signal is not None and store is not None:
+            # Reactive trigger (gr162141): the paid content download itself
+            # failed with a payment/quota shape. Raises the *same* alert key
+            # as check_openalex_balance's proactive credits_remaining poll —
+            # a separate prepaid wallet can be dry (paid fetches failing)
+            # while /rate-limit still reports a healthy credits_remaining, so
+            # this is the guaranteed-correct fallback regardless of which
+            # balance model is actually gating the account. Best-effort:
+            # never raises, and the fetch still records fetch_failed below.
+            # ``store`` is None for the manual one-shot CLI
+            # (``precis fetch-openalex``), which has no nursery-alert flow —
+            # skip the alert there rather than raise on a missing store.
+            try:
+                _raise_alert(
+                    store,
+                    source=_OPENALEX_BALANCE_SOURCE,
+                    fingerprint=_OPENALEX_BALANCE_FINGERPRINT,
+                    title="OpenAlex paid content fetch failed with a payment/quota signal",
+                    detail=(
+                        f"paid fetch failed with payment/quota signal {signal} "
+                        f"(doi={stub.doi}): {err[:200]}. Reactive trigger — "
+                        "distinct from the proactive credits_remaining poll "
+                        "(check_openalex_balance); a separate prepaid content "
+                        "wallet may be dry even though /rate-limit still "
+                        "reports a healthy balance. Top up at "
+                        "https://openalex.org/users."
+                    ),
+                    severity="warn",
+                )
+            except Exception as alert_exc:  # pragma: no cover — defensive
+                log.warning(
+                    "fetch_oa: reactive openalex_balance alert failed: %s",
+                    str(alert_exc)[:200],
+                )
         return FetchOutcome(
             event="fetch_failed",
             payload={"doi": stub.doi, "url": pdf_url, "error": err[:200]},
@@ -2190,6 +2301,7 @@ def _run_cascade(
                     stub,
                     inbox_dir=inbox_dir,
                     api_key=openalex_content_key,
+                    store=store,
                     email=email,
                 ),
             )

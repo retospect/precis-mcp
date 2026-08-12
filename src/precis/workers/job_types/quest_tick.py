@@ -37,6 +37,28 @@ until a fresh coordinator job re-awakens it. RC2: it also self-rests
 immediately, on any phase, once the quest itself is no longer active (see
 ``_dispatch``) — it no longer only winds down passively via the dry/punt
 budgets.
+
+**gr170252: dry-rest escalation.** A dry rest (``Done(success=True)`` via the
+``_max_dry_ticks`` budget) is a *successful* tick outcome — the model
+genuinely engaged, it just had nothing new to dispatch — so
+:mod:`precis.quest.loop`'s reconciler used to treat it exactly like a
+productive rest and re-mint the loop on its very next pass. That's the
+cooldown asymmetry behind the bug: mint → 3 dry ticks → rest(success) →
+immediate re-mint → repeat, spinning forever (bounded only by the allocator's
+12-tick ``cool_stalled`` backstop, which never fires because the loop keeps
+minting). The rest now stamps ``summary_meta["rest_reason"] = "dry"`` (which
+lands on the coordinator job's own ``meta`` via ``Done``'s normal persistence
+path), and bumps a ``consecutive_dry_rests`` counter on the *quest* ref
+itself (reset to 0 by any frontier improvement or any non-dry rest) — see
+``_register_dry_rest`` / ``_reset_dry_rest_counter``. ``reconcile_quest_loops``
+reads both: the job-side ``rest_reason`` drives the same escalating cooldown
+as a real failed rest, and once the quest-side counter reaches
+``PRECIS_QUEST_DRY_REST_ESCALATE`` (default 3) re-minting backs off to a
+long, fixed cooldown (``PRECIS_QUEST_DRY_REST_ESCALATE_COOLDOWN_S``, default
+24 h) and an operator alert is raised — the quest is genuinely stuck on
+missing input, not merely between heartbeats, but the loop still ticks at
+that slow cadence so a tick can observe recovery (frontier improvement or a
+non-dry rest) and reset the counter through the paths below.
 """
 
 from __future__ import annotations
@@ -136,6 +158,19 @@ def _max_punt_ticks() -> int:
     before the loop rests.
     """
     return _env_int("PRECIS_QUEST_TICK_MAX_PUNT", 8, lo=1, hi=1000)
+
+
+def _dry_rest_escalate_threshold() -> int:
+    """Consecutive *dry rests* (not dry ticks — full loop rest-and-re-mint
+    cycles) tolerated before a quest is treated as genuinely stuck on missing
+    input (default 3, gr170252).
+
+    Read by both this module (:func:`_register_dry_rest`, to decide whether
+    to raise the operator alert) and :mod:`precis.quest.loop` (to decide
+    whether ``reconcile_quest_loops`` stops re-minting the loop) — the same
+    env var, so the two never disagree about the line.
+    """
+    return _env_int("PRECIS_QUEST_DRY_REST_ESCALATE", 3)
 
 
 def _force_acquire_enabled() -> bool:
@@ -325,6 +360,114 @@ def _quest_body(store: Any, quest_id: int) -> str | None:
     return str(val) if val is not None else None
 
 
+def _frontier_improved_this_tick(store: Any, quest_id: int) -> bool:
+    """Did this tick's ``cascade.update_cascade_state`` reset the stall clock?
+
+    ``run_quest_tick`` calls ``update_cascade_state`` at the very end of a
+    successful tick, which resets ``meta.ticks_since_frontier_improve`` to 0
+    exactly when *any* external progress happened this tick (frontier gain,
+    new result, resolved hypothesis, acquired paper — see that function).
+    Reading the freshly-written value right after the call is a proxy for
+    "did this tick make progress" without this module having to duplicate or
+    hook that logic itself. Defensive — same shape as ``_quest_status``: a
+    missing/exception-raising ``get_ref`` degrades to ``False`` (no reset),
+    never a crash.
+    """
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return False
+    if ref is None:
+        return False
+    return int((ref.meta or {}).get("ticks_since_frontier_improve", 0) or 0) == 0
+
+
+def _reset_dry_rest_counter(store: Any, quest_id: int) -> None:
+    """Zero the quest's ``consecutive_dry_rests`` escalation counter (gr170252).
+
+    Called whenever the quest shows evidence it is not stuck: a frontier
+    improvement this tick, or a rest for any reason other than "dry" (punt,
+    real failure, RC2 self-rest). Skips the write when already 0 (the common
+    case) so a healthy quest doesn't churn its ``meta``. Never raises — a
+    failure to reset must not break the tick/rest it's attached to.
+    """
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return
+    if ref is None:
+        return
+    if not int((ref.meta or {}).get("consecutive_dry_rests", 0) or 0):
+        return
+    try:
+        store.update_ref(quest_id, meta_patch={"consecutive_dry_rests": 0})
+    except Exception:
+        log.exception("_reset_dry_rest_counter: failed to reset quest %s", quest_id)
+
+
+def _register_dry_rest(store: Any, quest_id: int) -> int:
+    """Bump the quest's ``consecutive_dry_rests`` counter; escalate at threshold.
+
+    Called exactly when ``_phase_tick`` rests the loop via the
+    ``_max_dry_ticks`` budget (gr170252). Returns the new count (``0`` if the
+    quest ref couldn't be read — never raises). Once the count reaches
+    :func:`_dry_rest_escalate_threshold`, raises (or refreshes — ``raise_alert``
+    dedups per condition) an operator alert keyed ``quest:dry-rest/<quest_id>``:
+    the quest keeps waking, finding the same missing input, and resting again,
+    worth a human's attention even though re-minting isn't stopped for good.
+    ``reconcile_quest_loops`` reads this same counter to back its loop off to
+    a long cooldown once it's at/above threshold — see
+    :func:`precis.quest.loop._dry_rest_escalation_active`.
+    """
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        log.exception("_register_dry_rest: failed to read quest %s", quest_id)
+        return 0
+    if ref is None:
+        return 0
+    n = int((ref.meta or {}).get("consecutive_dry_rests", 0) or 0) + 1
+    try:
+        store.update_ref(quest_id, meta_patch={"consecutive_dry_rests": n})
+    except Exception:
+        log.exception("_register_dry_rest: failed to stamp quest %s", quest_id)
+        return n
+
+    threshold = _dry_rest_escalate_threshold()
+    if n >= threshold:
+        try:
+            from precis.alerts import raise_alert
+
+            title = (getattr(ref, "title", None) or "").strip() or f"quest {quest_id}"
+            raise_alert(
+                store,
+                source="quest_tick",
+                fingerprint=f"quest:dry-rest/{quest_id}",
+                title=(
+                    f"quest {quest_id} ({title}) appears blocked on missing "
+                    "input — needs a human"
+                ),
+                detail=(
+                    f"{n} consecutive dry rests (each after "
+                    f"{_max_dry_ticks()} consecutive engaged-but-nothing-new "
+                    "ticks) — the loop keeps waking, finding the same missing "
+                    "input, and resting again. Re-minting now backs off to a "
+                    "long cooldown (~daily) instead of every worker pass, and "
+                    "self-heals the moment a tick sees frontier improvement "
+                    "or a non-dry rest — no manual nudge required, though a "
+                    "fresh acquisition or setting the quest dormant still "
+                    "resolves it sooner."
+                ),
+                severity="warn",
+                subject_ref_id=quest_id,
+            )
+        except Exception:
+            log.exception(
+                "_register_dry_rest: failed to raise alert for quest %s", quest_id
+            )
+    return n
+
+
 def _dispatch(ctx: Any, spec: Any) -> Any:
     """Coordinator phase machine. Returns ``Done`` | ``Yield``."""
     state = (ctx.meta or {}).get("coordinator_state") or {}
@@ -344,6 +487,10 @@ def _dispatch(ctx: Any, spec: Any) -> Any:
     # loop", so the two never disagree.
     if quest_id not in set(active_quest_ids(ctx.store)):
         status = _quest_status(ctx.store, quest_id)
+        # Not a dry rest — the quest going inactive is unrelated to whether it
+        # was stuck on missing input (gr170252); clear the escalation counter
+        # so a later re-activation starts clean.
+        _reset_dry_rest_counter(ctx.store, quest_id)
         return Done(
             summary=(
                 f"quest {quest_id} no longer active ({status}) — loop self-resting"
@@ -624,6 +771,13 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         f"(+{getattr(outcome, 'papers_linked', 0)} papers); {note}"[:500],
     )
 
+    # gr170252: this tick just ran — if it shows genuine progress (the
+    # cascade's stall clock reset), the quest is not stuck on missing input,
+    # regardless of this tick's dry/punt/failed outcome — clear the
+    # dry-rest escalation counter.
+    if _frontier_improved_this_tick(ctx.store, quest_id):
+        _reset_dry_rest_counter(ctx.store, quest_id)
+
     # A failed / paused tick is NOT a dry loop — back off and retry rather than
     # resting. A transient LLM error (endpoint 400/502) or a breaker/quota pause
     # would otherwise fall through to the "no sims dispatched → Done" branch and
@@ -637,6 +791,11 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         if status == "failed":
             fails += 1
         if fails >= _max_tick_failures():
+            # Not a dry rest — a real failure is its own signal, distinct from
+            # "engaged but nothing new" (gr170252's cooldown symmetry treats
+            # ``failed`` on its own escalating window; the dry-rest counter
+            # resets so it doesn't also escalate on top of that).
+            _reset_dry_rest_counter(ctx.store, quest_id)
             return Done(
                 summary=(
                     f"quest {quest_id} loop resting after {fails} consecutive "
@@ -720,6 +879,10 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     if not engaged:
         punts = int(state.get("punt_ticks") or 0) + 1
         if punts >= _max_punt_ticks():
+            # A punt rest is weaker evidence than a dry rest (the model
+            # produced nothing at all, not "engaged but nothing new") — not a
+            # dry rest, so clear the escalation counter (gr170252).
+            _reset_dry_rest_counter(ctx.store, quest_id)
             return Done(
                 summary=(
                     f"quest {quest_id} loop resting after {punts} consecutive "
@@ -751,6 +914,15 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
 
     dry = int(state.get("dry_ticks") or 0) + 1
     if dry >= _max_dry_ticks():
+        # gr170252: this is the cooldown-asymmetry rest — a *successful* tick
+        # outcome that is nonetheless real evidence the quest is stuck on
+        # missing input. Stamp ``rest_reason: "dry"`` on the coordinator job
+        # (via Done's normal summary_meta -> job.meta persistence) so
+        # ``reconcile_quest_loops`` applies the same escalating cooldown a
+        # real failure gets instead of re-minting immediately, and bump the
+        # quest-side escalation counter (raises an operator alert + halts
+        # re-minting entirely once it crosses threshold).
+        rests = _register_dry_rest(ctx.store, quest_id)
         return Done(
             summary=(
                 f"quest {quest_id} loop resting after {dry} consecutive dry "
@@ -762,6 +934,8 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                 "slices": slice_count,
                 "dry_ticks": dry,
                 "last_status": status,
+                "rest_reason": "dry",
+                "consecutive_dry_rests": rests,
             },
         )
     ctx.append_chunk(

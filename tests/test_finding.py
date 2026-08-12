@@ -463,6 +463,71 @@ class TestRoundTrip:
         assert "setup context" in body
 
 
+# ── get(id=<pub_id>) — reverse lookup (gr178763 item 1) ───────────────
+
+
+class TestGetByPubId:
+    """A draft cites a finding/claim-hub by its ``[<pub_id>]`` placeholder
+    token; ``get(id=<pub_id>)`` must resolve it to the same render as
+    ``get(id=<ref_id>)`` — previously only internal
+    ``find_hub_by_pub_id`` / ``precis resolve`` bridged the gap."""
+
+    def test_get_by_pub_id_resolves_hub(self, store) -> None:
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Pd/C catalyzes Suzuki coupling at room temperature.",
+                scope={"material": "Pd/C"},
+            ),
+        )
+        with store.pool.connection() as conn:
+            pub_id = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'pub_id'",
+                (hub_id,),
+            ).fetchone()[0]
+        h = _make_handler(store)
+
+        by_pub_id = h.get(id=pub_id).body
+        by_ref_id = h.get(id=hub_id).body
+        assert by_pub_id == by_ref_id
+        assert f"finding {hub_id}" in by_pub_id
+
+    def test_get_by_pub_id_resolves_plain_finding(self, store) -> None:
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="t",
+            body="claim body",
+            scope={"electrode": "Cu"},
+            cited_in="miller23a",
+        )
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        pub_id = _search(r"pub_id=(\w+)", resp.body).group(1)
+
+        by_pub_id = h.get(id=pub_id).body
+        by_ref_id = h.get(id=ref_id).body
+        assert by_pub_id == by_ref_id
+
+    def test_get_by_unknown_pub_id_raises_not_found(self, store) -> None:
+        from precis.errors import NotFound
+
+        h = _make_handler(store)
+        with pytest.raises(NotFound, match="no finding with pub_id='deadbeef'"):
+            h.get(id="deadbeef")
+
+    def test_get_still_rejects_non_numeric_non_pub_id_form(self, store) -> None:
+        """Sanity: the pub_id fallback doesn't mask other malformed-id
+        shapes — an id that could never be a pub_id (wrong alphabet/length)
+        still surfaces the same 'not found' story as an unknown pub_id,
+        never a confusing 'must be an integer' regression for this kind."""
+        from precis.errors import NotFound
+
+        h = _make_handler(store)
+        with pytest.raises(NotFound):
+            h.get(id="not-a-real-handle!!")
+
+
 # ── search override ─────────────────────────────────────────────────
 
 

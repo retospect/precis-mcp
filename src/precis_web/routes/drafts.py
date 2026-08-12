@@ -1812,7 +1812,9 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     (``anchor``) so the ask still works on the current para + its fisheye. Body
     ``{text, model, anchor?, placement?, reasoning?, temperature?}`` — the last
     three are the optional structured selection, threaded onto
-    ``meta.llm_select`` alongside the ``model`` alias's ``meta.llm_tier``."""
+    ``meta.llm_select`` alongside the ``model`` alias's ``meta.llm_tier``.
+    Response carries ``note`` (gr55762's eye-cap overflow line) only when the
+    curated eye set overflowed the cap on save."""
     try:
         payload = await request.json()
     except Exception:
@@ -1848,8 +1850,10 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
             status_code=422,
         )
     meta: dict[str, Any] = {"llm_tier": tier}
+    working_set_meta: dict[str, Any] | None = None
     if has_marks:
-        meta["working_set"] = draft_eyes.to_working_set_meta(marks)
+        working_set_meta = draft_eyes.to_working_set_meta(marks)
+        meta["working_set"] = working_set_meta
     if anchor:
         meta["anchor"] = anchor
     llm_select = llm_select_from_payload(
@@ -1870,7 +1874,11 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     body, is_error = await await_dispatch(request, "put", args)
     if is_error:
         return JSONResponse({"ok": False, "error": body}, status_code=400)
-    return JSONResponse({"ok": True, "anchor": anchor})
+    resp: dict[str, Any] = {"ok": True, "anchor": anchor}
+    note = (working_set_meta or {}).get("note")
+    if note:
+        resp["note"] = note
+    return JSONResponse(resp)
 
 
 @router.post("/drafts/{ident}/text")

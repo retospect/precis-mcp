@@ -1154,3 +1154,144 @@ class TestPaperEdit:
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert ref.meta["journal"] == "Old Journal"
         assert "entry_type" not in ref.meta
+
+
+# ---------------------------------------------------------------------------
+# edit() — DOI-edit metadata-clobber guard (gr180189)
+# ---------------------------------------------------------------------------
+
+
+def _doi_edit_events(store: Store, ref_id: int) -> list[dict[str, Any]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT payload FROM ref_events "
+            "WHERE ref_id = %s AND event = 'doi_edit_metadata_risk' "
+            "ORDER BY event_id",
+            (ref_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+class TestPaperEditDoiWarning:
+    """A DOI edit never overwrites title/authors itself, but the
+    *next* metadata re-resolve pass trusts whatever DOI is on file — a
+    wrong DOI edit is exactly how gr180189 corrupted pa1056. The guard
+    warns (in the response body and a ``doi_edit_metadata_risk``
+    ref_event); it never blocks the edit."""
+
+    def test_doi_change_warns_generically_without_crossref(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Crossref unreachable/miss → the cheap, no-fetch note still
+        fires (a paper with an existing title is at risk regardless of
+        whether we can verify the new DOI right now)."""
+        import precis.ingest.crossref as crossref_mod
+
+        monkeypatch.setattr(crossref_mod, "lookup_crossref", lambda *a, **k: None)
+        ref_id = _seed_paper(
+            store, slug="wang2020state", doi="10.1/old", title="Original Title"
+        )
+        resp = handler.edit(id=ref_id, doi="10.2/new")
+        assert "note: doi changed to '10.2/new'" in resp.body
+        assert "WARNING" not in resp.body
+        events = _doi_edit_events(store, ref_id)
+        assert len(events) == 1
+        assert events[0]["doi"] == "10.2/new"
+        assert events[0]["title"] == "Original Title"
+        assert "crossref_title" not in events[0]
+
+    def test_doi_change_no_warning_without_existing_title(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A bare stub (no title yet) has nothing for a re-resolve to
+        clobber — no warning, no event."""
+        ref = store.insert_ref(kind="paper", slug="notitle2020", title="")
+        store.set_ref_identifier(ref.id, "doi", "10.1/old", source="edit")
+        resp = handler.edit(id=ref.id, doi="10.2/new")
+        assert "note:" not in resp.body
+        assert "WARNING" not in resp.body
+        assert _doi_edit_events(store, ref.id) == []
+
+    def test_doi_change_no_warning_when_doi_unchanged(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Editing something else entirely (no ``doi=``) never trips
+        the guard."""
+        ref_id = _seed_paper(store, slug="wang2020state", doi="10.1/old", year=2020)
+        resp = handler.edit(id=ref_id, year=2021)
+        assert "note:" not in resp.body
+        assert _doi_edit_events(store, ref_id) == []
+
+    def test_doi_change_escalates_on_crossref_title_mismatch(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The new DOI resolves to an unrelated title on Crossref — the
+        gr180189 signature — so the warning escalates and the event
+        records the mismatch score."""
+        import precis.ingest.crossref as crossref_mod
+
+        monkeypatch.setattr(
+            crossref_mod,
+            "lookup_crossref",
+            lambda *a, **k: {
+                "title": "A Completely Unrelated Study on Zebrafish Genetics"
+            },
+        )
+        ref_id = _seed_paper(
+            store,
+            slug="wang2020state",
+            doi="10.1/old",
+            title="State of the art in nitrate reduction",
+        )
+        resp = handler.edit(id=ref_id, doi="10.2/new")
+        assert "WARNING: doi '10.2/new'" in resp.body
+        assert "different paper" in resp.body
+        events = _doi_edit_events(store, ref_id)
+        assert len(events) == 1
+        assert events[0]["crossref_title"] == (
+            "A Completely Unrelated Study on Zebrafish Genetics"
+        )
+        assert events[0]["title_score"] < 0.6
+
+    def test_doi_change_stays_generic_on_crossref_title_match(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The new DOI's Crossref title agrees with the stored title —
+        no escalation, just the generic note."""
+        import precis.ingest.crossref as crossref_mod
+
+        monkeypatch.setattr(
+            crossref_mod,
+            "lookup_crossref",
+            lambda *a, **k: {"title": "State of the art in nitrate reduction"},
+        )
+        ref_id = _seed_paper(
+            store,
+            slug="wang2020state",
+            doi="10.1/old",
+            title="State of the art in nitrate reduction",
+        )
+        resp = handler.edit(id=ref_id, doi="10.2/new")
+        assert "note: doi changed" in resp.body
+        assert "WARNING" not in resp.body
+        events = _doi_edit_events(store, ref_id)
+        assert events[0]["title_score"] >= 0.6
+
+    def test_doi_change_never_blocks_on_crossref_failure(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Crossref lookup that raises is swallowed — the edit still
+        succeeds with the generic note, never a 5xx / raised error."""
+        import precis.ingest.crossref as crossref_mod
+
+        def _boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("network is down")
+
+        monkeypatch.setattr(crossref_mod, "lookup_crossref", _boom)
+        ref_id = _seed_paper(
+            store, slug="wang2020state", doi="10.1/old", title="Original Title"
+        )
+        resp = handler.edit(id=ref_id, doi="10.2/new")
+        assert "note: doi changed" in resp.body
+        ids = store.identifiers_for_refs([ref_id])[ref_id]
+        assert ids["doi"] == "10.2/new"  # the edit itself still landed
