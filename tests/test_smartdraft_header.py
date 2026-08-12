@@ -103,6 +103,10 @@ class _ConnStore:
     def ref_connections(self, ref_id):
         return self._conns
 
+    drafts = property(
+        lambda self: self
+    )  # drafts carve: fake serves as its own sub-store
+
 
 def _conn(relation, direction="out", ident="x"):
     return {

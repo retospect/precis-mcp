@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: The ref-meta key the sticky set lives under.
 META_KEY = "reader_working_set"
@@ -96,7 +99,7 @@ def capped_note(overflow: int) -> str:
     return f"+{overflow} more not eyed (cap {_EYE_CAP})"
 
 
-def load_marks(store: Any, ref_id: int) -> dict[str, Any]:
+def load_marks(store: Store, ref_id: int) -> dict[str, Any]:
     """The live (non-expired) working set for a draft, or an empty one. Shape:
     ``{"pens": [dc…], "eyes": {handle: extent, …}, "updated_at": iso|None,
     "capped": int}`` — ``capped`` is the count of eyes dropped by the
@@ -124,7 +127,7 @@ def load_marks(store: Any, ref_id: int) -> dict[str, Any]:
     }
 
 
-def save_marks(store: Any, ref_id: int, marks: dict[str, Any]) -> dict[str, Any]:
+def save_marks(store: Store, ref_id: int, marks: dict[str, Any]) -> dict[str, Any]:
     """Persist ``marks`` (stamping ``updated_at``) and return the stored form.
 
     Eyes are capped at ``_EYE_CAP`` here — the single funnel every marker op
@@ -158,7 +161,7 @@ def save_marks(store: Any, ref_id: int, marks: dict[str, Any]) -> dict[str, Any]
     return stored
 
 
-def clear_marks(store: Any, ref_id: int) -> dict[str, Any]:
+def clear_marks(store: Store, ref_id: int) -> dict[str, Any]:
     """Wipe the sticky set (a fresh empty one, stamped now)."""
     return save_marks(store, ref_id, _empty())
 
@@ -207,7 +210,7 @@ def _default_extent(handle: str) -> str:
 
 
 def expand_around(
-    store: Any, ref_id: int, dc_handles: list[str], marks: dict[str, Any]
+    store: Store, ref_id: int, dc_handles: list[str], marks: dict[str, Any]
 ) -> None:
     """*Around here*: for each selected draft chunk add an eye on it **and
     promote its reference ring to real eyes** — cited papers (as their cluster
@@ -219,10 +222,10 @@ def expand_around(
     for dc in dc_handles:
         marks["eyes"].setdefault(dc, _DEFAULT_DC_EXTENT)
         try:
-            target = store.get_draft_chunk(dc, kind="draft")
+            target = store.drafts.get_draft_chunk(dc, kind="draft")
             if target is None:
                 continue
-            chunks = store.reading_order(target.ref_id, kind="draft")
+            chunks = store.drafts.reading_order(target.ref_id, kind="draft")
             ring = collect_ring(store, target, chunks)
         except Exception:
             continue

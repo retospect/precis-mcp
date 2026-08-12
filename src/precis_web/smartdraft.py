@@ -46,13 +46,16 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
 from precis.store._draft_ops import content_sha
 from precis.utils.figure_source import RenderSpec, resolve_figure_source
 from precis.utils.table_data import table_payload
 from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 # ── pressure weights (tune later; env-overridable is a follow-up) ────────
 _W_KEYWORD = 1.0
@@ -240,7 +243,7 @@ _NODE_CACHE: dict[int, tuple[float, str, list[ChunkNode]]] = {}
 _NODE_TTL = 45.0
 
 
-def _cache_version(store: Any, ref_id: int) -> str | None:
+def _cache_version(store: Store, ref_id: int) -> str | None:
     """A cheap content token for a draft — ``digest:tags`` over its live chunks.
 
     The digest folds in every input :func:`_build_nodes_uncached` reads off the
@@ -299,7 +302,7 @@ def _apply_marks(nodes: list[ChunkNode], marks: dict[str, Any] | None) -> None:
 
 
 def build_nodes(
-    store: Any, ref_id: int, *, marks: dict[str, Any] | None = None
+    store: Store, ref_id: int, *, marks: dict[str, Any] | None = None
 ) -> list[ChunkNode]:
     """Assemble the draft's chunks into `ChunkNode`s (cached per draft; see
     :data:`_NODE_CACHE`). ``marks`` stamps pin/lock status as a per-request
@@ -317,7 +320,7 @@ def build_nodes(
     return nodes
 
 
-def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
+def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
     """The actual build — one join over reading-order (structure) +
     `list_blocks_for_ref` (keywords) + `block_views` (llm summary) + chunk tags.
     Pins/locks are left False; :func:`_apply_marks` overlays them per request."""
@@ -327,12 +330,12 @@ def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
     # import time) and called once per (cache-missed) build.
     from precis_web.routes.drafts import provenance_state
 
-    chunks = store.reading_order(ref_id)
+    chunks = store.drafts.reading_order(ref_id)
     # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
     # floats and (with a python cosine) blocks the page for seconds. Semantic is
     # served by the HNSW index at query time (`semantic_ranks`), not a full scan.
     blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id)}
-    views = store.block_views(ref_id)
+    views = store.drafts.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
     nodes: list[ChunkNode] = []
     for i, c in enumerate(chunks):
@@ -384,7 +387,7 @@ def _kw_from_view(v: dict[str, str]) -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
-def _load_chunk_tags(store: Any, ref_id: int) -> dict[int, list[str]]:
+def _load_chunk_tags(store: Store, ref_id: int) -> dict[int, list[str]]:
     """``{chunk_id: [tag value, …]}`` for a ref's chunks (``chunk_tags`` — the
     ``T`` search signal). Best-effort: a store without a raw pool degrades to
     no tags rather than raising."""
@@ -681,7 +684,7 @@ def _left_toc(
 
 
 def build_view(
-    store: Any,
+    store: Store,
     ref_id: int,
     *,
     focus_dc: str | None = None,
@@ -865,7 +868,7 @@ def search_chunks(
 
 
 def semantic_ranks(
-    store: Any, ref_id: int, query_vec: list[float] | None, *, k: int = _SEM_TOPN
+    store: Store, ref_id: int, query_vec: list[float] | None, *, k: int = _SEM_TOPN
 ) -> dict[int, int]:
     """``{chunk_id: rank}`` for a query's top-``k`` semantically-nearest chunks in
     a ref — computed by the **HNSW index** (pgvector ``<=>``), not a python scan
@@ -1038,7 +1041,7 @@ def review_indicator(
     }
 
 
-def cite_integrity_ok(store: Any, text: str, cache: dict[int, bool]) -> bool:
+def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
     """``True`` unless ``text`` carries a cite token that fails to resolve
     (a dead/merged-away ``[pc<id>]``) or whose cited paper isn't held (a
     stub with zero body blocks — the same "to-fetch" signal
@@ -1124,7 +1127,7 @@ def claim_trust_for_block(
     return {"label": label, "heads": offenders}
 
 
-def _prepopulate_trust_cache(store: Any, nodes: list[ChunkNode]) -> dict[str, Any]:
+def _prepopulate_trust_cache(store: Store, nodes: list[ChunkNode]) -> dict[str, Any]:
     """Bulk-resolve every distinct cite head across ``nodes`` into
     :func:`claim_trust_for_block`'s cache shape up front — the batch
     counterpart to that function's own lazy per-head ``claim_trust`` call.
@@ -1158,7 +1161,7 @@ def _prepopulate_trust_cache(store: Any, nodes: list[ChunkNode]) -> dict[str, An
 def review_payloads_for(
     nodes: list[ChunkNode],
     status_by_chunk: dict[int, dict[str, Any]],
-    store: Any,
+    store: Store,
 ) -> dict[str, dict[str, Any]]:
     """``{dc: payload}`` for every reviewable node in ``nodes`` — scoped to
     the per-request RENDERED set (the middle pane, or one ``/blocks``

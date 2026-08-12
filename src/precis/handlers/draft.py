@@ -633,10 +633,10 @@ class DraftHandler(Handler):
         where = "all drafts"
         if raw_scope:
             if _is_draft_chunk_addr(raw_scope):
-                chunk_ids = self.store.draft_subtree_chunk_ids(raw_scope)
+                chunk_ids = self.store.drafts.draft_subtree_chunk_ids(raw_scope)
                 if not chunk_ids:
                     raise NotFound(f"draft chunk {raw_scope} not found")
-                root = self.store.get_draft_chunk(raw_scope)
+                root = self.store.drafts.get_draft_chunk(raw_scope)
                 scope_ref_id = int(root.ref_id) if root else None
                 where = f"subtree {raw_scope}"
             else:
@@ -707,25 +707,29 @@ class DraftHandler(Handler):
             pairs: list[tuple[str, Any]] = []
             for ref in self.store.list_refs(kind="draft", limit=10_000):
                 slug = ref.slug or str(ref.id)
-                pairs.extend((slug, c) for c in self.store.reading_order(ref.id))
+                pairs.extend((slug, c) for c in self.store.drafts.reading_order(ref.id))
             return pairs, "all drafts"
         raw = str(raw_scope).strip()
         if _is_draft_chunk_addr(raw):
-            ids = self.store.draft_subtree_chunk_ids(raw)
+            ids = self.store.drafts.draft_subtree_chunk_ids(raw)
             if not ids:
                 raise NotFound(f"draft chunk {raw} not found")
-            root = self.store.get_draft_chunk(raw)
+            root = self.store.drafts.get_draft_chunk(raw)
             if root is None:
                 raise NotFound(f"draft chunk {raw} not found")
             ref_id = int(root.ref_id)
             owner = self.store.get_ref(kind="draft", id=ref_id)
             slug = (owner.slug if owner and owner.slug else None) or str(ref_id)
             keep = set(ids)
-            chunks = [c for c in self.store.reading_order(ref_id) if c.chunk_id in keep]
+            chunks = [
+                c for c in self.store.drafts.reading_order(ref_id) if c.chunk_id in keep
+            ]
             return [(slug, c) for c in chunks], f"subtree {raw}"
         ref = resolve_live_slug_ref(self.store, kind="draft", id=raw)
         slug = ref.slug or str(ref.id)
-        return [(slug, c) for c in self.store.reading_order(ref.id)], f"draft {raw!r}"
+        return [
+            (slug, c) for c in self.store.drafts.reading_order(ref.id)
+        ], f"draft {raw!r}"
 
     def _regex_find(
         self,
@@ -869,7 +873,7 @@ class DraftHandler(Handler):
             # (``old``, folded into ``changes`` above) — a concurrent edit
             # between scoping and this write raises BadInput instead of
             # silently clobbering it (gr176088).
-            res = self.store.edit_text(
+            res = self.store.drafts.edit_text(
                 c.handle, new_text, base_sha=content_sha(c.text or "")
             )
             if res is not None:
@@ -1053,8 +1057,12 @@ class DraftHandler(Handler):
             if kind == "term":
                 meta, term_role = self._prepare_term_meta(ref.id, meta)
                 if at is None:
-                    at = {"into": self.store.ensure_registry_heading(ref.id, term_role)}
-            chunks = self.store.add_chunks(
+                    at = {
+                        "into": self.store.drafts.ensure_registry_heading(
+                            ref.id, term_role
+                        )
+                    }
+            chunks = self.store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
                 text=str(text),
@@ -1085,7 +1093,7 @@ class DraftHandler(Handler):
                 next="put(kind='draft', id='nanotrans', title='…', project=<todo-id>)",
             )
         project_ref_id = self._resolve_project(project)
-        ref, title_chunk = self.store.create_draft(
+        ref, title_chunk = self.store.drafts.create_draft(
             name=slug,
             title=(title or slug).strip() or slug,
             project_ref_id=project_ref_id,
@@ -1152,7 +1160,7 @@ class DraftHandler(Handler):
         candidate = str(new_id).strip() if new_id else f"{src_slug}-copy"
         new_slug = self._dedup_slug(candidate)
         new_title = (title or f"{src.title} (review copy)").strip()
-        new_ref = self.store.fork_draft(
+        new_ref = self.store.drafts.fork_draft(
             src.id, project_ref_id, new_slug=new_slug, title=new_title
         )
         return Response(
@@ -1210,7 +1218,7 @@ class DraftHandler(Handler):
         m["registry"] = role
         policy = _reg.policy_for(role)
         if policy.assign == "insert" and m.get("callout") is None:
-            existing = self.store.registry_callouts(ref_id, role)
+            existing = self.store.drafts.registry_callouts(ref_id, role)
             m["callout"] = _reg.next_insert_callout(existing, policy)
         return m, role
 
@@ -1267,7 +1275,7 @@ class DraftHandler(Handler):
                     ),
                 )
             fig_meta["permission"] = permission
-        chunk = self.store.add_figure(
+        chunk = self.store.drafts.add_figure(
             ref_id=ref_id,
             caption=str(caption),
             origin=org,
@@ -1317,7 +1325,7 @@ class DraftHandler(Handler):
         # Resolve each plots target to a live chunk in *this* draft.
         targets = []
         for p in plots:
-            c = self.store.get_draft_chunk(str(p))
+            c = self.store.drafts.get_draft_chunk(str(p))
             if c is None:
                 raise NotFound(f"plots target {p!r} not found")
             if int(c.ref_id) != ref_id:
@@ -1327,7 +1335,7 @@ class DraftHandler(Handler):
                 )
             targets.append(c)
 
-        chunk = self.store.add_figure(
+        chunk = self.store.drafts.add_figure(
             ref_id=ref_id,
             caption=str(caption),
             origin="own_graph",
@@ -1336,11 +1344,13 @@ class DraftHandler(Handler):
             at=at,
             figure_meta={"render_pending": True},
         )
-        self.store.set_render_recipe(
+        self.store.drafts.set_render_recipe(
             chunk.chunk_id,
             {"kind": "code", "lang": "python", "src": str(render)},
         )
-        n = self.store.link_figure_plots(chunk.chunk_id, [t.chunk_id for t in targets])
+        n = self.store.drafts.link_figure_plots(
+            chunk.chunk_id, [t.chunk_id for t in targets]
+        )
         self._sync_draft_links(ref_id)
         self._attribute_touch([chunk.chunk_id])
         return Response(
@@ -1454,7 +1464,7 @@ class DraftHandler(Handler):
         if title is not None:
             _reject_dry_run("title")
             ref = self._resolve_draft_any(id)
-            old, synced = self.store.set_draft_title(
+            old, synced = self.store.drafts.set_draft_title(
                 ref.id, title, source={"reason": "draft-title", "actor": "draft-edit"}
             )
             note = "" if synced else " (no title heading — ref renamed only)"
@@ -1483,7 +1493,7 @@ class DraftHandler(Handler):
             _reject_dry_run("not_abbrev")
             tokens = [not_abbrev] if isinstance(not_abbrev, str) else list(not_abbrev)
             ref = self._resolve_draft_any(id)
-            self.store.add_abbrev_ignore(ref.id, tokens)
+            self.store.drafts.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
         # ``authoring`` is a draft-level op (paper-writing pipeline rung 3e,
         # the per-document auto-author toggle) — id is the slug (or any
@@ -1513,8 +1523,8 @@ class DraftHandler(Handler):
                     next=f"scaffold= one of {sorted(_SCAFFOLDS)}",
                 )
             ref = self._resolve_draft_any(id)
-            handles = self.store.scaffold_sections(ref.id, sections)
-            new_chunks = [self.store.get_draft_chunk(h) for h in handles]
+            handles = self.store.drafts.scaffold_sections(ref.id, sections)
+            new_chunks = [self.store.drafts.get_draft_chunk(h) for h in handles]
             self._attribute_touch([c.chunk_id for c in new_chunks if c is not None])
             if not handles:
                 return Response(body=f"{scaffold} scaffold is empty — nothing added")
@@ -1550,13 +1560,13 @@ class DraftHandler(Handler):
             # (draft_regex.DERIVED_KINDS).
             _sub_target = None
             if id is not None and _is_draft_chunk_addr(str(id).strip()):
-                _sub_target = self.store.get_draft_chunk(str(id).strip())
+                _sub_target = self.store.drafts.get_draft_chunk(str(id).strip())
             if _sub_target is None or _sub_target.chunk_kind != "table":
                 return self._substitute(id, sub, apply=bool(apply))
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
         # store mutators still key on; the agent-facing emit uses ``.dc``.
-        _base = self.store.get_draft_chunk(handle)
+        _base = self.store.drafts.get_draft_chunk(handle)
         if _base is None:
             raise NotFound(f"draft chunk {handle!r} not found")
         handle = _base.handle
@@ -1592,11 +1602,13 @@ class DraftHandler(Handler):
             # upserting a fresh approval — the edit-door twin of the web
             # reader's `POST /drafts/{ident}/review/retract`.
             if verdict == "retract":
-                existed = self.store.retract_review(_base.chunk_id, review)
+                existed = self.store.drafts.retract_review(_base.chunk_id, review)
                 if not existed:
                     return Response(body=f"no {review} review to retract on {_base.dc}")
                 return Response(body=f"retracted {review} review on {_base.dc}")
-            sha = self.store.record_review(_base.chunk_id, review, verdict=verdict)
+            sha = self.store.drafts.record_review(
+                _base.chunk_id, review, verdict=verdict
+            )
             return Response(
                 body=f"recorded {review} review on {_base.dc} @ {sha[:12]}… → {verdict}"
             )
@@ -1607,14 +1619,14 @@ class DraftHandler(Handler):
                     f"figure origin= must be one of {list(_FIGURE_ORIGINS)}",
                     next="origin='original' | 'own_graph' | 'third_party'",
                 )
-            c = self.store.set_figure_provenance(
+            c = self.store.drafts.set_figure_provenance(
                 handle, permission=permission, origin=origin
             )
             return Response(body=f"updated figure provenance {(c or _base).dc}")
         if style is not None:
             # Set/clear the heading's section style. Metadata-only
             # (meta.style = a skill slug) — no re-embed.
-            c = self.store.set_chunk_style(handle, style or None)
+            c = self.store.drafts.set_chunk_style(handle, style or None)
             dc = (c or _base).dc
             if style:
                 return Response(body=f"styled {dc} → {style}")
@@ -1623,7 +1635,7 @@ class DraftHandler(Handler):
             # Switch a ulist/olist container's kind, or dissolve it to normal
             # text (migration 0037). Structural — no text touched.
             dc = _base.dc
-            self.store.set_list_kind(handle, list_kind)
+            self.store.drafts.set_list_kind(handle, list_kind)
             if list_kind == "normal":
                 return Response(body=f"dissolved list {dc} → normal text")
             return Response(body=f"set list {dc} → {list_kind}")
@@ -1640,20 +1652,20 @@ class DraftHandler(Handler):
                     str(exc),
                     next="voices: get(kind='skill', id='precis-audio-help')",
                 ) from exc
-            self.store.patch_chunk_meta(handle, {"voice": _v, "lang": _lg})
+            self.store.drafts.patch_chunk_meta(handle, {"voice": _v, "lang": _lg})
             return Response(body=f"set narration on {_base.dc}: voice={_v} lang={_lg}")
         if meta is not None:
             # Patch a registry ``term`` leaf's attribute bag / hover surfaces
             # in place: manufacturer / mpn / url / ordering, and the
             # short / surface_forms surfaces. Metadata-only — no re-embed.
             _reject_dry_run("meta")
-            c = self.store.set_term_attrs(handle, meta)
+            c = self.store.drafts.set_term_attrs(handle, meta)
             return Response(body=f"updated term attributes {c.dc}" if c else "updated")
         if word_target is not None:
             # Set/clear a heading section's word limit (proposal writing).
             # ``word_target={'min':200,'max':400}`` sets it; ``{}`` clears.
             target = _coerce_word_target(word_target)
-            c = self.store.set_word_target(handle, target)
+            c = self.store.drafts.set_word_target(handle, target)
             dc = (c or _base).dc
             if target:
                 lo, hi = target
@@ -1665,7 +1677,7 @@ class DraftHandler(Handler):
                 )
             return Response(body=f"cleared word target on {dc}")
         if move is not None:
-            c = self.store.move_chunk(handle, move)
+            c = self.store.drafts.move_chunk(handle, move)
             if c is not None:
                 self._attribute_touch([c.chunk_id])
             return Response(body=f"moved {(c or _base).dc}")
@@ -1713,7 +1725,7 @@ class DraftHandler(Handler):
                         "text='')  # delete the span"
                     ),
                 )
-            prior = self.store.get_draft_chunk(str(handle).lstrip("¶"))
+            prior = self.store.drafts.get_draft_chunk(str(handle).lstrip("¶"))
             old_text = prior.text if prior else ""
             if find not in old_text:
                 raise NotFound(
@@ -1732,7 +1744,9 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, new_text, mode=dry_mode, note=note
                 )
-            c = self.store.edit_text(handle, new_text, base_sha=base_sha, source=source)
+            c = self.store.drafts.edit_text(
+                handle, new_text, base_sha=base_sha, source=source
+            )
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:
                 if occurrences > 1:
@@ -1753,13 +1767,13 @@ class DraftHandler(Handler):
             # Capture the prior text *before* the rewrite so the abbrev
             # hints fire only on what this edit introduced (not on
             # acronyms already living in the chunk — the MOF re-nag).
-            prior = self.store.get_draft_chunk(str(handle).lstrip("¶"))
+            prior = self.store.drafts.get_draft_chunk(str(handle).lstrip("¶"))
             old_text = prior.text if prior else ""
             if dry_mode is not None:
                 return self._render_draft_dry_run(
                     _base.dc, old_text, str(text), mode=dry_mode
                 )
-            c = self.store.edit_text(
+            c = self.store.drafts.edit_text(
                 handle, str(text), base_sha=base_sha, source=source
             )
             body = f"edited {c.dc}" if c else "edited"
@@ -1795,10 +1809,10 @@ class DraftHandler(Handler):
         **_kw: Any,
     ) -> Response:
         handle = self._require_chunk_id(id, verb="delete")
-        chunk = self.store.get_draft_chunk(handle)
+        chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
             raise NotFound(f"draft chunk {handle!r} not found")
-        self.store.retire_chunk(chunk.handle, mode=mode)
+        self.store.drafts.retire_chunk(chunk.handle, mode=mode)
         self._sync_draft_links(chunk.ref_id)
         return Response(body=f"retired {chunk.dc}")
 
@@ -1824,11 +1838,11 @@ class DraftHandler(Handler):
         old_acr = _acr(old_text)
         undefined = [
             a
-            for a in self.store.undefined_abbrevs(ref_id, new_text)
+            for a in self.store.drafts.undefined_abbrevs(ref_id, new_text)
             if a not in old_acr
         ]
         old_pairs = _find(old_text)
-        terms = self.store.draft_term_shorts(ref_id)
+        terms = self.store.drafts.draft_term_shorts(ref_id)
         promote = {
             short: long
             for short, long in _find(new_text).items()
@@ -2011,7 +2025,7 @@ class DraftHandler(Handler):
         in it). Used by the draft-level ``not_abbrev`` op."""
         s = str(id or "").strip()
         if _is_draft_chunk_addr(s):
-            chunk = self.store.get_draft_chunk(s)
+            chunk = self.store.drafts.get_draft_chunk(s)
             if chunk is None:
                 raise NotFound(f"draft chunk {s} not found")
             ref = self.store.get_ref(kind="draft", id=int(chunk.ref_id))
@@ -2060,8 +2074,8 @@ class DraftHandler(Handler):
         from precis.utils import draft_markup
 
         try:
-            chunks = self.store.reading_order(ref_id)
-            ord_by_chunk = self.store.chunk_ord_map(ref_id)
+            chunks = self.store.drafts.reading_order(ref_id)
+            ord_by_chunk = self.store.drafts.chunk_ord_map(ref_id)
             # Resolve per chunk so the source draft chunk (its ord) is
             # preserved. (src_ord, dst_ref_id, dst_pos) → desired relation.
             resolved: list[tuple[int | None, Any]] = []
@@ -2165,7 +2179,7 @@ class DraftHandler(Handler):
             chunk_meta["caption"] = cap
         if regen is not None:
             chunk_meta["regen"] = regen
-        chunks = self.store.add_chunks(
+        chunks = self.store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="table",
             text=md,
@@ -2242,7 +2256,7 @@ class DraftHandler(Handler):
                 next=f"edit(kind='draft', id={chunk.dc!r}, {_selectors[0]}=…)  "
                 "# one selector at a time",
             )
-        cur = self.store.draft_chunk_meta(handle)
+        cur = self.store.drafts.draft_chunk_meta(handle)
         cur_table = cur.get("table")
         no_data_err = BadInput(
             "this table chunk has no stored data — pass table={header, rows}",
@@ -2323,7 +2337,7 @@ class DraftHandler(Handler):
             patch["caption"] = cap or ""
         if regen is not None:
             patch["regen"] = regen
-        c = self.store.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
+        c = self.store.drafts.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self._sync_draft_links(c.ref_id)
@@ -2384,12 +2398,12 @@ class DraftHandler(Handler):
         )
 
     def _render_outline(self, slug: str, ref: Any) -> Response:
-        chunks = self.store.reading_order(ref.id)
+        chunks = self.store.drafts.reading_order(ref.id)
         # Per-block gloss preference: the llm-v1 summary, else the keyword
         # set, else the truncated first line. Lets the outline read as
         # *meaning* once the summarize/keyword workers have run, degrading
         # to the raw-text peek for blocks they haven't reached yet.
-        views = self.store.block_views(ref.id)
+        views = self.store.drafts.block_views(ref.id)
         n = len(chunks)
         lines = [f"# {ref.title}  ({slug}) — {n} chunk{'' if n == 1 else 's'}\n"]
         for c in chunks:
@@ -2438,7 +2452,7 @@ class DraftHandler(Handler):
         text = "\n\n".join(c.text for c in chunks if c.text)
         limit = 8 if elide else None
 
-        undefined = self.store.undefined_abbrevs(ref_id, text)
+        undefined = self.store.drafts.undefined_abbrevs(ref_id, text)
         if undefined:
             shown = ", ".join(undefined if limit is None else undefined[:limit])
             tail = (
@@ -2491,7 +2505,7 @@ class DraftHandler(Handler):
         complete, un-elided hygiene report (undefined abbreviations +
         whole-paper citations), and nothing else — no outline body, no
         WIP block, no pagination of unrelated content."""
-        chunks = self.store.reading_order(ref.id)
+        chunks = self.store.drafts.reading_order(ref.id)
         lines = self._hygiene_lines(ref.id, chunks, elide=False)
         header = f"# {ref.title}  ({slug}) — hygiene report"
         if not lines:
@@ -2543,7 +2557,7 @@ class DraftHandler(Handler):
         failed enrichment job parks the parent silently and never
         registers when you look at the draft itself."""
         try:
-            items = self.store.draft_attached_work(ref_id)
+            items = self.store.drafts.draft_attached_work(ref_id)
         except Exception:
             log.warning(
                 "draft: attached-work walk failed for %s", ref_id, exc_info=True
@@ -2569,7 +2583,7 @@ class DraftHandler(Handler):
         # (sibling step), ``-lo..hi`` (signed sibling span — the reading
         # window). Resolved against the draft tree; supersedes the legacy
         # ``-B+A`` reading-order window.
-        rel = self.store.draft_relative_chunk_ids(addr)
+        rel = self.store.drafts.draft_relative_chunk_ids(addr)
         if rel is not None:
             if not rel:
                 raise NotFound(
@@ -2579,7 +2593,7 @@ class DraftHandler(Handler):
             window = [
                 c
                 for cid in rel
-                if (c := self.store.get_draft_chunk(f"dc{cid}")) is not None
+                if (c := self.store.drafts.get_draft_chunk(f"dc{cid}")) is not None
             ]
         else:
             m = _CHUNK_ADDR.match(addr)
@@ -2590,7 +2604,7 @@ class DraftHandler(Handler):
                 )
             # ``get_draft_chunk`` accepts ``dc<id>`` and legacy ``¶<base58>``.
             core = ("dc" + m.group("cid")) if m.group("cid") else m.group("h")
-            chunk = self.store.get_draft_chunk(core)
+            chunk = self.store.drafts.get_draft_chunk(core)
             if chunk is None:
                 raise NotFound(f"draft chunk {addr!r} not found")
             window = [chunk]
@@ -2784,13 +2798,13 @@ class DraftHandler(Handler):
         heading (`view='toc'` at any hierarchy level). Computed §-numbers,
         with each heading's gist/keywords when a worker has produced them."""
         if root_handle is not None:
-            chunk = self.store.get_draft_chunk(root_handle)
+            chunk = self.store.drafts.get_draft_chunk(root_handle)
             if chunk is None:
                 raise NotFound(f"draft heading {root_handle} not found")
-            entries = self.store.draft_toc(chunk.ref_id, root_handle=root_handle)
+            entries = self.store.drafts.draft_toc(chunk.ref_id, root_handle=root_handle)
             header = f"# TOC under {chunk.dc}: {chunk.text}"
         else:
-            entries = self.store.draft_toc(ref.id)
+            entries = self.store.drafts.draft_toc(ref.id)
             header = f"# {ref.title} — table of contents"
         if not entries:
             return Response(body=f"{header}\n\n(no sub-headings yet)")
@@ -2829,7 +2843,7 @@ class DraftHandler(Handler):
 
         root = None
         if root_handle is not None:
-            root = self.store.get_draft_chunk(root_handle)
+            root = self.store.drafts.get_draft_chunk(root_handle)
             if root is None:
                 raise NotFound(f"draft heading {root_handle} not found")
             if root.chunk_kind != "heading":
@@ -2844,7 +2858,7 @@ class DraftHandler(Handler):
             ref_id = ref.id
             header = f"# {ref.title} — word counts"
 
-        chunks = self.store.reading_order(ref_id)
+        chunks = self.store.drafts.reading_order(ref_id)
         # Scope to the heading's DFS subtree when a root is given: the
         # contiguous run after the root whose depth exceeds the root's,
         # plus the root itself (standard DFS subtree property).

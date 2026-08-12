@@ -404,6 +404,14 @@ class FakeStore(_FakeStoreBase):
             ],
         }
 
+    @property
+    def drafts(self) -> FakeStore:
+        # Real Store composes a DraftStore sub-store (store.drafts); this
+        # fake keeps its draft methods flat on self, so self-as-sub-store
+        # satisfies ``store.drafts.<method>(...)`` call sites migrated off
+        # the transitional facade (see codereview-store-decomposition).
+        return self
+
     def _for_kind(self, kind: str | None) -> list[Any]:
         pools = {
             "todo": self.todos,

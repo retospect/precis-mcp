@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -37,6 +37,9 @@ from precis.figure.svg import DEFAULT_VIEWBOX, default_svg, lint_svg, sanitize_s
 from precis.figure.turn import run_turn
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis_web.deps import get_store, templates
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["figure"])
 
@@ -57,13 +60,13 @@ def _viewbox(ref: Any, svg: str) -> tuple[float, float, float, float]:
     return read_viewbox(svg) or DEFAULT_VIEWBOX
 
 
-def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
+def _docs(store: Store, ref_id: int) -> tuple[str, str, str, list[str]]:
     """Return ``(svg_source, vocab, notes, turn_texts)`` for a figure ref."""
     svg = ""
     vocab = ""
     notes = ""
     turns: list[str] = []
-    for c in store.reading_order(ref_id, kind="figure"):
+    for c in store.drafts.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node" and not svg:
             svg = c.text
         elif c.chunk_kind == "figure_vocab" and not vocab:
@@ -75,12 +78,12 @@ def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
     return svg or default_svg(), vocab, notes, turns
 
 
-def _bindings(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _bindings(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """Element→chunk bindings of a figure's source node, for the
     chips row. Empty when the figure has no source yet or nothing is bound."""
-    for c in store.reading_order(ref_id, kind="figure"):
+    for c in store.drafts.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node":
-            return store.element_bindings(c.chunk_id)
+            return store.drafts.element_bindings(c.chunk_id)
     return []
 
 

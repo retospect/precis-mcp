@@ -25,7 +25,13 @@ parity, mixin guard rescoped to the remaining 21 mixins.
 REMAINING (one domain per ship):
 - Migrate draft call sites to `store.drafts.*`, deleting each
   delegation when its callers are gone (interleave with the
-  [codereview-store-typing-seam] long tail — same files).
+  [codereview-store-typing-seam] long tail — same files). Batch 1
+  SHIPPED: handlers (draft/plan/_review_view) + all of precis_web
+  (~148 sites); test fakes now carry a one-line `drafts`
+  self-property (the pattern for any fake a migrated path receives).
+  Remaining src callers: quest/, diagram/, workers/, draftimport/,
+  utils/, export/ (~90 sites — grep the facade names); then the ~780
+  test call sites; then delete the delegations.
 - Next carves, same pattern: refs (`_refs_ops`, 108KB) and blocks
   (`_blocks_ops`, 110KB) are the big ones; then tags/links/cache/…
   Measure each mixin's outbound `self.*` cross-domain calls first (the

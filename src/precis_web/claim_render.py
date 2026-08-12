@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from markupsafe import Markup
 
@@ -51,6 +51,9 @@ from precis.utils.table_data import parse_markdown_table
 from precis_web.linkify import render_markdown
 from precis_web.paper_ident import paper_head, paper_head_from_facts
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 #: A hub-cite head in prose: a ``[fi<id>]`` finding handle or a 6-char
 #: ``[<pub_id>]``, optionally pinned (`>`/`+` + handle list — ignored for
 #: head extraction). Group 1 is the head. Kept in step with
@@ -63,7 +66,7 @@ _CITE_HEAD_RE = re.compile(
 _FI_HEAD_RE = re.compile(r"^fi[0-9]+$")
 
 
-def _resolve_head_ref_id(store: Any, head: str) -> int | None:
+def _resolve_head_ref_id(store: Store, head: str) -> int | None:
     """A cite head (``fi<id>`` handle or 6-char pub_id) → its finding ref_id,
     or ``None``. An ``fi`` head resolves via the handle registry (following
     a merged-record redirect); anything else is a pub_id lookup."""
@@ -79,7 +82,7 @@ def _resolve_head_ref_id(store: Any, head: str) -> int | None:
     return lookup["ref_id"] if lookup is not None else None
 
 
-def resolve_head_ref_id(store: Any, head: str) -> int | None:
+def resolve_head_ref_id(store: Store, head: str) -> int | None:
     """Public alias for :func:`_resolve_head_ref_id` — the canonical
     cite-head → finding ref_id resolver. Exposed (rather than making the
     caller reach for the underscore name) so the smartdraft claim-trust
@@ -105,7 +108,7 @@ def cite_heads_in(text: str) -> list[str]:
     return out
 
 
-def hub_cite_heads(store: Any, texts: Iterable[str]) -> frozenset[str]:
+def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
     """The cite heads in ``texts`` that resolve to a live ``TAPROOT:claim``
     hub — the ``claims`` side-channel a reader threads into
     :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
@@ -349,7 +352,7 @@ def _render_quote(text: str) -> tuple[Markup, bool]:
 
 
 def _grounding_chunks(
-    store: Any,
+    store: Store,
     rows: Iterable[tuple[dict[str, Any], str]],
     *,
     chunk_cache: dict[str, dict[str, Any]] | None = None,
@@ -386,7 +389,7 @@ def _grounding_chunks(
                 chunk = (
                     chunk_cache.get(handle)
                     if chunk_cache is not None
-                    else store.universal_chunk(handle)
+                    else store.drafts.universal_chunk(handle)
                 )
             else:
                 chunk = None
@@ -431,7 +434,7 @@ def _source_handles(evidence: HubEvidence) -> set[str]:
 
 
 def _render_one(
-    store: Any,
+    store: Store,
     head: str,
     ref_id: int,
     evidence: HubEvidence,
@@ -598,7 +601,7 @@ def _citation_miss_rows(hub_ref: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
+def render_claim_evidence(store: Store, head: str) -> dict[str, Any] | None:
     """Resolve a cite head to its claim hub + derived evidence, shaped for the
     web. Returns ``None`` when ``head`` doesn't resolve to a live
     ``TAPROOT:claim`` hub (an ordinary finding, a bare paper cite, or prose
@@ -618,7 +621,7 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     evidence = derive_evidence(store, ref_id, assume_hub=True)
     supporter_ids = _supporter_ref_ids(evidence)
     cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
-    chunk_cache = store.universal_chunks(_source_handles(evidence))
+    chunk_cache = store.drafts.universal_chunks(_source_handles(evidence))
     hub_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     # Supporter paper rows do double duty: enrich the identity header (venue +
     # authors) and carry the per-row unacquirable marks — and spare
@@ -639,7 +642,7 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     )
 
 
-def claim_full_sentence(store: Any, hub_ref_id: int) -> str | None:
+def claim_full_sentence(store: Store, hub_ref_id: int) -> str | None:
     """The hub's *full* claim sentence — its ``finding_body`` chunk at
     ``ord=0`` (:func:`~precis.taproot.hub.mint_hub` writes the whole sentence
     there; ``refs.title`` is only its ``[:200]`` truncation, which shears a
@@ -652,13 +655,13 @@ def claim_full_sentence(store: Any, hub_ref_id: int) -> str | None:
     :func:`claim_citers`: the compact popover and the smartdraft Claims rail
     keep the short title, and threading a per-hub body-chunk fetch through the
     bulk path would re-add a round trip batch B removed."""
-    text = store.chunk_text_at(hub_ref_id, 0)
+    text = store.drafts.chunk_text_at(hub_ref_id, 0)
     if not text or not text.strip():
         return None
     return " ".join(text.split())
 
 
-def claim_citers(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
+def claim_citers(store: Store, hub_ref_id: int) -> list[dict[str, Any]]:
     """The "Used by" rows for a claim hub — its inbound ``cites`` edges (who
     invokes this claim), shaped for the template.
 
@@ -673,7 +676,7 @@ def claim_citers(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
     return [_citer_row(e) for e in hub_citers(store, hub_ref_id)]
 
 
-def render_claims_evidence(store: Any, heads: Iterable[str]) -> list[dict[str, Any]]:
+def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str, Any]]:
     """Plural twin of :func:`render_claim_evidence` — resolve MANY cite
     heads' claim-hub evidence in a handful of bulk queries, regardless of
     how many distinct hubs are involved, instead of the ~16 round trips
@@ -713,7 +716,7 @@ def render_claims_evidence(store: Any, heads: Iterable[str]) -> list[dict[str, A
         supporter_ids |= _supporter_ref_ids(ev)
         source_handles |= _source_handles(ev)
     cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
-    chunk_cache = store.universal_chunks(source_handles)
+    chunk_cache = store.drafts.universal_chunks(source_handles)
     hub_refs = store.fetch_refs_by_ids(hub_ref_ids)
     # Supporter-paper refs for the hub-clean unacquirable-override check, batched
     # once (mirrors cite_key_map) so claim_trust never re-fetches per hub.

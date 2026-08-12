@@ -17,7 +17,7 @@ around the focus and lazily hydrates distant chunks on scroll.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -43,6 +43,9 @@ from precis_web.routes.drafts import (
     _owner_workspace,
     _review_status_by_chunk,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["smartdraft"])
 
@@ -210,7 +213,7 @@ async def reader(
     # never baked into the cached ChunkNodes, since a review action changes
     # the ledger without minting a new chunk_id (would go stale).
     review_status = _review_status_by_chunk(store, ref.id)
-    rollup = store.review_rollup_for_draft(ref.id)
+    rollup = store.drafts.review_rollup_for_draft(ref.id)
 
     # Per-block indicator payloads (item 6) — scoped to what's actually
     # RENDERED (the middle pane), not the whole draft, so the citation-
@@ -273,7 +276,7 @@ async def reader(
             "cur_doctype": str(owner_ws.get("doc_type") or ""),
             "cur_brief": str(owner_ws.get("brief") or ""),
             "cur_voice": str(owner_ws.get("voice") or ""),
-            "authoring_enabled": store.draft_authoring_enabled(ref.id),
+            "authoring_enabled": store.drafts.draft_authoring_enabled(ref.id),
             "focus_review": focus_review,
             # ── Review status (indicator + rollup) ──
             "review_by_dc": review_by_dc,
@@ -336,7 +339,7 @@ async def blocks(
 
 
 def _hub_and_citation_stats(
-    request: Request, store: Any, nodes: list[Any]
+    request: Request, store: Store, nodes: list[Any]
 ) -> dict[str, Any]:
     """Item 5(a)'s rollup-dropdown numbers — the taproot hub-coverage
     scoreboard (``DraftHandler._taproot_hub_scoreboard``, the SAME
@@ -375,7 +378,7 @@ def _hub_and_citation_stats(
     return {"hub_grounded": grounded, "hub_total": total, "lifecycle": lifecycle}
 
 
-def _document_shape_stats(store: Any, ref_id: int) -> dict[str, Any]:
+def _document_shape_stats(store: Store, ref_id: int) -> dict[str, Any]:
     """Item 10's deterministic half, for the toolbar rollup dropdown:
     per-section word-count balance, reusing ``aggregate_word_counts`` — the
     SAME computation ``view='wordcount'`` renders, not reimplemented.
@@ -390,7 +393,7 @@ def _document_shape_stats(store: Any, ref_id: int) -> dict[str, Any]:
     from precis.utils.wordcount import aggregate_word_counts
 
     try:
-        chunks = store.reading_order(ref_id)
+        chunks = store.drafts.reading_order(ref_id)
         report = aggregate_word_counts(chunks)
     except Exception:
         return {
@@ -616,7 +619,7 @@ def _doc_meta(ref: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _ref_tag_labels(store: Any, ref_id: int) -> list[str]:
+def _ref_tag_labels(store: Store, ref_id: int) -> list[str]:
     """Ref-level tags as ``ns:value`` labels (bare value in the default
     namespace). Empty for every draft today — nothing tags them — so the
     panel's tag row renders only when something starts to."""
@@ -634,7 +637,7 @@ def _ref_connection_groups(store: Any, ref_id: int) -> list[dict[str, Any]]:
     coincidence of what the briefing cast happens to write, not to a property
     of drafts. Bounding height in CSS holds at any N without discarding."""
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for conn in store.ref_connections(ref_id):
+    for conn in store.drafts.ref_connections(ref_id):
         groups.setdefault((conn["relation"], conn["direction"]), []).append(conn)
     out: list[dict[str, Any]] = []
     for (relation, direction), conns in groups.items():
@@ -652,7 +655,7 @@ def _ref_connection_groups(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return out
 
 
-def _chunk_tags(store: Any, chunk_id: int) -> list[str]:
+def _chunk_tags(store: Store, chunk_id: int) -> list[str]:
     """The tag values on one chunk (for the write path's echo-back)."""
     try:
         with store.pool.connection() as conn:

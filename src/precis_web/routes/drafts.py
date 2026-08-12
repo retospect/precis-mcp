@@ -74,7 +74,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -136,6 +136,9 @@ from precis_web.deps import (
 from precis_web.linkify import popover_chip
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 router = APIRouter(tags=["drafts"])
 
 log = logging.getLogger(__name__)
@@ -152,7 +155,7 @@ _ABBREV_CACHE: OrderedDict[tuple[int, int], dict[str, Any]] = OrderedDict()
 _ABBREV_CACHE_MAX = 64
 
 
-def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, Any]:
+def _abbrevs_cached(store: Store, ref_id: int, version: int) -> dict[str, Any]:
     """Whole-draft term/abbreviation map (rich records), memoised
     per (draft, version) so the per-row hydrate path doesn't re-scan the whole
     draft each time. Falls back to the plain ``{short: str}`` map for a store
@@ -181,13 +184,13 @@ _RO_CACHE: OrderedDict[tuple[int, int], list[Any]] = OrderedDict()
 _RO_CACHE_MAX = 16
 
 
-def _reading_order_cached(store: Any, ref_id: int, version: int) -> list[Any]:
+def _reading_order_cached(store: Store, ref_id: int, version: int) -> list[Any]:
     key = (ref_id, version)
     hit = _RO_CACHE.get(key)
     if hit is not None:
         _RO_CACHE.move_to_end(key)
         return hit
-    val = store.reading_order(ref_id)
+    val = store.drafts.reading_order(ref_id)
     _RO_CACHE[key] = val
     _RO_CACHE.move_to_end(key)
     while len(_RO_CACHE) > _RO_CACHE_MAX:
@@ -195,7 +198,7 @@ def _reading_order_cached(store: Any, ref_id: int, version: int) -> list[Any]:
     return val
 
 
-def _doc_state(store: Any, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
+def _doc_state(store: Store, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
     """The whole-draft inputs every render path shares — reading order,
     version token, abbreviations — each memoised per (ref, version) so a
     big draft pays for them once, not once per hydrated block."""
@@ -205,7 +208,7 @@ def _doc_state(store: Any, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
     return chunk_objs, version, abbrevs
 
 
-def _draft_ref(store: Any, ident: str) -> Any:
+def _draft_ref(store: Store, ident: str) -> Any:
     """Resolve a draft by slug or numeric ref_id (``get_ref`` handles
     both). Returns the live ``Ref`` or ``None``."""
     key: int | str = int(ident) if ident.lstrip("#").isdigit() else ident
@@ -214,7 +217,7 @@ def _draft_ref(store: Any, ident: str) -> Any:
     return store.get_ref(kind="draft", id=key)
 
 
-def _project_id(store: Any, ref_id: int) -> int | None:
+def _project_id(store: Store, ref_id: int) -> int | None:
     """The draft's owning *live* project todo (the ``draft-of`` target).
 
     Skips a soft-deleted target: ``links_for`` doesn't filter on the
@@ -229,7 +232,7 @@ def _project_id(store: Any, ref_id: int) -> int | None:
     return None
 
 
-def _job_parent(store: Any, ref: Any) -> int:
+def _job_parent(store: Store, ref: Any) -> int:
     """The ref a draft-scoped job (export / reMarkable send) should anchor
     under: the owning project todo when linked, else the draft ref itself.
 
@@ -439,14 +442,14 @@ _REQUEST_ORDER = {"open": 0, "scheduled": 1, "doing": 2, "paused": 3}
 
 
 def _requests_by_handle(
-    store: Any, handles: list[str]
+    store: Store, handles: list[str]
 ) -> dict[str, list[dict[str, Any]]]:
     """ALL change-request todos anchored at each chunk, grouped by handle —
     the per-block change-request cards. Thin wrapper over
     :meth:`Store.anchored_todos` (moved there so
     :func:`precis_web.draft_links.chunk_links`'s ``flags`` reads the SAME
     query, not a second copy — gripe 178766)."""
-    return store.anchored_todos(handles)
+    return store.drafts.anchored_todos(handles)
 
 
 def _list_markers(
@@ -541,7 +544,7 @@ _EDITABLE_KINDS = frozenset(
 _MERGE_KINDS = frozenset({"paragraph", "item", "aside", "box", "callout"})
 
 
-def _review_status_by_chunk(store: Any, ref_id: int) -> dict[int, dict[str, Any]]:
+def _review_status_by_chunk(store: Store, ref_id: int) -> dict[int, dict[str, Any]]:
     """Whole-draft human/checker review-ledger status (migration 0086),
     indexed by ``chunk_id``: ``{chunk_id: {checker: {approved_sha, verdict,
     at, dirty}, ...}}``. One call to ``Store.review_status_for_draft`` per
@@ -572,7 +575,7 @@ def _review_status_by_chunk(store: Any, ref_id: int) -> dict[int, dict[str, Any]
     because this map can be serialized (``tojson`` / ``JSONResponse``) — a
     raw ``datetime`` would 500 the page."""
     out: dict[int, dict[str, Any]] = {}
-    for row in store.review_status_for_draft(ref_id):
+    for row in store.drafts.review_status_for_draft(ref_id):
         entry = out.setdefault(
             row["chunk_id"],
             {
@@ -614,14 +617,14 @@ def _review_json(status: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def _rollup_json(store: Any, ref_id: int) -> dict[str, int]:
+def _rollup_json(store: Store, ref_id: int) -> dict[str, int]:
     """``{"done": N, "total": M}`` — the toolbar rollup badge data (item 8),
     a thin JSON wrapper over ``Store.review_rollup_for_draft`` (prose-only
     denominator; ``done`` = approved by ``human`` at the current sha).
     Attached to every ledger-mutating JSON response (``/human-review``,
     ``/review/retract``) so the client can refresh the toolbar badge without
     a full page reload."""
-    return store.review_rollup_for_draft(ref_id)
+    return store.drafts.review_rollup_for_draft(ref_id)
 
 
 def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
@@ -683,13 +686,13 @@ def _draft_author_lines(ref: Any) -> str:
     return "\n".join(lines)
 
 
-def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _work_items(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """Stuck / in-flight work on this draft for the detail panel (Fix A):
     blocked-or-in-flight open todos walked draft→project→subtree. Mirrors
     the MCP outline's "Work in progress" block so a failed enrichment job
     is visible from the draft in the browser too."""
     try:
-        items = store.draft_attached_work(ref_id)
+        items = store.drafts.draft_attached_work(ref_id)
     except Exception:  # pragma: no cover - defensive, never fail the page
         log.warning("drafts: attached-work walk failed for %s", ref_id, exc_info=True)
         return []
@@ -703,7 +706,7 @@ def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
         asks = [
             {
                 "tag": t,
-                "question": store.resolve_ask_question(
+                "question": store.drafts.resolve_ask_question(
                     it.todo_id, t[len("ask-user:") :]
                 )
                 if t.startswith("ask-user:")
@@ -717,7 +720,7 @@ def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
             {
                 "id": jid,
                 "status": st,
-                "reason": store.job_fail_reason(jid) if st == "failed" else None,
+                "reason": store.drafts.job_fail_reason(jid) if st == "failed" else None,
             }
             for jid, st in it.jobs
         ]
@@ -739,7 +742,7 @@ def _work_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
 #: ``_DOC_TYPES`` / ``_DOC_TYPE_BRIEF`` / ``_SECTION_STYLES`` / ``_SCAFFOLDS``).
 
 
-def _owner_workspace(store: Any, ref: Any) -> tuple[int, dict[str, Any]]:
+def _owner_workspace(store: Store, ref: Any) -> tuple[int, dict[str, Any]]:
     """The ``(ref_id, meta.workspace)`` that owns this draft's genre/brief:
     the owning project todo if linked, else the draft itself. Returns an
     empty workspace dict when unset or unreadable (defensive — a stub store
@@ -757,14 +760,14 @@ def _owner_workspace(store: Any, ref: Any) -> tuple[int, dict[str, Any]]:
         return rid, {}
 
 
-def _doc_type(store: Any, ref: Any) -> str:
+def _doc_type(store: Store, ref: Any) -> str:
     """The draft's ``doc_type`` (genre), read from the owning project's
     ``meta.workspace`` (falling back to the draft's own meta). ``""`` when
     unset."""
     return str(_owner_workspace(store, ref)[1].get("doc_type") or "")
 
 
-def _workspace_targets(store: Any, ref: Any) -> list[int]:
+def _workspace_targets(store: Store, ref: Any) -> list[int]:
     """Refs whose ``meta.workspace`` should carry the genre/brief: the draft
     AND its owning project todo (if any). Writing both keeps ``_doc_type``
     (reads the project), the planner-prompt brief cascade (the project), and
@@ -776,13 +779,13 @@ def _workspace_targets(store: Any, ref: Any) -> list[int]:
     return targets
 
 
-def _section_styles_for(store: Any, ref: Any) -> list[tuple[str, str]]:
+def _section_styles_for(store: Store, ref: Any) -> list[tuple[str, str]]:
     """The section styles to offer for this draft's genre (empty → no
     dropdown)."""
     return _SECTION_STYLES.get(_doc_type(store, ref), [])
 
 
-def _chunk_addr(store: Any, handle: str) -> str | None:
+def _chunk_addr(store: Store, handle: str) -> str | None:
     """Canonical ``dc<chunk_id>`` address for a posted draft-chunk handle.
 
     The reader posts the bare ``chunks.handle`` (the draft editable-document model base-58
@@ -792,7 +795,7 @@ def _chunk_addr(store: Any, handle: str) -> str | None:
     hand back the ``dc`` address so the per-heading style / list-kind
     forms reach the handler. ``None`` when the handle resolves to no
     chunk."""
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None:
         return None
     return handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
@@ -1033,7 +1036,7 @@ async def new_draft(
         draft_ref = store.get_ref(kind="draft", id=slug)
         if draft_ref is not None:
             try:
-                store.scaffold_sections(draft_ref.id, sections)
+                store.drafts.scaffold_sections(draft_ref.id, sections)
             except Exception:  # pragma: no cover - defensive
                 log.warning("drafts: scaffold failed for %s", slug, exc_info=True)
     return RedirectResponse(url=f"/drafts/{slug}", status_code=303)
@@ -1144,7 +1147,7 @@ def _retraction_blocked_response(request: Request, report: Any) -> Response:
     )
 
 
-def _safe_retraction_report(store: Any, ref: Any, **kw: Any) -> Any | None:
+def _safe_retraction_report(store: Store, ref: Any, **kw: Any) -> Any | None:
     """``draft_retraction_report`` wrapped defensively — a failure inside
     the walk must never take down the export it's gating or the reader
     the watch button lives on. Returns ``None`` on any exception; callers
@@ -1534,7 +1537,7 @@ async def delete_draft(
         # name mismatch — bounce back to the reader, nothing deleted.
         return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
     try:
-        store.soft_delete_draft(ref.id)
+        store.drafts.soft_delete_draft(ref.id)
     except Exception as exc:  # pragma: no cover - defensive
         return templates.TemplateResponse(
             request,
@@ -1566,7 +1569,7 @@ async def reader(ident: str) -> RedirectResponse:
     return RedirectResponse(url=f"/smartdraft/{ident}", status_code=307)
 
 
-def _draft_version(store: Any, ref_id: int) -> int:
+def _draft_version(store: Store, ref_id: int) -> int:
     """Monotone version token = max ``chunk_events.event_id`` over the
     draft's chunks. Bumps on every chunk create/edit/move/retire, so it
     doubles as the cache key for a compiled PDF."""
@@ -1696,7 +1699,7 @@ async def chunk_blob(request: Request, handle: str) -> Response:
     ``src`` the reader points at. 404 when the chunk carries no blob. The
     handle is globally unique, so no draft ident is needed."""
     store = get_store(request)
-    blob = store.get_chunk_blob(handle)
+    blob = store.drafts.get_chunk_blob(handle)
     if blob is None:
         return Response(status_code=404)
     data, mime = blob
@@ -1713,7 +1716,7 @@ def _is_dc(handle: str) -> bool:
     return bool(p and p[0] == "draft" and p[1])
 
 
-def _marks_view(store: Any, marks: dict[str, Any]) -> dict[str, Any]:
+def _marks_view(store: Store, marks: dict[str, Any]) -> dict[str, Any]:
     """A client-friendly render of the sticky set: ``pens`` (dc handles) + an
     ``eyes`` list carrying each eye's kind/title/is-draft-chunk so the tray can
     label a promoted ring target (``pa721 — Rigidity percolation``)."""
@@ -1816,8 +1819,12 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     body, is_error = await await_dispatch(request, "edit", args)
     if is_error:
         return JSONResponse({"ok": False, "error": body}, status_code=400)
-    chunk = store.get_draft_chunk(handle)
-    status = store.review_status_for_chunk(chunk.chunk_id) if chunk is not None else []
+    chunk = store.drafts.get_draft_chunk(handle)
+    status = (
+        store.drafts.review_status_for_chunk(chunk.chunk_id)
+        if chunk is not None
+        else []
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -1862,7 +1869,7 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     ) or (str(payload.get("anchor") or "").strip() or None)
     anchor = None
     if anchor_dc:
-        chunk = store.get_draft_chunk(anchor_dc, kind="draft")
+        chunk = store.drafts.get_draft_chunk(anchor_dc, kind="draft")
         anchor = chunk.handle if chunk is not None else None
     if not has_marks and not anchor:
         return JSONResponse(
@@ -1926,7 +1933,7 @@ async def edit_text_inline(
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     old_text = chunk.text or ""
@@ -2117,13 +2124,13 @@ async def add_block(
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    anchor = store.get_draft_chunk(after)
+    anchor = store.drafts.get_draft_chunk(after)
     if anchor is None or anchor.ref_id != ref.id:
         return JSONResponse(
             {"ok": False, "error": "anchor block not found"}, status_code=404
         )
     kind = chunk_kind if chunk_kind in _EDITABLE_KINDS else "paragraph"
-    chunks = store.add_chunks(
+    chunks = store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind=kind, text="", at={"after": f"¶{after}"}
     )
     new = chunks[0]
@@ -2146,7 +2153,7 @@ async def split_block(
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     # Splitting a heading/term yields a paragraph tail; a paragraph/item keeps
@@ -2170,12 +2177,12 @@ async def split_block(
     # handler gets a consistent, machine-readable 409 — any other BadInput
     # (a genuinely bad request) still surfaces via the global handler.
     try:
-        store.edit_text(handle, before, base_sha=content_sha(chunk.text or ""))
+        store.drafts.edit_text(handle, before, base_sha=content_sha(chunk.text or ""))
     except BadInput as exc:
         if "changed since you read" in str(exc):
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
         raise
-    new = store.add_chunks(
+    new = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind=tail_kind,
         text=after,
@@ -2206,10 +2213,10 @@ async def merge_prev_block(
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
-    order = store.reading_order(ref.id)
+    order = store.drafts.reading_order(ref.id)
     idx = next((i for i, c in enumerate(order) if c.handle == handle), None)
     if idx is None or idx == 0:
         return JSONResponse({"ok": True, "noop": True})
@@ -2228,11 +2235,13 @@ async def merge_prev_block(
     # Deferred to gr176088 Part 2 (structural-op locking / transactional draft
     # mutations), where retire+edit can be guarded as a unit.
     try:
-        store.retire_chunk(handle)  # childless prose; refuses (→ noop) if it has kids
+        store.drafts.retire_chunk(
+            handle
+        )  # childless prose; refuses (→ noop) if it has kids
     except BadInput:
         return JSONResponse({"ok": True, "noop": True})
     if text:
-        store.edit_text(prev.handle, (prev.text or "") + text)
+        store.drafts.edit_text(prev.handle, (prev.text or "") + text)
     handler = get_runtime(request).hub.handler_for("draft")
     handler._sync_draft_links(ref.id)
     return JSONResponse({"ok": True, "handle": prev.handle, "caret": caret})
@@ -2253,7 +2262,7 @@ async def delete_block(
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}"}
@@ -2323,7 +2332,7 @@ async def review_block(request: Request, ident: str) -> JSONResponse:
     dc = str(payload.get("dc") or "").strip()
     scope_chunk_id: int | None = None
     if dc:
-        chunk = store.get_draft_chunk(dc)
+        chunk = store.drafts.get_draft_chunk(dc)
         if chunk is None or chunk.ref_id != ref.id:
             return JSONResponse(
                 {"ok": False, "error": "block not found"}, status_code=404
@@ -2390,17 +2399,17 @@ async def retract_review_route(request: Request, ident: str) -> JSONResponse:
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     handle = str(payload.get("dc") or payload.get("handle") or "")
-    chunk = store.get_draft_chunk(handle) if handle else None
+    chunk = store.drafts.get_draft_chunk(handle) if handle else None
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     checker = str(payload.get("checker") or "human")
-    existed = store.retract_review(chunk.chunk_id, checker)
+    existed = store.drafts.retract_review(chunk.chunk_id, checker)
     if not existed:
         return JSONResponse(
             {"ok": False, "error": f"no {checker!r} review to retract on {handle}"},
             status_code=404,
         )
-    status = store.review_status_for_chunk(chunk.chunk_id)
+    status = store.drafts.review_status_for_chunk(chunk.chunk_id)
     return JSONResponse(
         {
             "ok": True,
@@ -2461,13 +2470,13 @@ async def convert_cites_route(request: Request, ident: str) -> JSONResponse:
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     dc = str(payload.get("dc") or "").strip()
-    chunk = store.get_draft_chunk(dc) if dc else None
+    chunk = store.drafts.get_draft_chunk(dc) if dc else None
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
     dry_run_raw = payload.get("dry_run")
     dry_run = True if dry_run_raw is None else bool(dry_run_raw)
     targets = (
-        store.review_subtree_chunk_ids(ref.id, chunk.chunk_id)
+        store.drafts.review_subtree_chunk_ids(ref.id, chunk.chunk_id)
         if chunk.chunk_kind == "heading"
         else [chunk.chunk_id]
     )
@@ -2682,7 +2691,9 @@ async def set_title(
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     try:
-        old, synced = store.set_draft_title(ref.id, title, source={"actor": "web-edit"})
+        old, synced = store.drafts.set_draft_title(
+            ref.id, title, source={"actor": "web-edit"}
+        )
     except BadInput as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     except NotFound as exc:
@@ -2822,12 +2833,12 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
     ref = _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url=back, status_code=303)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None or chunk.chunk_kind != "figure":
         return RedirectResponse(url=back, status_code=303)
 
     # Already drawn-with: jump straight into the existing canvas.
-    existing = store.figure_canvas_ref(chunk.chunk_id)
+    existing = store.drafts.figure_canvas_ref(chunk.chunk_id)
     if existing is not None:
         cref = store.get_ref(kind="figure", id=existing)
         if cref is not None and cref.slug:
@@ -2851,7 +2862,7 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
         return await redirect_or_error(
             request, "put", args, redirect=back, error_title="Create drawing error"
         )
-    store.link_figure_canvas(chunk.chunk_id, canvas.id)
+    store.drafts.link_figure_canvas(chunk.chunk_id, canvas.id)
     return RedirectResponse(url=f"/figure/{slug}", status_code=303)
 
 
@@ -2863,7 +2874,7 @@ async def goto_chunk(request: Request, handle: str) -> Response:
     redirects through the ``/r/<kind>/<id>`` resolver at that chunk (e.g. a
     paper → its PDF page). The click target of every ``¶``/``§`` anchor."""
     store = get_store(request)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is not None:
         ref = store.get_ref(kind="draft", id=int(chunk.ref_id))
         ident = ref.slug if ref and ref.slug else chunk.ref_id
@@ -2872,7 +2883,7 @@ async def goto_chunk(request: Request, handle: str) -> Response:
         return RedirectResponse(
             url=f"/smartdraft/{ident}?focus={chunk.dc}", status_code=303
         )
-    uc = store.universal_chunk(handle)
+    uc = store.drafts.universal_chunk(handle)
     if uc is not None:
         # paper chunks carry an ord the /r resolver maps to a PDF page;
         # other kinds just land on the record.
@@ -2905,11 +2916,11 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
     (``pc<id>`` paper, ``mc``/``lc``/…) so a paper-chunk citation hovers to
     its quote. A dangling handle degrades to a 'missing' card."""
     store = get_store(request)
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is not None:
         src_kind, text, ref_id = "draft", chunk.text, chunk.ref_id
     else:
-        uc = store.universal_chunk(handle)
+        uc = store.drafts.universal_chunk(handle)
         if uc is None:
             return templates.TemplateResponse(
                 request,

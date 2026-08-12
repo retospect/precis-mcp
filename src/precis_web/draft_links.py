@@ -15,11 +15,14 @@ neither re-derives the in/out split or re-queries anchored todos itself.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def chunk_links(
-    store: Any,
+    store: Store,
     ref_id: int,
     handle: str,
     *,
@@ -45,9 +48,9 @@ def chunk_links(
     lookup) and this fetches for just ``handle``.
     """
     if conns is None:
-        conns = store.chunk_connections(ref_id, [handle])
+        conns = store.drafts.chunk_connections(ref_id, [handle])
     if flags is None:
-        flags = store.anchored_todos([handle])
+        flags = store.drafts.anchored_todos([handle])
     rows = conns.get(handle, [])
     return {
         "links_out": [c for c in rows if c.get("direction") == "out"],

@@ -5131,6 +5131,13 @@ def test_ask_value_strips_prefix() -> None:
                 return "the real overflow question"
             return value
 
+        @property
+        def drafts(self) -> _Store:
+            # Real Store composes a DraftStore sub-store (store.drafts);
+            # this stand-in keeps its draft methods flat on self (see
+            # codereview-store-decomposition).
+            return self
+
     s = _Store()
     assert _ask_value(s, 1, "ask-user:hello") == "hello"
     assert _ask_value(s, 1, "ask-user") == ""
@@ -5272,6 +5279,13 @@ class _CtxStore:
         from types import SimpleNamespace
 
         return {5: SimpleNamespace(slug="my-draft", title="My Draft\nsubtitle")}
+
+    @property
+    def drafts(self) -> _CtxStore:
+        # Real Store composes a DraftStore sub-store (store.drafts); this
+        # stand-in keeps its draft methods flat on self (see
+        # codereview-store-decomposition).
+        return self
 
 
 def test_chunk_context_resolves_anchor_window() -> None:

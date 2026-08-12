@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -37,6 +37,9 @@ from precis.mermaid.mermaid import MERMAID_LANG, render_svg
 from precis.mermaid.turn import run_turn
 from precis_web.deps import get_store, templates
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 router = APIRouter(tags=["mermaid"])
 
 log = logging.getLogger(__name__)
@@ -44,11 +47,11 @@ log = logging.getLogger(__name__)
 _LIST_LIMIT = 100
 
 
-def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
+def _docs(store: Store, ref_id: int) -> tuple[str, str, str, list[str]]:
     """Return ``(source, vocab, notes, turn_texts)`` for a mermaid ref."""
     source = vocab = notes = ""
     turns: list[str] = []
-    for c in store.reading_order(ref_id, kind="mermaid"):
+    for c in store.drafts.reading_order(ref_id, kind="mermaid"):
         if c.chunk_kind == "mermaid_node" and not source:
             source = c.text
         elif c.chunk_kind == "mermaid_vocab" and not vocab:
@@ -60,10 +63,10 @@ def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
     return source, vocab, notes, turns
 
 
-def _bindings(store: Any, ref_id: int) -> list[dict[str, Any]]:
-    for c in store.reading_order(ref_id, kind="mermaid"):
+def _bindings(store: Store, ref_id: int) -> list[dict[str, Any]]:
+    for c in store.drafts.reading_order(ref_id, kind="mermaid"):
         if c.chunk_kind == "mermaid_node":
-            return store.element_bindings(c.chunk_id)
+            return store.drafts.element_bindings(c.chunk_id)
     return []
 
 

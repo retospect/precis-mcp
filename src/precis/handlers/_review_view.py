@@ -37,14 +37,14 @@ def _preview(text: str, n: int = 60) -> str:
 
 def render_review_view(store: Store, ref: Ref) -> Response:
     """Render ``view='review'`` for a whole draft."""
-    chunks = store.reading_order(ref.id)
+    chunks = store.drafts.reading_order(ref.id)
     header = f"# {ref.slug or ref.id} — review ledger"
     if not chunks:
         return Response(body=f"{header}\n\n(no chunks yet)")
 
     per_chunk: dict[int, dict[str, dict[str, Any]]] = {}
     checkers_seen: set[str] = {_HUMAN}
-    for row in store.review_status_for_draft(ref.id):
+    for row in store.drafts.review_status_for_draft(ref.id):
         if row["checker"] is None:  # never reviewed by anyone — no entry
             continue
         by_checker = per_chunk.setdefault(row["chunk_id"], {})
@@ -98,10 +98,10 @@ def render_review_view(store: Store, ref: Ref) -> Response:
 def render_review_diff_view(store: Store, addr: str) -> Response:
     """Render ``view='review-diff'`` for one chunk — the ``human``
     checker's approved→current diff."""
-    chunk = store.get_draft_chunk(addr)
+    chunk = store.drafts.get_draft_chunk(addr)
     if chunk is None:
         raise NotFound(f"draft chunk {addr!r} not found")
-    statuses = store.review_status_for_chunk(chunk.chunk_id)
+    statuses = store.drafts.review_status_for_chunk(chunk.chunk_id)
     human = next((s for s in statuses if s["checker"] == _HUMAN), None)
     header = f"# {chunk.dc} — review-diff (human)"
     if human is None:
@@ -110,7 +110,7 @@ def render_review_diff_view(store: Store, addr: str) -> Response:
             f"Next: edit(kind='draft', id='{chunk.dc}', review='human') to approve "
             "the current text."
         )
-    diff = store.review_diff_since(chunk.chunk_id, human["approved_sha"])
+    diff = store.drafts.review_diff_since(chunk.chunk_id, human["approved_sha"])
     if not diff:
         return Response(
             body=f"{header}\n\nno change since human approved "

@@ -33,7 +33,7 @@ again.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,6 +41,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from precis.utils import handle_registry
 from precis_web.deps import await_dispatch, get_store, redirect_or_error, templates
 from precis_web.linkify import popover_chip
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/asks", tags=["asks"])
 
@@ -94,7 +97,7 @@ def _qa_history(body: str) -> tuple[str, list[dict[str, str]]]:
     return parts[0].rstrip(), history
 
 
-def _crumb(store: Any, ref_id: int, *, max_depth: int = 8) -> list[dict[str, Any]]:
+def _crumb(store: Store, ref_id: int, *, max_depth: int = 8) -> list[dict[str, Any]]:
     """Ancestor chain of the ask's todo (root-first), for the breadcrumb.
 
     One recursive query up ``refs.parent_id`` — the project root lands
@@ -129,7 +132,7 @@ def _crumb(store: Any, ref_id: int, *, max_depth: int = 8) -> list[dict[str, Any
     ]
 
 
-def _project_draft(store: Any, ancestor_ids: list[int]) -> dict[str, str] | None:
+def _project_draft(store: Store, ancestor_ids: list[int]) -> dict[str, str] | None:
     """The draft bound ``draft-of`` to any ancestor of the ask's todo —
     the document an ask belongs to even when no specific chunk is named.
 
@@ -190,7 +193,7 @@ def _chunk_context(store: Any, *, anchor: str, prose: str) -> dict[str, Any] | N
         if handle in seen:
             continue
         seen.add(handle)
-        focus = store.get_draft_chunk(handle, kind=kind_i)
+        focus = store.drafts.get_draft_chunk(handle, kind=kind_i)
         if focus is not None:
             kind = kind_i
             break
@@ -199,13 +202,13 @@ def _chunk_context(store: Any, *, anchor: str, prose: str) -> dict[str, Any] | N
 
     # ±1 sibling window around the focus — the surrounding paragraphs.
     before = after = None
-    window = store.draft_relative_chunk_ids(f"{focus.dc}-1..1", kind=kind) or []
+    window = store.drafts.draft_relative_chunk_ids(f"{focus.dc}-1..1", kind=kind) or []
     idx = window.index(focus.chunk_id) if focus.chunk_id in window else -1
     code = "dc" if kind == "draft" else "pe"
     if idx > 0:
-        before = store.get_draft_chunk(f"{code}{window[idx - 1]}", kind=kind)
+        before = store.drafts.get_draft_chunk(f"{code}{window[idx - 1]}", kind=kind)
     if 0 <= idx < len(window) - 1:
-        after = store.get_draft_chunk(f"{code}{window[idx + 1]}", kind=kind)
+        after = store.drafts.get_draft_chunk(f"{code}{window[idx + 1]}", kind=kind)
 
     # Nearest ancestor heading — the § the passage sits under.
     section = ""
@@ -213,7 +216,7 @@ def _chunk_context(store: Any, *, anchor: str, prose: str) -> dict[str, Any] | N
     for _ in range(_HEADING_HOPS):
         if cur.parent_chunk_id is None:
             break
-        parent = store.get_draft_chunk(f"{code}{cur.parent_chunk_id}", kind=kind)
+        parent = store.drafts.get_draft_chunk(f"{code}{cur.parent_chunk_id}", kind=kind)
         if parent is None:
             break
         if parent.chunk_kind == "heading":
@@ -254,11 +257,11 @@ def _ask_value(store: Any, ref_id: int, tag_value: str) -> str:
     prefix = "ask-user:"
     if not tag_value.startswith(prefix):
         return ""
-    return store.resolve_ask_question(ref_id, tag_value[len(prefix) :])
+    return store.drafts.resolve_ask_question(ref_id, tag_value[len(prefix) :])
 
 
 def _load_asks(
-    store: Any, *, limit: int = 100, offset: int = 0
+    store: Store, *, limit: int = 100, offset: int = 0
 ) -> list[dict[str, Any]]:
     """Open todos carrying ask-user tags. One row per todo.
 
