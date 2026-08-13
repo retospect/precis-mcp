@@ -40,7 +40,7 @@ see below.
 **Which chunks.** ``store.reviewable_chunks(ref_id)`` — the draft's live,
 draft-family chunks with a non-NULL ``content_sha`` (the same population
 ``chunks_requiring_review``/``review_status_for_draft`` scope to), or, for
-a narrower ``scope``, ``store.review_subtree_chunk_ids`` (a heading's
+a narrower ``scope``, ``store.drafts.review_subtree_chunk_ids`` (a heading's
 subtree) or the single named chunk.
 
 **Incremental re-check (``only_dirty``).** Off by default — a blunt "mint
@@ -49,7 +49,7 @@ chunk at its current sha (a re-run is still cheap: ``mint_review_todo``'s
 own idempotency check skips a pair that already has a *live review-todo*).
 ``only_dirty=True`` additionally skips a ``(chunk, lens)`` pair that
 already has an *approved* ``chunk_review`` row at the chunk's current sha
-(``store.approved_pairs_at_current_sha``) — the cheap re-check loop after
+(``store.drafts.approved_pairs_at_current_sha``) — the cheap re-check loop after
 an edit: only the touched chunks' lenses re-mint.
 
 **Skip unsettled.** A chunk carrying an open anchored change-request is
@@ -74,14 +74,14 @@ trigger, and the whole-draft "run outstanding checks" button.
 call or an old caller that only passes ``lenses=`` never mints it). One
 review-todo per document, anchored on the draft's first chunk in document
 order (there is no single dedicated root — see
-``store.toc_digest``/``review_status_for_draft``'s docstrings). Its
+``store.drafts.toc_digest``/``review_status_for_draft``'s docstrings). Its
 ``only_dirty`` check compares the ledger's stored digest against
-``store.toc_digest(ref_id)`` (recomputed), never a chunk sha — see that
+``store.drafts.toc_digest(ref_id)`` (recomputed), never a chunk sha — see that
 method. Never author-eligible.
 
 **Parent.** Parented on the draft's owning **project todo**, resolved via
 the ``draft-of`` link (``draft --(draft-of)--> project``, 1:1 — see
-``store.create_draft``'s bind + ``handlers/draft.py``'s
+``store.drafts.create_draft``'s bind + ``handlers/draft.py``'s
 ``_render_by_project``). This differs from ``mint_weave_reviews``, which
 parents straight on the quest ref — that trigger fires *from* a quest
 tick and already has ``quest_id`` in hand; this one fires from a bare
@@ -260,7 +260,7 @@ def _scoped_chunks(
         )
     if target["chunk_kind"] != "heading":
         return [target]
-    subtree_ids = store.review_subtree_chunk_ids(draft_ref_id, scope)
+    subtree_ids = store.drafts.review_subtree_chunk_ids(draft_ref_id, scope)
     return [all_chunks[cid] for cid in subtree_ids if cid in all_chunks]
 
 
@@ -314,7 +314,9 @@ def mint_review_fanout(
     chunks = _scoped_chunks(store, draft_ref_id, scope)
 
     approved_at_sha = (
-        store.approved_pairs_at_current_sha(draft_ref_id) if only_dirty else set()
+        store.drafts.approved_pairs_at_current_sha(draft_ref_id)
+        if only_dirty
+        else set()
     )
 
     minted: list[int] = []
@@ -383,7 +385,7 @@ def _mint_doc_lenses(
 ) -> tuple[list[int], int, int]:
     """Mint the document-level lenses (today: ``toc``) — one review-todo
     per document, anchored on the draft's first REVIEWABLE chunk in
-    document order (item 10; see ``store.toc_digest``'s docstring for why
+    document order (item 10; see ``store.drafts.toc_digest``'s docstring for why
     there is no single dedicated root to anchor on instead). Anchor is
     ``store.review_root_chunk_id`` — NOT ``reading_order()[0]`` — so this
     mints on the SAME chunk ``review_status_for_draft`` reports the

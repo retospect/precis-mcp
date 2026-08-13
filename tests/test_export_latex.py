@@ -585,6 +585,7 @@ def test_footnote_mode_pc_handle_quotes_the_chunk() -> None:
             else None
         ),
     )
+    store.drafts = store  # sub-store facade shim
     out = latex._render_inline("As in [pc10].", (ctx := _fn_ctx(store)))
     assert r"\footnote{" in out  # a footnote, not an inline \cite
     assert r"\cite{kong24}" in out  # prints [N] + registers the bib entry
@@ -607,6 +608,7 @@ def test_footnote_mode_record_handle_has_no_excerpt() -> None:
             id=1, title="T", slug="miller23", meta={"authors": [{"name": "Miller, A."}]}
         ),
     )
+    store.drafts = store  # sub-store facade shim
     out = latex._render_inline("see [pa123].", _fn_ctx(store))
     assert r"\footnote{" in out and r"\cite{miller23}" in out
     assert r"\emph{" not in out  # no excerpt block for a chunk-less ref
@@ -637,6 +639,7 @@ def test_footnote_mode_slug_cite_resolves_chunk_excerpt() -> None:
             else None
         ),
     )
+    store.drafts = store  # sub-store facade shim
     out = latex._render_inline("prior work [§smith2024~3].", (ctx := _fn_ctx(store)))
     assert r"\footnote{" in out and r"\cite{smith2024}" in out
     assert "Amidoxime groups bind uranyl" in out

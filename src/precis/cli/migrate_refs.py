@@ -325,7 +325,7 @@ def run(args: argparse.Namespace) -> None:
         _print_samples("draft chunks", drafts)
         if not dry_run:
             for c in drafts:
-                store.edit_text(c.ident, c.new, source={"tool": "migrate-refs"})
+                store.drafts.edit_text(c.ident, c.new, source={"tool": "migrate-refs"})
         counts["draft_chunks"] = len(drafts)
 
     if args.scope in ("all", "thoughts"):

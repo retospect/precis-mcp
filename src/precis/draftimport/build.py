@@ -337,7 +337,7 @@ def run_import(
             )
             out["project"] = _id_of(resp.body)
 
-        draft_ref, title_chunk = store.create_draft(
+        draft_ref, title_chunk = store.drafts.create_draft(
             name=slug,
             title=title,
             project_ref_id=int(out["project"]),
@@ -398,7 +398,7 @@ def run_import(
                     keymap=km.slug,
                     cite_resolver=_cite_resolver,
                 )
-                nmade = store.add_chunks(
+                nmade = store.drafts.add_chunks(
                     ref_id=draft_ref.id,
                     chunk_kind="paragraph",
                     text=ntext,
@@ -462,7 +462,7 @@ def run_import(
                 # a `$$…$$` paragraph (normalised above). Every other kind is
                 # stored as-is.
                 store_kind = "paragraph" if child.kind == "equation" else child.kind
-                made = store.add_chunks(
+                made = store.drafts.add_chunks(
                     ref_id=draft_ref.id,
                     chunk_kind=store_kind,
                     text=text or "(figure omitted)",
@@ -487,7 +487,7 @@ def run_import(
         ext_keys = sorted(k for k in km.unresolved if k in bib)
         ext_map: dict[str, str] = {}
         if ext_keys:
-            sec = store.add_chunks(
+            sec = store.drafts.add_chunks(
                 ref_id=draft_ref.id,
                 chunk_kind="heading",
                 text="External References (books, patents, and standards not in the paper corpus)",
@@ -501,7 +501,7 @@ def run_import(
                     )
                     or k
                 )
-                made = store.add_chunks(
+                made = store.drafts.add_chunks(
                     ref_id=draft_ref.id,
                     chunk_kind="paragraph",
                     text=ref_text,
@@ -521,7 +521,7 @@ def run_import(
         refs_done = 0
         missing_cite_keys: set[str] = set()
         missing_cite_blocks = 0
-        for ch in store.reading_order(draft_ref.id):
+        for ch in store.drafts.reading_order(draft_ref.id):
             text = ch.text or ""
             new = text
             if "[¶@" in new:
@@ -529,7 +529,7 @@ def run_import(
             if ext_re and "[§" in new:
                 new = ext_re.sub(lambda m: f"[{ext_map[m.group(1)]}]", new)
             if new != text:
-                store.edit_text(ch.handle, new)
+                store.drafts.edit_text(ch.handle, new)
                 refs_done += 1
             # Any [§key] still here is a citation with NO backing reference
             # anywhere — not in the corpus, not in any bib the document

@@ -287,13 +287,13 @@ def render_working_set(
         if kind not in _TREE_KINDS:
             flat_eyes.append((handle, eye))
             continue
-        target = store.get_draft_chunk(handle, kind=kind)
+        target = store.drafts.get_draft_chunk(handle, kind=kind)
         if target is None:
             continue
         ref_id = int(target.ref_id)
         d = docs.get(ref_id)
         if d is None:
-            chunks = store.reading_order(ref_id, kind=kind)
+            chunks = store.drafts.reading_order(ref_id, kind=kind)
             d = docs[ref_id] = {
                 "kind": kind,
                 "chunks": chunks,
@@ -318,7 +318,7 @@ def render_working_set(
     if cursor is not None:
         parsed_cursor = handle_registry.parse(cursor)
         if parsed_cursor is not None and parsed_cursor[0] in _TREE_KINDS:
-            ct = store.get_draft_chunk(cursor, kind=parsed_cursor[0])
+            ct = store.drafts.get_draft_chunk(cursor, kind=parsed_cursor[0])
             cursor_ref = int(ct.ref_id) if ct is not None else None
     order = sorted(docs, key=lambda r: (r != cursor_ref, r))
 
@@ -326,7 +326,7 @@ def render_working_set(
     for ref_id in order:
         d = docs[ref_id]
         _close_gaps(d["chunks"], d["demand"])
-        views = store.block_views(ref_id)
+        views = store.drafts.block_views(ref_id)
         ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
         blocks.append(_render_doc(ref, d["chunks"], d["demand"], cursor, views))
         if link_map:

@@ -23,11 +23,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.diagram.context import render_diagram_context
 from precis.diagram.lang import DiagramLang, LintFinding
-from precis.store.protocols import DiagramTurnStore
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -77,11 +79,11 @@ class TurnResult:
 
 
 def _docs(
-    lang: DiagramLang, store: DiagramTurnStore, ref_id: int
+    lang: DiagramLang, store: Store, ref_id: int
 ) -> tuple[Any | None, Any | None, Any | None]:
     """Return ``(source_chunk, vocab_chunk, notes_chunk)`` for a diagram."""
     source = vocab = notes = None
-    for c in store.reading_order(ref_id, kind=lang.kind):
+    for c in store.drafts.reading_order(ref_id, kind=lang.kind):
         if c.chunk_kind == lang.source_kind and source is None:
             source = c
         elif c.chunk_kind == lang.vocab_kind and vocab is None:
@@ -157,7 +159,7 @@ def build_prompt(
 
 def run_turn(
     lang: DiagramLang,
-    store: DiagramTurnStore,
+    store: Store,
     ref: Any,
     message: str,
     *,
@@ -205,9 +207,9 @@ def run_turn(
     if new_src is not None:
         # new_src is already sanitized + compiles (guaranteed by _ask_with_heal).
         if source_chunk is not None:
-            store.edit_text(source_chunk.handle, new_src, kind=lang.kind)
+            store.drafts.edit_text(source_chunk.handle, new_src, kind=lang.kind)
         else:
-            created = store.add_chunks(
+            created = store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=lang.source_kind,
                 text=new_src,
@@ -228,7 +230,9 @@ def run_turn(
     # Reconcile bindings to the model's declared set (the whole `links` array
     # replaces the current set); omitting `links` leaves them untouched.
     if new_links is not None and node_chunk_id is not None:
-        store.set_element_bindings(node_chunk_id=node_chunk_id, desired=new_links)
+        store.drafts.set_element_bindings(
+            node_chunk_id=node_chunk_id, desired=new_links
+        )
 
     final_vocab = _persist_doc(
         lang, store, ref.id, vocab_chunk, lang.vocab_kind, new_vocab, vocab, index=True
@@ -240,7 +244,9 @@ def run_turn(
     _persist_turn(lang, store, ref.id, message, reply)
     final_findings = _all_findings(lang, store, node_chunk_id, final_src, bounds)
     final_bindings = (
-        store.element_bindings(node_chunk_id) if node_chunk_id is not None else []
+        store.drafts.element_bindings(node_chunk_id)
+        if node_chunk_id is not None
+        else []
     )
     return TurnResult(
         reply=reply,
@@ -272,7 +278,7 @@ def _document_context(store: Any, ref: Any, message: str) -> str:
 
 def _all_findings(
     lang: DiagramLang,
-    store: DiagramTurnStore,
+    store: Store,
     node_chunk_id: int | None,
     source: str,
     bounds: Any,
@@ -283,14 +289,14 @@ def _all_findings(
         return []
     findings: list[LintFinding] = lang.lint(source, bounds)
     if node_chunk_id is not None:
-        bound = {b["element"] for b in store.element_bindings(node_chunk_id)}
+        bound = {b["element"] for b in store.drafts.element_bindings(node_chunk_id)}
         findings = findings + lang.lint_bindings(source, bound)
     return findings
 
 
 def _persist_doc(
     lang: DiagramLang,
-    store: DiagramTurnStore,
+    store: Store,
     ref_id: int,
     chunk: Any | None,
     chunk_kind: str,
@@ -305,9 +311,9 @@ def _persist_doc(
     if new_text is None or not new_text.strip() or new_text == current:
         return current
     if chunk is not None:
-        store.edit_text(chunk.handle, new_text, kind=lang.kind)
+        store.drafts.edit_text(chunk.handle, new_text, kind=lang.kind)
     else:
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref_id,
             chunk_kind=chunk_kind,
             text=new_text,
@@ -425,11 +431,11 @@ def _clean_if_valid(lang: DiagramLang, raw: str) -> str | None:
 
 
 def _persist_turn(
-    lang: DiagramLang, store: DiagramTurnStore, ref_id: int, message: str, reply: str
+    lang: DiagramLang, store: Store, ref_id: int, message: str, reply: str
 ) -> None:
     """Append the turn's chat chunk (embedded, resumable)."""
     text = f"user: {message.strip()}\n\nassistant: {reply.strip()}"
-    store.add_chunks(
+    store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind=lang.turn_kind,
         text=text,

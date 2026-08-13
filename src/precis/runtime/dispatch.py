@@ -918,7 +918,7 @@ class DispatchMixin(RuntimeShape):
         if explicit is not None and explicit != "draft":
             return False
         try:
-            if self.store.get_draft_chunk("dc" + m.group(1)) is None:
+            if self.store.drafts.get_draft_chunk("dc" + m.group(1)) is None:
                 return False
         except Exception:  # pragma: no cover — store outage etc.
             log.exception("draft chunk routing lookup failed")

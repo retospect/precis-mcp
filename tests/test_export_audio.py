@@ -27,6 +27,10 @@ class _Chunk:
 
 
 class _Store:
+    drafts = property(
+        lambda self: self
+    )  # sub-store facade shim (see conftest FakeStore)
+
     def __init__(self, chunks: list[_Chunk]) -> None:
         self._chunks = chunks
 

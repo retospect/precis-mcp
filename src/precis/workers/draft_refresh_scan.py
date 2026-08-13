@@ -150,7 +150,7 @@ def _stale_sections(store: Any, ref_id: int) -> list[_StaleSection]:
     whole draft."""
     from precis.workers.job_types.draft_refresh import _split_body_chunks
 
-    rows = store.reading_order(ref_id)
+    rows = store.drafts.reading_order(ref_id)
     created = _created_at_map(store, ref_id)
     candidates: list[_StaleSection] = []
     for i, c in enumerate(rows):

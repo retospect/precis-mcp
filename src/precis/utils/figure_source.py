@@ -78,7 +78,7 @@ def _svg_has_content(svg: str | None) -> bool:
 
 def _canvas_source(store: Any, canvas_ref_id: int) -> str | None:
     """The ``figure_node`` SVG source for a canvas ref, or ``None``."""
-    for c in store.reading_order(canvas_ref_id, kind="figure"):
+    for c in store.drafts.reading_order(canvas_ref_id, kind="figure"):
         if c.chunk_kind == "figure_node":
             return c.text
     return None
@@ -124,7 +124,7 @@ def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
     sanitized at ingest, slice 3) or a linked **canvas** (sanitized at write) —
     rasterises to PNG so it embeds in both LaTeX (``\\includegraphics``) and
     docx (``add_picture``), neither of which consumes raw SVG."""
-    canvas_ref_id = store.figure_canvas_ref(chunk.chunk_id)
+    canvas_ref_id = store.drafts.figure_canvas_ref(chunk.chunk_id)
     if canvas_ref_id is not None:
         svg = _canvas_source(store, canvas_ref_id)
         if not _svg_has_content(svg):
@@ -133,7 +133,7 @@ def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
         png = _svg_to_png(svg)
         return (png, "png") if png is not None else None
 
-    blob = store.get_chunk_blob(chunk.handle)
+    blob = store.drafts.get_chunk_blob(chunk.handle)
     if blob is not None:
         data, mime = blob
         mime = (mime or "").split(";", 1)[0].strip()
@@ -157,7 +157,7 @@ def resolve_figure_source(store: Any, chunk: Any) -> FigureSource:
     origin = fig.get("origin")
 
     # 1 — canvas: an owned, editable SVG canvas linked from this chunk.
-    canvas_ref_id = store.figure_canvas_ref(chunk.chunk_id)
+    canvas_ref_id = store.drafts.figure_canvas_ref(chunk.chunk_id)
     if canvas_ref_id is not None:
         ref = store.get_ref(kind="figure", id=canvas_ref_id)
         slug = getattr(ref, "slug", None) if ref is not None else None
@@ -180,7 +180,7 @@ def resolve_figure_source(store: Any, chunk: Any) -> FigureSource:
     # 2/3 — blob-backed (a raster/static-SVG image, or a rendered graph). A
     # graph figure (0035) carries a render recipe and still lands its pixels in
     # chunk_blobs, so it resolves here; the medium label distinguishes it.
-    if store.has_chunk_blob(chunk.chunk_id):
+    if store.drafts.has_chunk_blob(chunk.chunk_id):
         is_graph = origin == "own_graph" or bool(fig.get("render_pending"))
         ok, reason = figure_status(fig)
         return FigureSource(

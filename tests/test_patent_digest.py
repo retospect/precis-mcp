@@ -42,6 +42,10 @@ class _Chunk:
 
 
 class _FakeStore:
+    drafts = property(
+        lambda self: self
+    )  # sub-store facade shim (see conftest FakeStore)
+
     def __init__(
         self,
         blocks_by_ref: dict[int, list[_Block]],

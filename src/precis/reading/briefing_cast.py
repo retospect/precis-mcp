@@ -898,7 +898,9 @@ def build_reading_briefing(
         return None
 
     ref, _created = create_cast_draft(store, profile=profile, date_tag=date_tag)
-    store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=script, split=True)
+    store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text=script, split=True
+    )
     # Link the draft back to its sources — the brief names them but reads no URL
     # aloud, so these edges are the only way to reach the paper/finding later.
     n_links = link_sources(

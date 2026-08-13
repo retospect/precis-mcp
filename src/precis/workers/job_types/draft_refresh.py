@@ -408,7 +408,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     preserved_text = _render_preserved(preserved_chunks)
     try:
-        toc = ctx.store.draft_toc(ref_id)
+        toc = ctx.store.drafts.draft_toc(ref_id)
         toc_text = (
             "\n".join(f"{'  ' * e.depth}- {e.title}" for e in toc) or "(no headings)"
         )
@@ -517,7 +517,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # (old + new paragraphs both live) — messy but self-healing, since the
     # section still has live paragraphs and gets picked up again.
     try:
-        new_chunks = ctx.store.add_chunks(
+        new_chunks = ctx.store.drafts.add_chunks(
             ref_id=ref_id,
             chunk_kind="paragraph",
             text=new_body_text,
@@ -526,7 +526,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         for c in retire_targets:
             ctx.store.retire_chunk(c.handle, mode="cascade")
         if new_heading_text and new_heading_text != (heading.text or "").strip():
-            ctx.store.edit_text(
+            ctx.store.drafts.edit_text(
                 heading.handle, new_heading_text, source={"reason": "draft_refresh"}
             )
         draft_handler._sync_draft_links(ref_id)

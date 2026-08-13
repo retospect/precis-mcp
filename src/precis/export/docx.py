@@ -239,19 +239,19 @@ def export_docx(
     if doc_type is None:
         ws = Workspace.from_meta(getattr(ref, "meta", None))
         doc_type = ws.doc_type if ws else ""
-    chunks = store.reading_order(ref.id)
+    chunks = store.drafts.reading_order(ref.id)
     handles = {c.handle for c in chunks}
     ctx = _Ctx(
         store=store,
         known_handles=handles,
-        abbrevs=store.defined_abbrevs(ref.id),
+        abbrevs=store.drafts.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
         doc_type=doc_type,
     )
 
     doc = Document()
     _apply_paper_theme(doc)
-    terms = store.draft_terms(ref.id)  # handle → (short, long)
+    terms = store.drafts.draft_terms(ref.id)  # handle → (short, long)
     byline = build_byline(getattr(ref, "authors", None))
 
     # List context (migration 0037): a ulist/olist container owns `item`

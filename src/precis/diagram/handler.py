@@ -95,7 +95,7 @@ class DiagramHandler(Handler):
 
     def _docs(self, ref_id: int) -> tuple[Any | None, Any | None, Any | None]:
         source = vocab = notes = None
-        for c in self.store.reading_order(ref_id, kind=self.LANG.kind):
+        for c in self.store.drafts.reading_order(ref_id, kind=self.LANG.kind):
             if c.chunk_kind == self.LANG.source_kind and source is None:
                 source = c
             elif c.chunk_kind == self.LANG.vocab_kind and vocab is None:
@@ -109,7 +109,7 @@ class DiagramHandler(Handler):
         if not s:
             raise BadInput(f"edit(kind='{self.LANG.kind}') requires id=")
         if self._is_node_addr(s):
-            node = self.store.get_draft_chunk(s, kind=self.LANG.kind)
+            node = self.store.drafts.get_draft_chunk(s, kind=self.LANG.kind)
             if node is None:
                 raise NotFound(f"{self.LANG.kind} node {s} not found")
             ref = self.store.get_ref(kind=self.LANG.kind, id=int(node.ref_id))
@@ -144,7 +144,7 @@ class DiagramHandler(Handler):
         index: bool,
     ) -> None:
         if chunk is None:
-            self.store.add_chunks(
+            self.store.drafts.add_chunks(
                 ref_id=ref_id,
                 chunk_kind=chunk_kind,
                 text=text,
@@ -153,7 +153,7 @@ class DiagramHandler(Handler):
                 kind=self.LANG.kind,
             )
         else:
-            self.store.edit_text(
+            self.store.drafts.edit_text(
                 chunk.handle, text, base_sha=base_sha, kind=self.LANG.kind
             )
 
@@ -185,7 +185,7 @@ class DiagramHandler(Handler):
         )
 
     def _render_node(self, addr: str) -> Response:
-        node = self.store.get_draft_chunk(addr, kind=self.LANG.kind)
+        node = self.store.drafts.get_draft_chunk(addr, kind=self.LANG.kind)
         if node is None:
             raise NotFound(f"{self.LANG.kind} node {addr!r} not found")
         return Response(body=f"{node.dc}  [{node.chunk_kind}]\n{node.text}")
@@ -195,7 +195,7 @@ class DiagramHandler(Handler):
         source, vocab_chunk, notes_chunk = self._docs(ref.id)
         turns = sum(
             1
-            for c in self.store.reading_order(ref.id, kind=lang.kind)
+            for c in self.store.drafts.reading_order(ref.id, kind=lang.kind)
             if c.chunk_kind == lang.turn_kind
         )
         src = source.text if source is not None else ""
@@ -203,7 +203,9 @@ class DiagramHandler(Handler):
         if box is None:
             box = lang.read_bounds(src)
         bindings = (
-            self.store.element_bindings(source.chunk_id) if source is not None else []
+            self.store.drafts.element_bindings(source.chunk_id)
+            if source is not None
+            else []
         )
         findings = lang.lint(src, box) if src else []
         if src and bindings:
@@ -275,7 +277,7 @@ class DiagramHandler(Handler):
             title=(title or slug).strip() or slug,
             meta=self._ref_meta(box),
         )
-        self.store.add_chunks(
+        self.store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind=lang.source_kind,
             text=source,
@@ -286,7 +288,7 @@ class DiagramHandler(Handler):
         # The vocab doc is born only when explicitly seeded; otherwise it stays
         # empty until the model writes it. Notes are always born empty (lazy).
         if vocab and vocab.strip():
-            self.store.add_chunks(
+            self.store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=lang.vocab_kind,
                 text=vocab.strip(),
@@ -358,7 +360,7 @@ class DiagramHandler(Handler):
         if text is not None:
             clean = self._validate_source(text)
             if source is None:
-                self.store.add_chunks(
+                self.store.drafts.add_chunks(
                     ref_id=ref.id,
                     chunk_kind=lang.source_kind,
                     text=clean,
@@ -367,7 +369,7 @@ class DiagramHandler(Handler):
                     kind=lang.kind,
                 )
             else:
-                self.store.edit_text(
+                self.store.drafts.edit_text(
                     source.handle, clean, base_sha=base_sha, kind=lang.kind
                 )
             box = lang.read_bounds(clean)
@@ -438,7 +440,7 @@ class DiagramHandler(Handler):
                 next=f"edit(kind='{lang.kind}', id='{ref.slug}', text='…')",
             )
         if mode == "remove":
-            n = self.store.unbind_element(
+            n = self.store.drafts.unbind_element(
                 node_chunk_id=source.chunk_id, element=element, target=target
             )
             return Response(
@@ -451,7 +453,7 @@ class DiagramHandler(Handler):
                 "it depicts)",
                 next=f"link(kind='{lang.kind}', id='<slug>', element='x', target='dc42')",
             )
-        self.store.bind_element(
+        self.store.drafts.bind_element(
             node_chunk_id=source.chunk_id,
             element=element,
             target=str(target).strip(),

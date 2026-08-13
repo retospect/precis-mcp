@@ -180,7 +180,7 @@ def intents_for_draft(
     """Every heading-intent in a draft, keyed by heading handle — walks the draft's
     heading chunks and looks each one up. (Live headings only; an orphan whose
     heading was deleted is not returned — that's :func:`prune_dangling`'s job.)"""
-    chunks = store.reading_order(draft_ref_id, kind=kind)
+    chunks = store.drafts.reading_order(draft_ref_id, kind=kind)
     handles = [c.dc for c in chunks if getattr(c, "chunk_kind", None) == "heading"]
     return intents_for(store, handles)
 
@@ -228,10 +228,10 @@ def section_intents(store: Any, anchor_handle: str) -> IntentContext:
     kind = _kind_of(anchor_handle)
     if kind is None:
         return IntentContext([], [])
-    chunk = store.get_draft_chunk(anchor_handle, kind=kind)
+    chunk = store.drafts.get_draft_chunk(anchor_handle, kind=kind)
     if chunk is None:
         return IntentContext([], [])
-    chunks = store.reading_order(chunk.ref_id, kind=kind)
+    chunks = store.drafts.reading_order(chunk.ref_id, kind=kind)
     by_id = {c.chunk_id: c for c in chunks}
 
     def _walk_up_headings(start: Any) -> list[Any]:

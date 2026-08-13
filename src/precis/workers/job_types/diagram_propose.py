@@ -85,7 +85,7 @@ def compose_message(store: Any, instruction: str, seeds: list[str]) -> str:
             continue
         chunk = None
         try:
-            chunk = store.universal_chunk(h)
+            chunk = store.drafts.universal_chunk(h)
         except Exception:
             chunk = None
         if chunk and (chunk.get("text") or "").strip():

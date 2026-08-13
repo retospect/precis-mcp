@@ -33,7 +33,7 @@ served from here:
   files review-todos, not ledger rows. ``POST /drafts/{ident}/cites/convert``
   dry-runs/applies the taproot living-cite backfill (item 5b).
 * ``POST /drafts/{ident}/title`` — header rename: converges ``refs.title``
-  AND the title heading chunk in one transaction (``store.set_draft_title``)
+  AND the title heading chunk in one transaction (``store.drafts.set_draft_title``)
   so the name in search results can't drift from the one in the document.
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
@@ -165,7 +165,8 @@ def _abbrevs_cached(store: Store, ref_id: int, version: int) -> dict[str, Any]:
     if hit is not None:
         _ABBREV_CACHE.move_to_end(key)
         return hit
-    fn = getattr(store, "defined_terms", None) or store.defined_abbrevs
+    drafts = store.drafts
+    fn = getattr(drafts, "defined_terms", None) or drafts.defined_abbrevs
     val = fn(ref_id)
     _ABBREV_CACHE[key] = val
     _ABBREV_CACHE.move_to_end(key)
@@ -1542,7 +1543,7 @@ async def delete_draft(
     request: Request, ident: str, confirm: str = Form("")
 ) -> Response:
     """Soft-delete a whole draft, gated on typing its name. Atomic
-    (``store.soft_delete_draft`` marks the ref deleted + retires its chunks
+    (``store.drafts.soft_delete_draft`` marks the ref deleted + retires its chunks
     in one transaction); recoverable. The owning project todo is left
     intact — this deletes the document, not the project."""
     store = get_store(request)
@@ -2132,7 +2133,7 @@ async def add_block(
     ``+`` affordance (docs/backlog/draft-inline-editor.md, slice 2b). Returns
     the new block's handle so the client can hydrate and open it for editing.
 
-    Goes straight to ``store.add_chunks`` rather than the ``put`` verb: the
+    Goes straight to ``store.drafts.add_chunks`` rather than the ``put`` verb: the
     verb rejects empty ``text=`` (an agent-ergonomics guard against blank
     chunks), but "add a blank paragraph then type into it" is exactly the
     human flow here."""
@@ -2695,7 +2696,7 @@ async def set_title(
 ) -> JSONResponse:
     """Rename the draft from the reader header — the web twin of
     ``edit(kind='draft', title=…)``. Writes ``refs.title`` AND the title
-    heading chunk in one transaction (``store.set_draft_title``) so the name
+    heading chunk in one transaction (``store.drafts.set_draft_title``) so the name
     in search results can't drift from the one in the document.
 
     Speaks JSON (not the 303-redirect the older meta forms use): the header

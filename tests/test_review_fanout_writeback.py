@@ -945,7 +945,7 @@ class TestReviewWriteback:
         def _boom(*_a: object, **_k: object) -> str:
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(store, "record_review", _boom)
+        monkeypatch.setattr(store.drafts, "record_review", _boom)
 
         with store.pool.connection() as conn:
             # Must not raise even though store.record_review blows up. sha

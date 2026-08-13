@@ -11,23 +11,25 @@ is ``lang.elements(source)`` (the anchor list); everything else is data.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.diagram.lang import DiagramLang
-from precis.store.protocols import DiagramBindingStore
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 #: Cap on an inlined linked-chunk body — keep the prompt bounded.
 _BODY_CHARS = 1200
 
 
 def render_diagram_context(
-    lang: DiagramLang, store: DiagramBindingStore, node_chunk_id: int, source: str
+    lang: DiagramLang, store: Store, node_chunk_id: int, source: str
 ) -> str:
     """The ``## Diagram elements ↔ linked context`` block (+ inlined bodies),
     or ``""`` when nothing is bound (the block is simply omitted). Safe on an
     empty/unparseable ``source`` — coordinates degrade to ``(no matching
     element)``, which is itself the dangling-binding signal."""
-    binds = store.element_bindings(node_chunk_id)
+    binds = store.drafts.element_bindings(node_chunk_id)
     if not binds:
         return ""
     coords = {e.id: (e.tag, e.coords) for e in lang.elements(source)}
@@ -66,12 +68,12 @@ def render_diagram_context(
     return "\n".join(lines)
 
 
-def _linked_text(store: DiagramBindingStore, binding: dict[str, Any]) -> str:
+def _linked_text(store: Store, binding: dict[str, Any]) -> str:
     """The bound target's text — a chunk body for a chunk-level target, else
     ``""`` (a ref-level target's title already appears in the element line)."""
     if binding.get("chunk_id") is None:
         return ""  # ref-level target (e.g. a memory record) — title suffices
-    got = store.universal_chunk(binding["handle"])
+    got = store.drafts.universal_chunk(binding["handle"])
     if not got:
         return ""
     return str(got.get("text") or "").strip()[:_BODY_CHARS]

@@ -254,7 +254,7 @@ def render_citations_view(store: Store, ref: Ref) -> Response:
     """Render ``view='citations'`` for a draft: every paper/claim cite in
     its chunks, partitioned into to-fetch / to-re-ground / to-promote /
     done. Read-only — no writes, no LLM call (see module docstring)."""
-    chunks = store.reading_order(ref.id)
+    chunks = store.drafts.reading_order(ref.id)
     raw = _collect_raw_cites(store, chunks)
     buckets = _build_rows(store, raw)
     return _render(ref, buckets)
@@ -267,7 +267,7 @@ def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:
     queue). Reuses the citations view's own token scan + block-count
     derivation, so the drive scope and the ``view='citations'`` to-fetch
     partition can never diverge. Read-only, no LLM."""
-    chunks = store.reading_order(ref.id)
+    chunks = store.drafts.reading_order(ref.id)
     raw = _collect_raw_cites(store, chunks)
     paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
     # Bulk "which of these have body chunks" (one query) minus set — the

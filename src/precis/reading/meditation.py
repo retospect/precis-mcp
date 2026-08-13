@@ -438,7 +438,9 @@ def build_meditation(
         title=f"Evening meditation — {date_tag}",
         meta={"cohort": cohort},
     )
-    store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=script, split=True)
+    store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text=script, split=True
+    )
     # Link the draft back to the concepts it walked — the meditation names them
     # but reads no handle aloud, so these edges are the way to reopen a concept
     # the walk touched (the nidra analogue of the morning brief's paper links).

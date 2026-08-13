@@ -64,7 +64,7 @@ def _resolve_targets(store: Store, targets: list[str], *, kind: str) -> list[Any
     here)."""
     resolved: list[Any] = []
     for t in targets:
-        chunk = store.get_draft_chunk(t, kind=kind)
+        chunk = store.drafts.get_draft_chunk(t, kind=kind)
         if chunk is not None:
             resolved.append(chunk)
     return resolved
@@ -80,7 +80,7 @@ def _target_cited_refs(
 
     out: set[int] = set()
     for tc in target_chunks:
-        chunks = store.reading_order(tc.ref_id, kind=kind)
+        chunks = store.drafts.reading_order(tc.ref_id, kind=kind)
         for rid, _label in collect_ring(store, tc, chunks).get("Cited", []):
             out.add(int(rid))
     return out
@@ -214,7 +214,7 @@ def _backfill_marks(
     marks: dict[str, str] = {}
     citing: dict[int, list[str]] = {}
     for tc in target_chunks:
-        chunks = store.reading_order(tc.ref_id, kind=kind)
+        chunks = store.drafts.reading_order(tc.ref_id, kind=kind)
         for rid, _label in collect_ring(store, tc, chunks).get("Cited", []):
             citing.setdefault(int(rid), []).append(tc.dc)
     refs = store.fetch_refs_by_ids(list(citing)) if citing else {}
@@ -248,7 +248,7 @@ def _render_grounding(store: Store, target_chunks: list[Any], *, kind: str) -> s
 
     lines = ["— grounding · claims WE assert —"]
     for tc in target_chunks:
-        chunks = store.reading_order(tc.ref_id, kind=kind)
+        chunks = store.drafts.reading_order(tc.ref_id, kind=kind)
         cited_ids = [rid for rid, _ in collect_ring(store, tc, chunks).get("Cited", [])]
         refs = store.fetch_refs_by_ids(cited_ids) if cited_ids else {}
         cites = [
@@ -306,7 +306,7 @@ def _top_level_section_handles(store: Store, ref_id: int, *, kind: str) -> list[
     sub-headings at all) falls back to every top-level body chunk, so a
     short heading-less draft still gets scanned rather than returning
     nothing."""
-    chunks = store.reading_order(ref_id, kind=kind)
+    chunks = store.drafts.reading_order(ref_id, kind=kind)
     headings = [
         c.dc for c in chunks if c.chunk_kind == "heading" and c.parent_chunk_id is None
     ]

@@ -60,7 +60,7 @@ def render_figure_chunk(
     No-op-safe: returns ``ok=False`` (never raises) for a plain image figure
     or a render failure, so a caller (the render pass / export barrier) can
     bubble the reason without crashing the worker."""
-    bundle = store.figure_render_bundle(figure_chunk_id)
+    bundle = store.drafts.figure_render_bundle(figure_chunk_id)
     if bundle is None:
         return RenderOutcome(ok=False, error="not-a-graph")
     tables = bundle["tables"]
@@ -75,7 +75,7 @@ def render_figure_chunk(
     if not result.ok or result.png is None:
         return RenderOutcome(ok=False, error=result.error, detail=result.stderr)
 
-    store.upsert_chunk_blob(figure_chunk_id, result.png, RENDER_MIME)
+    store.drafts.upsert_chunk_blob(figure_chunk_id, result.png, RENDER_MIME)
     key = invalidation_key(bundle["input_shas"])
-    store.stamp_render_key(figure_chunk_id, key)
+    store.drafts.stamp_render_key(figure_chunk_id, key)
     return RenderOutcome(ok=True, cached_key=key)

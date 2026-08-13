@@ -294,7 +294,7 @@ def weave_section(
     claim-clustering dedup, so callers should not re-feed dispositioned
     papers today.
     """
-    heading = store.get_draft_chunk(section_handle, kind="draft")
+    heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
     if heading is None:
         raise NotFound(
             f"weave_section: unknown section handle {section_handle!r}",
@@ -374,7 +374,7 @@ def weave_section(
     if found is not None:
         existing_handle, existing_sha = found
         try:
-            body_chunk = store.edit_text(
+            body_chunk = store.drafts.edit_text(
                 existing_handle,
                 section_text,
                 base_sha=existing_sha,
@@ -394,7 +394,7 @@ def weave_section(
             }
         assert body_chunk is not None
     else:
-        created = store.add_chunks(
+        created = store.drafts.add_chunks(
             ref_id=dossier_ref_id,
             chunk_kind="paragraph",
             text=section_text,

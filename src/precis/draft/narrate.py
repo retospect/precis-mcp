@@ -391,7 +391,7 @@ def render_narration(
     doc-class defaults or the draft's own meta).
     """
     segments: list[NarrationSegment] = []
-    for c in store.reading_order(ref.id):
+    for c in store.drafts.reading_order(ref.id):
         if c.chunk_kind in _SKIP_KINDS:
             continue
         spoken = apply_lexicon(speakable(c.text or ""), lexicon)

@@ -5,7 +5,7 @@ DB reads + an outbound LLM call, not a pure ``WorkerHandler``). For each claimed
 ``paper`` it harvests the terms a reader would need to follow the paper:
 
   1. **defined abbreviations** — Schwartz-Hearst ``Long Form (ABBR)`` first-uses
-     + explicit ``term`` chunks (``store.defined_abbrevs``),
+     + explicit ``term`` chunks (``store.drafts.defined_abbrevs``),
   2. **undefined acronyms** — acronym-shaped tokens in title/abstract lacking a
      definition (``abbreviations.find_acronyms``),
   3. **key terms** — the per-chunk KeyBERT keywords already computed corpus-wide
@@ -225,7 +225,7 @@ def _context(
     store: Any, ref_id: int, title: str
 ) -> tuple[str, dict[str, str], list[str], list[str]]:
     """``(abstract, defined_abbrevs, undefined_acronyms, keywords)`` for one paper."""
-    defined = store.defined_abbrevs(ref_id)
+    defined = store.drafts.defined_abbrevs(ref_id)
     with store.pool.connection() as conn:
         arow = conn.execute(
             "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_abstract' "

@@ -178,7 +178,7 @@ def doc_context_table(store: Store, anchor: str) -> str:
     navigating by ``dc<id>``, looking up gloss by the base-58 handle, and
     **displaying the canonical ``dc<id>``** the prompt tells the agent to
     use."""
-    base = store.get_draft_chunk(anchor)
+    base = store.drafts.get_draft_chunk(anchor)
     if base is None:
         return ""
     ref_id = int(base.ref_id)
@@ -187,8 +187,8 @@ def doc_context_table(store: Store, anchor: str) -> str:
         return "dc" + str(chunk_id)
 
     def _step(op: str) -> DraftChunk | None:
-        ids = store.draft_relative_chunk_ids(_dc(base.chunk_id) + op)
-        return store.get_draft_chunk(_dc(ids[0])) if ids else None
+        ids = store.drafts.draft_relative_chunk_ids(_dc(base.chunk_id) + op)
+        return store.drafts.get_draft_chunk(_dc(ids[0])) if ids else None
 
     parent = _step("^")
     prev = _step("-1")
@@ -196,7 +196,9 @@ def doc_context_table(store: Store, anchor: str) -> str:
 
     neighbours = [c for c in (parent, prev, nxt) if c is not None]
     views = (
-        store.block_views(ref_id, [c.handle for c in neighbours]) if neighbours else {}
+        store.drafts.block_views(ref_id, [c.handle for c in neighbours])
+        if neighbours
+        else {}
     )
 
     rows: list[dict[str, str]] = []
@@ -222,7 +224,9 @@ def doc_context_table(store: Store, anchor: str) -> str:
     # references — outbound/inbound links from the anchor (cites, prior
     # art, dream-memories), keyed by the base-58 handle the link graph
     # stores. Deduped against window rows already shown.
-    for conn in store.chunk_connections(ref_id, [base.handle]).get(base.handle, []):
+    for conn in store.drafts.chunk_connections(ref_id, [base.handle]).get(
+        base.handle, []
+    ):
         ident = f"{conn['kind']}:{conn['ident']}"
         if ident in seen:
             continue
@@ -264,15 +268,15 @@ def section_review_block(store: Store, anchor: str) -> str:
     labelled by its canonical ``dc<id>`` handle so the reviewer can anchor
     every finding precisely. Bounded by character budget; returns ``""``
     when the anchor chunk no longer exists."""
-    base = store.get_draft_chunk(anchor)
+    base = store.drafts.get_draft_chunk(anchor)
     if base is None:
         return ""
     ref_id = int(base.ref_id)
-    ids = set(store.draft_subtree_chunk_ids(anchor))
+    ids = set(store.drafts.draft_subtree_chunk_ids(anchor))
     if not ids:
         return ""
     # reading_order gives proper DFS order; keep only the subtree members.
-    ordered = [c for c in store.reading_order(ref_id) if c.chunk_id in ids]
+    ordered = [c for c in store.drafts.reading_order(ref_id) if c.chunk_id in ids]
     head = (
         "## Section under review (anchored at "
         f"dc{base.chunk_id}; review THESE chunks, anchor each finding to "
@@ -302,7 +306,7 @@ def glossary_table(store: Store, draft_ref_id: int) -> str:
 
     The reusable computed-module form of the glossary (region-scoped in context; the full registry is only used by the
     off-model linkify pass). Returns ``""`` when the draft has no terms."""
-    terms = store.draft_terms(draft_ref_id)  # {handle: (short, long)}
+    terms = store.drafts.draft_terms(draft_ref_id)  # {handle: (short, long)}
     rows = [
         {"term": short, "short": short, "long": _clip(long, 120), "handle": h}
         for h, (short, long) in sorted(terms.items(), key=lambda t: t[1][0].lower())

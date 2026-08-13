@@ -84,7 +84,7 @@ def draft_figure_clearance(store: Any, ref_id: int) -> ClearanceSummary:
 
     uncleared: list[FigureClear] = []
     total = 0
-    for c in store.reading_order(ref_id):
+    for c in store.drafts.reading_order(ref_id):
         if c.chunk_kind != "figure":
             continue
         total += 1

@@ -1424,7 +1424,7 @@ class DraftHandler(Handler):
     ) -> Response:
         # ``source`` is a code/provenance-caller convenience (not documented
         # on the general edit surface): forwarded verbatim to
-        # ``store.edit_text``'s ``chunk_events.source`` payload for the two
+        # ``store.drafts.edit_text``'s ``chunk_events.source`` payload for the two
         # plain-text-mutation paths (find-replace + whole-chunk rewrite)
         # only. Lets a caller that knows *why* it's editing — e.g. the
         # grounded-authoring reviewer persona stamping
@@ -1457,7 +1457,7 @@ class DraftHandler(Handler):
 
         # ``title`` is a draft-level op (rename the document) — id is the slug
         # (or any handle in the draft), not a single chunk. Writes BOTH
-        # ``refs.title`` and the title heading chunk (``store.set_draft_title``):
+        # ``refs.title`` and the title heading chunk (``store.drafts.set_draft_title``):
         # the heading was always editable while the ref title had no write path
         # at all, so the two could diverge — the reader showing one name and
         # every search hit / list row / link chip another.

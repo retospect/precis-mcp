@@ -250,7 +250,7 @@ def _cache_version(store: Store, ref_id: int) -> str | None:
     chunk row itself: ``chunk_id`` (add / retire), ``pos`` and
     ``parent_chunk_id`` (move, re-parent), and ``content_sha`` (text). Hashing
     the *content* rather than counting rows is load-bearing — the live edit path
-    (``store.edit_text``) UPDATEs a chunk **in place**, so a token built from
+    (``store.drafts.edit_text``) UPDATEs a chunk **in place**, so a token built from
     ``count(*) + max(chunk_id)`` never moved on an edit and the reader served
     stale text until the TTL fired. The ``chunk_tags`` count covers tag add /
     remove.

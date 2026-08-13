@@ -139,7 +139,7 @@ def owning_document(store: Any, figure_ref_id: int) -> tuple[int, int] | None:
     predating the figure medium axis) or a free-standing figure both read as ``None`` — the
     caller then supplies no document context and the loop behaves as before.
     """
-    fn = getattr(store, "figure_owning_draft", None)
+    fn = getattr(getattr(store, "drafts", None), "figure_owning_draft", None)
     if fn is None:
         return None
     try:
@@ -286,13 +286,13 @@ def build_document_context(
     chunks. ``expand`` defaults to the canonical fisheye renderer; tests inject
     a fake. A failing expansion degrades to the block's own verbatim text — a
     thin context is still better than none."""
-    chunks = list(store.reading_order(draft_ref_id, kind="draft"))
+    chunks = list(store.drafts.reading_order(draft_ref_id, kind="draft"))
     if not chunks:
         return ""
     expand = expand or _default_expand
     title = _doc_title(store, draft_ref_id, chunks)
     views: dict[str, Any] = {}
-    bv = getattr(store, "block_views", None)
+    bv = getattr(getattr(store, "drafts", None), "block_views", None)
     if bv is not None:
         try:
             views = bv(draft_ref_id) or {}

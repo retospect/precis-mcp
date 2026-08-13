@@ -450,7 +450,7 @@ def _cited_sources(store: Any, text: str) -> list[RefChip]:
 
 def _flag_chips(flags: list[dict[str, Any]]) -> list[Any]:
     """Render ``chunk_links``'s ``flags`` (anchored change-request todos,
-    ``store.anchored_todos``) as hover chips — the standalone-anchor case
+    ``store.drafts.anchored_todos``) as hover chips — the standalone-anchor case
     gripe 178766 filed on: no project link, no job, so neither the fisheye
     ring nor the outline's "Work in progress" block ever surfaces it. Shares
     :func:`precis_web.linkify.popover_chip` with ``_connection_chips``

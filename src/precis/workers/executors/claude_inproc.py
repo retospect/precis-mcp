@@ -807,7 +807,7 @@ def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
 # meta.anchor='dc<id>' (the same shape predicates.has_review/has_anchor
 # read). On a clean SUCCEEDED completion — zero filed findings AND the
 # anchor chunk's content_sha unchanged since the tick started — record
-# store.record_review(chunk_id, lens, verdict='approved'). Any findings,
+# store.drafts.record_review(chunk_id, lens, verdict='approved'). Any findings,
 # or a sha that moved (the reviewer edited the chunk itself — future
 # authoring reviewers must not self-approve prose they just wrote),
 # records nothing: the chunk correctly stays "requires review".
@@ -840,7 +840,7 @@ def _anchor_chunk_snapshot(
     store: Any, anchor: str, lens: str
 ) -> tuple[int, str | None] | None:
     """Resolve a ``dc<id>`` anchor to ``(chunk_id, sha_before)`` via the
-    shared handle resolver (``store.get_draft_chunk`` — same lookup
+    shared handle resolver (``store.drafts.get_draft_chunk`` — same lookup
     ``predicates.py``'s anchor handling relies on), or ``None`` when the
     anchor doesn't resolve to a live chunk.
 
@@ -851,11 +851,11 @@ def _anchor_chunk_snapshot(
     here at tick start so the writeback can tell a heading
     add/remove/rename/reorder (digest moved — no self-approval) from a
     paragraph body edit (digest unchanged — approval still stands)."""
-    chunk = store.get_draft_chunk(anchor)
+    chunk = store.drafts.get_draft_chunk(anchor)
     if chunk is None:
         return None
     if lens == "toc":
-        return (chunk.chunk_id, store.toc_digest(chunk.ref_id))
+        return (chunk.chunk_id, store.drafts.toc_digest(chunk.ref_id))
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk.chunk_id,)
@@ -923,7 +923,7 @@ def _maybe_record_review_pass(
             ).fetchone()
             if ref_row is None:
                 return
-            digest_now = store.toc_digest(int(ref_row[0]))
+            digest_now = store.drafts.toc_digest(int(ref_row[0]))
             if digest_now != sha_before:
                 return  # a heading moved — no self-approval
             conn.execute(
@@ -942,7 +942,7 @@ def _maybe_record_review_pass(
         sha_now = sha_row[0] if sha_row is not None else None
         if sha_now != sha_before:
             return  # the reviewer edited the chunk itself — no self-approval
-        store.record_review(chunk_id, lens, verdict="approved")
+        store.drafts.record_review(chunk_id, lens, verdict="approved")
     except Exception:
         log.exception(
             "review writeback failed (review_todo=%s chunk=%s lens=%s) — "

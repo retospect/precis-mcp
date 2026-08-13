@@ -416,15 +416,15 @@ def _ensure_ledger_chunk_for_ref(store: Store, dossier_id: int) -> str:
     recursion (``ensure_dossier`` calls this directly after seeding the
     narrative rather than going back through the public entry point).
     """
-    chunks = store.reading_order(dossier_id)
+    chunks = store.drafts.reading_order(dossier_id)
     found = _find_pinned_chunk(chunks, "ledger")
     if found is not None:
         return str(found.handle)
-    created = store.add_chunks(
+    created = store.drafts.add_chunks(
         ref_id=dossier_id, chunk_kind="paragraph", text=_LEDGER_SEED, split=False
     )
     handle = str(created[0].handle)
-    store.patch_chunk_meta(handle, {"pinned": "ledger"})
+    store.drafts.patch_chunk_meta(handle, {"pinned": "ledger"})
     return handle
 
 
@@ -434,18 +434,18 @@ def _ensure_frontier_tree_chunk_for_ref(store: Store, dossier_id: int) -> str:
     absent, else returns its existing handle. Internal — see
     :func:`update_frontier_tree` for the public, code-regenerating entry
     point."""
-    chunks = store.reading_order(dossier_id)
+    chunks = store.drafts.reading_order(dossier_id)
     found = _find_pinned_chunk(chunks, _FRONTIER_TREE_PINNED)
     if found is not None:
         return str(found.handle)
-    created = store.add_chunks(
+    created = store.drafts.add_chunks(
         ref_id=dossier_id,
         chunk_kind="paragraph",
         text=_FRONTIER_TREE_SEED,
         split=False,
     )
     handle = str(created[0].handle)
-    store.patch_chunk_meta(handle, {"pinned": _FRONTIER_TREE_PINNED})
+    store.drafts.patch_chunk_meta(handle, {"pinned": _FRONTIER_TREE_PINNED})
     return handle
 
 
@@ -468,7 +468,7 @@ def update_frontier_tree(store: Store, owner_id: int) -> str:
     did = ensure_dossier(store, owner_id)
     handle = _ensure_frontier_tree_chunk_for_ref(store, did)
     markdown = render_frontier_tree(store, owner_id)
-    store.edit_text(handle, markdown, source={"reason": "quest-frontier-tree"})
+    store.drafts.edit_text(handle, markdown, source={"reason": "quest-frontier-tree"})
     return handle
 
 
@@ -500,14 +500,16 @@ def ensure_dossier(store: Store, owner_id: int, *, title: str | None = None) -> 
     if existing is not None:
         return existing
     stmt = _owner_title(store, owner_id).splitlines()[0]
-    ref, _heading = store.create_draft(
+    ref, _heading = store.drafts.create_draft(
         name=f"dossier-{owner_id}",
         title=title or f"Dossier — {stmt[:80]}",
         project_ref_id=owner_id,
         meta={"dossier_of_owner": owner_id},
         relation=_RELATION,
     )
-    store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text=_SEED, split=False)
+    store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text=_SEED, split=False
+    )
     _ensure_ledger_chunk_for_ref(store, ref.id)
     return int(ref.id)
 
@@ -524,7 +526,7 @@ def read_dossier(store: Store, owner_id: int) -> tuple[int | None, str | None, s
     did = dossier_ref_id(store, owner_id)
     if did is None:
         return None, None, ""
-    chunks = store.reading_order(did)
+    chunks = store.drafts.reading_order(did)
     body = [c for c in chunks if c.chunk_kind != "heading"]
     text = "\n\n".join(c.text for c in body)
     handle = body[0].dc if body else None
@@ -545,7 +547,7 @@ def read_narrative(store: Store, owner_id: int) -> str:
     did = dossier_ref_id(store, owner_id)
     if did is None:
         return ""
-    chunks = store.reading_order(did)
+    chunks = store.drafts.reading_order(did)
     body = [
         c
         for c in chunks
@@ -564,7 +566,7 @@ def read_ledger(store: Store, owner_id: int) -> str:
     handle = ensure_ledger_chunk(store, owner_id)
     did = dossier_ref_id(store, owner_id)
     assert did is not None  # ensure_ledger_chunk just guaranteed a dossier
-    for c in store.reading_order(did):
+    for c in store.drafts.reading_order(did):
         if c.handle == handle:
             return str(c.text)
     return ""  # pragma: no cover - handle was just resolved above
@@ -578,7 +580,7 @@ def _ledger_roots(store: Store, owner_id: int) -> tuple[str, int, list[AttemptNo
     handle = ensure_ledger_chunk(store, owner_id)
     did = dossier_ref_id(store, owner_id)
     assert did is not None  # ensure_ledger_chunk just guaranteed a dossier
-    chunk = next(c for c in store.reading_order(did) if c.handle == handle)
+    chunk = next(c for c in store.drafts.reading_order(did) if c.handle == handle)
     return handle, did, _parse_ledger(chunk.text)
 
 
@@ -620,7 +622,9 @@ def add_attempt(
     if any(n.text == stripped_text and n.status == st for n in target_children):
         return False
     target_children.append(AttemptNode(text=stripped_text, status=st, children=[]))
-    store.edit_text(handle, _render_ledger(roots), source={"reason": "quest-ledger"})
+    store.drafts.edit_text(
+        handle, _render_ledger(roots), source={"reason": "quest-ledger"}
+    )
     return True
 
 
@@ -653,7 +657,9 @@ def mark_attempt(
     if len(matches) != 1:
         return False
     matches[0].status = status
-    store.edit_text(handle, _render_ledger(roots), source={"reason": "quest-ledger"})
+    store.drafts.edit_text(
+        handle, _render_ledger(roots), source={"reason": "quest-ledger"}
+    )
     return True
 
 
@@ -695,7 +701,7 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
     is explicitly excluded, so each survives every rewrite byte-identical. If somehow there is no narrative chunk yet, one is added.
     """
     did = ensure_dossier(store, owner_id)
-    chunks = store.reading_order(did)
+    chunks = store.drafts.reading_order(did)
     body = [
         c
         for c in chunks
@@ -704,9 +710,13 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
     if body:
         # edit_text keys on the legacy ``.handle`` (the ``¶`` anchor), not the
         # universal ``.dc`` display handle — mirror the draft handler.
-        store.edit_text(body[0].handle, markdown, source={"reason": "quest-tick"})
+        store.drafts.edit_text(
+            body[0].handle, markdown, source={"reason": "quest-tick"}
+        )
     else:  # pragma: no cover - ensure_dossier always seeds a narrative body
-        store.add_chunks(ref_id=did, chunk_kind="paragraph", text=markdown, split=False)
+        store.drafts.add_chunks(
+            ref_id=did, chunk_kind="paragraph", text=markdown, split=False
+        )
     return did
 
 

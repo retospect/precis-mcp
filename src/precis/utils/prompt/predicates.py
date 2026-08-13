@@ -53,7 +53,7 @@ def has_styled_anchor(ctx: AssemblyContext) -> bool:
     handle = _anchor_handle(ctx)
     if handle is None or ctx.store is None:
         return False
-    return bool(ctx.store.section_style_for(handle))
+    return bool(ctx.store.drafts.section_style_for(handle))
 
 
 def _review_kind(ctx: AssemblyContext) -> str | None:

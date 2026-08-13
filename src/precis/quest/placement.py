@@ -66,10 +66,10 @@ def _section_centroids(store: Any, dossier_ref_id: int) -> list[_SectionCentroid
     subtree's available chunk vectors. A heading whose whole subtree has no
     embedded chunks (or whose mean collapses to the zero vector) is skipped:
     it simply can't receive a placement yet."""
-    headings = store.draft_toc(dossier_ref_id)
+    headings = store.drafts.draft_toc(dossier_ref_id)
     if not headings:
         return []
-    chunks = store.reading_order(dossier_ref_id, kind="draft")
+    chunks = store.drafts.reading_order(dossier_ref_id, kind="draft")
     centroids: list[_SectionCentroid] = []
     for h in headings:
         member_ids = _subtree_chunk_ids(chunks, h.chunk_id)

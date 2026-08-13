@@ -306,7 +306,7 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
 
     scope_chunk_id: int | None = None
     if args.scope:
-        scope_chunk = store.get_draft_chunk(args.scope)
+        scope_chunk = store.drafts.get_draft_chunk(args.scope)
         if scope_chunk is None:
             print(f"quest review-all: no draft chunk {args.scope!r}", file=sys.stderr)
             sys.exit(2)

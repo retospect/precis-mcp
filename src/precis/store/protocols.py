@@ -57,31 +57,6 @@ class SettingsStore(Protocol):
     def set_setting(self, key: str, value: str) -> None: ...
 
 
-class ReadingOrderStore(Protocol):
-    """Read a document's chunk sequence (draft/plan reading order)."""
-
-    def reading_order(self, ref_id: int, *, kind: str = ...) -> list[Any]: ...
-
-
-class DiagramBindingStore(Protocol):
-    """Read a diagram's element↔chunk bindings and resolve bound chunks."""
-
-    def element_bindings(self, node_chunk_id: int) -> list[dict[str, Any]]: ...
-    def universal_chunk(self, handle: str) -> dict[str, Any] | None: ...
-
-
-class DiagramTurnStore(ReadingOrderStore, DiagramBindingStore, Protocol):
-    """Everything a diagram edit turn touches: read the document + bindings,
-    write the node's source/bindings, stamp turn bookkeeping meta."""
-
-    def edit_text(self, handle: str, text: str, *, kind: str = ...) -> Any: ...
-    def add_chunks(self, **kw: Any) -> list[Any]: ...
-    def stamp_ref_meta(self, ref_id: int, patch: dict[str, Any]) -> Any: ...
-    def set_element_bindings(
-        self, *, node_chunk_id: int, desired: list[dict[str, Any]], set_by: str = ...
-    ) -> dict[str, int]: ...
-
-
 class OpenTagMetaStore(Protocol):
     """Look up the first ref meta carrying a given open tag (patent CQL lift)."""
 

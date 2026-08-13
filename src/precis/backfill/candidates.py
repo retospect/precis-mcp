@@ -130,7 +130,7 @@ def draft_cited_ref_ids(store: Store, ref_id: int, *, kind: str = "draft") -> se
     set: a candidate already cited *anywhere* in the draft — directly, or as
     a hub's supporting evidence once ``[pc]``/``[pa]`` backfill to ``[fi]`` —
     is not a fresh gap."""
-    chunks = store.reading_order(ref_id, kind=kind)
+    chunks = store.drafts.reading_order(ref_id, kind=kind)
     hit: set[int] = set()
     for c in chunks:
         for lt in resolve_link_targets(store, c.text, exclude_ref_id=None):
@@ -190,10 +190,10 @@ def seed_from_targets(
     texts: list[str] = []
     views_by_ref: dict[int, dict[str, dict[str, str]]] = {}
     for tc in target_chunks:
-        chunks = store.reading_order(tc.ref_id, kind=kind)
+        chunks = store.drafts.reading_order(tc.ref_id, kind=kind)
         views = views_by_ref.get(tc.ref_id)
         if views is None:
-            views = views_by_ref[tc.ref_id] = store.block_views(tc.ref_id)
+            views = views_by_ref[tc.ref_id] = store.drafts.block_views(tc.ref_id)
         for c in _subtree_chunks(chunks, tc):
             texts.append(c.text or "")
             kwline = (views.get(c.handle, {}) or {}).get("keywords", "") or ""

@@ -166,12 +166,13 @@ def import_glossary(
     """
     res = GlossaryResult()
     by_short = {
-        short: h for h, (short, _long) in store.draft_terms(draft_ref_id).items()
+        short: h for h, (short, _long) in store.drafts.draft_terms(draft_ref_id).items()
     }
     by_short_long = {
-        short: long for _h, (short, long) in store.draft_terms(draft_ref_id).items()
+        short: long
+        for _h, (short, long) in store.drafts.draft_terms(draft_ref_id).items()
     }
-    gloss_heading = "¶" + store.ensure_glossary_heading(draft_ref_id)
+    gloss_heading = "¶" + store.drafts.ensure_glossary_heading(draft_ref_id)
     for key, (short, long) in acronyms.items():
         if short in by_short:
             res.handle[key] = by_short[short]
@@ -179,7 +180,7 @@ def import_glossary(
             if (by_short_long.get(short) or "").strip() != (long or "").strip():
                 res.conflicts.append((short, by_short_long.get(short, ""), long))
             continue
-        chunks = store.add_chunks(
+        chunks = store.drafts.add_chunks(
             ref_id=draft_ref_id,
             chunk_kind="term",
             text=long,

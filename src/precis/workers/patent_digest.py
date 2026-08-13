@@ -162,7 +162,7 @@ def discover_our_claim_handles(store: Any, draft_ref_id: int) -> list[str]:
     reading order. These ride the digest verbatim so the claim-writing tick
     sees *all our claims so far* alongside the prior art."""
     try:
-        chunks = store.reading_order(draft_ref_id)
+        chunks = store.drafts.reading_order(draft_ref_id)
     except Exception:  # pragma: no cover — no draft / store hiccup
         return []
     out: list[str] = []
@@ -170,7 +170,7 @@ def discover_our_claim_handles(store: Any, draft_ref_id: int) -> list[str]:
         if getattr(c, "chunk_kind", None) == "heading":
             continue  # the section heading itself is not a claim
         try:
-            style = store.section_style_for(c.dc)
+            style = store.drafts.section_style_for(c.dc)
         except Exception:  # pragma: no cover — style resolve hiccup
             style = None
         if style == "patent-claim":

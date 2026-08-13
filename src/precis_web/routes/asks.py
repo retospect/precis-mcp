@@ -246,7 +246,7 @@ def _ask_value(store: Any, ref_id: int, tag_value: str) -> str:
     """Turn an ``ask-user`` tag into the human question text.
 
     Strips the ``ask-user:`` prefix, then routes the value through
-    ``store.resolve_ask_question`` so a ``see-chunk-N`` overflow redirect
+    ``store.drafts.resolve_ask_question`` so a ``see-chunk-N`` overflow redirect
     (the form the tag takes when the question exceeds the 80-char tag cap)
     de-references to the real prose in the ``tag_overflow`` chunk — the
     reader must show the actual request, not the opaque ``see-chunk-0``

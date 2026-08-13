@@ -583,7 +583,7 @@ def _render_target(
                 # a bare record handle (``pa<id>`` / a patent) has none.
                 excerpt = ""
                 if is_chunk and ctx.store is not None:
-                    uc = ctx.store.universal_chunk(tgt)
+                    uc = ctx.store.drafts.universal_chunk(tgt)
                     if uc:
                         excerpt = uc.get("text") or ""
                 return _source_footnote(slug, kind, excerpt, ctx)
@@ -707,7 +707,7 @@ def _slug_chunk_excerpt(base: str, chunk_ord: str, ctx: _Ctx) -> str:
     if ref is None:
         return ""
     try:
-        return ctx.store.chunk_text_at(ref.id, int(chunk_ord)) or ""
+        return ctx.store.drafts.chunk_text_at(ref.id, int(chunk_ord)) or ""
     except Exception:  # pragma: no cover — store hiccup / missing method
         return ""
 
@@ -837,8 +837,8 @@ def render_body(
     bibliography number + the referenced chunk excerpt — so the draft reads
     offline without a round-trip to the reference list. The end bibliography
     is still built (the footnote's ``[N]`` matches it)."""
-    chunks = store.reading_order(ref.id)
-    abbrevs: dict[str, str] = store.defined_abbrevs(ref.id)
+    chunks = store.drafts.reading_order(ref.id)
+    abbrevs: dict[str, str] = store.drafts.defined_abbrevs(ref.id)
     ctx = _Ctx(
         keymap=_acronym_keymap(abbrevs),
         known_handles={c.dc for c in chunks},

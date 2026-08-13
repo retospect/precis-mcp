@@ -9,7 +9,7 @@ draft equation chunks:
 * normalise the raw LaTeX body to a single-line ``$$ … $$`` via the shared,
   tested :func:`precis.draftimport.mathnorm.normalize_math` (strips ``\\label``,
   unwraps outer ``equation``/``align``/``gather`` envs, wraps bare aligned rows);
-* ``store.edit_text`` the new body — this bumps ``content_sha`` (so the
+* ``store.drafts.edit_text`` the new body — this bumps ``content_sha`` (so the
   embed/keyword/summary cascade re-derives) and logs a ``chunk_events`` row with
   the original text as ``prev_text``, so the change is **reversible**;
 * flip ``chunk_kind`` to ``paragraph``.
@@ -115,7 +115,7 @@ def run(args: argparse.Namespace) -> None:
         converted += 1
         print(f"  chunk {chunk_id}: {raw[:48]!r} -> {norm[:64]!r}")
         if not dry:
-            store.edit_text(handle, norm)
+            store.drafts.edit_text(handle, norm)
             with store.pool.connection() as conn:
                 conn.execute(
                     "UPDATE chunks SET chunk_kind = 'paragraph' WHERE chunk_id = %s",
@@ -154,7 +154,7 @@ def run(args: argparse.Namespace) -> None:
                 rewrites += 1
                 print(f"  ref-rewrite chunk {chunk_id}")
                 if not dry:
-                    store.edit_text(handle, new)
+                    store.drafts.edit_text(handle, new)
 
     print(
         f"\nretire-draft-equations [{mode}] done: "

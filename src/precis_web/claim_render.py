@@ -375,7 +375,7 @@ def _grounding_chunks(
 
     ``chunk_cache`` — a pre-fetched ``{handle: chunk}`` map
     (:func:`~precis.store.Store.universal_chunks`) — skips the per-handle
-    ``store.universal_chunk`` round trip when given (a bulk caller resolving
+    ``store.drafts.universal_chunk`` round trip when given (a bulk caller resolving
     many hubs' grounding passages in one query, OPEN-ITEMS.md batch B)."""
     out: list[dict[str, Any]] = []
     by_handle: dict[str, dict[str, Any]] = {}

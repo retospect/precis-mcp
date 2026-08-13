@@ -796,7 +796,7 @@ def _render_plan_ledger(store: Store, plan_ref_id: int, slug: str) -> str:
     to fetch it. For a patent this is the freedom-to-operate scoping ledger:
     what was declined or narrowed, and why (``docs/backlog/patent-authoring-loop.md``). One line per node, capped for the flow."""
     try:
-        chunks = store.reading_order(plan_ref_id)
+        chunks = store.drafts.reading_order(plan_ref_id)
     except Exception:  # pragma: no cover — no plan / store hiccup
         return ""
     entries: list[str] = []
@@ -1186,7 +1186,7 @@ def _render_draft_sources(store: Store, draft_ref_id: int, ident: str) -> str:
     numeric id — kept as a parameter (not re-resolved here) so the caller's
     single :func:`~precis.utils.prompt.predicates._bound_draft_ref` query
     is the only lookup."""
-    chunks = store.reading_order(draft_ref_id)
+    chunks = store.drafts.reading_order(draft_ref_id)
     parts = [
         f"## Source material for draft `{ident}` (pre-rendered — cite from "
         "here before you search)",
@@ -1335,7 +1335,7 @@ def _render_glossary(store: Store, ref_id: int) -> str:
         ).fetchone()
     if not row:
         return ""
-    terms = store.draft_terms(int(row[0]))  # {handle: (short, long)}
+    terms = store.drafts.draft_terms(int(row[0]))  # {handle: (short, long)}
     rows = sorted(
         ((short, long, h) for h, (short, long) in terms.items() if short),
         key=lambda t: t[0].lower(),
@@ -1389,7 +1389,7 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
     handle = ((row[0] if row else None) or "").lstrip("¶").strip()
     if not handle:
         return ""
-    chunk = store.get_draft_chunk(handle)
+    chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None:
         return (
             f"## Anchor — requested at {handle}\n\n"
@@ -1415,7 +1415,7 @@ def _render_anchor_context(store: Store, ref_id: int) -> str:
     # What's already linked to this chunk — provenance, related thoughts,
     # and dream-memories — so the agent works *with* the existing context
     # (cite the linked source, build on the dream) instead of blind.
-    conns = store.chunk_connections(int(chunk.ref_id), [handle]).get(handle, [])
+    conns = store.drafts.chunk_connections(int(chunk.ref_id), [handle]).get(handle, [])
     if conns:
         parts.append("\nLinked to this chunk (use as context / sources):")
         for c in conns[:12]:
@@ -1495,7 +1495,7 @@ def _render_section_style(store: Store, ref_id: int) -> str:
     """Inject the section-style skill for the chunk this tick is anchored to.
 
     When the change-request's ``meta.anchor`` points at a draft chunk, find
-    the nearest enclosing styled heading (``store.section_style_for``) and
+    the nearest enclosing styled heading (``store.drafts.section_style_for``) and
     surface that style's skill body, so the editor authors the section in
     the right register (e.g. the ``patent-claim`` rules) without hunting for
     it. No-op when there's no anchor or no enclosing styled section.
@@ -1508,7 +1508,7 @@ def _render_section_style(store: Store, ref_id: int) -> str:
     handle = ((row[0] if row else None) or "").lstrip("¶").strip()
     if not handle:
         return ""
-    style = store.section_style_for(handle)
+    style = store.drafts.section_style_for(handle)
     if not style:
         return ""
     try:
@@ -2319,7 +2319,7 @@ def _render_backfill_workspace(
         # name the exact tag command (the ledger is a ref-level tag on the draft).
         draft_ident = "<draft>"
         try:
-            first = store.get_draft_chunk(targets[0], kind=kind)
+            first = store.drafts.get_draft_chunk(targets[0], kind=kind)
             if first is not None:
                 draft = store.get_ref(kind=kind, id=int(first.ref_id))
                 draft_ident = (

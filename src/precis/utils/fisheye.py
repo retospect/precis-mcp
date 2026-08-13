@@ -111,11 +111,11 @@ def render_fisheye(
       everything the section points at one edge out (cited papers, cross-refs,
       linked notes/memories — ``utils.refeye``)."""
     ext = Extent.parse(extent)
-    target = store.get_draft_chunk(handle, kind=kind)
+    target = store.drafts.get_draft_chunk(handle, kind=kind)
     if target is None:
         raise ValueError(f"fisheye: no live {kind} node {handle!r}")
-    chunks = store.reading_order(target.ref_id, kind=kind)
-    views = store.block_views(target.ref_id)
+    chunks = store.drafts.reading_order(target.ref_id, kind=kind)
+    views = store.drafts.block_views(target.ref_id)
     by_id = {c.chunk_id: c for c in chunks}
 
     # Content-only rungs (§ C0): the node *alone* — ``summary`` is its gloss,

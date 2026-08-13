@@ -289,7 +289,9 @@ def weave_tick(
                     }
                 )
                 continue
-            handle = store.scaffold_sections(did, [(title, "sci-survey-section")])[0]
+            handle = store.drafts.scaffold_sections(
+                did, [(title, "sci-survey-section")]
+            )[0]
             result = weave_section(
                 store,
                 client,
