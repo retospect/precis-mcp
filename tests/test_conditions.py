@@ -10,11 +10,17 @@ restart-once whitelist, dark by default).
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 import pytest
+from psycopg.types.json import Jsonb
 
+from precis.dispatch import Hub
+from precis.handlers.quest import QuestHandler
+from precis.quest import loop as loop_mod
 from precis.store import Store
+from precis.store.types import Tag
 from precis.workers.bounded_heal import HealSpec, run_bounded_heal
 from precis.workers.conditions import (
     Condition,
@@ -24,6 +30,7 @@ from precis.workers.conditions import (
     _probe_llm_degraded,
     _probe_pass_dead,
     _probe_pass_wedged,
+    _probe_rescue_cadence,
     run_condition_checks,
     run_condition_heals,
 )
@@ -72,6 +79,50 @@ def _seed_pass_logs(store: Store, handler: str, *, n: int, last_age_s: float) ->
                 "handler": handler,
                 "n": n,
             },
+        )
+        conn.commit()
+
+
+def _mk_quest(store: Store, text: str) -> int:
+    h = QuestHandler(hub=Hub(store=store))
+    resp = h.put(text=text)
+    m = re.search(r"\bqu(\d+)\b", resp.body)
+    assert m is not None, resp.body
+    return int(m.group(1))
+
+
+def _set_status(store: Store, ref_id: int, status: str) -> None:
+    store.add_tag(
+        ref_id,
+        Tag.closed("STATUS", status),
+        set_by="agent",
+        replace_prefix=True,
+    )
+
+
+def _age_status(store: Store, ref_id: int, age_sql: str) -> None:
+    """Backdate ``ref_id``'s current STATUS tag row's ``created_at``
+    server-side (e.g. ``'2 minutes'``) — same trick as
+    ``tests/test_quest_loop.py``'s helper, works for a quest's
+    STATUS:active tag or a job's STATUS: terminal tag alike."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE ref_tags rt SET created_at = (now() - (%s)::interval)
+              FROM tags t
+             WHERE rt.tag_id = t.tag_id AND t.namespace = 'STATUS'
+               AND rt.ref_id = %s
+            """,
+            (age_sql, ref_id),
+        )
+        conn.commit()
+
+
+def _set_rest_reason(store: Store, job_id: int, reason: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (Jsonb({"rest_reason": reason}), job_id),
         )
         conn.commit()
 
@@ -144,6 +195,130 @@ def test_pass_dead_respects_service_config_off(
                 (_HOST, handler),
             )
             conn.commit()
+
+
+# ── rescue-pass-cadence (gr204708 — demand-gated quest_loop_reconcile) ────
+
+
+def test_rescue_cadence_quest_reconcile_fires_when_active_quest_waited(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_COND_RESCUE_GAP_BUDGET_S", "60")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "quest_loop_reconcile", n=1, last_age_s=120.0)
+    q = _mk_quest(store, "a striving that needs a fresh loop")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "cancelled")
+    # A second, non-STATUS tag on the job (the reaper stamps
+    # reaped:reboot-orphan on exactly this cancelled shape) — regression
+    # guard for the demand SQL's DISTINCT ON tie-break: the extra ref_tags
+    # row must not shadow the STATUS row.
+    store.add_tag(job_id, Tag.open("reaped:reboot-orphan"), set_by="agent")
+    _age_status(store, job_id, "2 minutes")
+
+    found = [
+        f
+        for f in _probe_rescue_cadence(store)
+        if f.key == "rescue-gap:quest_loop_reconcile"
+    ]
+    assert len(found) == 1
+    assert "waiting" in found[0].detail
+
+
+def test_rescue_cadence_quest_reconcile_quiet_with_no_active_quests(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gr204708 false positive: a cadence gap with nothing waiting."""
+    monkeypatch.setenv("PRECIS_COND_RESCUE_GAP_BUDGET_S", "60")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "quest_loop_reconcile", n=1, last_age_s=120.0)
+
+    found = [
+        f
+        for f in _probe_rescue_cadence(store)
+        if f.key == "rescue-gap:quest_loop_reconcile"
+    ]
+    assert found == []
+
+
+def test_rescue_cadence_quest_reconcile_quiet_when_loop_live(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-terminal (running) loop means the loop is live — not waiting."""
+    monkeypatch.setenv("PRECIS_COND_RESCUE_GAP_BUDGET_S", "60")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "quest_loop_reconcile", n=1, last_age_s=120.0)
+    q = _mk_quest(store, "a striving mid-tick")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "running")
+
+    found = [
+        f
+        for f in _probe_rescue_cadence(store)
+        if f.key == "rescue-gap:quest_loop_reconcile"
+    ]
+    assert found == []
+
+
+def test_rescue_cadence_quest_reconcile_quiet_during_failed_backoff(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A most-recent 'failed' loop is deliberate exponential backoff
+    (``_failed_rest_cooldown_active``) — not starvation."""
+    monkeypatch.setenv("PRECIS_COND_RESCUE_GAP_BUDGET_S", "60")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "quest_loop_reconcile", n=1, last_age_s=120.0)
+    q = _mk_quest(store, "a striving resting on failure")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "failed")
+    _age_status(store, job_id, "2 minutes")
+
+    found = [
+        f
+        for f in _probe_rescue_cadence(store)
+        if f.key == "rescue-gap:quest_loop_reconcile"
+    ]
+    assert found == []
+
+
+def test_rescue_cadence_quest_reconcile_quiet_during_dry_rest(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dry rest (succeeded + meta.rest_reason='dry') is a deliberate
+    cooldown (``_dry_rest_cooldown_active``) — not starvation."""
+    monkeypatch.setenv("PRECIS_COND_RESCUE_GAP_BUDGET_S", "60")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "quest_loop_reconcile", n=1, last_age_s=120.0)
+    q = _mk_quest(store, "a striving resting dry")
+    job_id, _ = loop_mod.ensure_quest_loop(store, q)
+    assert job_id is not None
+    _set_status(store, job_id, "succeeded")
+    _set_rest_reason(store, job_id, "dry")
+    _age_status(store, job_id, "2 minutes")
+
+    found = [
+        f
+        for f in _probe_rescue_cadence(store)
+        if f.key == "rescue-gap:quest_loop_reconcile"
+    ]
+    assert found == []
+
+
+def test_rescue_cadence_sweeper_fires_on_gap_alone(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pure-cadence handlers (system-profile, fast rotation) fire on the
+    gap alone — no demand probe is consulted."""
+    monkeypatch.setenv("PRECIS_COND_RESCUE_GAP_BUDGET_S", "60")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, "sweeper", n=1, last_age_s=120.0)
+
+    found = [f for f in _probe_rescue_cadence(store) if f.key == "rescue-gap:sweeper"]
+    assert len(found) == 1
+    assert "waiting" not in found[0].detail
 
 
 # ── pass-wedged ──────────────────────────────────────────────────────────

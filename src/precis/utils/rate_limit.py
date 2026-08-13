@@ -56,6 +56,7 @@ from typing import Any
 import psycopg
 
 from precis.config import load_config
+from precis.liveness import drain_sleep
 
 log = logging.getLogger(__name__)
 
@@ -181,9 +182,11 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
     ``database_url`` is unset, the provider has no row, or the table/DB is
     unreachable — the limiter must NEVER wedge a worker or break ingest;
     worst case we degrade to the pre-limiter uncoordinated tenacity
-    behaviour. Returns ``False`` only when ``max_wait_s`` elapses while
-    rate-starved, or the daily quota is exhausted (the caller proceeds and
-    relies on its existing tenacity backoff either way).
+    behaviour. Returns ``False`` when ``max_wait_s`` elapses while
+    rate-starved, the daily quota is exhausted, or the process starts
+    draining mid-poll (gr204611 — a token-bucket wait must not outlive
+    the SIGTERM drain budget) — the caller proceeds and relies on its
+    existing tenacity backoff either way.
     """
     if not _rate_limit_enabled():
         return True
@@ -205,7 +208,11 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False  # rate-starved past the wait budget
-            time.sleep(_next_wait(n, float(avail), float(refill_per_sec), remaining))
+            wait = _next_wait(n, float(avail), float(refill_per_sec), remaining)
+            if drain_sleep(wait):
+                # Draining — stop waiting for tokens; the caller's retry
+                # path is itself drain-gated (precis.utils.http.external_retry).
+                return False
     except Exception:
         log.debug(
             "rate_limit: acquire(%r, n=%d) failed; failing open",

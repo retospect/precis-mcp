@@ -20,9 +20,16 @@ was invisible for 4 days):
   handler is dead/wedged/removed, not merely quiet. Handlers switched
   off live via ``service_config`` (prio 0) are excluded.
 * ``rescue-pass-cadence`` — the rescue-critical passes (sweeper,
-  nursery, quest_loop_reconcile) have a fleet-wide cadence SLO; a gap
-  means the rescuers themselves are starved (the 2026-08-12 bib_parse
-  starvation: quest_loop_reconcile stretched to ~30 min).
+  nursery, quest_loop_reconcile) have a fleet-wide cadence SLO. For
+  sweeper/nursery (system-profile, fast rotation, where a gap IS
+  starvation) a gap alone means the rescuers themselves are starved
+  (the 2026-08-12 bib_parse starvation: quest_loop_reconcile stretched
+  to ~30 min). ``quest_loop_reconcile`` runs in the agent-profile
+  rotation instead, where cycles legitimately stretch hours behind a
+  long ``claude_inproc`` run — gap alone false-positived on 34% of its
+  normal run intervals (gr204708) — so it also needs a demand probe:
+  a gap only fires when an active quest has actually waited the whole
+  budget with no live loop.
 * ``pass-wedged`` — ``host_heartbeat.meta.activity`` shows a pass
   running for hours (fresh heartbeat, stale ``since`` — the dedicated
   heartbeat thread keeps ``ts`` fresh through a wedge, so both signals
@@ -197,6 +204,79 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
 #: tighter budget than the per-host pass-dead row.
 _RESCUE_HANDLERS = ("sweeper", "nursery", "quest_loop_reconcile")
 
+_QUEST_RECONCILE_DEMAND_SQL = """
+WITH active_quests AS (
+    SELECT r.ref_id AS quest_id, rt.created_at AS active_since
+      FROM refs r
+      JOIN ref_tags rt ON rt.ref_id = r.ref_id
+      JOIN tags t ON t.tag_id = rt.tag_id
+     WHERE r.kind = 'quest' AND r.deleted_at IS NULL
+       AND t.namespace = 'STATUS' AND t.value = 'active'
+), latest_loop AS (
+    SELECT DISTINCT ON (aq.quest_id)
+           aq.quest_id, aq.active_since,
+           j.ref_id AS job_id, j.meta->>'rest_reason' AS rest_reason,
+           jt.value AS job_status, jrt.created_at AS status_since
+      FROM active_quests aq
+      LEFT JOIN refs j
+        ON j.kind = 'job' AND j.deleted_at IS NULL
+       AND j.meta->>'idem_key' = 'quest_tick:' || aq.quest_id
+       AND j.meta->>'executor' = 'coordinator'
+      LEFT JOIN ref_tags jrt ON jrt.ref_id = j.ref_id
+      LEFT JOIN tags jt ON jt.tag_id = jrt.tag_id AND jt.namespace = 'STATUS'
+     -- A job's non-STATUS tags (e.g. reaped:reboot-orphan) also match jrt,
+     -- landing extra rows with jt NULL; the NULLS LAST tie-break makes
+     -- DISTINCT ON deterministically keep the row carrying the STATUS value.
+     ORDER BY aq.quest_id, j.ref_id DESC, jt.value NULLS LAST
+)
+SELECT 1
+  FROM latest_loop
+ WHERE (
+         job_id IS NULL
+         AND active_since < now() - make_interval(secs => %(budget_s)s)
+       )
+    OR (
+         job_status IN ('succeeded', 'cancelled')
+         AND NOT (job_status = 'succeeded' AND rest_reason = 'dry')
+         AND status_since < now() - make_interval(secs => %(budget_s)s)
+       )
+ LIMIT 1
+"""
+
+
+def _quest_reconcile_demand(store: Store, budget_s: float) -> bool:
+    """True iff some active quest has gone ``budget_s`` without a live
+    ``quest_tick`` coordinator loop — an existence probe, not a finding
+    list (the cadence probe only needs a yes/no per fired handler).
+
+    A quest counts as "waiting" when its most-recent coordinator loop is
+    terminal-and-remintable (``succeeded``/``cancelled``, excluding a dry
+    rest) or missing entirely, and that state has held for the full
+    budget. Deliberately excluded: a live loop (non-terminal STATUS), a
+    ``failed`` most-recent loop (the escalating backoff in
+    ``precis.quest.loop._failed_rest_cooldown_active`` is on purpose), and
+    a dry rest (``succeeded`` + ``meta.rest_reason == 'dry'`` —
+    ``_dry_rest_cooldown_active``'s cooldown, also on purpose). Alerting
+    on either recreates the gr204708 false positive: the reconciler is
+    deliberately resting, not starved.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            _QUEST_RECONCILE_DEMAND_SQL, {"budget_s": budget_s}
+        ).fetchone()
+    return row is not None
+
+
+#: gr204708 — a gap alone false-positives on ``quest_loop_reconcile`` (its
+#: agent-profile rotation legitimately stretches across hour-long
+#: ``claude_inproc`` runs). A per-handler DEMAND probe answers "did work
+#: actually wait the whole budget window", not just "was the pass quiet";
+#: handlers absent from this table (sweeper, nursery — system-profile, fast
+#: rotation, where a gap IS starvation) stay pure-cadence.
+_RESCUE_DEMAND: dict[str, Callable[[Store, float], bool]] = {
+    "quest_loop_reconcile": _quest_reconcile_demand,
+}
+
 _RESCUE_GAP_SQL = """
 SELECT payload->>'handler' AS handler,
        EXTRACT(EPOCH FROM (now() - max(ts))) / 60.0 AS gap_min
@@ -222,17 +302,25 @@ def _probe_rescue_cadence(store: Store) -> list[ConditionFinding]:
             _RESCUE_GAP_SQL,
             {"handlers": list(_RESCUE_HANDLERS), "budget_s": budget_s},
         ).fetchall()
-    return [
-        ConditionFinding(
-            key=f"rescue-gap:{r[0]}",
-            detail=(
-                f"rescue-critical pass '{r[0]}' has not completed anywhere in "
-                f"{float(r[1]):.0f} min (fleet-wide; hosts are alive) — "
-                "pass-loop starvation (the 2026-08-12 bib_parse class)"
-            ),
+    out: list[ConditionFinding] = []
+    for r in rows:
+        handler = str(r[0])
+        gap_min = float(r[1])
+        demand = _RESCUE_DEMAND.get(handler)
+        if demand is not None and not demand(store, budget_s):
+            continue  # idle gap, not starvation — nothing was waiting
+        detail = (
+            f"rescue-critical pass '{handler}' has not completed anywhere in "
+            f"{gap_min:.0f} min (fleet-wide; hosts are alive) — "
+            "pass-loop starvation (the 2026-08-12 bib_parse class)"
         )
-        for r in rows
-    ]
+        if demand is not None:
+            detail += (
+                " and work is waiting (an active quest has sat without a "
+                "live loop past budget)"
+            )
+        out.append(ConditionFinding(key=f"rescue-gap:{handler}", detail=detail))
+    return out
 
 
 _PASS_WEDGED_SQL = """

@@ -1513,9 +1513,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "model_index": 0,
         "partial": {"states": {"s0": {}}, "warnings": []},
         "lattice": {"emt": 3.9},
-        "structures": {
-            "s0": {"energy": -1.0, "extxyz": "1\nX 0 0 0\n"}
-        },
+        "structures": {"s0": {"energy": -1.0, "extxyz": "1\nX 0 0 0\n"}},
     }
     monkeypatch.setattr(
         runner,

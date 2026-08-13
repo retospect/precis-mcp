@@ -5,13 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from semanticscholar import SemanticScholar
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
+from precis.utils.http import external_retry
 from precis.utils.rate_limit import acquire as acquire_rate_limit
 
 
@@ -69,12 +64,7 @@ def _shape_neighbor(item: Any) -> dict[str, Any]:
     }
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _get_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """Get papers this paper cites.
 
@@ -92,12 +82,7 @@ def _get_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]
     return [_shape_neighbor(r) for r in paper.references]
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _get_citations(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """Get papers that cite this paper.
 
@@ -144,12 +129,7 @@ _BATCH_FIELDS = [
 _BATCH_CHUNK_SIZE = 500
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _get_papers_batch(sch: SemanticScholar, s2_ids: list[str]) -> list[Any]:
     """POST /paper/batch for one chunk (<=500 ids).
 
@@ -195,12 +175,7 @@ def _lookup_input_id(paper: Any, index: dict[str, str]) -> str | None:
     return None
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _paginated_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """The truncation-fallback path: unlike ``get_paper``'s nested-field
     fetch (also capped at the same 10MB/9999 aggregate), the dedicated
@@ -224,12 +199,7 @@ def _paginated_references(sch: SemanticScholar, paper_id: str) -> list[dict[str,
     ]
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _paginated_citations(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """The truncation-fallback path for cited-by — see
     ``_paginated_references``."""

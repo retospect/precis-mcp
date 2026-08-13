@@ -53,12 +53,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from typing import Any
 
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.types.json import Jsonb
 
+from precis.liveness import drain_sleep
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
 from precis.utils.db_retry import retry_locked
 from precis.workers import ref_lease
@@ -444,12 +444,14 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
             except Exception as exc:
                 log.warning("bib_parse: crossref request failed: %r", exc)
                 if attempt + 1 < _CROSSREF_RETRY_MAX_ATTEMPTS:
-                    time.sleep(_CROSSREF_RETRY_BASE_S * (2**attempt))
+                    if drain_sleep(_CROSSREF_RETRY_BASE_S * (2**attempt)):
+                        return None
                     continue
                 return None
             if resp.status_code == 429 or resp.status_code >= 500:
                 if attempt + 1 < _CROSSREF_RETRY_MAX_ATTEMPTS:
-                    time.sleep(_CROSSREF_RETRY_BASE_S * (2**attempt))
+                    if drain_sleep(_CROSSREF_RETRY_BASE_S * (2**attempt)):
+                        return None
                     continue
                 return None
             if resp.status_code != 200:

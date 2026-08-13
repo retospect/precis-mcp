@@ -39,14 +39,6 @@ groups:
         annotations:
           summary: "PostgreSQL is down on the data node"
 
-      - alert: OllamaDown
-        expr: up{job="ollama"} == 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "{% raw %}Ollama is down on {{ $labels.instance }}{% endraw %}"
-
       - alert: NFSMountMissing
         expr: node_filesystem_avail_bytes{mountpoint="/shared"} == 0
         for: 5m

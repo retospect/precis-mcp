@@ -26,12 +26,14 @@ functions via :func:`require_httpx`, mirroring every existing caller.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.optional_deps import require_optional
 
 if TYPE_CHECKING:
     import httpx
+    from tenacity import RetryCallState
 
 #: Default User-Agent for precis outbound requests. Individual callers
 #: may override (e.g. the ORCID client appends a contact URL, the web
@@ -96,9 +98,52 @@ def http_client(
     )
 
 
+def external_retry(
+    *,
+    attempts: int = 5,
+    wait_min_s: float = 1.0,
+    wait_max_s: float = 60.0,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Shared tenacity retry decorator for outbound external-API calls
+    (S2, Crossref, ...): exponential backoff, five attempts, reraise.
+
+    Equivalent to the ``wait_exponential(min=1, max=60)`` /
+    ``stop_after_attempt(5)`` / ``reraise=True`` decorator that used to be
+    hand-copied at every retried call site — with two drain hooks added so
+    a backoff sleep can't outlive the worker's SIGTERM drain budget
+    (gr204611: a single 60s backoff sleep must not outlive the 60s drain
+    window and get the worker SIGKILLed mid-retry, which is what mints the
+    orphaned claims the reaper exists to clean up). The sleep wakes early
+    on drain via :func:`precis.liveness.drain_sleep`, and the retry
+    predicate refuses the *next* attempt once draining — with
+    ``reraise=True`` the in-flight exception then propagates exactly as if
+    the retry budget had been exhausted, so callers' existing failure
+    handling is unchanged.
+    """
+    import tenacity
+
+    from precis.liveness import drain_requested, drain_sleep
+
+    def _drain_aware_sleep(seconds: float) -> None:
+        drain_sleep(seconds)
+
+    class _not_draining(tenacity.retry_base):
+        def __call__(self, retry_state: RetryCallState) -> bool:
+            return not drain_requested()
+
+    return tenacity.retry(
+        wait=tenacity.wait_exponential(min=wait_min_s, max=wait_max_s),
+        stop=tenacity.stop_after_attempt(attempts),
+        retry=tenacity.retry_if_exception_type(Exception) & _not_draining(),
+        reraise=True,
+        sleep=_drain_aware_sleep,
+    )
+
+
 __all__ = [
     "DEFAULT_USER_AGENT",
     "HTTPX_EXTRA",
+    "external_retry",
     "http_client",
     "require_httpx",
 ]

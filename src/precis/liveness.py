@@ -77,6 +77,16 @@ def drain_requested() -> bool:
     return _DRAIN.is_set()
 
 
+def drain_sleep(seconds: float) -> bool:
+    """Sleep up to ``seconds`` but wake immediately on drain.
+
+    The drain-aware replacement for ``time.sleep`` in retry/backoff
+    paths: returns True iff the process is draining (possibly waking
+    early), False after a full undisturbed sleep.
+    """
+    return _DRAIN.wait(max(0.0, float(seconds)))
+
+
 def reserve_host() -> str:
     """This host's identity for resource reservation / claim stamping.
 

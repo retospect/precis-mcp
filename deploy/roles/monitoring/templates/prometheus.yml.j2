@@ -25,11 +25,3 @@ scrape_configs:
   - job_name: pgbouncer
     static_configs:
       - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9127']
-
-  - job_name: ollama
-    metrics_path: /metrics
-    static_configs:
-      - targets:
-{% for host in groups['ollama_hosts'] %}
-          - '{{ hostvars[host]["ansible_host"] }}:{{ ollama_port }}'
-{% endfor %}

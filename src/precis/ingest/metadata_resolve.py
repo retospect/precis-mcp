@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -38,6 +37,7 @@ from precis.ingest.cards import rewrite_cards
 from precis.ingest.crossref import lookup_crossref
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.ingest.semantic_scholar import lookup_s2
+from precis.liveness import drain_sleep
 from precis.store import Store, Tag
 from precis.utils.authors import to_name_dicts
 
@@ -449,7 +449,8 @@ def resolve_triage(
             "book-frontmatter"
         )
         if delay > 0 and hit_network:
-            time.sleep(delay)
+            if drain_sleep(delay):
+                break  # draining — stop walking the cohort, return what we have
     return results
 
 

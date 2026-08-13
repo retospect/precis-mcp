@@ -25,13 +25,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import time
 import urllib.error
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.handlers.news import article_blocks
+from precis.liveness import drain_requested, drain_sleep
 from precis.store import Store
 from precis.store.types import BlockInsert
 from precis.utils.llm.router import DispatchClient, DispatchError, Tier
@@ -195,10 +195,17 @@ def _complete_with_retry(
     *,
     attempts: int = _LLM_RETRY_ATTEMPTS,
     backoff_s: float = _LLM_RETRY_BACKOFF_S,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], object] = drain_sleep,
 ) -> Any:
     """``llm.complete`` with bounded exponential-backoff retries on transient
-    proxy failures; permanent errors propagate on the first attempt."""
+    proxy failures; permanent errors propagate on the first attempt.
+
+    ``sleep`` defaults to :func:`precis.liveness.drain_sleep` (gr204611: a
+    backoff sleep here must not outlive the SIGTERM drain budget) — its
+    return value is ignored by the ``Callable[[float], object]`` contract,
+    but a caller draining mid-sleep re-raises the transient exception right
+    after waking instead of burning the rest of the retry budget.
+    """
     for attempt in range(1, attempts + 1):
         try:
             return llm.complete(messages)
@@ -214,6 +221,8 @@ def _complete_with_retry(
                 exc,
             )
             sleep(wait)
+            if drain_requested():
+                raise
     raise AssertionError("unreachable")  # pragma: no cover
 
 

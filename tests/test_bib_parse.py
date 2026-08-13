@@ -779,7 +779,7 @@ class TestMatchCrossref:
             return responses.pop(0)
 
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
-        monkeypatch.setattr(bib_parse_mod.time, "sleep", lambda *_a: None)
+        monkeypatch.setattr(bib_parse_mod, "drain_sleep", lambda *_a: False)
 
         run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
         doi, _s2_id, _held, _match_conf = _entry_row(store, entry_id)
@@ -802,7 +802,7 @@ class TestMatchCrossref:
             raise RuntimeError("connection reset")
 
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
-        monkeypatch.setattr(bib_parse_mod.time, "sleep", lambda *_a: None)
+        monkeypatch.setattr(bib_parse_mod, "drain_sleep", lambda *_a: False)
 
         result = run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
         assert result == {"attempted": 1}

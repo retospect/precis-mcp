@@ -6,13 +6,8 @@ from datetime import datetime
 from typing import Any
 
 from semanticscholar import SemanticScholar
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
+from precis.utils.http import external_retry
 from precis.utils.rate_limit import acquire as acquire_rate_limit
 
 
@@ -36,12 +31,7 @@ def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] |
     return _normalize(paper)
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _search_with_retry(sch: SemanticScholar, title: str, limit: int) -> Any:
     """Search S2 with exponential backoff on 429."""
     acquire_rate_limit("s2")
@@ -128,12 +118,7 @@ def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] |
     return out
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _get_papers_with_retry(
     sch: SemanticScholar, paper_ids: list[str]
 ) -> tuple[list[Any], list[str]]:
@@ -174,12 +159,7 @@ def get_paper_by_id(paper_id: str, api_key: str = "") -> dict[str, Any] | None:
     return _normalize(paper)
 
 
-@retry(
-    wait=wait_exponential(min=1, max=60),
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+@external_retry()
 def _get_with_retry(sch: SemanticScholar, paper_id: str) -> Any:
     """Get paper with exponential backoff on 429."""
     acquire_rate_limit("s2")

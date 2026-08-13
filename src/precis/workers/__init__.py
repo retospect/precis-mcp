@@ -191,7 +191,10 @@ Notable pass mechanics
   an in-flight call aborts with its partial salvaged (the
   ``StreamTimeout``/``paused`` retry path) instead of holding the unit
   into the stop-timeout SIGKILL that minted the orphans in the first
-  place.
+  place. External-HTTP retry/backoff sleeps honor it too (gr204611):
+  :func:`precis.liveness.drain_sleep` wakes early on drain, and
+  :func:`precis.utils.http.external_retry` (the shared S2/Crossref
+  tenacity config) additionally refuses the next attempt once draining.
 * ``conditions`` (:mod:`.conditions`, evaluated on ``health_digest``'s
   hourly lane) is the condition registry (spine Layer 2): declarative
   probe rows — pass-dead-on-host (a handler silent past budget on a
