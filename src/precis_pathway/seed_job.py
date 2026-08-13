@@ -167,7 +167,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     partial = result["partial"]
     # The aggregate job's whole input: seed/model identity + the raw
-    # run_one_seed partial + any lattice this unit relaxed. Top-level job
+    # run_one_seed partial + any lattice this unit relaxed + the per-state
+    # geometry (``structures``, model_index==0 units only — this is how the
+    # relaxed extxyz crosses the job boundary to the aggregate's
+    # ``structures_extxyz`` merge; dropping it here is exactly how pathway
+    # geometry silently vanished from the whole fan-out era). Top-level job
     # meta (not params) — mirrors autocatpath_explore's own contract.
     ctx.set_meta(
         content_key=params.get("content_key"),
@@ -176,6 +180,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         model=result["model"],
         partial=partial,
         lattice=result.get("lattice") or {},
+        structures=result.get("structures") or {},
         **_provenance_meta(params),
     )
     n_states = len(partial.get("states") or {})
@@ -282,6 +287,7 @@ def _poll(ctx: Any, handle: Any) -> bool:
         model=result["model"],
         partial=partial,
         lattice=result.get("lattice") or {},
+        structures=result.get("structures") or {},  # see _dispatch's note
         **_provenance_meta(params),
     )
     tail = (status.get("tail") or "")[-4000:]

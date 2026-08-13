@@ -84,6 +84,17 @@ def persist_result(
     lands in the same meta. Best-effort — an ingest failure never blocks the
     core result write-back."""
     extra = dict(extra_meta or {})
+    if ingest and pathway_slug and not artifact.get("structures_extxyz"):
+        # The gate below silently skipping is exactly how the fan-out era
+        # shipped geometry-less pathways for ten days (the seed→aggregate
+        # glue dropped the ``structures`` key; 2026-08-13). An ingest-enabled
+        # persist with nothing to ingest is always worth a loud line.
+        log.warning(
+            "pathway %s: artifact carries no structures_extxyz — "
+            "structure_refs will not be set (per-state geometry lost "
+            "upstream?)",
+            pathway_slug,
+        )
     if ingest and pathway_slug and artifact.get("structures_extxyz"):
         try:
             from .ingest import ingest_intermediates

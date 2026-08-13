@@ -840,6 +840,9 @@ def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
     assert ctx.meta_updates["model"] == "emt"
     partial = ctx.meta_updates["partial"]
     assert isinstance(partial, dict) and partial["states"]
+    # model_index==0 unit: relaxed per-state geometry rides the meta to the
+    # aggregate (dropping it here was the fan-out geometry regression)
+    assert ctx.meta_updates["structures"], "seed meta carries no geometry"
     assert any(kind == "job_summary" for kind, _text in ctx.chunks)
 
 
@@ -1510,6 +1513,9 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "model_index": 0,
         "partial": {"states": {"s0": {}}, "warnings": []},
         "lattice": {"emt": 3.9},
+        "structures": {
+            "s0": {"energy": -1.0, "extxyz": "1\nX 0 0 0\n"}
+        },
     }
     monkeypatch.setattr(
         runner,
@@ -1538,6 +1544,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "model",
         "partial",
         "lattice",
+        "structures",
     }
     assert ctx.meta_updates["content_key"] == "deadbeef"
     assert ctx.meta_updates["seed"] == 1
@@ -1545,6 +1552,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
     assert ctx.meta_updates["model"] == "emt"
     assert ctx.meta_updates["partial"] == result["partial"]
     assert ctx.meta_updates["lattice"] == {"emt": 3.9}
+    assert ctx.meta_updates["structures"] == result["structures"]
     assert any(kind == "job_summary" for kind, _text in ctx.chunks)
     assert not any(kind == "run_log" for kind, _text in ctx.chunks)  # no tail given
 
@@ -1707,6 +1715,9 @@ def _seed_a_todo_tree(
                     "model": result["model"],
                     "partial": result["partial"],
                     "lattice": result.get("lattice") or {},
+                    # what seed_job._dispatch/_poll now stamp — the geometry's
+                    # only route across the job boundary (2026-08-13 fix)
+                    "structures": result.get("structures") or {},
                 },
                 parent_id=seed_todo.id,
                 conn=c,
@@ -1754,6 +1765,14 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     assert got.meta["n_seed_partials"] == 2
     blocks = pathway_store.list_blocks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")
+
+    # per-state geometry survived the seed->aggregate job boundary and was
+    # ingested as linked structure refs (the 2026-08-13 fan-out regression:
+    # the glue dropped `structures`, so every pathway shipped geometry-less)
+    assert got.meta["n_structures"] > 0
+    struct_refs = got.meta.get("structure_refs") or {}
+    assert struct_refs, "aggregate persisted no structure_refs"
+    assert all(isinstance(v, int) for v in struct_refs.values())
 
     # matches what the monolith would have produced on the same seeds
     monolith = runner.run_pathway(cfg, force_backend="emt")

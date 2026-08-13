@@ -130,6 +130,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 "model_index": m.get("model_index"),
                 "partial": partial,
                 "lattice": m.get("lattice") or {},
+                # per-state geometry (model_index==0 units) — feeds
+                # aggregate_seed_partials' min-energy structures_extxyz
+                # merge; omitting this key silently strips geometry from
+                # every fan-out pathway (the persist gate just skips).
+                "structures": m.get("structures") or {},
             }
         )
     if not seed_results:
