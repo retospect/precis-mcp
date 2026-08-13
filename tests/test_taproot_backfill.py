@@ -176,14 +176,14 @@ def _seed_draft_para(draft: DraftHandler, hub: Hub, text: str) -> int:
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_handle = hub.live_store.reading_order(ref.id)[0].handle
+    title_handle = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
         text=text,
         at={"after": "¶" + title_handle},
     )
-    order = hub.live_store.reading_order(ref.id)
+    order = hub.live_store.drafts.reading_order(ref.id)
     return int(order[-1].chunk_id)
 
 
@@ -630,7 +630,7 @@ def test_apply_is_idempotent_at_draft_level(draft: DraftHandler, hub: Hub) -> No
     # finds no pc-cites → zero cite-groups.
     nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert nt_ref is not None
-    order = hub.live_store.reading_order(nt_ref.id)
+    order = hub.live_store.drafts.reading_order(nt_ref.id)
     new_dc = int(order[-1].chunk_id)
     second = plan_chunk(
         hub.live_store,
@@ -796,7 +796,7 @@ def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
     # Both [pa] tokens still present in the live draft chunk — nothing erased.
     nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert nt_ref is not None
-    order = hub.live_store.reading_order(nt_ref.id)
+    order = hub.live_store.drafts.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
@@ -910,7 +910,7 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
     assert _finding_count(hub.live_store) == 1
     nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert nt_ref is not None
-    order = hub.live_store.reading_order(nt_ref.id)
+    order = hub.live_store.drafts.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
@@ -1013,7 +1013,7 @@ def test_apply_reground_multi_supporter_partial_nomatch_skips_whole_run(
     # Both [pa] tokens survive in the live draft chunk — nothing erased.
     nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert nt_ref is not None
-    order = hub.live_store.reading_order(nt_ref.id)
+    order = hub.live_store.drafts.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
@@ -1058,7 +1058,7 @@ def test_apply_reground_partial_unresolved_handle_skips_whole_run(
     # Both tokens survive — the unresolved one was NOT erased.
     nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert nt_ref is not None
-    order = hub.live_store.reading_order(nt_ref.id)
+    order = hub.live_store.drafts.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
@@ -1121,7 +1121,7 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
 
     nt_ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert nt_ref is not None
-    order = hub.live_store.reading_order(nt_ref.id)
+    order = hub.live_store.drafts.reading_order(nt_ref.id)
     live_dc = int(order[-1].chunk_id)
 
     # Step 2 — promote the freshly-grounded [pc] via the existing path.

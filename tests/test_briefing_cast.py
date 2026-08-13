@@ -154,7 +154,7 @@ class TestReadingLane:
             title=title,
             meta={"abstract": "An abstract."},
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=paper.id,
             chunk_kind="paragraph",
             text="Body text.",
@@ -302,7 +302,7 @@ class TestBuild:
             title=f"Morning briefing — {date_tag}",
             meta={"briefing": True, "date": date_tag},
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=news.id,
             chunk_kind="paragraph",
             text="Markets rose. A new catalyst paper landed.",
@@ -324,7 +324,7 @@ class TestBuild:
             title="wire",
             meta={"briefing": True, "date": date_tag},
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=news.id,
             chunk_kind="paragraph",
             text="A new catalyst paper landed.",

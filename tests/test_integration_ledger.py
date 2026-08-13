@@ -88,14 +88,14 @@ class TestIntegrationLedger:
         proj = _proj(store)
         draft.put(id="ledger-dossier", title="Dossier", project=proj)
         dossier_ref = store.get_ref(kind="draft", id="ledger-dossier")
-        title_chunk = store.reading_order(dossier_ref.id)[0]
+        title_chunk = store.drafts.reading_order(dossier_ref.id)[0]
         draft.put(
             id="ledger-dossier",
             chunk_kind="heading",
             text="Current state",
             at={"after": title_chunk.dc},
         )
-        section = store.reading_order(dossier_ref.id)[1]
+        section = store.drafts.reading_order(dossier_ref.id)[1]
         section_ord = _chunk_ord(store, section.chunk_id)
 
         p1 = _paper(store, "ledger-p1", "Paper One")

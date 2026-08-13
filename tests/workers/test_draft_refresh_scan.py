@@ -35,7 +35,7 @@ def _seed_draft(draft: DraftHandler, hub: Hub, *, slug: str) -> dict[str, Any]:
     draft.put(id=slug, title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_dc = hub.live_store.reading_order(ref.id)[0].dc
+    title_dc = hub.live_store.drafts.reading_order(ref.id)[0].dc
     return {"ref_id": ref.id, "title": title_dc}
 
 
@@ -329,10 +329,10 @@ def test_scan_idem_key_rearms_after_rewrite_but_dedups_when_unchanged(
     # ``chunks.handle`` (base58) form, not the universal ``dc<id>``
     # address — same as the job's own dispatch (``draft_refresh.py``
     # retires via ``c.handle``, not ``c.dc``).
-    old_para = store.get_draft_chunk(sec["paras"][0])
+    old_para = store.drafts.get_draft_chunk(sec["paras"][0])
     assert old_para is not None
-    store.retire_chunk(old_para.handle, mode="cascade")
-    new_chunks = store.add_chunks(
+    store.drafts.retire_chunk(old_para.handle, mode="cascade")
+    new_chunks = store.drafts.add_chunks(
         ref_id=seeded["ref_id"],
         chunk_kind="paragraph",
         text="New.",

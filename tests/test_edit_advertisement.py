@@ -187,7 +187,7 @@ def test_edit_tool_sub_reaches_draft_handler(hub: Hub) -> None:
         tools_core.put(kind="draft", id="subtest", title="T", project=proj)
         ref = store.get_ref(kind="draft", id="subtest")
         assert ref is not None
-        title_handle = store.reading_order(ref.id)[0].handle
+        title_handle = store.drafts.reading_order(ref.id)[0].handle
         tools_core.put(
             kind="draft",
             id="subtest",
@@ -202,7 +202,7 @@ def test_edit_tool_sub_reaches_draft_handler(hub: Hub) -> None:
             apply=True,
         )
         assert "[error:" not in str(out)
-        texts = [c.text for c in store.reading_order(ref.id) if c.text]
+        texts = [c.text for c in store.drafts.reading_order(ref.id) if c.text]
         assert any("alpha, beta" in t for t in texts)
     finally:
         tools_core._runtime = None

@@ -104,7 +104,7 @@ def test_collapse_marker_rolls_up_keywords(hub: Hub, plan: PlanHandler) -> None:
     h = _flat_doc(hub, plan, "kw", ["n0", "n1", "n2", "n3", "n4", "n5"])
     with store.pool.connection() as conn:
         for name in ("n1", "n2", "n3", "n4"):
-            ch = store.get_draft_chunk(h[name], kind="plan")
+            ch = store.drafts.get_draft_chunk(h[name], kind="plan")
             assert ch is not None
             write_chunk_keywords(
                 conn,

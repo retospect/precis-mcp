@@ -56,10 +56,10 @@ def _dossier_with_sections(store: Store, slug: str, n: int) -> tuple[int, list[s
     ``dc`` return value, a different handle namespace)."""
     ref = store.insert_ref(kind="draft", slug=slug, title="Dossier", meta={})
     sections: list[tuple[str, str | None]] = [(f"Section {i}", None) for i in range(n)]
-    dc_handles = store.scaffold_sections(ref.id, sections)
+    dc_handles = store.drafts.scaffold_sections(ref.id, sections)
     handles = []
     for i, dc_handle in enumerate(dc_handles):
-        chunk = store.get_draft_chunk(dc_handle)
+        chunk = store.drafts.get_draft_chunk(dc_handle)
         assert chunk is not None
         _embed(store, chunk.chunk_id, _onehot(i))
         handles.append(chunk.handle)

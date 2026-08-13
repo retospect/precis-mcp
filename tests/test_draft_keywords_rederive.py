@@ -35,8 +35,8 @@ def _set_embed_sha_to_current(store: Store, chunk_id: int) -> None:
 
 def test_keywords_rederive_gated_on_embed_then_reclaims(store: Store) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="P").id
-    ref, title = store.create_draft(name="nt", title="T", project_ref_id=proj)
-    p = store.add_chunks(
+    ref, title = store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
+    p = store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text=_LONG, at={"after": title.handle}
     )[0]
 
@@ -71,7 +71,7 @@ def test_keywords_rederive_gated_on_embed_then_reclaims(store: Store) -> None:
 
     # 3) edit the text → content_sha changes, but the embedding is now
     #    stale → keywords WAIT (don't re-derive against a stale vector)
-    store.edit_text(p.handle, _LONG2)
+    store.drafts.edit_text(p.handle, _LONG2)
     assert p.chunk_id not in _claimed(store)
 
     # 4) embed catches up → keywords re-claim for re-derivation
@@ -103,8 +103,8 @@ def test_draft_chunks_jump_queue_ahead_of_papers(store: Store) -> None:
 
     # a newer draft chunk (higher ref_id), embedded at its current sha.
     proj = store.insert_ref(kind="todo", slug=None, title="P").id
-    ref, title = store.create_draft(name="njump", title="T", project_ref_id=proj)
-    d = store.add_chunks(
+    ref, title = store.drafts.create_draft(name="njump", title="T", project_ref_id=proj)
+    d = store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text=_LONG2, at={"after": title.handle}
     )[0]
     with store.pool.connection() as conn:

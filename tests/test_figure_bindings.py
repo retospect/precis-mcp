@@ -65,15 +65,17 @@ def fig(store, fh):
 def _target(store) -> str:
     """A draft chunk to bind to; returns its dc<id> handle."""
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
-    src, _t = store.create_draft(name="parts", title="Parts", project_ref_id=proj)
-    store.add_chunks(
+    src, _t = store.drafts.create_draft(
+        name="parts", title="Parts", project_ref_id=proj
+    )
+    store.drafts.add_chunks(
         ref_id=src.id, chunk_kind="paragraph", text="the face is a green circle"
     )
-    return store.reading_order(src.id)[1].dc
+    return store.drafts.reading_order(src.id)[1].dc
 
 
 def _source_chunk_id(store, ref_id: int) -> int:
-    for c in store.reading_order(ref_id, kind="figure"):
+    for c in store.drafts.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node":
             return c.chunk_id
     raise AssertionError("no figure_node")
@@ -89,7 +91,7 @@ def _fixed(**payload):
 def test_render_diagram_context_lists_elements_and_body(store, fig) -> None:
     node = _source_chunk_id(store, fig.id)
     h = _target(store)
-    store.bind_element(node_chunk_id=node, element="face", target=h)
+    store.drafts.bind_element(node_chunk_id=node, element="face", target=h)
 
     ctx = render_diagram_context(store, node, _FACE)
     assert "Diagram elements ↔ linked context" in ctx
@@ -107,7 +109,7 @@ def test_render_diagram_context_empty_without_bindings(store, fig) -> None:
 def test_render_diagram_context_marks_dangling(store, fig) -> None:
     node = _source_chunk_id(store, fig.id)
     h = _target(store)
-    store.bind_element(node_chunk_id=node, element="ghost", target=h)
+    store.drafts.bind_element(node_chunk_id=node, element="ghost", target=h)
     ctx = render_diagram_context(store, node, _FACE)
     assert "dangling" in ctx
 
@@ -141,7 +143,7 @@ def test_turn_creates_bindings_from_links(store, fig) -> None:
             links=[{"element": "face", "target": h, "relation": "depicts"}],
         ),
     )
-    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("face", h)}
     assert {(b["element"], b["handle"]) for b in res.bindings} == {("face", h)}
 
@@ -149,24 +151,24 @@ def test_turn_creates_bindings_from_links(store, fig) -> None:
 def test_turn_without_links_leaves_bindings(store, fig) -> None:
     node = _source_chunk_id(store, fig.id)
     h = _target(store)
-    store.bind_element(node_chunk_id=node, element="face", target=h)
+    store.drafts.bind_element(node_chunk_id=node, element="face", target=h)
     # a chat-only turn (no svg, no links) must not disturb bindings
     run_turn(store, fig, "hi", claude_fn=_fixed(reply="hello"))
-    assert {b["element"] for b in store.element_bindings(node)} == {"face"}
+    assert {b["element"] for b in store.drafts.element_bindings(node)} == {"face"}
 
 
 def test_turn_empty_links_clears_bindings(store, fig) -> None:
     node = _source_chunk_id(store, fig.id)
     h = _target(store)
-    store.bind_element(node_chunk_id=node, element="face", target=h)
+    store.drafts.bind_element(node_chunk_id=node, element="face", target=h)
     run_turn(store, fig, "unbind all", claude_fn=_fixed(reply="cleared", links=[]))
-    assert store.element_bindings(node) == []
+    assert store.drafts.element_bindings(node) == []
 
 
 def test_turn_dangling_binding_surfaces_in_findings(store, fig) -> None:
     node = _source_chunk_id(store, fig.id)
     h = _target(store)
-    store.bind_element(node_chunk_id=node, element="face", target=h)
+    store.drafts.bind_element(node_chunk_id=node, element="face", target=h)
     # the model removes the <circle id="face"> but keeps the binding
     res = run_turn(
         store, fig, "drop the face", claude_fn=_fixed(reply="dropped", svg=_NO_FACE)
@@ -184,7 +186,7 @@ def test_handler_link_binds_and_get_shows_it(store, fh, fig) -> None:
     out = fh.link(id="m", element="face", target=h)
     assert "bound element 'face'" in out.body
 
-    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("face", h)}
 
     rendered = fh.get(id="m").body
@@ -198,4 +200,4 @@ def test_handler_link_remove_unbinds(store, fh, fig) -> None:
     fh.link(id="m", element="face", target=h)
     out = fh.link(id="m", element="face", mode="remove")
     assert "unbound" in out.body
-    assert store.element_bindings(node) == []
+    assert store.drafts.element_bindings(node) == []

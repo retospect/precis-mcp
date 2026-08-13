@@ -37,7 +37,7 @@ same section N times for nothing). An equation/table/term chunk gets
 nothing from either lens set. ``toc`` is document-level, not per-chunk —
 see below.
 
-**Which chunks.** ``store.reviewable_chunks(ref_id)`` — the draft's live,
+**Which chunks.** ``store.drafts.reviewable_chunks(ref_id)`` — the draft's live,
 draft-family chunks with a non-NULL ``content_sha`` (the same population
 ``chunks_requiring_review``/``review_status_for_draft`` scope to), or, for
 a narrower ``scope``, ``store.drafts.review_subtree_chunk_ids`` (a heading's
@@ -94,7 +94,7 @@ project todo itself (same accepted orphan-sweep caveat
 
 **Author flag.** The effective authoring decision is ``author=True`` OR'd
 with the draft's per-document auto-author toggle
-(``store.draft_authoring_enabled(draft_ref_id)``, rung 3e — set via
+(``store.drafts.draft_authoring_enabled(draft_ref_id)``, rung 3e — set via
 ``edit(kind='draft', authoring='on')`` / the web reader's toolbar toggle).
 Either forces authoring on; the explicit ``author`` param still lets a
 caller (e.g. the CLI ``--author`` flag) override the toggle regardless of
@@ -248,7 +248,9 @@ def _scoped_chunks(
 
     Raises :class:`BadInput` when ``scope`` doesn't name a live reviewable
     chunk of this draft."""
-    all_chunks = {c["chunk_id"]: c for c in store.reviewable_chunks(draft_ref_id)}
+    all_chunks = {
+        c["chunk_id"]: c for c in store.drafts.reviewable_chunks(draft_ref_id)
+    }
     if scope is None:
         return list(all_chunks.values())
     target = all_chunks.get(scope)
@@ -310,7 +312,9 @@ def mint_review_fanout(
     # Per-document auto-author toggle (rung 3e): an explicit ``author=True``
     # forces authoring on regardless of the toggle; otherwise defer to the
     # draft's own ``meta.authoring_enabled`` (web toolbar / edit(authoring=)).
-    effective_author = author or bool(store.draft_authoring_enabled(draft_ref_id))
+    effective_author = author or bool(
+        store.drafts.draft_authoring_enabled(draft_ref_id)
+    )
     chunks = _scoped_chunks(store, draft_ref_id, scope)
 
     approved_at_sha = (
@@ -387,14 +391,14 @@ def _mint_doc_lenses(
     per document, anchored on the draft's first REVIEWABLE chunk in
     document order (item 10; see ``store.drafts.toc_digest``'s docstring for why
     there is no single dedicated root to anchor on instead). Anchor is
-    ``store.review_root_chunk_id`` — NOT ``reading_order()[0]`` — so this
+    ``store.drafts.review_root_chunk_id`` — NOT ``reading_order()[0]`` — so this
     mints on the SAME chunk ``review_status_for_draft`` reports the
     ``toc`` ledger row against; ``reading_order()[0]`` carries no
     content_sha filter, so if the draft's first chunk isn't yet
     reviewable this would anchor on a chunk the status query never
     surfaces, and the toc indicator would read permanently unapproved.
     Returns ``(minted_ids, skipped, unsettled_skipped)``."""
-    root_chunk_id = store.review_root_chunk_id(draft_ref_id)
+    root_chunk_id = store.drafts.review_root_chunk_id(draft_ref_id)
     if root_chunk_id is None:
         return [], 0, 0
     anchor = handle_registry.format_handle("draft", root_chunk_id, chunk=True)
@@ -429,7 +433,7 @@ def _toc_is_dirty(store: Any, draft_ref_id: int) -> bool:
     (the root chunk's ``chunk_review.approved_sha``) no longer matches the
     recomputed :meth:`~precis.store._draft_ops.DraftMixin.toc_digest`.
     ``True`` (dirty) when never approved."""
-    for row in store.review_status_for_draft(draft_ref_id):
+    for row in store.drafts.review_status_for_draft(draft_ref_id):
         if row["checker"] == "toc":
             return bool(row["dirty"])
     return True

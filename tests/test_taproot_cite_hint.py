@@ -29,7 +29,7 @@ def _proj(hub: Hub) -> int:
 def _order(hub: Hub, slug: str) -> list:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    return hub.live_store.reading_order(ref.id)
+    return hub.live_store.drafts.reading_order(ref.id)
 
 
 def _seed_pc(store: Store, *, paper_ref_id: int, text: str = "supporting text") -> int:

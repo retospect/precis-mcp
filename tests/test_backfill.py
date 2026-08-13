@@ -140,7 +140,7 @@ def test_find_candidates_broadens_kinds_and_weights_by_tier(
 
     store = hub.live_store
     sec, _cited_id, _cand_id = _doc_with_citation(store, plan)
-    tc = store.get_draft_chunk(sec, kind="plan")
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     captured: dict[str, object] = {}
 
@@ -191,7 +191,7 @@ def test_find_candidates_surfaces_memory_as_ref_level_lead(
 
     store = hub.live_store
     sec, _cited, _cand = _doc_with_citation(store, plan)
-    tc = store.get_draft_chunk(sec, kind="plan")
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         block = NS(id=555)
@@ -255,7 +255,7 @@ def test_draft_cited_ref_ids_finds_only_cited_papers(
         id="p", text=f"a claim paper:{cited.id} memory:{note.id}", at={"into": sec}
     )
 
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
     ref_id = sec_chunk.ref_id
     got = draft_cited_ref_ids(store, ref_id, kind="plan")
@@ -374,7 +374,7 @@ def test_backfill_marks_stamp_cited_and_candidate(hub: Hub, plan: PlanHandler) -
         chunk_handle="pc999",
         score=1.0,
     )
-    tc = store.get_draft_chunk(sec, kind="plan")
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
     marks = wsmod._backfill_marks(store, [tc], [cand], kind="plan")
     cited_handle = handle_registry.format_handle("paper", cited_id)
     assert marks[cited_handle].startswith("★ cited")
@@ -415,7 +415,7 @@ def test_draft_cited_ref_ids_includes_fi_hub_supporters(
     sec = _pe(plan.put(id="g1", text="Section", at={"last": True}).body)
     plan.put(id="g1", text=f"a settled claim [fi{hub_ref_id}]", at={"into": sec})
 
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
     ref_id = sec_chunk.ref_id
     got = draft_cited_ref_ids(store, ref_id, kind="plan")
@@ -437,7 +437,7 @@ def test_draft_cited_ref_ids_ignores_non_hub_finding_cite(
     sec = _pe(plan.put(id="g1b", text="Section", at={"last": True}).body)
     plan.put(id="g1b", text=f"see [fi{plain_finding.id}] for detail", at={"into": sec})
 
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
     ref_id = sec_chunk.ref_id
     got = draft_cited_ref_ids(store, ref_id, kind="plan")  # must not raise
@@ -490,7 +490,7 @@ def test_find_candidates_topic_gate_demotes_off_domain_hit(
         ]
 
     monkeypatch.setattr(store, "search_blocks_multi", fake_search)
-    tc = store.get_draft_chunk(sec, kind="plan")
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     out = find_candidates(
         store, None, [tc], kind="plan", limit=5, citation_seed_ref_ids={cited_id}
@@ -523,7 +523,7 @@ def test_find_candidates_topic_gate_noop_without_draft_topics(
         return [(NS(id=301), off_domain, 1.0)]
 
     monkeypatch.setattr(store, "search_blocks_multi", fake_search)
-    tc = store.get_draft_chunk(sec, kind="plan")
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     out = find_candidates(
         store, None, [tc], kind="plan", limit=5, citation_seed_ref_ids={cited_id}
@@ -569,7 +569,7 @@ def test_find_candidates_topic_gate_covers_citation_lens_only_hit(
     )
     monkeypatch.setattr(cl, "find_citation_candidates", lambda *a, **k: [cite_cand])
 
-    tc = store.get_draft_chunk(sec, kind="plan")
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
     out = find_candidates(
         store, None, [tc], kind="plan", limit=5, citation_seed_ref_ids={cited_id}
     )
@@ -602,9 +602,11 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
     draft.put(id="wd", title="Whole Draft Doc", project=proj)
     ref = store.get_ref(kind="draft", id="wd")
     assert ref is not None
-    title_h = store.reading_order(ref.id)[0].handle
+    title_h = store.drafts.reading_order(ref.id)[0].handle
     draft.put(id="wd", chunk_kind="heading", text="Intro", at={"after": "¶" + title_h})
-    intro_h = next(c.handle for c in store.reading_order(ref.id) if c.text == "Intro")
+    intro_h = next(
+        c.handle for c in store.drafts.reading_order(ref.id) if c.text == "Intro"
+    )
     draft.put(
         id="wd", chunk_kind="paragraph", text="intro body", at={"into": "¶" + intro_h}
     )
@@ -612,7 +614,7 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
         id="wd", chunk_kind="heading", text="Methods", at={"after": "¶" + intro_h}
     )
     methods_h = next(
-        c.handle for c in store.reading_order(ref.id) if c.text == "Methods"
+        c.handle for c in store.drafts.reading_order(ref.id) if c.text == "Methods"
     )
     draft.put(
         id="wd",
@@ -628,7 +630,7 @@ def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
 
     monkeypatch.setattr(store, "search_blocks_multi", fake_search)
 
-    n_sections = sum(1 for e in store.draft_toc(ref.id) if e.depth == 0)
+    n_sections = sum(1 for e in store.drafts.draft_toc(ref.id) if e.depth == 0)
     out = draft.get(id="wd", view="backfill").body
     assert f"{n_sections} section(s) scanned" in out
     assert "Recurring Candidate" in out
@@ -649,9 +651,9 @@ def test_assemble_draft_notes_truncation_not_a_silent_drop(
     draft.put(id="wd2", title="Doc", project=proj)
     ref = store.get_ref(kind="draft", id="wd2")
     assert ref is not None
-    title_h = store.reading_order(ref.id)[0].handle
+    title_h = store.drafts.reading_order(ref.id)[0].handle
     draft.put(id="wd2", chunk_kind="heading", text="A", at={"after": "¶" + title_h})
-    a_h = next(c.handle for c in store.reading_order(ref.id) if c.text == "A")
+    a_h = next(c.handle for c in store.drafts.reading_order(ref.id) if c.text == "A")
     draft.put(id="wd2", chunk_kind="paragraph", text="a body", at={"into": "¶" + a_h})
 
     papers = [

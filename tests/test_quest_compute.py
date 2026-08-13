@@ -3791,7 +3791,7 @@ class TestFrontierTreeDossierChunk:
         handle1 = dossier_mod.update_frontier_tree(store, qid)
         did, _h, _text = dossier_mod.read_dossier(store, qid)
         assert did is not None
-        chunks = store.reading_order(did)
+        chunks = store.drafts.reading_order(did)
         tree_chunk = next(
             c for c in chunks if (c.meta or {}).get("pinned") == "frontier-tree"
         )
@@ -3859,7 +3859,7 @@ class TestFrontierTreeDossierChunk:
         assert did is not None
         before = next(
             c
-            for c in store.reading_order(did)
+            for c in store.drafts.reading_order(did)
             if (c.meta or {}).get("pinned") == "frontier-tree"
         ).text
 
@@ -3867,7 +3867,7 @@ class TestFrontierTreeDossierChunk:
 
         after_tree = next(
             c
-            for c in store.reading_order(did)
+            for c in store.drafts.reading_order(did)
             if (c.meta or {}).get("pinned") == "frontier-tree"
         ).text
         assert after_tree == before  # untouched by the whole-rewrite
@@ -3894,7 +3894,7 @@ class TestFrontierTreeDossierChunk:
         assert did is not None
         tree_chunk = next(
             c
-            for c in store.reading_order(did)
+            for c in store.drafts.reading_order(did)
             if (c.meta or {}).get("pinned") == "frontier-tree"
         )
         assert "Fe" in tree_chunk.text

@@ -81,9 +81,13 @@ def test_registered_with_dispatch() -> None:
 
 def _target_chunk(store) -> str:
     proj = store.insert_ref(kind="todo", slug=None, title="p").id
-    src, _t = store.create_draft(name="parts", title="Parts", project_ref_id=proj)
-    store.add_chunks(ref_id=src.id, chunk_kind="paragraph", text="a stainless hook")
-    return store.reading_order(src.id)[1].dc
+    src, _t = store.drafts.create_draft(
+        name="parts", title="Parts", project_ref_id=proj
+    )
+    store.drafts.add_chunks(
+        ref_id=src.id, chunk_kind="paragraph", text="a stainless hook"
+    )
+    return store.drafts.reading_order(src.id)[1].dc
 
 
 def test_compose_message_inlines_seed_chunks(store) -> None:
@@ -115,7 +119,7 @@ def figure_and_seed(store):
 
 
 def _source_chunk_id(store, ref_id):
-    for c in store.reading_order(ref_id, kind="figure"):
+    for c in store.drafts.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node":
             return c.chunk_id
     raise AssertionError("no figure_node")
@@ -153,11 +157,11 @@ def test_dispatch_builds_figure_and_binds(store, figure_and_seed, monkeypatch) -
     node = _source_chunk_id(store, ref.id)
     src_text = next(
         c.text
-        for c in store.reading_order(ref.id, kind="figure")
+        for c in store.drafts.reading_order(ref.id, kind="figure")
         if c.chunk_kind == "figure_node"
     )
     assert 'id="hook"' in src_text  # source rewritten in place
-    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("hook", h)}
 
 

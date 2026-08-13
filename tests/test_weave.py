@@ -57,7 +57,7 @@ def _dossier_with_section(store: Any, slug: str) -> tuple[int, str]:
     """A ``draft`` with one scaffolded top-level heading; returns
     ``(dossier_ref_id, section_dc_handle)``."""
     ref = store.insert_ref(kind="draft", slug=slug, title="Dossier", meta={})
-    handles = store.scaffold_sections(ref.id, [("Section One", None)])
+    handles = store.drafts.scaffold_sections(ref.id, [("Section One", None)])
     return ref.id, handles[0]
 
 
@@ -145,7 +145,7 @@ class TestWeaveApplies:
         assert result["applied"] is True
         assert result["section_text_len"] == len(section_text)
 
-        body_chunk = store.get_draft_chunk(result["body_handle"], kind="draft")
+        body_chunk = store.drafts.get_draft_chunk(result["body_handle"], kind="draft")
         assert body_chunk is not None
         assert body_chunk.text == section_text
         assert body_chunk.meta.get("weave_body") is True
@@ -156,7 +156,7 @@ class TestWeaveApplies:
         assert citation_ref is not None
         assert citation_ref.meta["claim"] == claim_text
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         heading_ord = _heading_ord(store, heading.chunk_id)
         links = store.links_for(dossier_id, direction="in", relation="cited-in")
         assert any(
@@ -216,12 +216,12 @@ class TestWeaveApplies:
 
         # Same chunk identity (handle stable) — no duplicate woven body.
         assert result_2["body_handle"] == result_1["body_handle"]
-        body_chunk = store.get_draft_chunk(result_2["body_handle"], kind="draft")
+        body_chunk = store.drafts.get_draft_chunk(result_2["body_handle"], kind="draft")
         assert body_chunk is not None
         assert body_chunk.text == second_text
         assert content_sha(first_text) != content_sha(second_text)
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         with store.pool.connection() as conn:
             n = conn.execute(
                 "SELECT count(*) FROM chunks WHERE parent_chunk_id = %s "
@@ -232,7 +232,7 @@ class TestWeaveApplies:
 
     def test_human_authored_chunk_left_untouched(self, store: Any) -> None:
         dossier_id, section_handle = _dossier_with_section(store, "wv3")
-        human_chunks = store.add_chunks(
+        human_chunks = store.drafts.add_chunks(
             ref_id=dossier_id,
             chunk_kind="paragraph",
             text="A human wrote this paragraph by hand.",
@@ -266,7 +266,7 @@ class TestWeaveApplies:
         assert result["ok"] is True
         assert result["body_handle"] != human_handle
 
-        human_chunk = store.get_draft_chunk(human_handle, kind="draft")
+        human_chunk = store.drafts.get_draft_chunk(human_handle, kind="draft")
         assert human_chunk is not None
         assert human_chunk.text == "A human wrote this paragraph by hand."
 
@@ -303,7 +303,7 @@ class TestDispositions:
             {"ref_id": paper_id, "disposition": "off-topic-for", "citation_ids": []}
         ]
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         heading_ord = _heading_ord(store, heading.chunk_id)
         links = store.links_for(dossier_id, direction="in", relation="off-topic-for")
         assert any(
@@ -341,7 +341,7 @@ class TestDispositions:
             {"ref_id": paper_id, "disposition": "superseded-in", "citation_ids": []}
         ]
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         heading_ord = _heading_ord(store, heading.chunk_id)
         links = store.links_for(dossier_id, direction="in", relation="superseded-in")
         assert any(
@@ -396,7 +396,7 @@ class TestDryRunAndParseFailure:
         assert "body_handle" not in result
         assert "citation_ids" not in result
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         with store.pool.connection() as conn:
             n = conn.execute(
                 "SELECT count(*) FROM chunks WHERE parent_chunk_id = %s "
@@ -434,7 +434,7 @@ class TestDryRunAndParseFailure:
 
         assert result == {"ok": False, "error": "unparseable", "applied": False}
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         with store.pool.connection() as conn:
             n = conn.execute(
                 "SELECT count(*) FROM chunks WHERE parent_chunk_id = %s "
@@ -470,7 +470,7 @@ class TestDryRunAndParseFailure:
             "applied": False,
         }
 
-        heading = store.get_draft_chunk(section_handle, kind="draft")
+        heading = store.drafts.get_draft_chunk(section_handle, kind="draft")
         with store.pool.connection() as conn:
             n = conn.execute(
                 "SELECT count(*) FROM chunks WHERE parent_chunk_id = %s "
@@ -652,7 +652,7 @@ class TestReweaveConflict:
         }
 
         # Body text unchanged (still the first weave's text) — no clobber.
-        body_chunk = store.get_draft_chunk(result_1["body_handle"], kind="draft")
+        body_chunk = store.drafts.get_draft_chunk(result_1["body_handle"], kind="draft")
         assert body_chunk is not None
         assert body_chunk.text == first_text
 
@@ -750,6 +750,6 @@ class TestPerPaperResilience:
         assert not any(link.src_ref_id == paper_a for link in links)
 
         # The body chunk still got written despite the per-paper failure.
-        body_chunk = store.get_draft_chunk(result["body_handle"], kind="draft")
+        body_chunk = store.drafts.get_draft_chunk(result["body_handle"], kind="draft")
         assert body_chunk is not None
         assert body_chunk.text == "Composed prose citing both papers."

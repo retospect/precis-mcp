@@ -15,7 +15,7 @@ from precis.workers import cast_audio
 def _make_cast_draft(store: Any, cast: str = "reading") -> Any:
     date_tag = f"{cast[:3]}-{uuid.uuid4().hex[:8]}"
     ref, _ = create_cast_draft(store, profile=CAST_PROFILES[cast], date_tag=date_tag)
-    store.add_chunks(
+    store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="Good morning.\n\nHere is your day.",
@@ -408,7 +408,7 @@ class TestNewsLeadIn:
             title=f"Morning briefing — {date_tag}",
             meta={"briefing": True, "date": date_tag},
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=news.id, chunk_kind="paragraph", text=text, split=True, kind="news"
         )
         return news
@@ -443,7 +443,7 @@ class TestNewsLeadIn:
         ref, _ = create_cast_draft(
             store, profile=CAST_PROFILES["reading"], date_tag=date_tag
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="Good morning. Here is your personal brief.",
@@ -486,7 +486,7 @@ class TestNewsLeadIn:
         ref, _ = create_cast_draft(
             store, profile=CAST_PROFILES["reading"], date_tag=date_tag
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="Good morning. Brief-only content.",
@@ -515,7 +515,7 @@ class TestNewsLeadIn:
         ref, _ = create_cast_draft(
             store, profile=CAST_PROFILES["nidra"], date_tag=date_tag
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="Settle in, and let the breath slow.",

@@ -32,12 +32,12 @@ _PERM = {
 
 def _draft(store: Store):
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    return store.create_draft(name="nt", title="T", project_ref_id=proj)
+    return store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
 
 
 def test_add_figure_stores_blob_and_meta(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 1. A widget.",
         origin="original",
@@ -50,20 +50,20 @@ def test_add_figure_stores_blob_and_meta(store: Store) -> None:
     assert fig.meta["figure"]["origin"] == "original"
 
     # bytes round-trip with their mime
-    blob = store.get_chunk_blob(fig.handle)
+    blob = store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None
     data, mime = blob
     assert data == _PNG and mime == "image/png"
 
     # appears in reading order carrying its meta
-    order = store.reading_order(ref.id)
+    order = store.drafts.reading_order(ref.id)
     assert order[-1].handle == fig.handle
     assert order[-1].meta["figure"]["origin"] == "original"
 
 
 def test_add_figure_keeps_permission_in_meta(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 2. Borrowed.",
         origin="third_party",
@@ -72,7 +72,7 @@ def test_add_figure_keeps_permission_in_meta(store: Store) -> None:
         at={"after": title.handle},
         figure_meta={"permission": _PERM},
     )
-    got = store.get_draft_chunk(fig.handle)
+    got = store.drafts.get_draft_chunk(fig.handle)
     assert got is not None
     assert got.meta["figure"]["origin"] == "third_party"
     assert got.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
@@ -80,12 +80,12 @@ def test_add_figure_keeps_permission_in_meta(store: Store) -> None:
 
 def test_get_chunk_blob_none_for_text_chunk(store: Store) -> None:
     _ref, title = _draft(store)
-    assert store.get_chunk_blob(title.handle) is None
+    assert store.drafts.get_chunk_blob(title.handle) is None
 
 
 def test_blob_row_count_and_size(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="c",
         origin="original",
@@ -137,7 +137,7 @@ def test_draft_figure_clearance_rollup(store: Store) -> None:
     from precis.utils.figure_clearance import draft_figure_clearance
 
     ref, title = _draft(store)
-    store.add_figure(
+    store.drafts.add_figure(
         ref_id=ref.id,
         caption="ours",
         origin="original",
@@ -145,7 +145,7 @@ def test_draft_figure_clearance_rollup(store: Store) -> None:
         mime="image/png",
         at={"after": title.handle},
     )
-    store.add_figure(
+    store.drafts.add_figure(
         ref_id=ref.id,
         caption="borrowed, not granted",
         origin="third_party",
@@ -175,7 +175,7 @@ def _events(store: Store, chunk_id: int) -> list[str]:
 
 def test_set_figure_provenance_updates_meta_and_logs(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="c",
         origin="original",
@@ -183,14 +183,14 @@ def test_set_figure_provenance_updates_meta_and_logs(store: Store) -> None:
         mime="image/png",
         at={"after": title.handle},
     )
-    upd = store.set_figure_provenance(
+    upd = store.drafts.set_figure_provenance(
         fig.handle, origin="third_party", permission=_PERM
     )
     assert upd is not None
     assert upd.meta["figure"]["origin"] == "third_party"
     assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
     # bytes untouched, history shows the edit
-    blob = store.get_chunk_blob(fig.handle)
+    blob = store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None
     assert blob[0] == _PNG
     assert _events(store, fig.chunk_id) == ["created", "edited"]
@@ -201,7 +201,7 @@ def test_set_figure_provenance_rejects_non_figure(store: Store) -> None:
     from precis.errors import BadInput
 
     with pytest.raises(BadInput, match="not a figure"):
-        store.set_figure_provenance(title.handle, permission=_PERM)
+        store.drafts.set_figure_provenance(title.handle, permission=_PERM)
 
 
 # ── handler put path ─────────────────────────────────────────────────
@@ -219,7 +219,11 @@ def _proj(hub: Hub) -> int:
 def _figures(hub: Hub, slug: str) -> list:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    return [c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "figure"]
+    return [
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "figure"
+    ]
 
 
 def test_put_figure_original(draft: DraftHandler, hub: Hub) -> None:
@@ -230,7 +234,7 @@ def test_put_figure_original(draft: DraftHandler, hub: Hub) -> None:
     assert "added figure" in r.body and "[original]" in r.body
     figs = _figures(hub, "nt")
     assert len(figs) == 1 and figs[0].meta["figure"]["origin"] == "original"
-    blob = hub.live_store.get_chunk_blob(figs[0].handle)
+    blob = hub.live_store.drafts.get_chunk_blob(figs[0].handle)
     assert blob is not None
     assert blob[0] == _PNG
 
@@ -286,7 +290,7 @@ def test_mime_sniffed_when_omitted(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="nt", title="T", project=_proj(hub))
     draft.put(id="nt", chunk_kind="figure", text="c", image=_PNG_B64, origin="original")
     fig = _figures(hub, "nt")[0]
-    blob = hub.live_store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None
     _data, mime = blob
     assert mime == "image/png"
@@ -298,7 +302,7 @@ def test_edit_permission_via_handler(draft: DraftHandler, hub: Hub) -> None:
     fig = _figures(hub, "nt")[0]
     r = draft.edit(id=f"¶{fig.handle}", origin="third_party", permission=_PERM)
     assert "updated figure provenance" in r.body
-    upd = hub.live_store.get_draft_chunk(fig.handle)
+    upd = hub.live_store.drafts.get_draft_chunk(fig.handle)
     assert upd is not None
     assert upd.meta["figure"]["origin"] == "third_party"
     assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
@@ -340,7 +344,7 @@ def test_put_svg_figure_sniffed_and_sanitized(draft: DraftHandler, hub: Hub) -> 
         origin="original",
     )
     fig = _figures(hub, "nt")[0]
-    blob = hub.live_store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None
     data, mime = blob
     assert mime == "image/svg+xml"
@@ -363,7 +367,7 @@ def test_put_svg_figure_explicit_mime_still_sanitized(
         mime="image/svg+xml; charset=utf-8",
     )
     fig = _figures(hub, "nt")[0]
-    blob = hub.live_store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None
     data, mime = blob
     assert mime == "image/svg+xml"  # charset param normalised off

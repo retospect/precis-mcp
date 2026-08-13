@@ -260,13 +260,15 @@ def diagram(store, mh):
 
 def _target(store) -> str:
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
-    src, _t = store.create_draft(name="d", title="D", project_ref_id=proj)
-    store.add_chunks(ref_id=src.id, chunk_kind="paragraph", text="the intake stage")
-    return store.reading_order(src.id)[1].dc
+    src, _t = store.drafts.create_draft(name="d", title="D", project_ref_id=proj)
+    store.drafts.add_chunks(
+        ref_id=src.id, chunk_kind="paragraph", text="the intake stage"
+    )
+    return store.drafts.reading_order(src.id)[1].dc
 
 
 def _source_chunk_id(store, ref_id: int) -> int:
-    for c in store.reading_order(ref_id, kind="mermaid"):
+    for c in store.drafts.reading_order(ref_id, kind="mermaid"):
         if c.chunk_kind == "mermaid_node":
             return c.chunk_id
     raise AssertionError("no mermaid_node")
@@ -290,7 +292,7 @@ def test_link_binds_node_and_get_shows_it(store, mh, diagram) -> None:
     h = _target(store)
     out = mh.link(id="flow", element="intake", target=h)
     assert "bound node 'intake'" in out.body
-    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("intake", h)}
     assert "## Bindings" in mh.get(id="flow").body
 
@@ -300,7 +302,7 @@ def test_link_remove_unbinds(store, mh, diagram) -> None:
     h = _target(store)
     mh.link(id="flow", element="intake", target=h)
     mh.link(id="flow", element="intake", mode="remove")
-    assert store.element_bindings(node) == []
+    assert store.drafts.element_bindings(node) == []
 
 
 # ── MCP tool surface: vocab=/notes=/viewbox= on edit, element= on link ──────
@@ -344,7 +346,7 @@ def test_mcp_link_tool_persists_element_binding(
     node = _source_chunk_id(store, diagram.id)
     out = core.link(kind="mermaid", id="flow", element="intake", target=h)
     assert isinstance(out, str) and "bound" in out
-    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("intake", h)}
 
 
@@ -372,5 +374,5 @@ def test_turn_edits_source_and_reconciles_links(store, mh, diagram) -> None:
     )
     assert res.changed
     assert "ship[Ship]" in res.svg  # TurnResult.svg holds the source
-    got = {(b["element"], b["handle"]) for b in store.element_bindings(node)}
+    got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("intake", h)}

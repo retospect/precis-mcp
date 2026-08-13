@@ -80,7 +80,7 @@ def test_put_redirects_long_yield_tag(todo: TodoHandler) -> None:
     assert " " not in handles[0]
     # The prose is recoverable from the tag_overflow chunk.
     slug = handles[0].split(":", 1)[1]
-    resolved = todo.store.resolve_ask_question(ref_id, slug)
+    resolved = todo.store.drafts.resolve_ask_question(ref_id, slug)
     assert "file writes are disabled" in resolved
 
 
@@ -125,7 +125,9 @@ def test_memory_put_redirects_long_yield_tag(memory: MemoryHandler) -> None:
     assert handles and handles[0].startswith("ask-user:see-chunk-")
     assert " " not in handles[0]
     slug = handles[0].split(":", 1)[1]
-    assert "file writes are disabled" in memory.store.resolve_ask_question(ref_id, slug)
+    assert "file writes are disabled" in memory.store.drafts.resolve_ask_question(
+        ref_id, slug
+    )
 
 
 def test_memory_tag_redirects_long_yield_tag(memory: MemoryHandler) -> None:

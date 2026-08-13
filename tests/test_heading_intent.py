@@ -45,7 +45,7 @@ def _doc_with_heading(
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
     plan.put(id="p", title="Doc", project=proj)
     h = _pe(plan.put(id="p", chunk_kind="heading", text=title, at={"last": True}).body)
-    draft_ref_id = store.get_draft_chunk(h, kind="plan").ref_id
+    draft_ref_id = store.drafts.get_draft_chunk(h, kind="plan").ref_id
     return draft_ref_id, h
 
 
@@ -114,7 +114,7 @@ def test_prune_dangling_reaps_orphans_only(hub: Hub, plan: PlanHandler) -> None:
 
 
 def _by_text(store: Any, draft_ref: int, text: str) -> str:
-    for c in store.reading_order(draft_ref, kind="plan"):
+    for c in store.drafts.reading_order(draft_ref, kind="plan"):
         if (c.text or "").strip() == text:
             return c.dc
     raise AssertionError(f"no chunk with text {text!r}")
@@ -133,7 +133,7 @@ def test_section_intents_breadcrumb_and_siblings(hub: Hub, plan: PlanHandler) ->
     root = _pe(
         plan.put(id="p", chunk_kind="heading", text="Root", at={"last": True}).body
     )
-    root_chunk = store.get_draft_chunk(root, kind="plan")
+    root_chunk = store.drafts.get_draft_chunk(root, kind="plan")
     assert root_chunk is not None
     draft = root_chunk.ref_id
     plan.put(id="p", chunk_kind="heading", text="Section A", at={"into": root})

@@ -48,9 +48,9 @@ def _section_with_refs(hub: Hub, plan: PlanHandler):
         text=f"This builds on paper:{paper.id} and the idea in memory:{mem_out.id}.",
         at={"into": sec},
     )
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
-    chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
+    chunks = store.drafts.reading_order(sec_chunk.ref_id, kind="plan")
     # inbound: a memory that links TO the section (the "noted on this" edge)
     store.add_link(
         src_ref_id=mem_in.id, dst_ref_id=sec_chunk.ref_id, relation="related-to"
@@ -85,9 +85,9 @@ def test_ring_empty_when_section_points_nowhere(hub: Hub, plan: PlanHandler) -> 
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     plan.put(id="p", title="Root", project=proj)
     sec = _handles(plan.put(id="p", text="A lonely section", at={"last": True}).body)[0]
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
-    chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
+    chunks = store.drafts.reading_order(sec_chunk.ref_id, kind="plan")
     assert render_reference_ring(store, sec_chunk, chunks) == "— no references —"
 
 
@@ -103,9 +103,9 @@ def test_ring_caps_each_group_with_overflow(hub: Hub, plan: PlanHandler) -> None
     sec = _handles(
         plan.put(id="p", text=f"Cites all: {cites}", at={"last": True}).body
     )[0]
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
-    chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
+    chunks = store.drafts.reading_order(sec_chunk.ref_id, kind="plan")
 
     ring = render_reference_ring(store, sec_chunk, chunks, cap=8)
     assert "Cited:" in ring
@@ -156,9 +156,9 @@ def _plan_section_citing(hub: Hub, plan: PlanHandler, text: str):
     plan.put(id="p", title="Root", project=proj)
     sec = _handles(plan.put(id="p", text="Section", at={"last": True}).body)[0]
     plan.put(id="p", text=text, at={"into": sec})
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
-    chunks = store.reading_order(sec_chunk.ref_id, kind="plan")
+    chunks = store.drafts.reading_order(sec_chunk.ref_id, kind="plan")
     return sec_chunk, chunks
 
 

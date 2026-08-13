@@ -97,7 +97,7 @@ class TestDossier:
         qid = _mk_quest(store, "A striving whose dossier gets deleted")
         did = ensure_dossier(store, qid)
         assert dossier_ref_id(store, qid) == did
-        store.soft_delete_draft(did)
+        store.drafts.soft_delete_draft(did)
         assert dossier_ref_id(store, qid) is None
 
 
@@ -108,7 +108,7 @@ class TestDossierLedger:
     def test_ensure_dossier_creates_a_pinned_ledger_chunk(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving that needs a ledger")
         did = ensure_dossier(store, qid)
-        chunks = store.reading_order(did)
+        chunks = store.drafts.reading_order(did)
         ledger_chunks = [c for c in chunks if (c.meta or {}).get("pinned") == "ledger"]
         assert len(ledger_chunks) == 1
         assert "## Attempts" in ledger_chunks[0].text
@@ -136,14 +136,14 @@ class TestDossierLedger:
         # Build the dossier the OLD way — a single narrative chunk, no pinned
         # ledger — the shape a live prod quest is in pre-migration.
         qref = store.get_ref(kind="quest", id=qid)
-        ref, _heading = store.create_draft(
+        ref, _heading = store.drafts.create_draft(
             name=f"quest-{qid}-dossier",
             title=f"Dossier — {qref.title}",
             project_ref_id=qid,
             meta={"dossier_of_quest": qid},
             relation=dossier_mod._RELATION,
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="Pre-existing narrative synthesis.",
@@ -151,12 +151,12 @@ class TestDossierLedger:
         )
         did = ref.id
         assert dossier_ref_id(store, qid) == did
-        before = store.reading_order(did)
+        before = store.drafts.reading_order(did)
         assert not any((c.meta or {}).get("pinned") == "ledger" for c in before)
 
         handle = ensure_ledger_chunk(store, qid)
 
-        after = store.reading_order(did)
+        after = store.drafts.reading_order(did)
         ledger_chunks = [c for c in after if (c.meta or {}).get("pinned") == "ledger"]
         assert len(ledger_chunks) == 1
         assert ledger_chunks[0].handle == handle
@@ -167,7 +167,7 @@ class TestDossierLedger:
             len(
                 [
                     c
-                    for c in store.reading_order(did)
+                    for c in store.drafts.reading_order(did)
                     if (c.meta or {}).get("pinned") == "ledger"
                 ]
             )
@@ -355,7 +355,7 @@ class TestAttemptTree:
             "## Ruled out\n- Pd(111) bare — beaten on barrier\n\n"
             "## Open\n- Does co-adsorbed H help?\n"
         )
-        store.edit_text(handle, legacy, source={"reason": "test-seed-legacy"})
+        store.drafts.edit_text(handle, legacy, source={"reason": "test-seed-legacy"})
         assert read_ledger(store, qid) == legacy  # human-edited, round-trips raw
 
         # a code mutation re-renders it into the new tree format — no data lost
@@ -472,14 +472,14 @@ class TestDossierOwnerGeneralization:
         # (no dossier_of_owner) must still resolve through every read path —
         # resolution is link-based, so the meta-key rename needs no backfill.
         qid = _mk_quest(store, "A striving with a pre-§B dossier")
-        ref, _heading = store.create_draft(
+        ref, _heading = store.drafts.create_draft(
             name=f"quest-{qid}-dossier",  # the old naming, too
             title="Dossier — legacy",
             project_ref_id=qid,
             meta={"dossier_of_quest": qid},  # only the LEGACY owner key
             relation="dossier-of",
         )
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="Legacy narrative.",
@@ -1341,7 +1341,7 @@ class TestPaperRelation:
 
     def test_linked_paper_resolves(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving with a reader-facing paper")
-        ref, _heading = store.create_draft(
+        ref, _heading = store.drafts.create_draft(
             name=f"quest-{qid}-paper",
             title="Paper — draft",
             project_ref_id=qid,
@@ -1356,14 +1356,14 @@ class TestPaperRelation:
         """Mirrors the dossier case: a ``paper-of`` link surviving the
         soft-delete of its target draft must not resolve to a live id."""
         qid = _mk_quest(store, "A striving whose paper gets deleted")
-        ref, _heading = store.create_draft(
+        ref, _heading = store.drafts.create_draft(
             name=f"quest-{qid}-paper-deleted",
             title="Paper — draft",
             project_ref_id=qid,
             relation="paper-of",
         )
         assert paper_ref_id(store, qid) == ref.id
-        store.soft_delete_draft(ref.id)
+        store.drafts.soft_delete_draft(ref.id)
         assert paper_ref_id(store, qid) is None
 
 

@@ -33,17 +33,17 @@ def _proj(hub: Hub) -> int:
 def _order(hub: Hub, slug: str) -> list:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    return hub.live_store.reading_order(ref.id)
+    return hub.live_store.drafts.reading_order(ref.id)
 
 
 def _chunk_text(hub: Hub, handle: str) -> str | None:
-    ch = hub.live_store.get_draft_chunk(handle)
+    ch = hub.live_store.drafts.get_draft_chunk(handle)
     assert ch is not None
     return ch.text
 
 
 def _chunk_meta(hub: Hub, handle: str) -> dict[str, Any]:
-    ch = hub.live_store.get_draft_chunk(handle)
+    ch = hub.live_store.drafts.get_draft_chunk(handle)
     assert ch is not None
     return ch.meta
 
@@ -127,12 +127,13 @@ def test_edit_review_verdict_retract_deletes_ledger_row(
 
     draft.edit(id=f"¶{para.handle}", review="human", verdict="approved")
     assert [
-        r["checker"] for r in hub.live_store.review_status_for_chunk(para.chunk_id)
+        r["checker"]
+        for r in hub.live_store.drafts.review_status_for_chunk(para.chunk_id)
     ] == ["human"]
 
     r = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")
     assert "retracted human review" in r.body
-    assert hub.live_store.review_status_for_chunk(para.chunk_id) == []
+    assert hub.live_store.drafts.review_status_for_chunk(para.chunk_id) == []
 
     # Retracting again (nothing left to retract) is a clean no-op, not an error.
     r2 = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")
@@ -160,7 +161,7 @@ def test_put_claim_chunk_kind_inserts_without_fk_violation(
     )
     assert "added 1 chunk" in r1.body
     dc1 = _dc(r1.body)
-    chunk1 = hub.live_store.get_draft_chunk(dc1)
+    chunk1 = hub.live_store.drafts.get_draft_chunk(dc1)
     assert chunk1 is not None
     assert chunk1.chunk_kind == "claim"
 
@@ -215,7 +216,7 @@ def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
 
     # edit its text in place
     draft.edit(id=f"¶{intro_h}", text="Intro v2")
-    intro_chunk = hub.live_store.get_draft_chunk(intro_h)
+    intro_chunk = hub.live_store.drafts.get_draft_chunk(intro_h)
     assert intro_chunk is not None
     assert intro_chunk.text == "Intro v2"
 
@@ -260,7 +261,7 @@ def test_add_empty_block_inserts_paragraph_after_anchor(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """The inline `+` affordance inserts an EMPTY paragraph after a block — the
-    web `/drafts/{id}/block` endpoint calls `store.add_chunks` directly (the
+    web `/drafts/{id}/block` endpoint calls `store.drafts.add_chunks` directly (the
     `put` verb rejects empty `text=`). It lands right after the anchor in
     reading order, ready to type into."""
     proj = _proj(hub)
@@ -272,7 +273,7 @@ def test_add_empty_block_inserts_paragraph_after_anchor(
     para_h = _order(hub, "nt")[1].handle
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    chunks = hub.live_store.add_chunks(
+    chunks = hub.live_store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text="", at={"after": "¶" + para_h}
     )
     assert len(chunks) == 1 and chunks[0].text == ""
@@ -295,18 +296,18 @@ def test_split_keeps_handle_and_inserts_tail_after(
     para_h = _order(hub, "nt")[1].handle
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    hub.live_store.edit_text(para_h, "Hello ")
-    new = hub.live_store.add_chunks(
+    hub.live_store.drafts.edit_text(para_h, "Hello ")
+    new = hub.live_store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="world",
         at={"after": "¶" + para_h},
         split=False,
     )[0]
-    para_chunk = hub.live_store.get_draft_chunk(para_h)
+    para_chunk = hub.live_store.drafts.get_draft_chunk(para_h)
     assert para_chunk is not None
     assert para_chunk.text == "Hello "  # first keeps handle + before
-    new_chunk = hub.live_store.get_draft_chunk(new.handle)
+    new_chunk = hub.live_store.drafts.get_draft_chunk(new.handle)
     assert new_chunk is not None
     assert new_chunk.text == "world"
     handles = [c.handle for c in _order(hub, "nt")]
@@ -324,20 +325,20 @@ def test_merge_prev_joins_text_and_deletes_block(draft: DraftHandler, hub: Hub) 
         id="nt", chunk_kind="paragraph", text="Hello", at={"after": "¶" + title_h}
     )
     p1 = _order(hub, "nt")[1].handle
-    hub.live_store.edit_text(
+    hub.live_store.drafts.edit_text(
         p1, "Hello "
     )  # the editor saves verbatim (put would strip)
     draft.put(id="nt", chunk_kind="paragraph", text="world", at={"after": "¶" + p1})
     p2 = _order(hub, "nt")[2].handle
 
-    prev = hub.live_store.get_draft_chunk(p1)
+    prev = hub.live_store.drafts.get_draft_chunk(p1)
     assert prev is not None
     caret = len(prev.text or "")
-    hub.live_store.retire_chunk(p2)
-    hub.live_store.edit_text(p1, (prev.text or "") + "world")
+    hub.live_store.drafts.retire_chunk(p2)
+    hub.live_store.drafts.edit_text(p1, (prev.text or "") + "world")
 
     assert caret == 6
-    merged = hub.live_store.get_draft_chunk(p1)
+    merged = hub.live_store.drafts.get_draft_chunk(p1)
     assert merged is not None
     assert merged.text == "Hello world"
     assert p2 not in [c.handle for c in _order(hub, "nt")]
@@ -708,9 +709,9 @@ def test_retired_chunk_read_discloses_retired_state(
         id="nt", chunk_kind="paragraph", text="centering payload", at={"last": True}
     )
     para_h = _dc(para.body)
-    para_chunk = hub.live_store.get_draft_chunk(para_h)
+    para_chunk = hub.live_store.drafts.get_draft_chunk(para_h)
     assert para_chunk is not None
-    hub.live_store.retire_chunk(para_chunk.handle)
+    hub.live_store.drafts.retire_chunk(para_chunk.handle)
 
     out = draft.get(id=para_h).body
     assert "⚠ RETIRED" in out
@@ -852,7 +853,7 @@ def test_defined_abbrevs_collects_terms_and_inline(
         meta={"short": "MOF"},
     )
 
-    abb = hub.live_store.defined_abbrevs(ref.id)
+    abb = hub.live_store.drafts.defined_abbrevs(ref.id)
     assert abb["PEI"] == "polyethyleneimine"
     assert abb["MOF"] == "metal-organic framework"
 
@@ -902,10 +903,10 @@ def test_resolve_ask_question_resolves_see_chunk_overflow(hub: Hub) -> None:
             )
         ],
     )
-    assert store.resolve_ask_question(todo.id, "see-chunk-0") == q
-    assert store.resolve_ask_question(todo.id, "which para?") == "which para?"
-    assert store.resolve_ask_question(todo.id, "") == ""
-    assert store.resolve_ask_question(todo.id, "see-chunk-9") == ""
+    assert store.drafts.resolve_ask_question(todo.id, "see-chunk-0") == q
+    assert store.drafts.resolve_ask_question(todo.id, "which para?") == "which para?"
+    assert store.drafts.resolve_ask_question(todo.id, "") == ""
+    assert store.drafts.resolve_ask_question(todo.id, "see-chunk-9") == ""
 
 
 def test_requests_by_handle_surfaces_question_and_fail_reason(
@@ -1041,7 +1042,7 @@ def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None
             (dref.id, para.chunk_id, mem.id),
         )
 
-    conns = hub.live_store.chunk_connections(dref.id, [para.handle])
+    conns = hub.live_store.drafts.chunk_connections(dref.id, [para.handle])
     assert conns[para.handle][0]["kind"] == "memory"
     assert conns[para.handle][0]["title"] == "A dreamt idea"
     assert conns[para.handle][0]["relation"] == "derived-from"
@@ -1049,7 +1050,7 @@ def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None
 
     # edit the chunk → an 'edited' event is logged
     draft.edit(id=f"¶{para.handle}", text="A revised claim.")
-    stats = hub.live_store.chunk_edit_stats(dref.id, [para.handle])
+    stats = hub.live_store.drafts.chunk_edit_stats(dref.id, [para.handle])
     assert stats[para.handle]["edits"] >= 1
 
 
@@ -1075,7 +1076,7 @@ def test_anchored_todos_groups_by_handle_and_keeps_done(
     hub.live_store.stamp_ref_meta(done_todo.id, {"anchor": para_h})  # bare form too
     hub.live_store.add_tag(done_todo.id, Tag.closed("STATUS", "done"))
 
-    out = hub.live_store.anchored_todos([para_h])
+    out = hub.live_store.drafts.anchored_todos([para_h])
     reqs = out.get(para_h, [])
     assert {r["ref_id"] for r in reqs} == {open_todo.id, done_todo.id}
     done = next(r for r in reqs if r["ref_id"] == done_todo.id)
@@ -1083,7 +1084,7 @@ def test_anchored_todos_groups_by_handle_and_keeps_done(
     # active-first ordering (_REQUEST_ORDER): open sorts ahead of done.
     assert reqs[0]["ref_id"] == open_todo.id
     # unrelated handle sees no anchored todos.
-    assert hub.live_store.anchored_todos(["ZZZZZZ"]) == {}
+    assert hub.live_store.drafts.anchored_todos(["ZZZZZZ"]) == {}
 
 
 # ── queued UX fixes: abbrev scoping, promote hint, link redirect ──
@@ -1495,7 +1496,7 @@ def test_edit_retired_or_unknown_chunk_is_typed(draft: DraftHandler, hub: Hub) -
     r = draft.put(id="rt", chunk_kind="paragraph", text="doomed body")
     para_h = _order(hub, "rt")[-1].handle
     # Retire it out from under the caller, then edit the now-stale handle.
-    hub.live_store.retire_chunk(para_h)
+    hub.live_store.drafts.retire_chunk(para_h)
     with pytest.raises(Gone, match="retired"):
         draft.edit(id="¶" + para_h, text="new text")
     # An unknown / garbage handle → typed NotFound (not the opaque fallback).
@@ -1507,14 +1508,14 @@ def test_edit_text_store_op_typed_errors(store: Store) -> None:
     """Store-level guard: ``edit_text`` on a retired chunk raises ``Gone``,
     on an unknown handle raises ``NotFound`` — never a bare ValueError."""
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, _title = store.create_draft(name="es", title="T", project_ref_id=proj)
-    para = store.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text="doomed")
+    ref, _title = store.drafts.create_draft(name="es", title="T", project_ref_id=proj)
+    para = store.drafts.add_chunks(ref_id=ref.id, chunk_kind="paragraph", text="doomed")
     handle = para[-1].handle
-    store.retire_chunk(handle)
+    store.drafts.retire_chunk(handle)
     with pytest.raises(Gone, match="retired"):
-        store.edit_text(handle, "new text")
+        store.drafts.edit_text(handle, "new text")
     with pytest.raises(NotFound):
-        store.edit_text("zzzznotarealhandle", "x")
+        store.drafts.edit_text("zzzznotarealhandle", "x")
 
 
 # ---------------------------------------------------------------------------
@@ -1612,16 +1613,16 @@ def test_dispatch_typed_error_retired_chunk_all_mutator_shapes(
     fixed only the ``edit_text`` path; this pins the whole verb set)."""
     store = runtime_with_store.store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, title = store.create_draft(
+    ref, title = store.drafts.create_draft(
         name=f"rt-{shape_id}", title="T", project_ref_id=proj
     )
-    target = store.add_chunks(
+    target = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind=chunk_kind,
         text=seed_text,
         at={"after": title.handle},
     )[0]
-    store.retire_chunk(target.handle)
+    store.drafts.retire_chunk(target.handle)
     args = {"kind": "draft", "id": target.dc, **build_args(title.dc)}
     body, is_error = runtime_with_store.dispatch_with_status("edit", args)
     assert is_error, f"{shape_id}: expected an error, got {body!r}"
@@ -1641,10 +1642,10 @@ def test_dispatch_typed_error_retired_figure_provenance(
     already-retired figure chunk also returns typed [error:Gone]."""
     store = runtime_with_store.store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, title = store.create_draft(
+    ref, title = store.drafts.create_draft(
         name=f"rtfig-{arg_name}", title="T", project_ref_id=proj
     )
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="c",
         origin="original",
@@ -1652,7 +1653,7 @@ def test_dispatch_typed_error_retired_figure_provenance(
         mime="image/png",
         at={"after": title.handle},
     )
-    store.retire_chunk(fig.handle)
+    store.drafts.retire_chunk(fig.handle)
     body, is_error = runtime_with_store.dispatch_with_status(
         "edit", {"kind": "draft", "id": fig.dc, arg_name: arg_value}
     )
@@ -1672,16 +1673,16 @@ def test_dispatch_delete_already_retired_chunk_is_idempotent_not_error(
     ValueError) is caught either way."""
     store = runtime_with_store.store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, title = store.create_draft(
+    ref, title = store.drafts.create_draft(
         name="rt-delete-idempotent", title="T", project_ref_id=proj
     )
-    target = store.add_chunks(
+    target = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="doomed body",
         at={"after": title.handle},
     )[0]
-    store.retire_chunk(target.handle)
+    store.drafts.retire_chunk(target.handle)
     body, is_error = runtime_with_store.dispatch_with_status(
         "delete", {"kind": "draft", "id": target.dc}
     )

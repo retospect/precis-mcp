@@ -40,7 +40,7 @@ def _table_chunk(hub: Hub, slug: str) -> Any:
     the low-level store ops still key on)."""
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    order = hub.live_store.reading_order(ref.id)
+    order = hub.live_store.drafts.reading_order(ref.id)
     return next(c for c in order if c.chunk_kind == "table")
 
 
@@ -152,13 +152,13 @@ def test_put_table_derives_markdown_and_stores_canonical(
     )
     assert "added table dc" in r.body and "2 rows × 2 cols" in r.body
     tc = _table_chunk(hub, "d")
-    chunk = hub.live_store.get_draft_chunk(tc.dc)  # dc<id> resolves
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)  # dc<id> resolves
     assert chunk is not None
     # text is the derived markdown (caption + table), one block
     assert chunk.text.startswith("**Band gaps**\n| element | gap_eV |")
     assert "| Si | 1.12 |" in chunk.text and "\n\n" not in chunk.text
     # canonical data + provenance live in meta, numbers preserved
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["rows"] == [["Si", 1.12], ["Ge", 0.67]]
     assert meta["regen"] == {"source": "dft", "cmd": "vasp relax"}
     assert meta["caption"] == "Band gaps"
@@ -192,11 +192,11 @@ def test_edit_table_rederives_and_rejects_text(draft: DraftHandler, hub: Hub) ->
 
     # new data re-derives the markdown; caption persists from meta
     draft.edit(id=tc.dc, table={"header": ["x"], "rows": [[1], [2], [3]]})
-    chunk = hub.live_store.get_draft_chunk(tc.dc)
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
     assert chunk.text.startswith("**C**\n")  # caption preserved
     assert "| 3 |" in chunk.text
-    assert hub.live_store.draft_chunk_meta(tc.handle)["table"]["rows"] == [
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]["rows"] == [
         [1],
         [2],
         [3],
@@ -204,8 +204,10 @@ def test_edit_table_rederives_and_rejects_text(draft: DraftHandler, hub: Hub) ->
 
     # regen-only edit keeps the data, restamps provenance
     draft.edit(id=tc.dc, regen={"source": "manual"})
-    assert hub.live_store.draft_chunk_meta(tc.handle)["regen"] == {"source": "manual"}
-    assert hub.live_store.draft_chunk_meta(tc.handle)["table"]["rows"] == [
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle)["regen"] == {
+        "source": "manual"
+    }
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]["rows"] == [
         [1],
         [2],
         [3],
@@ -227,16 +229,16 @@ def test_edit_table_clears_caption_from_data_and_markdown(
         at={"last": True},
     )
     tc = _table_chunk(hub, "d")
-    seeded = hub.live_store.get_draft_chunk(tc.dc)
+    seeded = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert seeded is not None
     assert seeded.text.startswith("**Legend**\n")
 
     draft.edit(id=tc.dc, table={"header": ["x"], "rows": [[1]]}, caption="")
-    chunk = hub.live_store.get_draft_chunk(tc.dc)
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
     assert not chunk.text.startswith("**")  # legend line dropped
     assert chunk.text.startswith("| x |")
-    assert hub.live_store.draft_chunk_meta(tc.handle)["caption"] == ""
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle)["caption"] == ""
 
 
 def test_edit_table_on_non_table_chunk_errors(draft: DraftHandler, hub: Hub) -> None:
@@ -245,7 +247,7 @@ def test_edit_table_on_non_table_chunk_errors(draft: DraftHandler, hub: Hub) -> 
     ref = hub.live_store.get_ref(kind="draft", id="d")
     assert ref is not None
     draft.put(id="d", chunk_kind="paragraph", text="prose", at={"last": True})
-    para = hub.live_store.reading_order(ref.id)[-1]  # the paragraph just added
+    para = hub.live_store.drafts.reading_order(ref.id)[-1]  # the paragraph just added
     with pytest.raises(BadInput, match="only to a chunk_kind='table'"):
         draft.edit(id=para.dc, table={"header": ["x"], "rows": [[1]]})
 
@@ -362,11 +364,11 @@ def test_edit_table_find_replace_only_matching_cells_and_caption_untouched(
 ) -> None:
     tc = _seed_table(draft, hub, caption="Band gaps (Si)")
     draft.edit(id=tc.dc, find="Si", text="silicon")
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["rows"] == [["silicon", 1.12], ["Ge", 0.67]]
     # non-target cell (Ge, both numbers) untouched, caption untouched
     assert meta["caption"] == "Band gaps (Si)"
-    chunk = hub.live_store.get_draft_chunk(tc.dc)
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
     assert "**Band gaps (Si)**" in chunk.text  # markdown re-derived, caption kept
 
@@ -375,10 +377,10 @@ def test_edit_table_find_no_match_refuses_and_leaves_chunk_untouched(
     draft: DraftHandler, hub: Hub
 ) -> None:
     tc = _seed_table(draft, hub)
-    before = hub.live_store.draft_chunk_meta(tc.handle)
+    before = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     with pytest.raises(BadInput, match="no cell matches"):
         draft.edit(id=tc.dc, find="xenon", text="Xe")
-    after = hub.live_store.draft_chunk_meta(tc.handle)
+    after = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert after == before
 
 
@@ -387,12 +389,12 @@ def test_edit_table_cell_a1_string_and_dict_address(
 ) -> None:
     tc = _seed_table(draft, hub)
     draft.edit(id=tc.dc, cell="B2", text="1.523")
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["rows"][0] == ["Si", 1.523]
     assert isinstance(meta["table"]["rows"][0][1], float)  # numerics-indexable
 
     draft.edit(id=tc.dc, cell={"row": 3, "col": 2}, text="0.7")
-    meta2 = hub.live_store.draft_chunk_meta(tc.handle)
+    meta2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta2["table"]["rows"][1] == ["Ge", 0.7]
 
 
@@ -409,7 +411,7 @@ def test_edit_table_cell_nan_stays_string_no_crash(
     # string "NaN", not float('nan') (which jsonb would reject outright).
     tc = _seed_table(draft, hub)
     draft.edit(id=tc.dc, cell="B2", text="NaN")
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     val = meta["table"]["rows"][0][1]
     assert val == "NaN" and isinstance(val, str)
 
@@ -418,7 +420,7 @@ def test_edit_table_conflicting_selectors_rejected(
     draft: DraftHandler, hub: Hub
 ) -> None:
     tc = _seed_table(draft, hub)
-    before = hub.live_store.draft_chunk_meta(tc.handle)
+    before = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     with pytest.raises(BadInput, match="only one of table=/cell=/find=/sub="):
         draft.edit(
             id=tc.dc,
@@ -426,16 +428,16 @@ def test_edit_table_conflicting_selectors_rejected(
             cell="B2",
             text="x",
         )
-    after = hub.live_store.draft_chunk_meta(tc.handle)
+    after = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert after == before  # nothing applied — neither selector silently won
 
 
 def test_edit_table_cell_header_rename(draft: DraftHandler, hub: Hub) -> None:
     tc = _seed_table(draft, hub)
     draft.edit(id=tc.dc, cell="B1", text="gap (eV)")
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["header"] == ["element", "gap (eV)"]
-    chunk = hub.live_store.get_draft_chunk(tc.dc)
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
     assert "| gap (eV) |" in chunk.text
 
@@ -443,7 +445,7 @@ def test_edit_table_cell_header_rename(draft: DraftHandler, hub: Hub) -> None:
 def test_edit_table_sub_regex_find_replace(draft: DraftHandler, hub: Hub) -> None:
     tc = _seed_table(draft, hub)
     draft.edit(id=tc.dc, sub={"find": r"^Si$", "replace": "silicon"})
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["rows"][0][0] == "silicon"
 
 
@@ -455,7 +457,7 @@ def test_edit_table_backslash_roundtrip_latex_export(
     emits it unescaped (proves gr178512's fix for the supported edit path)."""
     tc = _seed_table(draft, hub)
     draft.edit(id=tc.dc, cell="B2", text=r"$\sim$3 zJ")
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     cell_val = meta["table"]["rows"][0][1]
     assert cell_val == r"$\sim$3 zJ"
     assert cell_val.count("\\") == 1  # single backslash, not doubled
@@ -479,7 +481,7 @@ def test_edit_table_string_channel_roundtrip_latex_export(
         id=tc.dc,
         table='{"header": ["gap"], "rows": [["$\\\\sim$3 aJ"]]}',
     )
-    meta = hub.live_store.draft_chunk_meta(tc.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     cell_val = meta["table"]["rows"][0][0]
     assert cell_val == "$\\sim$3 aJ"
     assert cell_val.count("\\") == 1  # single backslash, not doubled

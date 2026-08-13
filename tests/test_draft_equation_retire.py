@@ -46,7 +46,7 @@ def test_importer_emits_math_as_dollar_paragraphs(store: Store, tmp_path: Path) 
 
     ref = store.get_ref(kind="draft", id="euler-note")
     assert ref is not None
-    chunks = store.reading_order(ref.id)
+    chunks = store.drafts.reading_order(ref.id)
 
     kinds = {c.chunk_kind for c in chunks}
     assert "equation" not in kinds, f"legacy equation kind leaked: {kinds}"

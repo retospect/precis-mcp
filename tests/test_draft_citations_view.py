@@ -38,9 +38,9 @@ def _new_draft(store, draft: DraftHandler, slug: str, title: str = "Dossier"):
 def _add_para(store, draft: DraftHandler, slug: str, ref, text: str):
     """Append one paragraph chunk with ``text`` to the end of the draft;
     return the new chunk (``DraftChunk``, carrying ``.dc``)."""
-    tail = store.reading_order(ref.id)[-1]
+    tail = store.drafts.reading_order(ref.id)[-1]
     draft.put(id=slug, chunk_kind="paragraph", text=text, at={"after": tail.dc})
-    return store.reading_order(ref.id)[-1]
+    return store.drafts.reading_order(ref.id)[-1]
 
 
 def _section(body: str, heading: str) -> str:

@@ -174,16 +174,16 @@ def test_sub_apply_raises_on_concurrent_edit(
         pairs, where = real_scope_chunks(self, raw_scope, allow_all=allow_all)
         # a concurrent writer changes p1's content right after our read
         # (edit_text wants the legacy base-58 handle, not the dc<id> address)
-        p1_chunk = hub.live_store.get_draft_chunk(seeded["p1"])
+        p1_chunk = hub.live_store.drafts.get_draft_chunk(seeded["p1"])
         assert p1_chunk is not None
-        hub.live_store.edit_text(p1_chunk.handle, "raced in first")
+        hub.live_store.drafts.edit_text(p1_chunk.handle, "raced in first")
         return pairs, where
 
     monkeypatch.setattr(draft.__class__, "_scope_chunks", _racing_scope_chunks)
     with pytest.raises(BadInput, match="changed since you read"):
         draft.edit(id=seeded["slug"], sub={"find": "—", "replace": ", "}, apply=True)
     # the concurrent writer's text survives untouched — no clobber
-    raced_chunk = hub.live_store.get_draft_chunk(seeded["p1"])
+    raced_chunk = hub.live_store.drafts.get_draft_chunk(seeded["p1"])
     assert raced_chunk is not None
     assert raced_chunk.text == "raced in first"
 

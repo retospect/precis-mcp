@@ -804,13 +804,13 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="nt", title="Nanoscale Transistors", project=proj)
     ref = store.get_ref(kind="draft", id="nt")
-    title_h = store.reading_order(ref.id)[0].handle
+    title_h = store.drafts.reading_order(ref.id)[0].handle
 
     draft.put(
         id="nt", chunk_kind="heading", text="Introduction", at={"after": f"¶{title_h}"}
     )
     sec_h = next(
-        c.handle for c in store.reading_order(ref.id) if c.text == "Introduction"
+        c.handle for c in store.drafts.reading_order(ref.id) if c.text == "Introduction"
     )
     draft.put(
         id="nt",
@@ -847,7 +847,7 @@ def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="nt", title="T", project=proj)
     ref = store.get_ref(kind="draft", id="nt")
-    title_h = store.reading_order(ref.id)[0].handle
+    title_h = store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="figure",

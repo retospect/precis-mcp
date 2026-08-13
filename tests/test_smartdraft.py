@@ -289,10 +289,10 @@ def test_focus_index_defaults_to_first_body_chunk() -> None:
 
 def _seed_draft(store, *, regimes):
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, _title = store.create_draft(
+    ref, _title = store.drafts.create_draft(
         name="sd", title="Smart Draft", project_ref_id=proj
     )
-    store.add_chunks(
+    store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="\n\n".join(f"body of chunk {i}" for i in range(len(regimes))),
@@ -328,7 +328,7 @@ def test_full_doc_mode_renders_every_chunk_verbatim(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["a"], ["b"], ["c"], ["d"]])
     view = build_view(store, ref_id, relevance=False)
-    assert len(view.middle) == len(store.reading_order(ref_id))
+    assert len(view.middle) == len(store.drafts.reading_order(ref_id))
     assert all(m.mode in ("full", "doc") for m in view.middle)
     assert sum(1 for m in view.middle if m.is_focus) == 1
 
@@ -363,7 +363,9 @@ def test_chunk_tag_round_trips_and_feeds_the_T_signal(hub) -> None:
 
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["a"], ["b"]])
-    body = next(c for c in store.reading_order(ref_id) if c.chunk_kind != "heading")
+    body = next(
+        c for c in store.drafts.reading_order(ref_id) if c.chunk_kind != "heading"
+    )
     dc = handle_registry.format_handle("draft", body.chunk_id, chunk=True)
     rh = store.resolve_handle(dc)
     store.add_tag(ref_id, Tag.open("important"), pos=rh.chunk_ord)
@@ -384,7 +386,7 @@ def test_chunk_tag_round_trips_and_feeds_the_T_signal(hub) -> None:
 def test_build_view_marks_a_pinned_chunk(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])
-    chunks = store.reading_order(ref_id)
+    chunks = store.drafts.reading_order(ref_id)
     body = next(c for c in chunks if c.chunk_kind != "heading")
     pin_dc = handle_registry.format_handle("draft", body.chunk_id, chunk=True)
     view = build_view(store, ref_id, marks={"pens": [pin_dc], "eyes": {}})
@@ -405,7 +407,9 @@ def test_base_nodes_are_cached_but_marks_are_a_fresh_overlay(hub) -> None:
     n2 = sd.build_nodes(store, ref_id)
     assert n1 is n2  # cache hit: not rebuilt
 
-    body = next(c for c in store.reading_order(ref_id) if c.chunk_kind != "heading")
+    body = next(
+        c for c in store.drafts.reading_order(ref_id) if c.chunk_kind != "heading"
+    )
     pin_dc = handle_registry.format_handle("draft", body.chunk_id, chunk=True)
     pinned = sd.build_nodes(store, ref_id, marks={"pens": [pin_dc], "eyes": {}})
     assert any(n.pinned for n in pinned)
@@ -421,7 +425,7 @@ def test_a_new_chunk_invalidates_the_node_cache(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])
     first = sd.build_nodes(store, ref_id)
-    store.add_chunks(
+    store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="paragraph",
         text="a wholly new chunk",
@@ -443,9 +447,11 @@ def test_an_in_place_text_edit_invalidates_the_node_cache(hub) -> None:
     store = hub.store
     ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])
     first = sd.build_nodes(store, ref_id)
-    body = next(c for c in store.reading_order(ref_id) if c.chunk_kind != "heading")
+    body = next(
+        c for c in store.drafts.reading_order(ref_id) if c.chunk_kind != "heading"
+    )
 
-    store.edit_text(body.handle, "text the reader must not miss")
+    store.drafts.edit_text(body.handle, "text the reader must not miss")
 
     second = sd.build_nodes(store, ref_id)
     assert second is not first  # version changed → rebuilt

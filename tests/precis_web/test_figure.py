@@ -157,10 +157,10 @@ def test_drive_new_creates_figure_and_redirects(fig_client, runtime_with_store) 
 def _draft_with_placeholder(store):
     """A draft carrying one asset-less figure chunk (the deck-hook shape)."""
     proj = store.insert_ref(kind="todo", slug=None, title="P").id
-    ref, title = store.create_draft(
+    ref, title = store.drafts.create_draft(
         name="deckhook", title="Deck Hook", project_ref_id=proj
     )
-    fig = store.add_chunks(
+    fig = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="figure",
         text="FIG. 1 a perspective view",
@@ -179,7 +179,7 @@ def test_create_drawing_mints_canvas_and_links(fig_client, runtime_with_store) -
     assert r.status_code == 303
     assert r.headers["location"].startswith("/figure/")
     # a canvas was minted, seeded from the caption, and linked to the chunk.
-    canvas_ref_id = store.figure_canvas_ref(fig.chunk_id)
+    canvas_ref_id = store.drafts.figure_canvas_ref(fig.chunk_id)
     assert canvas_ref_id is not None
     canvas = store.get_ref(kind="figure", id=canvas_ref_id)
     assert canvas.title == "FIG. 1 a perspective view"

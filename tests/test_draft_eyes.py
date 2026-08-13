@@ -145,8 +145,10 @@ def _draft_citing_a_paper(hub: Hub) -> tuple[int, str, int]:
     store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     paper = store.insert_ref(kind="paper", slug="coolpaper", title="A Cool Paper")
-    ref, _title = store.create_draft(name="d", title="My Draft", project_ref_id=proj)
-    created = store.add_chunks(
+    ref, _title = store.drafts.create_draft(
+        name="d", title="My Draft", project_ref_id=proj
+    )
+    created = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text=f"This builds on paper:{paper.id}.",

@@ -163,9 +163,9 @@ def test_docx_embeds_figure_image(
     draft.put(id="d1", title="T", project=pid)
     ref = hub.live_store.get_ref(kind="draft", id="d1")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     # a caption-only figure chunk (no blob) backed by a canvas.
-    fig = hub.live_store.add_chunks(
+    fig = hub.live_store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="figure",
         text="Fig 1. A widget.",
@@ -183,7 +183,7 @@ def test_docx_embeds_figure_image(
     )
     canvas = hub.live_store.get_ref(kind="figure", id="fig1")
     assert canvas is not None
-    hub.live_store.link_figure_canvas(fig.chunk_id, canvas.id)
+    hub.live_store.drafts.link_figure_canvas(fig.chunk_id, canvas.id)
 
     out = tmp_path / "d1.docx"
     export_docx(hub.live_store, ref, target_path=out)

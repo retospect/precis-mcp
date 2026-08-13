@@ -59,9 +59,9 @@ def _draft_with_chunks(store: Store, *, name: str, n_paragraphs: int = 1) -> int
     live paragraph chunks under its title heading. Returns the draft
     ref_id."""
     proj = _project(store)
-    ref, title = store.create_draft(name=name, title="T", project_ref_id=proj)
+    ref, title = store.drafts.create_draft(name=name, title="T", project_ref_id=proj)
     for i in range(n_paragraphs):
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text=f"paragraph {i}",
@@ -95,7 +95,7 @@ def _expected_pairs(chunks: list[dict[str, Any]], lenses: tuple[str, ...]) -> in
 class TestMintReviewFanout:
     def test_mints_chunk_times_lens_todos(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="fan1", n_paragraphs=2)
-        chunks = store.reviewable_chunks(ref_id)
+        chunks = store.drafts.reviewable_chunks(ref_id)
         assert len(chunks) == 3  # title + 2 paragraphs
 
         result = mint_review_fanout(store, ref_id)
@@ -152,7 +152,7 @@ class TestMintReviewFanout:
 
     def test_respects_lenses(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="fan-lenses")
-        chunks = store.reviewable_chunks(ref_id)
+        chunks = store.drafts.reviewable_chunks(ref_id)
 
         result = mint_review_fanout(store, ref_id, lenses=("flow",))
 
@@ -164,16 +164,16 @@ class TestMintReviewFanout:
 
     def test_skips_non_reviewable_chunks(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="fan-retire", n_paragraphs=2)
-        chunks_before = store.reviewable_chunks(ref_id)
+        chunks_before = store.drafts.reviewable_chunks(ref_id)
         assert len(chunks_before) == 3  # title + 2 paragraphs
 
         # Retire one paragraph chunk — it drops out of reviewable_chunks
         # (retired_at IS NOT NULL) and must not get a review-todo minted.
         retired_handle = chunks_before[-1]["handle"]
         retired_chunk_id = chunks_before[-1]["chunk_id"]
-        store.retire_chunk(retired_handle, kind="draft")
+        store.drafts.retire_chunk(retired_handle, kind="draft")
 
-        chunks_after = store.reviewable_chunks(ref_id)
+        chunks_after = store.drafts.reviewable_chunks(ref_id)
         assert len(chunks_after) == 2
         assert retired_chunk_id not in {c["chunk_id"] for c in chunks_after}
 
@@ -284,11 +284,11 @@ class TestMintReviewFanout:
 class TestOnlyDirty:
     def test_fully_approved_draft_mints_zero(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="dirty-full", n_paragraphs=1)
-        chunks = store.reviewable_chunks(ref_id)
+        chunks = store.drafts.reviewable_chunks(ref_id)
         for c in chunks:
             allowed = _HEADING_LENSES if c["chunk_kind"] == "heading" else _PROSE_LENSES
             for lens in allowed:
-                store.record_review(c["chunk_id"], lens, verdict="approved")
+                store.drafts.record_review(c["chunk_id"], lens, verdict="approved")
 
         result = mint_review_fanout(store, ref_id, only_dirty=True)
         assert result["minted"] == []
@@ -297,15 +297,15 @@ class TestOnlyDirty:
         self, store: Store
     ) -> None:
         ref_id = _draft_with_chunks(store, name="dirty-edit", n_paragraphs=2)
-        chunks = store.reviewable_chunks(ref_id)
+        chunks = store.drafts.reviewable_chunks(ref_id)
         for c in chunks:
             allowed = _HEADING_LENSES if c["chunk_kind"] == "heading" else _PROSE_LENSES
             for lens in allowed:
-                store.record_review(c["chunk_id"], lens, verdict="approved")
+                store.drafts.record_review(c["chunk_id"], lens, verdict="approved")
         assert mint_review_fanout(store, ref_id, only_dirty=True)["minted"] == []
 
         target = next(c for c in chunks if c["chunk_kind"] == "paragraph")
-        store.edit_text(target["handle"], "edited text bumps the sha")
+        store.drafts.edit_text(target["handle"], "edited text bumps the sha")
 
         result = mint_review_fanout(store, ref_id, only_dirty=True)
         anchor = handle_registry.format_handle("draft", target["chunk_id"], chunk=True)
@@ -326,26 +326,28 @@ class TestOnlyDirty:
 class TestScope:
     def test_subtree_scope_mints_only_under_heading(self, store: Store) -> None:
         proj = _project(store)
-        ref, title = store.create_draft(name="scope1", title="T", project_ref_id=proj)
-        section_a = store.add_chunks(
+        ref, title = store.drafts.create_draft(
+            name="scope1", title="T", project_ref_id=proj
+        )
+        section_a = store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="heading",
             text="Section A",
             at={"after": title.handle},
         )[0]
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="para A",
             at={"into": section_a.handle},
         )
-        section_b = store.add_chunks(
+        section_b = store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="heading",
             text="Section B",
             at={"after": section_a.handle},
         )[0]
-        store.add_chunks(
+        store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text="para B",
@@ -372,7 +374,7 @@ class TestScope:
 
     def test_single_prose_chunk_scope_mints_only_that_chunk(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="scope2", n_paragraphs=2)
-        chunks = store.reviewable_chunks(ref_id)
+        chunks = store.drafts.reviewable_chunks(ref_id)
         paras = [c for c in chunks if c["chunk_kind"] == "paragraph"]
 
         result = mint_review_fanout(store, ref_id, scope=paras[0]["chunk_id"])
@@ -399,7 +401,9 @@ class TestSkipUnsettled:
     ) -> None:
         ref_id = _draft_with_chunks(store, name="unsettled", n_paragraphs=1)
         p = next(
-            c for c in store.reviewable_chunks(ref_id) if c["chunk_kind"] == "paragraph"
+            c
+            for c in store.drafts.reviewable_chunks(ref_id)
+            if c["chunk_kind"] == "paragraph"
         )
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         req = store.insert_ref(
@@ -420,7 +424,7 @@ class TestSkipUnsettled:
         store.add_tag(
             req.id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
         )
-        store.edit_text(p["handle"], "revised after fix")
+        store.drafts.edit_text(p["handle"], "revised after fix")
 
         result2 = mint_review_fanout(store, ref_id, scope=p["chunk_id"])
         assert len(result2["minted"]) == len(_PROSE_LENSES)
@@ -437,11 +441,13 @@ class TestLensKindMapping:
         self, store: Store
     ) -> None:
         proj = _project(store)
-        ref, title = store.create_draft(name="kindmix", title="T", project_ref_id=proj)
-        para = store.add_chunks(
+        ref, title = store.drafts.create_draft(
+            name="kindmix", title="T", project_ref_id=proj
+        )
+        para = store.drafts.add_chunks(
             ref_id=ref.id, chunk_kind="paragraph", text="p", at={"after": title.handle}
         )[0]
-        eq = store.add_chunks(
+        eq = store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="equation",
             text="E=mc^2",
@@ -503,7 +509,9 @@ class TestDocLenses:
     def test_toc_not_minted_when_scope_given(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="doclens-scope")
         p = next(
-            c for c in store.reviewable_chunks(ref_id) if c["chunk_kind"] == "paragraph"
+            c
+            for c in store.drafts.reviewable_chunks(ref_id)
+            if c["chunk_kind"] == "paragraph"
         )
 
         result = mint_review_fanout(
@@ -528,9 +536,9 @@ class TestDocLenses:
         self, store: Store
     ) -> None:
         ref_id = _draft_with_chunks(store, name="doclens-dirty")
-        order = store.reading_order(ref_id)
+        order = store.drafts.reading_order(ref_id)
         root = order[0]
-        digest = store.toc_digest(ref_id)
+        digest = store.drafts.toc_digest(ref_id)
         _seed_toc_approval(store, root.chunk_id, digest)
 
         result = mint_review_fanout(
@@ -538,7 +546,7 @@ class TestDocLenses:
         )
         assert result["minted"] == []
 
-        store.edit_text(root.handle, "T (renamed)")
+        store.drafts.edit_text(root.handle, "T (renamed)")
 
         result2 = mint_review_fanout(
             store, ref_id, lenses=(), doc_lenses=DOC_LENSES, only_dirty=True
@@ -559,7 +567,7 @@ class TestDocLenses:
         permanently unapproved no matter how many times the anchored
         chunk was actually reviewed."""
         ref_id = _draft_with_chunks(store, name="doclens-nullsha", n_paragraphs=1)
-        order = store.reading_order(ref_id)
+        order = store.drafts.reading_order(ref_id)
         title, para = order[0], order[1]
         with store.pool.connection() as conn:
             conn.execute(
@@ -568,7 +576,7 @@ class TestDocLenses:
             )
             conn.commit()
 
-        assert store.review_root_chunk_id(ref_id) == para.chunk_id
+        assert store.drafts.review_root_chunk_id(ref_id) == para.chunk_id
 
         result = mint_review_fanout(store, ref_id, lenses=(), doc_lenses=DOC_LENSES)
         assert len(result["minted"]) == 1
@@ -580,7 +588,9 @@ class TestDocLenses:
         assert ref.meta.get("anchor") == expected_anchor
 
         toc_rows = [
-            s for s in store.review_status_for_draft(ref_id) if s["checker"] == "toc"
+            s
+            for s in store.drafts.review_status_for_draft(ref_id)
+            if s["checker"] == "toc"
         ]
         assert len(toc_rows) == 1
         assert toc_rows[0]["chunk_id"] == para.chunk_id
@@ -701,7 +711,7 @@ def _run(
 class TestReviewWriteback:
     def test_clean_pass_unchanged_sha_records_approval(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="wb-clean")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="flow", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -710,7 +720,7 @@ class TestReviewWriteback:
 
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags
-        statuses = store.review_status_for_chunk(p["chunk_id"])
+        statuses = store.drafts.review_status_for_chunk(p["chunk_id"])
         assert len(statuses) == 1
         assert statuses[0]["checker"] == "flow"
         assert statuses[0]["verdict"] == "approved"
@@ -722,7 +732,7 @@ class TestReviewWriteback:
         section, so no approval may be recorded (a false ✓ would mask an
         unreviewed chunk)."""
         ref_id = _draft_with_chunks(store, name="wb-resume")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="flow", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -731,13 +741,13 @@ class TestReviewWriteback:
 
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags  # resumable → succeeded, not failed
-        assert store.review_status_for_chunk(p["chunk_id"]) == []
+        assert store.drafts.review_status_for_chunk(p["chunk_id"]) == []
 
     def test_non_done_verdict_records_nothing(self, store: Store) -> None:
         """A clean exit whose reviewer yielded mid-pass (verdict != done)
         is not a finished review — no approval."""
         ref_id = _draft_with_chunks(store, name="wb-continue")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="flow", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -746,7 +756,7 @@ class TestReviewWriteback:
 
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags
-        assert store.review_status_for_chunk(p["chunk_id"]) == []
+        assert store.drafts.review_status_for_chunk(p["chunk_id"]) == []
 
     def test_open_anchored_change_request_records_nothing(self, store: Store) -> None:
         """The ``precis-draft-reviewer`` persona files findings as an
@@ -754,7 +764,7 @@ class TestReviewWriteback:
         ``kind='finding'`` child — so an OPEN anchored request on the chunk
         must also block the auto-approval."""
         ref_id = _draft_with_chunks(store, name="wb-anchored-open")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="cites", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -769,7 +779,7 @@ class TestReviewWriteback:
 
         _run(store, job_id)
 
-        assert store.review_status_for_chunk(p["chunk_id"]) == []
+        assert store.drafts.review_status_for_chunk(p["chunk_id"]) == []
 
     def test_resolved_anchored_change_request_still_approves(
         self, store: Store
@@ -778,7 +788,7 @@ class TestReviewWriteback:
         fresh clean pass — the guard is open-requests-only, so a chunk that
         was fixed can still earn a later ✓."""
         ref_id = _draft_with_chunks(store, name="wb-anchored-done")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="flow", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -792,13 +802,13 @@ class TestReviewWriteback:
 
         _run(store, job_id)
 
-        statuses = store.review_status_for_chunk(p["chunk_id"])
+        statuses = store.drafts.review_status_for_chunk(p["chunk_id"])
         assert len(statuses) == 1
         assert statuses[0]["verdict"] == "approved"
 
     def test_findings_filed_records_nothing(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="wb-findings")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="cites", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -812,35 +822,35 @@ class TestReviewWriteback:
 
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags
-        assert store.review_status_for_chunk(p["chunk_id"]) == []
+        assert store.drafts.review_status_for_chunk(p["chunk_id"]) == []
 
     def test_changed_anchor_sha_records_nothing(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="wb-changed-sha")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
         parent_id = _mk_review_parent(store, lens="flow", anchor=anchor)
         job_id = _mk_job(store, parent_id)
 
         # The reviewer edited the anchor chunk itself during the tick
         # (e.g. a future authoring reviewer) — must not self-approve.
-        chunk = store.get_draft_chunk(anchor)
+        chunk = store.drafts.get_draft_chunk(anchor)
         assert chunk is not None
 
         def _edit_during_tick() -> None:
-            store.edit_text(chunk.handle, "the reviewer rewrote this")
+            store.drafts.edit_text(chunk.handle, "the reviewer rewrote this")
 
         _run(store, job_id, side_effect=_edit_during_tick)
 
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags
-        assert store.review_status_for_chunk(p["chunk_id"]) == []
+        assert store.drafts.review_status_for_chunk(p["chunk_id"]) == []
 
     def test_toc_clean_pass_records_digest_approval(self, store: Store) -> None:
         """item 10 — a clean ``toc`` tick pins ``approved_sha`` to the
         draft's TOC digest (:meth:`Store.toc_digest`), not the anchor
         chunk's ``content_sha``."""
         ref_id = _draft_with_chunks(store, name="wb-toc-clean", n_paragraphs=1)
-        root = store.reading_order(ref_id)[0]
+        root = store.drafts.reading_order(ref_id)[0]
         anchor = handle_registry.format_handle("draft", root.chunk_id, chunk=True)
         parent_id = _mk_review_parent(store, lens="toc", anchor=anchor)
         job_id = _mk_job(store, parent_id)
@@ -851,25 +861,25 @@ class TestReviewWriteback:
         assert "STATUS:succeeded" in job_tags
         statuses = [
             s
-            for s in store.review_status_for_chunk(root.chunk_id)
+            for s in store.drafts.review_status_for_chunk(root.chunk_id)
             if s["checker"] == "toc"
         ]
         assert len(statuses) == 1
         assert statuses[0]["verdict"] == "approved"
-        assert statuses[0]["approved_sha"] == store.toc_digest(ref_id)
+        assert statuses[0]["approved_sha"] == store.drafts.toc_digest(ref_id)
 
     def test_toc_heading_renamed_mid_tick_records_nothing(self, store: Store) -> None:
         """A heading rename during the tick moves the TOC digest — the
         toc lens must refuse to self-approve, same mechanism as a chunk
         lens's sha check."""
         ref_id = _draft_with_chunks(store, name="wb-toc-renamed", n_paragraphs=1)
-        root = store.reading_order(ref_id)[0]
+        root = store.drafts.reading_order(ref_id)[0]
         anchor = handle_registry.format_handle("draft", root.chunk_id, chunk=True)
         parent_id = _mk_review_parent(store, lens="toc", anchor=anchor)
         job_id = _mk_job(store, parent_id)
 
         def _rename_during_tick() -> None:
-            store.edit_text(root.handle, "T (renamed)")
+            store.drafts.edit_text(root.handle, "T (renamed)")
 
         _run(store, job_id, side_effect=_rename_during_tick)
 
@@ -877,7 +887,7 @@ class TestReviewWriteback:
         assert "STATUS:succeeded" in job_tags
         statuses = [
             s
-            for s in store.review_status_for_chunk(root.chunk_id)
+            for s in store.drafts.review_status_for_chunk(root.chunk_id)
             if s["checker"] == "toc"
         ]
         assert statuses == []
@@ -890,16 +900,18 @@ class TestReviewWriteback:
         so the toc approval records even though the draft changed under
         the reviewer — unlike a chunk lens, which would refuse."""
         ref_id = _draft_with_chunks(store, name="wb-toc-para-edit", n_paragraphs=1)
-        root = store.reading_order(ref_id)[0]
+        root = store.drafts.reading_order(ref_id)[0]
         para = next(
-            c for c in store.reviewable_chunks(ref_id) if c["chunk_kind"] == "paragraph"
+            c
+            for c in store.drafts.reviewable_chunks(ref_id)
+            if c["chunk_kind"] == "paragraph"
         )
         anchor = handle_registry.format_handle("draft", root.chunk_id, chunk=True)
         parent_id = _mk_review_parent(store, lens="toc", anchor=anchor)
         job_id = _mk_job(store, parent_id)
 
         def _edit_paragraph_during_tick() -> None:
-            store.edit_text(para["handle"], "the reviewer tightened this prose")
+            store.drafts.edit_text(para["handle"], "the reviewer tightened this prose")
 
         _run(store, job_id, side_effect=_edit_paragraph_during_tick)
 
@@ -907,12 +919,12 @@ class TestReviewWriteback:
         assert "STATUS:succeeded" in job_tags
         statuses = [
             s
-            for s in store.review_status_for_chunk(root.chunk_id)
+            for s in store.drafts.review_status_for_chunk(root.chunk_id)
             if s["checker"] == "toc"
         ]
         assert len(statuses) == 1
         assert statuses[0]["verdict"] == "approved"
-        assert statuses[0]["approved_sha"] == store.toc_digest(ref_id)
+        assert statuses[0]["approved_sha"] == store.drafts.toc_digest(ref_id)
 
     def test_non_review_tick_records_nothing_and_never_raises(
         self, store: Store
@@ -933,7 +945,7 @@ class TestReviewWriteback:
         self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         ref_id = _draft_with_chunks(store, name="wb-swallow")
-        p = store.reviewable_chunks(ref_id)[0]
+        p = store.drafts.reviewable_chunks(ref_id)[0]
         with store.pool.connection() as conn:
             current_sha_row = conn.execute(
                 "SELECT content_sha FROM chunks WHERE chunk_id = %s",
@@ -948,7 +960,7 @@ class TestReviewWriteback:
         monkeypatch.setattr(store.drafts, "record_review", _boom)
 
         with store.pool.connection() as conn:
-            # Must not raise even though store.record_review blows up. sha
+            # Must not raise even though store.drafts.record_review blows up. sha
             # matches current (0 findings, unchanged) so the swallow path
             # is genuinely reached inside the try/except, not short-
             # circuited by the sha-changed guard.
@@ -962,4 +974,4 @@ class TestReviewWriteback:
             )
             conn.commit()
 
-        assert store.review_status_for_chunk(p["chunk_id"]) == []
+        assert store.drafts.review_status_for_chunk(p["chunk_id"]) == []

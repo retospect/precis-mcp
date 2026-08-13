@@ -66,8 +66,8 @@ def _scaffold_section(store: Any, did: int, title: str, vec: list[float]) -> str
     centroid is exactly ``vec`` — mirrors ``tests/test_placement.py``'s
     ``_dossier_with_sections``. Returns the section's legacy ``handle``
     (what ``place_papers`` rows key on)."""
-    dc_handle = store.scaffold_sections(did, [(title, None)])[0]
-    chunk = store.get_draft_chunk(dc_handle)
+    dc_handle = store.drafts.scaffold_sections(did, [(title, None)])[0]
+    chunk = store.drafts.get_draft_chunk(dc_handle)
     assert chunk is not None
     _embed(store, chunk.chunk_id, vec)
     return str(chunk.handle)
@@ -268,7 +268,7 @@ class TestMaintainAndResidual:
         assert isinstance(result["log_entry"], int)
 
         # A new section heading now exists in the dossier's TOC.
-        toc = store.draft_toc(did)
+        toc = store.drafts.draft_toc(did)
         assert any(h.title == _NEW_TITLE for h in toc)
 
         # cited-in links exist for all three papers.
@@ -291,7 +291,7 @@ class TestMaintainAndResidual:
         client = _full_client()
         claims_client = _FixedClaimsClient()
 
-        toc_before = {h.handle for h in store.draft_toc(did)}
+        toc_before = {h.handle for h in store.drafts.draft_toc(did)}
 
         result = weave_tick(
             store, client, qid, claims_client=claims_client, dry_run=True
@@ -309,7 +309,7 @@ class TestMaintainAndResidual:
         assert result["log_entry"] is None
 
         # Nothing physically written.
-        toc_after = {h.handle for h in store.draft_toc(did)}
+        toc_after = {h.handle for h in store.drafts.draft_toc(did)}
         assert toc_after == toc_before  # no new heading scaffolded
 
         with store.pool.connection() as conn:

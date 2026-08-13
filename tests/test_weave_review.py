@@ -53,8 +53,8 @@ def _dossier_with_topic(store: Any, qid: int, *, topic: str = "mof") -> int:
 
 
 def _scaffold_section(store: Any, did: int, title: str, vec: list[float]) -> str:
-    dc_handle = store.scaffold_sections(did, [(title, None)])[0]
-    chunk = store.get_draft_chunk(dc_handle)
+    dc_handle = store.drafts.scaffold_sections(did, [(title, None)])[0]
+    chunk = store.drafts.get_draft_chunk(dc_handle)
     assert chunk is not None
     _embed(store, chunk.chunk_id, vec)
     return str(chunk.handle)

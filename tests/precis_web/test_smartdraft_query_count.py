@@ -87,12 +87,14 @@ def _seed_draft(hub: Hub, n: int, *, name: str) -> tuple[str, list[str]]:
     (focus defaults to the first body chunk). Returns ``(slug, dcs)``."""
     store = hub.live_store
     proj = store.insert_ref(kind="todo", slug=None, title=f"QC project {name}").id
-    ref, _title = store.create_draft(name=name, title="QC draft", project_ref_id=proj)
+    ref, _title = store.drafts.create_draft(
+        name=name, title="QC draft", project_ref_id=proj
+    )
     dcs: list[str] = []
     for i in range(n):
         hub_ref_id = _mint_hub_with_evidence(hub, i)
         fi_handle = handle_registry.format_handle("finding", hub_ref_id)
-        chunks = store.add_chunks(
+        chunks = store.drafts.add_chunks(
             ref_id=ref.id,
             chunk_kind="paragraph",
             text=f"Paragraph {i} makes a claim [{fi_handle}].",

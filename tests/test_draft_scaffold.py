@@ -25,29 +25,29 @@ def _new_draft(hub: Hub, slug: str) -> int:
 def test_scaffold_patent_sections(draft: DraftHandler, hub: Hub) -> None:
     ref_id = _new_draft(hub, "pat")
     sections = _SCAFFOLDS["patent"]
-    created = hub.live_store.scaffold_sections(ref_id, sections)
+    created = hub.live_store.drafts.scaffold_sections(ref_id, sections)
     assert len(created) == len(sections)
 
-    ro = hub.live_store.reading_order(ref_id)
+    ro = hub.live_store.drafts.reading_order(ref_id)
     # the auto-minted title heading, then the scaffolded sections in order
     assert ro[0].text == "Paperclip"
     assert [c.text for c in ro[1:]] == [t for t, _ in sections]
     # each scaffolded section is a heading carrying its style
     for c, (_title, style) in zip(ro[1:], sections):
         assert c.chunk_kind == "heading"
-        assert hub.live_store.section_style_for(c.handle) == style
+        assert hub.live_store.drafts.section_style_for(c.handle) == style
 
 
 def test_scaffold_empty_is_noop(draft: DraftHandler, hub: Hub) -> None:
     ref_id = _new_draft(hub, "d")
-    before = len(hub.live_store.reading_order(ref_id))
-    assert hub.live_store.scaffold_sections(ref_id, []) == []
-    assert len(hub.live_store.reading_order(ref_id)) == before
+    before = len(hub.live_store.drafts.reading_order(ref_id))
+    assert hub.live_store.drafts.scaffold_sections(ref_id, []) == []
+    assert len(hub.live_store.drafts.reading_order(ref_id)) == before
 
 
 def test_paper_scaffold_uses_sci_styles(draft: DraftHandler, hub: Hub) -> None:
     ref_id = _new_draft(hub, "rp")
-    hub.live_store.scaffold_sections(ref_id, _SCAFFOLDS["paper"])
-    ro = hub.live_store.reading_order(ref_id)
-    styles = [hub.live_store.section_style_for(c.handle) for c in ro[1:]]
+    hub.live_store.drafts.scaffold_sections(ref_id, _SCAFFOLDS["paper"])
+    ro = hub.live_store.drafts.reading_order(ref_id)
+    styles = [hub.live_store.drafts.section_style_for(c.handle) for c in ro[1:]]
     assert "sci-methods" in styles and "sci-abstract" in styles

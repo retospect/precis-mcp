@@ -15,8 +15,8 @@ def _claimed_ids(store: Store, handler: RakeLemmaHandler) -> list[int]:
 
 def test_edit_reclaims_chunk_for_rederive(store: Store) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="P").id
-    ref, title = store.create_draft(name="nt", title="T", project_ref_id=proj)
-    p = store.add_chunks(
+    ref, title = store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
+    p = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="nanoscale transistor leakage current density",
@@ -41,5 +41,5 @@ def test_edit_reclaims_chunk_for_rederive(store: Store) -> None:
     assert p.chunk_id not in _claimed_ids(store, h)
 
     # 3) after an in-place edit → re-claimed (content_sha changed)
-    store.edit_text(p.handle, "graphene channel mobility enhancement factor")
+    store.drafts.edit_text(p.handle, "graphene channel mobility enhancement factor")
     assert p.chunk_id in _claimed_ids(store, h)

@@ -23,10 +23,10 @@ def _make_source_draft(store: Store) -> tuple[int, int]:
     ``plots`` self-link and an inbound ``related-to`` link from another
     ref. Returns (src_ref_id, project_id)."""
     proj = _project(store, "Source project")
-    ref, title = store.create_draft(
+    ref, title = store.drafts.create_draft(
         name="src", title="Source Draft", project_ref_id=proj
     )
-    chunks = store.add_chunks(
+    chunks = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="first paragraph\n\nsecond paragraph",
@@ -39,7 +39,7 @@ def _make_source_draft(store: Store) -> tuple[int, int]:
             "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s",
             (second.chunk_id,),
         )
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 1. widget",
         origin="original",
@@ -61,12 +61,12 @@ def _make_source_draft(store: Store) -> tuple[int, int]:
             (fig.chunk_id, tag_id),
         )
     # an intra-draft self-link (plots): figure "plots" the first paragraph
-    store.link_figure_plots(fig.chunk_id, [first.chunk_id])
+    store.drafts.link_figure_plots(fig.chunk_id, [first.chunk_id])
     # an inbound related-to link from another ref
     other = store.insert_ref(kind="memory", slug=None, title="external note").id
     store.add_link(src_ref_id=other, dst_ref_id=ref.id, relation="related-to")
     # a chunk-scoped human review on the first paragraph — must NOT copy
-    store.record_review(first.chunk_id, "human", verdict="approved")
+    store.drafts.record_review(first.chunk_id, "human", verdict="approved")
     return ref.id, proj
 
 
@@ -116,9 +116,9 @@ def test_remap_xrefs_noop_when_no_refs() -> None:
 def test_fork_preserves_chunk_count_and_hierarchy(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project")
-    new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst")
 
-    src_all = store.reading_order(src_ref_id)  # live only
+    src_all = store.drafts.reading_order(src_ref_id)  # live only
     # reading_order is live-only; fetch ALL (incl. retired) for both sides
     with store.pool.connection() as conn:
         src_rows = conn.execute(
@@ -140,8 +140,10 @@ def test_fork_preserves_chunk_count_and_hierarchy(store: Store) -> None:
     assert n_retired_dst == 1
 
     # hierarchy preserved: same number of live children under the (mapped) root
-    assert len(src_all) == len(store.reading_order(new_ref.id))
-    for src_c, dst_c in zip(src_all, store.reading_order(new_ref.id), strict=True):
+    assert len(src_all) == len(store.drafts.reading_order(new_ref.id))
+    for src_c, dst_c in zip(
+        src_all, store.drafts.reading_order(new_ref.id), strict=True
+    ):
         assert src_c.depth == dst_c.depth
         assert src_c.chunk_kind == dst_c.chunk_kind
         assert src_c.text == dst_c.text
@@ -151,7 +153,7 @@ def test_fork_preserves_chunk_count_and_hierarchy(store: Store) -> None:
 def test_fork_mints_fresh_handles(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project 2")
-    new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst2")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst2")
 
     with store.pool.connection() as conn:
         src_handles = {
@@ -173,7 +175,7 @@ def test_fork_mints_fresh_handles(store: Store) -> None:
 def test_fork_copies_blob_and_tag_side_tables(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project 3")
-    new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst3")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst3")
 
     with store.pool.connection() as conn:
         src_fig_row = conn.execute(
@@ -212,7 +214,7 @@ def test_fork_copies_blob_and_tag_side_tables(store: Store) -> None:
 def test_fork_links_remapped_not_shared_with_source(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project 4")
-    new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst4")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst4")
 
     with store.pool.connection() as conn:
         _src_row = conn.execute(
@@ -265,11 +267,11 @@ def test_fork_rewrites_intra_draft_prose_xrefs(store: Store) -> None:
     links table, so verbatim copy would dangle them back into the source);
     a cross-draft ref is left alone, and content_sha stays consistent."""
     proj = _project(store, "Xref source project")
-    ref, title = store.create_draft(
+    ref, title = store.drafts.create_draft(
         name="xref-src", title="Xref Source", project_ref_id=proj
     )
     # target paragraph the cross-refs point at (need its id first)
-    [target] = store.add_chunks(
+    [target] = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="the target paragraph",
@@ -277,10 +279,10 @@ def test_fork_rewrites_intra_draft_prose_xrefs(store: Store) -> None:
     )
     # a chunk in ANOTHER draft — a cross-draft ref that must NOT be rewritten
     other_proj = _project(store, "Other project")
-    other_ref, other_title = store.create_draft(
+    other_ref, other_title = store.drafts.create_draft(
         name="xref-other", title="Other", project_ref_id=other_proj
     )
-    [other_chunk] = store.add_chunks(
+    [other_chunk] = store.drafts.add_chunks(
         ref_id=other_ref.id,
         chunk_kind="paragraph",
         text="external",
@@ -292,7 +294,7 @@ def test_fork_rewrites_intra_draft_prose_xrefs(store: Store) -> None:
         f"As shown in [dc{target.chunk_id}] and [the target]"
         f"(dc{target.chunk_id}); compare [dc{other_chunk.chunk_id}]."
     )
-    [referrer] = store.add_chunks(
+    [referrer] = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text=ref_text,
@@ -300,11 +302,11 @@ def test_fork_rewrites_intra_draft_prose_xrefs(store: Store) -> None:
     )
 
     dst_proj = _project(store, "Xref dest project")
-    new_ref = store.fork_draft(ref.id, dst_proj, new_slug="xref-dst")
+    new_ref = store.drafts.fork_draft(ref.id, dst_proj, new_slug="xref-dst")
 
     # align source ↔ copy by reading-order index to find the copied chunks
-    src_order = store.reading_order(ref.id)
-    dst_order = store.reading_order(new_ref.id)
+    src_order = store.drafts.reading_order(ref.id)
+    dst_order = store.drafts.reading_order(new_ref.id)
     assert len(src_order) == len(dst_order)
     ti = next(i for i, s in enumerate(src_order) if s.chunk_id == target.chunk_id)
     ri = next(i for i, s in enumerate(src_order) if s.chunk_id == referrer.chunk_id)
@@ -348,7 +350,7 @@ def test_fork_original_draft_untouched(store: Store) -> None:
         ).fetchall()
 
     dst_proj = _project(store, "Dest project 5")
-    store.fork_draft(src_ref_id, dst_proj, new_slug="dst5")
+    store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst5")
 
     with store.pool.connection() as conn:
         after_chunks = conn.execute(
@@ -372,7 +374,7 @@ def test_fork_original_draft_untouched(store: Store) -> None:
 def test_fork_copy_review_ledger_is_empty(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project 6")
-    new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst6")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst6")
 
     with store.pool.connection() as conn:
         src_reviewed_row = conn.execute(
@@ -394,7 +396,7 @@ def test_fork_copy_review_ledger_is_empty(store: Store) -> None:
 def test_fork_binds_project_and_stamps_copy_of(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project 7")
-    new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst7")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst7")
 
     draft_of = store.links_for(dst_proj, direction="in", relation="draft-of")
     assert any(link.src_ref_id == new_ref.id for link in draft_of)
@@ -412,9 +414,9 @@ def test_fork_binds_project_and_stamps_copy_of(store: Store) -> None:
 def test_fork_refuses_when_project_already_has_a_draft(store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     dst_proj = _project(store, "Dest project 8")
-    store.create_draft(name="already-there", title="X", project_ref_id=dst_proj)
+    store.drafts.create_draft(name="already-there", title="X", project_ref_id=dst_proj)
     with pytest.raises(ValueError, match="already has a draft"):
-        store.fork_draft(src_ref_id, dst_proj, new_slug="dst8")
+        store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst8")
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +438,9 @@ def test_handler_fork_creates_bound_copy(draft: DraftHandler, store: Store) -> N
         new_ref = store.get_ref(kind="draft", id=link.src_ref_id)
     assert new_ref is not None
     assert new_ref.slug == f"{src_ref.slug}-copy"
-    assert len(store.reading_order(new_ref.id)) == len(store.reading_order(src_ref_id))
+    assert len(store.drafts.reading_order(new_ref.id)) == len(
+        store.drafts.reading_order(src_ref_id)
+    )
 
 
 def test_handler_fork_project_todo_string_still_works(
@@ -483,7 +487,9 @@ def test_handler_fork_project_title_mints_new_project(
     assert len(draft_of) == 1
     new_ref = store.get_ref(kind="draft", id=draft_of[0].src_ref_id)
     assert new_ref is not None
-    assert len(store.reading_order(new_ref.id)) == len(store.reading_order(src_ref_id))
+    assert len(store.drafts.reading_order(new_ref.id)) == len(
+        store.drafts.reading_order(src_ref_id)
+    )
 
 
 def test_handler_fork_dedupes_slug(draft: DraftHandler, store: Store) -> None:
@@ -536,11 +542,11 @@ def test_authored_provenance_new_chunk_and_edit_stamp(store: Store) -> None:
     latest grounded EXTEND of an existing chunk (``edit_text(source=…)``)
     both surface in ``authored_provenance``; an un-stamped chunk doesn't."""
     src_ref_id, _proj = _make_source_draft(store)
-    order = store.reading_order(src_ref_id)
+    order = store.drafts.reading_order(src_ref_id)
     plain = next(c for c in order if c.chunk_kind == "paragraph")
 
     # A NEW authored chunk (put(kind='draft', meta={'authored_by': …})).
-    [new_chunk] = store.add_chunks(
+    [new_chunk] = store.drafts.add_chunks(
         ref_id=src_ref_id,
         chunk_kind="paragraph",
         text="A grounded addition.",
@@ -549,13 +555,13 @@ def test_authored_provenance_new_chunk_and_edit_stamp(store: Store) -> None:
     )
 
     # A grounded EXTEND of an existing chunk (edit_text(source=…)).
-    store.edit_text(
+    store.drafts.edit_text(
         plain.handle,
         "The extended, grounded paragraph.",
         source={"authored_by": "review:cites"},
     )
 
-    prov = store.authored_provenance(src_ref_id)
+    prov = store.drafts.authored_provenance(src_ref_id)
     assert prov[new_chunk.chunk_id] == "review:structure"
     assert prov[plain.chunk_id] == "review:cites"
     # A chunk with neither stamp doesn't appear.
@@ -570,33 +576,38 @@ def test_authored_provenance_edit_stamp_uses_latest_stamped_edit(store: Store) -
     touch-up, doesn't itself clear a prior stamp, since the subquery only
     ranks among stamped rows)."""
     src_ref_id, _proj = _make_source_draft(store)
-    order = store.reading_order(src_ref_id)
+    order = store.drafts.reading_order(src_ref_id)
     plain = next(c for c in order if c.chunk_kind == "paragraph")
 
-    store.edit_text(
+    store.drafts.edit_text(
         plain.handle, "First grounded edit.", source={"authored_by": "review:cites"}
     )
-    assert store.authored_provenance(src_ref_id)[plain.chunk_id] == "review:cites"
+    assert (
+        store.drafts.authored_provenance(src_ref_id)[plain.chunk_id] == "review:cites"
+    )
 
-    store.edit_text(
+    store.drafts.edit_text(
         plain.handle,
         "Second grounded edit, different lens.",
         source={"authored_by": "review:structure"},
     )
-    assert store.authored_provenance(src_ref_id)[plain.chunk_id] == "review:structure"
+    assert (
+        store.drafts.authored_provenance(src_ref_id)[plain.chunk_id]
+        == "review:structure"
+    )
 
 
 def test_draft_authoring_enabled_reflects_stamp_ref_meta(store: Store) -> None:
     """``draft_authoring_enabled`` defaults False and reflects the last
     ``stamp_ref_meta(..., {'authoring_enabled': …})`` write."""
     src_ref_id, _proj = _make_source_draft(store)
-    assert store.draft_authoring_enabled(src_ref_id) is False
+    assert store.drafts.draft_authoring_enabled(src_ref_id) is False
 
     store.stamp_ref_meta(src_ref_id, {"authoring_enabled": True})
-    assert store.draft_authoring_enabled(src_ref_id) is True
+    assert store.drafts.draft_authoring_enabled(src_ref_id) is True
 
     store.stamp_ref_meta(src_ref_id, {"authoring_enabled": False})
-    assert store.draft_authoring_enabled(src_ref_id) is False
+    assert store.drafts.draft_authoring_enabled(src_ref_id) is False
 
 
 def test_handler_edit_authoring_toggles_ref_meta(
@@ -610,11 +621,11 @@ def test_handler_edit_authoring_toggles_ref_meta(
 
     resp = draft.edit(id=src_ref.slug, authoring="on")
     assert "ON" in resp.body
-    assert store.draft_authoring_enabled(src_ref_id) is True
+    assert store.drafts.draft_authoring_enabled(src_ref_id) is True
 
     resp = draft.edit(id=src_ref.slug, authoring="off")
     assert "OFF" in resp.body
-    assert store.draft_authoring_enabled(src_ref_id) is False
+    assert store.drafts.draft_authoring_enabled(src_ref_id) is False
 
     with pytest.raises(BadInput, match="not understood"):
         draft.edit(id=src_ref.slug, authoring="maybe")

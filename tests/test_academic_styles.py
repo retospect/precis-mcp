@@ -43,21 +43,21 @@ def test_sci_methods_injects_real_body(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="rp", title="A paper", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="rp")
     assert ref is not None
-    title = hub.live_store.reading_order(ref.id)[0]
+    title = hub.live_store.drafts.reading_order(ref.id)[0]
     draft.put(
         id="rp",
         chunk_kind="heading",
         text="Methods",
         at={"after": "¶" + title.handle},
     )
-    methods = hub.live_store.reading_order(ref.id)[1]
+    methods = hub.live_store.drafts.reading_order(ref.id)[1]
     draft.put(
         id="rp",
         chunk_kind="paragraph",
         text="We ran it.",
         at={"into": "¶" + methods.handle, "last": True},
     )
-    para = hub.live_store.reading_order(ref.id)[2]
+    para = hub.live_store.drafts.reading_order(ref.id)[2]
     draft.edit(id=methods.dc, style="sci-methods")
     cr = hub.live_store.insert_ref(
         kind="todo", slug=None, title="cr", meta={"anchor": para.dc}

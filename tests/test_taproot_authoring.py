@@ -702,14 +702,14 @@ def test_backfill_grounding_part_a_resyncs_draft_cites_edge(store: Any) -> None:
     draft = DraftHandler(hub=Hub(store=store))
     draft.put(id="bg-nt", title="T", project=proj)
     ref = store.get_ref(kind="draft", id="bg-nt")
-    title_h = store.reading_order(ref.id)[0].handle
+    title_h = store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="bg-nt",
         chunk_kind="paragraph",
         text=f"the effect holds [{pc}]",
         at={"after": "¶" + title_h},
     )
-    para = store.reading_order(ref.id)[1]
+    para = store.drafts.reading_order(ref.id)[1]
 
     def _cites() -> list[Any]:
         return [

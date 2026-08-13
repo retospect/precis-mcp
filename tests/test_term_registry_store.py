@@ -37,7 +37,9 @@ def _mk(hub: Hub, draft: DraftHandler) -> int:
 
 def _headings(hub: Hub, ref_id: int) -> list:
     return [
-        c for c in hub.live_store.reading_order(ref_id) if c.chunk_kind == "heading"
+        c
+        for c in hub.live_store.drafts.reading_order(ref_id)
+        if c.chunk_kind == "heading"
     ]
 
 
@@ -48,8 +50,8 @@ def test_defined_terms_part_surfaces_all_key_to_rich_entry(
     draft: DraftHandler, hub: Hub
 ) -> None:
     ref_id = _mk(hub, draft)
-    gloss = hub.live_store.ensure_registry_heading(ref_id, "components")
-    hub.live_store.add_chunks(
+    gloss = hub.live_store.drafts.ensure_registry_heading(ref_id, "components")
+    hub.live_store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="term",
         text="an operational amplifier",
@@ -63,7 +65,7 @@ def test_defined_terms_part_surfaces_all_key_to_rich_entry(
             "registry": "components",
         },
     )
-    terms = hub.live_store.defined_terms(ref_id)
+    terms = hub.live_store.drafts.defined_terms(ref_id)
     # Every string surface reaches the same rich record.
     for surface in ("op-amp", "LM358", "LM358DR"):
         assert surface in terms, surface
@@ -89,7 +91,7 @@ def test_defined_terms_abbrev_is_a_dedicated_resolvable_surface(
         text="stereolithography",
         meta={"short": "stereolithography", "abbrev": "STL"},
     )
-    terms = hub.live_store.defined_terms(ref_id)
+    terms = hub.live_store.drafts.defined_terms(ref_id)
     for surface in ("stereolithography", "STL"):
         assert surface in terms, surface
         e = terms[surface]
@@ -105,7 +107,7 @@ def test_defined_terms_plain_glossary_has_no_bag(draft: DraftHandler, hub: Hub) 
         text="metal-organic framework",
         meta={"short": "MOF"},
     )
-    terms = hub.live_store.defined_terms(ref_id)
+    terms = hub.live_store.drafts.defined_terms(ref_id)
     assert terms["MOF"]["definition"] == "metal-organic framework"
     # No manufacturing attribute bag on a plain glossary term.
     assert "mpn" not in terms["MOF"]
@@ -115,7 +117,7 @@ def test_defined_terms_plain_glossary_has_no_bag(draft: DraftHandler, hub: Hub) 
 
 def test_defined_terms_explicit_wins_over_inline(draft: DraftHandler, hub: Hub) -> None:
     ref_id = _mk(hub, draft)
-    title_h = hub.live_store.reading_order(ref_id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref_id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -125,7 +127,7 @@ def test_defined_terms_explicit_wins_over_inline(draft: DraftHandler, hub: Hub) 
     draft.put(
         id="nt", chunk_kind="term", text="a different expansion", meta={"short": "PEI"}
     )
-    terms = hub.live_store.defined_terms(ref_id)
+    terms = hub.live_store.drafts.defined_terms(ref_id)
     assert terms["PEI"]["definition"] == "a different expansion"
 
 
@@ -136,9 +138,9 @@ def test_registry_heading_is_created_and_reused_per_role(
     draft: DraftHandler, hub: Hub
 ) -> None:
     ref_id = _mk(hub, draft)
-    g1 = hub.live_store.ensure_registry_heading(ref_id, "glossary")
-    g2 = hub.live_store.ensure_registry_heading(ref_id, "glossary")
-    comp = hub.live_store.ensure_registry_heading(ref_id, "components")
+    g1 = hub.live_store.drafts.ensure_registry_heading(ref_id, "glossary")
+    g2 = hub.live_store.drafts.ensure_registry_heading(ref_id, "glossary")
+    comp = hub.live_store.drafts.ensure_registry_heading(ref_id, "components")
     assert g1 == g2  # same home reused, not duplicated
     assert comp != g1  # a distinct registry gets its own home
     titles = {c.text for c in _headings(hub, ref_id)}
@@ -151,14 +153,14 @@ def test_registry_heading_adopts_legacy_text_heading(
     """A renamed/imported 'Abbreviations' heading is adopted (stamped
     meta.registry) — no second 'Glossary' is minted (the two-cluster bug)."""
     ref_id = _mk(hub, draft)
-    created = hub.live_store.add_chunks(
+    created = hub.live_store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="heading",
         text="Abbreviations",
         at={"last": True},
     )
     legacy_dc = created[0].dc
-    got = hub.live_store.ensure_registry_heading(ref_id, "glossary")
+    got = hub.live_store.drafts.ensure_registry_heading(ref_id, "glossary")
     assert got == legacy_dc  # adopted, not replaced
     headings = _headings(hub, ref_id)
     # No fresh "Glossary" heading minted.
@@ -171,21 +173,21 @@ def test_registry_heading_reconciles_duplicates(draft: DraftHandler, hub: Hub) -
     """Two role-tagged headings fold to one; the straggler's leaves reparent
     under the earliest-pos canonical (belt-and-suspenders reconcile)."""
     ref_id = _mk(hub, draft)
-    first = hub.live_store.add_chunks(
+    first = hub.live_store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="heading",
         text="Glossary",
         at={"last": True},
         meta={"registry": "glossary"},
     )[0]
-    second = hub.live_store.add_chunks(
+    second = hub.live_store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="heading",
         text="Glossary (dup)",
         at={"last": True},
         meta={"registry": "glossary"},
     )[0]
-    term = hub.live_store.add_chunks(
+    term = hub.live_store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="term",
         text="a def",
@@ -193,14 +195,14 @@ def test_registry_heading_reconciles_duplicates(draft: DraftHandler, hub: Hub) -
         meta={"short": "X"},
     )[0]
     # Triggers the reconcile.
-    canonical = hub.live_store.ensure_registry_heading(ref_id, "glossary")
+    canonical = hub.live_store.drafts.ensure_registry_heading(ref_id, "glossary")
     assert canonical == first.dc
     live_headings = _headings(hub, ref_id)
     glossary_homes = [
         h for h in live_headings if (h.meta or {}).get("registry") == "glossary"
     ]
     assert len(glossary_homes) == 1  # the duplicate is retired
-    moved = hub.live_store.get_draft_chunk(term.handle)
+    moved = hub.live_store.drafts.get_draft_chunk(term.handle)
     assert moved is not None and moved.parent_chunk_id == first.chunk_id
 
 
@@ -211,9 +213,9 @@ def test_parts_callout_map_is_spaced_and_reorder_recomputes(
     draft: DraftHandler, hub: Hub
 ) -> None:
     ref_id = _mk(hub, draft)
-    home = hub.live_store.ensure_registry_heading(ref_id, "parts")
+    home = hub.live_store.drafts.ensure_registry_heading(ref_id, "parts")
     parts = [
-        hub.live_store.add_chunks(
+        hub.live_store.drafts.add_chunks(
             ref_id=ref_id,
             chunk_kind="term",
             text=f"part {name}",
@@ -225,11 +227,11 @@ def test_parts_callout_map_is_spaced_and_reorder_recomputes(
     from precis.utils import handle_registry
 
     dcs = [handle_registry.normalize(p.dc) for p in parts]
-    m = hub.live_store.parts_callout_map(ref_id, "parts")
+    m = hub.live_store.drafts.parts_callout_map(ref_id, "parts")
     assert m[dcs[0]] == 100 and m[dcs[1]] == 105 and m[dcs[2]] == 110
     # Reorder: move the last part to the front → numerals recompute positionally.
-    hub.live_store.move_chunk(parts[2].handle, {"into": home, "first": True})
-    m2 = hub.live_store.parts_callout_map(ref_id, "parts")
+    hub.live_store.drafts.move_chunk(parts[2].handle, {"into": home, "first": True})
+    m2 = hub.live_store.drafts.parts_callout_map(ref_id, "parts")
     assert m2[dcs[2]] == 100 and m2[dcs[0]] == 105 and m2[dcs[1]] == 110
 
 
@@ -237,8 +239,8 @@ def test_parts_callout_map_empty_for_non_render_registry(
     draft: DraftHandler, hub: Hub
 ) -> None:
     ref_id = _mk(hub, draft)
-    assert hub.live_store.parts_callout_map(ref_id, "components") == {}
-    assert hub.live_store.parts_callout_map(ref_id, "glossary") == {}
+    assert hub.live_store.drafts.parts_callout_map(ref_id, "components") == {}
+    assert hub.live_store.drafts.parts_callout_map(ref_id, "glossary") == {}
 
 
 # ── handler: put routing + insert-callout freeze, edit bag ────────────────
@@ -260,8 +262,8 @@ def test_put_components_term_stamps_registry_and_freezes_callout(
         text="regulator",
         meta={"registry": "components", "short": "LDO"},
     )
-    c1 = hub.live_store.get_draft_chunk(_dc(r1.body))
-    c2 = hub.live_store.get_draft_chunk(_dc(r2.body))
+    c1 = hub.live_store.drafts.get_draft_chunk(_dc(r1.body))
+    c2 = hub.live_store.drafts.get_draft_chunk(_dc(r2.body))
     assert c1 is not None and c2 is not None
     assert c1.meta["registry"] == "components" and c1.meta["callout"] == 1
     assert c2.meta["callout"] == 2  # consecutive
@@ -278,11 +280,11 @@ def test_put_components_term_files_under_components_home(
         text="op-amp",
         meta={"registry": "components", "short": "LM358"},
     )
-    leaf = hub.live_store.get_draft_chunk(_dc(r.body))
+    leaf = hub.live_store.drafts.get_draft_chunk(_dc(r.body))
     assert leaf is not None
     parent = next(
         c
-        for c in hub.live_store.reading_order(ref_id)
+        for c in hub.live_store.drafts.reading_order(ref_id)
         if c.chunk_id == leaf.parent_chunk_id
     )
     assert parent.chunk_kind == "heading"
@@ -297,7 +299,7 @@ def test_put_glossary_term_gets_no_callout(draft: DraftHandler, hub: Hub) -> Non
         text="metal-organic framework",
         meta={"short": "MOF"},
     )
-    leaf = hub.live_store.get_draft_chunk(_dc(r.body))
+    leaf = hub.live_store.drafts.get_draft_chunk(_dc(r.body))
     assert leaf is not None
     assert leaf.meta["registry"] == "glossary"
     assert "callout" not in leaf.meta
@@ -316,7 +318,7 @@ def test_edit_meta_patches_term_attribute_bag(draft: DraftHandler, hub: Hub) -> 
         id=dc,
         meta={"mpn": "LM358DR", "manufacturer": "TI", "url": "https://x/lm358.pdf"},
     )
-    leaf = hub.live_store.get_draft_chunk(dc)
+    leaf = hub.live_store.drafts.get_draft_chunk(dc)
     assert leaf is not None
     assert leaf.meta["mpn"] == "LM358DR"
     assert leaf.meta["manufacturer"] == "TI"

@@ -41,7 +41,7 @@ def _ords(store: Any, ref_id: int) -> dict[int, int]:
 
 
 def _by_text(store: Any, ref_id: int, text: str) -> Any:
-    for c in store.reading_order(ref_id, kind="plan"):
+    for c in store.drafts.reading_order(ref_id, kind="plan"):
         if (c.text or "").strip() == text:
             return c
     raise AssertionError(f"no chunk with text {text!r}")
@@ -55,7 +55,7 @@ def _doc(store: Any, plan: PlanHandler) -> tuple[int, dict[str, Any]]:
     root = _pe(
         plan.put(id="p", chunk_kind="heading", text="Root", at={"last": True}).body
     )
-    ref_id = store.get_draft_chunk(root, kind="plan").ref_id
+    ref_id = store.drafts.get_draft_chunk(root, kind="plan").ref_id
     plan.put(id="p", chunk_kind="heading", text="Methods", at={"into": root})
     methods = _by_text(store, ref_id, "Methods").dc
     plan.put(id="p", chunk_kind="paragraph", text="m-para", at={"into": methods})
@@ -63,7 +63,9 @@ def _doc(store: Any, plan: PlanHandler) -> tuple[int, dict[str, Any]]:
     plan.put(id="p", chunk_kind="heading", text="Results", at={"into": root})
     results = _by_text(store, ref_id, "Results").dc
     plan.put(id="p", chunk_kind="paragraph", text="r-para", at={"into": results})
-    chunks = {c.text.strip(): c for c in store.reading_order(ref_id, kind="plan")}
+    chunks = {
+        c.text.strip(): c for c in store.drafts.reading_order(ref_id, kind="plan")
+    }
     return ref_id, chunks
 
 
@@ -97,9 +99,9 @@ def test_render_link_rollup_aggregates_by_visibility(
     # src m-para rolls up to Methods (its open section); the in-doc target
     # r-para (collapsed under collapsed Results) rolls up to the visible Root.
     demand = {ch["Root"].chunk_id: Extent.FULL, ch["Methods"].chunk_id: Extent.FULL}
-    views = store.block_views(ref_id)
+    views = store.drafts.block_views(ref_id)
     out = render_link_rollup(
-        store, ref_id, store.reading_order(ref_id, kind="plan"), demand, views
+        store, ref_id, store.drafts.reading_order(ref_id, kind="plan"), demand, views
     )
 
     assert "section link map" in out
@@ -118,7 +120,7 @@ def test_render_link_rollup_empty_without_links(hub: Hub, plan: PlanHandler) -> 
     ref_id, ch = _doc(store, plan)
     demand = {ch["Root"].chunk_id: Extent.FULL}
     out = render_link_rollup(
-        store, ref_id, store.reading_order(ref_id, kind="plan"), demand, {}
+        store, ref_id, store.drafts.reading_order(ref_id, kind="plan"), demand, {}
     )
     assert out == ""
 

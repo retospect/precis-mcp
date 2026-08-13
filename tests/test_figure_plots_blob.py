@@ -46,9 +46,11 @@ def seeded(hub: Hub) -> tuple[Hub, int, object, object]:
         at={"last": True},
     )
     data_c = next(
-        c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "table"
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
     )
-    fig = hub.live_store.add_figure(
+    fig = hub.live_store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 1.",
         origin="own_graph",
@@ -82,10 +84,10 @@ def test_upsert_chunk_blob_replaces_deferred_image(seeded: tuple) -> None:
     hub, _ref_id, _data_c, fig = seeded
     # add_figure seeded the stub; a render overwrites it in place
     new = b"\x89PNG\r\n\x1a\n" + b"rendered"
-    hub.live_store.upsert_chunk_blob(fig.chunk_id, new, "image/png")
-    got = hub.live_store.get_chunk_blob(fig.handle)
+    hub.live_store.drafts.upsert_chunk_blob(fig.chunk_id, new, "image/png")
+    got = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert got == (new, "image/png")
     # a second render replaces again (not a second row)
     newer = b"\x89PNG\r\n\x1a\n" + b"rerendered"
-    hub.live_store.upsert_chunk_blob(fig.chunk_id, newer, "image/png")
-    assert hub.live_store.get_chunk_blob(fig.handle) == (newer, "image/png")
+    hub.live_store.drafts.upsert_chunk_blob(fig.chunk_id, newer, "image/png")
+    assert hub.live_store.drafts.get_chunk_blob(fig.handle) == (newer, "image/png")

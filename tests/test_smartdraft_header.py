@@ -146,7 +146,7 @@ def test_no_edge_is_dropped_however_many_a_relation_has() -> None:
 
 def _seed(store, *, title="Original title"):
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, head = store.create_draft(name="rn", title=title, project_ref_id=proj)
+    ref, head = store.drafts.create_draft(name="rn", title=title, project_ref_id=proj)
     return ref, head
 
 
@@ -160,10 +160,10 @@ def _ref_title(store, ref_id):
 
 def test_rename_writes_both_the_ref_title_and_the_heading(store) -> None:
     ref, head = _seed(store)
-    old, synced = store.set_draft_title(ref.id, "A better title")
+    old, synced = store.drafts.set_draft_title(ref.id, "A better title")
     assert (old, synced) == ("Original title", True)
     assert _ref_title(store, ref.id) == "A better title"
-    assert store.get_draft_chunk(head.handle).text == "A better title"
+    assert store.drafts.get_draft_chunk(head.handle).text == "A better title"
 
 
 def test_rename_converges_an_already_drifted_heading(store) -> None:
@@ -172,25 +172,25 @@ def test_rename_converges_an_already_drifted_heading(store) -> None:
     reader and another in every search hit. Renaming must converge them,
     which means overwriting a diverged heading rather than preserving it."""
     ref, head = _seed(store)
-    store.edit_text(head.handle, "Heading the author changed by hand")
+    store.drafts.edit_text(head.handle, "Heading the author changed by hand")
     assert _ref_title(store, ref.id) == "Original title"  # drifted
 
-    store.set_draft_title(ref.id, "Converged")
+    store.drafts.set_draft_title(ref.id, "Converged")
     assert _ref_title(store, ref.id) == "Converged"
-    assert store.get_draft_chunk(head.handle).text == "Converged"
+    assert store.drafts.get_draft_chunk(head.handle).text == "Converged"
 
 
 def test_rename_keeps_the_heading_handle_alive(store) -> None:
     # In-place edit, so inbound anchors to the title heading survive.
     ref, head = _seed(store)
-    store.set_draft_title(ref.id, "Renamed")
-    assert store.get_draft_chunk(head.handle) is not None
+    store.drafts.set_draft_title(ref.id, "Renamed")
+    assert store.drafts.get_draft_chunk(head.handle) is not None
 
 
 def test_rename_is_idempotent_on_the_heading(store) -> None:
     ref, head = _seed(store)
-    store.set_draft_title(ref.id, "Original title")
-    assert store.get_draft_chunk(head.handle).text == "Original title"
+    store.drafts.set_draft_title(ref.id, "Original title")
+    assert store.drafts.get_draft_chunk(head.handle).text == "Original title"
 
 
 def test_a_no_op_rename_leaves_the_ref_untouched(store) -> None:
@@ -203,7 +203,7 @@ def test_a_no_op_rename_leaves_the_ref_untouched(store) -> None:
             "SELECT updated_at FROM refs WHERE ref_id = %s", (ref.id,)
         ).fetchone()[0]
 
-    store.set_draft_title(ref.id, "  Original title  ")  # same, once stripped
+    store.drafts.set_draft_title(ref.id, "  Original title  ")  # same, once stripped
 
     with store.pool.connection() as conn:
         after = conn.execute(
@@ -222,26 +222,26 @@ def test_a_no_op_ref_rename_still_converges_a_drifted_heading(store) -> None:
     # The convergence case where the ref title is BY DEFINITION unchanged —
     # so the no-op guard above must not short-circuit the heading sync.
     ref, head = _seed(store)
-    store.edit_text(head.handle, "Drifted by hand")
-    store.set_draft_title(ref.id, "Original title")
-    assert store.get_draft_chunk(head.handle).text == "Original title"
+    store.drafts.edit_text(head.handle, "Drifted by hand")
+    store.drafts.set_draft_title(ref.id, "Original title")
+    assert store.drafts.get_draft_chunk(head.handle).text == "Original title"
 
 
 def test_blank_title_is_rejected(store) -> None:
     ref, _ = _seed(store)
     with pytest.raises(BadInput):
-        store.set_draft_title(ref.id, "   ")
+        store.drafts.set_draft_title(ref.id, "   ")
     assert _ref_title(store, ref.id) == "Original title"
 
 
 def test_rename_of_a_missing_ref_raises(store) -> None:
     with pytest.raises(NotFound):
-        store.set_draft_title(999_999, "Nope")
+        store.drafts.set_draft_title(999_999, "Nope")
 
 
 def test_rename_logs_a_ref_event(store) -> None:
     ref, _ = _seed(store)
-    store.set_draft_title(ref.id, "Renamed")
+    store.drafts.set_draft_title(ref.id, "Renamed")
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT payload FROM ref_events "
@@ -257,11 +257,11 @@ def test_a_draft_with_no_root_heading_renames_the_ref_alone(store) -> None:
     ref, head = _seed(store)
     # A draft must keep one live chunk, so give it a body before retiring
     # the heading — the shape an import (no root heading) lands in.
-    store.add_chunks(
+    store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text="body", at={"last": True}
     )
-    store.retire_chunk(head.handle)
-    old, synced = store.set_draft_title(ref.id, "Headless")
+    store.drafts.retire_chunk(head.handle)
+    old, synced = store.drafts.set_draft_title(ref.id, "Headless")
     assert (old, synced) == ("Original title", False)
     assert _ref_title(store, ref.id) == "Headless"
 
@@ -272,4 +272,4 @@ def test_handler_edit_exposes_the_rename(hub) -> None:
     resp = DraftHandler(hub=hub).edit(id="rn", title="Via the verb")
     assert "Via the verb" in resp.body
     assert _ref_title(store, ref.id) == "Via the verb"
-    assert store.get_draft_chunk(head.handle).text == "Via the verb"
+    assert store.drafts.get_draft_chunk(head.handle).text == "Via the verb"

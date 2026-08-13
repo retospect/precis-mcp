@@ -937,8 +937,8 @@ def test_smartdraft_focus_shows_connections_links_and_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The focus Connections rail (gripe 178766, migrated from the retired
-    classic reader): the focus chunk's out/in link-edges (`store.chunk_connections`,
-    split by direction) and its anchored change-request flags (`store.anchored_todos`)
+    classic reader): the focus chunk's out/in link-edges (`store.drafts.chunk_connections`,
+    split by direction) and its anchored change-request flags (`store.drafts.anchored_todos`)
     render as hover chips. Both surfaces are computed for the focus by
     `draft_links.chunk_links` → `_connection_chips`/`_flag_chips`."""
     store = smartdraft_runtime.store
@@ -1413,8 +1413,8 @@ def test_smartdraft_links_panel_lists_in_out_edges_and_anchored_flag(
     the draft" — no project link, no job, so it's otherwise invisible here)
     — all render in the new Links panel, via the SAME
     ``precis_web.draft_links.chunk_links`` data path the classic reader
-    assembles from (``store.chunk_connections`` split by direction +
-    ``store.anchored_todos``)."""
+    assembles from (``store.drafts.chunk_connections`` split by direction +
+    ``store.drafts.anchored_todos``)."""
     store = smartdraft_runtime.store  # default focus = chunk 2, handle H000002
 
     def fake_conns(

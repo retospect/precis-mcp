@@ -524,7 +524,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             at={"into": heading.dc, "first": True},
         )
         for c in retire_targets:
-            ctx.store.retire_chunk(c.handle, mode="cascade")
+            ctx.store.drafts.retire_chunk(c.handle, mode="cascade")
         if new_heading_text and new_heading_text != (heading.text or "").strip():
             ctx.store.drafts.edit_text(
                 heading.handle, new_heading_text, source={"reason": "draft_refresh"}

@@ -59,7 +59,7 @@ def test_assemble_excludes_dismissed_from_recall(
     sec = _pe(plan.put(id="p", text="Ionic transport", at={"last": True}).body)
     plan.put(id="p", text=f"a claim paper:{cited.id}", at={"into": sec})
 
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
     draft_ref_id = sec_chunk.ref_id
     dropped = store.insert_ref(kind="paper", slug="kumar", title="Kumar 2021").id
@@ -120,7 +120,7 @@ def test_dismissal_by_chunk_handle_resolves_to_owning_ref(
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
     plan.put(id="p", title="Doc", project=proj)
     sec = _pe(plan.put(id="p", text="Ionic transport", at={"last": True}).body)
-    sec_chunk = store.get_draft_chunk(sec, kind="plan")
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
     assert sec_chunk is not None
     draft_ref_id = sec_chunk.ref_id
     # ``sec`` is a chunk handle (``pe<id>`` here; ``pc<id>`` in prod) — it resolves

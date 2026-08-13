@@ -112,7 +112,7 @@ def test_turn_vocab_and_notes_are_separate_chunks(store, ref):
         "both",
         claude_fn=_fixed(vocab="a mascot", notes="head = circle#head"),
     )
-    kinds = [c.chunk_kind for c in store.reading_order(ref.id, kind="figure")]
+    kinds = [c.chunk_kind for c in store.drafts.reading_order(ref.id, kind="figure")]
     assert kinds.count("figure_vocab") == 1
     assert kinds.count("figure_notes") == 1
 

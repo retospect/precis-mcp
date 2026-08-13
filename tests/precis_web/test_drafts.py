@@ -1559,8 +1559,10 @@ def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
 
 def test_retract_review_route_deletes_row_and_reverts_indicator(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    _rt.store.record_review(2, "human", verdict="approved")  # dc2 == BBBBBB
-    assert [r["checker"] for r in _rt.store.review_status_for_chunk(2)] == ["human"]
+    _rt.store.drafts.record_review(2, "human", verdict="approved")  # dc2 == BBBBBB
+    assert [r["checker"] for r in _rt.store.drafts.review_status_for_chunk(2)] == [
+        "human"
+    ]
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
     assert r.status_code == 200
@@ -1570,28 +1572,28 @@ def test_retract_review_route_deletes_row_and_reverts_indicator(tmp_path) -> Non
     assert body["rollup"] == {"done": 0, "total": 1}  # only BBBBBB is prose
 
     # A re-GET of the chunk's status shows the indicator reverted (empty).
-    assert _rt.store.review_status_for_chunk(2) == []
+    assert _rt.store.drafts.review_status_for_chunk(2) == []
 
 
 def test_retract_review_route_defaults_checker_to_human(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    _rt.store.record_review(2, "human")
-    _rt.store.record_review(2, "flow")
+    _rt.store.drafts.record_review(2, "human")
+    _rt.store.drafts.record_review(2, "flow")
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
     assert r.status_code == 200
-    remaining = {row["checker"] for row in _rt.store.review_status_for_chunk(2)}
+    remaining = {row["checker"] for row in _rt.store.drafts.review_status_for_chunk(2)}
     assert remaining == {"flow"}  # only 'human' (the default) was retracted
 
 
 def test_retract_review_route_retracts_named_checker(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
-    _rt.store.record_review(2, "human")
-    _rt.store.record_review(2, "flow")
+    _rt.store.drafts.record_review(2, "human")
+    _rt.store.drafts.record_review(2, "flow")
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2", "checker": "flow"})
     assert r.status_code == 200
-    remaining = {row["checker"] for row in _rt.store.review_status_for_chunk(2)}
+    remaining = {row["checker"] for row in _rt.store.drafts.review_status_for_chunk(2)}
     assert remaining == {"human"}
 
 
@@ -1651,7 +1653,7 @@ def test_rollup_badge_zero_of_three_then_review_complete(tmp_path) -> None:
     # only — see ReviewFakeStore's docstring); approve all three prose
     # chunks directly, the way a real edit(review='human') write would land.
     for cid in (102, 103, 105):
-        rt.store.record_review(cid, "human")
+        rt.store.drafts.record_review(cid, "human")
 
     r2 = client.post("/drafts/nt/human-review", json={"dc": "dc102"})
     assert r2.status_code == 200
@@ -2222,14 +2224,14 @@ def _seed_convert_draft(runtime_with_store) -> tuple[str, str]:
     draft = DraftHandler(hub=runtime_with_store.hub)
     draft.put(id="cvdraft", title="T", project=proj)
     draft_ref = store.get_ref(kind="draft", id="cvdraft")
-    title_h = store.reading_order(draft_ref.id)[0].handle
+    title_h = store.drafts.reading_order(draft_ref.id)[0].handle
     draft.put(
         id="cvdraft",
         chunk_kind="paragraph",
         text=f"Ribbons are semiconducting [pc{pc}].",
         at={"after": "¶" + title_h},
     )
-    para = store.reading_order(draft_ref.id)[-1]
+    para = store.drafts.reading_order(draft_ref.id)[-1]
     return "cvdraft", para.dc
 
 
@@ -2250,8 +2252,8 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
     chunk_id = int(dc[2:])
 
     # Human-approve the chunk at its pre-convert sha.
-    store.record_review(chunk_id, "human")
-    assert store.review_status_for_chunk(chunk_id)[0]["dirty"] is False
+    store.drafts.record_review(chunk_id, "human")
+    assert store.drafts.review_status_for_chunk(chunk_id)[0]["dirty"] is False
 
     # dry_run=True (also the default): a preview, nothing written.
     r = convert_client.post(
@@ -2261,8 +2263,12 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
     body = r.json()
     assert body["dry_run"] is True
     assert body["chunks"][0]["groups"][0]["action"] == "new"
-    assert store.get_draft_chunk(dc).text.startswith("Ribbons are semiconducting [pc")
-    assert store.review_status_for_chunk(chunk_id)[0]["dirty"] is False  # unchanged
+    assert store.drafts.get_draft_chunk(dc).text.startswith(
+        "Ribbons are semiconducting [pc"
+    )
+    assert (
+        store.drafts.review_status_for_chunk(chunk_id)[0]["dirty"] is False
+    )  # unchanged
 
     # apply: rewrites [pc<id>] -> [fi<hub>] through the normal edit door.
     r2 = convert_client.post(
@@ -2273,11 +2279,11 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
     assert body2["dry_run"] is False
     rewritten = body2["chunks"][0]["rewritten_text"]
     assert rewritten is not None and "[fi" in rewritten
-    assert store.get_draft_chunk(dc).text == rewritten
+    assert store.drafts.get_draft_chunk(dc).text == rewritten
 
     # Acceptance criterion: the chunk's approval is now stale (content_sha
     # bumped through the edit door).
-    assert store.review_status_for_chunk(chunk_id)[0]["dirty"] is True
+    assert store.drafts.review_status_for_chunk(chunk_id)[0]["dirty"] is True
 
 
 def test_convert_cites_dry_run_default_true(
@@ -2292,12 +2298,12 @@ def test_convert_cites_dry_run_default_true(
 
     slug, dc = _seed_convert_draft(runtime_with_store)
     store = runtime_with_store.hub.store
-    before = store.get_draft_chunk(dc).text
+    before = store.drafts.get_draft_chunk(dc).text
 
     r = convert_client.post(f"/drafts/{slug}/cites/convert", json={"dc": dc})
     assert r.status_code == 200
     assert r.json()["dry_run"] is True
-    assert store.get_draft_chunk(dc).text == before  # nothing written
+    assert store.drafts.get_draft_chunk(dc).text == before  # nothing written
 
 
 def test_convert_cites_unknown_dc_404(convert_client: TestClient) -> None:

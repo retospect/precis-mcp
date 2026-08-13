@@ -162,7 +162,7 @@ def test_scan_and_apply_draft(hub) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="nt", title="T", project=proj)
     ref = store.get_ref(kind="draft", id="nt")
-    title_h = store.reading_order(ref.id)[0].handle  # legacy base-58
+    title_h = store.drafts.reading_order(ref.id)[0].handle  # legacy base-58
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -171,7 +171,7 @@ def test_scan_and_apply_draft(hub) -> None:
     )
 
     found = migrate_refs._scan_drafts(store)
-    para = store.reading_order(ref.id)[1]
+    para = store.drafts.reading_order(ref.id)[1]
     dc_title = handle_registry.format_handle(
         "draft", _chunk_id(store, title_h), chunk=True
     )
@@ -179,9 +179,9 @@ def test_scan_and_apply_draft(hub) -> None:
     assert plan[para.handle] == f"see [{me}] and [{dc_title}]"
 
     for c in found:
-        store.edit_text(c.ident, c.new, source={"tool": "migrate-refs"})
+        store.drafts.edit_text(c.ident, c.new, source={"tool": "migrate-refs"})
 
-    reread = store.reading_order(ref.id)[1]
+    reread = store.drafts.reading_order(ref.id)[1]
     assert reread.text == f"see [{me}] and [{dc_title}]"
 
 

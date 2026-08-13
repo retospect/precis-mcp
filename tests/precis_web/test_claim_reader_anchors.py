@@ -49,11 +49,11 @@ def _draft_citing_a_hub(hub: Hub) -> str:
         store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
     )
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    ref, _title = store.create_draft(
+    ref, _title = store.drafts.create_draft(
         name="claimdraft", title="Claim draft", project_ref_id=proj
     )
     fi_handle = handle_registry.format_handle("finding", claim_hub)
-    store.add_chunks(
+    store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text=f"Evidence shows this reaction proceeds well [{fi_handle}].",

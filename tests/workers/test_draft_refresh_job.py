@@ -58,7 +58,7 @@ def _seed_section_draft(
     draft.put(id=slug, title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_dc = hub.live_store.reading_order(ref.id)[0].dc
+    title_dc = hub.live_store.drafts.reading_order(ref.id)[0].dc
 
     r = draft.put(
         id=slug, chunk_kind="heading", text="Section A", at={"after": title_dc}
@@ -246,7 +246,7 @@ def test_dispatch_happy_path_applies_and_writes_process_memory(
     assert ctx.meta_set.get("applied") is True
 
     # old chunks retired (no longer live), new chunks under the heading.
-    live = store.reading_order(seeded["ref_id"])
+    live = store.drafts.reading_order(seeded["ref_id"])
     live_ids = {c.chunk_id for c in live}
     assert not (set(old_para_ids) & live_ids)
     sec_chunk = next(c for c in live if c.dc == seeded["sec"])
@@ -286,7 +286,7 @@ def test_dispatch_questless_draft_applies_without_process_memory(
 
     assert not ctx.failures, ctx.failures
     assert ctx.meta_set.get("applied") is True
-    live = store.reading_order(seeded["ref_id"])
+    live = store.drafts.reading_order(seeded["ref_id"])
     sec_chunk = next(c for c in live if c.dc == seeded["sec"])
     new_body = [c for c in live if c.parent_chunk_id == sec_chunk.chunk_id]
     assert [c.text for c in new_body] == ["New para, tightened."]
@@ -316,7 +316,7 @@ def test_dispatch_gate_refusal_leaves_section_unchanged(
     assert not ctx.failures, ctx.failures  # a refusal is not a job failure
     assert ctx.meta_set.get("applied") is False
     assert ctx.meta_set.get("gate_reason") == "no-progress-growth"
-    para_chunk = store.get_draft_chunk(seeded["paras"][0])
+    para_chunk = store.drafts.get_draft_chunk(seeded["paras"][0])
     assert para_chunk is not None and para_chunk.text == old_text  # untouched
     events = [t for k, t in ctx.events if k == "job_event"]
     assert any("growth gate refused" in t for t in events)
@@ -350,7 +350,7 @@ def test_dispatch_parse_failure_records_failure(
     _spec().dispatch(ctx, _spec())
 
     assert any("could not parse" in f for f in ctx.failures)
-    para_chunk = store.get_draft_chunk(seeded["paras"][0])
+    para_chunk = store.drafts.get_draft_chunk(seeded["paras"][0])
     assert para_chunk is not None and para_chunk.text == old_text  # untouched
 
 
@@ -371,7 +371,7 @@ def test_dispatch_preserves_table_chunk(
         at={"into": seeded["sec"]},
     )
     table_dc = _dc(r.body)
-    table_before = store.get_draft_chunk(table_dc)
+    table_before = store.drafts.get_draft_chunk(table_dc)
     assert table_before is not None
     table_chunk_id = table_before.chunk_id
     table_text_before = table_before.text
@@ -392,15 +392,15 @@ def test_dispatch_preserves_table_chunk(
     assert ctx.meta_set.get("applied") is True
 
     # the table chunk survives un-retired, same chunk_id, same text.
-    table_after = store.get_draft_chunk(table_dc)
+    table_after = store.drafts.get_draft_chunk(table_dc)
     assert table_after is not None
     assert table_after.chunk_id == table_chunk_id
     assert table_after.text == table_text_before
 
-    live = store.reading_order(seeded["ref_id"])
+    live = store.drafts.reading_order(seeded["ref_id"])
     live_ids = {c.chunk_id for c in live}
     assert table_chunk_id in live_ids
-    old_para = store.get_draft_chunk(seeded["paras"][0])
+    old_para = store.drafts.get_draft_chunk(seeded["paras"][0])
     assert old_para is not None
     assert old_para.chunk_id not in live_ids  # retired, no longer live
     sec_chunk = next(c for c in live if c.dc == seeded["sec"])
@@ -429,7 +429,7 @@ def test_dispatch_preserves_sub_heading_subtree(
         id="nt", chunk_kind="paragraph", text="Inner para.", at={"into": sub_dc}
     )
     inner_para_dc = _dc(r.body)
-    inner_before = store.get_draft_chunk(inner_para_dc)
+    inner_before = store.drafts.get_draft_chunk(inner_para_dc)
     assert inner_before is not None
     inner_chunk_id = inner_before.chunk_id
 
@@ -449,13 +449,13 @@ def test_dispatch_preserves_sub_heading_subtree(
     assert ctx.meta_set.get("applied") is True
 
     # the nested subsection (its heading AND its inner paragraph) survives.
-    sub_after = store.get_draft_chunk(sub_dc)
+    sub_after = store.drafts.get_draft_chunk(sub_dc)
     assert sub_after is not None
-    live = store.reading_order(seeded["ref_id"])
+    live = store.drafts.reading_order(seeded["ref_id"])
     live_ids = {c.chunk_id for c in live}
     assert sub_after.chunk_id in live_ids
     assert inner_chunk_id in live_ids
-    inner_after = store.get_draft_chunk(inner_para_dc)
+    inner_after = store.drafts.get_draft_chunk(inner_para_dc)
     assert inner_after is not None and inner_after.text == "Inner para."
 
     # the direct paragraph events/summary count the subsection as preserved.
@@ -486,7 +486,7 @@ def test_dispatch_insert_before_retire_survives_mid_apply_failure(
         calls.append(handle)
         raise RuntimeError("boom: retire failed")
 
-    monkeypatch.setattr(store, "retire_chunk", _boom)
+    monkeypatch.setattr(store.drafts, "retire_chunk", _boom)
 
     ctx = _FakeCtx(
         store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
@@ -500,7 +500,7 @@ def test_dispatch_insert_before_retire_survives_mid_apply_failure(
     assert calls
 
     # the section still has live paragraph(s) — never orphaned.
-    live = store.reading_order(seeded["ref_id"])
+    live = store.drafts.reading_order(seeded["ref_id"])
     sec_chunk = next(c for c in live if c.dc == seeded["sec"])
     live_paras = [
         c

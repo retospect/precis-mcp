@@ -201,7 +201,7 @@ def _draft_with_paragraphs(draft: DraftHandler, hub: Hub, slug: str) -> Store:
     draft.put(id=slug, title="Doc", project=_proj(hub))
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id=slug,
         chunk_kind="paragraph",
@@ -210,7 +210,7 @@ def _draft_with_paragraphs(draft: DraftHandler, hub: Hub, slug: str) -> Store:
     )
     first_h = next(
         c.handle
-        for c in hub.live_store.reading_order(ref.id)
+        for c in hub.live_store.drafts.reading_order(ref.id)
         if c.text.startswith("First para")
     )
     draft.put(
@@ -232,7 +232,7 @@ def test_doc_context_table_window(draft: DraftHandler, hub: Hub) -> None:
     ref = hub.live_store.get_ref(kind="draft", id="dctx")
     assert ref is not None
     anchor_chunk = next(
-        c for c in store.reading_order(ref.id) if c.text.startswith("First para")
+        c for c in store.drafts.reading_order(ref.id) if c.text.startswith("First para")
     )
     out = doc_context_table(store, anchor_chunk.handle)
     assert "## doc_context" in out
@@ -273,7 +273,9 @@ def test_planner_user_has_doc_context_when_anchored(
     ref = hub.live_store.get_ref(kind="draft", id="dctx2")
     assert ref is not None
     anchor = next(
-        c.handle for c in store.reading_order(ref.id) if c.text.startswith("First para")
+        c.handle
+        for c in store.drafts.reading_order(ref.id)
+        if c.text.startswith("First para")
     )
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="edit the para")
     hub.live_store.stamp_ref_meta(todo.id, {"anchor": anchor})
@@ -300,10 +302,12 @@ def _draft_with_section(draft: DraftHandler, hub: Hub, slug: str) -> str:
     draft.put(id=slug, title="Doc", project=_proj(hub))
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(id=slug, chunk_kind="heading", text="Methods", at={"after": title_h})
     methods_h = next(
-        c.handle for c in hub.live_store.reading_order(ref.id) if c.text == "Methods"
+        c.handle
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.text == "Methods"
     )
     # nest the paragraphs UNDER the heading (into, not after) so they form
     # the section subtree the reviewer reads
@@ -584,11 +588,11 @@ def _project_with_draft(draft: DraftHandler, hub: Hub, slug: str) -> tuple[int, 
     draft.put(id=slug, title="Doc", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(id=slug, chunk_kind="heading", text="Calibration", at={"after": title_h})
     intro_h = next(
         c.handle
-        for c in hub.live_store.reading_order(ref.id)
+        for c in hub.live_store.drafts.reading_order(ref.id)
         if c.text == "Calibration"
     )
     draft.put(
@@ -649,7 +653,7 @@ def test_planner_sources_block_cited_draft(draft: DraftHandler, hub: Hub) -> Non
     )
     intro_h = next(
         c.handle
-        for c in hub.live_store.reading_order(draft_ref_id)
+        for c in hub.live_store.drafts.reading_order(draft_ref_id)
         if c.text == "Calibration"
     )
     draft.put(
@@ -674,7 +678,7 @@ def test_planner_sources_block_absent_when_anchored(
     proj, draft_ref_id = _project_with_draft(draft, hub, "src3")
     intro_h = next(
         c.handle
-        for c in hub.live_store.reading_order(draft_ref_id)
+        for c in hub.live_store.drafts.reading_order(draft_ref_id)
         if c.text == "Calibration"
     )
     todo = _bound_todo(hub, proj)
@@ -724,10 +728,12 @@ def test_planner_sources_block_outline_mode_over_cap(
     draft.put(id="src5", title="Doc", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="src5")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(id="src5", chunk_kind="heading", text="Body", at={"after": title_h})
     body_h = next(
-        c.handle for c in hub.live_store.reading_order(ref.id) if c.text == "Body"
+        c.handle
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.text == "Body"
     )
     big_text = ("filler word " * 700) + _LONG_DRAFT_MARKER
     assert len(big_text) > _SOURCES_DRAFT_INLINE_CAP

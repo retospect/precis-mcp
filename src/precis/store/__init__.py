@@ -16,8 +16,8 @@ Decomposition (in progress, codereview-store-decomposition): the
 stateful pool/tx lifecycle lives in :class:`precis.store.core.StoreCore`;
 domain sub-stores hold a core and are reached as composed properties —
 ``store.drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the
-first. The flat ``Store`` method surface survives as transitional typed
-delegations, deleted per-domain as call sites migrate to the sub-store.
+first, fully carved: draft ops exist only on the sub-store (no flat
+delegations remain on ``Store``).
 
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
 """

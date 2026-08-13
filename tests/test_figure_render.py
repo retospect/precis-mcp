@@ -57,9 +57,11 @@ def _graph_figure(hub: Hub, src: str) -> tuple[int, int]:
         at={"last": True},
     )
     data_c = next(
-        c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "table"
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
     )
-    fig = hub.live_store.add_figure(
+    fig = hub.live_store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 1.",
         origin="own_graph",
@@ -86,17 +88,17 @@ def test_render_writes_png_and_stamps_key(hub: Hub) -> None:
         "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + bytes(len(t['rows'])))\n"
     )
     fig_id, _ref = _graph_figure(hub, src)
-    fig = hub.live_store.get_draft_chunk(f"dc{fig_id}")
+    fig = hub.live_store.drafts.get_draft_chunk(f"dc{fig_id}")
     assert fig is not None
 
     out = render_figure_chunk(hub.live_store, fig_id)
     assert out.ok, out.detail
     # the deferred stub was overwritten with the rendered bytes
-    blob = hub.live_store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None and blob[0].startswith(b"\x89PNG\r\n\x1a\n")
     assert blob[1] == "image/png"
     # invalidation key stamped at meta.render.cached_key
-    meta = hub.live_store.draft_chunk_meta(fig.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
     assert meta["render"]["cached_key"] == out.cached_key
     assert out.cached_key is not None and len(out.cached_key) == 64
 
@@ -115,7 +117,7 @@ def test_not_a_graph_is_reported(hub: Hub) -> None:
     d.put(id="g", title="T", project=_proj(hub))
     ref = hub.live_store.get_ref(kind="draft", id="g")
     assert ref is not None
-    fig = hub.live_store.add_figure(
+    fig = hub.live_store.drafts.add_figure(
         ref_id=ref.id,
         caption="photo",
         origin="original",
@@ -147,7 +149,9 @@ def test_put_graph_figure_creates_recipe_plots_and_deferred_image(hub: Hub) -> N
         at={"last": True},
     )
     data_c = next(
-        c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "table"
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
     )
 
     src = "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + bytes(len(data['tables'][0]['rows'])))\n"
@@ -161,18 +165,22 @@ def test_put_graph_figure_creates_recipe_plots_and_deferred_image(hub: Hub) -> N
     )
     assert "added graph figure dc" in r.body and "plots 1 data source" in r.body
     fig = next(
-        c for c in hub.live_store.reading_order(ref.id) if c.chunk_kind == "figure"
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "figure"
     )
-    meta = hub.live_store.draft_chunk_meta(fig.handle)
+    meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
     # recipe stamped, origin own_graph, image deferred (placeholder present)
     assert meta["render"]["src"] == src
     assert meta["figure"]["origin"] == "own_graph"
-    assert hub.live_store.get_chunk_blob(fig.handle) is not None  # placeholder seeded
+    assert (
+        hub.live_store.drafts.get_chunk_blob(fig.handle) is not None
+    )  # placeholder seeded
 
     # the plots link the put created drives the render end-to-end
     out = render_figure_chunk(hub.live_store, fig.chunk_id)
     assert out.ok, out.detail
-    blob = hub.live_store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None and blob[0].startswith(b"\x89PNG\r\n\x1a\n")
 
 
@@ -209,8 +217,8 @@ def test_real_matplotlib_render(hub: Hub) -> None:
     fig_id, _ref = _graph_figure(hub, src)
     out = render_figure_chunk(hub.live_store, fig_id)
     assert out.ok, out.detail
-    fig = hub.live_store.get_draft_chunk(f"dc{fig_id}")
+    fig = hub.live_store.drafts.get_draft_chunk(f"dc{fig_id}")
     assert fig is not None
-    blob = hub.live_store.get_chunk_blob(fig.handle)
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None and blob[0].startswith(b"\x89PNG\r\n\x1a\n")
     assert len(blob[0]) > 1000  # a real chart, not the stub

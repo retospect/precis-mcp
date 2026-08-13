@@ -42,7 +42,7 @@ def test_kind_ref_mention_materialises_link(draft: DraftHandler, hub: Hub) -> No
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
 
     draft.put(
         id="nt",
@@ -63,7 +63,7 @@ def test_universal_handle_ref_materialises_link(draft: DraftHandler, hub: Hub) -
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].dc
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].dc
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -80,7 +80,7 @@ def test_editing_out_a_mention_drops_its_link(draft: DraftHandler, hub: Hub) -> 
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
 
     draft.put(
         id="nt",
@@ -88,7 +88,7 @@ def test_editing_out_a_mention_drops_its_link(draft: DraftHandler, hub: Hub) -> 
         text=f"see memory:{a} and memory:{b}",
         at={"after": "¶" + title_h},
     )
-    para_h = hub.live_store.reading_order(ref.id)[1].handle
+    para_h = hub.live_store.drafts.reading_order(ref.id)[1].handle
     assert {(a, None), (b, None)} <= _auto_links(hub, "nt")
 
     # drop the reference to B → its link disappears, A survives
@@ -105,13 +105,13 @@ def test_xref_to_another_draft_links_at_chunk_level(
     draft.put(id="other", title="Other doc", project=other_proj)
     other_ref = hub.live_store.get_ref(kind="draft", id="other")
     assert other_ref is not None
-    other_title = hub.live_store.reading_order(other_ref.id)[0]
+    other_title = hub.live_store.drafts.reading_order(other_ref.id)[0]
 
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -166,7 +166,7 @@ def test_paper_chunk_ref_is_a_cites_edge_not_related_to(
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -208,7 +208,7 @@ def test_cites_edge_grounds_at_source_draft_chunk(
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -217,8 +217,8 @@ def test_cites_edge_grounds_at_source_draft_chunk(
     )
 
     # the citing paragraph is the source chunk of the cites edge
-    para = hub.live_store.reading_order(ref.id)[1]
-    para_ord = hub.live_store.chunk_ord_map(ref.id)[para.chunk_id]
+    para = hub.live_store.drafts.reading_order(ref.id)[1]
+    para_ord = hub.live_store.drafts.chunk_ord_map(ref.id)[para.chunk_id]
     cites = [
         link
         for link in hub.live_store.links_for(ref.id, direction="out", relation="cites")
@@ -254,14 +254,14 @@ def test_same_ref_cited_from_two_chunks_is_two_edges(
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
         text=f"first mention [{pc}]",
         at={"after": "¶" + title_h},
     )
-    para1_h = hub.live_store.reading_order(ref.id)[1].handle
+    para1_h = hub.live_store.drafts.reading_order(ref.id)[1].handle
     draft.put(
         id="nt",
         chunk_kind="paragraph",
@@ -283,7 +283,7 @@ def test_intra_draft_xref_is_not_an_edge(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     # a paragraph referencing the draft's OWN title chunk
     draft.put(
         id="nt",

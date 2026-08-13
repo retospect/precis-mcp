@@ -60,7 +60,7 @@ def test_list_recent_counts_touched(draft: DraftHandler, hub: Hub) -> None:
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
     log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
-    title = hub.live_store.reading_order(ref.id)[0]
+    title = hub.live_store.drafts.reading_order(ref.id)[0]
     agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[title.chunk_id])
     rows = agentlog.list_recent(hub.live_store)
     row = next(r for r in rows if r["ref_id"] == log_id)
@@ -82,7 +82,7 @@ def test_draft_edit_attributes_touch_when_env_set(
     monkeypatch.setenv(agentlog.ENV_VAR, str(log_id))
 
     # Add a paragraph — the handler should attribute it to the run.
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(
         id="nt", chunk_kind="paragraph", text="A new para", at={"after": "¶" + title_h}
     )
@@ -90,8 +90,8 @@ def test_draft_edit_attributes_touch_when_env_set(
     links = hub.live_store.links_for(log_id, direction="out", relation="touched")
     assert len(links) >= 1
     # The touched chunk surfaces on the draft's Connections graph.
-    handles = [c.handle for c in hub.live_store.reading_order(ref.id)]
-    conns = hub.live_store.chunk_connections(ref.id, handles)
+    handles = [c.handle for c in hub.live_store.drafts.reading_order(ref.id)]
+    conns = hub.live_store.drafts.chunk_connections(ref.id, handles)
     flat = [c for rows in conns.values() for c in rows]
     assert any(c["kind"] == "agentlog" and c["relation"] == "touched" for c in flat)
 
@@ -104,7 +104,7 @@ def test_draft_edit_no_touch_without_env(
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_h = hub.live_store.reading_order(ref.id)[0].handle
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
     draft.put(id="nt", chunk_kind="paragraph", text="x", at={"after": "¶" + title_h})
     # No agentlog exists, so no touched link anywhere.
     with hub.live_store.pool.connection() as conn:
@@ -137,7 +137,7 @@ def test_gc_drops_links_keeps_chunks_softdeletes_log(
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    chunk = hub.live_store.reading_order(ref.id)[0]
+    chunk = hub.live_store.drafts.reading_order(ref.id)[0]
     log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
     agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[chunk.chunk_id])
 
@@ -162,7 +162,7 @@ def test_gc_drops_links_keeps_chunks_softdeletes_log(
         links = row[0]
     assert links == 0
     # …but the chunk it touched is untouched.
-    assert hub.live_store.get_draft_chunk(chunk.handle) is not None
+    assert hub.live_store.drafts.get_draft_chunk(chunk.handle) is not None
 
 
 def test_gc_spares_fresh_logs(hub: Hub) -> None:
@@ -210,7 +210,7 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
         parent_ref_id=proj,
         job_ref_id=999,
     )
-    chunk = hub.live_store.reading_order(ref.id)[0]
+    chunk = hub.live_store.drafts.reading_order(ref.id)[0]
     agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[chunk.chunk_id])
 
     app = create_app(runtime=types.SimpleNamespace(store=hub.live_store))

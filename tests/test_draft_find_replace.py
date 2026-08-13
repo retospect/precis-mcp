@@ -12,8 +12,10 @@ from precis.store.store import Store
 
 def _draft_with_para(store: Store) -> tuple[DraftHandler, str]:
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
-    ref, title = store.create_draft(name="frlst", title="Title", project_ref_id=proj)
-    para = store.add_chunks(
+    ref, title = store.drafts.create_draft(
+        name="frlst", title="Title", project_ref_id=proj
+    )
+    para = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="paragraph",
         text="The temperature is 60°C in this section and everywhere.",
@@ -25,11 +27,13 @@ def _draft_with_para(store: Store) -> tuple[DraftHandler, str]:
 def _draft_with_item(store: Store, text: str) -> tuple[DraftHandler, str]:
     """A list item chunk — the shape that surfaced gr45083 as a ValueError."""
     proj = store.insert_ref(kind="todo", slug=None, title="proj").id
-    ref, title = store.create_draft(name="frit", title="Title", project_ref_id=proj)
-    ul = store.add_chunks(
+    ref, title = store.drafts.create_draft(
+        name="frit", title="Title", project_ref_id=proj
+    )
+    ul = store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="ulist", text="", at={"after": title.handle}
     )[0]
-    item = store.add_chunks(
+    item = store.drafts.add_chunks(
         ref_id=ref.id,
         chunk_kind="item",
         text=text,
@@ -39,7 +43,7 @@ def _draft_with_item(store: Store, text: str) -> tuple[DraftHandler, str]:
 
 
 def _text(store: Store, dc: str) -> str:
-    c = store.get_draft_chunk(dc)
+    c = store.drafts.get_draft_chunk(dc)
     assert c is not None
     return c.text
 

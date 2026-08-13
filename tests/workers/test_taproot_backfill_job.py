@@ -76,7 +76,7 @@ def _seed_sectioned_draft(
     draft.put(id="nt", title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id="nt")
     assert ref is not None
-    title_dc = hub.live_store.reading_order(ref.id)[0].dc
+    title_dc = hub.live_store.drafts.reading_order(ref.id)[0].dc
 
     r = draft.put(
         id="nt", chunk_kind="heading", text="Section A", at={"after": title_dc}
@@ -243,7 +243,7 @@ def test_dispatch_converts_pc_cites_and_lands_evidence(
     _spec().dispatch(ctx, _spec())
 
     assert not ctx.failures, ctx.failures
-    chunk = store.get_draft_chunk(handles["para_a1"])
+    chunk = store.drafts.get_draft_chunk(handles["para_a1"])
     assert chunk is not None
     assert "[fi" in chunk.text, (chunk.text, ctx.events, ctx.meta_set)
     assert "[pc" not in chunk.text
@@ -290,10 +290,10 @@ def test_dispatch_isolates_one_chunk_failure(
     failed_events = [t for k, t in ctx.events if k == "job_event" and "FAILED" in t]
     assert any(f"dc{bad_id}" in t for t in failed_events)
     # the OTHER chunk still converted.
-    good = store.get_draft_chunk(handles["para_b1"])
+    good = store.drafts.get_draft_chunk(handles["para_b1"])
     assert good is not None and "[fi" in good.text
     # the bad chunk's prose is untouched ([pc…] survives).
-    bad = store.get_draft_chunk(handles["para_a1"])
+    bad = store.drafts.get_draft_chunk(handles["para_a1"])
     assert bad is not None and f"[{pc1}]" in bad.text
     summaries = [t for k, t in ctx.events if k == "job_summary"]
     assert summaries and "1 failed" in summaries[0]
@@ -332,7 +332,7 @@ def test_dispatch_skips_already_done_chunks(
     assert done_id not in calls  # checkpoint: never re-run
     assert _chunk_id(handles["para_b1"]) in calls
     # the pre-done chunk's prose is untouched (never rewrote it this pass).
-    skipped = store.get_draft_chunk(handles["para_a1"])
+    skipped = store.drafts.get_draft_chunk(handles["para_a1"])
     assert skipped is not None and f"[{pc1}]" in skipped.text
     assert done_id in ctx.meta_set.get("done_chunk_ids", [])
 
@@ -365,7 +365,7 @@ def test_dispatch_dc_scope_processes_only_that_sections_chunks(
     assert _chunk_id(handles["sec_b"]) not in got
     assert _chunk_id(handles["para_b1"]) not in got
     # section B's prose is untouched — out of scope.
-    untouched = store.get_draft_chunk(handles["para_b1"])
+    untouched = store.drafts.get_draft_chunk(handles["para_b1"])
     assert untouched is not None and f"[{pc2}]" in untouched.text
 
 

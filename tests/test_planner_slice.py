@@ -350,7 +350,7 @@ def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
     draft.put(id="d1", title="T", project=proj)
     dref = store.get_ref(kind="draft", id="d1")
     assert dref is not None
-    title_h = store.reading_order(dref.id)[0].handle
+    title_h = store.drafts.reading_order(dref.id)[0].handle
     draft.put(
         id="d1",
         chunk_kind="paragraph",
@@ -358,7 +358,9 @@ def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
         at={"after": title_h},
     )
     para_h = next(
-        c.handle for c in store.reading_order(dref.id) if c.text.startswith("The quick")
+        c.handle
+        for c in store.drafts.reading_order(dref.id)
+        if c.text.startswith("The quick")
     )
     todo = store.insert_ref(kind="todo", slug=None, title="remove this paragraph")
     store.stamp_ref_meta(todo.id, {"anchor": para_h})
@@ -384,7 +386,7 @@ def test_planner_prompt_carries_fisheye_ring_on_anchor(
     draft.put(id="d1", title="T", project=proj)
     dref = store.get_ref(kind="draft", id="d1")
     assert dref is not None
-    title_h = store.reading_order(dref.id)[0].handle
+    title_h = store.drafts.reading_order(dref.id)[0].handle
     draft.put(
         id="d1",
         chunk_kind="paragraph",
@@ -392,7 +394,9 @@ def test_planner_prompt_carries_fisheye_ring_on_anchor(
         at={"after": title_h},
     )
     para = next(
-        c for c in store.reading_order(dref.id) if c.text.startswith("This section")
+        c
+        for c in store.drafts.reading_order(dref.id)
+        if c.text.startswith("This section")
     )
     todo = store.insert_ref(kind="todo", slug=None, title="review section")
     store.stamp_ref_meta(todo.id, {"anchor": para.handle})
@@ -424,14 +428,16 @@ def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
     draft.put(id="d2", title="T", project=proj)
     dref = store.get_ref(kind="draft", id="d2")
     assert dref is not None
-    title_h = store.reading_order(dref.id)[0].handle
+    title_h = store.drafts.reading_order(dref.id)[0].handle
     draft.put(
         id="d2",
         chunk_kind="paragraph",
         text="A claim to support.",
         at={"after": title_h},
     )
-    para = next(c for c in store.reading_order(dref.id) if c.text.startswith("A claim"))
+    para = next(
+        c for c in store.drafts.reading_order(dref.id) if c.text.startswith("A claim")
+    )
     mem = store.insert_ref(kind="memory", slug=None, title="Supporting evidence")
     with store.pool.connection() as conn:
         conn.execute(

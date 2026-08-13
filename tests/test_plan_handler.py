@@ -208,7 +208,7 @@ def test_edit_and_move_node(plan: PlanHandler, hub: Hub) -> None:
     plan.edit(id=b, move={"before": a})
     ref = hub.live_store.get_ref(kind="plan", id="p1")
     assert ref is not None
-    order = [c.dc for c in hub.live_store.reading_order(ref.id, kind="plan")]
+    order = [c.dc for c in hub.live_store.drafts.reading_order(ref.id, kind="plan")]
     assert order.index(b) < order.index(a)
 
 

@@ -28,12 +28,12 @@ _DRAWN = (
 
 def _draft(store: Store):
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
-    return store.create_draft(name="nt", title="T", project_ref_id=proj)
+    return store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
 
 
 def _placeholder_figure(store: Store, ref_id: int, after: str):
     """A caption-only figure chunk with no blob (the deck-hook shape)."""
-    return store.add_chunks(
+    return store.drafts.add_chunks(
         ref_id=ref_id,
         chunk_kind="figure",
         text="FIG. 1 a perspective view",
@@ -58,7 +58,7 @@ def test_none_medium_is_placeholder_and_uncleared(store: Store) -> None:
 
 def test_blob_medium_original_cleared(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 1. A widget.",
         origin="original",
@@ -75,7 +75,7 @@ def test_blob_medium_original_cleared(store: Store) -> None:
 
 def test_blob_third_party_permission_gates_clearance(store: Store) -> None:
     ref, title = _draft(store)
-    ungranted = store.add_figure(
+    ungranted = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 2. Borrowed.",
         origin="third_party",
@@ -88,7 +88,7 @@ def test_blob_third_party_permission_gates_clearance(store: Store) -> None:
     assert src.medium == "blob"
     assert not src.cleared  # rights axis: permission not granted
 
-    granted = store.add_figure(
+    granted = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 3. Licensed.",
         origin="third_party",
@@ -102,7 +102,7 @@ def test_blob_third_party_permission_gates_clearance(store: Store) -> None:
 
 def test_graph_medium_labelled_from_own_graph(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="Fig 4. A plot.",
         origin="own_graph",
@@ -122,7 +122,7 @@ def test_canvas_medium_drawn_is_cleared(store: Store, hub: Hub) -> None:
     FigureHandler(hub=hub).put(id="c1", title="Fig 1", text=_DRAWN)
     canvas = store.get_ref(kind="figure", id="c1")
     assert canvas is not None
-    store.link_figure_canvas(fig.chunk_id, canvas.id)
+    store.drafts.link_figure_canvas(fig.chunk_id, canvas.id)
 
     src = resolve_figure_source(store, fig)
     assert src.medium == "canvas"
@@ -138,7 +138,7 @@ def test_canvas_medium_empty_is_uncleared(store: Store, hub: Hub) -> None:
     FigureHandler(hub=hub).put(id="c2", title="Empty")  # default empty canvas
     canvas = store.get_ref(kind="figure", id="c2")
     assert canvas is not None
-    store.link_figure_canvas(fig.chunk_id, canvas.id)
+    store.drafts.link_figure_canvas(fig.chunk_id, canvas.id)
 
     src = resolve_figure_source(store, fig)
     assert src.medium == "canvas"
@@ -163,7 +163,7 @@ def test_clearance_counts_assetless_figures(store: Store, hub: Hub) -> None:
     FigureHandler(hub=hub).put(id="drawn", title="Drawn", text=_DRAWN)
     canvas = store.get_ref(kind="figure", id="drawn")
     assert canvas is not None
-    store.link_figure_canvas(f1.chunk_id, canvas.id)
+    store.drafts.link_figure_canvas(f1.chunk_id, canvas.id)
 
     summary2 = draft_figure_clearance(store, ref.id)
     assert summary2.total == 2
@@ -177,7 +177,7 @@ _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 def test_export_asset_raster_passthrough(store: Store) -> None:
     ref, title = _draft(store)
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="c",
         origin="original",
@@ -201,7 +201,7 @@ def test_export_asset_canvas_rasterises_to_png(store: Store, hub: Hub) -> None:
     FigureHandler(hub=hub).put(id="c1", title="F", text=_DRAWN)
     canvas = store.get_ref(kind="figure", id="c1")
     assert canvas is not None
-    store.link_figure_canvas(fig.chunk_id, canvas.id)
+    store.drafts.link_figure_canvas(fig.chunk_id, canvas.id)
 
     asset = figure_export_asset(store, fig)
     assert asset is not None
@@ -216,7 +216,7 @@ def test_export_asset_svg_blob_rasterises(store: Store) -> None:
         b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
         b'<rect width="10" height="10"/></svg>'
     )
-    fig = store.add_figure(
+    fig = store.drafts.add_figure(
         ref_id=ref.id,
         caption="c",
         origin="original",

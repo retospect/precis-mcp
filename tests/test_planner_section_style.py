@@ -1,6 +1,6 @@
 """The planner injects the nearest enclosing section style.
 
-`store.section_style_for` walks parent_chunk_id to the nearest styled
+`store.drafts.section_style_for` walks parent_chunk_id to the nearest styled
 heading; `_render_section_style` resolves a change-request's `meta.anchor`,
 finds that style, and injects the style skill's body.
 """
@@ -28,21 +28,21 @@ def _build(hub: Hub, draft: DraftHandler):
     draft.put(id="pat", title="Paperclip", project=_proj(hub))
     ref = hub.live_store.get_ref(kind="draft", id="pat")
     assert ref is not None
-    title = hub.live_store.reading_order(ref.id)[0]
+    title = hub.live_store.drafts.reading_order(ref.id)[0]
     draft.put(
         id="pat",
         chunk_kind="heading",
         text="Claims",
         at={"after": "¶" + title.handle},
     )
-    claims = hub.live_store.reading_order(ref.id)[1]
+    claims = hub.live_store.drafts.reading_order(ref.id)[1]
     draft.put(
         id="pat",
         chunk_kind="paragraph",
         text="A clip.",
         at={"into": "¶" + claims.handle, "last": True},
     )
-    para = hub.live_store.reading_order(ref.id)[2]
+    para = hub.live_store.drafts.reading_order(ref.id)[2]
     return claims, para
 
 
@@ -51,13 +51,15 @@ def test_section_style_for_walks_to_nearest_heading(
 ) -> None:
     claims, para = _build(hub, draft)
     draft.edit(id=claims.dc, style="patent-claim")
-    assert hub.live_store.section_style_for(para.handle) == "patent-claim"
-    assert hub.live_store.section_style_for(claims.handle) == "patent-claim"  # self
+    assert hub.live_store.drafts.section_style_for(para.handle) == "patent-claim"
+    assert (
+        hub.live_store.drafts.section_style_for(claims.handle) == "patent-claim"
+    )  # self
 
 
 def test_section_style_for_none_when_unstyled(draft: DraftHandler, hub: Hub) -> None:
     _claims, para = _build(hub, draft)
-    assert hub.live_store.section_style_for(para.handle) is None
+    assert hub.live_store.drafts.section_style_for(para.handle) is None
 
 
 def test_planner_injects_section_style_body(draft: DraftHandler, hub: Hub) -> None:
