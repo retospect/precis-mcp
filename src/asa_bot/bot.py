@@ -17,7 +17,10 @@ NOTIFY handlers:
   - precis.cron: fetch the cron's payload, synthesize a user msg,
     invoke Asa with that as the prompt, post the result.
   - precis.messages: fetch the message ref, post text + attachments
-    to the target, stamp meta.status='sent'.
+    to the target, stamp meta.status='sent'. A multi-part briefing
+    (``briefing_parts`` > 1 in the payload) is buffered and flushed in
+    ascending part order by ``BriefingBuffer`` rather than posted as it
+    arrives — see ``asa_bot.briefing_buffer`` for why (gr51556).
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from typing import Any
 import discord
 
 from asa_bot import preamble, slash
+from asa_bot.briefing_buffer import BriefingBuffer
 from asa_bot.capture_shim import CaptureShim
 from asa_bot.claude_invoke import invoke as claude_invoke
 from asa_bot.config import Config, LLMConfig, load_discord_token
@@ -72,6 +76,10 @@ class AsaBot(discord.Client):
         self._soul: str = ""
         self._tool_hints: str = ""
         self._runtime = slash.Runtime()
+        # Multi-part briefing NOTIFYs are buffered and flushed in order
+        # rather than posted as they arrive — see ``asa_bot.briefing_buffer``
+        # (gr51556).
+        self._briefing_buffer = BriefingBuffer(poster=self._post_briefing_parts)
 
     async def setup_hook(self) -> None:
         self._soul = _read_or_empty(self._cfg.preamble.soul_path)
@@ -421,6 +429,47 @@ class AsaBot(discord.Client):
         target = data.get("target")
         if not ref_id or not target:
             log.warning("messages notify missing ref_id/target: %r", data)
+            return
+        # A multi-part briefing (briefing.py::_deliver, gr51556): buffer by
+        # (target, briefing_date) and post 1..N in order once complete (or
+        # on the per-set timeout) instead of posting each part on arrival —
+        # see asa_bot.briefing_buffer for the ordering/completeness story.
+        # Every other payload shape (single-part brief, ordinary message)
+        # posts immediately, exactly as before.
+        if data.get("briefing_parts"):
+            await self._briefing_buffer.add(data)
+            return
+        await self._post_message_ref(data)
+
+    async def _post_briefing_parts(self, payloads: list[dict[str, Any]]) -> None:
+        """``BriefingBuffer`` poster callback: post a completed/timed-out
+        part set, in the ascending order the buffer already sorted.
+
+        Per-part try/except: a timeout-triggered flush runs on the buffer's
+        own fire-and-forget task, outside ``_consume_messages``'s handler —
+        without this, one part's posting failure would silently drop every
+        part after it and surface only as an unretrieved-task exception."""
+        for payload in payloads:
+            try:
+                await self._post_message_ref(payload)
+            except Exception:
+                log.exception(
+                    "briefing part failed to post (ref_id=%r) — continuing "
+                    "with remaining parts",
+                    payload.get("ref_id"),
+                )
+
+    async def _post_message_ref(self, data: dict[str, Any]) -> None:
+        """Post one ``message`` ref's body to Discord + mirror into conv.
+
+        The single-message posting logic (was ``_handle_outbound`` itself
+        before gr51556's part-buffering split it out) — reused both for a
+        payload that posts immediately and for one flushed out of
+        ``BriefingBuffer``."""
+        ref_id = data.get("ref_id")
+        target = data.get("target")
+        if not ref_id or not target:
+            log.warning("post_message_ref: missing ref_id/target: %r", data)
             return
         # Read the full body from the message_body chunk directly — the
         # kind='message' rendering only carries the title (≤200 chars), so a

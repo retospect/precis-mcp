@@ -461,6 +461,33 @@ def test_finding_view_evidence_empty_hub(store: Any) -> None:
     assert "no evidence edges yet for this claim hub" in resp.body
 
 
+def test_finding_view_evidence_marks_only_zero_block_papers_unfetched(
+    store: Any,
+) -> None:
+    """gr180155's per-hub analogue of the draft citations view's to-fetch
+    worklist: an evidence paper with no body chunks renders ``(unfetched)``;
+    one with a body chunk does not."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    fetched = _paper(store, title="Fetched corroborator", year=2001)
+    seed_chunk(store, ref_id=fetched, text="a grounding passage")
+    unfetched = _paper(store, title="Unfetched corroborator", year=2002)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=fetched, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=unfetched, role="corroborates")
+
+    resp = handler.get(id=hub, view="evidence")
+    body = resp.body
+
+    fetched_line = next(
+        line for line in body.splitlines() if "Fetched corroborator" in line
+    )
+    unfetched_line = next(
+        line for line in body.splitlines() if "Unfetched corroborator" in line
+    )
+    assert "(unfetched)" not in fetched_line
+    assert "(unfetched)" in unfetched_line
+
+
 # ── view='evidence' patent rendering (patent-evidence-parity.md Phase 3) ──
 
 

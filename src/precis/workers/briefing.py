@@ -340,9 +340,19 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
     brief was cut off mid-URL, dropping the tail of the digest (gr51155).
     Split the brief into Discord-sized parts here (:func:`split_message`,
     on line/word boundaries so no markdown link is broken) and queue each
-    part as its own ``message`` ref, in order, each with its own notify —
-    Postgres delivers a single tx's notifications in send order, so a
-    serial asa_bot listener posts the parts in sequence.
+    part as its own ``message`` ref, in order, each with its own notify.
+
+    Postgres delivering one tx's notifications in send order to a serial
+    listener isn't a completeness guarantee: NOTIFY itself isn't durable
+    (a listener reconnect between two parts silently drops one), and
+    nothing pins the consumer to stay serial forever. So when a brief
+    splits into more than one part, each part's notify payload also
+    carries ``briefing_part``/``briefing_parts``/``briefing_date`` —
+    asa_bot's ``BriefingBuffer`` (``asa_bot.briefing_buffer``) buffers by
+    (target, date), flushes 1..N in ascending order once the set is
+    complete, and time-boxes an incomplete set so a dropped notify can't
+    stall delivery forever (gr51556). A single-part brief keeps the plain
+    ``{ref_id, target, author}`` payload.
 
     Idempotent per brief-date: if *any* delivery message for ``date_tag``
     already exists, skip the whole set — so a job retry (or a same-day
@@ -395,13 +405,18 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
                     ],
                     conn=conn,
                 )
+                notify_payload: dict[str, object] = {
+                    "ref_id": ref.id,
+                    "target": target,
+                    "author": "asa",
+                }
+                if total > 1:
+                    notify_payload["briefing_part"] = i
+                    notify_payload["briefing_parts"] = total
+                    notify_payload["briefing_date"] = date_tag
                 conn.execute(
                     "SELECT pg_notify('precis.messages', %s)",
-                    (
-                        json.dumps(
-                            {"ref_id": ref.id, "target": target, "author": "asa"}
-                        ),
-                    ),
+                    (json.dumps(notify_payload),),
                 )
     except Exception as exc:
         log.warning("briefing: delivery to %s failed: %s", target, exc)

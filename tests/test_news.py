@@ -190,6 +190,8 @@ def test_deliver_queues_message_and_notifies() -> None:
     notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]
     assert notifies, "expected a precis.messages pg_notify"
     payload = json.loads(notifies[0][1][0])
+    # single-part brief keeps the plain payload — no briefing_* fields
+    # (gr51556: asa_bot only buffers a payload that carries them)
     assert payload == {"ref_id": 99, "target": "discord/1/2/2", "author": "asa"}
 
 
@@ -228,6 +230,14 @@ def test_deliver_splits_long_brief_into_multiple_messages() -> None:
     notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]
     assert len(notifies) == total
     assert json.loads(notifies[0][1][0])["target"] == "discord/1/2/2"
+    # gr51556: a multi-part brief's notify payload carries the fields
+    # asa_bot's BriefingBuffer needs to buffer + order + timeout the set,
+    # since Postgres notify-send-order isn't itself a delivery guarantee.
+    for i, (_sql, params) in enumerate(notifies, start=1):
+        payload = json.loads(params[0])
+        assert payload["briefing_part"] == i
+        assert payload["briefing_parts"] == total
+        assert payload["briefing_date"] == "2026-06-23"
 
 
 def test_news_help_skill_present_and_shaped() -> None:

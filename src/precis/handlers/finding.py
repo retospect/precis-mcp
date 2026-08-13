@@ -1033,6 +1033,12 @@ class FindingHandler(NumericRefHandler):
         :func:`_collapse_patent_families`) — a paper's own family is
         untouched (papers carry no ``family_id``), so this is a no-op for
         every pre-existing paper-only hub.
+
+        An evidence paper with zero body blocks — a stub never fetched —
+        renders with an ``(unfetched)`` annotation (gr180155's per-hub
+        analogue of the draft citations view's to-fetch worklist), so a
+        reader of one hub's evidence list, not just a citing draft's
+        worklist, can see which claims rest on un-verifiable evidence.
         """
         from precis.export._patent_cite import format_patent_bibliography_entry
         from precis.format import render_agent_table
@@ -1049,6 +1055,9 @@ class FindingHandler(NumericRefHandler):
             return Response(body="\n".join(header))
 
         refs_by_id = self.store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
+        fetched_paper_ids = self.store.ref_ids_with_chunks(
+            [e.paper_ref_id for e in all_edges]
+        )
 
         def _label(e: seniority.EvidenceEdge, note: str | None) -> str:
             source_ref = refs_by_id.get(e.paper_ref_id)
@@ -1058,6 +1067,8 @@ class FindingHandler(NumericRefHandler):
                 label = e.title[:80] + ("…" if len(e.title) > 80 else "")
             if note:
                 label = f"{label} ({note})"
+            if e.paper_ref_id not in fetched_paper_ids:
+                label = f"{label} (unfetched)"
             if e.is_originator:
                 label = f"★ {label}"
             return label

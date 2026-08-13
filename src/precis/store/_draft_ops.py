@@ -527,6 +527,49 @@ class DraftStore(_AbbrevMixin):
     def tx(self) -> AbstractContextManager[psycopg.Connection]:
         return self._core.tx()
 
+    def _lock_sections(
+        self, conn: psycopg.Connection, ref_id: int, *parents: int | None
+    ) -> None:
+        """Serialize structural draft ops per (ref, section).
+
+        A section is identified by its parent heading chunk (``None`` =
+        the draft's top level). Acquires a ``pg_advisory_xact_lock`` for
+        each distinct section touched, in sorted key order — so two ops
+        that each span the same pair of sections (e.g. a move A→B
+        racing a move B→A) can never deadlock. Held to the transaction's
+        end (auto-released on commit/rollback) — call this from inside
+        an already-open ``self.tx()`` block, never standalone.
+
+        Deliberately section-scoped, not a coarse per-ref lock: ops on
+        different sections of the same draft still parallelize (a
+        per-ref lock would over-serialize unrelated sections — the
+        masking risk gr176088's root-cause pass called out).
+
+        Key is a single bigint via
+        ``hashtextextended('draft-section:<ref_id>:<parent_or_0>', 0)`` —
+        the single-bigint form avoids the ``(int4, int4)`` overload's
+        overflow hazard on chunk ids.
+
+        Known accepted gap (TOCTOU): the lock is taken *after* the
+        caller resolves which section(s) an op touches, so a concurrent
+        move landing between that resolution and this call can still
+        skew an adjacency pos-key — fractional keys tolerate that. The
+        guarantee this delivers is narrower and still the one that
+        matters: two *structural* writers targeting the same section
+        serialize against each other.
+
+        Also note: ``retire_chunk``'s ``mode='cascade'``/``'promote'``
+        only locks the chunk being retired and its immediate parent —
+        deeper descendant sections that the cascade also touches are
+        NOT locked.
+        """
+        for parent_key in sorted({p or 0 for p in parents}):
+            conn.execute(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended('draft-section:' || %s || ':' || %s, 0))",
+                (ref_id, parent_key),
+            )
+
     # -- low-level inserts ---------------------------------------------------
 
     def _insert_draft_chunk(
@@ -2333,6 +2376,7 @@ class DraftStore(_AbbrevMixin):
         blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
+            self._lock_sections(conn, ref_id, parent)
             keys = n_keys_between(lo, hi, len(blocks))
             return [
                 self._insert_draft_chunk(
@@ -2373,6 +2417,7 @@ class DraftStore(_AbbrevMixin):
         fig = {"origin": origin, **(figure_meta or {})}
         with self.tx() as conn:
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
+            self._lock_sections(conn, ref_id, parent)
             chunk = self._insert_draft_chunk(
                 conn,
                 ref_id=ref_id,
@@ -2857,7 +2902,10 @@ class DraftStore(_AbbrevMixin):
                         {"reason": "list-kind", "from": chunk_kind, "to": kind},
                     )
                 return self.get_draft_chunk(handle)
-            # kind == 'normal' → dissolve the list.
+            # kind == 'normal' → dissolve the list. Structural (reparents
+            # the container's children + retires it), so it takes the same
+            # section locks as retire_chunk(mode='promote').
+            self._lock_sections(conn, ref_id, parent, chunk_id)
             kids = self._children(conn, ref_id, chunk_id)
             item_ids = [k.chunk_id for k in kids if k.chunk_kind == "item"]
             if item_ids:
@@ -2985,6 +3033,7 @@ class DraftStore(_AbbrevMixin):
         if not sections:
             return []
         with self.tx() as conn:
+            self._lock_sections(conn, ref_id, None)
             row = conn.execute(
                 "SELECT pos FROM chunks WHERE ref_id = %s "
                 "AND parent_chunk_id IS NULL AND pos IS NOT NULL "
@@ -3669,6 +3718,7 @@ class DraftStore(_AbbrevMixin):
             new_parent, lo, hi = self._resolve_move(
                 conn, ref_id, move, moving_id=chunk_id
             )
+            self._lock_sections(conn, ref_id, old_parent, new_parent)
             if new_parent is not None:
                 forbidden = {chunk_id, *self._descendant_ids(conn, chunk_id)}
                 if new_parent in forbidden:
@@ -3713,6 +3763,7 @@ class DraftStore(_AbbrevMixin):
             if row[6] is not None:
                 return  # already retired — idempotent
             chunk_id, ref_id, parent = row[0], row[1], row[3]
+            self._lock_sections(conn, ref_id, parent, chunk_id)
             kids = self._children(conn, ref_id, chunk_id)
             live = self._live_count(conn, ref_id)
             if kids:

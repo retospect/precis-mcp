@@ -20,6 +20,20 @@ an LLM call that already runs inside ``backfill``'s promote dry-run; every
 NO-CLAIM/skip determination surfaces at promote-time where the call
 already happens (see the proposal's blocker-7 resolution).
 
+**Evidence-demand rows (gr180155's second half).** A ``[fi<hub>]``/
+``[pub_id]`` cite itself always lands in **done** — the claim is settled —
+but a settled claim can still rest on evidence papers that were never
+fetched, and nothing surfaced that. So for every distinct finding-hub cited
+in the draft, this view also enumerates the hub's evidence papers (paper
+→hub ``establishes``/``corroborates``/``contradicts`` edges, read via
+:func:`precis.taproot.seniority.derive_evidence_bulk`) and adds a
+**to-fetch** row for each one still a zero-block stub, labelled ``fetch
+(evidence for fi<hub_id>)`` and keyed to the citing ``[fi]`` token/chunk. An
+evidence paper already surfacing in the direct to-fetch set (or already
+added for an earlier hub/occurrence) gets no second row — dedup is by paper
+ref_id, direct row wins. This is still pure derivation: no LLM, no write,
+:func:`Store.ref_ids_with_chunks` batched across every hub's evidence set.
+
 Token scanning mirrors :func:`precis.utils.refeye._mine_claim_hub_ids`'s
 interleave of the two citation grammars (:data:`~precis.utils.mentions.
 BARE_BRACKET_REF_PATTERN` for handle-form cites, :data:`~precis.utils.
@@ -35,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
 from precis.response import Response
+from precis.taproot.seniority import derive_evidence_bulk
 from precis.utils import handle_registry
 from precis.utils.mentions import BARE_BRACKET_REF_PATTERN
 from precis.utils.pub_id_lookup import PLACEHOLDER_RE, lookup_pub_id_finding
@@ -202,14 +217,49 @@ def _partition_of(*, kind: str, is_chunk: bool, block_count: int) -> str:
     return "to-promote" if is_chunk else "to-re-ground"
 
 
+def _evidence_unfetched_paper_ids(
+    store: Store, finding_ids: set[int]
+) -> tuple[dict[int, set[int]], set[int]]:
+    """The evidence-demand derivation (gr180155's second half), shared
+    between :func:`_build_rows`'s to-fetch evidence rows and
+    :func:`draft_fetch_ref_ids` so the two can never diverge.
+
+    Returns ``(evidence_paper_ids_by_hub, all_unfetched)``: every cited
+    finding-hub's evidence paper ref_ids (``establishes``/``corroborates``/
+    ``contradicts`` edges via :func:`derive_evidence_bulk` — empty for a
+    cited finding that isn't actually a claim hub, or carries no evidence
+    yet), and the subset of the UNION of all of those that are still
+    zero-block stubs. One batched :meth:`Store.ref_ids_with_chunks` call
+    across every hub's evidence set — no N+1 even when the draft cites
+    many hubs.
+    """
+    if not finding_ids:
+        return {}, set()
+    evidence_by_hub = {
+        hub_id: {
+            e.paper_ref_id for e in ev.originators + ev.corroborators + ev.contradictors
+        }
+        for hub_id, ev in derive_evidence_bulk(store, finding_ids).items()
+    }
+    all_ids = {pid for ids in evidence_by_hub.values() for pid in ids}
+    if not all_ids:
+        return evidence_by_hub, set()
+    unfetched = all_ids - store.ref_ids_with_chunks(list(all_ids))
+    return evidence_by_hub, unfetched
+
+
 def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, str]]]:
     paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
     finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
     dois = store.identifiers_for_refs(list(paper_ids))
     block_counts = {rid: store.count_blocks(rid) for rid in paper_ids}
+    evidence_by_hub, evidence_unfetched = _evidence_unfetched_paper_ids(
+        store, finding_ids
+    )
 
     buckets: dict[str, list[dict[str, str]]] = {p: [] for p in _PARTITIONS}
+    direct_to_fetch_paper_ids: set[int] = set()
     for c in raw:
         handle = handle_registry.format_handle(c.kind, c.ref_id)
         found_ref = refs_by_id.get(c.ref_id)
@@ -223,6 +273,8 @@ def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, s
                 kind=c.kind, is_chunk=c.is_chunk, block_count=block_count
             )
             doi = dois.get(c.ref_id, {}).get("doi", "")
+            if partition == "to-fetch":
+                direct_to_fetch_paper_ids.add(c.ref_id)
         buckets[partition].append(
             {
                 "dc": c.dc,
@@ -233,6 +285,36 @@ def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, s
                 "action": _ACTION_LABEL[partition],
             }
         )
+
+    # Evidence-demand to-fetch rows — one per (citing [fi] occurrence, still-
+    # unfetched evidence paper), skipping a paper already covered by a direct
+    # to-fetch row or already emitted for an earlier hub/occurrence.
+    evidence_rows_paper_ids = evidence_unfetched - direct_to_fetch_paper_ids
+    if evidence_rows_paper_ids:
+        ev_refs_by_id = store.fetch_refs_by_ids(evidence_rows_paper_ids)
+        ev_dois = store.identifiers_for_refs(list(evidence_rows_paper_ids))
+        already_emitted: set[int] = set()
+        for c in raw:
+            if c.kind != "finding":
+                continue
+            hub_paper_ids = (
+                evidence_by_hub.get(c.ref_id, set()) & evidence_rows_paper_ids
+            )
+            for pid in sorted(hub_paper_ids - already_emitted):
+                already_emitted.add(pid)
+                handle = handle_registry.format_handle("paper", pid)
+                ev_ref = ev_refs_by_id.get(pid)
+                title = _title_of(ev_ref.title if ev_ref else None, handle)
+                buckets["to-fetch"].append(
+                    {
+                        "dc": c.dc,
+                        "token": c.token,
+                        "handle": handle,
+                        "title": title,
+                        "doi": ev_dois.get(pid, {}).get("doi", ""),
+                        "action": f"fetch (evidence for fi{c.ref_id})",
+                    }
+                )
     return buckets
 
 
@@ -262,18 +344,24 @@ def render_citations_view(store: Store, ref: Ref) -> Response:
 
 def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:
     """Distinct paper ref_ids in this draft's **to-fetch** partition — cited
-    but with zero body blocks (a stub). The papers-to-fetch worklist behind
-    ``/drive?cited_by=<draft>`` (proposal AC5's draft-scoped acquisition
-    queue). Reuses the citations view's own token scan + block-count
-    derivation, so the drive scope and the ``view='citations'`` to-fetch
-    partition can never diverge. Read-only, no LLM."""
+    directly (with zero body blocks, a stub) or as a still-unfetched
+    evidence paper of a cited ``[fi]`` claim hub (gr180155's evidence-demand
+    half). The papers-to-fetch worklist behind ``/drive?cited_by=<draft>``
+    (proposal AC5's draft-scoped acquisition queue). Reuses the citations
+    view's own token scan + block-count/evidence derivation
+    (:func:`_evidence_unfetched_paper_ids`), so the drive scope and the
+    ``view='citations'`` to-fetch partition can never diverge. Read-only,
+    no LLM."""
     chunks = store.drafts.reading_order(ref.id)
     raw = _collect_raw_cites(store, chunks)
     paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
+    finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
     # Bulk "which of these have body chunks" (one query) minus set — the
     # to-fetch papers are those with none. Avoids an N+1 count per cited paper
     # (a lit-review draft cites 50–100+).
-    return sorted(paper_ids - store.ref_ids_with_chunks(list(paper_ids)))
+    direct_unfetched = paper_ids - store.ref_ids_with_chunks(list(paper_ids))
+    _, evidence_unfetched = _evidence_unfetched_paper_ids(store, finding_ids)
+    return sorted(direct_unfetched | evidence_unfetched)
 
 
 __all__ = ["draft_fetch_ref_ids", "render_citations_view"]

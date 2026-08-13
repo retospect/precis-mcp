@@ -9,6 +9,10 @@ Covers the view's acceptance criteria:
    to-fetch, with no link edited.
 3. Zero LLM calls, zero writes.
 4. Empty-draft and ``[fi]``-only-draft shapes.
+5. gr180155's evidence-demand half: an un-fetched evidence paper of a
+   cited ``[fi]`` claim hub surfaces as its own to-fetch row (and in
+   ``draft_fetch_ref_ids``), fully-fetched evidence adds nothing, and a
+   paper cited both directly and as evidence appears once (direct wins).
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import attach_evidence, mint_hub
 from tests.workers._helpers import seed_chunk, seed_ref
 
 
@@ -314,3 +320,113 @@ class TestDraftFetchRefIds:
         _add_para(store, draft, "fetch-ids-empty", ref, f"All grounded [pc{chunk_id}].")
 
         assert draft_fetch_ref_ids(store, ref) == []
+
+
+# ---------------------------------------------------------------------------
+# 6. Evidence-demand half (gr180155) — a [fi] hub's un-fetched evidence
+#    papers surface as their own to-fetch rows, the [fi] cite itself stays
+#    done, and a paper cited both directly and as evidence appears once.
+# ---------------------------------------------------------------------------
+
+
+def _hub(store, sentence: str) -> int:
+    return mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
+
+
+class TestEvidenceDemand:
+    def test_unfetched_evidence_paper_lands_in_to_fetch(
+        self, store, draft: DraftHandler
+    ) -> None:
+        from precis.handlers._citations_view import draft_fetch_ref_ids
+
+        hub = _hub(store, "A settled claim with unfetched evidence.")
+        evidence_paper = seed_ref(store, title="Unfetched Evidence Paper", kind="paper")
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=evidence_paper,
+            role="corroborates",
+            check_retraction=False,
+        )
+
+        ref = _new_draft(store, draft, "cites-evidence-demand")
+        row = _add_para(
+            store, draft, "cites-evidence-demand", ref, f"Settled: [fi{hub}]."
+        )
+
+        resp = draft.get(id="cites-evidence-demand", view="citations")
+        body = resp.body
+        to_fetch = _section(body, "TO FETCH (1)")
+        done = _section(body, "DONE (1)")
+
+        assert f"pa{evidence_paper}" in to_fetch
+        assert "Unfetched Evidence Paper" in to_fetch
+        assert f"fetch (evidence for fi{hub})" in to_fetch
+        assert row.dc in to_fetch
+        assert f"[fi{hub}]" in to_fetch  # the citing token, as written
+
+        assert f"fi{hub}" in done
+        assert f"[fi{hub}]" in done
+
+        assert draft_fetch_ref_ids(store, ref) == [evidence_paper]
+
+    def test_hub_with_fully_fetched_evidence_adds_no_rows(
+        self, store, draft: DraftHandler
+    ) -> None:
+        from precis.handlers._citations_view import draft_fetch_ref_ids
+
+        hub = _hub(store, "A settled claim with fully-fetched evidence.")
+        evidence_paper = seed_ref(store, title="Fetched Evidence Paper", kind="paper")
+        seed_chunk(store, ref_id=evidence_paper, text="grounding passage")
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=evidence_paper,
+            role="corroborates",
+            check_retraction=False,
+        )
+
+        ref = _new_draft(store, draft, "cites-evidence-fetched")
+        _add_para(store, draft, "cites-evidence-fetched", ref, f"Settled: [fi{hub}].")
+
+        resp = draft.get(id="cites-evidence-fetched", view="citations")
+        body = resp.body
+        assert _section(body, "TO FETCH (0)").strip().startswith("(none)")
+        assert f"fi{hub}" in _section(body, "DONE (1)")
+
+        assert draft_fetch_ref_ids(store, ref) == []
+
+    def test_evidence_paper_also_cited_directly_appears_once(
+        self, store, draft: DraftHandler
+    ) -> None:
+        from precis.handlers._citations_view import draft_fetch_ref_ids
+
+        hub = _hub(store, "A settled claim citing its own unfetched evidence.")
+        shared = seed_ref(store, title="Shared Stub", kind="paper")
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=shared,
+            role="corroborates",
+            check_retraction=False,
+        )
+
+        ref = _new_draft(store, draft, "cites-evidence-shared")
+        _add_para(
+            store,
+            draft,
+            "cites-evidence-shared",
+            ref,
+            f"Direct [pa{shared}] and settled [fi{hub}].",
+        )
+
+        resp = draft.get(id="cites-evidence-shared", view="citations")
+        body = resp.body
+        to_fetch = _section(body, "TO FETCH (1)")
+
+        # Exactly one row for the shared paper — the direct [pa] one, plain
+        # "fetch" action, no "evidence for" duplicate.
+        assert to_fetch.count(f"[pa{shared}]") == 1
+        assert "evidence for fi" not in to_fetch
+
+        assert draft_fetch_ref_ids(store, ref) == [shared]
