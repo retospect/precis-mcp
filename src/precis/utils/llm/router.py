@@ -908,6 +908,19 @@ class LlmResult:
       skip-not-fail treatment as ``paused``: the call simply didn't run, and the
       next tick re-attempts for free. (Without it, every worker bounce mid-review
       wrote a false 5h ``review-fail`` cooldown marker.)
+    * ``timed_out`` — ``True`` when ``error`` is a *wall-clock timeout* (the
+      streamed hard ceiling / idle timeout, or a one-shot transport's socket
+      cap). A strict refinement of ``paused``: a timeout is always also a
+      ``paused`` unavailability, but not the reverse (a 429, a connection
+      failure, a worker drain). Callers that merely back off don't need the
+      split; a caller holding a bounded give-up budget does, because the two
+      retry differently — a capped window or a drain clears by itself, whereas
+      re-sending an identical prompt to an identical rung that just exhausted
+      its wall clock exhausts it again, deterministically, forever (2026-08-13:
+      all 10 of the ``quest_tick`` BIG chain's 900s-ceiling trips in 7 days were
+      the same cloud rung, none recovered on retry). Read by
+      :func:`~precis.quest.tick.run_quest_tick` to stamp
+      :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind`.
     """
 
     text: str
@@ -920,6 +933,7 @@ class LlmResult:
     data: dict[str, Any] | None = None
     paused: bool = False
     interrupted: bool = False
+    timed_out: bool = False
     #: OpenAI ``usage.total_tokens`` for the local / openai-compat transports
     #: (``None`` for the claude transports, which report cost not tokens). Kept
     #: so a direct-``LlmClient`` pass folded through :class:`DispatchClient`
@@ -1092,7 +1106,9 @@ class LlmRequest:
     stream: bool = False
     #: Completion-length cap. For the local / openai-compat transports this is
     #: the ``max_tokens`` field of the underlying ``LlmConfig`` — a real,
-    #: generation-time stop. ``None`` keeps ``LlmConfig.from_env``'s default
+    #: generation-time stop; ``OPENAI_TOOLS`` puts it on each turn's wire
+    #: payload for the same effect (reachable since 2026-08-13 — see
+    #: :func:`run_oss_tool_loop`). ``None`` keeps ``LlmConfig.from_env``'s default
     #: (220) — the summarizer's short-gloss cap. A pass with a longer
     #: structured payload pins its own (e.g. paper_glossary needs 2000, else
     #: the JSON truncates); this is the knob that lets a direct-``LlmClient``
@@ -2940,6 +2956,7 @@ def run_oss_tool_loop(
     temperature: float | None = None,
     thinking: bool | None = None,
     stream: bool = False,
+    max_tokens: int | None = None,
 ) -> AgentLoopResult:
     """Drive the in-process OSS ``tools=`` loop and return the RAW
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
@@ -2975,6 +2992,16 @@ def run_oss_tool_loop(
     direct local llama-swap endpoint gets no such directive (see the matching
     NOTE in :func:`_dispatch_local` — the key llama.cpp/llama-swap itself
     honors for this is unconfirmed).
+
+    ``max_tokens`` is :attr:`LlmRequest.max_tokens` threaded onto the client's
+    per-turn wire payload — a real generation-time stop on this transport,
+    unlike the ``claude_agent`` path's post-hoc truncation. It was structurally
+    unreachable here until 2026-08-13 (the parameter simply didn't exist, so
+    ``ToolChatClient._max_tokens`` was always ``None``), which is why a verbose
+    rung could generate 33k chars unbounded until the streamed wall ceiling
+    killed the whole turn. ``None`` (the default) omits the field from the wire
+    entirely — byte-identical to the payload sent before this knob existed; no
+    caller gets a cap it didn't ask for.
     """
     from precis.liveness import drain_requested
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
@@ -3001,6 +3028,7 @@ def run_oss_tool_loop(
         model=model,
         timeout=timeout,
         temperature=temperature,
+        max_tokens=max_tokens,
         extra_body=extra_body,
         stream=stream,
         idle_timeout=_stream_idle_timeout_s(),
@@ -3048,6 +3076,10 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             temperature=req.temperature,
             thinking=req.thinking,
             stream=req.stream,
+            # A caller-pinned completion cap reaches the wire here (it already
+            # did on the LOCAL / OPENAI_COMPAT transports) — ``None`` leaves the
+            # payload exactly as before, so nothing gains a default cap.
+            max_tokens=req.max_tokens,
         )
     except (RuntimeError, OSError) as exc:
         return LlmResult(
@@ -3093,6 +3125,10 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         # `run_tool_loop`) rides through so an unavailability rides the same
         # skip-and-retry path as the breaker / local-slot pauses.
         paused=result.paused,
+        # …and its wall-clock-timeout refinement, so a caller with a bounded
+        # give-up budget can tell "wait for the window" from "this rung ran out
+        # of clock and will again" without reading the error string.
+        timed_out=result.timed_out,
         # Thread the definitive tool-call count so the review seam's
         # empty-result assertion works on this (local/OSS) backend too —
         # otherwise a silent-empty pass routed through OPENAI_TOOLS keeps
@@ -3131,6 +3167,10 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         # todo. A non-timeout ClaudeProcessError (non-zero exit /
         # missing binary) stays a semantic error, as before.
         paused=getattr(exc, "timed_out", False),
+        # Same signal, kept unmerged with ``paused`` so a bounded-budget caller
+        # sees *why* it paused — this transport's pause is only ever a timeout
+        # today, but that is a property of the wrapper, not a guarantee.
+        timed_out=getattr(exc, "timed_out", False),
     )
 
 

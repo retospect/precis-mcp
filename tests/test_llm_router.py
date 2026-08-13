@@ -791,6 +791,7 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
             model: str,
             timeout: float,
             temperature: float | None = None,
+            max_tokens: int | None = None,
             extra_body: dict[str, object] | None = None,
             stream: bool = False,
             idle_timeout: float = 120.0,
@@ -849,6 +850,7 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
             model: str,
             timeout: float,
             temperature: float | None = None,
+            max_tokens: int | None = None,
             extra_body: dict[str, object] | None = None,
             stream: bool = False,
             idle_timeout: float = 120.0,
@@ -938,6 +940,110 @@ def test_openai_tools_threads_loop_paused(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert out.paused is True
     assert out.error == "timed out after 120.0s"
+
+
+def test_openai_tools_threads_loop_timed_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """…and its wall-clock-timeout refinement rides through to
+    ``LlmResult.timed_out``, so a caller with a bounded give-up budget (the
+    quest_tick coordinator) can tell "wait for the window" from "this rung ran
+    out of clock and will again" without parsing the error string."""
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="33k chars of partial reasoning",
+            turns_used=0,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="error",
+            error="streamed completion exceeded the 900s hard ceiling",
+            paused=True,
+            timed_out=True,
+        ),
+    )
+    out = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert out.paused is True and out.timed_out is True
+
+    # A non-timeout unavailability (a drain, a 429) stays paused-but-not-timed-
+    # out — it clears on its own, so the retry really is free.
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="",
+            turns_used=0,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="error",
+            error="worker draining: agent loop aborted before next turn",
+            paused=True,
+        ),
+    )
+    drained = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert drained.paused is True and drained.timed_out is False
+
+
+def test_openai_tools_threads_max_tokens_to_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LlmRequest.max_tokens`` reaches the OPENAI_TOOLS wire payload —
+    ``LlmRequest`` → ``_dispatch_openai_tools`` → ``run_oss_tool_loop`` →
+    ``ToolChatClient``. Structurally unreachable before 2026-08-13 (the loop
+    took no such parameter, so the client's cap was always ``None``), which is
+    why a verbose rung generated unbounded until the wall ceiling killed the
+    whole turn."""
+    from typing import Any
+
+    import precis.secrets as secrets
+    from precis.utils.llm import openai_tools as ot
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    sent: list[dict[str, Any]] = []
+
+    class _CapturingTransport:
+        def post_json(
+            self,
+            url: str,
+            payload: dict[str, Any],
+            *,
+            headers: dict[str, str],
+            timeout: float,
+        ) -> dict[str, Any]:
+            sent.append(payload)
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 5},
+            }
+
+    real_client = ot.ToolChatClient
+    monkeypatch.setattr(
+        ot,
+        "ToolChatClient",
+        lambda **kw: real_client(transport=_CapturingTransport(), **kw),
+    )
+    monkeypatch.setattr("precis.utils.llm.precis_tools.precis_tool_specs", lambda: [])
+    monkeypatch.setattr(
+        "precis.utils.llm.precis_tools.runtime_executor", lambda: lambda n, a: ""
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://oss:9999/v1")
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
+
+    _dispatch_openai_tools(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, max_tokens=4096), "m"
+    )
+    assert sent[-1]["max_tokens"] == 4096
+
+    # ``None`` (the default) leaves the payload exactly as it was before the
+    # knob became reachable — nobody gets a cap they didn't ask for.
+    _dispatch_openai_tools(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert "max_tokens" not in sent[-1]
 
 
 # ── Part 2: openai_tools cost capture (un-blind the budget breaker) ────

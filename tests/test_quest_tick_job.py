@@ -41,9 +41,12 @@ class _Outcome:
         dossier_rewritten: bool = False,
         proposals: int = 0,
         ledger_added: int = 0,
+        pause_kind: str | None = None,
     ) -> None:
         self.status = status
         self.note = note
+        #: ``QuestTickOutcome.pause_kind`` — "timeout" | "window" | None.
+        self.pause_kind = pause_kind
         self.candidates_created = 0
         self.sims_dispatched = 0
         self.results_harvested = 0
@@ -308,6 +311,105 @@ class TestPhaseAwaitDryTicks:
         out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
         assert isinstance(out, Yield)
         assert out.state["tick_failures"] == 2  # unchanged by a pause
+
+    def test_window_pause_still_retries_for_free(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pins the free-retry rule for the *explicitly* window-kind pause
+        # (breaker trip / dollar cap / OAuth quota / worker drain) now that its
+        # timeout-kind sibling does consume the budget: the window rolls off by
+        # itself, so waiting costs nothing and must not count.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(status="paused", note="paused: budget cap", pause_kind="window"),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {"phase": "tick", "slice_count": 3, "tick_failures": 2}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["tick_failures"] == 2
+
+    def test_timeout_pause_counts_toward_the_failure_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 2026-08-13: a pause caused by the LLM's wall-clock ceiling is NOT a
+        # wait-for-window — retrying the identical prompt on the identical rung
+        # re-burns the identical ~15min, forever. It consumes the give-up
+        # budget exactly like a `failed`.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(
+                status="paused",
+                note="paused: streamed completion exceeded the 900s hard ceiling",
+                pause_kind="timeout",
+            ),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {"phase": "tick", "slice_count": 3, "tick_failures": 2}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await"
+        assert out.state["tick_failures"] == 3
+
+    def test_repeated_timeout_pauses_rest_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point of counting them: the budget must actually *engage*
+        # on a run of timeout pauses instead of yielding forever (quest 164903
+        # burned 53% of 24h of tick time on this).
+        _stub_tick(
+            monkeypatch,
+            _Outcome(
+                status="paused",
+                note="paused: streamed completion exceeded the 900s hard ceiling",
+                pause_kind="timeout",
+            ),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {
+            "phase": "tick",
+            "slice_count": 9,
+            "tick_failures": qt._max_tick_failures() - 1,
+        }
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is False
+        assert out.summary_meta.get("tick_failures") == qt._max_tick_failures()
+        assert out.summary_meta.get("last_status") == "paused"
+        # WHY it rested is on the record — a bare "paused" would read as the
+        # free wait-for-window kind.
+        assert out.summary_meta.get("last_pause_kind") == "timeout"
+
+    def test_timeout_pause_loop_terminates_instead_of_spinning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Drive the real tick→await→tick cycle (feeding each Yield's state back
+        # in) against a rung that times out every single time — the exact
+        # production shape. It must reach Done within the budget; before
+        # 2026-08-13 this loop had no exit at all.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(
+                status="paused",
+                note="paused: streamed completion exceeded the 900s hard ceiling",
+                pause_kind="timeout",
+            ),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state: dict[str, Any] = {"phase": "tick", "slice_count": 0}
+        for _ in range(qt._max_tick_failures() + 1):
+            out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+            if isinstance(out, Done):
+                break
+            assert isinstance(out, Yield)
+            state = out.state
+        assert isinstance(out, Done)
+        assert out.success is False
+        assert out.summary_meta.get("tick_failures") == qt._max_tick_failures()
 
     def test_failed_tick_rests_after_max_failures(
         self, monkeypatch: pytest.MonkeyPatch

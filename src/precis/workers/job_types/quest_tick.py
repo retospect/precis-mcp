@@ -127,6 +127,12 @@ def _max_tick_failures() -> int:
     (a real config break) should eventually rest the loop rather than spin every
     heartbeat forever; after this many consecutive failures it goes ``Done`` and
     waits to be re-armed by a fresh ``quest_tick`` job.
+
+    Since 2026-08-13 a *timeout-kind* pause (the rung's LLM call hit its
+    wall-clock ceiling — ``QuestTickOutcome.pause_kind == "timeout"``) counts
+    here too: it is deterministic, not a window that rolls off, so the free
+    retry never converged and this budget could never engage (see the rule
+    written out in :func:`_phase_tick`).
     """
     return _env_int("PRECIS_QUEST_TICK_MAX_FAILURES", 5, lo=1, hi=1000)
 
@@ -784,11 +790,30 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     # silently end the perpetual loop (the 2026-07-20 failure mode: two loop
     # instances died on a local-model 400). A *failure* counts toward a bounded
     # give-up budget so a persistent config break eventually rests; a *pause* is
-    # a wait-for-window, so it retries without consuming the budget. Return early
-    # so a failed/paused tick doesn't also fire the acquisition fallback below.
+    # a wait-for-window, so it retries without consuming the budget.
+    #
+    # …with one exception (2026-08-13): a pause caused by the LLM's wall-clock
+    # ceiling is NOT a wait-for-window. Nothing rolls off — retrying the
+    # identical prompt on the identical rung re-burns the identical ceiling, so
+    # the free-retry rule turned a deterministic failure into an unbounded loop
+    # that _max_tick_failures() could never stop. Measured on the BIG chain: all
+    # 10 of the 900s-ceiling trips in 7 days were the cloud rung (24 calls, 15
+    # errors, median 1412s) while the two local rungs tripped it zero times in
+    # 139 calls; quest 164903 burned 120 of 228 minutes of tick time (53%) in
+    # 24h re-running the same doomed call. So a timeout-kind pause consumes the
+    # budget exactly like a failure, and a genuine window pause (breaker trip,
+    # dollar cap, OAuth quota, worker drain) still retries for free. The cause
+    # rides in structurally on ``QuestTickOutcome.pause_kind`` — never sniffed
+    # out of the note text, which is an LLM/transport error string.
+    #
+    # Return early so a failed/paused tick doesn't also fire the acquisition
+    # fallback below.
     if status in ("failed", "paused"):
         fails = int(state.get("tick_failures") or 0)
-        if status == "failed":
+        timed_out = (
+            status == "paused" and getattr(outcome, "pause_kind", None) == "timeout"
+        )
+        if status == "failed" or timed_out:
             fails += 1
         if fails >= _max_tick_failures():
             # Not a dry rest — a real failure is its own signal, distinct from
@@ -799,19 +824,25 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
             return Done(
                 summary=(
                     f"quest {quest_id} loop resting after {fails} consecutive "
-                    f"failed tick(s) (last: {status} — {note}). Re-armed by a "
-                    "fresh quest_tick coordinator job once the cause is fixed."
+                    f"failed/timed-out tick(s) (last: {status} — {note}). "
+                    "Re-armed by a fresh quest_tick coordinator job once the "
+                    "cause is fixed."
                 ),
                 success=False,
                 summary_meta={
                     "slices": slice_count,
                     "tick_failures": fails,
                     "last_status": status,
+                    # A timeout-kind pause rests the loop like a failure — keep
+                    # WHY on the record, since a bare ``last_status: paused``
+                    # otherwise reads as the free wait-for-window kind.
+                    **({"last_pause_kind": "timeout"} if timed_out else {}),
                 },
             )
         ctx.append_chunk(
             "job_event",
-            f"tick #{slice_count}: {status} — backing off "
+            f"tick #{slice_count}: {status}"
+            f"{' (llm wall-clock timeout)' if timed_out else ''} — backing off "
             f"{_heartbeat_s()}s then retrying "
             f"(failure {fails}/{_max_tick_failures()})",
         )

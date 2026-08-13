@@ -278,6 +278,21 @@ class QuestTickOutcome:
     # Cascade (rung 4c).
     escalated: bool = False
     mode: str = "local"  # "local" | "frontier-review"
+    #: Why a ``paused`` tick paused — ``None`` on every non-paused outcome (and
+    #: on any construction site that predates this field, which is exactly
+    #: today's behaviour for them).
+    #:
+    #: * ``"timeout"`` — the rung's LLM call hit a wall-clock ceiling
+    #:   (:attr:`~precis.utils.llm.router.LlmResult.timed_out`).
+    #: * ``"window"`` — a wait-for-window pause: breaker trip, dollar cap,
+    #:   OAuth quota, worker drain, 429/5xx.
+    #:
+    #: The coordinator (:mod:`precis.workers.job_types.quest_tick`) splits its
+    #: give-up budget on this: a window pause retries for free, a timeout pause
+    #: consumes the budget, because the retry is not free — it re-burns the same
+    #: ceiling. Carried structurally rather than sniffed out of :attr:`note`, so
+    #: the worker never string-matches an LLM error message.
+    pause_kind: str | None = None
 
 
 # ── context assembly ──────────────────────────────────────────────────
@@ -1522,9 +1537,21 @@ def run_quest_tick(
         # pick recorded, no panel "failed") and re-picks once the window clears —
         # instead of burning a tick + a FAILED-PASSES row every worker cycle.
         if getattr(res, "paused", False):
+            # Split the pause by *cause* for the coordinator's give-up budget
+            # (see QuestTickOutcome.pause_kind): a wall-clock timeout is not a
+            # window that will roll off — the same prompt on the same rung
+            # re-burns the same ceiling — so it must not retry for free.
             return _finalize(
                 QuestTickOutcome(
-                    quest_id, "paused", 0, False, cost, f"paused: {res.error}"
+                    quest_id,
+                    "paused",
+                    0,
+                    False,
+                    cost,
+                    f"paused: {res.error}",
+                    pause_kind=(
+                        "timeout" if getattr(res, "timed_out", False) else "window"
+                    ),
                 ),
                 partial=salvage,
             )

@@ -454,6 +454,103 @@ def test_loop_surfaces_stream_partials_on_error() -> None:
     assert out.paused is True
     assert "half a thought" in out.final_text
     assert "half an answer" in out.final_text
+    # …and it is flagged as a *wall-clock* pause, the strict refinement of
+    # `paused` a bounded-budget caller needs (see AgentLoopResult.timed_out).
+    assert out.timed_out is True
+
+
+def test_loop_drain_abort_is_paused_but_not_timed_out() -> None:
+    """A drain abort borrows :class:`StreamTimeout` purely for the partial
+    salvage — nothing timed out, and the same call succeeds under the next
+    worker generation, so it must NOT be flagged ``timed_out`` (the quest-tick
+    give-up budget would otherwise charge a deploy bounce as a rung failure)."""
+
+    class _DrainingClient:
+        def chat(
+            self, messages: Any, *, tools: Any = None, tool_choice: str = "auto"
+        ) -> ChatTurn:
+            raise StreamTimeout(
+                "worker draining: stream aborted between chunks (partial kept)",
+                partial_text="half an answer",
+                drained=True,
+            )
+
+    out = run_tool_loop(
+        _DrainingClient(), prompt="q", tools=[], execute=lambda n, a: "", max_turns=5
+    )
+    assert out.stop_reason == "error"
+    assert out.paused is True  # still a skip-and-retry unavailability…
+    assert out.timed_out is False  # …but not a deterministic wall-clock loss
+
+
+def test_loop_semantic_error_is_neither_paused_nor_timed_out() -> None:
+    class _BadRequestClient:
+        def chat(
+            self, messages: Any, *, tools: Any = None, tool_choice: str = "auto"
+        ) -> ChatTurn:
+            raise RuntimeError("tool-chat returned no choice: {}")
+
+    out = run_tool_loop(
+        _BadRequestClient(), prompt="q", tools=[], execute=lambda n, a: "", max_turns=5
+    )
+    assert out.paused is False and out.timed_out is False
+
+
+def test_streaming_drain_abort_flags_drained_on_the_exception() -> None:
+    """The drain/timeout split is carried on the exception itself, so no layer
+    above has to string-match ``"draining"`` out of the message."""
+    tx = _FakeSseTransport([_delta("par"), _delta("tial"), _delta("never")])
+    seen = {"n": 0}
+
+    def _drain_after_two() -> bool:
+        seen["n"] += 1
+        return seen["n"] > 2
+
+    client = ToolChatClient(
+        url="http://x/v1",
+        api_key="k",
+        model="m",
+        transport=tx,
+        stream=True,
+        abort_check=_drain_after_two,
+    )
+    with pytest.raises(StreamTimeout) as exc_info:
+        client.chat([{"role": "user", "content": "hi"}])
+    assert exc_info.value.drained is True
+
+    # The two genuine aborts (hard ceiling here) are NOT drains.
+    ceiling = ToolChatClient(
+        url="http://x/v1",
+        api_key="k",
+        model="m",
+        transport=_FakeSseTransport([_delta("a"), _delta("b")]),
+        stream=True,
+        timeout=1e-9,
+    )
+    with pytest.raises(StreamTimeout) as ceil_info:
+        ceiling.chat([{"role": "user", "content": "hi"}])
+    assert ceil_info.value.drained is False
+
+
+def test_client_max_tokens_rides_the_wire_payload() -> None:
+    """``max_tokens`` is a real generation-time stop on this transport — and
+    ``None`` omits the key entirely (byte-identical to the payload sent before
+    the knob was reachable from ``LlmRequest``)."""
+    body = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"total_tokens": 3},
+    }
+    tx = _FakeTransport([body])
+    ToolChatClient(
+        url="http://x/v1", api_key="k", model="m", transport=tx, max_tokens=4096
+    ).chat([{"role": "user", "content": "q"}])
+    assert tx.sent[0]["max_tokens"] == 4096
+
+    tx2 = _FakeTransport([body])
+    ToolChatClient(url="http://x/v1", api_key="k", model="m", transport=tx2).chat(
+        [{"role": "user", "content": "q"}]
+    )
+    assert "max_tokens" not in tx2.sent[0]
 
 
 # ── run_tool_loop ──────────────────────────────────────────────────────

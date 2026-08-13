@@ -51,12 +51,18 @@ def _fake_dispatch(
     error: str | None = None,
     cost: float | None = 0.01,
     paused: bool = False,
+    timed_out: bool = False,
 ) -> Any:
     """A stand-in for router.dispatch returning a canned LlmResult-shaped obj."""
 
     def _d(_req: Any) -> Any:
         return SimpleNamespace(
-            data=payload, text=text, error=error, cost_usd=cost, paused=paused
+            data=payload,
+            text=text,
+            error=error,
+            cost_usd=cost,
+            paused=paused,
+            timed_out=timed_out,
         )
 
     return _d
@@ -605,9 +611,34 @@ class TestQuestTick:
             ),
         )
         assert out.status == "paused" and "paused" in out.note
+        # …and it is the *window* kind: the coordinator retries it for free.
+        assert out.pause_kind == "window"
         assert not [
             b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
         ]
+
+    def test_timeout_pause_is_flagged_pause_kind_timeout(self, store: Any) -> None:
+        # A wall-clock ceiling abort (LlmResult.timed_out) is still reported as
+        # "paused" — nothing was written, the allocator must not record a pick —
+        # but it is stamped `pause_kind="timeout"` so the coordinator can charge
+        # it to the give-up budget: unlike a capped window, this one never
+        # clears on its own (2026-08-13 BIG-chain data).
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                None,
+                error=(
+                    "streamed completion exceeded the 900s hard ceiling "
+                    "(still generating — partial kept)"
+                ),
+                paused=True,
+                timed_out=True,
+            ),
+        )
+        assert out.status == "paused"
+        assert out.pause_kind == "timeout"
 
     def test_partial_output_persists_to_agentlog_on_error(self, store: Any) -> None:
         # A streamed rung that dies mid-generation returns its partial

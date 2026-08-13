@@ -68,6 +68,16 @@ class StreamTimeout(TimeoutError):
     losing the whole generation. ``partial_text`` is the assistant content so
     far; ``partial_reasoning`` the reasoning/thinking deltas (OpenRouter's
     ``delta.reasoning`` / some providers' ``delta.reasoning_content``).
+
+    ``drained`` splits the *third* user of this abort path from the two real
+    timeouts: a worker-drain abort (``abort_check``) also raises this class to
+    reuse the partial-salvage plumbing, but nothing timed out — the same prompt
+    on the same rung would have finished fine under the next worker generation.
+    Callers that treat a wall-clock timeout as a *deterministic* failure (the
+    quest-tick coordinator's give-up budget — see
+    :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind`) must not count a
+    drain, so the distinction is carried structurally on the exception rather
+    than sniffed out of the message text.
     """
 
     def __init__(
@@ -76,10 +86,12 @@ class StreamTimeout(TimeoutError):
         *,
         partial_text: str = "",
         partial_reasoning: str = "",
+        drained: bool = False,
     ) -> None:
         super().__init__(message)
         self.partial_text = partial_text
         self.partial_reasoning = partial_reasoning
+        self.drained = drained
 
 
 def partial_artifact(exc: BaseException) -> str:
@@ -377,11 +389,12 @@ class ToolChatClient:
         total: int | None = None
         cost: float | None = None
 
-        def _abort(reason: str) -> StreamTimeout:
+        def _abort(reason: str, *, drained: bool = False) -> StreamTimeout:
             return StreamTimeout(
                 reason,
                 partial_text="".join(content_parts),
                 partial_reasoning="".join(reasoning_parts),
+                drained=drained,
             )
 
         try:
@@ -390,7 +403,8 @@ class ToolChatClient:
             ):
                 if self._abort_check is not None and self._abort_check():
                     raise _abort(
-                        "worker draining: stream aborted between chunks (partial kept)"
+                        "worker draining: stream aborted between chunks (partial kept)",
+                        drained=True,
                     )
                 usage = event.get("usage") or {}
                 if isinstance(usage.get("total_tokens"), int):
@@ -507,6 +521,22 @@ class AgentLoopResult:
     #: clean run, a semantic error, or any exception not recognized as a known
     #: transient signal.
     paused: bool = False
+    #: ``True`` when the run ended on a *wall-clock timeout* — the streamed
+    #: hard ceiling or the idle timeout (:class:`StreamTimeout`), or a blocking
+    #: POST's socket timeout — as opposed to the other unavailabilities that
+    #: also set :attr:`paused` (a 5xx/429, a connection failure, a worker
+    #: drain). A strict refinement of ``paused``: every ``timed_out`` run is
+    #: also ``paused``, never the reverse.
+    #:
+    #: Threaded onto :attr:`~precis.utils.llm.router.LlmResult.timed_out` so a
+    #: caller can tell the two apart *structurally*. The distinction matters
+    #: because they retry differently: a 429 or a drain clears on its own, but
+    #: re-sending an identical prompt to an identical rung that just ran out of
+    #: wall clock burns the identical wall clock again (2026-08-13: the
+    #: ``quest_tick`` BIG chain's cloud rung tripped the 900s ceiling 10× in 7
+    #: days, always after generating 12k–33k chars, and never once succeeded on
+    #: the retry).
+    timed_out: bool = False
     #: Summed :attr:`ChatTurn.cost_usd` across every turn — ``None`` when no
     #: turn reported one (a backend that doesn't return ``usage.cost``, e.g. a
     #: local/loopback server). Mirrors :attr:`total_tokens`'s accumulation so
@@ -604,6 +634,14 @@ def run_tool_loop(
                 stop_reason="error",
                 error=str(exc),
                 paused=_is_unavailability(exc),
+                # The wall-clock-timeout refinement of ``paused`` (see
+                # :attr:`AgentLoopResult.timed_out`): every timeout is a
+                # ``TimeoutError`` subclass, but a drain abort borrows
+                # :class:`StreamTimeout` purely for the partial salvage and is
+                # NOT a timeout — it flags itself ``drained`` so it's excluded
+                # here without anyone parsing the message text.
+                timed_out=isinstance(exc, TimeoutError)
+                and not getattr(exc, "drained", False),
                 cost_usd=total_cost,
             )
         _accumulate(turn.total_tokens, turn.cost_usd)
