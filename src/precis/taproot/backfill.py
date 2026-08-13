@@ -26,7 +26,7 @@ Two citation forms are backfilled, from the two grammars in the draft prose:
 Motivation. Most claims in the corpus were first written with raw
 ``[pc<id>]`` / ``[pa<id>]`` paper citations, before taproot claim hubs existed.
 This module walks a draft chunk's existing paper cites and, for each, runs
-``extract_claim → block → dedup_judge → place → apply_placement`` (mirroring
+``extract_claim → block → dedup_judge → place → apply_extraction`` (mirroring
 :func:`precis.workers.chase._taproot_bridge`) so a claim **converges onto an
 existing hub** rather than minting a near-duplicate — the whole point of
 routing through the cascade instead of :func:`precis.taproot.authoring.seed_claim_hub`'s
@@ -54,6 +54,23 @@ The extract / block / judge functions are injected (defaulting to the real
 :mod:`precis.taproot.canon` ones) so the segmenter + orchestration are
 unit-testable with deterministic fakes and no LLM/embedder — mirroring how
 :func:`precis.taproot.canon.place` takes a ``merge_confirm_fn``.
+
+**Decomposition (docs/backlog/taproot-atomic-claims.md).** ``extract_fn``
+returns a :class:`~precis.taproot.canon.ClaimExtraction` — zero or more
+AIDA-atomic claims plus an optional bundling ``compound``. Per group, the
+cascade tail (``block`` → ``dedup_judge`` → ``place``) runs once per atom
+*and*, when present, once for the compound (:func:`_run_cascade`); the
+resulting ``(claim, Placement)`` pairs are handed to
+:func:`precis.taproot.hub.apply_extraction` (the write door), which mints/
+converges each atom, mints/converges the compound with **no** evidence edge,
+links ``atom --conjunct-of--> compound``, and folds ``not_claims`` into the
+compound's audit memo. The prose collapse always targets the compound when
+one exists (``[fi<compound_hub>]``); an already-atomic extraction has no
+compound (step-1 invariant) and targets its lone atom instead — the "one
+cite-group, one ``[fi<hub>]``" rewrite invariant holds either way. Supporter
+papers beyond the first (``plan.supporters[1:]``) attach ``corroborates`` to
+**every** atom hub, never the compound (step 3) — the cited passage asserts
+all conjuncts, and the edges are LLM-free, so supporters × atoms is cheap.
 """
 
 from __future__ import annotations
@@ -68,6 +85,8 @@ from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     Candidate,
     CanonicalClaim,
+    ClaimExtraction,
+    NotClaim,
     Placement,
     Verdict,
     block,
@@ -151,7 +170,8 @@ class GroupPlan:
     :func:`apply_chunk` acts on it."""
 
     group: CiteGroup
-    #: ``"no-claim"`` — the span asserts nothing groundable (extract → None);
+    #: ``"no-claim"`` — the span asserts nothing groundable (extract →
+    #: ``ClaimExtraction.is_empty``);
     #: ``"unresolved"`` — a handle didn't resolve to a paper (skipped);
     #: ``"stub-fetch-first"`` — a ``[pa]`` cite to an un-fetched stub (0 blocks),
     #: skipped pending fetch (no write, prose left as ``[pa]``);
@@ -166,13 +186,33 @@ class GroupPlan:
     #: else the cascade action: ``"attach"`` / ``"new"`` /
     #: ``"new_contradicts"`` / ``"needs_review"``.
     action: str
+    #: The **target** claim/placement for this group's ``action``/
+    #: ``hub_ref_id``/``note`` above — the compound's when the extraction
+    #: decomposed (:attr:`compound_plan` non-``None``), else the lone atom's
+    #: (an already-atomic extraction has no compound, step-1 invariant).
+    #: ``None`` for no-claim / unresolved / stub-fetch-first / reground(-nomatch).
     claim: CanonicalClaim | None = None
     placement: Placement | None = None
+    #: Every atom's ``(claim, Placement)`` pair from :func:`_run_cascade`'s
+    #: per-atom cascade tail, in extraction order — handed to
+    #: :func:`precis.taproot.hub.apply_extraction` as its ``atoms=`` arg.
+    #: Empty for no-claim / unresolved / stub-fetch-first / reground(-nomatch).
+    atom_plans: list[tuple[CanonicalClaim, Placement]] = field(default_factory=list)
+    #: The compound's own ``(claim, Placement)`` pair, or ``None`` when the
+    #: extraction didn't decompose (a lone atom has no compound).
+    compound_plan: tuple[CanonicalClaim, Placement] | None = None
+    #: Rejected conjuncts (:func:`extract_claim`'s ``not_claims``) — folded
+    #: into the compound hub's audit memo by
+    #: :func:`precis.taproot.hub.apply_extraction` (step 8). Empty when the
+    #: extraction rejected nothing (including the no-decomposition case).
+    not_claims: tuple[NotClaim, ...] = ()
     #: (handle, paper_ref_id) for each resolved supporter — for a fetched-``[pa]``
     #: ref-level promote, only the fetched supporters (stubs never mint evidence).
     supporters: list[tuple[str, int]] = field(default_factory=list)
-    #: The hub this group cites once acted on — the matched hub for
-    #: ``attach``, or (after :func:`apply_chunk`) the minted hub for
+    #: The hub this group's prose cite targets once acted on — the compound
+    #: hub when one exists, else the lone atom hub (the "one cite-group, one
+    #: ``[fi<hub>]``" collapse target). Populated at plan time for ``attach``
+    #: (the matched candidate); set post-write by :func:`apply_chunk` for
     #: ``new``/``new_contradicts``. ``None`` for no-claim / needs_review /
     #: unresolved / stub-fetch-first / reground-needed (prose left untouched).
     hub_ref_id: int | None = None
@@ -213,7 +253,7 @@ class ChunkBackfill:
 # segmenter + orchestration testable without an LLM/embedder. ``merge_confirm``
 # is threaded to :func:`place` (a low-confidence ``same`` escalates to a BIG
 # confirm — the same behaviour the chase bridge accepts).
-ExtractFn = Callable[[str], CanonicalClaim | None]
+ExtractFn = Callable[[str], ClaimExtraction]
 BlockFn = Callable[[CanonicalClaim, Any, Any], list[Candidate]]
 JudgeFn = Callable[[str, str], Verdict]
 MergeConfirmFn = Callable[[str, str], Verdict]
@@ -402,10 +442,15 @@ def _run_cascade(
     ungrounded: bool = False,
 ) -> GroupPlan:
     """The shared extract → block → judge → place tail, once supporters are
-    resolved. ``ungrounded`` marks a ref-level ``[pa]`` promote (whole-paper
-    edge, no grounding passage)."""
-    claim = extract_fn(group.span_text)
-    if claim is None:
+    resolved. Runs the block/judge/place cascade once per atom **and**, when
+    the extraction decomposed, once more for the compound
+    (docs/backlog/taproot-atomic-claims.md step 2) — canon (LLM/ANN) stays
+    per-claim; only the write door (:func:`precis.taproot.hub.apply_extraction`,
+    called from :func:`apply_chunk`) is decomposition-aware. ``ungrounded``
+    marks a ref-level ``[pa]`` promote (whole-paper edge, no grounding
+    passage)."""
+    extraction = extract_fn(group.span_text)
+    if extraction.is_empty:
         return GroupPlan(
             group=group,
             action="no-claim",
@@ -413,18 +458,31 @@ def _run_cascade(
             note="span asserts nothing groundable",
         )
 
-    candidates = block_fn(claim, store, embedder)
-    judged = [(cand, judge_fn(claim.sentence, cand.claim)) for cand in candidates]
-    placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
+    def _place_one(claim: CanonicalClaim) -> tuple[CanonicalClaim, Placement]:
+        candidates = block_fn(claim, store, embedder)
+        judged = [(cand, judge_fn(claim.sentence, cand.claim)) for cand in candidates]
+        return claim, place(claim, judged, merge_confirm_fn=merge_confirm_fn)
+
+    atom_plans = [_place_one(atom) for atom in extraction.atoms]
+    compound_plan = _place_one(extraction.compound) if extraction.compound else None
+
+    # Prose/reporting target: the compound when the extraction decomposed,
+    # else the lone atom (step-1 invariant: a multi-atom extraction always
+    # carries a compound, so this is never ambiguous).
+    target_claim, target_placement = compound_plan or atom_plans[0]
+
     return GroupPlan(
         group=group,
-        action=placement.action,
-        claim=claim,
-        placement=placement,
+        action=target_placement.action,
+        claim=target_claim,
+        placement=target_placement,
+        atom_plans=atom_plans,
+        compound_plan=compound_plan,
+        not_claims=extraction.not_claims,
         supporters=supporters,
-        hub_ref_id=placement.hub_ref_id,
+        hub_ref_id=target_placement.hub_ref_id,
         ungrounded=ungrounded,
-        note=placement.reason,
+        note=target_placement.reason,
     )
 
 
@@ -639,11 +697,13 @@ def plan_chunk(
     """Plan the backfill of one draft chunk — writes **nothing**.
 
     For each paper cite-group: resolve its supporter papers, then route by
-    kind. A ``[pc]`` group extracts the claim (``None`` → ``no-claim``, prose
-    left as-is) and runs the canonicalizer cascade (``block`` ANN over
-    existing hubs → ``dedup_judge`` → ``place``) to decide whether the claim
-    **converges onto an existing hub** (``attach``) or would mint a ``new``
-    one. A ``[pa]`` group classifies by block-count: stub → ``stub-fetch-first``,
+    kind. A ``[pc]`` group extracts the claim (an empty
+    :class:`~precis.taproot.canon.ClaimExtraction` → ``no-claim``, prose left
+    as-is) and runs the canonicalizer cascade (``block`` ANN over existing
+    hubs → ``dedup_judge`` → ``place``) once per atom and, if the extraction
+    decomposed, once for the compound, to decide whether each **converges
+    onto an existing hub** (``attach``) or would mint a ``new`` one. A
+    ``[pa]`` group classifies by block-count: stub → ``stub-fetch-first``,
     fetched → ``reground`` (locate the passage, rewrite ``[pa]``→``[pc]``;
     ``reground-nomatch`` if none found) unless ``ref_level`` promotes it
     whole-paper. This is what the CLI ``--dry-run`` reports; it is LLM- and
@@ -754,8 +814,19 @@ def apply_chunk(
     on-ramp, with which it shares the registered ``set_by='agent'`` actor
     (``backfill`` is not a seeded actor; ``meta.origin`` carries the
     distinction instead), while all three fill the same claim graph.
+
+    **Decomposition.** Each group's writes go through
+    :func:`precis.taproot.hub.apply_extraction` (not a single
+    ``apply_placement`` call): every atom mints/converges + attaches the
+    primary supporter as evidence (``needs_review`` files a todo and
+    contributes no hub); the compound (if any) mints/converges with **no**
+    evidence edge and gets the ``not_claims`` audit memo; every successfully
+    placed atom is ``conjunct-of``-linked to the compound. Remaining
+    supporters (``plan.supporters[1:]``) then attach ``corroborates`` to
+    **every** atom hub (never the compound). The prose rewrite target is the
+    compound hub when one landed, else the lone atom hub.
     """
-    from precis.taproot.hub import _DEFAULT_ROLE, apply_placement, attach_evidence
+    from precis.taproot.hub import _DEFAULT_ROLE, apply_extraction, attach_evidence
 
     text, draft_ref_id = _read_draft_chunk(store, chunk_id)
 
@@ -814,7 +885,7 @@ def apply_chunk(
             edits.append((cites[0].start, cites[-1].end, replacement))
             plan.note = f"re-grounded [pa]→{replacement}"
             continue
-        if plan.claim is None or plan.placement is None:
+        if not plan.atom_plans and plan.compound_plan is None:
             # no-claim / unresolved / stub-fetch-first / reground-nomatch —
             # prose left untouched ([pc…] or [pa…]).
             continue
@@ -822,46 +893,59 @@ def apply_chunk(
         # Isolate each group's writes: a mid-loop failure (transient DB /
         # LLM error) on one group must not abort the batch or strand the
         # earlier groups' prose rewrites — those are applied below regardless.
-        # hub mint + evidence commit per call (own tx); full mint-and-prose
-        # atomicity isn't available through the draft edit door, so on failure
-        # we rewrite prose only for the groups whose hub actually landed, and
-        # a re-run converges onto them (idempotent).
+        # hub mint + evidence commit per call (own tx per atom/compound);
+        # full mint-and-prose atomicity isn't available through the draft
+        # edit door, so on failure we rewrite prose only for the groups whose
+        # target hub actually landed, and a re-run converges onto them
+        # (idempotent) — including any atom that landed before a later
+        # atom/compound in the same call raised.
         #
         # ``hub_landed`` — not ``plan.hub_ref_id`` — is the "did this call's
         # write commit?" signal: for ``attach``, ``plan.hub_ref_id`` is
         # already populated at plan time (the ANN-matched candidate, set in
         # ``_run_cascade`` before any write runs), so it's non-None even when
-        # ``apply_placement``/``attach_evidence`` below raises. Gating the
-        # except-path skip on ``plan.hub_ref_id`` would append an
-        # ``[fi<hub>]`` cite for a hub whose evidence edge never landed this
-        # call — silent draft corruption. ``hub_landed`` only flips True once
-        # ``apply_placement`` has actually returned a committed hub.
+        # ``apply_extraction`` below raises. Gating the except-path skip on
+        # ``plan.hub_ref_id`` would append an ``[fi<hub>]`` cite for a hub
+        # whose evidence edge never landed this call — silent draft
+        # corruption. ``hub_landed`` only flips True once ``apply_extraction``
+        # has actually returned with a target hub id.
         hub_landed = False
         try:
-            hub_ref_id = apply_placement(
+            outcome = apply_extraction(
                 store,
-                plan.claim,
-                plan.placement,
+                atoms=plan.atom_plans,
+                compound=plan.compound_plan,
+                not_claims=plan.not_claims,
                 paper_ref_id=plan.supporters[0][1],
                 meta=_edge_meta(plan.supporters[0][0]),
                 set_by=set_by,
                 todo_fn=_todo_fn,
             )
-            if hub_ref_id is None:  # needs_review — todo filed, prose left as [pc…]
+            target_hub_id = (
+                outcome.compound_hub_id
+                if outcome.compound_hub_id is not None
+                else (outcome.atom_hub_ids[0] if outcome.atom_hub_ids else None)
+            )
+            if (
+                target_hub_id is None
+            ):  # needs_review — todo(s) filed, prose left as [pc…]
                 plan.note = "risky merge — filed for review, prose left as [pc…]"
                 continue
-            plan.hub_ref_id = hub_ref_id
+            plan.hub_ref_id = target_hub_id
             hub_landed = True
-            # Remaining supporter papers → corroborating evidence on the hub.
+            # Remaining supporter papers → corroborating evidence on EVERY
+            # atom hub (the cited passage asserts all conjuncts; never the
+            # compound, step 3).
             for handle, paper_ref_id in plan.supporters[1:]:
-                attach_evidence(
-                    store,
-                    hub_ref_id=hub_ref_id,
-                    paper_ref_id=paper_ref_id,
-                    role=_DEFAULT_ROLE,
-                    meta=_edge_meta(handle),
-                    set_by=set_by,
-                )
+                for atom_hub_id in outcome.atom_hub_ids:
+                    attach_evidence(
+                        store,
+                        hub_ref_id=atom_hub_id,
+                        paper_ref_id=paper_ref_id,
+                        role=_DEFAULT_ROLE,
+                        meta=_edge_meta(handle),
+                        set_by=set_by,
+                    )
         except Exception as exc:  # isolate one group, keep the batch going
             plan.action = "error"
             plan.note = f"write failed, prose left as [pc…]: {exc}"

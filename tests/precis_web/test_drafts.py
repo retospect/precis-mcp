@@ -2201,9 +2201,17 @@ def convert_client(runtime_with_store, tmp_path) -> TestClient:
 
 
 def _extract_const(sentence: str):
-    from precis.taproot.canon import CanonicalClaim
+    """Fake ``ExtractFn``: a single atomic claim, no compound — mirrors a
+    real :func:`~precis.taproot.canon.extract_claim` result for a chunk
+    that decomposes to exactly one atom (``ClaimExtraction`` is the
+    real-world return shape; these routes never see decomposition)."""
+    from precis.taproot.canon import CanonicalClaim, ClaimExtraction
 
-    return lambda span: CanonicalClaim(sentence=sentence, scope={})
+    return lambda span: ClaimExtraction(
+        atoms=(CanonicalClaim(sentence=sentence, scope={}),),
+        compound=None,
+        not_claims=(),
+    )
 
 
 def _block_none(claim, store, embedder):

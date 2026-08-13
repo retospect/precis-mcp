@@ -42,12 +42,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Literal
+from functools import reduce
+from typing import Any, Literal, cast
 
 from precis.store.protocols import ClaimTrustStore
 from precis.taproot.cite import finding_cite_keys, hub_cite_keys
 from precis.taproot.seniority import (
     HubEvidence,
+    conjunct_atoms_bulk,
+    derive_conjuncts,
     derive_evidence_bulk,
     is_claim_hub,
     is_claim_hub_bulk,
@@ -101,6 +104,17 @@ _DEAD_CHAIN_NOTES = {
 #: ``acquiring``/``tracing`` and any other in-progress lifecycle state
 #: (``cycle``, an unrecognized status, a missing STATUS tag).
 _PENDING_NOTE = "source pending"
+
+#: ``TrustState.status`` for a compound hub — distinct from the plain hub's
+#: ``'hub'`` (docs/backlog/taproot-atomic-claims.md) so a debugging read can
+#: tell "this label came from rolling up atoms" from "this label came from
+#: the hub's own evidence."
+_COMPOUND_STATUS = "hub-compound"
+
+#: Truncation width for the weakest-atom title named in a compound's note —
+#: mirrors :mod:`precis.utils.refeye`'s ``title[:89]`` idiom for the same
+#: "advisory one-liner, not the full sentence" purpose.
+_CONJUNCT_TITLE_LIMIT = 89
 
 
 @dataclass(frozen=True)
@@ -171,6 +185,73 @@ def _hub_trust(
     return "clean", None, "hub"
 
 
+def _truncate_conjunct_title(title: str) -> str:
+    """Trim a weakest-atom title to :data:`_CONJUNCT_TITLE_LIMIT` chars for
+    the compound note — same trim-and-ellipsize shape
+    :mod:`precis.utils.refeye` uses for its own advisory one-liners."""
+    if len(title) <= _CONJUNCT_TITLE_LIMIT:
+        return title
+    return title[:_CONJUNCT_TITLE_LIMIT].rstrip() + "…"
+
+
+def _compound_trust(
+    atoms: list[tuple[int, str, TrustState]],
+) -> tuple[TrustLabel, str, str]:
+    """A compound hub's rolled-up trust: worst-of its atoms' OWN trust
+    states (taproot-atomic-claims.md's decomposition plan, step 4).
+    ``atoms`` is ``(atom_ref_id, title, TrustState)`` triples — each state
+    already a full, depth-1 :func:`claim_trust` derivation (the caller
+    passed ``_expand_conjuncts=False`` deriving it, so a miswired
+    compound-of-compound can't recurse through here).
+
+    The label is ``reduce(worse_trust, ...)`` across every atom's label —
+    the loudest one wins, exactly the same "worst-of" composition
+    ``smartdraft.claim_trust_for_block`` already applies across a block's
+    cite heads. The note names the first atom (input order — both callers
+    feed atoms ref_id-ascending) whose OWN label matches that worst label,
+    so a tie is broken deterministically rather than arbitrarily.
+
+    Never called with an empty ``atoms`` list — both callers only reach
+    here once the atom map (:func:`~precis.taproot.seniority.
+    derive_conjuncts`/:func:`~precis.taproot.seniority.conjunct_atoms_bulk`)
+    came back non-empty."""
+    labels: list[str] = [state.label for _, _, state in atoms]
+    worst_label = cast(TrustLabel, reduce(worse_trust, labels))
+    worst_title = next(title for _, title, state in atoms if state.label == worst_label)
+    note = f"weakest conjunct: {_truncate_conjunct_title(worst_title)}"
+    return worst_label, note, _COMPOUND_STATUS
+
+
+def _apply_claim_level_override(
+    label: TrustLabel, note: str | None, status: str, meta: dict[str, Any]
+) -> TrustState:
+    """Rule 3 — the only softener: the finding's/hub's OWN claim-level
+    ``meta.unacquirable_override`` (never inherited from a paper) converts
+    an otherwise-**unverified** label to the softer ``abstract``/``vouched``.
+    Factored out of :func:`claim_trust`'s tail so a compound's rolled-up
+    ``(label, note)`` (:func:`_compound_trust`) composes through the exact
+    same rule rather than a second copy of it — the plan's "rule-3 vouch
+    softener applies AFTER the rollup" (docs/backlog/
+    taproot-atomic-claims.md)."""
+    if label == "unverified":
+        override = meta.get("unacquirable_override")
+        if isinstance(override, dict) and override:
+            # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on
+            # file backs it), anything else (incl. a legacy override with no
+            # mode) → ✍ vouched (author asserts; source unobtainable). Never
+            # all the way to clean — no one read the full text.
+            soft: TrustLabel = (
+                "abstract" if override.get("mode") == "abstract" else "vouched"
+            )
+            return TrustState(
+                label=soft,
+                note=override.get("note") or note,
+                overridden=True,
+                status=status,
+            )
+    return TrustState(label=label, note=note, overridden=False, status=status)
+
+
 def _lifecycle_trust(
     store: ClaimTrustStore, ref_id: int, meta: dict[str, Any]
 ) -> tuple[TrustLabel, str | None, str]:
@@ -207,52 +288,102 @@ def claim_trust(
     cite_key_map: dict[int, list[str]] | None = None,
     ref: Any = None,
     paper_refs: dict[int, Any] | None = None,
+    conjunct_atom_ids: list[int] | None = None,
+    _expand_conjuncts: bool = True,
 ) -> TrustState:
     """Derive a finding's trust label — the ONE mapping every trust
     surface (export marking, the smartdraft badge) reads.
 
     Branches hub vs. lifecycle finding exactly as
-    :func:`precis.taproot.cite.finding_cite_keys` does. Three rules then
+    :func:`precis.taproot.cite.finding_cite_keys` does — with one further
+    split inside the hub arm: a **compound** hub (non-empty ``conjunct-of``
+    atoms, :func:`~precis.taproot.seniority.derive_conjuncts`) never derives
+    its own evidence (:mod:`precis.taproot.hub`'s ``attach_evidence`` guard
+    forbids a direct evidence edge onto one) — its label is instead the
+    worst-of its atoms' own trust (:func:`_compound_trust`). Four rules then
     apply, in order:
 
-    1. **Hub harden.** A clean hub whose every print-visible grounding
-       paper carries a *paper-level* ``unacquirable_override`` (a pure
-       acquirability fact, set from a paper's Meta tab) overstates itself
-       — no one read any of those sources in full — so it's downgraded to
-       ``unverified`` with an explanatory note. This is a fact-driven
-       harden, not an author assertion: ``TrustState.overridden`` stays
-       ``False``.
+    1. **Hub harden.** A clean *plain* hub (not a compound — see above)
+       whose every print-visible grounding paper carries a *paper-level*
+       ``unacquirable_override`` (a pure acquirability fact, set from a
+       paper's Meta tab) overstates itself — no one read any of those
+       sources in full — so it's downgraded to ``unverified`` with an
+       explanatory note. This is a fact-driven harden, not an author
+       assertion: ``TrustState.overridden`` stays ``False``.
     2. **Lifecycle note enrichment.** An unverified lifecycle finding
        blocked on a paper that itself carries a paper-level override gets
        its note enriched (naming the blocking source's declared reason) —
        the label is untouched; a paper being unobtainable is not itself a
        claim-backing assertion.
-    3. **Claim-level softener.** The finding's/hub's OWN ``meta.
+    3. **Compound rollup.** A compound hub's ``(label, note)`` is
+       ``reduce(worse_trust, ...)`` across its atoms — see
+       :func:`_compound_trust`. Depth-1 by construction: each atom is
+       derived with ``_expand_conjuncts=False``, so a miswired
+       compound-of-compound can't recurse through here.
+    4. **Claim-level softener.** The finding's/hub's OWN ``meta.
        unacquirable_override`` (set via ``edit(kind='finding',
        unacquirable_note=…)`` or, for a hub, ``POST /claim/<head>/
        unacquirable``) then converts an otherwise-**unverified** label
-       (including one just hardened by rule 1) to the softer ``abstract``
-       (Ⓐ) / ``vouched`` (✍). Composes with rule 1: a hardened hub can
-       still be individually vouched for here. Never applied to an
-       **unsupported** label (a negative terminal verification outranks
-       any override: the paper was read; "trust me" doesn't unread it).
+       (including one just hardened by rule 1, OR just rolled up by rule 3)
+       to the softer ``abstract`` (Ⓐ) / ``vouched`` (✍) — a human can vouch
+       for the whole bundle even when one conjunct is unsupported. Composes
+       with rules 1 and 3. Never applied to an **unsupported** label (a
+       negative terminal verification outranks any override: the paper was
+       read; "trust me" doesn't unread it).
 
     ``evidence``/``cite_key_map`` thread a caller's already-derived hub
     evidence + bulk cite_key resolution straight into :func:`_hub_trust`
     (batch/de-dup fix — a caller passing ``evidence`` also implies the
-    ref IS a hub, so the ``is_claim_hub`` re-check is skipped too).
-    ``ref`` lets a caller that already fetched the finding's ``Ref``
-    (e.g. for its title) skip this function's own ``fetch_refs_by_ids``
-    call. ``paper_refs`` is the bulk twin for the grounding-paper meta the
-    hub-harden check reads (mirrors ``cite_key_map``). All four default to
-    the old single-hub, no-cache behaviour.
+    ref IS a hub, so the ``is_claim_hub`` re-check is skipped too; it does
+    NOT imply non-compound — a compound's derived evidence is legitimately
+    empty, so the conjunct check still runs). ``conjunct_atom_ids`` is that
+    check's own threading knob: a caller that already batched
+    :func:`~precis.taproot.seniority.conjunct_atoms_bulk` over its hub set
+    passes each hub's list (``[]`` for a plain atomic hub) and this function
+    issues no per-hub :func:`~precis.taproot.seniority.derive_conjuncts`
+    queries; ``None`` (the default) keeps the lazy per-call derive.
+    ``ref`` lets a caller that already fetched
+    the finding's ``Ref`` (e.g. for its title) skip this function's own
+    ``fetch_refs_by_ids`` call. ``paper_refs`` is the bulk twin for the
+    grounding-paper meta the hub-harden check reads (mirrors
+    ``cite_key_map``). ``_expand_conjuncts`` is private — the depth-1 guard
+    rule 3 relies on; every real caller leaves it at the default ``True``.
+    All threading params default to the old single-hub, no-cache behaviour.
     """
     if ref is None:
         ref = store.fetch_refs_by_ids([finding_ref_id]).get(finding_ref_id)
     meta = (ref.meta or {}) if ref is not None else {}
 
+    is_hub = evidence is not None or is_claim_hub(store, finding_ref_id)
+    atom_ids: list[int] = []
+    if is_hub and _expand_conjuncts:
+        if conjunct_atom_ids is not None:
+            atom_ids = list(conjunct_atom_ids)
+        else:
+            atom_ids = [
+                cr.hub_ref_id
+                for cr in derive_conjuncts(store, finding_ref_id).refined_by
+            ]
+
     hub_evidence: HubEvidence | None = None
-    if evidence is not None or is_claim_hub(store, finding_ref_id):
+    label: TrustLabel
+    note: str | None
+    status: str
+    if atom_ids:
+        titles = {
+            rid: (r.title or f"<claim {rid}>")
+            for rid, r in store.fetch_refs_by_ids(atom_ids).items()
+        }
+        atoms = [
+            (
+                a,
+                titles.get(a, f"<claim {a}>"),
+                claim_trust(store, a, _expand_conjuncts=False),
+            )
+            for a in atom_ids
+        ]
+        label, note, status = _compound_trust(atoms)
+    elif is_hub:
         # Resolve the hub's evidence once (thread the caller's when given) so
         # both the label AND the harden check below read the same derivation
         # — no second derive.
@@ -270,15 +401,19 @@ def claim_trust(
     if hub_evidence is not None and label == "clean":
         # Rule 1 — harden: every print-visible grounding paper declared
         # unacquirable (a fact, not an author claim-backing assertion), so
-        # 'clean' overstates it.
+        # 'clean' overstates it. Never reached for a compound (hub_evidence
+        # stays None there — rule 3 is its rollup instead).
         if _hub_grounding_unacquirable(store, hub_evidence, cite_key_map, paper_refs):
             label = "unverified"
             note = _HUB_GROUNDING_UNACQUIRABLE_NOTE
-    elif hub_evidence is None and label == "unverified":
+    elif hub_evidence is None and not atom_ids and label == "unverified":
         # Rule 2 — a lifecycle finding's blocking source paper being
         # declared unacquirable is a fact about acquirability, never a
         # softener: enrich the note only, so a human knows to vouch at the
-        # claim level (rule 3) or drop the cite.
+        # claim level (rule 4) or drop the cite. Guarded off for a compound
+        # (`not atom_ids`) — its meta carries no lifecycle ``chain``, so this
+        # would be a silent no-op there anyway, but skipping it keeps the
+        # branch honest about which finding shape it's for.
         paper_override = _source_paper_override(store, meta)
         paper_note = (
             paper_override.get("note") if isinstance(paper_override, dict) else None
@@ -287,26 +422,11 @@ def claim_trust(
             addition = f"blocking source declared unacquirable: {paper_note}"
             note = f"{note} — {addition}" if note else addition
 
-    # Rule 3 — the only softener: the finding's/hub's OWN claim-level
-    # declaration (never inherited from a paper). Never applied to
-    # 'unsupported' (only 'unverified' reaches here, by construction above).
-    if label == "unverified":
-        override = meta.get("unacquirable_override")
-        if isinstance(override, dict) and override:
-            # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on
-            # file backs it), anything else (incl. a legacy override with no
-            # mode) → ✍ vouched (author asserts; source unobtainable). Never
-            # all the way to clean — no one read the full text.
-            soft: TrustLabel = (
-                "abstract" if override.get("mode") == "abstract" else "vouched"
-            )
-            return TrustState(
-                label=soft,
-                note=override.get("note") or note,
-                overridden=True,
-                status=status,
-            )
-    return TrustState(label=label, note=note, overridden=False, status=status)
+    # Rule 4 — the only softener: the finding's/hub's OWN claim-level
+    # declaration (never inherited from a paper). Applies to a compound's
+    # rolled-up label exactly as it would to a plain hub's own (rule 3
+    # composes with rule 4, same as rule 1 already did).
+    return _apply_claim_level_override(label, note, status, meta)
 
 
 def _source_paper_override(
@@ -399,15 +519,23 @@ def claim_trust_bulk(
     once a hub's supporters are counted) per finding.
 
     Splits ``finding_ref_ids`` into hub vs. lifecycle findings with ONE
-    :func:`~precis.taproot.seniority.is_claim_hub_bulk` query, derives every
-    hub's evidence with :func:`~precis.taproot.seniority.derive_evidence_bulk`
-    (3 more queries, regardless of hub count) plus one bulk cite_key
-    resolution, then calls :func:`claim_trust` per hub with everything
-    pre-threaded (0 further queries per hub — just the in-Python
-    ``unacquirable_override``/ref-title lookup, batched via
-    ``fetch_refs_by_ids``). A lifecycle (non-hub) finding still costs its
-    own :func:`claim_trust` call — its STATUS-tag derivation isn't itself
-    N+1 today, so batching it is out of this fix's scope.
+    :func:`~precis.taproot.seniority.is_claim_hub_bulk` query, then ONE
+    :func:`~precis.taproot.seniority.conjunct_atoms_bulk` query over the hub
+    ids to find which are compounds and what their atoms are (the "exactly
+    one more" query this atomic-claims build adds — taproot-atomic-claims.md
+    step 4). Atom ids that fall outside the caller's original set (a
+    compound was requested but its atoms weren't) are unioned into the SAME
+    :func:`~precis.taproot.seniority.derive_evidence_bulk` (3 more queries,
+    regardless of hub+atom count) + bulk cite_key + refs batches every plain
+    hub already used — so an atom's own trust costs zero further queries,
+    same as a plain hub's. Every hub then gets its :class:`TrustState` from
+    :func:`claim_trust` with ``_expand_conjuncts=False`` and everything
+    pre-threaded (0 further queries per hub) — for a compound, that means
+    building its atom :class:`TrustState`\\ s once (memoized across
+    compounds sharing an atom) and reducing via :func:`_compound_trust`
+    instead. A lifecycle (non-hub) finding still costs its own
+    :func:`claim_trust` call — its STATUS-tag derivation isn't itself N+1
+    today, so batching it is out of this fix's scope.
 
     The smartdraft reader's per-block claim-trust badge
     (``smartdraft.py::claim_trust_for_block``) is this function's
@@ -423,28 +551,73 @@ def claim_trust_bulk(
 
     out: dict[int, TrustState] = {}
     if hub_ids:
-        evidence_by_hub = derive_evidence_bulk(store, hub_ids)
+        atoms_by_hub = conjunct_atoms_bulk(store, hub_ids)
+        atom_ids = sorted({a for atoms in atoms_by_hub.values() for a in atoms})
+        # Union: every plain hub needs its own evidence; every atom (even
+        # one the caller never asked about directly) needs its own evidence
+        # too, to derive its own trust for the rollup below.
+        all_hub_ids = sorted(set(hub_ids) | set(atom_ids))
+
+        evidence_by_hub = derive_evidence_bulk(store, all_hub_ids)
         supporter_ids = {
             e.paper_ref_id
             for ev in evidence_by_hub.values()
             for e in (*ev.originators, *ev.corroborators)
         }
         cite_key_map = store.ref_cite_keys_bulk(supporter_ids) if supporter_ids else {}
-        refs = store.fetch_refs_by_ids(hub_ids)
+        refs = store.fetch_refs_by_ids(all_hub_ids)
         # Supporter-paper refs for the hub-clean unacquirable-override check,
         # batched once (mirrors cite_key_map) rather than per-hub in claim_trust.
         paper_refs = (
             store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
         )
-        for rid in hub_ids:
-            out[rid] = claim_trust(
+
+        # Every atom's OWN trust, computed once regardless of how many
+        # compounds share it (two compounds pointing at the same atom would
+        # otherwise re-derive it twice).
+        atom_states: dict[int, TrustState] = {
+            a: claim_trust(
                 store,
-                rid,
-                evidence=evidence_by_hub[rid],
+                a,
+                evidence=evidence_by_hub[a],
                 cite_key_map=cite_key_map,
-                ref=refs.get(rid),
+                ref=refs.get(a),
                 paper_refs=paper_refs,
+                _expand_conjuncts=False,
             )
+            for a in atom_ids
+        }
+
+        for rid in hub_ids:
+            atoms = atoms_by_hub.get(rid) or []
+            if atoms:
+                triples = [
+                    (
+                        a,
+                        (
+                            refs[a].title
+                            if a in refs and refs[a].title
+                            else f"<claim {a}>"
+                        ),
+                        atom_states[a],
+                    )
+                    for a in atoms
+                ]
+                label, note, status = _compound_trust(triples)
+                compound_meta = (refs[rid].meta or {}) if rid in refs else {}
+                out[rid] = _apply_claim_level_override(
+                    label, note, status, compound_meta
+                )
+            else:
+                out[rid] = claim_trust(
+                    store,
+                    rid,
+                    evidence=evidence_by_hub[rid],
+                    cite_key_map=cite_key_map,
+                    ref=refs.get(rid),
+                    paper_refs=paper_refs,
+                    _expand_conjuncts=False,
+                )
     for rid in lifecycle_ids:
         out[rid] = claim_trust(store, rid)
     return out

@@ -18,7 +18,21 @@ a blind periodic rescan (the incremental-trigger design,
    ``TAPROOT_DUE`` tag from the trigger pass, never-refined, an edited
    claim reopening it, or the long backstop), never-refined first, oldest
    ``last_refined_at`` next, ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass`
-   — mirrors ``workers/inbound_chase.py``'s claim-query shape.
+   — mirrors ``workers/inbound_chase.py``'s claim-query shape. A **compound**
+   claim hub (docs/backlog/taproot-atomic-claims.md — one carrying a live
+   inbound ``conjunct-of`` edge from a live finding, i.e. it decomposed into
+   atomic conjunct hubs) is excluded from this due-set entirely: its only
+   possible write here is a direct evidence attach, which
+   ``taproot.hub.attach_evidence`` now refuses (raises ``BadInput``) —
+   claiming it would just raise every pass, roll back the per-hub tx, and
+   grind the attempt-lease/backstop machinery forever without ever
+   converging. :func:`_is_compound_hub` mirrors this same predicate as a
+   defensive per-hub check inside :func:`_refine_one_hub`, for the race
+   window between claim and processing (see that function's docstring).
+   The predicate is deliberately re-derived here rather than imported —
+   same three-deliberate-copies precedent as ``seniority._is_claim_hub``
+   mirroring ``hub._is_claim_hub`` (docs/backlog/taproot-atomic-claims.md
+   "cross-task seam").
 2. **Discover** — TWO sources merged into one per-hub candidate list
    (the shipped citation-taproot-resolve proposal, git history), citation
    candidates first
@@ -76,6 +90,19 @@ a blind periodic rescan (the incremental-trigger design,
    stored ``last_refined_sha`` no longer matches the live title — clears the
    rejection memo *before* discovery: the claim itself changed, so an old
    ``supports=no`` verdict on the previous wording may no longer hold.
+
+**Reopen gate vs. decomposition.** A compound hub never reaches step 6 (it's
+excluded upstream, see step 1), so a human rewording a compound hub's title
+costs nothing here and — critically — does NOT re-run decomposition: atoms
+vs. compound is decided once, at extraction time
+(``taproot.canon.extract_claim``), never inside this pass. A reworded
+compound just sits with a stale set of ``conjunct-of`` atoms until a
+separate, human-run migration pass revisits it (docs/backlog/
+taproot-atomic-claims.md's sequencing note) — this pass has no opinion on
+whether a compound's conjuncts still match its (possibly now-different)
+wording. Per-atom rewording is unaffected: an atom is an ordinary hub, so
+its own sha-reopen (item 3 above / :func:`_is_hub_due`) still clears its own
+rejection memo at the correct (atom) grain.
 
 A raise anywhere in steps 2-5 (a per-candidate verify-LLM failure, a DB
 error in ``attach_evidence``, ...) means step 6 never runs and the whole
@@ -294,6 +321,15 @@ def _claim_hubs_due_for_refine(
     simply re-triggers next pass. Also writes each locked hub's
     :data:`_ATTEMPT_NS` claim-time lease here, in the same commit — see
     that constant's docstring for why.
+
+    Excludes **compound** claim hubs (docs/backlog/taproot-atomic-claims.md):
+    a ``NOT EXISTS`` over an inbound live ``conjunct-of`` edge from a live
+    ``finding`` — the same predicate :func:`_is_compound_hub` checks per-hub,
+    deliberately re-derived here rather than shared (see the module
+    docstring's "cross-task seam" note). A compound hub's only possible
+    write is a direct evidence attach, which ``taproot.hub.attach_evidence``
+    now refuses — claiming one here would just raise every pass and never
+    converge.
     """
     rows = conn.execute(
         """
@@ -324,6 +360,14 @@ def _claim_hubs_due_for_refine(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %(status_ns)s
                     AND t.value = %(status_canonical)s
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM links l
+                  JOIN refs a ON a.ref_id = l.src_ref_id
+                 WHERE l.dst_ref_id = r.ref_id
+                   AND l.relation = 'conjunct-of'
+                   AND a.kind = 'finding'
+                   AND a.deleted_at IS NULL
                )
         """,
         {
@@ -397,6 +441,38 @@ def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         out.append(rec)
     return out
+
+
+def _is_compound_hub(conn: Connection, ref_id: int) -> bool:
+    """True iff ``ref_id`` carries a live inbound ``conjunct-of`` edge from a
+    live ``finding`` (docs/backlog/taproot-atomic-claims.md) — i.e. it is a
+    compound claim hub with atomic conjuncts linked to it, rather than an
+    atom or a plain (undecomposed) claim hub.
+
+    Deliberately re-derives the same predicate :func:`_claim_hubs_due_for_refine`
+    already applies as a ``NOT EXISTS`` filter, rather than sharing a
+    connection-agnostic helper — the "cross-task seam" precedent
+    (``seniority._is_claim_hub`` mirrors ``hub._is_claim_hub``; each module
+    opens its own connection and keeps its own copy). Used only as a
+    defensive per-hub check inside :func:`_refine_one_hub`, for the narrow
+    race window between :func:`_claim_hubs_due_for_refine`'s claim and this
+    function's processing — the due-set query above already keeps compounds
+    from being claimed in the first place.
+    """
+    row = conn.execute(
+        """
+        SELECT 1
+          FROM links l
+          JOIN refs a ON a.ref_id = l.src_ref_id
+         WHERE l.dst_ref_id = %s
+           AND l.relation = 'conjunct-of'
+           AND a.kind = 'finding'
+           AND a.deleted_at IS NULL
+         LIMIT 1
+        """,
+        (ref_id,),
+    ).fetchone()
+    return row is not None
 
 
 def _fetch_hub_info(conn: Connection, ref_id: int) -> tuple[str, dict[str, Any]] | None:
@@ -607,6 +683,17 @@ def _refine_one_hub(
     rejection memo (and the citation-miss / unresolved-cite records)
     *before* discovery/verify run: the claim wording changed, so an old
     ``supports=no`` verdict may no longer hold.
+
+    **Defensive compound skip.** :func:`_claim_hubs_due_for_refine` already
+    excludes compound hubs from the due-set, but a hub can *become*
+    compound in the narrow window between that claim and this function
+    running (a concurrent decomposition mints the ``conjunct-of`` edge).
+    :func:`_is_compound_hub` re-checks here and, if true, drains the hub
+    cleanly: it still stamps ``last_refined_at``/``last_refined_sha`` (this
+    ref is live, unlike the vanished-ref case below) and clears the
+    attempt lease, then returns before discovery/verify ever run — no
+    evidence attach is attempted, so ``taproot.hub.attach_evidence``'s
+    compound guard is never even reached.
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:
@@ -616,6 +703,20 @@ def _refine_one_hub(
         store.remove_tag(hub_ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
         return
     title, meta = info
+    if _is_compound_hub(conn, hub_ref_id):
+        # Became compound between claim and processing — stamp-and-drain
+        # (see the docstring above): no discovery/verify, no evidence
+        # attach attempt.
+        store.update_ref(
+            hub_ref_id,
+            meta_patch={
+                _META_LAST_REFINED_AT: datetime.now(UTC).isoformat(),
+                _META_LAST_REFINED_SHA: claim_sha(title),
+            },
+            conn=conn,
+        )
+        store.remove_tag(hub_ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
+        return
     claim_sentence = title.strip()
     scope = dict(meta.get("scope") or {})
     new_sha = claim_sha(title)

@@ -6,8 +6,11 @@ the fixture eval scores **zero over-merges** — bar = 0, no exceptions
 (``tests/test_taproot_eval_canon.py``). Four functions, one cascade:
 
 1. :func:`extract_claim` — SMALL/local. A chunk of text -> a
-   :class:`CanonicalClaim` (normalized sentence + light scope), or ``None``
-   when the chunk asserts nothing groundable (the ``NO-CLAIM`` outcome).
+   :class:`ClaimExtraction`: zero or more AIDA-atomic claims, an optional
+   surviving ``compound`` (the bundling summary sentence, kept only when
+   decomposition actually split something), and the rejected conjuncts
+   (:class:`NotClaim`) that couldn't be grounded — the ``NO-CLAIM`` outcome
+   is an *empty* extraction (``ClaimExtraction.is_empty``), not ``None``.
 2. :func:`block` — no model. ANN over the existing ``TAPROOT:claim`` hub card
    embeddings (bge-m3, same embedder as the rest of the card index) ->
    the ``k`` nearest :class:`Candidate` hubs.
@@ -101,6 +104,91 @@ class CanonicalClaim:
     scope: dict[str, str]
 
 
+class NotClaim(TypedDict):
+    """One conjunct :func:`extract_claim` rejected rather than atomized —
+    forward-looking, vague, or a comparative with no comparator (the
+    carbon-nanomaterials worked example in
+    ``docs/backlog/taproot-atomic-claims.md``). Step 8's memo payload: these
+    get folded into the surviving compound hub's meta, never minted as a
+    hub nobody can ever ground."""
+
+    text: str  # the rejected conjunct, verbatim-normalized
+    reason: str  # why it can't be grounded ("forward-looking", "vague", ...)
+
+
+@dataclass(frozen=True)
+class ClaimExtraction:
+    """The full result of :func:`extract_claim` on one chunk.
+
+    * ``atoms`` — each AIDA-atomic (one subject-predicate fact), evidence-
+      bearing. Empty on NO-CLAIM.
+    * ``compound`` — the surviving bundling sentence, or ``None``. Kept
+      only when decomposition genuinely split something (see
+      :func:`_coerce_extraction`) — an already-atomic claim has no
+      compound and mints no ``conjunct-of`` links.
+    * ``not_claims`` — rejected conjuncts, kept for the compound hub's
+      audit memo (step 8), never minted.
+
+    Construct via :func:`extract_claim`, not directly — the three-way
+    invariant between ``atoms``/``compound``/``not_claims`` is enforced at
+    parse time by :func:`_coerce_extraction`, mirroring :func:`_coerce_verdict`'s
+    bias-safe degrade philosophy (fail toward the smaller, safer claim set,
+    never mint a bad or degenerate hub).
+    """
+
+    atoms: tuple[CanonicalClaim, ...]
+    compound: CanonicalClaim | None
+    not_claims: tuple[NotClaim, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        """NO-CLAIM: nothing groundable survived (today's ``None``)."""
+        return not self.atoms and self.compound is None
+
+
+#: The NO-CLAIM outcome — dispatch error, empty input, or unparseable/
+#: all-rejected model output. A single frozen instance (all fields are
+#: immutable) so every degrade path returns the identical sentinel.
+_EMPTY_EXTRACTION = ClaimExtraction(atoms=(), compound=None, not_claims=())
+
+
+def _coerce_extraction(
+    atoms: list[CanonicalClaim],
+    compound: CanonicalClaim | None,
+    not_claims: list[NotClaim],
+) -> ClaimExtraction:
+    """Enforce the atoms/compound/not_claims invariants on parsed model
+    output — the ``ClaimExtraction`` analogue of :func:`_coerce_verdict`.
+
+    - Zero atoms -> NO-CLAIM: any compound the model still emitted is
+      dropped (nothing groundable survived to bundle).
+    - A lone atom with nothing rejected -> the compound is folded away
+      (never mint a degenerate 1-conjunct bundle); an already-atomic claim
+      has no compound.
+    - A compound is kept only when decomposition did something real:
+      ``len(atoms) >= 2`` (an actual split) or ``not_claims`` non-empty
+      (something was rejected out of the bundle).
+    - Two-plus atoms with **no** compound -> NO-CLAIM: the model asserted a
+      split but returned no bundling sentence, so downstream (backfill's
+      prose rewrite targets the compound, else ``atoms[0]``) would silently
+      cite only the first atom — degrade whole rather than mint a partial
+      citation. The chunk stays un-decomposed and is retried on a later
+      pass.
+    """
+    atoms_t = tuple(atoms)
+    not_claims_t = tuple(not_claims)
+    if not atoms_t or (len(atoms_t) == 1 and not not_claims_t):
+        compound = None
+    elif len(atoms_t) >= 2 and compound is None:
+        log.warning(
+            "taproot: extract_claim returned %d atoms with no compound; "
+            "degrading to NO-CLAIM (partial-citation guard)",
+            len(atoms_t),
+        )
+        return _EMPTY_EXTRACTION
+    return ClaimExtraction(atoms=atoms_t, compound=compound, not_claims=not_claims_t)
+
+
 @dataclass(frozen=True)
 class Candidate:
     """One ANN hit from :func:`block` — an existing claim hub near the
@@ -169,6 +257,21 @@ Rules — the claim will be read ALONE, without this passage:
    formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
    -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs").
 
+Atomic: each claim you emit must assert exactly ONE subject-predicate fact.
+If the passage bundles several conjuncts ("X has A, B, and C" / "X, which
+also does Y"), split it into self-contained atoms — each one obeying rules
+1-4 above (resolve referents per atom, carry its own material/method/
+quantity/regime, not the bundle's). A conjunct that is forward-looking
+("will enable…", "paves the way for…"), vague with no concrete referent, or
+a comparative with no stated comparator ("exceptional", "superior") cannot
+be grounded as its own atom — put it in "not_claims" with a one-phrase
+reason instead of forcing it into a weak atom. Only return the original
+sentence as "compound" when it genuinely bundles two or more
+groundable-or-rejected parts — an already-atomic passage has no compound.
+(*Absolute* is already handled by the material/method/quantity/regime
+scope fields; *Declarative* is implied by normalizing to sentences — this
+rule adds *Atomic*, the one AIDA criterion not yet enforced.)
+
 Examples:
 - "This strategy has been pursued across the principal families of 2D
   materials."  -> BAD (dangling "This strategy"); with the referent in the
@@ -187,39 +290,95 @@ Examples:
 - "Graphene exhibits extraordinary tensile strength."  -> weak; if the
   passage states the value, prefer "Graphene exhibits a tensile strength
   of ~130 GPa."
+- "Carbon nanomaterials have exceptional mechanical, optoelectronic, and
+  physicochemical characteristics and tunability that enable
+  next-generation technologies, particularly in advanced electronics." ->
+  splits into atoms for the concrete, groundable conjuncts ("Carbon
+  nanomaterials exhibit tunable mechanical characteristics.", "Carbon
+  nanomaterials exhibit tunable optoelectronic characteristics.", ...);
+  "enable next-generation technologies" (forward-looking) and
+  "exceptional"/"particularly in advanced electronics" (comparative/vague,
+  no comparator) go to not_claims; the original sentence is the compound.
 
-If it asserts a claim: normalize it to ONE sentence, plus any of
-material/method/quantity/regime it names (omit keys it doesn't name).
-If it asserts nothing groundable: return claim = null.
+For each claim you emit: give the normalized sentence plus any of
+material/method/quantity/regime it names (omit keys it doesn't name). If
+the passage asserts nothing groundable at all, "claims" is an empty list.
 
 Respond with EXACTLY ONE JSON object, nothing else:
 {{
-  "claim": "<one normalized sentence>" | null,
-  "material": "<optional>",
-  "method": "<optional>",
-  "quantity": "<optional>",
-  "regime": "<optional>"
+  "claims": [
+    {{
+      "claim": "<one normalized, atomic sentence>",
+      "material": "<optional>",
+      "method": "<optional>",
+      "quantity": "<optional>",
+      "regime": "<optional>"
+    }}
+  ],
+  "compound": "<original bundling sentence>" | null,
+  "not_claims": [
+    {{
+      "text": "<rejected conjunct, verbatim-normalized>",
+      "reason": "<why it can't be grounded>"
+    }}
+  ]
 }}
 """
 
 _SCOPE_KEYS = ("material", "method", "quantity", "regime")
 
 
-def extract_claim(chunk_text: str) -> CanonicalClaim | None:
-    """Extract the dominant claim from ``chunk_text``, or ``None``.
+def _parse_claim_item(item: dict[str, Any]) -> CanonicalClaim | None:
+    """Parse one ``{"claim": ..., "material": ..., ...}`` object (a
+    ``claims[]`` entry, or the whole payload under the legacy single-object
+    shape) into a :class:`CanonicalClaim`, or ``None`` if it carries no
+    usable claim text."""
+    claim = item.get("claim")
+    if not isinstance(claim, str) or not claim.strip():
+        return None
+    scope = {
+        key: str(item[key]).strip()
+        for key in _SCOPE_KEYS
+        if isinstance(item.get(key), str) and item[key].strip()
+    }
+    return CanonicalClaim(sentence=claim.strip(), scope=scope)
 
-    SMALL/local tier — cheap, per-chunk. Returns ``None`` when the chunk is
-    pure-pointer / meta (the ``NO-CLAIM`` outcome, taproot.md Axis A stage
-    0') — including on a dispatch error or unparseable model output (fail
-    safe: no claim rather than a bad one).
 
-    v1 returns the single **dominant** claim; splitting a bundled ``X∧Y``
-    chunk into atoms is deferred (taproot.md §Non-goals #4) — a bundled
-    chunk simply under-merges later, which the fixture metric tolerates.
+def _parse_not_claim(item: dict[str, Any]) -> NotClaim | None:
+    """Parse one ``not_claims[]`` entry, or ``None`` if it carries no
+    rejected-conjunct text."""
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    raw_reason = item.get("reason")
+    reason = (
+        raw_reason.strip()
+        if isinstance(raw_reason, str) and raw_reason.strip()
+        else "unspecified"
+    )
+    return NotClaim(text=text.strip(), reason=reason)
+
+
+def extract_claim(chunk_text: str) -> ClaimExtraction:
+    """Extract the atomic claims (+ optional compound + rejected conjuncts)
+    from ``chunk_text`` — a :class:`ClaimExtraction`.
+
+    SMALL/local tier — cheap, per-chunk. Returns the empty extraction
+    (``ClaimExtraction.is_empty``) when the chunk is pure-pointer / meta
+    (the ``NO-CLAIM`` outcome, taproot.md Axis A stage 0') — including on a
+    dispatch error or unparseable model output (fail safe: no claim rather
+    than a bad one).
+
+    Parses the current ``{"claims": [...], "compound": ..., "not_claims":
+    [...]}`` contract; tolerates the legacy ``{"claim": ..., "material":
+    ...}`` single-object shape a SMALL-tier model may still regress to
+    (degrades to one atom, no compound/not_claims — same fail-safe posture
+    as the rest of this module). :func:`_coerce_extraction` enforces the
+    atoms/compound/not_claims invariants either way.
     """
     text = (chunk_text or "").strip()
     if not text:
-        return None
+        return _EMPTY_EXTRACTION
     prompt = _EXTRACT_PROMPT.format(excerpt=text[:_EXTRACT_EXCERPT_CHARS])
     res = dispatch(
         LlmRequest(
@@ -234,19 +393,36 @@ def extract_claim(chunk_text: str) -> CanonicalClaim | None:
     )
     if res.error:
         log.warning("taproot: extract_claim dispatch failed: %s", res.error)
-        return None
+        return _EMPTY_EXTRACTION
     data = res.data or _parse_json_object(res.text)
     if not isinstance(data, dict):
-        return None
-    claim = data.get("claim")
-    if not isinstance(claim, str) or not claim.strip():
-        return None
-    scope = {
-        key: str(data[key]).strip()
-        for key in _SCOPE_KEYS
-        if isinstance(data.get(key), str) and data[key].strip()
-    }
-    return CanonicalClaim(sentence=claim.strip(), scope=scope)
+        return _EMPTY_EXTRACTION
+
+    raw_claims = data.get("claims")
+    if isinstance(raw_claims, list):
+        atoms = []
+        for item in raw_claims:
+            if isinstance(item, dict):
+                parsed = _parse_claim_item(item)
+                if parsed is not None:
+                    atoms.append(parsed)
+        not_claims = []
+        for item in data.get("not_claims") or []:
+            if isinstance(item, dict):
+                parsed_nc = _parse_not_claim(item)
+                if parsed_nc is not None:
+                    not_claims.append(parsed_nc)
+        compound = None
+        raw_compound = data.get("compound")
+        if isinstance(raw_compound, str) and raw_compound.strip():
+            compound = CanonicalClaim(sentence=raw_compound.strip(), scope={})
+        return _coerce_extraction(atoms, compound, not_claims)
+
+    # Legacy single-object degrade: {"claim": ..., "material": ...}.
+    single = _parse_claim_item(data)
+    if single is None:
+        return _EMPTY_EXTRACTION
+    return ClaimExtraction(atoms=(single,), compound=None, not_claims=())
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
@@ -575,6 +751,8 @@ __all__ = [
     "TAPROOT_REVIEW",
     "Candidate",
     "CanonicalClaim",
+    "ClaimExtraction",
+    "NotClaim",
     "Placement",
     "Verdict",
     "block",

@@ -74,3 +74,20 @@ signed off 2026-07-28** (`human_approved` field on those rows).
 - **Domain skew** toward nanoelectronics + NOx/catalysis (the corpus's
   actual mass).
 - 238 pairs is a v1 bar; expand as canonicalization is built against it.
+
+## `extraction_passages.jsonl` — the AIDA-Atomic gate
+
+A separate, smaller fixture for `canon.extract_claim`'s decomposition step
+(`eval_canon.eval_extraction`), not the dedup gate above. One object per
+row: `id`, `passage`, `expected_atom_count` (0 for NO-CLAIM),
+`expected_not_claims` (rejected-conjunct substrings, audit only — not
+graded as a hard gate in v1), `note` (provenance / rationale). Ten rows,
+hand-authored (2026-08-13) to cover: the carbon-nanomaterials worked
+example (`docs/backlog/taproot-atomic-claims.md` §Worked example) —
+multi-atom + not_claims + surviving compound; an already-atomic claim (no
+compound); two NO-CLAIM shapes (pure pointer, meta-prose); a
+not-claims-only row (zero atoms survive but rejects are still recorded); a
+clean 2-atom split; a legitimate bare-`and` condition list that must
+*not* be treated as an un-split atom (regression guard for
+`eval_extraction`'s lexical conjunction heuristic); and the one-atom+
+reject edge case that keeps a compound despite a single surviving atom.

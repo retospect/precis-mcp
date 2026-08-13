@@ -18,9 +18,11 @@ from precis.errors import BadInput
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import Tag
-from precis.taproot.canon import CanonicalClaim, Placement
+from precis.taproot.canon import CanonicalClaim, NotClaim, Placement
 from precis.taproot.hub import (
     PROPHETIC_EXAMPLE_CAVEAT,
+    ExtractionOutcome,
+    apply_extraction,
     apply_placement,
     attach_evidence,
     link_claims,
@@ -44,6 +46,29 @@ _SHARPER_CLAIM = CanonicalClaim(
         "aqueous ethanol, >90% yield."
     ),
     scope={"material": "Pd/C", "method": "Suzuki coupling", "regime": "RT"},
+)
+
+#: A compound claim bundling two conjuncts — the kind that decomposes into
+#: atom hubs (docs/backlog/taproot-atomic-claims.md), each linked back to
+#: this hub via ``conjunct-of``.
+_COMPOUND_CLAIM = CanonicalClaim(
+    sentence=(
+        "Carbon nanomaterials have exceptional mechanical characteristics "
+        "and enable next-generation electronics."
+    ),
+    scope={"material": "carbon nanomaterial"},
+)
+
+#: One atomic conjunct of ``_COMPOUND_CLAIM``.
+_ATOM_CLAIM = CanonicalClaim(
+    sentence="Carbon nanomaterials have exceptional mechanical characteristics.",
+    scope={"material": "carbon nanomaterial"},
+)
+
+#: A second, distinct conjunct of ``_COMPOUND_CLAIM``.
+_ATOM_CLAIM_2 = CanonicalClaim(
+    sentence="Carbon nanomaterials enable next-generation electronics.",
+    scope={"material": "carbon nanomaterial"},
 )
 
 
@@ -627,8 +652,52 @@ def test_link_claims_rejects_unknown_relation(store: Any) -> None:
             store,
             from_hub_ref_id=sharper,
             to_hub_ref_id=original,
-            relation="related-to",  # not a claim-link relation (v1: only refines)
+            relation="related-to",  # not a claim-link relation
         )
+
+
+# ── link_claims — the claim→claim advisory conjunct-of edge (migration 0126) ──
+
+
+def test_link_claims_writes_a_conjunct_of_edge(store: Any) -> None:
+    compound = mint_hub(store, _COMPOUND_CLAIM)
+    atom = mint_hub(store, _ATOM_CLAIM)
+
+    wrote = link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+
+    assert wrote is True
+    # Directed atom -> compound; no auto-mirror.
+    assert _edge(store, atom, compound) == "conjunct-of"
+    assert _edge(store, compound, atom) is None
+
+
+def test_link_claims_conjunct_of_is_idempotent(store: Any) -> None:
+    compound = mint_hub(store, _COMPOUND_CLAIM)
+    atom = mint_hub(store, _ATOM_CLAIM)
+
+    assert (
+        link_claims(
+            store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        )
+        is True
+    )
+    # Re-running the same authoring step writes nothing and reports it.
+    assert (
+        link_claims(
+            store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        )
+        is False
+    )
+
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (atom, compound),
+        ).fetchone()[0]
+    assert n == 1
 
 
 def test_link_claims_rejects_non_hub_endpoints(store: Any) -> None:
@@ -664,3 +733,281 @@ def test_apply_placement_needs_review_files_todo_and_attaches_nothing(
     assert out is None
     assert captured == [(_CLAIM, placement)]
     assert _edge(store, paper, hub) is None  # nothing attached
+
+
+# ── apply_placement — compound downgrade (step 2) ───────────────────────
+
+
+def test_apply_placement_attach_to_compound_downgrades_to_needs_review(
+    store: Any,
+) -> None:
+    compound = mint_hub(store, _COMPOUND_CLAIM)
+    atom = mint_hub(store, _ATOM_CLAIM)
+    link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    paper = seed_ref(store, title="Late-arriving 2021", kind="paper")
+    captured: list[tuple[CanonicalClaim, Placement]] = []
+
+    placement = Placement(action="attach", hub_ref_id=compound)
+    out = apply_placement(
+        store,
+        _COMPOUND_CLAIM,
+        placement,
+        paper_ref_id=paper,
+        todo_fn=lambda claim, pl: captured.append((claim, pl)),
+    )
+
+    assert out is None
+    assert captured == [(_COMPOUND_CLAIM, placement)]
+    # Nothing attached to the compound -- the downgrade never reaches
+    # attach_evidence.
+    assert _edge(store, paper, compound) is None
+
+
+def test_apply_placement_attach_to_compound_logs_without_todo_fn(store: Any) -> None:
+    """No ``todo_fn`` -- the downgrade still returns ``None`` and attaches
+    nothing (mirrors the plain needs_review no-todo_fn path)."""
+    compound = mint_hub(store, _COMPOUND_CLAIM)
+    atom = mint_hub(store, _ATOM_CLAIM)
+    link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    paper = seed_ref(store, title="No-todo 2021", kind="paper")
+
+    out = apply_placement(
+        store,
+        _COMPOUND_CLAIM,
+        Placement(action="attach", hub_ref_id=compound),
+        paper_ref_id=paper,
+    )
+
+    assert out is None
+    assert _edge(store, paper, compound) is None
+
+
+# ── attach_evidence — compound hubs hold no direct evidence (step 3) ───
+
+
+def test_attach_evidence_rejects_compound_target(store: Any) -> None:
+    compound = mint_hub(store, _COMPOUND_CLAIM)
+    atom = mint_hub(store, _ATOM_CLAIM)
+    link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    paper = seed_ref(store, title="Direct-to-compound 2022", kind="paper")
+
+    with pytest.raises(BadInput, match="compound"):
+        attach_evidence(
+            store, hub_ref_id=compound, paper_ref_id=paper, role="corroborates"
+        )
+    # Nothing was written on the rejected attempt.
+    assert _edge(store, paper, compound) is None
+
+
+def test_attach_evidence_still_accepts_the_atom(store: Any) -> None:
+    """The guard is compound-specific -- attaching to the plain atom hub
+    (no inbound ``conjunct-of``) is untouched."""
+    compound = mint_hub(store, _COMPOUND_CLAIM)
+    atom = mint_hub(store, _ATOM_CLAIM)
+    link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    paper = seed_ref(store, title="Atom-targeted 2022", kind="paper")
+
+    attach_evidence(store, hub_ref_id=atom, paper_ref_id=paper, role="corroborates")
+
+    assert _edge(store, paper, atom) == "corroborates"
+
+
+# ── apply_extraction — the decomposition orchestrator (step 2 + step 8) ─
+
+
+def test_apply_extraction_mints_atoms_and_compound_with_conjunct_links(
+    store: Any,
+) -> None:
+    paper = seed_ref(store, title="Origin 2020", kind="paper")
+    not_claims = (
+        NotClaim(text="enable next-generation technologies", reason="forward-looking"),
+    )
+
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (_ATOM_CLAIM, Placement(action="new")),
+            (_ATOM_CLAIM_2, Placement(action="new")),
+        ],
+        compound=(_COMPOUND_CLAIM, Placement(action="new")),
+        not_claims=not_claims,
+        paper_ref_id=paper,
+        role="establishes",
+    )
+
+    assert isinstance(outcome, ExtractionOutcome)
+    assert len(outcome.atom_hub_ids) == 2
+    assert outcome.compound_hub_id is not None
+    assert outcome.compound_hub_id not in outcome.atom_hub_ids
+
+    # Evidence lands on every atom, never on the compound (step 3).
+    for atom_hub in outcome.atom_hub_ids:
+        assert _edge(store, paper, atom_hub) == "establishes"
+    assert _edge(store, paper, outcome.compound_hub_id) is None
+
+    # One conjunct-of edge per atom, atom -> compound.
+    for atom_hub in outcome.atom_hub_ids:
+        assert _edge(store, atom_hub, outcome.compound_hub_id) == "conjunct-of"
+
+    # The not_claims memo landed on the compound, sha-keyed.
+    compound_ref = store.get_ref(kind="finding", id=outcome.compound_hub_id)
+    memo = (compound_ref.meta or {}).get("taproot_not_claims") or {}
+    assert len(memo) == 1
+    entry = next(iter(memo.values()))
+    assert entry["text"] == "enable next-generation technologies"
+    assert entry["reason"] == "forward-looking"
+    assert "at" in entry
+
+
+def test_apply_extraction_needs_review_atom_contributes_no_link(store: Any) -> None:
+    paper = seed_ref(store, title="Risky 2023", kind="paper")
+    captured: list[tuple[CanonicalClaim, Placement]] = []
+
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (
+                _ATOM_CLAIM,
+                Placement(action="needs_review", reason="low-confidence same"),
+            ),
+            (_ATOM_CLAIM_2, Placement(action="new")),
+        ],
+        compound=(_COMPOUND_CLAIM, Placement(action="new")),
+        paper_ref_id=paper,
+        todo_fn=lambda claim, pl: captured.append((claim, pl)),
+    )
+
+    # Only the placed ("new") atom contributes a hub id.
+    assert len(outcome.atom_hub_ids) == 1
+    assert len(captured) == 1
+    assert outcome.compound_hub_id is not None
+
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE dst_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (outcome.compound_hub_id,),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_apply_extraction_is_idempotent_on_rerun(store: Any) -> None:
+    """A re-run over the same passage — atoms/compound now placed as
+    ``attach`` (the canonicalizer having found the just-minted hubs) —
+    converges on the same hub ids and writes no duplicate edges."""
+    paper1 = seed_ref(store, title="First-pass 2020", kind="paper")
+    paper2 = seed_ref(store, title="Second-pass 2020", kind="paper")
+    not_claims = (NotClaim(text="a rejected fragment", reason="vague"),)
+
+    first = apply_extraction(
+        store,
+        atoms=[(_ATOM_CLAIM, Placement(action="new"))],
+        compound=(_COMPOUND_CLAIM, Placement(action="new")),
+        not_claims=not_claims,
+        paper_ref_id=paper1,
+    )
+
+    second = apply_extraction(
+        store,
+        atoms=[
+            (
+                _ATOM_CLAIM,
+                Placement(action="attach", hub_ref_id=first.atom_hub_ids[0]),
+            )
+        ],
+        compound=(
+            _COMPOUND_CLAIM,
+            Placement(action="attach", hub_ref_id=first.compound_hub_id),
+        ),
+        not_claims=not_claims,
+        paper_ref_id=paper2,
+    )
+
+    assert second.atom_hub_ids == first.atom_hub_ids
+    assert second.compound_hub_id == first.compound_hub_id
+
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (first.atom_hub_ids[0], first.compound_hub_id),
+        ).fetchone()[0]
+    assert n == 1
+
+    # The re-submitted identical not_claim hashes to the same sha -- no
+    # duplicate memo entry.
+    compound_ref = store.get_ref(kind="finding", id=first.compound_hub_id)
+    memo = (compound_ref.meta or {}).get("taproot_not_claims") or {}
+    assert len(memo) == 1
+
+
+def test_apply_extraction_merges_not_claims_memo_on_converge(store: Any) -> None:
+    """A converging (``attach``) pass with a partly-overlapping
+    ``not_claims`` set appends the new fragment and leaves the existing
+    entry untouched -- non-destructive merge, sha-deduped."""
+    paper1 = seed_ref(store, title="First-fragment 2020", kind="paper")
+    paper2 = seed_ref(store, title="Second-fragment 2021", kind="paper")
+    nc1 = NotClaim(text="fragment one", reason="vague")
+    nc2 = NotClaim(text="fragment two", reason="forward-looking")
+
+    first = apply_extraction(
+        store,
+        atoms=[(_ATOM_CLAIM, Placement(action="new"))],
+        compound=(_COMPOUND_CLAIM, Placement(action="new")),
+        not_claims=(nc1,),
+        paper_ref_id=paper1,
+    )
+
+    second = apply_extraction(
+        store,
+        atoms=[
+            (
+                _ATOM_CLAIM,
+                Placement(action="attach", hub_ref_id=first.atom_hub_ids[0]),
+            )
+        ],
+        compound=(
+            _COMPOUND_CLAIM,
+            Placement(action="attach", hub_ref_id=first.compound_hub_id),
+        ),
+        not_claims=(nc1, nc2),
+        paper_ref_id=paper2,
+    )
+
+    assert second.compound_hub_id == first.compound_hub_id
+    compound_ref = store.get_ref(kind="finding", id=first.compound_hub_id)
+    memo = (compound_ref.meta or {}).get("taproot_not_claims") or {}
+    assert len(memo) == 2
+    texts = {entry["text"] for entry in memo.values()}
+    assert texts == {"fragment one", "fragment two"}
+
+
+def test_apply_extraction_without_compound_mints_only_the_atom(store: Any) -> None:
+    """An already-atomic extraction (no compound -- canon's degenerate-
+    fold invariant) mints the atom alone; no conjunct-of link, no memo."""
+    paper = seed_ref(store, title="Atomic-only 2020", kind="paper")
+
+    outcome = apply_extraction(
+        store,
+        atoms=[(_ATOM_CLAIM, Placement(action="new"))],
+        compound=None,
+        paper_ref_id=paper,
+    )
+
+    assert len(outcome.atom_hub_ids) == 1
+    assert outcome.compound_hub_id is None
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (outcome.atom_hub_ids[0],),
+        ).fetchone()[0]
+    assert n == 0

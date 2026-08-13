@@ -6,14 +6,21 @@ A claim lives on exactly one **claim hub**: a ``finding`` tagged
 edges. The graph is an overlay on ``finding``/``ref_tags``/``links`` — its
 only own schema is ``claim_embeddings`` (migration 0101) plus link relations
 ``establishes`` (0094, seeded without an inverse: hubs read evidence via
-``links_for(direction='in')``) and ``refines`` (0100); ``corroborates`` /
-``contradicts`` reuse existing slugs, endpoint kinds disambiguate. Design:
+``links_for(direction='in')``), ``refines`` (0100), and ``conjunct-of``
+(0126, atom -> compound, asymmetric, no inverse, mirrors 0100); ``corroborates``
+/ ``contradicts`` reuse existing slugs, endpoint kinds disambiguate. A claim
+hub is either **atomic** (evidence-bearing) or **compound** (an
+un-decomposable bundling sentence, no direct evidence — see :mod:`.hub`).
+Design:
 ``docs/backlog/taproot.md``; governance: taproot evidence relations (+ the living citation pins).
 
 Module map (each module's docstring carries its own detail):
 
 - :mod:`.canon` — the canonicalizer cascade: ``extract_claim`` (SMALL; chunk
-  -> ``CanonicalClaim`` or ``None`` = NO-CLAIM) -> ``block`` (no model; ANN
+  -> a :class:`~.canon.ClaimExtraction` — zero or more AIDA-atomic claims, an
+  optional surviving ``compound`` bundling sentence, and the rejected
+  conjuncts (:class:`~.canon.NotClaim`); NO-CLAIM is an *empty* extraction
+  (``is_empty``), never ``None``) -> ``block`` (no model; ANN
   over ``TAPROOT:claim`` hub embeddings) -> ``dedup_judge`` (MEDIUM;
   ``same``/``different``/``contradicts``, biased hard toward ``different``)
   -> ``place`` (deterministic; a low-confidence ``same`` escalates to
@@ -24,16 +31,25 @@ Module map (each module's docstring carries its own detail):
   zero false ``same``; under-merge is tolerated. Every model call routes
   through ``precis.utils.llm.router``.
 - :mod:`.hub` — the single write door: ``mint_hub`` / ``attach_evidence`` /
-  ``apply_placement`` / ``link_claims``. Evidence sources are paper/patent
-  refs only; grounding is per-passage (``meta.source_handle`` ->
-  ``src_chunk_id``, so two passages of one paper are two edges); role is
-  always written ``corroborates``; ``needs_review`` files a ``kind='todo'``.
+  ``apply_placement`` / ``link_claims`` / ``apply_extraction``. Evidence
+  sources are paper/patent refs only; grounding is per-passage
+  (``meta.source_handle`` -> ``src_chunk_id``, so two passages of one paper
+  are two edges); role is always written ``corroborates``; ``needs_review``
+  files a ``kind='todo'``. ``apply_extraction`` is the decomposition-aware
+  orchestrator over a full ``ClaimExtraction``: each atom mints/converges +
+  attaches evidence through ``apply_placement``; the **compound** hub (when
+  a chunk actually split) mints/converges with **no** direct evidence edge —
+  ``attach_evidence`` raises on a compound target — linked to its atoms
+  ``conjunct-of`` (migration 0126), with the rejected conjuncts recorded on
+  ``meta['taproot_not_claims']`` keyed by claim sha.
 - :mod:`.seniority` — pure read/derive, never stored: supporters split into
   ``establishes`` originators vs corroborators by walking ``cites`` edges
   among the supporter set only, at read time (no intra-set cites -> all stay
   corroborators + ``coverage_note``; an originator is never guessed).
   ``contradicts`` is a separate group, never folded in. ``derive_refines``
-  reads the claim->claim links.
+  reads the claim->claim ``refines`` links; ``derive_conjuncts`` /
+  ``conjunct_atoms_bulk`` read the ``conjunct-of`` links — a compound hub
+  derives no evidence originators of its own (it holds none).
 - :mod:`.cite` — the ONE cite-key policy for ``precis resolve`` and draft
   export: derived ``establishes`` originators, falling back to corroborators,
   then in-flight; recomputed every run, so a later-discovered originator or
@@ -42,7 +58,8 @@ Module map (each module's docstring carries its own detail):
   ``apply_pin`` across the resolve-token and draft-mentions grammars.
 - :mod:`.trust` — read-time trust ladder for a finding-backed citation:
   ``clean`` < ``abstract`` < ``vouched`` < ``unverified`` < ``unsupported``,
-  worst-of reduction across a block's cite heads.
+  worst-of reduction across a block's cite heads. A compound hub's own trust
+  is the worst-of its atoms' trust (status ``hub-compound``), depth-1 only.
 - :mod:`.resolve` — inline-marker resolution: the ``bib_mark`` sweep
   (``workers/bib_mark.py``) extracts a paper's inline ``[N]`` markers into
   ``chunk_citations`` (migration 0109; only numbers that are a real bib
@@ -67,7 +84,10 @@ embedder is available):
   the existing hub and ``add_link`` no-ops the repeat edge.
 - **hub_refine** (``workers/hub_refine.py``,
   ``PRECIS_TAPROOT_REFINE_ENABLED``) — revisits *existing* hubs (everything
-  else attaches evidence only as a side effect of a chase or a mint). Claims
+  else attaches evidence only as a side effect of a chase or a mint); a
+  **compound** hub is excluded from the due-set entirely (its only possible
+  write is a direct evidence attach, which ``attach_evidence`` refuses) —
+  refine/re-embed touches atoms only. Claims
   due hubs (``TAPROOT_DUE`` ref tag, edited-claim sha-reopen via
   :func:`.canon.claim_sha`, or a 90d stuck-row backstop), discovers
   candidates from two merged sources — corpus semantic ANN and
@@ -85,7 +105,8 @@ embedder is available):
   watermark: sha-gated hub vectors in ``claim_embeddings``, reverse ANN from
   newly-embedded paper/patent chunks (loose similarity floor — over-triggering
   is cheap, hub_refine prechecks), marks near hubs ``TAPROOT_DUE``; drains
-  via ``CHASETRIG:<version>`` chunk tags.
+  via ``CHASETRIG:<version>`` chunk tags. Excludes compound hubs from both
+  the embed and the probe query, same predicate as hub_refine's exclusion.
 - **TAPROOT axis classifier** (``data/axes/taproot.yaml`` via
   ``workers/axis_pass.py``; default-OFF ``axis:taproot`` service) — tags
   ``finding`` rows ``TAPROOT:claim`` (grounded world-claim) vs

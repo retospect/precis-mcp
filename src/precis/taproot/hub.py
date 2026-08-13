@@ -9,26 +9,33 @@ through this module. A raw ``INSERT`` / ``store.add_link`` for these
 relations elsewhere bypasses the vocabulary + ``TAPROOT:claim`` guards below
 and is a defect — the exact silent-junk-edge error taproot exists to prevent.
 
-Four functions:
+Five functions:
 
 1. :func:`mint_hub` — create a ``TAPROOT:claim`` ``finding`` hub for a
    paper-grounded claim (open #15: only paper-sourced claims become hubs).
 2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
-   in :data:`HUB_ROLES`, guarding the target is actually a claim hub and the
-   source is an evidence-source ref (:data:`EVIDENCE_SRC_KINDS` backstop).
-   Also the single choke point for the deterministic prophetic-example
-   caveat (patent-evidence-parity phase 4): a patent source whose grounding
-   chunk carries ``PATENT_EXAMPLE:prophetic`` (``data/axes/
-   patent_example.yaml``) gets :data:`PROPHETIC_EXAMPLE_CAVEAT` appended to
-   ``meta.caveats`` here, mechanically — never via the verify LLM prompt,
-   which is unchanged.
+   in :data:`HUB_ROLES`, guarding the target is actually a claim hub, is
+   NOT a **compound** hub (docs/backlog/taproot-atomic-claims.md step 3 —
+   evidence attaches only to atoms), and the source is an evidence-source
+   ref (:data:`EVIDENCE_SRC_KINDS` backstop). Also the single choke point
+   for the deterministic prophetic-example caveat (patent-evidence-parity
+   phase 4): a patent source whose grounding chunk carries
+   ``PATENT_EXAMPLE:prophetic`` (``data/axes/patent_example.yaml``) gets
+   :data:`PROPHETIC_EXAMPLE_CAVEAT` appended to ``meta.caveats`` here,
+   mechanically — never via the verify LLM prompt, which is unchanged.
 3. :func:`apply_placement` — bridge a :class:`~precis.taproot.canon.Placement`
    (the canonicalizer's verdict) to the writes above; a ``needs_review``
    placement files a ``kind='todo'`` (via an injected ``todo_fn``) and never
-   auto-attaches (open #16).
-4. :func:`link_claims` — the claim->claim advisory ``refines`` edge
-   (:data:`CLAIM_LINK_RELATIONS`, migration 0100): link-don't-merge, carries
-   no evidence flow.
+   auto-attaches (open #16); an ``attach`` onto a compound hub downgrades to
+   the same ``needs_review`` path rather than raising.
+4. :func:`link_claims` — the claim->claim advisory ``refines``/``conjunct-of``
+   edges (:data:`CLAIM_LINK_RELATIONS`, migrations 0100/0126): link-don't-merge,
+   carries no evidence flow.
+5. :func:`apply_extraction` — the decomposition-aware orchestrator over a
+   full :class:`~precis.taproot.canon.ClaimExtraction`: atoms through
+   :func:`apply_placement`, the compound minted/converged with no evidence
+   edge, ``conjunct-of`` links between them, and the not-a-claim audit memo
+   (step 8) on the compound's ``meta``.
 
 Callers that populate the edges: ``workers/chase.py::_taproot_bridge`` (the
 forward bridge, supplies the verdict ``meta``), ``workers/hub_refine.py``,
@@ -40,6 +47,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import UniqueViolation
@@ -53,7 +62,9 @@ from precis.taproot.canon import (
     TAPROOT_CLAIM,
     TAPROOT_NAMESPACE,
     CanonicalClaim,
+    NotClaim,
     Placement,
+    claim_sha,
 )
 
 if TYPE_CHECKING:
@@ -69,13 +80,14 @@ log = logging.getLogger(__name__)
 HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradicts"})
 
 #: Claim→claim advisory link relations a hub may carry to ANOTHER hub
-#: (migration 0100, taproot evidence relations amendment). ``refines`` = "source hub is a
-#: sharper/reworded version of the target hub" — link-don't-merge, NO
-#: evidence flow (each hub keeps its own paper→hub edges). Written through
-#: :func:`link_claims` (the single write door), distinct from the paper→hub
-#: evidence edges of :data:`HUB_ROLES`. A frozenset so v1's one relation can
-#: grow (e.g. a future ``related-to`` claim-link) without touching callers.
-CLAIM_LINK_RELATIONS: frozenset[str] = frozenset({"refines"})
+#: (migration 0100, taproot evidence relations amendment; migration 0126,
+#: taproot-atomic-claims). ``refines`` = "source hub is a sharper/reworded
+#: version of the target hub"; ``conjunct-of`` = "source hub is one atomic
+#: conjunct of the target compound hub" (docs/backlog/taproot-atomic-claims.md)
+#: — both link-don't-merge, NO evidence flow (each hub keeps its own
+#: paper→hub edges). Written through :func:`link_claims` (the single write
+#: door), distinct from the paper→hub evidence edges of :data:`HUB_ROLES`.
+CLAIM_LINK_RELATIONS: frozenset[str] = frozenset({"refines", "conjunct-of"})
 
 #: The default role :func:`apply_placement` attaches with. ``corroborates`` is
 #: the *safe* assumption — never falsely claim a paper is the originator.
@@ -252,12 +264,62 @@ def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
     return row is not None
 
 
+def _is_compound_hub(ref_id: int, *, conn: Any) -> bool:
+    """True iff ``ref_id`` carries a live inbound ``conjunct-of`` edge from a
+    live ``finding`` — i.e. it is a **compound** claim hub with atomic
+    conjuncts linked to it, rather than an atom or a plain (undecomposed)
+    claim hub (docs/backlog/taproot-atomic-claims.md).
+
+    Deliberately the literal predicate — ``links l JOIN refs a ON
+    a.ref_id = l.src_ref_id WHERE l.dst_ref_id = %s AND l.relation =
+    'conjunct-of' AND a.kind = 'finding' AND a.deleted_at IS NULL`` — with
+    **no** ``TAPROOT:claim`` tag join on the source. This is a deliberate
+    seam, not an oversight: :mod:`precis.taproot.seniority`'s mirror of this
+    predicate (``conjunct_atoms_bulk``) *does* re-check the tag (that
+    module's idiom — ``_is_claim_hub`` always checks tags), while
+    :mod:`precis.workers.hub_refine`'s copies (``_claim_hubs_due_for_refine``'s
+    ``NOT EXISTS`` filter, ``_is_compound_hub``) omit it, same as here. Both
+    are correct: :func:`link_claims` (the single write door for
+    ``conjunct-of`` edges) already guards **both** endpoints are live
+    ``TAPROOT:claim`` findings at write time, so a live inbound
+    ``conjunct-of`` edge can only ever originate from a claim hub — the tag
+    re-check downstream is redundant, not wrong, and each module keeps its
+    own copy of the predicate rather than sharing a connection-agnostic
+    helper (the ``seniority._is_claim_hub``-mirrors-``hub._is_claim_hub``
+    precedent this build follows throughout).
+    """
+    row = conn.execute(
+        """
+        SELECT 1
+          FROM links l
+          JOIN refs a ON a.ref_id = l.src_ref_id
+         WHERE l.dst_ref_id = %s
+           AND l.relation = 'conjunct-of'
+           AND a.kind = 'finding'
+           AND a.deleted_at IS NULL
+         LIMIT 1
+        """,
+        (ref_id,),
+    ).fetchone()
+    return row is not None
+
+
+#: The compound hub's not-a-claim audit memo key (step 8,
+#: docs/backlog/taproot-atomic-claims.md) — mirrors ``hub_refine``'s
+#: ``taproot_rejected`` memo *shape* (deduped by key, never re-litigated)
+#: but keyed by ``claim_sha(text)`` of the rejected fragment, **not** a ref
+#: id: a rejected conjunct is never minted, so it has no ref id to key by.
+#: Don't "fix" this to a ref-id key later — there is no ref for it to be.
+_NOT_CLAIMS_META_KEY = "taproot_not_claims"
+
+
 def mint_hub(
     store: Store,
     claim: CanonicalClaim,
     *,
     set_by: ActorSlug = "agent",
     conn: Any = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> int:
     """Create a new ``TAPROOT:claim`` ``finding`` hub. Returns its ref_id.
 
@@ -301,6 +363,18 @@ def mint_hub(
     transaction), and resolves to the winner's ref_id. Either way the
     caller always gets back a real hub ref_id to attach evidence to,
     never a raised exception or a dropped edge.
+
+    ``extra_meta`` (step 8, docs/backlog/taproot-atomic-claims.md) merges
+    additional top-level ``meta`` keys into the hub at insert time — one
+    write, no follow-up ``update_ref`` — used by
+    :func:`apply_extraction` to seed a freshly-minted compound hub's
+    :data:`_NOT_CLAIMS_META_KEY` memo. Applied **only** on an actual insert
+    (the ``_mint`` path below); the converge-to-existing branches (a
+    pub_id already resolved, or a raced ``UniqueViolation``) return the
+    existing hub untouched — merging into an *existing* hub's meta
+    non-destructively is a distinct operation (see the module's
+    ``_merge_not_claims_memo`` helper, used on the ``attach`` side of
+    :func:`apply_extraction`), not this parameter's job.
     """
     paper_id = make_taproot_hub_paper_id(claim.sentence, claim.scope)
     pub_id = make_pub_id(paper_id)
@@ -313,11 +387,14 @@ def mint_hub(
         return int(row[0]) if row is not None else None
 
     def _mint(c: Any) -> int:
+        meta: dict[str, Any] = {"scope": dict(claim.scope), "source": "taproot"}
+        if extra_meta:
+            meta.update(extra_meta)
         ref = store.insert_ref(
             kind="finding",
             slug=None,
             title=claim.sentence.strip()[:200],
-            meta={"scope": dict(claim.scope), "source": "taproot"},
+            meta=meta,
             conn=c,
         )
         store.insert_blocks(
@@ -659,6 +736,22 @@ def attach_evidence(
                     "finding TAPROOT:claim (axis:taproot) or pick a claim hub"
                 ),
             )
+        # Hard backstop (docs/backlog/taproot-atomic-claims.md step 3) behind
+        # apply_placement's softer needs_review downgrade — same
+        # defense-in-depth as the EVIDENCE_SRC_KINDS check below sitting
+        # behind authoring.resolve_paper_ref_id's authoritative check.
+        # apply_extraction's own ordering (atoms attach before the
+        # conjunct-of link is ever written) never trips this.
+        if _is_compound_hub(hub_ref_id, conn=c):
+            raise BadInput(
+                "evidence attaches to atom hubs; this hub is a compound — "
+                "attach to its conjunct atoms",
+                next=(
+                    "resolve the compound's conjunct atom hubs "
+                    "(taproot.seniority.derive_conjuncts) and attach evidence "
+                    "to the specific atom this source supports"
+                ),
+            )
         src = store.fetch_refs_by_ids([paper_ref_id], include_deleted=True).get(
             paper_ref_id
         )
@@ -737,18 +830,22 @@ def link_claims(
     """Write one hub ``--relation--> hub`` advisory claim-link. Returns
     ``True`` if a new edge was written, ``False`` if it already existed.
 
-    ``relation`` must be one of :data:`CLAIM_LINK_RELATIONS` (v1: ``refines``)
-    *and* a registered relation (checked via :func:`validate_relation` — the
-    friendly pre-flight for the ``links_relation_fkey`` FK). **Both**
+    ``relation`` must be one of :data:`CLAIM_LINK_RELATIONS` (``refines``,
+    ``conjunct-of``) *and* a registered relation (checked via
+    :func:`validate_relation` — the friendly pre-flight for the
+    ``links_relation_fkey`` FK). **Both**
     endpoints must be live ``TAPROOT:claim`` findings — a claim-link joins two
     claim hubs (never a paper, a review note, or a non-finding), and the two
-    must differ (a hub can't refine itself).
+    must differ (a hub can't link to itself).
 
     This is the single write door for claim→claim links, the sibling of
     :func:`attach_evidence` for paper→hub evidence edges (open #16).
     Unlike evidence, a claim-link carries **no evidence flow** — the hubs keep
-    their own paper→hub edges; the link is surfaced read-only by the fisheye
-    Claims ring (:mod:`precis.utils.refeye`). Idempotent: an identical
+    their own paper→hub edges. The fisheye Claims ring
+    (:mod:`precis.utils.refeye`) surfaces only ``refines`` today
+    (``derive_refines``); ``conjunct-of`` edges are not yet rendered there —
+    backlog item ``docs/backlog/fisheye-conjunct-of-surfacing.md``. Idempotent:
+    an identical
     ``(from, to, relation)`` edge already present is a no-op returning
     ``False``, so a re-run of the same authoring step writes nothing.
     """
@@ -804,6 +901,75 @@ def link_claims(
         return _do(c)
 
 
+def _mint_for_placement(
+    store: Store,
+    claim: CanonicalClaim,
+    placement: Placement,
+    *,
+    paper_ref_id: int | None,
+    role: str,
+    meta: dict[str, Any] | None,
+    set_by: ActorSlug,
+    conn: Any,
+    pending_checks: list[int] | None,
+    attach_paper: bool,
+    extra_meta: dict[str, Any] | None = None,
+) -> int:
+    """Shared ``new``/``new_contradicts`` mint-or-converge, for both
+    :func:`apply_placement` (atoms, ``attach_paper=True``) and
+    :func:`apply_extraction`'s compound handling (``attach_paper=False`` —
+    a compound never gets a direct evidence edge, step 3). One mint-logic
+    path rather than a fork: :func:`mint_hub` (+ the hub<->hub
+    ``contradicts`` link for ``new_contradicts``), optionally followed by
+    :func:`attach_evidence`.
+
+    ``extra_meta`` passes through to :func:`mint_hub` — the not-a-claim
+    memo (step 8) for a freshly-minted compound.
+    """
+    owned_checks: list[int] = []
+    sink = pending_checks if conn is not None else owned_checks
+
+    def _do(c: Any) -> int:
+        hub = mint_hub(store, claim, set_by=set_by, conn=c, extra_meta=extra_meta)
+        if attach_paper:
+            if paper_ref_id is None:  # pragma: no cover — defensive
+                raise BadInput("attach_paper=True requires a paper_ref_id")
+            attach_evidence(
+                store,
+                hub_ref_id=hub,
+                paper_ref_id=paper_ref_id,
+                role=role,
+                meta=meta,
+                set_by=set_by,
+                conn=c,
+                pending_checks=sink,
+            )
+        if placement.action == "new_contradicts":
+            if placement.contradicts_hub_ref_id is None:
+                raise BadInput(
+                    "new_contradicts placement has no contradicts_hub_ref_id"
+                )
+            # Hub <-> hub: opposite *claims* (distinct from a paper->hub
+            # `contradicts` evidence edge; same slug, different endpoints).
+            store.add_link(
+                src_ref_id=hub,
+                dst_ref_id=placement.contradicts_hub_ref_id,
+                relation=validate_relation("contradicts", store=store),
+                set_by=set_by,
+                conn=c,
+            )
+        return hub
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        hub_id = _do(c)
+    if attach_paper:
+        # Transaction committed — now it is safe to reach the network.
+        run_retraction_checks(store, owned_checks, hub_ref_id=hub_id)
+    return hub_id
+
+
 def apply_placement(
     store: Store,
     claim: CanonicalClaim,
@@ -828,9 +994,20 @@ def apply_placement(
     * ``needs_review`` — file a ``kind='todo'`` via ``todo_fn`` and attach
       **nothing** (open #16: a risky merge is never auto-applied).
 
+    **Compound downgrade** (docs/backlog/taproot-atomic-claims.md step 2):
+    an ``attach`` placement whose ``hub_ref_id`` is a **compound** hub (has
+    ≥1 live inbound ``conjunct-of`` edge, :func:`_is_compound_hub`) is
+    downgraded to the ``needs_review`` path instead of attaching — evidence
+    must never land on a compound (step 3's own hard guard in
+    :func:`attach_evidence` would raise), and letting that raise happen
+    inside a caller's savepoint (e.g. the chase bridge's per-finding
+    transaction) would drop the evidence with only a log line rather than
+    filing a todo a human can act on.
+
     Returns the hub ref_id it attached to / minted, or ``None`` for
-    ``needs_review``. ``role`` is the evidence role for the paper edge
-    (default :data:`_DEFAULT_ROLE`); originator promotion is derived later.
+    ``needs_review`` (including the compound downgrade above). ``role`` is
+    the evidence role for the paper edge (default :data:`_DEFAULT_ROLE`);
+    originator promotion is derived later.
 
     ``conn`` (Phase 3 W1) lets a caller that already holds an open
     transaction (chase's per-finding ``conn``) fold the hub mint + evidence
@@ -846,69 +1023,8 @@ def apply_placement(
     the evidence write ``conn`` exists to bundle.
     """
     action = placement.action
-    # Trigger-1 sink (see attach_evidence): a check can never run inside an
-    # open transaction. When the caller owns ``conn`` we pass their list
-    # upward and they drain it post-commit; when we own the transaction we
-    # collect locally and drain it ourselves below.
-    owned_checks: list[int] = []
-    sink = pending_checks if conn is not None else owned_checks
 
-    if action == "attach":
-        if placement.hub_ref_id is None:
-            raise BadInput("attach placement has no hub_ref_id")
-        # conn=None here means attach_evidence owns (and commits) its own
-        # transaction, so it runs the check itself and the sink stays empty.
-        attach_evidence(
-            store,
-            hub_ref_id=placement.hub_ref_id,
-            paper_ref_id=paper_ref_id,
-            role=role,
-            meta=meta,
-            set_by=set_by,
-            conn=conn,
-            pending_checks=sink,
-        )
-        return placement.hub_ref_id
-
-    if action in ("new", "new_contradicts"):
-
-        def _do(c: Any) -> int:
-            hub = mint_hub(store, claim, set_by=set_by, conn=c)
-            attach_evidence(
-                store,
-                hub_ref_id=hub,
-                paper_ref_id=paper_ref_id,
-                role=role,
-                meta=meta,
-                set_by=set_by,
-                conn=c,
-                pending_checks=sink,
-            )
-            if action == "new_contradicts":
-                if placement.contradicts_hub_ref_id is None:
-                    raise BadInput(
-                        "new_contradicts placement has no contradicts_hub_ref_id"
-                    )
-                # Hub <-> hub: opposite *claims* (distinct from a paper->hub
-                # `contradicts` evidence edge; same slug, different endpoints).
-                store.add_link(
-                    src_ref_id=hub,
-                    dst_ref_id=placement.contradicts_hub_ref_id,
-                    relation=validate_relation("contradicts", store=store),
-                    set_by=set_by,
-                    conn=c,
-                )
-            return hub
-
-        if conn is not None:
-            return _do(conn)
-        with store.tx() as c:
-            hub_id = _do(c)
-        # Transaction committed — now it is safe to reach the network.
-        run_retraction_checks(store, owned_checks, hub_ref_id=hub_id)
-        return hub_id
-
-    if action == "needs_review":
+    def _file_needs_review() -> None:
         if todo_fn is not None:
             todo_fn(claim, placement)
         else:
@@ -916,15 +1032,262 @@ def apply_placement(
                 "taproot: needs_review placement dropped (no todo_fn): %s",
                 placement.reason,
             )
+
+    if action == "attach":
+        hub_ref_id = placement.hub_ref_id
+        if hub_ref_id is None:
+            raise BadInput("attach placement has no hub_ref_id")
+
+        if conn is not None:
+            is_compound = _is_compound_hub(hub_ref_id, conn=conn)
+        else:
+            with store.pool.connection() as c:
+                is_compound = _is_compound_hub(hub_ref_id, conn=c)
+        if is_compound:
+            log.info(
+                "taproot: attach placement on compound hub_ref_id=%s downgraded "
+                "to needs_review (evidence attaches to atom hubs only)",
+                hub_ref_id,
+            )
+            _file_needs_review()
+            return None
+
+        # conn=None here means attach_evidence owns (and commits) its own
+        # transaction, so it runs the check itself and the sink stays empty.
+        attach_evidence(
+            store,
+            hub_ref_id=hub_ref_id,
+            paper_ref_id=paper_ref_id,
+            role=role,
+            meta=meta,
+            set_by=set_by,
+            conn=conn,
+            pending_checks=pending_checks if conn is not None else [],
+        )
+        return hub_ref_id
+
+    if action in ("new", "new_contradicts"):
+        return _mint_for_placement(
+            store,
+            claim,
+            placement,
+            paper_ref_id=paper_ref_id,
+            role=role,
+            meta=meta,
+            set_by=set_by,
+            conn=conn,
+            pending_checks=pending_checks,
+            attach_paper=True,
+        )
+
+    if action == "needs_review":
+        _file_needs_review()
         return None
 
     raise BadInput(f"unknown placement action: {action!r}")
+
+
+def _not_claims_memo(not_claims: tuple[NotClaim, ...]) -> dict[str, dict[str, Any]]:
+    """Build the sha-keyed memo dict step 8 stores on the compound hub —
+    ``{claim_sha(text): {"text", "reason", "at"}}``. ``{}`` for an empty
+    ``not_claims`` (the caller should treat that as "nothing to write")."""
+    now = datetime.now(UTC).isoformat()
+    return {
+        claim_sha(nc["text"]): {"text": nc["text"], "reason": nc["reason"], "at": now}
+        for nc in not_claims
+    }
+
+
+def _merge_not_claims_memo(
+    store: Store, hub_ref_id: int, memo: dict[str, dict[str, Any]], *, conn: Any
+) -> None:
+    """Merge ``memo`` into an existing compound hub's
+    ``meta[_NOT_CLAIMS_META_KEY]``, existing keys winning — the
+    ``attach`` counterpart to :func:`mint_hub`'s ``extra_meta`` (a fresh
+    hub has no existing entries to protect, so that path just writes).
+    A re-extraction of the same rejected fragment computes the same
+    ``claim_sha`` and finds its entry already present; nothing is
+    overwritten or duplicated."""
+
+    def _do(c: Any) -> None:
+        row = c.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (hub_ref_id,),
+        ).fetchone()
+        current = dict(row[0] or {}) if row is not None else {}
+        existing_memo = dict(current.get(_NOT_CLAIMS_META_KEY) or {})
+        merged = {**memo, **existing_memo}  # existing keys win
+        store.update_ref(hub_ref_id, meta_patch={_NOT_CLAIMS_META_KEY: merged}, conn=c)
+
+    if conn is not None:
+        _do(conn)
+    else:
+        with store.tx() as c:
+            _do(c)
+
+
+def _apply_compound_placement(
+    store: Store,
+    claim: CanonicalClaim,
+    placement: Placement,
+    *,
+    not_claims: tuple[NotClaim, ...],
+    todo_fn: Callable[[CanonicalClaim, Placement], Any] | None,
+    set_by: ActorSlug,
+    conn: Any,
+) -> int | None:
+    """Mint-or-converge the compound hub for one :func:`extract_claim`
+    result, **without** any evidence edge (step 3: compounds hold no
+    direct evidence). ``attach`` resolves the existing hub id and merges
+    the not-a-claim memo non-destructively; ``new``/``new_contradicts``
+    mint via :func:`_mint_for_placement` (``attach_paper=False``) with the
+    memo seeded at insert time; ``needs_review`` files the todo and mints
+    nothing (no hub -> no memo target)."""
+    action = placement.action
+    memo = _not_claims_memo(not_claims) if not_claims else None
+
+    if action == "attach":
+        hub_ref_id = placement.hub_ref_id
+        if hub_ref_id is None:
+            raise BadInput("attach placement has no hub_ref_id")
+        if memo:
+            _merge_not_claims_memo(store, hub_ref_id, memo, conn=conn)
+        return hub_ref_id
+
+    if action in ("new", "new_contradicts"):
+        extra_meta = {_NOT_CLAIMS_META_KEY: memo} if memo else None
+        return _mint_for_placement(
+            store,
+            claim,
+            placement,
+            paper_ref_id=None,
+            role=_DEFAULT_ROLE,
+            meta=None,
+            set_by=set_by,
+            conn=conn,
+            pending_checks=None,
+            attach_paper=False,
+            extra_meta=extra_meta,
+        )
+
+    if action == "needs_review":
+        if todo_fn is not None:
+            todo_fn(claim, placement)
+        else:
+            log.warning(
+                "taproot: compound needs_review placement dropped (no todo_fn): %s",
+                placement.reason,
+            )
+        return None
+
+    raise BadInput(f"unknown placement action: {action!r}")
+
+
+@dataclass(frozen=True)
+class ExtractionOutcome:
+    """The hub ids :func:`apply_extraction` wrote — ``atom_hub_ids`` in
+    the same order as the ``atoms`` list passed in (a ``needs_review``
+    atom contributes no id), and ``compound_hub_id`` (``None`` when there
+    was no compound, or the compound placement itself was
+    ``needs_review``)."""
+
+    atom_hub_ids: list[int]
+    compound_hub_id: int | None
+
+
+def apply_extraction(
+    store: Store,
+    *,
+    atoms: list[tuple[CanonicalClaim, Placement]],
+    compound: tuple[CanonicalClaim, Placement] | None,
+    not_claims: tuple[NotClaim, ...] = (),
+    paper_ref_id: int,
+    role: str = _DEFAULT_ROLE,
+    meta: dict[str, Any] | None = None,
+    todo_fn: Callable[[CanonicalClaim, Placement], Any] | None = None,
+    set_by: ActorSlug = "agent",
+    conn: Any = None,
+    pending_checks: list[int] | None = None,
+) -> ExtractionOutcome:
+    """Persist a full :class:`~precis.taproot.canon.ClaimExtraction` through
+    the write door — the decomposition-aware orchestrator on top of
+    :func:`apply_placement` (docs/backlog/taproot-atomic-claims.md step 2).
+
+    Canon (LLM/ANN) stays out of this module: the caller has already run
+    ``block`` -> ``dedup_judge`` -> ``place`` per atom and for the compound,
+    and hands in the resulting ``(claim, placement)`` pairs — this function
+    only writes.
+
+    1. Each ``atoms`` pair -> :func:`apply_placement` exactly as for a
+       single claim (mint/attach + evidence edge; ``needs_review`` files a
+       todo and contributes no hub id to
+       :attr:`ExtractionOutcome.atom_hub_ids`).
+    2. ``compound`` (if given) -> mint-or-converge with **no** evidence
+       edge (step 3) via :func:`_apply_compound_placement`, which also
+       writes/merges the ``not_claims`` audit memo (step 8) onto the
+       compound hub.
+    3. Every atom hub that was actually placed gets a
+       ``link_claims(atom, compound, relation="conjunct-of")`` — the single
+       write door, idempotent, so a re-run of the same extraction converges
+       rather than duplicating edges.
+
+    Idempotency falls out of the primitives it calls: :func:`mint_hub`'s
+    content-derived pub_id converges re-runs, :func:`link_claims` no-ops on
+    an existing edge, and :func:`_merge_not_claims_memo` is sha-keyed and
+    existing-wins. ``conn``/``pending_checks``/``todo_fn``/``set_by`` all
+    thread through to :func:`apply_placement` and the compound path
+    unchanged from their single-claim meaning.
+    """
+    atom_hub_ids: list[int] = []
+    for atom_claim, atom_placement in atoms:
+        hub_id = apply_placement(
+            store,
+            atom_claim,
+            atom_placement,
+            paper_ref_id=paper_ref_id,
+            role=role,
+            meta=meta,
+            todo_fn=todo_fn,
+            set_by=set_by,
+            conn=conn,
+            pending_checks=pending_checks,
+        )
+        if hub_id is not None:
+            atom_hub_ids.append(hub_id)
+
+    compound_hub_id: int | None = None
+    if compound is not None:
+        compound_claim, compound_placement = compound
+        compound_hub_id = _apply_compound_placement(
+            store,
+            compound_claim,
+            compound_placement,
+            not_claims=not_claims,
+            todo_fn=todo_fn,
+            set_by=set_by,
+            conn=conn,
+        )
+
+    if compound_hub_id is not None:
+        for atom_hub_id in atom_hub_ids:
+            link_claims(
+                store,
+                from_hub_ref_id=atom_hub_id,
+                to_hub_ref_id=compound_hub_id,
+                relation="conjunct-of",
+                set_by=set_by,
+                conn=conn,
+            )
+
+    return ExtractionOutcome(atom_hub_ids=atom_hub_ids, compound_hub_id=compound_hub_id)
 
 
 __all__ = [
     "CLAIM_LINK_RELATIONS",
     "EVIDENCE_SRC_KINDS",
     "HUB_ROLES",
+    "ExtractionOutcome",
+    "apply_extraction",
     "apply_placement",
     "attach_evidence",
     "link_claims",

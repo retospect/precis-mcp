@@ -1,4 +1,5 @@
-"""Taproot Phase-1 eval harness — the ``dedup_judge`` gate.
+"""Taproot Phase-1 eval harness — the ``dedup_judge`` gate, plus the
+``extract_claim`` atomicity gate.
 
 Runs :func:`~precis.taproot.canon.dedup_judge` over every pair in
 ``tests/fixtures/taproot/claim_pairs.jsonl`` and grades it against the
@@ -11,13 +12,20 @@ fixture says ``different`` is the dangerous error (a wrong merge fuses
 distinct claims). Under-merge (predicted ``different`` where the fixture
 says ``same``) is tallied but tolerated (taproot.md's "safe direction").
 
-This module makes live model calls when run with the real
-:func:`~precis.taproot.canon.dedup_judge` — it is a **validation harness the
-builder runs deliberately**, not something the offline test gate executes
-(see ``tests/test_taproot_eval_canon.py``, which is skipped without an
-explicit opt-in).
+:func:`eval_extraction` is the sibling gate for the AIDA-Atomic constraint
+added to :func:`~precis.taproot.canon.extract_claim`
+(``docs/backlog/taproot-atomic-claims.md`` §AIDA): it runs the extractor
+over ``tests/fixtures/taproot/extraction_passages.jsonl`` and checks two
+hard gates (bar = 0) plus one soft metric — see its docstring.
 
-CLI: ``python -m precis.taproot.eval_canon [fixture_path]``.
+Both harnesses make live model calls when run with the real canon
+functions — they are **validation harnesses the builder runs
+deliberately**, not something the offline test gate executes (see
+``tests/test_taproot_eval_canon.py`` / the extraction sibling test, both
+skipped without an explicit opt-in).
+
+CLI: ``python -m precis.taproot.eval_canon [fixture_path]`` (dedup gate
+only).
 """
 
 from __future__ import annotations
@@ -30,7 +38,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from precis.taproot.canon import Verdict, Verdict3, dedup_judge
+from precis.taproot.canon import (
+    ClaimExtraction,
+    Verdict,
+    Verdict3,
+    dedup_judge,
+    extract_claim,
+)
 
 #: The fixture's 5-relation labels collapsed onto the 3 verdicts v1 grades
 #: (tests/fixtures/taproot/README.md "v1 grades collapsed"). Kept here (not
@@ -143,16 +157,22 @@ class Report:
         return "\n".join(lines)
 
 
-def _load_pairs(fixture_path: str | Path) -> list[dict[str, Any]]:
+def _load_jsonl(fixture_path: str | Path) -> list[dict[str, Any]]:
+    """One-object-per-line reader shared by both fixtures (``#``-comment
+    lines and blank lines skipped)."""
     path = Path(fixture_path)
-    pairs: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     with path.open() as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            pairs.append(json.loads(line))
-    return pairs
+            rows.append(json.loads(line))
+    return rows
+
+
+def _load_pairs(fixture_path: str | Path) -> list[dict[str, Any]]:
+    return _load_jsonl(fixture_path)
 
 
 def eval_canonicalization(
@@ -206,6 +226,172 @@ def eval_canonicalization(
     return report
 
 
+# ── eval_extraction — the AIDA-Atomic gate ──────────────────────────────
+
+ExtractFn = Callable[[str], ClaimExtraction]
+
+#: A cheap lexical tell that an emitted atom still bundles a second
+#: predicate — the hard gate's heuristic
+#: (``docs/backlog/taproot-atomic-claims.md`` §AIDA). Deliberately
+#: imperfect: it flags candidates for a human to look at, not a semantic
+#: parse. Excludes a bare " and " (a legitimate condition list like "at
+#: 300 K and 1 atm" would false-positive on it) — the markers below are
+#: the ones that read as clause-joining in practice.
+_CONJUNCTION_MARKERS = (
+    " as well as ",
+    " in addition to ",
+    " along with ",
+    " while ",
+    " whereas ",
+    ", and ",
+    ", which also ",
+)
+
+
+def _has_predicate_conjunction(sentence: str) -> bool:
+    """True if ``sentence`` still contains one of :data:`_CONJUNCTION_MARKERS`
+    — a candidate un-split atom."""
+    lowered = f" {sentence.lower()} "
+    return any(marker in lowered for marker in _CONJUNCTION_MARKERS)
+
+
+@dataclass
+class ExtractionResult:
+    """One graded fixture row."""
+
+    passage_id: int
+    expected_atom_count: int
+    actual_atom_count: int
+    compound_without_atoms: bool
+    conjunction_atoms: list[str] = field(default_factory=list)
+    not_claim_texts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtractionReport:
+    """:func:`eval_extraction`'s output — two hard gates (bar = 0) plus one
+    soft metric, and the per-row results for drill-down."""
+
+    results: list[ExtractionResult] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.results)
+
+    @property
+    def atom_count_matches(self) -> int:
+        return sum(
+            1 for r in self.results if r.actual_atom_count == r.expected_atom_count
+        )
+
+    @property
+    def atom_count_agreement_rate(self) -> float:
+        """Soft metric — how often the extractor's atom count matches the
+        fixture's expectation. Not a gate: a model that atomizes
+        differently (more/fewer atoms) than the fixture's author but still
+        keeps every atom AIDA-atomic is not wrong, just differently
+        granular."""
+        return self.atom_count_matches / self.total if self.total else 0.0
+
+    @property
+    def compound_without_atoms_violations(self) -> list[ExtractionResult]:
+        """Hard gate — bar is 0. A compound with no surviving atoms means
+        nothing groundable backs the bundle; :func:`~precis.taproot.canon
+        ._coerce_extraction` should have folded it to ``None``. Checked
+        here too as a backstop against a caller bypassing that helper."""
+        return [r for r in self.results if r.compound_without_atoms]
+
+    @property
+    def conjunction_violations(self) -> list[ExtractionResult]:
+        """Hard gate — bar is 0. An emitted atom still reads as bundling a
+        second predicate (see :data:`_CONJUNCTION_MARKERS`)."""
+        return [r for r in self.results if r.conjunction_atoms]
+
+    def format(self) -> str:
+        lines = [
+            f"Taproot extraction (AIDA-Atomic) eval — {self.total} passages",
+            "",
+            f"atom-count agreement: {self.atom_count_matches}/{self.total} "
+            f"({self.atom_count_agreement_rate:.1%}) — soft metric",
+            f"compound-without-atoms: {len(self.compound_without_atoms_violations)} "
+            "— hard gate, bar is 0",
+            f"atoms with a residual conjunction: "
+            f"{len(self.conjunction_violations)} — hard gate, bar is 0",
+        ]
+        if self.compound_without_atoms_violations:
+            lines.append("")
+            lines.append("Compound-without-atoms (investigate individually):")
+            for r in self.compound_without_atoms_violations:
+                lines.append(f"  passage {r.passage_id}")
+        if self.conjunction_violations:
+            lines.append("")
+            lines.append("Residual-conjunction atoms (investigate individually):")
+            for r in self.conjunction_violations:
+                lines.append(f"  passage {r.passage_id}: {r.conjunction_atoms}")
+        return "\n".join(lines)
+
+
+def eval_extraction(
+    fixture_path: str | Path,
+    *,
+    extract_fn: ExtractFn = extract_claim,
+    progress: bool = True,
+) -> ExtractionReport:
+    """Run ``extract_fn`` over every row in ``fixture_path`` and grade the
+    AIDA-Atomic gate. Prints the report to stdout and returns it.
+
+    Fixture row shape: ``id``, ``passage``, ``expected_atom_count`` (0 for
+    a NO-CLAIM passage), optionally ``expected_not_claims`` (a list of
+    rejected-conjunct substrings, kept for audit — not graded as a gate in
+    v1) and ``note`` (provenance / rationale).
+
+    ``extract_fn`` defaults to the real
+    :func:`~precis.taproot.canon.extract_claim` (a live SMALL-tier dispatch
+    per row) — inject a stub for an offline unit test.
+
+    ``progress`` mirrors :func:`eval_canonicalization`'s streamed-to-stderr
+    per-row line, flagging a hard-gate violation inline.
+    """
+    rows = _load_jsonl(fixture_path)
+    total = len(rows)
+    results: list[ExtractionResult] = []
+    for i, row in enumerate(rows, start=1):
+        extraction = extract_fn(row["passage"])
+        conjunction_atoms = [
+            atom.sentence
+            for atom in extraction.atoms
+            if _has_predicate_conjunction(atom.sentence)
+        ]
+        compound_without_atoms = (
+            extraction.compound is not None and not extraction.atoms
+        )
+        result = ExtractionResult(
+            passage_id=int(row["id"]),
+            expected_atom_count=int(row["expected_atom_count"]),
+            actual_atom_count=len(extraction.atoms),
+            compound_without_atoms=compound_without_atoms,
+            conjunction_atoms=conjunction_atoms,
+            not_claim_texts=[nc["text"] for nc in extraction.not_claims],
+        )
+        results.append(result)
+        if progress:
+            flags = ""
+            if compound_without_atoms:
+                flags += "  ⚠ COMPOUND-WITHOUT-ATOMS"
+            if conjunction_atoms:
+                flags += "  ⚠ RESIDUAL-CONJUNCTION"
+            print(
+                f"[{i}/{total}] passage {result.passage_id} "
+                f"expected_atoms={result.expected_atom_count} "
+                f"got_atoms={result.actual_atom_count}{flags}",
+                file=sys.stderr,
+                flush=True,
+            )
+    report = ExtractionReport(results=results)
+    print(report.format())
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     fixture = (
@@ -228,8 +414,12 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "ExtractFn",
+    "ExtractionReport",
+    "ExtractionResult",
     "PairResult",
     "Report",
     "collapse_label",
     "eval_canonicalization",
+    "eval_extraction",
 ]

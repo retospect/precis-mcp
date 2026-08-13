@@ -21,7 +21,12 @@ from precis.handlers.finding import FindingHandler
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
-from precis.taproot.seniority import derive_evidence, derive_refines
+from precis.taproot.seniority import (
+    conjunct_atoms_bulk,
+    derive_conjuncts,
+    derive_evidence,
+    derive_refines,
+)
 from precis.utils import handle_registry
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -650,6 +655,106 @@ def test_derive_refines_drops_a_soft_deleted_neighbour(store: Any) -> None:
 
     # The original no longer surfaces the deleted sharper hub as a neighbour.
     assert derive_refines(store, original).refined_by == []
+
+
+# ── derive_conjuncts — atomic-claims claim→claim advisory (migration 0126) ──
+
+
+def test_derive_conjuncts_reads_both_directions(store: Any) -> None:
+    compound = mint_hub(store, _CLAIM)
+    atom_a = _sharper_hub(store, "Atom A: Pd/C alone catalyzes the coupling.")
+    atom_b = _sharper_hub(store, "Atom B: a mild base is required.")
+    link_claims(
+        store, from_hub_ref_id=atom_a, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    link_claims(
+        store, from_hub_ref_id=atom_b, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+
+    # From the COMPOUND's view: its atoms are inbound.
+    compound_links = derive_conjuncts(store, compound)
+    assert {cr.hub_ref_id for cr in compound_links.refined_by} == {atom_a, atom_b}
+    assert compound_links.refines == []
+
+    # From an ATOM's view: the compound it belongs to is outbound.
+    atom_links = derive_conjuncts(store, atom_a)
+    assert [cr.hub_ref_id for cr in atom_links.refines] == [compound]
+    assert atom_links.refined_by == []
+    assert atom_links.refines[0].sentence == _CLAIM.sentence
+
+
+def test_derive_conjuncts_empty_for_a_plain_atomic_hub(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    links = derive_conjuncts(store, hub)
+    assert links.refines == []
+    assert links.refined_by == []
+
+
+def test_derive_conjuncts_drops_a_soft_deleted_atom(store: Any) -> None:
+    compound = mint_hub(store, _CLAIM)
+    atom = _sharper_hub(store, "Atom: a mild base is required.")
+    link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (atom,))
+        conn.commit()
+
+    # A deleted atom no longer surfaces as one of the compound's conjuncts.
+    assert derive_conjuncts(store, compound).refined_by == []
+
+
+def test_conjunct_atoms_bulk_maps_compounds_to_their_atoms(store: Any) -> None:
+    compound = mint_hub(store, _CLAIM)
+    atom_a = _sharper_hub(store, "Atom A: Pd/C alone catalyzes the coupling.")
+    atom_b = _sharper_hub(store, "Atom B: a mild base is required.")
+    link_claims(
+        store, from_hub_ref_id=atom_a, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    link_claims(
+        store, from_hub_ref_id=atom_b, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    plain_hub = _sharper_hub(store, "A plain atomic hub with no conjuncts.")
+
+    result = conjunct_atoms_bulk(store, [compound, plain_hub])
+
+    assert result[compound] == sorted([atom_a, atom_b])
+    assert result[plain_hub] == []
+
+
+def test_conjunct_atoms_bulk_empty_input_returns_empty_map(store: Any) -> None:
+    assert conjunct_atoms_bulk(store, []) == {}
+
+
+# ── regression: a compound hub derives NO originators/corroborators ────
+#
+# A compound's only inbound edges are `conjunct-of` from its atom findings.
+# `_fetch_evidence_rows` only matches `_ALL_ROLES` (establishes/corroborates/
+# contradicts) from an `_EVIDENCE_SRC_KINDS` (paper/patent/edgar) source —
+# `conjunct-of` isn't a matched role AND a finding isn't a matched source
+# kind, so a compound is doubly excluded even though its atoms individually
+# carry real evidence. Pins step 5's "compounds derive no originators" flag
+# (docs/backlog/taproot-atomic-claims.md) — no code change was needed for
+# this, the existing guard already does it; this test just proves it.
+
+
+def test_derive_evidence_on_compound_hub_yields_no_evidence(store: Any) -> None:
+    compound = mint_hub(store, _CLAIM)
+    atom = _sharper_hub(store, "Atom: a mild base is required.")
+    link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    supporter = _paper(store, title="Supports the atom, not the compound", year=2001)
+    attach_evidence(store, hub_ref_id=atom, paper_ref_id=supporter, role="corroborates")
+
+    evidence = derive_evidence(store, compound)
+
+    assert evidence.originators == []
+    assert evidence.corroborators == []
+    assert evidence.contradictors == []
+    assert evidence.coverage_note is None
+    assert evidence.grounding == []
 
 
 # ── grounding passages: per-chunk, not per-paper (corroborates-pc regression) ──

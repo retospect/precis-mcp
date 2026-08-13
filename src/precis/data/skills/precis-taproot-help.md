@@ -43,6 +43,14 @@ supporter(s) the *other* supporters' citations converge on
 `cites` graph). No intra-supporter citation edge held → every supporter
 stays `corroborates` (never guessed).
 
+**A compound hub holds no direct evidence.** When a claim decomposes into
+several atomic sub-claims (see the backfill decomposition note below), the
+bundling sentence gets its own hub — cite-able, but attach-only-through-atoms:
+`link(..., rel='establishes'|'corroborates'|'contradicts')` onto a compound
+hub raises. Attach evidence to the atom hub the passage actually supports
+instead — `get(id='fi<id>', view='links')` lists a compound's `conjunct-of`
+atoms.
+
 **Edges are chunk-grounded.** An evidence edge names the *specific
 passage* that supports the claim: supply a supporter's `source_handle`
 (a `[pc<id>]` paper chunk) and the edge is stored `pc<id>`-granular, so
@@ -157,12 +165,16 @@ precis taproot backfill --chunk dc1652005 --apply   # one chunk / section
 precis taproot backfill --draft my-draft-slug       # every body chunk in a draft
 ```
 
-It anchors on the `[pc<id>]` markers (a claim is what a citation grounds —
-**not** a sentence split): each cite's preceding prose is the claim span, and
-adjacent pc-cites (`[pc1][pc2]`) grounding one span collapse to **one** hub
-with two evidence edges → a single `[fi<hub>]`. Each claim runs the full
-canonicalizer cascade (`extract → block → dedup_judge → place`), so it
-**converges onto an existing hub** rather than minting a near-duplicate; a
+It anchors on the `[pc<id>]` markers (the citation grouping picks the claim
+span — not a sentence split you pick yourself): each cite's preceding prose
+is the claim span, and adjacent pc-cites (`[pc1][pc2]`) grounding one span
+collapse to **one** written cite. Each span runs the full canonicalizer
+cascade (`extract_claim → block → dedup_judge → place → apply_extraction`):
+if the span bundles more than one atomic claim, extraction splits it into
+several atom hubs (each with its own evidence edge) plus a non-evidence
+**compound** hub `conjunct-of`-linked to them (see "The evidence model"
+above) — either way the prose rewrite target is **one** `[fi<hub>]` (the
+compound when one landed, else the lone atom), so a citer sees no change. A
 risky merge files a review `todo` and leaves the `[pc…]` untouched, and a
 pointer-only span (no groundable claim) is left as-is. The prose rewrite goes
 through the draft edit door (DELETE+INSERT, embeddings re-run). Idempotent at

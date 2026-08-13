@@ -23,7 +23,7 @@ from typing import Any
 
 from precis.store.types import BlockInsert
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.hub import mint_hub
+from precis.taproot.hub import link_claims, mint_hub
 from precis.workers.chase_trigger import (
     _near_claims,
     chase_trigger_enabled,
@@ -288,5 +288,108 @@ def test_near_claims_excludes_a_claim_matching_its_own_source_chunk(store: Any) 
             embedder_model=embedder.model,
             floor=_MIN_SIM,
             chunk_ref_map={self_chunk_id: hub},
+        )
+    assert near == set()
+
+
+# ── compound-hub exclusion (docs/backlog/taproot-atomic-claims.md) ──────
+#
+# A compound claim hub (a live inbound `conjunct-of` edge from a live
+# finding) must never be embedded/probed/marked TAPROOT_DUE here -- a
+# due-mark hub_refine's own due-set query would never claim (it excludes
+# compounds too) would just accumulate, an unpopped tag with no consumer.
+
+
+def _link_conjunct(store: Any, *, atom: int, compound: int) -> None:
+    assert link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+
+
+def test_compound_hub_excluded_from_claim_embeddings_refresh(store: Any) -> None:
+    """A compound claim hub never gets a ``claim_embeddings`` row -- (a)'s
+    hub query excludes it outright, so it never becomes a probe target
+    either."""
+    embedder = make_mock_bge_m3()
+    atom = _seed_hub(store, sentence="A compound-exclusion probe atomic claim.")
+    compound = _seed_hub(store, sentence="A compound-exclusion probe compound claim.")
+    _link_conjunct(store, atom=atom, compound=compound)
+
+    result = run_chase_trigger_pass(
+        store,
+        embedder=embedder,
+        batch_size=10,
+        min_sim=_MIN_SIM,
+        claim_refresh_limit=10,
+    )
+    assert result["claim_embeds"] == 1  # the atom only
+    assert _claim_embedding_sha(store, atom, embedder.model) is not None
+    assert _claim_embedding_sha(store, compound, embedder.model) is None
+
+
+def test_compound_hub_excluded_from_due_marking_even_with_a_stale_embedding_row(
+    store: Any,
+) -> None:
+    """Belt-and-suspenders: even if a compound hub already carries a
+    ``claim_embeddings`` row (seeded directly here, simulating a hub that
+    became compound AFTER an earlier refresh already wrote one), the probe
+    query's own exclusion still keeps it from being marked ``TAPROOT_DUE``."""
+    embedder = make_mock_bge_m3()
+    claim_sentence = "A due-marking exclusion probe compound claim."
+    atom = _seed_hub(store, sentence="A due-marking exclusion probe atomic claim.")
+    compound = _seed_hub(store, sentence=claim_sentence)
+    _link_conjunct(store, atom=atom, compound=compound)
+
+    with store.pool.connection() as conn:
+        vec = embedder.embed_one(claim_sentence)
+        conn.execute(
+            "INSERT INTO claim_embeddings (claim_ref_id, embedder, claim_sha, vector) "
+            "VALUES (%s, %s, 'deadbeef', %s)",
+            (compound, embedder.model, vec),
+        )
+        conn.commit()
+
+    # Identical text -> identical MockEmbedder vector -> distance 0 (near).
+    _seed_paper_chunk(store, embedder, cite_key="due-exclusion", text=claim_sentence)
+
+    result = run_chase_trigger_pass(
+        store,
+        embedder=embedder,
+        batch_size=10,
+        min_sim=_MIN_SIM,
+        claim_refresh_limit=10,
+    )
+    assert store.has_tag(compound, "TAPROOT_DUE", "1") is False
+    assert result["due_marked"] == 0
+
+
+def test_near_claims_excludes_a_compound_claim(store: Any) -> None:
+    """Direct check of the probe query's own exclusion, isolated from the
+    refresh step: a ``claim_embeddings`` row for a compound hub, seeded
+    directly, never surfaces from ``_near_claims`` even at distance 0."""
+    embedder = make_mock_bge_m3()
+    claim_sentence = "A direct near_claims compound-exclusion probe."
+    atom = _seed_hub(store, sentence="A direct near_claims atomic conjunct probe.")
+    compound = _seed_hub(store, sentence=claim_sentence)
+    _link_conjunct(store, atom=atom, compound=compound)
+    near_ref, near_chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="near-compound", text=claim_sentence
+    )
+
+    with store.pool.connection() as conn:
+        vec = embedder.embed_one(claim_sentence)
+        conn.execute(
+            "INSERT INTO claim_embeddings (claim_ref_id, embedder, claim_sha, vector) "
+            "VALUES (%s, %s, 'deadbeef', %s)",
+            (compound, embedder.model, vec),
+        )
+        conn.commit()
+
+        near = _near_claims(
+            conn,
+            [near_chunk_id],
+            embedder_model=embedder.model,
+            floor=_MIN_SIM,
+            chunk_ref_map={near_chunk_id: near_ref},
         )
     assert near == set()

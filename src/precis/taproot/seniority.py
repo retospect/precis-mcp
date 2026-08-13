@@ -334,13 +334,17 @@ def _sort_group(edges: list[EvidenceEdge]) -> list[EvidenceEdge]:
 
 
 _REFINES_RELATION = "refines"
+#: The atomic-claims decomposition's other claim-link relation (migration
+#: 0126) — ``link_claims`` writes it atom->compound (src=atom, dst=compound).
+#: See :func:`derive_conjuncts`.
+_CONJUNCT_RELATION = "conjunct-of"
 
 
 @dataclass(frozen=True)
 class ClaimRef:
-    """A neighbouring claim hub reached over a ``refines`` link — its ref_id
-    plus its claim sentence (the finding ``title``), for the ring's advisory
-    "see also" line."""
+    """A neighbouring claim hub reached over a claim-link edge (``refines``
+    or ``conjunct-of``) — its ref_id plus its claim sentence (the finding
+    ``title``), for the ring's advisory "see also" line."""
 
     hub_ref_id: int
     sentence: str
@@ -348,24 +352,37 @@ class ClaimRef:
 
 @dataclass(frozen=True)
 class ClaimLinks:
-    """A claim hub's advisory ``refines`` neighbourhood (migration 0100).
+    """A claim hub's advisory claim->claim neighbourhood over ONE
+    :data:`~precis.taproot.hub.CLAIM_LINK_RELATIONS` relation (migrations
+    0100/0126). Generic over the relation — :func:`derive_refines` and
+    :func:`derive_conjuncts` are its two callers, sharing the query
+    (:func:`_derive_claim_links`) but reading opposite semantics into the
+    same two fields:
 
-    Both directions of the directed, no-inverse ``refines`` edge, read via
-    explicit ``src``/``dst`` filtering (never :func:`store.links_for`, whose
-    inverse rewrite doesn't apply to a no-inverse slug but which we avoid for
-    the same clarity reason :func:`_fetch_evidence_rows` does):
+    * ``refines``: :attr:`refines` (outbound, src=hub) = coarser hubs this
+      hub sharpens; :attr:`refined_by` (inbound, dst=hub) = sharper hubs
+      that refine this one; "a sharper version of this claim exists."
+    * ``conjunct-of``: :attr:`refines` (outbound, src=hub) = the compound
+      hub this atom belongs to (0 or 1 entries — ``link_claims`` writes one
+      atom->compound edge per placed atom); :attr:`refined_by` (inbound,
+      dst=hub) = this compound's own atoms, non-empty iff ``hub_ref_id`` IS
+      a compound.
 
-    * :attr:`refines` — coarser hubs this hub sharpens (outbound: src=hub).
-    * :attr:`refined_by` — sharper hubs that refine this one (inbound:
-      dst=hub); "a sharper version of this claim exists."
+    Both directions of the directed, no-inverse edge, read via explicit
+    ``src``/``dst`` filtering (never :func:`store.links_for`, whose inverse
+    rewrite doesn't apply to a no-inverse slug but which we avoid for the
+    same clarity reason :func:`_fetch_evidence_rows` does).
     """
 
     refines: list[ClaimRef]
     refined_by: list[ClaimRef]
 
 
-def derive_refines(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
-    """Read a claim hub's ``refines`` neighbours in both directions.
+def _derive_claim_links(store: PoolStore, hub_ref_id: int, relation: str) -> ClaimLinks:
+    """Read a claim hub's ``relation`` neighbours in both directions — the
+    shared query behind :func:`derive_refines` and :func:`derive_conjuncts`
+    (generalized so the second claim-link relation, ``conjunct-of``, didn't
+    need a second copy of it).
 
     Pure read. Only live ``TAPROOT:claim`` finding neighbours are returned
     (a soft-deleted or non-hub endpoint is dropped) — the endpoint guard
@@ -392,7 +409,7 @@ def derive_refines(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
             """,
             {
                 "hub": hub_ref_id,
-                "rel": _REFINES_RELATION,
+                "rel": relation,
                 "ns": TAPROOT_NAMESPACE,
                 "val": TAPROOT_CLAIM,
             },
@@ -416,6 +433,81 @@ def derive_refines(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
         key=lambda cr: cr.hub_ref_id,
     )
     return ClaimLinks(refines=refines, refined_by=refined_by)
+
+
+def derive_refines(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
+    """Read a claim hub's ``refines`` neighbours in both directions — see
+    :func:`_derive_claim_links` for the shared query and live-endpoint
+    guard. :attr:`ClaimLinks.refines` = coarser hubs this hub sharpens;
+    :attr:`ClaimLinks.refined_by` = sharper hubs that refine this one."""
+    return _derive_claim_links(store, hub_ref_id, _REFINES_RELATION)
+
+
+def derive_conjuncts(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
+    """Read a claim hub's ``conjunct-of`` neighbours in both directions —
+    see :func:`_derive_claim_links` for the shared query and live-endpoint
+    guard. :attr:`ClaimLinks.refines` (outbound, src=hub) = the compound hub
+    this atom belongs to (0 or 1 entries); :attr:`ClaimLinks.refined_by`
+    (inbound, dst=hub) = this compound's atoms — non-empty iff ``hub_ref_id``
+    IS a compound. The read-side twin of :func:`~precis.taproot.hub.
+    link_claims`'s atom->compound write; :mod:`precis.taproot.trust`'s
+    compound = worst-of-its-atoms rollup (docs/backlog/
+    taproot-atomic-claims.md) is the motivating caller for the
+    :attr:`~ClaimLinks.refined_by` side."""
+    return _derive_claim_links(store, hub_ref_id, _CONJUNCT_RELATION)
+
+
+def conjunct_atoms_bulk(
+    store: PoolStore, hub_ref_ids: Iterable[int]
+) -> dict[int, list[int]]:
+    """Bulk twin of :func:`derive_conjuncts`'s inbound side: for every id in
+    ``hub_ref_ids``, the ref_ids of its ``conjunct-of`` atoms (``[]`` when
+    the hub isn't a compound) — ONE query instead of one
+    :func:`derive_conjuncts` call per hub. :mod:`precis.taproot.trust`'s
+    ``claim_trust_bulk`` is the motivating caller: it needs every
+    candidate compound's atom set up front before it can batch-derive each
+    atom's own trust and reduce.
+
+    The compound-hub predicate here (inbound live ``conjunct-of`` edge from
+    a live ``TAPROOT:claim`` finding source) is deliberately re-derived
+    rather than shared: it also appears, each module opening its own
+    connection, as :mod:`precis.taproot.hub`'s ``_is_compound_hub`` and
+    :mod:`precis.workers.hub_refine``'s due-set ``NOT EXISTS`` exclusion —
+    three copies by design (the atomic-claims build's cross-task seam),
+    same precedent as :func:`_is_claim_hub` mirroring ``hub._is_claim_hub``.
+
+    Every id in ``hub_ref_ids`` is a key in the result (``[]`` for a plain
+    atomic hub or an id with no rows at all), so a caller never needs a
+    ``.get(id, [])`` guard."""
+    ids = sorted({int(r) for r in hub_ref_ids})
+    out: dict[int, list[int]] = {h: [] for h in ids}
+    if not ids:
+        return out
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.dst_ref_id, l.src_ref_id
+            FROM links l
+            JOIN refs a ON a.ref_id = l.src_ref_id
+            JOIN ref_tags rt ON rt.ref_id = a.ref_id
+            JOIN tags t ON t.tag_id = rt.tag_id
+                       AND t.namespace = %(ns)s AND t.value = %(val)s
+            WHERE l.relation = %(rel)s
+              AND l.dst_ref_id = ANY(%(hubs)s)
+              AND a.kind = 'finding' AND a.deleted_at IS NULL
+            """,
+            {
+                "hubs": ids,
+                "rel": _CONJUNCT_RELATION,
+                "ns": TAPROOT_NAMESPACE,
+                "val": TAPROOT_CLAIM,
+            },
+        ).fetchall()
+    for dst, src in rows:
+        out[int(dst)].append(int(src))
+    for atoms in out.values():
+        atoms.sort()
+    return out
 
 
 @dataclass(frozen=True)
@@ -704,6 +796,8 @@ __all__ = [
     "EvidenceEdge",
     "GroundingRef",
     "HubEvidence",
+    "conjunct_atoms_bulk",
+    "derive_conjuncts",
     "derive_evidence",
     "derive_evidence_bulk",
     "derive_refines",

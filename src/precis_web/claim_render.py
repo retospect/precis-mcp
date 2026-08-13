@@ -37,6 +37,7 @@ from precis.taproot.seniority import (
     CiterEdge,
     EvidenceEdge,
     HubEvidence,
+    conjunct_atoms_bulk,
     derive_evidence,
     derive_evidence_bulk,
     hub_citers,
@@ -443,6 +444,7 @@ def _render_one(
     cite_key_map: dict[int, list[str]] | None = None,
     chunk_cache: dict[str, dict[str, Any]] | None = None,
     paper_refs: dict[int, Any] | None = None,
+    conjunct_atom_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Shape one already-resolved hub's evidence for the web — the shared
     tail both :func:`render_claim_evidence` (singular) and
@@ -471,6 +473,7 @@ def _render_one(
         cite_key_map=cite_key_map,
         ref=hub_ref,
         paper_refs=paper_refs,
+        conjunct_atom_ids=conjunct_atom_ids,
     )
     status = trust.label
     # ``paper_refs`` (all supporter rows, batched once by both the singular and
@@ -639,6 +642,7 @@ def render_claim_evidence(store: Store, head: str) -> dict[str, Any] | None:
         cite_key_map=cite_key_map,
         chunk_cache=chunk_cache,
         paper_refs=paper_refs,
+        conjunct_atom_ids=conjunct_atoms_bulk(store, [ref_id])[ref_id],
     )
 
 
@@ -721,6 +725,9 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
     # Supporter-paper refs for the hub-clean unacquirable-override check, batched
     # once (mirrors cite_key_map) so claim_trust never re-fetches per hub.
     paper_refs = store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
+    # Conjunct atoms batched once (mirrors cite_key_map) so claim_trust's
+    # compound check issues no per-hub derive_conjuncts queries.
+    atoms_by_hub = conjunct_atoms_bulk(store, hub_ref_ids)
 
     out: list[dict[str, Any]] = []
     for head, ref_id in head_ref.items():
@@ -737,6 +744,7 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
                 cite_key_map=cite_key_map,
                 chunk_cache=chunk_cache,
                 paper_refs=paper_refs,
+                conjunct_atom_ids=atoms_by_hub.get(ref_id, []),
             )
         )
     return out

@@ -1579,6 +1579,20 @@ def _taproot_bridge(
     * an empty finding title (the NO-CLAIM equivalent here — see the
       module-level note on why this doesn't call
       :func:`~precis.taproot.canon.extract_claim`).
+
+    **Decomposition deferral** (docs/backlog/taproot-atomic-claims.md): this
+    bridge never calls :func:`~precis.taproot.canon.extract_claim`, so it
+    never sees a :class:`~precis.taproot.canon.ClaimExtraction` and never
+    decomposes — it still builds one flat ``CanonicalClaim`` from
+    ``finding.title`` and routes it through the single-claim
+    ``block``/``dedup_judge``/``place`` → :func:`~precis.taproot.hub.apply_placement`
+    path exactly as before. A chase-minted hub can therefore still be a
+    compound (bundling multiple conjuncts) until a human migration pass
+    revisits it; :func:`precis.taproot.backfill.apply_chunk` is the only
+    caller currently wired to the decomposition-aware
+    :func:`~precis.taproot.hub.apply_extraction` write door. Deliberate scope
+    limit, not an oversight — see the design doc's "Migration of existing
+    hubs" section.
     """
     if embedder is None:
         log.info(

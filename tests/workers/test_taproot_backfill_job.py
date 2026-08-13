@@ -32,7 +32,7 @@ from precis.store.store import Store
 # THIS reference (never re-import from the module), or patching it would
 # recurse into the fake itself.
 from precis.taproot.backfill import apply_chunk as _REAL_APPLY_CHUNK
-from precis.taproot.canon import CanonicalClaim
+from precis.taproot.canon import CanonicalClaim, ClaimExtraction
 from precis.taproot.seniority import is_claim_hub
 from precis.workers.job_types import get_job_type, known_job_types
 from tests.workers._helpers import seed_chunk, seed_ref
@@ -187,7 +187,9 @@ def _claim(sentence: str) -> CanonicalClaim:
 
 
 def _extract_const(sentence: str) -> Any:
-    return lambda span: _claim(sentence)
+    return lambda span: ClaimExtraction(
+        atoms=(_claim(sentence),), compound=None, not_claims=()
+    )
 
 
 def _block_none(claim: Any, store: Any, embedder: Any) -> list[Any]:

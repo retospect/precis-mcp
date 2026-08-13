@@ -11,16 +11,25 @@ acceptance criteria can assert call counts, not just outcomes.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.hub import attach_evidence, mint_hub
+from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.utils import handle_registry
 from precis.workers._chase_llm import is_corroborating
 from precis.workers.bib_mark import run_bib_mark_pass
-from precis.workers.hub_refine import hub_refine_enabled, run_hub_refine_pass
+from precis.workers.hub_refine import (
+    _ATTEMPT_NS,
+    _ATTEMPT_VALUE,
+    _claim_hubs_due_for_refine,
+    _is_compound_hub,
+    _refine_one_hub,
+    hub_refine_enabled,
+    run_hub_refine_pass,
+)
 from precis_web.claim_render import render_claim_evidence
 from tests.workers._helpers import make_mock_bge_m3
 
@@ -908,3 +917,137 @@ def test_attached_patent_is_not_reverified_next_pass(store: Any) -> None:
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert mock_verify.call_count == 0
     assert len(_edges_from(store, patent)) == 1  # still exactly one edge
+
+
+# ── compound-hub exclusion (docs/backlog/taproot-atomic-claims.md) ──────
+#
+# A compound claim hub (a live inbound `conjunct-of` edge from a live
+# finding) must never be claimed here — its only possible write is a
+# direct evidence attach, which `taproot.hub.attach_evidence` now refuses.
+
+
+def _link_conjunct(store: Any, *, atom: int, compound: int) -> None:
+    assert link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+
+
+def test_is_compound_hub_helper(store: Any) -> None:
+    """Unit-level check of the per-hub mirror predicate."""
+    atom = _seed_hub(store, sentence="A helper-probe atomic claim about a device.")
+    compound = _seed_hub(
+        store, sentence="A helper-probe compound claim about a device."
+    )
+    with store.pool.connection() as conn:
+        assert _is_compound_hub(conn, atom) is False
+        assert _is_compound_hub(conn, compound) is False
+
+    _link_conjunct(store, atom=atom, compound=compound)
+
+    with store.pool.connection() as conn:
+        assert _is_compound_hub(conn, atom) is False  # the atom itself isn't compound
+        assert _is_compound_hub(conn, compound) is True
+
+
+def test_claim_hubs_due_for_refine_excludes_compound(store: Any) -> None:
+    """SQL-level check: the due-set query's ``NOT EXISTS`` filters the
+    compound out even though it's never-refined — the strongest due
+    reason there is."""
+    atom = _seed_hub(store, sentence="A direct due-set probe atomic claim.")
+    compound = _seed_hub(store, sentence="A direct due-set probe compound claim.")
+    _link_conjunct(store, atom=atom, compound=compound)
+
+    with store.pool.connection() as conn:
+        due = _claim_hubs_due_for_refine(conn, store, limit=10, backstop_h=2160.0)
+        conn.commit()
+    assert atom in due
+    assert compound not in due
+
+
+def test_compound_hub_is_never_claimed_end_to_end(store: Any) -> None:
+    """Driven from ``run_hub_refine_pass`` (not the internals): the atom is
+    refined, the compound sitting right beside it never is."""
+    embedder = make_mock_bge_m3()
+    atom = _seed_hub(store, sentence="An atomic conjunct claim about a device.")
+    compound = _seed_hub(store, sentence="A compound claim bundling several conjuncts.")
+    _link_conjunct(store, atom=atom, compound=compound)
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert result["claimed"] == 1  # the atom only
+    assert _hub_meta(store, atom).get("last_refined_at") is not None
+    assert _hub_meta(store, compound).get("last_refined_at") is None
+
+
+def test_compound_hub_reached_mid_flight_stamps_and_drains(store: Any) -> None:
+    """A hub that BECOMES compound between claim and processing (a
+    concurrent decomposition landing in the race window) is drained
+    defensively by ``_refine_one_hub`` itself: stamped and lease-cleared,
+    but discovery/verify never run and no evidence attach is attempted."""
+    embedder = make_mock_bge_m3()
+    atom = _seed_hub(store, sentence="A mid-flight-race atomic conjunct claim.")
+    compound = _seed_hub(store, sentence="A mid-flight-race compound claim.")
+    _seed_paper_chunk(
+        store, embedder, cite_key="midflight", text="A direct measurement statement."
+    )
+    _link_conjunct(store, atom=atom, compound=compound)
+
+    # Simulate the claim-time attempt lease already written (the normal
+    # claim path would have written this before _refine_one_hub ever runs).
+    store.add_tag(
+        compound,
+        Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE),
+        set_by="system",
+        expires_at=datetime.now(UTC) + timedelta(minutes=30),
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        with store.pool.connection() as conn:
+            _refine_one_hub(
+                conn, store, compound, embedder=embedder, topk=8, min_sim=None
+            )
+            conn.commit()
+
+    assert mock_verify.call_count == 0  # never reaches discovery/verify
+    assert _hub_meta(store, compound).get("last_refined_at") is not None
+    assert store.has_tag(compound, _ATTEMPT_NS, _ATTEMPT_VALUE) is False
+
+
+def test_atom_sha_reopen_still_clears_its_own_memo_beside_a_compound(
+    store: Any,
+) -> None:
+    """The compound exclusion is scoped to the compound hub only — an
+    atom's own sha-reopen (:func:`_is_hub_due`'s item 3) still fires and
+    clears its own rejection memo at the correct (atom) grain, unaffected
+    by having a ``conjunct-of`` sibling; the compound is never touched."""
+    embedder = make_mock_bge_m3()
+    atom = _seed_hub(store, sentence="Original atomic claim wording about a device.")
+    compound = _seed_hub(store, sentence="A compound claim with an atomic conjunct.")
+    _link_conjunct(store, atom=atom, compound=compound)
+    paper, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="atom-reopen", text="An unrelated measurement."
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1  # only the atom — the compound is excluded
+    rejected = _hub_meta(store, atom).get("taproot_rejected") or {}
+    assert str(paper) in rejected
+
+    # Baseline: not due again.
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
+    assert mock_verify.call_count == 0
+
+    # The atom's own wording changes -- a sha-reopen at the atom grain.
+    store.update_ref(atom, title="A materially edited atomic claim wording.")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+    # The memo was cleared BEFORE discovery: the previously-rejected paper
+    # is re-verified, not silently skipped by the (now-stale) memo.
+    assert mock_verify2.call_count == 1
+    assert _hub_meta(store, compound).get("last_refined_at") is None

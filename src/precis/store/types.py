@@ -222,6 +222,16 @@ Relation = Literal[
     # relation='refines')`. Keep in sync with the `relations` seed in
     # 0100_taproot_refines_relation.sql.
     "refines",
+    # Taproot claim→claim advisory link, second relation — migration 0126
+    # (docs/backlog/taproot-atomic-claims.md). `conjunct-of` (atom claim hub
+    # → compound claim hub) — a compound claim decomposes into atomic claim
+    # hubs, each linked back to the compound it is one conjunct of. Same
+    # link-don't-merge / no-evidence-flow shape as `refines`; same direction
+    # convention (derived/finer node → coarser node). No inverse: read both
+    # directions via `links_for(direction='in'|'out', relation='conjunct-
+    # of')`. Keep in sync with the `relations` seed in
+    # 0126_taproot_conjunct_of_relation.sql.
+    "conjunct-of",
     # Acquisition-mode findings — migration 0105. `awaits-evidence` binds
     # a `finding` (STATUS:acquiring) to each `DREAM:acquire` paper stub its
     # `wants=` descriptors minted; the chase worker polls the linked stubs

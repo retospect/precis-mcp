@@ -38,6 +38,20 @@ without having been matched):
     closed ``TAPROOT_DUE`` ref tag — idempotent, popped by ``hub_refine``
     when it claims the hub.
 
+**Compound exclusion** (docs/backlog/taproot-atomic-claims.md): both (a)'s
+hub query and (c)'s probe query exclude compound claim hubs (a live inbound
+``conjunct-of`` edge from a live finding) — same predicate
+``hub_refine._is_compound_hub``/``_claim_hubs_due_for_refine`` apply,
+deliberately re-derived rather than shared (the "cross-task seam"
+precedent: ``seniority._is_claim_hub`` mirrors ``hub._is_claim_hub``). A
+compound excluded from ``hub_refine``'s own due-set query must never be
+embedded/probed/marked ``TAPROOT_DUE`` here either — a due-mark that
+``hub_refine`` would never claim (it's excluded there too) would just
+accumulate on the hub forever, an unpopped tag with no consumer. Existing
+``claim_embeddings`` rows for a hub that later becomes compound are left in
+place (no deletion pass) — harmless once (a) stops refreshing them and (c)
+stops probing against them.
+
 (d) **Mark every claimed chunk swept** — matched or not, in the same
     transaction as (b)+(c). This is what drains the queue and guarantees
     convergence: a chunk that matched nothing is still marked so it's never
@@ -135,6 +149,11 @@ def _refresh_claim_embeddings(
     Python -- the sha comparison isn't SQL-computable (see
     :func:`taproot.canon.claim_sha`), and migration 0101's own comment
     already sizes this table (~1.2k rows) as trivial to scan whole.
+
+    Excludes **compound** claim hubs (docs/backlog/taproot-atomic-claims.md
+    -- see the module docstring's "Compound exclusion" note): a compound's
+    ``claim_embeddings`` row is never refreshed, so it never becomes a probe
+    target for :func:`_near_claims` either.
     """
     rows = conn.execute(
         """
@@ -155,6 +174,14 @@ def _refresh_claim_embeddings(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %(status_ns)s
                     AND t.value = %(status_canonical)s
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM links l
+                  JOIN refs a ON a.ref_id = l.src_ref_id
+                 WHERE l.dst_ref_id = r.ref_id
+                   AND l.relation = 'conjunct-of'
+                   AND a.kind = 'finding'
+                   AND a.deleted_at IS NULL
                )
          ORDER BY r.ref_id
         """,
@@ -259,7 +286,16 @@ def _near_claims(
 ) -> set[int]:
     """Distinct claim-hub ``ref_id``s within ``floor`` cosine distance of any
     chunk in ``chunk_ids``, excluding a claim matching its own source chunk
-    (a claim hub's own card surfacing in its own sweep)."""
+    (a claim hub's own card surfacing in its own sweep).
+
+    Excludes **compound** claim hubs the same way :func:`_refresh_claim_
+    embeddings` does upstream (docs/backlog/taproot-atomic-claims.md) --
+    belt-and-suspenders: (a) already stops refreshing a compound's row, so
+    this is normally a no-op filter, but a hub already carrying a stale row
+    when it *becomes* compound (a decomposition landing between passes)
+    must still never surface here, since ``hub_refine`` would never claim
+    it to pop the due-mark this function would otherwise write.
+    """
     rows = conn.execute(
         """
         SELECT DISTINCT ce.chunk_id, cl.claim_ref_id
@@ -271,6 +307,14 @@ def _near_claims(
          WHERE ce.chunk_id = ANY(%(chunk_ids)s)
            AND ce.embedder = %(embedder)s
            AND ce.status = 'ok'
+           AND NOT EXISTS (
+                 SELECT 1 FROM links l
+                  JOIN refs a ON a.ref_id = l.src_ref_id
+                 WHERE l.dst_ref_id = cl.claim_ref_id
+                   AND l.relation = 'conjunct-of'
+                   AND a.kind = 'finding'
+                   AND a.deleted_at IS NULL
+               )
         """,
         {"floor": floor, "chunk_ids": chunk_ids, "embedder": embedder_model},
     ).fetchall()
