@@ -1,0 +1,85 @@
+{% extends "base.html.j2" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">Settings</h1>
+<p class="text-sm text-slate-500 mb-5 max-w-2xl">
+  DB-resident config (<code>precis.settings</code>) — a saved row overrides
+  the env var, which overrides the compiled default. Reflects
+  <strong>db</strong>/<strong>env</strong>/<strong>default</strong> — which
+  layer each key currently resolves from. "Clear" reverts to env/compiled.
+</p>
+
+{% if error %}
+<div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+  {{ error }}
+</div>
+{% endif %}
+
+<div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+      <tr>
+        <th class="text-left font-medium px-4 py-2">Key</th>
+        <th class="text-left font-medium px-4 py-2">Value</th>
+        <th class="text-left font-medium px-4 py-2">Layer</th>
+        <th class="text-left font-medium px-4 py-2">Env var</th>
+        <th class="text-left font-medium px-4 py-2 w-1/4">Set</th>
+        <th class="px-4 py-2"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr>
+        <td class="px-4 py-2 align-middle">
+          <span class="font-mono text-xs text-slate-700">{{ r.key }}</span>
+          <div class="text-[10px] text-slate-400 max-w-xs">{{ r.doc }}</div>
+        </td>
+        <td class="px-4 py-2 align-middle font-mono text-xs text-slate-600">
+          {{ r.value if r.value is not none else '—' }}
+        </td>
+        <td class="px-4 py-2 align-middle">
+          <span class="rounded px-1.5 py-0.5 text-[11px]
+            {% if r.layer == 'db' %}bg-sky-50 text-sky-700
+            {% elif r.layer == 'env' %}bg-amber-50 text-amber-700
+            {% else %}bg-slate-100 text-slate-500{% endif %}">{{ r.layer }}</span>
+          {% if r.layer == 'db' %}
+          <div class="text-[10px] text-slate-300 mt-1">
+            {{ r.updated_at | ago if r.updated_at else '' }}
+            {% if r.updated_by %}by {{ r.updated_by }}{% endif %}
+          </div>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2 align-middle font-mono text-[11px] text-slate-400">
+          {{ r.env_var or '-' }}
+        </td>
+        <td class="px-4 py-2 align-middle">
+          <form method="post" action="/settings/set" class="flex gap-2">
+            <input type="hidden" name="key" value="{{ r.key }}" />
+            <input type="text" name="value"
+                   value="{{ r.value if r.value is not none else '' }}"
+                   class="flex-1 rounded border border-slate-200 px-2 py-1 text-xs
+                          font-mono focus:border-sky-400 focus:outline-none" />
+            <button type="submit"
+                    class="rounded bg-sky-600 text-white text-xs px-3 py-1
+                           hover:bg-sky-700 transition">Save</button>
+          </form>
+        </td>
+        <td class="px-4 py-2 align-middle text-right">
+          {% if r.layer == 'db' %}
+          <form method="post" action="/settings/clear">
+            <input type="hidden" name="key" value="{{ r.key }}" />
+            <button type="submit"
+                    class="text-xs text-slate-400 hover:text-rose-600 transition">clear</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">
+        No registered settings keys.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

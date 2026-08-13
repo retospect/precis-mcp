@@ -15,8 +15,9 @@ seven verbs:
   the raw mmCIF structure (``view='cif'``).
 - ``delete`` — soft-retire a protein.
 
-Ships **dark** behind ``PRECIS_BIO_ENABLED`` (``KindSpec.requires_env``): the
-kind is hidden from the catalogue and the dispatcher until the flag is set.
+Ships **dark** behind the ``bio.enabled`` setting (``KindSpec.requires_setting``;
+DB row → ``PRECIS_BIO_ENABLED`` env → unset/off): the kind is hidden from the
+catalogue and the dispatcher until enabled.
 
 """
 
@@ -26,6 +27,7 @@ import os
 import re
 from typing import Any, ClassVar
 
+from precis import settings as _settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
@@ -39,6 +41,22 @@ from precis_bio.persist import apply_fold_result
 #: round-trip testable without a cluster (route's ``PRECIS_CHEM_ROUTE_NODE``
 #: analogue).
 FOLD_NODE_ENV = "PRECIS_FOLD_NODE"
+
+#: Registered at import time, before ``ProteinHandler.spec`` is consumed by
+#: the kind gate — the DB-resident sibling of the old ``PRECIS_BIO_ENABLED``
+#: ``requires_env`` gate (``docs/backlog/db-resident-settings.md`` slice 3).
+#: ``default=None`` preserves today's behaviour (unset ⇒ kind unavailable);
+#: the env var stays the fallback tier so a host that already sets it sees
+#: zero change, while a DB row now enables/disables the kind fleet-wide.
+_settings.register(
+    _settings.SettingSpec(
+        key="bio.enabled",
+        type="bool",
+        env_var="PRECIS_BIO_ENABLED",
+        default=None,
+        doc="Dark-ship flag for the `protein` kind (precis_bio plugin).",
+    )
+)
 
 
 class ProteinHandler(Handler):
@@ -63,8 +81,8 @@ class ProteinHandler(Handler):
         role="artifact",
         corpus_role="none",
         can_own_jobs=True,
-        # Dark-ship: the kind is hidden until the flag is set.
-        requires_env=("PRECIS_BIO_ENABLED",),
+        # Dark-ship: the kind is hidden until the `bio.enabled` setting resolves.
+        requires_setting=("bio.enabled",),
     )
 
     def __init__(self, *, hub: Hub) -> None:

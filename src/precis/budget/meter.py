@@ -23,7 +23,6 @@ are gated.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -73,16 +72,6 @@ def active_store() -> Store | None:
     """The process-bound store, if any — the breaker's fallback when a caller
     doesn't pass one explicitly."""
     return _STORE
-
-
-def _cap(env_var: str, default: float) -> float:
-    raw = os.environ.get(env_var)
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,26 +128,20 @@ def spent_usd(store: Store, *, since_seconds: int) -> float:
     return float(llm[0] if llm else 0.0) + float(fetch[0] if fetch else 0.0)
 
 
-def _resolve_cap(store: Store, key: str, env_var: str, default: float) -> float:
-    """Cap resolution: DB override (web-set) → env default → compiled default."""
-    from precis.budget.settings import get_float
-
-    override = get_float(store, key)
-    return override if override is not None else _cap(env_var, default)
-
-
 def _compute_status(store: Store) -> BudgetStatus:
-    from precis.budget import settings as _s
+    # DB → env → compiled-default cap resolution now lives in the registry
+    # (precis.settings) rather than being hand-rolled here; the registry's
+    # env var / default already match DEFAULT_HOURLY_USD / DEFAULT_DAILY_USD.
+    # ``or DEFAULT`` would be wrong here — it'd also catch a legitimate 0.0.
+    from precis import settings as _settings
 
+    hourly_cap = _settings.get_float("budget.hourly_usd", store=store)
+    daily_cap = _settings.get_float("budget.daily_usd", store=store)
     return BudgetStatus(
         hourly_spent=spent_usd(store, since_seconds=_HOUR_S),
         daily_spent=spent_usd(store, since_seconds=_DAY_S),
-        hourly_cap=_resolve_cap(
-            store, _s.HOURLY_KEY, "PRECIS_BUDGET_HOURLY_USD", DEFAULT_HOURLY_USD
-        ),
-        daily_cap=_resolve_cap(
-            store, _s.DAILY_KEY, "PRECIS_BUDGET_DAILY_USD", DEFAULT_DAILY_USD
-        ),
+        hourly_cap=hourly_cap if hourly_cap is not None else DEFAULT_HOURLY_USD,
+        daily_cap=daily_cap if daily_cap is not None else DEFAULT_DAILY_USD,
     )
 
 

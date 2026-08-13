@@ -167,7 +167,8 @@ class EdgarHandler(Handler):
             except EdgarError as e:
                 raise NotFound(
                     f"could not fetch filing {slug!r} from SEC: {e}",
-                    next="check PRECIS_EDGAR_USER_AGENT and SEC availability",
+                    next="check `precis settings set contact.edgar_user_agent` "
+                    "(or PRECIS_EDGAR_USER_AGENT) and SEC availability",
                 ) from e
             ref = self.store.get_ref(kind="edgar", id=result.slug)
             if ref is None:

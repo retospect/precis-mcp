@@ -34,6 +34,7 @@ import os
 import sys
 from pathlib import Path
 
+from precis import settings
 from precis.cli._common import resolve_dsn
 
 log = logging.getLogger(__name__)
@@ -197,7 +198,7 @@ def run(args: argparse.Namespace) -> None:
     # Mailto resolution: CLI flag → env. We never silently send no
     # mailto for a batch >50, since that's discourteous on the
     # polite pool — warn instead.
-    mailto = args.mailto or os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+    mailto = args.mailto or settings.get_str("contact.crossref_mailto")
     if mailto is None and len(dois) > 50:
         log.warning(
             "check-provenance: %d DOIs without a polite-pool mailto. "
@@ -248,7 +249,7 @@ def run_sync(args: argparse.Namespace) -> None:
         print(f"sync-retraction-watch: cannot resolve DSN: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    mailto = args.mailto or os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+    mailto = args.mailto or settings.get_str("contact.crossref_mailto")
     if args.source == "labs" and not mailto:
         print(
             "sync-retraction-watch: --source=labs requires --mailto "

@@ -15,9 +15,9 @@ onto the seven verbs:
 - ``get``    — list routes, or render one route graph (``id=slug``).
 - ``delete`` — soft-retire a route.
 
-Ships **dark** behind ``PRECIS_CHEM_ENABLED`` (``KindSpec.requires_env``):
-the kind is hidden from the catalogue and the dispatcher until the flag is
-set.
+Ships **dark** behind the ``chem.enabled`` setting (``KindSpec.requires_setting``;
+DB row → ``PRECIS_CHEM_ENABLED`` env → unset/off): the kind is hidden from
+the catalogue and the dispatcher until enabled.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import os
 import re
 from typing import Any, ClassVar
 
+from precis import settings as _settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
@@ -38,6 +39,22 @@ from precis_chem.persist import apply_route_result
 #: handler runs the (in-process) engine inline — the slice-0 fallback that
 #: keeps the round-trip testable without a cluster (autocatpath's EMT analogue).
 ROUTE_NODE_ENV = "PRECIS_CHEM_ROUTE_NODE"
+
+#: Registered at import time, before ``RouteHandler.spec`` is consumed by the
+#: kind gate — the DB-resident sibling of the old ``PRECIS_CHEM_ENABLED``
+#: ``requires_env`` gate (``docs/backlog/db-resident-settings.md`` slice 3).
+#: ``default=None`` preserves today's behaviour (unset ⇒ kind unavailable);
+#: the env var stays the fallback tier so a host that already sets it sees
+#: zero change, while a DB row now enables/disables the kind fleet-wide.
+_settings.register(
+    _settings.SettingSpec(
+        key="chem.enabled",
+        type="bool",
+        env_var="PRECIS_CHEM_ENABLED",
+        default=None,
+        doc="Dark-ship flag for the `route` kind (precis_chem plugin).",
+    )
+)
 
 
 class RouteHandler(Handler):
@@ -61,8 +78,8 @@ class RouteHandler(Handler):
         role="artifact",
         corpus_role="none",
         can_own_jobs=True,
-        # Dark-ship: the kind is hidden until the flag is set.
-        requires_env=("PRECIS_CHEM_ENABLED",),
+        # Dark-ship: the kind is hidden until the `chem.enabled` setting resolves.
+        requires_setting=("chem.enabled",),
     )
 
     def __init__(self, *, hub: Hub) -> None:

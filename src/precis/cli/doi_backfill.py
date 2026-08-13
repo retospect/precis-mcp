@@ -8,9 +8,9 @@ default; ``--apply`` writes.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
+from precis import settings
 from precis.cli._common import resolve_dsn
 from precis.secrets import get_secret
 
@@ -86,10 +86,10 @@ def run(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    # ACATOME_CROSSREF_MAILTO is unset in prod; PRECIS_UNPAYWALL_EMAIL is
+    # ACATOME_CROSSREF_MAILTO is unset in prod; contact.polite_email is
     # the working Crossref polite-pool contact — see resolve-metadata.
-    mailto = get_secret("ACATOME_CROSSREF_MAILTO", store=store) or os.environ.get(
-        "PRECIS_UNPAYWALL_EMAIL", ""
+    mailto = get_secret("ACATOME_CROSSREF_MAILTO", store=store) or (
+        settings.get_str("contact.polite_email", store=store) or ""
     )
     s2_key = get_secret("SEMANTIC_SCHOLAR_API_KEY", store=store) or ""
     if not s2_key:

@@ -1,0 +1,22 @@
+-- 0125_app_settings_updated_by.sql
+--
+-- Who set this override, not just when. `app_settings` (migration 0070) has
+-- carried `updated_at` since the budget caps were its only consumer;
+-- promoting it to a general DB-resident settings layer
+-- (docs/backlog/db-resident-settings.md, Slice 1) means a drifted-vs-intended
+-- value needs the same "which process wrote this" answer the vault got in
+-- 0111 — reuse that identity summary (host/os_user/pid/ppid/process) rather
+-- than growing a parallel audit scheme.
+--
+-- A single text column, not five, because `app_settings` writes are rare
+-- (operator/web edits, not a hot audit stream like vault reveals) — one
+-- pre-formatted summary string is enough, no query ever needs to filter by
+-- host or pid alone the way `vault.events` does.
+--
+-- Nullable and additive: existing rows (budget caps set before this
+-- migration) keep NULL, and a caller on old code (pre-migration `set_setting`)
+-- still writes fine, just without the attribution.
+--
+-- Forward-only (ADR 0005). Idempotent.
+
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS updated_by text;

@@ -15,8 +15,9 @@ the NAS, never baked into the image.
 
 Slice 1 (this package) is the **retrosynthesis `route` kind** + a
 ``retrosynth`` job that plans a synthetic route to a target molecule.
-It ships **dark** behind ``PRECIS_CHEM_ENABLED`` (the ``route`` kind's
-``requires_env``) so the merge is inert until the flag is set. The
+It ships **dark** behind the ``chem.enabled`` setting (the ``route``
+kind's ``requires_setting``; DB row → ``PRECIS_CHEM_ENABLED`` env
+fallback) so the merge is inert until the flag is set. The
 heavy engines (AiZynthFinder, ASKCOS, …) live behind the ``[chem]``
 extra and are lazy-imported only on the compute node that runs the
 job; the always-on request path needs none of them — a deterministic

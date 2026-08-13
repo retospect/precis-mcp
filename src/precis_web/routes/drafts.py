@@ -67,7 +67,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 import re
 import tempfile
 from collections import OrderedDict
@@ -87,6 +86,7 @@ from fastapi.responses import (
 )
 from markupsafe import Markup
 
+from precis import settings
 from precis.draft.scaffolds import DOC_TYPE_BRIEF as _DOC_TYPE_BRIEF
 
 # Unused in this module itself, but re-exported: routes/drive.py and
@@ -1081,10 +1081,8 @@ def _crossref_mailto() -> str | None:
 
     Read fresh per call (not cached at import) so rotating it in ops
     doesn't need a process restart."""
-    return (
-        os.environ.get("PRECIS_CROSSREF_MAILTO")
-        or os.environ.get("PRECIS_UNPAYWALL_EMAIL")
-        or None
+    return settings.get_str("contact.crossref_mailto") or settings.get_str(
+        "contact.polite_email"
     )
 
 

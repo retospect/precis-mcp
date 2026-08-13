@@ -27,6 +27,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from precis import settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
@@ -1120,8 +1121,6 @@ class PaperHandler(Handler):
         different paper"). A lookup failure/timeout/miss silently falls
         back to the generic note — never raises.
         """
-        import os
-
         warning = (
             f"note: doi changed to {doi!r} on a paper that already has a "
             "title — a future metadata re-resolve may overwrite title/"
@@ -1132,7 +1131,7 @@ class PaperHandler(Handler):
             from precis.ingest._text_norm import best_jaccard
             from precis.ingest.crossref import lookup_crossref
 
-            mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or ""
+            mailto = settings.get_str("contact.crossref_mailto") or ""
             resolved = lookup_crossref(doi, mailto=mailto)
             resolved_title = (resolved or {}).get("title")
             if resolved_title and str(resolved_title).strip():
@@ -1660,11 +1659,9 @@ class PaperHandler(Handler):
                 next=f"get(id='{_pa(ref)}', view='abstract')",
             )
 
-        # Inherit the mailto convention from the env, same as the
-        # provenance handler does at boot.
-        import os
-
-        mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+        # Inherit the mailto convention from settings, same as the
+        # provenance handler.
+        mailto = settings.get_str("contact.crossref_mailto")
         result = check_doi(doi, store=self.store, mailto=mailto)
         return Response(body=render_single(result))
 

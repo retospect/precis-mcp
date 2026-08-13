@@ -47,9 +47,18 @@ class _Conn:
         return False
 
     def execute(self, sql: str, params: object = None) -> _Cursor:
-        return (
-            _Cursor((self._llm,)) if "llm_call_log" in sql else _Cursor((self._fetch,))
-        )
+        # Answers exactly the two spent_usd() queries; anything else (the cap
+        # resolution's app_settings read) has no override row — matching the
+        # "no DB override configured" default this bare FakeStore models.
+        # Falling through to ``self._fetch`` here used to be silently
+        # absorbed by ``budget.settings.get_float``'s positive-only filter;
+        # ``precis.settings.get_float`` (meter's resolver now) has no such
+        # filter, so a stray 0.0 "override" would wrongly zero the cap.
+        if "llm_call_log" in sql:
+            return _Cursor((self._llm,))
+        if "cache_state" in sql:
+            return _Cursor((self._fetch,))
+        return _Cursor(None)
 
 
 class _Pool:
@@ -79,6 +88,12 @@ def _reset_budget_state(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
     meter.bind_store(None)
     breaker_mod._reset_alert_state()
+    # meter now resolves the caps through precis.settings' TTL cache
+    # (keyed by name only, process-global) — drop it so one test's fake DB
+    # value can't leak into the next test's read of the same key.
+    from precis import settings as _psettings
+
+    _psettings.invalidate()
 
 
 # ── bands ──────────────────────────────────────────────────────────────

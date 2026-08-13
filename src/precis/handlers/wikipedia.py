@@ -33,6 +33,7 @@ import os
 from typing import Any, ClassVar
 from urllib.parse import quote
 
+from precis import settings
 from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import (
     CacheBackedHandler,
@@ -142,7 +143,7 @@ class WikipediaHandler(CacheBackedHandler):
 
     @staticmethod
     def _user_agent() -> str:
-        return (os.environ.get("PRECIS_WIKIPEDIA_UA") or "").strip() or _DEFAULT_UA
+        return (settings.get_str("contact.wikipedia_ua") or "").strip() or _DEFAULT_UA
 
     # ── upstream fetch ────────────────────────────────────────────────
 

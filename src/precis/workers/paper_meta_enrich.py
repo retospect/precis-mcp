@@ -35,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 
+from precis import settings
 from precis.store import Store
 from precis.workers.runner import BatchResult
 
@@ -116,8 +117,8 @@ def run_paper_meta_enrich_pass(
 
     from precis.ingest.paper_meta_enrich import enrich_paper
 
-    mailto = os.environ.get("PRECIS_CROSSREF_MAILTO", "").strip()
-    email = os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
+    mailto = (settings.get_str("contact.crossref_mailto") or "").strip()
+    email = (settings.get_str("contact.polite_email") or "").strip()
     batch_limit = limit if limit is not None else _DEFAULT_BATCH_LIMIT
 
     # Single-runner lock: same rationale as paper_reconcile / openalex_enrich

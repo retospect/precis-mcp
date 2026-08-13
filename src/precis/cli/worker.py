@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from precis import settings
 from precis.cli._common import (
     add_format_argument,
     resolve_dsn,
@@ -524,6 +525,11 @@ def run(args: argparse.Namespace) -> None:
     from precis.budget import bind_store as _bind_budget_store
 
     _bind_budget_store(store)
+    # Bind the same store for DB-resident settings (precis.settings) so
+    # registered keys resolve through the DB tier, mirroring secrets.
+    from precis import settings as _settings
+
+    _settings.bind_store(store)
     # Attach the centralised DB log handler now that we have a
     # working DSN. The file handler the worker's parent process
     # already set up stays in place as the bootstrap + fallback
@@ -689,7 +695,7 @@ def run(args: argparse.Namespace) -> None:
                 log_call=True,
                 log_blobs=False,
             )
-            _bp_mailto = os.environ.get("PRECIS_UNPAYWALL_EMAIL") or ""
+            _bp_mailto = settings.get_str("contact.polite_email") or ""
 
             def _bib_parse_pass(batch_size: int) -> _BpBatchResult:
                 from precis.workers.bib_parse import run_bib_parse_pass

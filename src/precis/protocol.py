@@ -121,16 +121,31 @@ class KindSpec:
     #: in the secrets vault, so the kind stays available after the env var is
     #: pulled and the value lives only in the DB.
     requires_secret: tuple[str, ...] = ()
+    #: Non-secret settings that must resolve to a usable value
+    #: (:func:`precis.settings.is_available`) or the kind is hidden. Use this
+    #: instead of ``requires_env`` for behavior flags / config that should be
+    #: fleet-uniform: DB row → registry env var → compiled default, so
+    #: availability doesn't depend on which launcher spawned this process
+    #: (``docs/backlog/db-resident-settings.md`` slice 3). A bool-typed key
+    #: resolving ``False`` (or unset with no compiled default) counts as
+    #: unavailable, same as an unset ``requires_env`` var.
+    requires_setting: tuple[str, ...] = ()
 
     def is_available(self) -> bool:
-        """True iff every required env var is set and every required secret
-        resolves (env / vault / file)."""
+        """True iff every required env var is set, every required secret
+        resolves (env / vault / file), and every required setting resolves
+        (DB / env / compiled default)."""
         if not all(os.environ.get(v) for v in self.requires_env):
             return False
         if self.requires_secret:
             from precis import secrets as _secrets
 
-            return all(_secrets.is_available(n) for n in self.requires_secret)
+            if not all(_secrets.is_available(n) for n in self.requires_secret):
+                return False
+        if self.requires_setting:
+            from precis import settings as _settings
+
+            return all(_settings.is_available(k) for k in self.requires_setting)
         return True
 
     def supports(self, verb: Verb) -> bool:

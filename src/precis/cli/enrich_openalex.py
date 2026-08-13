@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from precis import settings
 from precis.cli._common import resolve_dsn
 from precis.ingest.openalex_meta import ENRICH_VERSION, enrich_ref
 from precis.store import Store
@@ -117,9 +118,7 @@ def _resolve_one(store: Store, target: str) -> tuple[int, str]:
 
 
 def run(args: argparse.Namespace) -> None:
-    import os
-
-    email = args.email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
+    email = args.email or (settings.get_str("contact.polite_email") or "").strip()
     store = Store.connect(resolve_dsn(args.database_url))
     try:
         if args.backfill:

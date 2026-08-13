@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 from typing import Any, ClassVar
 
+from precis import settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
 from precis.handlers._provenance_report import (
@@ -192,12 +193,14 @@ class ProvenanceHandler(Handler):
         # path that handles both.
         self.store = hub.store
 
+    @property
+    def _mailto(self) -> str | None:
         # Crossref polite-pool mailto. ``ingest/crossref.py`` reads
-        # this from PRECIS_CROSSREF_MAILTO at call time too; mirror
-        # so we make the same recommended-headers HTTP call.
-        import os
-
-        self._mailto = os.environ.get("PRECIS_CROSSREF_MAILTO") or None
+        # this from settings/PRECIS_CROSSREF_MAILTO at call time too;
+        # mirror so we make the same recommended-headers HTTP call. A
+        # per-call read (not cached on ``self``) so a DB write takes
+        # effect without a process restart.
+        return settings.get_str("contact.crossref_mailto")
 
     def get(
         self,

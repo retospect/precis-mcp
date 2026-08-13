@@ -476,3 +476,89 @@ def test_requires_secret_gates_on_resolver(monkeypatch) -> None:
 
     monkeypatch.setenv("VAULT_ONLY_SECRET", "resolved")
     assert gate(spec, disabled=frozenset()).loaded is True
+
+
+# ---------------------------------------------------------------------------
+# requires_setting: DB-resident settings gate (docs/backlog/db-resident-settings.md
+# slice 3), parallel to requires_secret above.
+# ---------------------------------------------------------------------------
+
+
+def test_requires_setting_gates_on_unregistered_key(monkeypatch) -> None:
+    """An unregistered / absent setting key gates the kind off with the
+    'missing setting: <key>' reason (no DB tier for an unregistered key —
+    see precis.settings module docstring)."""
+    from precis import settings as _settings
+    from precis.kind_gate import gate
+    from precis.protocol import KindSpec
+
+    _settings.bind_store(None)
+    _settings.invalidate()
+    monkeypatch.delenv("SOME_UNREGISTERED_SETTING_KEY", raising=False)
+    spec = KindSpec(
+        kind="x",
+        title="X",
+        description="d",
+        requires_setting=("some.unregistered.setting.key",),
+    )
+    verdict = gate(spec, disabled=frozenset())
+    assert verdict.loaded is False
+    assert verdict.reason == "missing setting: some.unregistered.setting.key"
+
+
+def test_requires_setting_resolves_via_env_fallback(monkeypatch) -> None:
+    """A registered key with no DB row still resolves through its
+    registry env var — the fallback tier that keeps behaviour unchanged on
+    hosts that already set the env var."""
+    from precis import settings as _settings
+    from precis.kind_gate import gate
+    from precis.protocol import KindSpec
+
+    _settings.bind_store(None)
+    _settings.invalidate()
+    _settings.register(
+        _settings.SettingSpec(
+            key="test.gate.str_flag",
+            type="str",
+            env_var="TEST_GATE_STR_FLAG",
+            default=None,
+            doc="test-only key for the requires_setting gate test.",
+        )
+    )
+    spec = KindSpec(
+        kind="y", title="Y", description="d", requires_setting=("test.gate.str_flag",)
+    )
+    monkeypatch.delenv("TEST_GATE_STR_FLAG", raising=False)
+    assert gate(spec, disabled=frozenset()).loaded is False
+
+    monkeypatch.setenv("TEST_GATE_STR_FLAG", "x")
+    assert gate(spec, disabled=frozenset()).loaded is True
+
+
+def test_requires_setting_bool_false_gates_off() -> None:
+    """A bool-typed key resolving False (compiled default here) gates the
+    kind off — an enable flag set false must not count as 'set'."""
+    from precis import settings as _settings
+    from precis.kind_gate import gate
+    from precis.protocol import KindSpec
+
+    _settings.bind_store(None)
+    _settings.invalidate()
+    _settings.register(
+        _settings.SettingSpec(
+            key="test.gate.bool_flag",
+            type="bool",
+            env_var=None,
+            default=False,
+            doc="test-only bool key for the requires_setting gate test.",
+        )
+    )
+    spec = KindSpec(
+        kind="z",
+        title="Z",
+        description="d",
+        requires_setting=("test.gate.bool_flag",),
+    )
+    verdict = gate(spec, disabled=frozenset())
+    assert verdict.loaded is False
+    assert verdict.reason == "missing setting: test.gate.bool_flag"

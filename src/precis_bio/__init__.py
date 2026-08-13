@@ -10,7 +10,8 @@ catalogue stay untouched. It rides the two seams shipped for exactly this
 
 Slice 4 (this package) is the **structure-prediction `protein` kind** + a
 ``fold`` job that predicts a structure from a sequence. It ships **dark**
-behind ``PRECIS_BIO_ENABLED`` (the ``protein`` kind's ``requires_env``) so the
+behind the ``bio.enabled`` setting (the ``protein`` kind's ``requires_setting``;
+DB row → ``PRECIS_BIO_ENABLED`` env fallback) so the
 merge is inert until the flag is set. The heavy predictor (AlphaFold3) runs in
 a **container** on the GPU fold node — jax/CUDA + the model weights live in the
 image + a mounted models dir, never on the always-on workers; a deterministic

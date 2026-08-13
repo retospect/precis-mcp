@@ -37,6 +37,7 @@ import os
 import sys
 from pathlib import Path
 
+from precis import settings
 from precis.cli._common import resolve_dsn
 from precis.ingest.fetch_sidecar import write_sidecar
 from precis.store import Store
@@ -329,7 +330,7 @@ def run(args: argparse.Namespace) -> None:
             "(the dir `precis watch` scans)."
         )
     inbox_dir = Path(inbox)
-    email = os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
+    email = (settings.get_str("contact.polite_email") or "").strip()
 
     if not args.backfill and not args.target:
         raise SystemExit("fetch-openalex: pass a DOI / ref_id, or use --backfill.")

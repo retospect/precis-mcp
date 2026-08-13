@@ -287,6 +287,15 @@ def is_available(name: str, *, store: Store | None = None) -> bool:
     return get_secret(name, store=store) is not None
 
 
+def client_identity() -> tuple[str, str, int, int, str]:
+    """Public wrapper over :func:`_client_identity` — the
+    ``(host, os_user, pid, ppid, process)`` tuple computed for the vault
+    audit row (migration 0111). :mod:`precis.settings` reuses this for its
+    own ``app_settings.updated_by`` column (migration 0125) so both write
+    paths share one identity computation rather than duplicating it."""
+    return _client_identity()
+
+
 # ── write side (CLI + web editor) ─────────────────────────────────────────
 
 
@@ -318,6 +327,7 @@ def list_secrets(*, store: Store) -> list[dict[str, object]]:
 __all__ = [
     "adopt_process_store",
     "bind_store",
+    "client_identity",
     "delete_secret",
     "get_secret",
     "invalidate",

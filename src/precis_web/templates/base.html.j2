@@ -81,7 +81,7 @@
 
           {# ── Right: Attention (Needs you / Gripes / Alerts, badged) +
                Ops ▾ (System + admin surfaces) + global search. ── #}
-          {% set ops = [('status','System','/status'), ('categorizers','Categorizers','/categorizers'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('env','Env','/env'), ('secrets','Secrets','/secrets')] %}
+          {% set ops = [('status','System','/status'), ('categorizers','Categorizers','/categorizers'), ('agentlogs','Agent Logs','/agentlogs'), ('console','Console','/console'), ('env','Env','/env'), ('secrets','Secrets','/secrets'), ('settings','Settings','/settings')] %}
           {% set ops_keys = ops | map(attribute=0) | list %}
           <div class="ml-auto flex items-center gap-0.5">
             {# Needs you: asks + needs-triage, red attention badge. The

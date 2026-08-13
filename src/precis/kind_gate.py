@@ -123,7 +123,7 @@ def gate(
 ) -> Loadability:
     """Compute the pre-construction loadability verdict.
 
-    Two checks, in order:
+    Checks, in order:
 
     1. ``spec.kind`` in ``disabled`` → ``Loadability(loaded=False,
        reason=…)``. Honours operator intent over resource
@@ -134,6 +134,13 @@ def gate(
     2. Every env var in ``spec.requires_env`` is set non-empty →
        proceed. Missing envs → ``Loadability(loaded=False,
        reason='missing <ENV1>, <ENV2>')``.
+    3. Every name in ``spec.requires_secret`` resolves via
+       :func:`precis.secrets.is_available` → proceed. Missing →
+       ``reason='missing secret <NAME1>, <NAME2>'``.
+    4. Every key in ``spec.requires_setting`` resolves via
+       :func:`precis.settings.is_available` (DB row → registry env
+       var → compiled default) → proceed. Missing/false → ``reason=
+       'missing setting: <key1>, <key2>'``.
 
     Returns ``Loadability(loaded=True)`` when the handler should be
     constructed. Further checks (store presence, file-root validity,
@@ -167,6 +174,23 @@ def gate(
                 kind=spec.kind,
                 loaded=False,
                 reason="missing secret " + ", ".join(missing_secrets),
+            )
+    # requires_setting resolves through precis.settings (DB row → registry
+    # env var → compiled default), so a kind gated on a setting stays
+    # available fleet-wide once the DB row lands, regardless of which
+    # launcher spawned this process. Checked lazily, mirroring
+    # requires_secret above.
+    if spec.requires_setting:
+        from precis import settings as _settings
+
+        missing_settings = [
+            key for key in spec.requires_setting if not _settings.is_available(key)
+        ]
+        if missing_settings:
+            return Loadability(
+                kind=spec.kind,
+                loaded=False,
+                reason="missing setting: " + ", ".join(missing_settings),
             )
     return Loadability(kind=spec.kind, loaded=True)
 

@@ -128,6 +128,11 @@ def build_runtime(
         from precis.budget import bind_store as _bind_budget_store
 
         _bind_budget_store(store)
+        # Bind the same store for DB-resident settings (precis.settings) so
+        # registered keys resolve through the DB tier, mirroring secrets.
+        from precis import settings as _settings
+
+        _settings.bind_store(store)
         embedder = make_embedder(
             config.embedder,
             dim=store.embedding_dim(),

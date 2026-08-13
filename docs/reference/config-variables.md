@@ -31,8 +31,8 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_SUMMARIZE_LLM` | LLM two-part gloss (vs. extractive) | `False` | Designed as a single-host trickle, not a fleet-wide pass. |
 | `PRECIS_STRUCTURAL_REVIEW` | Structural reviewer (opus, 6h) | off | LLM tier — needs the agent worker profile. |
 | `PRECIS_DEEP_REVIEW` | Deep reviewer (opus, weekly) | off | LLM tier — agent profile. |
-| `PRECIS_CHEM_ENABLED` | `route`/chem kind **surface** | off | Surface gate only; compute routes to the node named by `PRECIS_CHEM_ROUTE_NODE` (§5). |
-| `PRECIS_BIO_ENABLED` | `protein`/fold kind surface | off | Surface gate only; compute routes via `PRECIS_FOLD_NODE` (§5). |
+| `PRECIS_CHEM_ENABLED` | `route`/chem kind **surface** | off | Now the *fallback tier* of the `chem.enabled` DB setting (`precis settings set chem.enabled true` wins fleet-wide); surface gate only — compute routes to the node named by `PRECIS_CHEM_ROUTE_NODE` (§5). |
+| `PRECIS_BIO_ENABLED` | `protein`/fold kind surface | off | Fallback tier of the `bio.enabled` DB setting (same scheme as chem); surface gate only — compute routes via `PRECIS_FOLD_NODE` (§5). |
 | `PRECIS_AUTOCATPATH_ENABLED` | `pathway`/autocatpath kind | off | Surface on the gateway; compute env on the GPU node. |
 | `PRECIS_BRIEFING_AUDIO_ENABLED` | Standalone daily briefing TTS pass (`news-<date>` episode) | off | Retired: the news wire is folded into the combined `morning_brief_<date>` reading-cast episode at narration time (`cast_audio._news_lead_in`); leave off to avoid double-publishing. |
 | `PRECIS_CAST_AUDIO_ENABLED` | Podcast cast TTS pass | off | |
@@ -63,6 +63,10 @@ scarce **EPO credentials** via `KindSpec.requires_secret` (vault) — **not**
 `PRECIS_PATENT_RAW_ROOT`, which is now just a config-defaulted path. Still
 gated by `KindSpec.requires_env`: `PRECIS_PYTHON_ROOTS`→`python` (a deliberate
 filesystem-scoping choice) and `PRECIS_ROOT`→markdown/plaintext/tex.
+`protein`/`route` moved off `requires_env` to `KindSpec.requires_setting`
+(`bio.enabled`/`chem.enabled` — DB row → env fallback via `precis.settings`;
+non-secret identity strings like the Crossref mailto live there too, see the
+`precis.settings` module docstring).
 
 ---
 

@@ -46,6 +46,7 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 
+from precis import settings
 from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.store import Store
 from precis.utils.authors import author_names
@@ -209,7 +210,7 @@ def run_openalex_enrich_pass(store: Store, *, limit: int | None = None) -> Batch
 
     from precis.ingest.openalex_meta import enrich_ref
 
-    email = os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
+    email = (settings.get_str("contact.polite_email") or "").strip()
     fetch_limit = limit if limit is not None else _DEFAULT_FETCH_LIMIT
 
     # Single-runner lock: same rationale as paper_reconcile (see module

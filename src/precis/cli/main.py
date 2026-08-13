@@ -59,6 +59,7 @@ from precis.cli import (
     secret,
     serve_embeddings,
     service,
+    settings,
     sim,
     stats,
     stubs,
@@ -120,6 +121,10 @@ def main() -> None:
 
     if args.cmd == "secret":
         secret.run(args)
+        return
+
+    if args.cmd == "settings":
+        settings.run(args)
         return
 
     if args.cmd == "db":
@@ -314,6 +319,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_parser(sub)
     schema_doc.add_parser(sub)
     secret.add_parser(sub)
+    settings.add_parser(sub)
     db.add_parser(sub)
     maintenance.add_parser(sub)
     enrich_openalex.add_parser(sub)

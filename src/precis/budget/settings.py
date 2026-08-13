@@ -9,6 +9,19 @@ Every read/write is best-effort: if the table is missing (un-migrated DB) or
 the query fails, reads return ``None`` (caller falls back to env) and writes
 raise a clean :class:`ValueError` the route surfaces. The meter reads these on
 each status recompute (cached ~15s), so there's no hot-path cost.
+
+**Relationship to :mod:`precis.settings`** (``docs/backlog/db-resident-
+settings.md``, Slice 1): the four keys below (:data:`HOURLY_KEY` /
+:data:`DAILY_KEY` / :data:`QUOTA_CEILING_KEY` / :data:`RESUME_UNTIL_KEY`) are
+also declared in that module's typed, TTL-cached registry — ``precis.budget
+.meter`` reads the caps through it now rather than hand-rolling the DB → env →
+default precedence here. This module remains the generic, *unregistered*
+``app_settings`` KV surface for every other caller (live_config chain
+overrides, dream_throttle's cadence, health_digest's last-push timestamp, the
+factory operator/cloud-enabled flags, …) — arbitrary/parametrised keys that
+don't fit a static registry entry. Every write here also invalidates the
+sibling module's cache for the same key (:func:`_invalidate_registered`), so
+the two never disagree on a registered key's current value.
 """
 
 from __future__ import annotations
@@ -64,6 +77,17 @@ def get_float(store: Store | None, key: str) -> float | None:
     return val if val > 0 else None
 
 
+def _invalidate_registered(key: str) -> None:
+    """Drop ``precis.settings``' cache entry for ``key`` too (no-op if it's
+    not one of the registered keys). Four of this module's keys
+    (``HOURLY_KEY``/``DAILY_KEY``/``QUOTA_CEILING_KEY``/``RESUME_UNTIL_KEY``)
+    are promoted into that module's registry and cached there (meter reads
+    the caps through it) — a write here must not leave that cache stale."""
+    from precis import settings as _settings
+
+    _settings.invalidate(key)
+
+
 def set_float(store: Store, key: str, value: float) -> None:
     """Upsert a positive float setting. Raises ``ValueError`` on a bad value."""
     if value <= 0:
@@ -76,6 +100,7 @@ def set_float(store: Store, key: str, value: float) -> None:
             "updated_at = now()",
             (key, repr(float(value))),
         )
+    _invalidate_registered(key)
 
 
 def set_setting(store: Store, key: str, value: str) -> None:
@@ -88,12 +113,14 @@ def set_setting(store: Store, key: str, value: str) -> None:
             "updated_at = now()",
             (key, str(value)),
         )
+    _invalidate_registered(key)
 
 
 def clear_setting(store: Store, key: str) -> None:
     """Delete one setting (revert to the env / compiled default)."""
     with store.pool.connection() as conn:
         conn.execute("DELETE FROM app_settings WHERE key = %s", (key,))
+    _invalidate_registered(key)
 
 
 def get_resume_until(store: Store | None) -> datetime | None:

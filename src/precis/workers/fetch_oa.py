@@ -103,6 +103,7 @@ from tenacity import (
 )
 
 from precis import secrets as _secrets
+from precis import settings
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
@@ -1770,7 +1771,7 @@ def run_oa_fetch_pass(
     """
     if not _oa_fetch_enabled():
         return {"claimed": 0, "ok": 0, "failed": 0}
-    email = email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "").strip()
+    email = email or (settings.get_str("contact.polite_email") or "").strip()
     api_key = api_key if api_key is not None else _elsevier_api_key()
     wiley_token = wiley_token if wiley_token is not None else _wiley_tdm_token()
     core_key = core_key if core_key is not None else _core_api_key()
@@ -2693,7 +2694,7 @@ def _download_pdf(
     tmp = target.with_suffix(target.suffix + ".part")
     size = 0
     head = b""
-    headers = dict(_DOWNLOAD_HEADERS)
+    headers = _download_headers()
     if extra_headers:
         headers.update(extra_headers)
     # http_client defaults follow_redirects=False and installs the SSRF
@@ -2752,15 +2753,19 @@ _USER_AGENT = (
 
 def _user_agent_header(email: str | None = None) -> str:
     return _USER_AGENT.format(
-        email=email or os.environ.get("PRECIS_UNPAYWALL_EMAIL", "noreply@example.com")
+        email=email or settings.get_str("contact.polite_email") or "noreply@example.com"
     )
 
 
-_DOWNLOAD_HEADERS = {
-    "User-Agent": _user_agent_header(),
-    # Some hosts insist on an Accept header that names PDFs explicitly.
-    "Accept": "application/pdf,*/*;q=0.8",
-}
+def _download_headers() -> dict[str, str]:
+    """Default download headers, built fresh per call (not frozen at import)
+    so a DB-set ``contact.polite_email`` takes effect on the next download
+    without a process restart."""
+    return {
+        "User-Agent": _user_agent_header(),
+        # Some hosts insist on an Accept header that names PDFs explicitly.
+        "Accept": "application/pdf,*/*;q=0.8",
+    }
 
 
 def _ms(t0: float) -> int:

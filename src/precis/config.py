@@ -342,5 +342,11 @@ def edgar_raw_root() -> Path:
 
 
 def edgar_user_agent() -> str:
-    """The SEC EDGAR User-Agent — ``PRECIS_EDGAR_USER_AGENT`` else the default."""
-    return os.environ.get("PRECIS_EDGAR_USER_AGENT") or DEFAULT_EDGAR_USER_AGENT
+    """The SEC EDGAR User-Agent — DB row → ``PRECIS_EDGAR_USER_AGENT`` → the
+    default (``precis.settings`` key ``contact.edgar_user_agent``)."""
+    from precis import settings
+
+    return (
+        settings.get_str("contact.edgar_user_agent", default=DEFAULT_EDGAR_USER_AGENT)
+        or DEFAULT_EDGAR_USER_AGENT
+    )

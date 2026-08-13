@@ -585,6 +585,12 @@ def store() -> Iterator[Store]:
     paid tier. Resetting it here closes the whole class rather than
     patching the one flaky test.
 
+    Same reasoning for :mod:`precis.settings`' ~60s TTL cache: it's keyed
+    only by setting name, not by ``Store``, and ``meter`` now resolves the
+    budget caps through it — a test that DB-overrides ``budget.hourly_usd``/
+    ``budget.daily_usd`` against its own store could otherwise leak that
+    value into an unrelated test's read for up to a minute.
+
     Skips when no postgres reachable at ``PG_TEST_DSN``.
     """
     if not _pg_available():
@@ -593,9 +599,11 @@ def store() -> Iterator[Store]:
             "or start a server to run db-tagged tests"
         )
     _truncate_data_tables(_active_dsn())
+    from precis import settings as _settings
     from precis.budget import meter as _budget_meter
 
     _budget_meter.bind_store(None)
+    _settings.invalidate()
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
     before = _live_backends(dbname) if _LEAKCHECK else set()
