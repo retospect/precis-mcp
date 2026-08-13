@@ -1,6 +1,6 @@
 """Fixer intake: what's ready to build, and which one is next.
 
-Two risky small bits flagged at design time live here:
+Three risky small bits flagged at design time live here:
 
 * **Ready convention.** A work item is a transient file under
   ``docs/backlog/*.md`` with a YAML-ish front-matter block; it is
@@ -12,18 +12,32 @@ Two risky small bits flagged at design time live here:
   re-builds the same thing forever. Skip is a ``branch_exists``
   predicate (local branch / worktree / remote head), injected so the
   pure pick logic stays unit-testable.
-
-Gripe intake exists but is **off by default** at the MVP (gripes surface for human promotion until the ``ready``-on-gripes dial
-is turned up); it is included here so the queue is one normalized
-list once enabled.
+* **Gripe intake, behind a dial.** ``PRECIS_FIXER_GRIPE_DB`` (a
+  Postgres URL) gates a second source: *promoted* open gripes — tag
+  ``auto-fix`` + a ``DIAGNOSIS``-prefixed timeline comment (minted by
+  :mod:`precis.workers.job_types.diagnose_gripe`, see
+  ``docs/backlog/dark-factory-arming.md``) — normalized into the same
+  :class:`WorkItem`
+  shape as a proposal and merged into one priority-ordered queue via
+  :func:`all_items`. Unset (the plist default) means the lane is
+  fully dark and **no store/DB import is attempted** —
+  :func:`gripe_items` imports :mod:`precis.store` lazily, only when
+  called with a URL, so the proposals-only path never pays for it and
+  never needs a DB reachable. This slice is read-only: SELECT the
+  promoted gripe + its timeline, never write back (status flip /
+  timeline append on build is a follow-on).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
+
+log = logging.getLogger("precis.fixer")
 
 #: Front-matter fence: a leading ``---`` line, body, closing ``---``.
 _FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -158,3 +172,166 @@ def pick_next(
             continue
         return item
     return None
+
+
+# ── gripe intake (behind PRECIS_FIXER_GRIPE_DB) ─────────────────────
+
+#: Chunk-kind slugs a gripe timeline carries. Mirrors the literals in
+#: ``handlers/gripe.py`` — duplicated rather than imported so a module
+#: this trivial doesn't drag the handler layer (and its store-package
+#: import weight) into every fixer tick, dial on or off.
+_GRIPE_BODY_KIND = "gripe_body"
+_GRIPE_COMMENT_KIND = "gripe_comment"
+
+#: A diagnosis comment's text prefix (the sibling diagnose-executor
+#: slice's convention — it appends ``"DIAGNOSIS (auto …"``). Matched by
+#: prefix only, not the parenthetical, so a human-authored comment that
+#: simply starts the word also counts as a diagnosis.
+_DIAGNOSIS_PREFIX = "DIAGNOSIS"
+
+
+class _TimelineEntry(NamedTuple):
+    """One chunk of a gripe's timeline — just enough to render + filter.
+
+    Deliberately not :class:`precis.store.types.Block` — keeping this
+    local means the pure rendering/filtering helpers below take no
+    dependency on the store package and stay unit-testable with plain
+    tuples, no DB or fakes required.
+    """
+
+    chunk_kind: str
+    pos: int
+    text: str
+
+
+def _gripe_prio_bucket(prio: int | None) -> str:
+    """Map a gripe's ``refs.prio`` (1..10, NULL=default) to a bucket.
+
+    1-3 → high, 4-6 → normal, everything else (7-10, and unset) → low.
+    Mirrors :data:`_PRIO_ORDER`'s bucket names so a gripe sorts on the
+    same axis as a proposal's front-matter ``prio:``.
+    """
+    if prio is not None and 1 <= prio <= 3:
+        return "high"
+    if prio is not None and 4 <= prio <= 6:
+        return "normal"
+    return "low"
+
+
+def _is_diagnosed(entries: Iterable[_TimelineEntry]) -> bool:
+    """True if the timeline carries at least one diagnosis comment.
+
+    The second half of the promotion criterion (the first half — open +
+    ``auto-fix`` tag — is a DB-side filter in :func:`gripe_items`, cheaper
+    to push into the query than to re-check here).
+    """
+    return any(
+        e.chunk_kind == _GRIPE_COMMENT_KIND and e.text.startswith(_DIAGNOSIS_PREFIX)
+        for e in entries
+    )
+
+
+def _render_gripe_spec(title: str, entries: Iterable[_TimelineEntry]) -> str:
+    """Title + timeline (body, then comments in pos order) as one spec.
+
+    Fed to the builder as ``WorkItem.spec_text`` — the diagnosis comment
+    is just another entry in pos order, so it flows in verbatim without
+    special-casing.
+    """
+    lines = [f"# {title}", ""]
+    for e in entries:
+        if e.chunk_kind == _GRIPE_BODY_KIND:
+            lines.append(e.text)
+        elif e.chunk_kind == _GRIPE_COMMENT_KIND:
+            lines.append("")
+            lines.append(f"## comment {e.pos}")
+            lines.append(e.text)
+        else:
+            lines.append("")
+            lines.append(e.text)
+    return "\n".join(lines)
+
+
+def _work_item_from_gripe(
+    ref_id: int, title: str, prio: int | None, entries: list[_TimelineEntry]
+) -> WorkItem | None:
+    """Normalize one promoted gripe into a :class:`WorkItem`, or ``None``.
+
+    ``None`` when the timeline has no diagnosis entry yet — the tag alone
+    (``auto-fix``, human- or diagnose-executor-applied) isn't sufficient;
+    a pinned diagnosis is what makes the item buildable unattended.
+    """
+    if not _is_diagnosed(entries):
+        return None
+    return WorkItem(
+        kind="gripe",
+        slug=f"gr{ref_id}",
+        title=title,
+        branch=f"fix/gr{ref_id}",
+        spec_text=_render_gripe_spec(title, entries),
+        model=None,
+        prio=_gripe_prio_bucket(prio),
+    )
+
+
+def gripe_items(db_url: str) -> list[WorkItem]:
+    """Promoted open gripes (open + ``auto-fix`` + diagnosed), as ``WorkItem``s.
+
+    Read-only: two SELECTs per candidate (the tagged-refs list, then each
+    ref's timeline) against ``db_url`` via a throwaway small pool — this
+    runs once per fixer tick, not a long-lived server, so a 1-2
+    connection pool is plenty and kinder to pgbouncer than the store's
+    server-sized default. Any failure (unreachable DB, query error,
+    schema surprise) is caught and logged; the caller degrades to
+    proposals-only rather than crashing the tick.
+    """
+    try:
+        from precis.store.store import Store
+    except Exception:
+        log.exception("gripe intake: could not import the store layer")
+        return []
+
+    try:
+        store = Store.connect(db_url, min_size=1, max_size=2)
+    except Exception as exc:
+        log.warning("gripe intake: DB unreachable (%s) — proposals-only", exc)
+        return []
+
+    try:
+        refs = store.list_refs(
+            kind="gripe", tags=["STATUS:open", "auto-fix"], limit=200
+        )
+        items: list[WorkItem] = []
+        for ref in refs:
+            blocks = store.list_blocks_for_ref(ref.id)
+            entries = [_TimelineEntry(b.chunk_kind, b.pos, b.text) for b in blocks]
+            item = _work_item_from_gripe(ref.id, ref.title, ref.prio, entries)
+            if item is not None:
+                items.append(item)
+        return items
+    except Exception as exc:
+        log.warning("gripe intake: query failed (%s) — proposals-only", exc)
+        return []
+    finally:
+        store.close()
+
+
+def all_items(backlog_dir: Path, gripe_db_url: str | None) -> list[WorkItem]:
+    """The one normalized, priority-ordered queue: proposals, then gripes.
+
+    ``gripe_db_url`` unset (the plist default) means :func:`gripe_items`
+    is never called — no import, no connection attempt, and the result
+    is exactly :func:`ready_items`'s list, so landing this lane changes
+    nothing until the dial is turned on. When set, gripes are appended
+    after proposals and the combined list is re-sorted by
+    :data:`_PRIO_ORDER`; Python's stable sort means same-bucket order is
+    preserved, so a high-prio gripe outranks a normal proposal, but at
+    equal prio a proposal always precedes a gripe (list order before the
+    sort) and each source keeps its own internal ordering (filename /
+    ref id).
+    """
+    proposals = ready_items(backlog_dir)
+    gripes = gripe_items(gripe_db_url) if gripe_db_url else []
+    merged = proposals + gripes
+    merged.sort(key=lambda it: _PRIO_ORDER[it.prio])
+    return merged

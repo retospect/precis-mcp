@@ -344,6 +344,19 @@ def _load_sandbox_run() -> JobTypeSpec:
     )
 
 
+def _load_diagnose_gripe() -> JobTypeSpec:
+    # Read-only root-cause diagnosis appended to a gripe as a
+    # gripe_comment (see precis.workers.job_types.diagnose_gripe) — never fixes,
+    # branches, pushes, or flips STATUS. Runs via plugin dispatch under
+    # claude_inproc. Registers unconditionally (like sandbox_run): the
+    # scan pass that mints these jobs (diagnose_scan) is the dark gate,
+    # not the job_type itself, so put/dispatch validation works even on
+    # a host where the scan is off.
+    from precis.workers.job_types import diagnose_gripe
+
+    return diagnose_gripe.SPEC
+
+
 def _load_good_search() -> JobTypeSpec:
     # Deep-search coordinator campaign (fuse → triage children → merged
     # verdict). Runs via plugin dispatch under the coordinator executor.
@@ -557,6 +570,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "sandbox_run":
         _REGISTRY["sandbox_run"] = _load_sandbox_run()
         return _REGISTRY["sandbox_run"]
+    if name == "diagnose_gripe":
+        _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()
+        return _REGISTRY["diagnose_gripe"]
     if name == "good_search":
         _REGISTRY["good_search"] = _load_good_search()
         return _REGISTRY["good_search"]
@@ -602,6 +618,7 @@ def known_job_types() -> list[str]:
         "diagram_propose",
         "cad_discuss",
         "sandbox_run",
+        "diagnose_gripe",
         "good_search",
         "good_search_triage",
         "quest_tick",

@@ -67,6 +67,7 @@ Don't use a job for work that fits inside the current conversation.
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
 | `fix_gripe`         | `claude_inproc` | Prepare a candidate fix branch for a gripe    |
+| `diagnose_gripe`    | `claude_inproc` | Read-only root-cause diagnosis of a gripe — clones the repo (never branches/commits/pushes), asks claude for a structured `DIAGNOSIS:` block (root cause + evidence + a proposed-fix sketch + `Confidence: 0.NN`), and appends it as one `DIAGNOSIS (auto, job <id>):` `gripe_comment`. Never flips the gripe's `STATUS`. Params: `gripe_id`. **Dark by default** — the minter pass (`diagnose_scan`) is gated on `PRECIS_DIAGNOSE_SCAN_ENABLED`; a hand-`put` diagnose job runs regardless. `PRECIS_DIAGNOSE_CLAUDE_MODEL` overrides the model (default: `Tier.BIG`, cheaper than `fix_gripe`'s FRONTIER). With `PRECIS_DIAGNOSE_AUTOPROMOTE=1` and confidence ≥ 0.8, the gripe is tagged `auto-fix` (the key `fixer-gripe-intake` reads) — default off. |
 | `plan_tick`         | `claude_inproc` | One planner-coroutine tick of a `meta.llm_tier`-set todo |
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |

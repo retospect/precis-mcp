@@ -82,6 +82,38 @@ differs.
   deployed sha under the deploy user's `~/.cache/uv/git-v0/checkouts/`),
   not a new bug.
 
+## Canary-staged deploys (opt-in)
+
+`scripts/deploy` runs one `ansible-playbook redeploy-precis.yml` pass against
+the whole fleet by default — every health probe in the playbook is
+`failed_when: false`, so the in-run convergence assert is the only hard gate.
+Set `PRECIS_DEPLOY_CANARY=<ansible-host-name>` (e.g. `scheduler`, the least-
+special collapsed-worker host) to stage that rollout instead: the target sha
+is resolved once (`git ls-remote`, the same resolution the playbook's own
+step-0 pin does) and pinned via explicit `-e precis_worker_git_ref=` /
+`precis_web_git_ref=` / `precis_embedder_git_ref=` on **both** phases below —
+an explicit `-e` beats the playbook's step-0 `set_fact` pin, so a `main` that
+moves mid-rollout can't split the two phases onto different commits.
+
+1. `ansible-playbook redeploy-precis.yml --limit <canary>` — the canary only.
+2. Verify: poll `scripts/prod-psql` for the canary's `host_heartbeat` row —
+   green once `ts` is newer than when phase 1 started *and* under 120s old
+   (the deployed worker came up and is heartbeating on the new code), timeout
+   `PRECIS_DEPLOY_CANARY_TIMEOUT_S` (default 300s). A `scripts/prod-psql`
+   failure during the poll is treated as red (fail closed), same as a timeout.
+3. Green → `ansible-playbook redeploy-precis.yml --limit 'all:!<canary>'` — the
+   rest of the fleet, same sha pins. Red → abort non-zero **before** touching
+   the fleet, with a loud mixed-state warning (canary on new code, fleet on
+   old) and a rollback line (`scripts/deploy` from the previous sha with
+   `PRECIS_DEPLOY_CANARY=<canary>`, which targets just the canary).
+
+`PRECIS_DEPLOY_CANARY_DB_HOST` overrides the `host_heartbeat.host` value
+polled in step 2, for the rare case where it differs from the ansible host
+name (fqdn vs short, or a custom `precis heartbeat --host`) — default is the
+canary name itself. Unset (the default), `scripts/deploy` is byte-identical
+to the single-pass behavior above; no inventory group, no playbook change —
+the host comes from the env var.
+
 ## The secret boundary (read before you commit)
 
 precis-mcp is a **public** repository. A commit that leaks the real cluster's

@@ -907,6 +907,42 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-fix-gripe-help",
     ),
     ServiceSpec(
+        # precis.workers.diagnose_scan: mints read-only diagnose_gripe
+        # jobs for open, undiagnosed gripes — same dark-pass shape as
+        # backlog_groom (no default_profiles, enable_env gate), a separate
+        # flip from it: an operator can run the cheap read-only diagnosis
+        # without also arming the FRONTIER-tier autonomous fixer. Arming
+        # sequence: docs/backlog/dark-factory-arming.md.
+        name="diagnose_scan",
+        label="Diagnose scanner",
+        category="jobs",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_DIAGNOSE_SCAN_ENABLED",
+        uses_model=True,
+        cost_sources=("diagnose_gripe",),
+        one_line="Mint read-only root-cause diagnosis jobs for open gripes.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        # The job_type diagnose_scan mints — kind=JOB (drained by
+        # claude_inproc, registered separately above), not PASS. Registers
+        # unconditionally (embed_batch/derived_drain shape, sandbox_run's
+        # "register the job_type even where its driving pass is off" note):
+        # a hand-put diagnose job works everywhere; diagnose_scan's gate
+        # controls the auto-mint, not the job_type's existence.
+        name="diagnose_gripe",
+        label="Diagnose gripe (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        requires=frozenset({"claude_bin", "git", "clones_dir", "claude_config_mount"}),
+        uses_model=True,
+        cost_sources=("diagnose_gripe",),
+        one_line="Read-only root-cause diagnosis appended to a gripe as a "
+        "gripe_comment — minted by diagnose_scan, dark by default.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="watch_poll",
         label="Citation-forward watcher",
         category="acquisition",

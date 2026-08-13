@@ -23,6 +23,22 @@
 # PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
 # the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
+#
+# PRECIS_DEPLOY_CANARY=<ansible-host-name> — opt-in canary staging (unset ⇒
+# byte-identical single-pass behavior, the default). When set: resolve the
+# target sha once (git ls-remote, the same resolution the playbook's step-0
+# pin does), run the playbook against `--limit <canary>` ONLY first, poll
+# `scripts/prod-psql` for that host's `host_heartbeat` row to freshen (proof
+# the deployed worker came up on the new code), then fan out to the rest of
+# the fleet with `--limit '!<canary>'` — same explicit sha pins on both
+# phases, so the two-run pin race (redeploy-precis.yml §step 0) can't bite. A
+# canary that never freshens aborts non-zero BEFORE the fleet phase and
+# prints a rollback line; a `scripts/prod-psql` failure during verify is
+# treated as red (fail closed).
+#   PRECIS_DEPLOY_CANARY_TIMEOUT_S  — verify timeout, seconds (default 300).
+#   PRECIS_DEPLOY_CANARY_DB_HOST    — override the host_heartbeat.host value
+#     to poll, if it differs from the ansible host name (fqdn vs short, or a
+#     custom `precis heartbeat --host`); default is the canary name itself.
 set -euo pipefail
 
 REF="${1:-main}"
@@ -130,20 +146,79 @@ ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-dep
 rm -f /tmp/precis-deploy-ping.$$
 
 # ── 2. deploy ───────────────────────────────────────────────────────────
-if [[ "$REF" == "main" ]]; then
-    say "deploying main to the cluster"
-    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
-        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-        || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
-else
-    say "deploying ref '${REF}' to the cluster"
-    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
-        -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
-        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-        || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
-fi
+CANARY="${PRECIS_DEPLOY_CANARY:-}"
+if [[ -z "$CANARY" ]]; then
+    # unchanged single-pass path (PRECIS_DEPLOY_CANARY unset)
+    if [[ "$REF" == "main" ]]; then
+        say "deploying main to the cluster"
+        ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+            || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+    else
+        say "deploying ref '${REF}' to the cluster"
+        ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+            -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+            || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
+    fi
 
-say "deployed — cluster is running '${REF}'."
+    say "deployed — cluster is running '${REF}'."
+else
+    # ── canary path (PRECIS_DEPLOY_CANARY set): one host first, verified,
+    # then the fleet. Resolve the sha ONCE (same ls-remote the playbook's
+    # step-0 pin does) and pass it as explicit `-e` pins to BOTH phases — an
+    # explicit `-e` wins over the playbook's own set_fact pin, so both
+    # ansible-playbook invocations below install the identical sha even if
+    # main advances between phase 1 and phase 2.
+    say "canary deploy: resolving '${REF}' to a single commit (git ls-remote)"
+    _target_sha="$(git ls-remote https://github.com/retospect/precis-mcp "$REF" | awk 'NR==1{print $1}')"
+    [[ ${#_target_sha} -eq 40 ]] || die "could not resolve '${REF}' to a commit via git ls-remote (got '${_target_sha:-empty}') — refusing to deploy an unpinned/unresolvable ref."
+    SHA_ARGS=(-e precis_worker_git_ref="$_target_sha" -e precis_web_git_ref="$_target_sha" -e precis_embedder_git_ref="$_target_sha")
+    _rollback_hint="rollback: scripts/deploy <previous-sha> with PRECIS_DEPLOY_CANARY=${CANARY} (targets just the canary)."
+
+    say "canary deploy: phase 1 — ${CANARY} only (pinned ${_target_sha:0:8})"
+    _phase1_start="$(date +%s)"
+    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+        --limit "$CANARY" \
+        "${SHA_ARGS[@]}" \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+        || die "canary phase 1 (${CANARY}) failed — see the failing task above; the rest of the fleet was never touched."
+
+    CANARY_TIMEOUT_S="${PRECIS_DEPLOY_CANARY_TIMEOUT_S:-300}"
+    DB_HOST="${PRECIS_DEPLOY_CANARY_DB_HOST:-$CANARY}"
+    [[ "$DB_HOST" =~ ^[A-Za-z0-9_.-]+$ ]] || die "PRECIS_DEPLOY_CANARY_DB_HOST/'${DB_HOST}': not a plausible hostname"
+    say "canary deploy: verifying ${CANARY}'s heartbeat (host_heartbeat.host='${DB_HOST}') freshens (timeout ${CANARY_TIMEOUT_S}s)"
+    _elapsed=0
+    _green=""
+    while (( _elapsed < CANARY_TIMEOUT_S )); do
+        _ts_epoch="$(PRECIS_PROD_PSQL_OPTS="-At" scripts/prod-psql \
+            "SELECT extract(epoch from ts)::bigint FROM host_heartbeat WHERE host = '${DB_HOST}';")" \
+            || die "canary verify: scripts/prod-psql failed reaching prod — treated as red (fail closed).
+mixed state: ${CANARY} may be on new code (${_target_sha}), the rest of the fleet is untouched (still on old code).
+${_rollback_hint}"
+        _now="$(date +%s)"
+        if [[ -n "$_ts_epoch" ]] && (( _ts_epoch > _phase1_start )) && (( _now - _ts_epoch < 120 )); then
+            _green=1
+            break
+        fi
+        sleep 15
+        _elapsed=$((_elapsed + 15))
+    done
+
+    [[ -n "$_green" ]] || die "canary verify: ${CANARY}'s host_heartbeat (host='${DB_HOST}') did not freshen within ${CANARY_TIMEOUT_S}s.
+mixed state: ${CANARY} may be on new code (${_target_sha}), the rest of the fleet is untouched (still on old code).
+${_rollback_hint}"
+
+    say "canary deploy: ${CANARY} verified fresh on new code — phase 2 (rest of the fleet)"
+    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+        --limit "all:!${CANARY}" \
+        "${SHA_ARGS[@]}" \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+        || die "canary phase 2 (fleet) failed — see the failing task above. ${CANARY} is on new code (${_target_sha}); the rest of the fleet may be mixed — re-run once fixed."
+
+    REF="$_target_sha"
+    say "deployed — cluster is running '${REF}' (canary ${CANARY} verified first, then the fleet)."
+fi
 
 # ── 3. record the deploy-state marker (for scripts/ship's lag report) ────
 # Gitignored, local-only: `<sha> <epoch>` of what's now actually running on

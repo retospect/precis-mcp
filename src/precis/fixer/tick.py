@@ -1,12 +1,17 @@
 """One tick of the laptop fixer loop.
 
-    pick (ready-gated) → build (Claude, host OAuth) → gate
+    pick (ready-gated proposals + promoted gripes) → build (Claude, host OAuth) → gate
       → [ship → deploy → look-at-prod → fix-forward]   (autonomy≥ship/full)
       → report (by exception)
 
 Run once via ``scripts/fixer-tick`` (launchd, skip-on-battery). Serial
 by a lockfile: a second tick that finds the lock held **exits** rather
 than racing a concurrent ship/deploy.
+
+``pick`` draws from :func:`precis.fixer.intake.all_items` — proposals
+under ``docs/backlog/`` always, plus (only when ``PRECIS_FIXER_GRIPE_DB``
+is set) promoted gripes read from that DB. See ``intake.py``'s module
+docstring for the gripe lane's promotion criterion and dial.
 
 **Autonomy is a dial, defaulting to the safe rung** so that merely
 landing this module does nothing dangerous:
@@ -34,7 +39,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
-from precis.fixer.intake import WorkItem, pick_next, ready_items
+from precis.fixer.intake import WorkItem, all_items, pick_next
 from precis.fixer.report import Report, ReportStatus, emit_report
 
 log = logging.getLogger("precis.fixer")
@@ -80,6 +85,10 @@ class FixerConfig:
     gate_cmds: tuple[tuple[str, ...], ...]
     discord_webhook: str | None
     readyz_url: str | None
+    # Postgres URL gating the gripe-intake lane (see intake.py's module
+    # docstring). Unset (the plist default) is the whole dial: the lane
+    # is fully dark and no store/DB import is attempted.
+    gripe_db_url: str | None = None
 
     @classmethod
     def from_env(cls, repo_root: Path) -> FixerConfig:
@@ -101,6 +110,7 @@ class FixerConfig:
             ),
             discord_webhook=os.environ.get("PRECIS_FIXER_DISCORD_WEBHOOK"),
             readyz_url=os.environ.get("PRECIS_FIXER_READYZ_URL"),
+            gripe_db_url=os.environ.get("PRECIS_FIXER_GRIPE_DB"),
         )
 
 
@@ -348,7 +358,7 @@ class TickResult:
 def run_tick(cfg: FixerConfig) -> TickResult:
     """Execute one tick. Returns what happened (for tests + the CLI)."""
     result = TickResult()
-    items = ready_items(cfg.backlog_dir)
+    items = all_items(cfg.backlog_dir, cfg.gripe_db_url)
     item = pick_next(items, lambda b: branch_exists(cfg.repo_root, b))
     if item is None:
         result.notes.append(f"nothing to do ({len(items)} ready, all branched)")

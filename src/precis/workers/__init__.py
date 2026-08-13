@@ -39,7 +39,8 @@ Three pass shapes share the one ``run_loop`` rotation (``runner.py``):
   ``bib_mark``, ``chase``, ``fetch``, ``hub_refine``, ``nursery``,
   ``sweeper``, ``heartbeat``, ``corpus_reconcile``, ``paper_reconcile``,
   ``paper_meta_enrich``, ``openalex_enrich``, ``stub_rank``,
-  ``llm_summarize``, … (roster: ``registry.py``).
+  ``llm_summarize``, ``backlog_groom``, ``diagnose_scan``, … (roster:
+  ``registry.py``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
   The ``dispatch`` pass is the intent→compute bridge: it walks
   open todos with ``meta.executor`` and mints one child ``kind='job'``

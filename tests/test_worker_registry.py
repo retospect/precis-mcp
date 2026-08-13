@@ -203,6 +203,7 @@ def test_enable_env_gates_cover_the_default_off_passes() -> None:
         "briefing_audio": "PRECIS_BRIEFING_AUDIO_ENABLED",
         "cast_audio": "PRECIS_CAST_AUDIO_ENABLED",
         "backlog_groom": "PRECIS_BACKLOG_GROOM_ENABLED",
+        "diagnose_scan": "PRECIS_DIAGNOSE_SCAN_ENABLED",
         "llm_summarize": "PRECIS_SUMMARIZE_LLM",
     }
     for name, env in expected.items():

@@ -168,7 +168,7 @@ def test_run_tick_deletes_local_branch_after_real_ship(
         "_run_script_in_worktree",
         lambda worktree, script, msg: (True, "shipped (fake)"),
     )
-    monkeypatch.setattr(tick_mod, "ready_items", lambda backlog_dir: [item])
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
 
     result = tick_mod.run_tick(cfg)
 
@@ -192,7 +192,7 @@ def test_run_tick_report_mode_leaves_local_branch_in_place(
     monkeypatch.setattr(
         tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
     )
-    monkeypatch.setattr(tick_mod, "ready_items", lambda backlog_dir: [item])
+    monkeypatch.setattr(tick_mod, "all_items", lambda backlog_dir, gripe_db_url: [item])
 
     result = tick_mod.run_tick(cfg)
 

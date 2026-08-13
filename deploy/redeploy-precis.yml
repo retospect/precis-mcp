@@ -63,7 +63,12 @@
 # advances under an in-flight deploy can't false-fail it (this deploy simply
 # lands the pinned commit; the next deploy picks up the newer one). An explicit
 # `-e precis_worker_git_ref=<branch>` still wins (extra-vars > set_fact); the
-# pin only overrides the role *defaults*.
+# pin only overrides the role *defaults*. A caller MAY also pass an
+# already-resolved 40-char sha (`-e precis_worker_git_ref=<sha>`) — canary
+# two-phase deploys (scripts/deploy) pre-resolve the sha client-side so both
+# phases install the identical commit — in which case this play uses it
+# directly and skips the ls-remote (which only matches ref names, never a
+# bare sha).
 - name: "Pin the deploy target to a single commit sha (freeze a moving ref)"
   hosts:
     - gateway
@@ -71,10 +76,18 @@
     - data
     - inference
   become: false
+  vars:
+    # `git ls-remote <ref>` only matches ref NAMES, never a bare sha — so a
+    # caller that already resolved the ref to a commit (scripts/deploy's
+    # canary path pre-resolves client-side so both phases install the
+    # identical commit) must skip ls-remote entirely rather than have it
+    # come back empty and trip the "did not resolve" assert.
+    precis_worker_git_ref_is_sha: "{{ (precis_worker_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
   tasks:
     - name: Resolve the deploy ref to one commit (once, shared to all hosts)
       # run_once → a single ls-remote; its result is broadcast to every host in
       # the play, so all hosts pin the SAME sha even if main moves a beat later.
+      # Skipped when precis_worker_git_ref is already a 40-char sha (see vars).
       ansible.builtin.shell: |
         set -uo pipefail
         git ls-remote https://github.com/retospect/precis-mcp \
@@ -84,6 +97,7 @@
       register: precis_target_ls
       run_once: true
       changed_when: false
+      when: not precis_worker_git_ref_is_sha
 
     - name: Refuse to deploy if the ref did not resolve to a commit
       ansible.builtin.assert:
@@ -95,6 +109,14 @@
           to deploy an unpinned/unresolvable ref.
         quiet: true
       run_once: true
+      when: not precis_worker_git_ref_is_sha
+
+    - name: Resolve the pin target (already-a-sha passthrough, or the ls-remote result)
+      # When precis_worker_git_ref already IS a 40-char sha (canary
+      # passthrough), use it directly instead of the (skipped) ls-remote's
+      # registered result.
+      ansible.builtin.set_fact:
+        precis_target_sha: "{{ precis_worker_git_ref if precis_worker_git_ref_is_sha else precis_target_ls.stdout }}"
 
     - name: Pin every managed venv's install ref + the compare target to that sha
       # set_fact beats the role defaults (precis_*_git_ref: main) so the install
@@ -102,10 +124,9 @@
       # so a deliberate branch deploy is untouched. precis_target_sha is the
       # single source of truth the pre-flight (0b) and the assert (4) compare to.
       ansible.builtin.set_fact:
-        precis_target_sha: "{{ precis_target_ls.stdout }}"
-        precis_worker_git_ref: "{{ precis_target_ls.stdout }}"
-        precis_embedder_git_ref: "{{ precis_target_ls.stdout }}"
-        precis_web_git_ref: "{{ precis_target_ls.stdout }}"
+        precis_worker_git_ref: "{{ precis_target_sha }}"
+        precis_embedder_git_ref: "{{ precis_target_sha }}"
+        precis_web_git_ref: "{{ precis_target_sha }}"
 
     - name: Report the pinned target
       ansible.builtin.debug:

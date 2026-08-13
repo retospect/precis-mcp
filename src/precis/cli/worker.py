@@ -1653,6 +1653,22 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_backlog_groom_pass)
 
+        # Diagnose scanner (default-OFF; PRECIS_DIAGNOSE_SCAN_ENABLED, the
+        # backlog_groom dark-pass shape): mint read-only diagnose_gripe jobs
+        # for open, undiagnosed gripes so the (separately dark) diagnosis
+        # pass upgrades them with a pinned root cause before the expensive
+        # fix_gripe / human sweep touches them. See
+        # precis.workers.diagnose_scan and docs/backlog/dark-factory-arming.md.
+        if _register("diagnose_scan"):
+            from precis.workers.runner import BatchResult as _DiagBatchResult
+
+            def _diagnose_scan_pass(batch_size: int) -> _DiagBatchResult:
+                from precis.workers.diagnose_scan import run_diagnose_scan_pass
+
+                return run_diagnose_scan_pass(store, batch_size=batch_size)
+
+            ref_passes.append(_diagnose_scan_pass)
+
         # Plugin-registered ref passes: third-party packages can
         # ship their own background workers via the
         # ``precis.ref_passes`` entry-point group (precis-dft's
