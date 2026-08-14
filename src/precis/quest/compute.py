@@ -1162,7 +1162,7 @@ def _stamp_preflight_dead_end(
     append_entry(
         store,
         quest_id,
-        text=f"ruled out {handle} ({slug}): failed substrate preflight — {top}",
+        text=f"ruled out [{handle}] ({slug}): failed substrate preflight — {top}",
         entry_type="dead-end",
         by=MEASURED_BY,
     )
@@ -1937,7 +1937,7 @@ def harvest_measures(
                 store,
                 quest_id,
                 text=(
-                    f"relax result for {handle} ({name}): {e_s}, "
+                    f"relax result for [{handle}] ({name}): {e_s}, "
                     f"{r.get('n_steps')} steps, converged"
                 ),
                 entry_type="result",
@@ -1995,7 +1995,7 @@ def harvest_measures(
             append_entry(
                 store,
                 quest_id,
-                text=f"autocatpath result for {handle} ({name}): {b_s}",
+                text=f"autocatpath result for [{handle}] ({name}): {b_s}",
                 entry_type="result",
                 by=MEASURED_BY,
             )
@@ -2017,13 +2017,13 @@ def harvest_measures(
                 retries = int((s.meta or {}).get("quest_infra_retries", 0) or 0)
                 if hub is None:
                     notes.append(
-                        f"infra failure for {handle} (retry-eligible, not ruled out)"
+                        f"infra failure for [{handle}] (retry-eligible, not ruled out)"
                     )
                 elif retries < _MAX_INFRA_RETRIES:
                     dispatch_relax(store, s.id, hub=hub, cell=relax_cell)
                     store.stamp_ref_meta(s.id, {"quest_infra_retries": retries + 1})
                     notes.append(
-                        f"infra failure for {handle} → re-dispatched "
+                        f"infra failure for [{handle}] → re-dispatched "
                         f"(retry {retries + 1})"
                     )
                 elif retries < _MAX_INFRA_RETRIES + 1:
@@ -2031,23 +2031,23 @@ def harvest_measures(
                     store.stamp_ref_meta(
                         s.id, {"quest_infra_retries": _MAX_INFRA_RETRIES + 1}
                     )
-                    notes.append(f"infra failure persists for {handle} → gripe filed")
+                    notes.append(f"infra failure persists for [{handle}] → gripe filed")
                 else:
                     # Already gripe-filed on a prior harvest — dedup, no re-file.
                     notes.append(
-                        f"infra failure persists for {handle} (gripe already filed)"
+                        f"infra failure persists for [{handle}] (gripe already filed)"
                     )
             else:
                 store.add_tag(s.id, Tag.open("ruled-out:relax-failed"), set_by="system")
                 append_entry(
                     store,
                     quest_id,
-                    text=f"ruled out {handle} ({name}): relax failed to converge",
+                    text=f"ruled out [{handle}] ({name}): relax failed to converge",
                     entry_type="dead-end",
                     by=MEASURED_BY,
                 )
                 ruled_out += 1
-                notes.append(f"ruled-out {handle}")
+                notes.append(f"ruled-out [{handle}]")
 
         # Autocatpath (barrier-lane) infra failure — the dossier-owned-by-process mirror of the
         # relax infra branch above, on the *barrier* lane. Unlike relax (where a
@@ -2099,14 +2099,14 @@ def harvest_measures(
             if cp_job_meta.get("job_type") == "autocatpath_explore":
                 if hub is None or reaction is None:
                     notes.append(
-                        f"stale-era autocatpath failure for {handle} "
+                        f"stale-era autocatpath failure for [{handle}] "
                         "(amnesty-eligible, not ruled out)"
                     )
                 else:
                     dispatch_autocatpath(store, s.id, reaction, hub=hub)
                     store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
                     notes.append(
-                        f"stale-era autocatpath failure for {handle} → amnesty "
+                        f"stale-era autocatpath failure for [{handle}] → amnesty "
                         "re-dispatch via seed/aggregate"
                     )
             elif cp_job_meta.get("job_type") == "autocatpath_seed":
@@ -2118,7 +2118,7 @@ def harvest_measures(
                 # the aggregate branch below, windowed instead of monotonic.
                 if hub is None or reaction is None:
                     notes.append(
-                        f"stuck seed for {handle} (retry-eligible, not re-dispatched)"
+                        f"stuck seed for [{handle}] (retry-eligible, not re-dispatched)"
                     )
                 else:
                     sk_retries = _seed_infra_retry_count(store, s.id)
@@ -2126,7 +2126,7 @@ def harvest_measures(
                         dispatch_autocatpath(store, s.id, reaction, hub=hub)
                         _bump_seed_infra_retry_count(store, s.id)
                         notes.append(
-                            f"stuck seed for {handle} → re-dispatched "
+                            f"stuck seed for [{handle}] → re-dispatched "
                             f"(retry {sk_retries + 1})"
                         )
                     elif sk_retries < _MAX_INFRA_RETRIES + 1:
@@ -2139,13 +2139,15 @@ def harvest_measures(
                             lane="autocatpath-seed",
                         )
                         _bump_seed_infra_retry_count(store, s.id)
-                        notes.append(f"stuck seed persists for {handle} → gripe filed")
+                        notes.append(
+                            f"stuck seed persists for [{handle}] → gripe filed"
+                        )
                     else:
                         # Already gripe-filed within this window — dedup, no
                         # re-file (the counter only bumps on the retry/gripe
                         # rungs above, so it stays put until the window rolls).
                         notes.append(
-                            f"stuck seed persists for {handle} (gripe already filed)"
+                            f"stuck seed persists for [{handle}] (gripe already filed)"
                         )
             else:
                 cp_retries = int(
@@ -2153,7 +2155,7 @@ def harvest_measures(
                 )
                 if hub is None or reaction is None:
                     notes.append(
-                        f"autocatpath infra failure for {handle} "
+                        f"autocatpath infra failure for [{handle}] "
                         "(retry-eligible, not ruled out)"
                     )
                 elif cp_retries < _MAX_INFRA_RETRIES:
@@ -2162,7 +2164,7 @@ def harvest_measures(
                         s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
                     )
                     notes.append(
-                        f"autocatpath infra failure for {handle} → re-dispatched "
+                        f"autocatpath infra failure for [{handle}] → re-dispatched "
                         f"(retry {cp_retries + 1})"
                     )
                 elif cp_retries < _MAX_INFRA_RETRIES + 1:
@@ -2179,12 +2181,12 @@ def harvest_measures(
                         {"quest_autocatpath_infra_retries": _MAX_INFRA_RETRIES + 1},
                     )
                     notes.append(
-                        f"autocatpath infra failure persists for {handle} → gripe filed"
+                        f"autocatpath infra failure persists for [{handle}] → gripe filed"
                     )
                 else:
                     # Already gripe-filed on a prior harvest — dedup, no re-file.
                     notes.append(
-                        f"autocatpath infra failure persists for {handle} (gripe already filed)"
+                        f"autocatpath infra failure persists for [{handle}] (gripe already filed)"
                     )
     return ComputeStep(
         candidates_created=0,
@@ -2369,7 +2371,7 @@ def promote_tiers(
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_NEB
                 )
-                notes.append(f"promoted {c.handle} screening→neb: {note}")
+                notes.append(f"promoted [{c.handle}] screening→neb: {note}")
 
         # neb → verify (frontier candidates only)
         if cap_verify > 0:
@@ -2386,7 +2388,7 @@ def promote_tiers(
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_VERIFY
                 )
-                notes.append(f"promoted {c.handle} neb→verify: {note}")
+                notes.append(f"promoted [{c.handle}] neb→verify: {note}")
     except Exception:
         log.exception("promote_tiers: promotion pass failed for quest %s", quest_id)
     return notes

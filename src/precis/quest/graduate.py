@@ -106,7 +106,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
                 store,
                 quest_id,
                 text=(
-                    f"held back {c.handle} ({c.name}) — barrier {value:g} meets "
+                    f"held back [{c.handle}] ({c.name}) — barrier {value:g} meets "
                     f"ceiling but pathway is untrusted ({n} NEB edge(s) "
                     f"failed / {m} adsorbate(s) desorbed / {w} mis-bound); needs "
                     "a re-run before graduation"
@@ -134,7 +134,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
                 store,
                 quest_id,
                 text=(
-                    f"pending verify: {c.handle} ({c.name}) — {key} {value:g} meets "
+                    f"pending verify: [{c.handle}] ({c.name}) — {key} {value:g} meets "
                     f"the ceiling on a {c.flags.get('barrier_tier') or 'parked'}-tier "
                     "barrier, but this quest's tier ladder requires a trusted "
                     "verify-tier (coadsorbed) run before graduation"
@@ -148,7 +148,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
             store,
             quest_id,
             text=(
-                f"graduated {c.handle} ({c.name}) — {key}={value:g} meets the "
+                f"graduated [{c.handle}] ({c.name}) — {key}={value:g} meets the "
                 f"ceiling ({sense} {threshold:g}); needs a real-world experiment"
             ),
             entry_type="milestone",

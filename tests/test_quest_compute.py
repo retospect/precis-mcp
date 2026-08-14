@@ -229,6 +229,16 @@ class TestHarvest:
             b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
         ]
         assert any("E=-12.5 eV" in b.text for b in logs)
+        # gr-linkify: the candidate's handle is BRACKETED (a bare handle only
+        # linkifies inside `[...]` — see BARE_BRACKET_REF_PATTERN in
+        # precis.utils.mentions) while the candidate name ("Fe") stays in
+        # plain parens right after it.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        result_entry = next(b for b in logs if f"relax result for [{handle}]" in b.text)
+        assert f"relax result for [{handle}] (Fe): E=-12.5 eV" in result_entry.text
         # idempotent: a second harvest of the same run adds nothing
         step2 = compute_mod.harvest_measures(store, qid)
         assert step2.results_harvested == 0
@@ -291,6 +301,16 @@ class TestHarvest:
             and (b.meta or {}).get("entry_type") == "dead-end"
         ]
         assert dead_ends and all(b.meta["by"] == "system" for b in dead_ends)
+        # gr-linkify: bracketed handle, name still in parens right after it.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        assert any(
+            f"ruled out [{handle}] (Fe): relax failed to converge" in b.text
+            for b in dead_ends
+        )
+        assert f"ruled-out [{handle}]" in step.notes
 
     def test_non_convergence_relax_failure_rules_out_candidate(
         self, store: Any
@@ -385,6 +405,14 @@ class TestHarvest:
         assert calls[0] == {"structure_ref_id": sid, "hub": hub, "cell": "inplane"}
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_infra_retries") == 1
+        # gr-linkify: bracketed handle in the retry note.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        assert any(
+            f"infra failure for [{handle}] → re-dispatched" in n for n in step.notes
+        )
 
     def test_infra_relax_failure_second_time_files_a_gripe_not_a_third_dispatch(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -436,6 +464,15 @@ class TestHarvest:
         assert dispatch_calls == []  # no third dispatch
         assert len(gripe_calls) == 1
         assert f"quest {qid}" in gripe_calls[0]["text"]
+        # gr-linkify: bracketed handle in the gripe-filed note.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        assert any(
+            f"infra failure persists for [{handle}] → gripe filed" in n
+            for n in step.notes
+        )
         assert (
             f"structure:{sid}" in gripe_calls[0]["text"]
             or str(sid) in gripe_calls[0]["text"]
@@ -797,6 +834,14 @@ class TestHarvest:
         assert meta1.get("quest_seed_infra_retries") == 1
         # the aggregate/explore-lane counter is untouched — separate budget.
         assert "quest_autocatpath_infra_retries" not in meta1
+        # gr-linkify: bracketed handle in the seed-lane retry note.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        assert any(
+            f"stuck seed for [{handle}] → re-dispatched" in n for n in step1.notes
+        )
 
         step2 = compute_mod.harvest_measures(store, qid, hub=hub)
         assert step2.ruled_out == 0
@@ -806,6 +851,10 @@ class TestHarvest:
         assert f"quest {qid}" in gripe_calls[0]["text"]
         meta2 = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta2.get("quest_seed_infra_retries") == 2
+        assert any(
+            f"stuck seed persists for [{handle}] → gripe filed" in n
+            for n in step2.notes
+        )
 
         # a third harvest while still stuck does not re-file (dedup).
         step3 = compute_mod.harvest_measures(store, qid, hub=hub)
@@ -1748,6 +1797,15 @@ class TestAutocatpathHarvest:
             b.meta["by"] == "system"
             for b in logs
             if (b.meta or {}).get("entry_type") == "result"
+        )
+        # gr-linkify: bracketed handle, name ("Pd") still in parens after it.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        assert any(
+            f"autocatpath result for [{handle}] (Pd): barrier=0.7 eV" in b.text
+            for b in logs
         )
         # idempotent: the same job is not re-harvested
         assert compute_mod.harvest_measures(store, qid).results_harvested == 0
@@ -3139,6 +3197,18 @@ class TestDispatchAutocatpath:
         assert compute_mod._fresh_autocatpath_jobs(store, sid, 0) == []  # no job minted
         tags = {str(t) for t in store.tags_for(sid)}
         assert any(t.startswith("ruled-out:preflight") for t in tags)
+        # gr-linkify: the logbook's dead-end entry brackets the handle so it
+        # linkifies on the web-rendered logbook (BARE_BRACKET_REF_PATTERN
+        # only fires inside `[...]`); the candidate slug stays in parens.
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None
+        logs = [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+        dead_end = next(b for b in logs if f"ruled out [{handle}]" in b.text)
+        assert "failed substrate preflight" in dead_end.text
 
     def test_preflight_flag_on_dispatches_clean_candidate(
         self, store: Any, monkeypatch: Any
@@ -3400,6 +3470,12 @@ class TestTierPromotion:
         assert promoted == {sid_best, sid_mid}
         assert sid_worst not in promoted
         assert all(tier == compute_mod._TIER_NEB for _sid, tier in calls)
+        # gr-linkify: bracketed handle in the promotion note.
+        from precis.utils import handle_registry
+
+        best_handle = handle_registry.try_format("structure", sid_best)
+        assert best_handle is not None
+        assert any(f"promoted [{best_handle}] screening→neb:" in n for n in notes)
 
     def test_skips_a_candidate_that_already_has_a_neb_pathway(
         self, store: Any, monkeypatch: Any
@@ -3444,6 +3520,12 @@ class TestTierPromotion:
         promoted = {sid for sid, _tier in calls}
         assert promoted == {lower_barrier}  # ranked best-first on `barrier`
         assert calls[0][1] == compute_mod._TIER_VERIFY
+        # gr-linkify: bracketed handle in the promotion note.
+        from precis.utils import handle_registry
+
+        lower_handle = handle_registry.try_format("structure", lower_barrier)
+        assert lower_handle is not None
+        assert any(f"promoted [{lower_handle}] neb→verify:" in n for n in notes)
 
     def test_neb_to_verify_skips_untrusted_barrier(
         self, store: Any, monkeypatch: Any
@@ -3807,6 +3889,25 @@ class TestFrontierTreeDossierChunk:
         # regenerating (e.g. a second tick) rewrites the SAME chunk in place.
         handle2 = dossier_mod.update_frontier_tree(store, qid)
         assert handle2 == handle1
+
+    def test_candidate_handle_emitted_in_brackets_not_parens(self, store: Any) -> None:
+        """The candidate handle must be ``[handle]`` (square brackets), not
+        ``(handle)`` — the draft inline-reference grammar
+        (:data:`precis.utils.mentions.BARE_BRACKET_REF_PATTERN`) only
+        linkifies a bracketed handle, so a parenthesised one renders as dead
+        text in the smartdraft web view."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        text = render_frontier_tree(store, qid)
+        c = _cand(store, sid)
+        line = next(ln for ln in text.splitlines() if "Pd" in ln)
+        assert f"[{c.handle}]" in line
+        assert f"({c.handle})" not in line
+        # name immediately followed by the bracketed handle, no stray parens
+        assert f"Pd [{c.handle}]:" in line
 
     def test_ruled_out_and_dup_markers_render(self, store: Any) -> None:
         from precis.store import Tag

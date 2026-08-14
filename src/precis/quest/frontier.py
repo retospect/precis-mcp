@@ -724,7 +724,7 @@ def render_frontier_tree(store: Store, quest_id: int) -> str:
         markers = _candidate_lineage_markers(store, c)
         marker_s = f" [{', '.join(markers)}]" if markers else ""
         lines.append(
-            f"{'  ' * depth}- {c.name} ({c.handle}): "
+            f"{'  ' * depth}- {c.name} [{c.handle}]: "
             f"{_candidate_key_measure(c)}{marker_s}"
         )
         for child_id in sorted(children.get(sid, [])):

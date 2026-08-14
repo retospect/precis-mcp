@@ -68,6 +68,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis.quest import review_guard
 from precis.store.types import Tag
 from precis.utils.ref_tree import is_orphaned
 
@@ -239,7 +240,22 @@ def mint_weave_reviews(
     already carrying a live review-todo for this exact ``body_handle`` is
     skipped (idempotent-friendly re-weave), so a repeat call over an
     unchanged body returns ``[]``.
+
+    **Machine-owned drafts are skipped, not scanned.** This trigger fires
+    for any ``meta.quest_body='weave'`` quest (``weave_tick.mark_weave_quest``'s
+    "paper-writing/topic-dossier quest" — a dossier CAN be in weave mode),
+    and — unlike :func:`precis.quest.review_fanout.mint_review_fanout` —
+    parents straight on ``quest_id`` with no ``draft-of`` resolution to
+    fail closed on, so nothing here would otherwise stop it minting
+    findings against a quest's own dossier. If ``body_handle``'s chunk
+    belongs to a draft that is the source of an outbound ``dossier-of``/
+    ``paper-of`` link (:func:`precis.quest.review_guard.is_machine_owned_draft`)
+    this returns ``[]`` without minting — see that guard's docstring for
+    why (quest 202469 / dossier 202546, Aug 2026).
     """
+    chunk = store.drafts.get_draft_chunk(body_handle)
+    if chunk is not None and review_guard.is_machine_owned_draft(store, chunk.ref_id):
+        return []
     minted: list[int] = []
     for lens in lenses:
         brief = _LENS_BRIEFS.get(lens)

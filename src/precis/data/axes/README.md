@@ -61,7 +61,15 @@ Don't bump for prompt typos or comment-only edits.
 
 No code changes required. No migrations. Tags land in a per-axis
 uppercase namespace derived from the axis id (`SCALE:10nm`,
-`ROLE:result`) with the closed-vocabulary validation table loaded
-from these YAML files at boot — NOT in the free-form OPEN namespace
-(ADR 0047: OPEN is the human/agent folksonomy and is slated for
-culling; curated tags must not stand in the blast radius).
+`ROLE:result`) — NOT in the free-form OPEN namespace (ADR 0047: OPEN
+is the human/agent folksonomy and is slated for culling; curated tags
+must not stand in the blast radius). The closed-vocabulary validation
+table (`_CLOSED_VOCAB` in `precis/store/types.py`) is a hardcoded
+dict, not loaded from these YAML files at boot — a new axis's
+`values:` here must be mirrored into `_CLOSED_VOCAB` by hand (step 1
+above), or `Tag.parse_strict` rejects the LLM-written tag as an
+unknown closed-prefix axis. Not every closed axis has a YAML here:
+an author-only (never LLM-classified) axis like `ATTEMPT` (the quest
+dossier's ledger) registers straight in `_CLOSED_VOCAB` with no
+`axes/*.yaml` — a YAML would wrongly register it as a
+`/categorizers` classifier service.

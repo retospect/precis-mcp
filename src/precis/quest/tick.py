@@ -416,14 +416,16 @@ def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
 #: `draft` kind (module docstring, dossier.py), so its narrative honors the
 #: same bare `[pc<id>]` inline-citation convention as any other draft
 #: (`get(kind='skill', id='precis-cite-paper-help')`); this tells the model
-#: to actually use it against the handles just listed above.
+#: to actually use it against the handles just listed above. The general
+#: "copy the handle, never invent one" rule lives once in the dossier-format
+#: block near the schema (below) — this stays literature-specific so the two
+#: don't repeat/contradict each other.
 _CITE_INSTRUCTION = (
     "\nWhen the rewritten dossier states a claim this literature supports, "
     "cite the specific paper inline by the bare `[pc<id>]` handle shown "
-    "above (e.g. `...a markedly lower barrier [pc234]`) — copy the handle "
-    "from the list, never invent one. A served paper listed with no handle "
-    "has no body chunk yet (a stub awaiting fetch) — do not cite it. See "
-    "`get(kind='skill', id='precis-cite-paper-help')`.\n"
+    "above (e.g. `...a markedly lower barrier [pc234]`). A served paper "
+    "listed with no handle has no body chunk yet (a stub awaiting fetch) — "
+    "do not cite it. See `get(kind='skill', id='precis-cite-paper-help')`.\n"
 )
 
 
@@ -781,7 +783,7 @@ def build_tick_prompt(
     ``narrative_override``, when given, is used in place of the PERSISTED
     narrative (:func:`precis.quest.dossier.read_narrative`) — the commit
     re-prompt ladder's rebuild (:func:`_build_commit_prompt`) passes the
-    primary tick's just-proposed (not-yet-written) ``dossier_markdown``
+    primary tick's just-proposed (not-yet-written) ``dossier_text``
     through here, since the narrative write is deferred past the ladder (the
     growth-ratchet gate needs the ladder's own harvest as progress evidence,
     :func:`run_quest_tick`) — without this, a ladder rebuild would show the
@@ -906,7 +908,7 @@ When the answer lies in the literature you don't yet hold (a `no-literature` or 
 `searches` to go get it instead of hypothesising in a vacuum.
 
 When you rule out or complete a *direction* that must never be revisited, pin \
-it to the ledger via `ledger_ops` (permanently preserved); `dossier_markdown` \
+it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
 is rewritten every tick, so a rule-out placed only there is forgotten.
 
 The ledger is a TREE of directions, not a flat list: a node is one durable \
@@ -926,6 +928,19 @@ so when in doubt add a new node rather than guess at one. Ruling out a \
 direction implicitly rules out its still-open children in what you're shown \
 next tick — you do not need to mark each child individually.
 
+## Dossier format
+`dossier_text` is a precis `draft` — stored and displayed as chunks, so the \
+chunk IS the block structure. Write blank-line-separated paragraphs of prose. \
+BLOCK-level markdown has no renderer and shows up as literal characters to the \
+reader: no `#`/`##` headings, no `-`/`*` bullet lists, no code fences, no \
+tables. INLINE markup does render and is welcome where it earns its place: \
+`**bold**`, `*italic*`, `` `code` ``, `<sub>`/`<sup>`, and `$…$` math (KaTeX — \
+use it for formulae and chemical species, e.g. `$NH_3$`, `$C_{{60}}$`). \
+Reference anything by copying its exact handle in square brackets from the \
+context above: `[st<id>]` a candidate structure (the frontier table), \
+`[pc<id>]`/`[pa<id>]` literature (see above), `[fi<id>]` a finding — never \
+invent one: parentheses don't linkify and a made-up handle resolves to nothing.
+
 Respond with EXACTLY ONE JSON object and nothing else:
 {{
   "logbook": [
@@ -933,8 +948,9 @@ Respond with EXACTLY ONE JSON object and nothing else:
   ],
   "searches": ["<0–3 literature queries to ground this quest — papers found are \
 linked as servers and feed the next step>"],
-  "dossier_markdown": "<the FULL rewritten dossier in markdown: current \
-understanding, best leads so far, what's ruled out, open questions>",
+  "dossier_text": "<the FULL rewritten dossier: current understanding, best \
+leads so far, what's ruled out, open questions — plain prose per the format \
+above>",
   "ledger_ops": [
     {{"op": "add", "text": "<one durable, permanently-pinned direction — a \
 strategy tried/killed/still open, not a single candidate material>",
@@ -956,7 +972,7 @@ refining an existing one>",
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
-words in `dossier_markdown` — but that's a target, not a hard cap: growth is \
+words in `dossier_text` — but that's a target, not a hard cap: growth is \
 fine when it reflects genuinely new evidence (a ruling, a result), not when \
 it's restated history. A rewrite that grows well past its previous length \
 with nothing new to show for it gets bounced back to you to compress.
@@ -1135,7 +1151,7 @@ def _build_commit_prompt(
     live-candidate scan) from scratch. ``None`` (default, and every unit
     test) builds it fresh. ``narrative_override`` (only meaningful on a fresh
     rebuild — ``base_prompt is None``) is the primary tick's just-proposed
-    ``dossier_markdown``, threaded straight through to
+    ``dossier_text``, threaded straight through to
     :func:`build_tick_prompt` — the narrative write is deferred past this
     ladder (:func:`run_quest_tick`), so without it a rebuild would show the
     model last tick's persisted narrative instead of its own current one.
@@ -1281,8 +1297,9 @@ def _narrative_compress_prompt(md: str, reason: str, *, ceiling_words: int) -> s
     return (
         f"{instruction} Preserve every ruling (what's tried, what's ruled "
         "out) and every open question — cut restated background and "
-        "repetition, not conclusions. Respond with ONLY the compressed "
-        "dossier markdown, nothing else.\n\n"
+        "repetition, not conclusions. Plain prose, no headings/bullets/bold, "
+        "same as before. Respond with ONLY the compressed dossier text, "
+        "nothing else.\n\n"
         f"{md}"
     )
 
@@ -1326,8 +1343,10 @@ def _reprompt_narrative_compress(
     if res is None or getattr(res, "error", None) or getattr(res, "paused", False):
         return ""
     data = getattr(res, "data", None)
-    if isinstance(data, dict) and str(data.get("dossier_markdown") or "").strip():
-        return str(data["dossier_markdown"]).strip()
+    if isinstance(data, dict):
+        text = str(data.get("dossier_text") or data.get("dossier_markdown") or "")
+        if text.strip():
+            return text.strip()
     return str(getattr(res, "text", "") or "").strip()
 
 
@@ -1341,7 +1360,7 @@ def _apply_narrative_gate(
     tier: Any,
     disp: Callable[[Any], Any],
 ) -> str | None:
-    """Run the growth-ratchet gate on a proposed `dossier_markdown`; return
+    """Run the growth-ratchet gate on a proposed `dossier_text`; return
     the markdown to actually write, or ``None`` when even the compress
     retry is rejected — the caller must then keep the previous narrative
     unrewritten. A rejected-then-accepted retry writes nothing to the
@@ -1671,7 +1690,13 @@ def run_quest_tick(
     # tick's full "progress" fact (the ledger ops already applied above, plus
     # any harvest/paper-link the compute+search steps below still produce),
     # so the gate+write is deferred to just before `update_cascade_state`.
-    narrative_md = str(payload.get("dossier_markdown") or "").strip()
+    # New field name is `dossier_text` (the old `dossier_markdown` name was
+    # itself the strongest wrong-format signal in the prompt — chunks render
+    # plain prose, not markdown); the old key is still accepted so a
+    # mid-flight response lands.
+    narrative_md = str(
+        payload.get("dossier_text") or payload.get("dossier_markdown") or ""
+    ).strip()
     rewritten = False
 
     # Proposals — log each candidate as a hypothesis (WORM), then optionally

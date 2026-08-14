@@ -194,9 +194,41 @@ class TestMintWeaveReviews:
         second = mint_weave_reviews(store, qid, "dc3001")
         assert len(second) == 2
 
+    def test_dossier_owned_chunk_is_skipped(self, store: Any) -> None:
+        """``body_handle`` anchoring a chunk of a ``dossier-of``-owned draft
+        mints nothing — unlike :func:`precis.quest.review_fanout.
+        mint_review_fanout`, this trigger parents straight on ``quest_id``
+        with no ``draft-of`` resolution to fail closed on, so without this
+        guard it would happily mint findings against a quest's own
+        dossier (quest 202469 / dossier 202546, Aug 2026 —
+        docs/backlog/dossier-present-tense-refinement.md)."""
+        qid = _mk_quest(store, "A quest for the dossier-skip guard")
+        did = _dossier_with_topic(store, qid)
+        handle = _scaffold_section(store, did, "Existing Section", _onehot(0))
+
+        ids = mint_weave_reviews(store, qid, handle)
+
+        assert ids == []
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM refs WHERE kind = 'todo' AND parent_id = %s "
+                "AND meta ? 'review'",
+                (qid,),
+            ).fetchone()[0]
+        assert n == 0
+
 
 class TestWeaveTickReviewTrigger:
-    def test_successful_weave_mints_reviews(self, store: Any) -> None:
+    def test_successful_weave_mints_no_reviews_for_a_dossier(self, store: Any) -> None:
+        """``weave_tick`` always weaves into the quest's own dossier
+        (``dossier.dossier_ref_id``) — every real weave target is
+        ``dossier-of``-owned, so :func:`mint_weave_reviews`'s guard skips
+        it every time (see ``TestMintWeaveReviews.
+        test_dossier_owned_chunk_is_skipped``). Was
+        ``test_successful_weave_mints_reviews`` (asserted 2 review-todos)
+        before the guard — updated, not deleted, since the old assertion
+        is now the exact bug the guard exists to prevent (quest 202469 /
+        dossier 202546, Aug 2026)."""
         qid, did, handle, pid = _setup_one_maintain_section(store)
         client = _FixedWeaveClient(_weave_payload_one())
 
@@ -205,13 +237,7 @@ class TestWeaveTickReviewTrigger:
         assert result["ok"] is True
         assert len(result["woven"]) == 1
         assert result["woven"][0]["ok"] is True
-        body_handle = result["woven"][0]["body_handle"]
-        assert len(result["review_todos"]) == 2
-        for todo_id in result["review_todos"]:
-            ref = store.get_ref(kind="todo", id=todo_id)
-            assert ref is not None
-            assert ref.meta.get("anchor") == body_handle
-            assert ref.parent_id == qid
+        assert result["review_todos"] == []
 
     def test_dry_run_mints_no_reviews(self, store: Any) -> None:
         qid, did, handle, pid = _setup_one_maintain_section(store)
@@ -260,16 +286,20 @@ class TestWeaveTickReviewTrigger:
     def test_repeat_tick_over_unchanged_body_does_not_stack_reviews(
         self, store: Any
     ) -> None:
-        qid, did, handle, pid = _setup_one_maintain_section(store)
-        client = _FixedWeaveClient(_weave_payload_one())
+        """Non-dossier regression coverage for the pre-guard dedup
+        contract: ``mint_weave_reviews`` must not stack duplicate
+        review-todos across repeat calls over the same body. The dossier
+        target from ``_setup_one_maintain_section`` now always skips (see
+        ``test_successful_weave_mints_no_reviews_for_a_dossier``), so this
+        exercises the dedup path directly against a synthetic non-owned
+        anchor instead — the same shape ``TestMintWeaveReviews.
+        test_idempotent_on_repeat_call`` already covers, kept here to
+        pin the ``weave_tick``-level entry point too."""
+        qid = _mk_quest(store, "A quest for the repeat-tick dedup check")
+        anchor = "dc4000"
 
-        first = weave_tick(store, client, qid, claims_client=_FixedClaimsClient())
-        assert len(first["review_todos"]) == 2
-        body_handle = first["woven"][0]["body_handle"]
+        first_ids = mint_weave_reviews(store, qid, anchor)
+        assert len(first_ids) == 2
 
-        # A second weave_tick over the same already-woven section directly
-        # (bypassing the "nothing unintegrated" early return, which real
-        # re-weaves never hit since the paper is now dispositioned) —
-        # mint_weave_reviews itself must not stack duplicates.
-        second_ids = mint_weave_reviews(store, qid, body_handle)
+        second_ids = mint_weave_reviews(store, qid, anchor)
         assert second_ids == []

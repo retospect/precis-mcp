@@ -995,6 +995,19 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # unlisted in `_KIND_ALLOWED_AXES` (unrestricted); listing it would strip
     # its other axes. `canon.block()` reads these via raw SQL.
     "TAPROOT": frozenset({"claim", "review"}),
+    # Quest dossier attempt-tree ledger (dossier-hygiene design, quest package
+    # docstring). A CHUNK tag on each ledger-node chunk (see
+    # ``precis.quest.dossier``), one per strategic direction; ``open`` /
+    # ``active`` / ``tried`` / ``ruled-out`` are ``dossier.py``'s
+    # ``_STATUSES`` (the model-facing vocabulary — the value ``add_attempt``/
+    # ``mark_attempt`` clamp bad input to); ``idea`` is registered here for a
+    # noted-but-not-yet-pursued direction but not yet wired into that clamp.
+    # Author-only (a model/tick writes it explicitly via
+    # ``Tag.closed("ATTEMPT", ...)``, bypassing ``parse_strict`` — never
+    # LLM-classified), so deliberately has NO ``data/axes/*.yaml`` — one would
+    # wrongly register a phantom ``axis:attempt`` service in
+    # ``/categorizers``.
+    "ATTEMPT": frozenset({"open", "active", "tried", "ruled-out", "idea"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as

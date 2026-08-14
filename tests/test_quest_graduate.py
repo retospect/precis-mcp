@@ -73,6 +73,11 @@ class TestGraduation:
             (b.meta or {}).get("entry_type") == "milestone" and "graduated" in b.text
             for b in logs
         )
+        # gr-linkify: the handle is BRACKETED (a bare handle only linkifies
+        # inside `[...]` — see BARE_BRACKET_REF_PATTERN in
+        # precis.utils.mentions) while the candidate name ("cand") stays in
+        # plain parens right after it.
+        assert any(f"graduated [st{sid}] (cand)" in b.text for b in logs)
         # idempotent — a second call does not re-graduate
         assert grad.graduate_frontier(store, qid) == []
 
@@ -191,6 +196,8 @@ class TestBarrierQualityGate:
             (b.meta or {}).get("entry_type") == "note" and "held back" in b.text
             for b in logs
         )
+        # gr-linkify: bracketed handle, name ("synthetic") still in parens.
+        assert any(f"held back [st{sid}] (synthetic)" in b.text for b in logs)
 
     def test_trusted_barrier_graduates(self, store: Any) -> None:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
@@ -276,6 +283,8 @@ class TestTierLadderGraduationGate:
             (b.meta or {}).get("entry_type") == "note" and "pending verify" in b.text
             for b in logs
         )
+        # gr-linkify: bracketed handle, name ("cand") still in parens after it.
+        assert any(f"pending verify: [st{sid}] (cand)" in b.text for b in logs)
 
     def test_verify_tier_trusted_barrier_graduates_when_ladder_on(
         self, store: Any

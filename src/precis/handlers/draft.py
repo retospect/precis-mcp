@@ -34,7 +34,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import toon
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
@@ -72,6 +72,24 @@ _CHUNK_ADDR = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
 #: operator (``^``/``+``/``-``/``..``) — used to tell a chunk address from a
 #: draft slug in ``get`` / ``search``.
 _DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:[+\-^].*|\.\..*)?$")
+
+#: Relations an owning *process* (a quest today, per its module
+#: docstring any ref) uses to mark a ``draft`` as its machine-managed
+#: body — mirrors ``precis.quest.dossier``'s private ``_RELATION`` /
+#: ``_PAPER_RELATION`` (duplicated, not imported: the guard below is
+#: enforced independently of quest internals, at the agent-facing
+#: handler boundary, so it can't be defeated by anything that changes
+#: on the quest side). A draft that is the SOURCE of either link
+#: (``draft --dossier-of/paper-of--> owner``) is off-limits to
+#: ``put``/``edit``/``delete`` through this handler — see
+#: :meth:`DraftHandler._refuse_if_machine_owned` for why: a generic
+#: draft-hygiene todo once executed against a quest dossier through
+#: this exact surface, retiring its narrative AND its pinned ledger
+#: chunk and silently losing the ledger's whole attempt tree
+#: (quest 202469 / dossier 202546, Aug 2026).
+_DOSSIER_RELATION = "dossier-of"
+_PAPER_RELATION = "paper-of"
+_MACHINE_OWNED_RELATIONS: tuple[str, ...] = (_DOSSIER_RELATION, _PAPER_RELATION)
 
 #: Malformed temperature / unit notation the draft prose should not carry.
 #: The canonical form is the literal sign with no space — ``63°C`` (degree
@@ -836,6 +854,11 @@ class DraftHandler(Handler):
         find, replace, flags = self._parse_sub_expr(sub)
         rx = draft_regex.compile_pattern(find, flags)
         pairs, where = self._scope_chunks(scope, allow_all=False)
+        if pairs:
+            # ``allow_all=False`` guarantees a single-draft scope (a slug or
+            # a dc<id> subtree, never "all drafts") — every pair shares one
+            # ref_id, so the first is enough to guard the whole write.
+            self._refuse_if_machine_owned(int(pairs[0][1].ref_id))
 
         changes: list[tuple[str, Any, str, int]] = []
         total_subs = 0
@@ -991,6 +1014,7 @@ class DraftHandler(Handler):
 
         if chunk_kind == "figure" and image is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
             return self._add_figure(
                 slug=slug,
                 ref_id=ref.id,
@@ -1006,6 +1030,7 @@ class DraftHandler(Handler):
         # to the render pass. text= is the caption.
         if chunk_kind == "figure" and (render is not None or plots is not None):
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
             return self._add_graph_figure(
                 slug=slug,
                 ref_id=ref.id,
@@ -1017,6 +1042,7 @@ class DraftHandler(Handler):
 
         if chunk_kind is not None or at is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
             if (chunk_kind or "paragraph") == "table" or table is not None:
                 return self._put_table(
                     slug,
@@ -1569,6 +1595,7 @@ class DraftHandler(Handler):
         _base = self.store.drafts.get_draft_chunk(handle)
         if _base is None:
             raise NotFound(f"draft chunk {handle!r} not found")
+        self._refuse_if_machine_owned(int(_base.ref_id))
         handle = _base.handle
         # dry_run previews only the text-mutation paths (find-replace / rewrite,
         # handled below). The structural / metadata ops write in place and have
@@ -1812,6 +1839,7 @@ class DraftHandler(Handler):
         chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
             raise NotFound(f"draft chunk {handle!r} not found")
+        self._refuse_if_machine_owned(int(chunk.ref_id))
         self.store.drafts.retire_chunk(chunk.handle, mode=mode)
         self._sync_draft_links(chunk.ref_id)
         return Response(body=f"retired {chunk.dc}")
@@ -2022,7 +2050,10 @@ class DraftHandler(Handler):
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
         """Resolve a draft ref from either its slug or a ¶handle (a chunk
-        in it). Used by the draft-level ``not_abbrev`` op."""
+        in it), refusing a machine-owned target (:meth:`_refuse_if_machine_owned`).
+        Used by every draft-level edit op (``title=``/``authors=``/
+        ``not_abbrev=``/``authoring=``/``scaffold=``) — all mutating, so
+        every caller wants the guard."""
         s = str(id or "").strip()
         if _is_draft_chunk_addr(s):
             chunk = self.store.drafts.get_draft_chunk(s)
@@ -2031,8 +2062,74 @@ class DraftHandler(Handler):
             ref = self.store.get_ref(kind="draft", id=int(chunk.ref_id))
             if ref is None:
                 raise NotFound(f"draft for chunk {s} not found")
-            return ref
-        return resolve_live_slug_ref(self.store, kind="draft", id=s)
+        else:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
+        self._refuse_if_machine_owned(ref.id)
+        return ref
+
+    def _machine_owner(self, ref_id: int) -> tuple[str, int, str, str | None] | None:
+        """``(relation, owner_ref_id, owner_kind, owner_title)`` iff ``ref_id``
+        is the SOURCE of an outbound ``dossier-of``/``paper-of`` link (the
+        owning process is the link's ``dst``) — else ``None``. One query
+        (link + owner ref joined), only ever run from a
+        put/edit/delete entry point on a draft that's about to be mutated
+        — never from a read path (``get``/``search``)."""
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT l.relation, l.dst_ref_id, r.kind, r.title "
+                "FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id "
+                "WHERE l.src_ref_id = %s AND l.relation = ANY(%s) LIMIT 1",
+                (ref_id, list(_MACHINE_OWNED_RELATIONS)),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row[0]), int(row[1]), str(row[2]), (str(row[3]) if row[3] else None)
+
+    def _refuse_if_machine_owned(self, ref_id: int) -> None:
+        """Raise :class:`Unsupported` when the draft ``ref_id`` is a
+        process's machine-managed body (a quest dossier, or its paper
+        projection — see the ``_DOSSIER_RELATION``/``_PAPER_RELATION``
+        module note).
+
+        Its structure — one code/model-rewritten narrative chunk plus
+        ``meta.pinned`` ledger/frontier chunks — is a machine invariant
+        enforced by the owning process's own write path
+        (:mod:`precis.quest.dossier`, :mod:`precis.quest.tick`), never by
+        this handler; markdown-looking prose inside it is intentional
+        storage for that process, not authoring debt. This is the exact
+        incident this guard exists for: a generic draft-hygiene todo once
+        "cleaned up" a dossier through this surface and silently lost its
+        entire attempt-tree ledger. Points the caller at the owning ref
+        instead of retrying a different write shape.
+
+        The only DB work on the common (unowned) path is
+        :meth:`_machine_owner`'s single query — the slug lookup below only
+        runs once a violation is already confirmed, on the way to raising.
+        """
+        owner = self._machine_owner(ref_id)
+        if owner is None:
+            return
+        relation, owner_id, owner_kind, owner_title = owner
+        noun = "dossier" if relation == _DOSSIER_RELATION else "reader-facing paper"
+        owner_handle = handle_registry.try_format(owner_kind, owner_id) or (
+            f"{owner_kind}:{owner_id}"
+        )
+        label = f" ({owner_title})" if owner_title else ""
+        self_ref = self.store.get_ref(kind="draft", id=ref_id, include_deleted=True)
+        slug_label = self_ref.slug if self_ref and self_ref.slug else ref_id
+        raise Unsupported(
+            f"draft {slug_label!r} is the {noun} of {owner_handle}{label} "
+            f"(a {relation} machine invariant) — it is written and "
+            "structured by that process's own code, not by hand: exactly "
+            "one narrative chunk (whole-rewritten every cycle) plus "
+            "code/model-managed pinned chunks (a ledger, a frontier tree). "
+            "That structure is not a formatting defect to refactor, and "
+            "markdown-looking content inside it is intentional storage, "
+            "not authoring debt — a generic 'clean this up' pass must "
+            "stop here rather than retry a different edit shape. "
+            f"put/edit/delete are refused on this draft through this handler.",
+            next=(f"inspect the owning process instead: get(id={owner_handle!r})"),
+        )
 
     def _require_chunk_id(self, id: str | int | None, *, verb: str) -> str:
         if id is None or not _is_draft_chunk_addr(str(id)):

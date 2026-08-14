@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Gone, NotFound
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 
@@ -1851,3 +1851,135 @@ def test_mcp_get_tool_looks_up_draft_by_project(
 
     out = core.get(kind="draft", project=proj)
     assert isinstance(out, str) and "Wired" in out and "wire-project" in out
+
+
+# ---------------------------------------------------------------------------
+# Machine-owned draft guard — a quest dossier (or its paper projection) is
+# structured/rewritten by its owning process's own code
+# (precis.quest.dossier), never by an agent through this handler's ordinary
+# put/edit/delete surface. gr-precedent: a generic draft-hygiene todo once
+# executed against a live dossier through exactly this surface, retiring its
+# narrative AND its pinned ledger chunk and silently losing the whole
+# attempt-tree ledger (quest 202469 / dossier 202546, Aug 2026).
+# ---------------------------------------------------------------------------
+
+
+def _make_dossier(hub: Hub) -> tuple[int, str, str]:
+    """Mint an owner ref + its dossier draft via the real quest-side
+    machine writer (`precis.quest.dossier.ensure_dossier`) — the same path
+    a live quest tick takes. Returns (owner_ref_id, dossier_slug, narrative_dc)."""
+    from precis.quest.dossier import ensure_dossier
+
+    owner = hub.live_store.insert_ref(kind="todo", slug=None, title="Owner process")
+    dossier_ref_id = ensure_dossier(hub.live_store, owner.id)
+    ref = hub.live_store.get_ref(kind="draft", id=dossier_ref_id)
+    assert ref is not None and ref.slug is not None
+    body = hub.live_store.drafts.reading_order(dossier_ref_id)
+    narrative = next(c for c in body if c.chunk_kind != "heading")
+    return owner.id, ref.slug, narrative.dc
+
+
+def test_put_refuses_on_dossier_owned_draft(draft: DraftHandler, hub: Hub) -> None:
+    owner_id, slug, _narrative_dc = _make_dossier(hub)
+    with pytest.raises(Unsupported, match="dossier") as ei:
+        draft.put(
+            id=slug, chunk_kind="paragraph", text="agent-added text", at={"last": True}
+        )
+    assert str(owner_id) in str(ei.value)
+
+
+def test_edit_refuses_on_dossier_owned_draft(draft: DraftHandler, hub: Hub) -> None:
+    _owner_id, _slug, narrative_dc = _make_dossier(hub)
+    with pytest.raises(Unsupported, match="dossier"):
+        draft.edit(id=narrative_dc, text="agent rewrite")
+
+
+def test_delete_refuses_on_dossier_owned_draft(draft: DraftHandler, hub: Hub) -> None:
+    _owner_id, _slug, narrative_dc = _make_dossier(hub)
+    with pytest.raises(Unsupported, match="dossier"):
+        draft.delete(id=narrative_dc)
+
+
+def test_edit_title_and_scaffold_also_refuse_on_dossier_owned_draft(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Draft-level edit ops (title=/scaffold=/…) resolve through
+    ``_resolve_draft_any``, the same guarded path — not just the per-chunk
+    text-edit branch."""
+    _owner_id, slug, _narrative_dc = _make_dossier(hub)
+    with pytest.raises(Unsupported, match="dossier"):
+        draft.edit(id=slug, title="Retitled")
+    with pytest.raises(Unsupported, match="dossier"):
+        draft.edit(id=slug, scaffold="summary")
+
+
+def test_paper_of_owned_draft_also_refused(draft: DraftHandler, hub: Hub) -> None:
+    """The sibling ``paper-of`` relation (the reader-facing paper
+    projection) is guarded identically to ``dossier-of``."""
+    owner = hub.live_store.insert_ref(kind="todo", slug=None, title="Paper owner")
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="Paper project")
+    ref, _heading = hub.live_store.drafts.create_draft(
+        name="paper-proj",
+        title="A Paper",
+        project_ref_id=proj.id,
+        relation="draft-of",
+    )
+    hub.live_store.add_link(src_ref_id=ref.id, dst_ref_id=owner.id, relation="paper-of")
+    with pytest.raises(Unsupported, match="paper") as ei:
+        draft.edit(id="paper-proj", title="Retitled")
+    assert str(owner.id) in str(ei.value)
+
+
+def test_ordinary_draft_unaffected_by_machine_owner_guard(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """(b) the guard is scoped to dossier-of/paper-of-owned drafts only — a
+    plain project draft's put/edit/delete are untouched."""
+    proj = _proj(hub)
+    draft.put(id="plain", title="Plain Draft", project=proj)
+    r = draft.put(
+        id="plain", chunk_kind="paragraph", text="hello world", at={"last": True}
+    )
+    handle = _dc(r.body)
+    draft.edit(id=handle, text="hello again")  # no raise
+    draft.delete(id=handle)  # no raise
+
+
+def test_machine_write_path_bypasses_handler_and_still_works(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """(c) the CRITICAL regression check: the quest tick's own writers
+    (`store.edit_text` / `store.add_chunks`, exactly what
+    `precis.quest.dossier.rewrite_dossier`/`add_attempt` call) go straight
+    to the store, never through this handler — so they must keep working on
+    a dossier ref even though the agent-facing put/edit/delete verbs now
+    refuse it. A guard that also blocked the quest tick would break every
+    live quest."""
+    from precis.quest.dossier import add_attempt, read_ledger, read_narrative
+
+    owner_id, slug, narrative_dc = _make_dossier(hub)
+
+    # First, confirm the handler DOES refuse this ref (sanity for the
+    # regression check below to mean anything).
+    with pytest.raises(Unsupported):
+        draft.edit(id=narrative_dc, text="agent rewrite")
+
+    # The machine path: rewrite_dossier (store.edit_text) + add_attempt
+    # (store.edit_text on the pinned ledger chunk) — both bypass
+    # DraftHandler entirely and must succeed.
+    from precis.quest.dossier import rewrite_dossier
+
+    rewrite_dossier(hub.live_store, owner_id, "The current understanding.")
+    assert read_narrative(hub.live_store, owner_id) == "The current understanding."
+
+    assert add_attempt(hub.live_store, owner_id, "try approach X") is True
+    assert "try approach X" in read_ledger(hub.live_store, owner_id)
+
+    # And the low-level store ops `ensure_dossier`/`rewrite_dossier` call
+    # under the hood — same as the module docstring — also still work
+    # directly.
+    dossier_ref_id = hub.live_store.get_ref(kind="draft", id=slug)
+    assert dossier_ref_id is not None
+    hub.live_store.drafts.add_chunks(
+        ref_id=dossier_ref_id.id, chunk_kind="paragraph", text="scratch", split=False
+    )

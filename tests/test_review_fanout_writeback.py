@@ -275,6 +275,76 @@ class TestMintReviewFanout:
         with pytest.raises(BadInput, match="draft-of"):
             mint_review_fanout(store, orphan.id)
 
+    def test_dossier_owned_draft_is_skipped(self, store: Store) -> None:
+        """A draft that is the source of an outbound ``dossier-of`` link —
+        a process's machine-managed, whole-rewritten-every-cycle body — is
+        skipped entirely: no ``draft-of`` resolution attempt (it has none,
+        so today that would raise ``BadInput`` — see
+        ``test_no_draft_of_link_raises``), no chunks walked, nothing
+        minted. Regression coverage for quest 202469 / dossier 202546
+        (Aug 2026, docs/backlog/dossier-present-tense-refinement.md): a
+        reviewer lens correctly-but-uselessly flagged the dossier's single
+        markdown narrative chunk as "written with markdown inside a draft,
+        refactor to draft chunks", and a plan_tick agent executing that
+        change-request destroyed the quest's attempt-tree ledger."""
+        from precis.quest.dossier import ensure_dossier
+
+        owner = store.insert_ref(kind="todo", slug=None, title="dossier owner")
+        did = ensure_dossier(store, owner.id)
+        # The dossier's seeded narrative chunk is markdown prose in one
+        # chunk — the exact shape a "flow"/"structure" lens would flag on
+        # an ordinary draft (see test_ordinary_draft_with_markdown_shape_
+        # is_still_flagged below).
+        store.drafts.add_chunks(
+            ref_id=did,
+            chunk_kind="paragraph",
+            text="# Heading\n\n## Status\n\n- **bold** point one\n- point two",
+            split=False,
+        )
+
+        result = mint_review_fanout(store, did)
+
+        assert result == {
+            "parent_id": None,
+            "minted": [],
+            "skipped": 0,
+            "unsettled_skipped": 0,
+            "author_minted": 0,
+            "chunks_seen": 0,
+        }
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM refs WHERE kind = 'todo' AND meta ? 'review'"
+            ).fetchone()
+        assert row is not None  # count(*) always returns exactly one row
+        assert row[0] == 0
+
+    def test_ordinary_draft_with_markdown_shape_is_still_flagged(
+        self, store: Store
+    ) -> None:
+        """A plain project-owned draft (``draft-of``, not ``dossier-of``)
+        carrying the identical markdown-in-one-chunk shape as the dossier
+        fixture above still gets its review-todos minted — the guard is
+        scoped to machine ownership, not to the presence of markdown
+        syntax; the heuristic itself is not disabled."""
+        proj = store.insert_ref(kind="todo", slug=None, title="ordinary project")
+        ref, title = store.drafts.create_draft(
+            name="ordinary-markdown-draft", title="T", project_ref_id=proj.id
+        )
+        store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="# Heading\n\n## Status\n\n- **bold** point one\n- point two",
+            at={"after": title.handle},
+        )
+        chunks = store.drafts.reviewable_chunks(ref.id)
+
+        result = mint_review_fanout(store, ref.id)
+
+        assert len(result["minted"]) == _expected_pairs(chunks, ALL_LENSES)
+        assert len(result["minted"]) > 0
+        assert result["parent_id"] == proj.id
+
 
 # ---------------------------------------------------------------------------
 # review-status incremental re-check — only_dirty

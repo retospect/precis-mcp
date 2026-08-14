@@ -307,7 +307,27 @@ def mint_review_fanout(
     Idempotent: a repeat call over an unchanged draft mints nothing (every
     ``(chunk, lens)`` pair already has a live review-todo from the first
     call), so ``minted == []`` and ``skipped`` covers every pair.
+
+    **Machine-owned drafts are skipped, not scanned.** A draft that is the
+    source of an outbound ``dossier-of``/``paper-of`` link
+    (:func:`precis.quest.review_guard.is_machine_owned_draft`) is a
+    process's machine-managed body, not hand-authored prose — its
+    markdown-looking single-chunk shape is that process's own storage
+    format (:mod:`precis.quest.dossier`), not authoring debt for a
+    reviewer lens to flag. Returns the same summary shape with every
+    count at zero and ``parent_id=None`` rather than resolving a
+    ``draft-of`` project (a dossier has none) or minting anything — see
+    the module docstring on ``review_guard.is_machine_owned_draft``.
     """
+    if review_guard.is_machine_owned_draft(store, draft_ref_id):
+        return {
+            "parent_id": None,
+            "minted": [],
+            "skipped": 0,
+            "unsettled_skipped": 0,
+            "author_minted": 0,
+            "chunks_seen": 0,
+        }
     parent_id = _draft_project_parent(store, draft_ref_id)
     # Per-document auto-author toggle (rung 3e): an explicit ``author=True``
     # forces authoring on regardless of the toggle; otherwise defer to the

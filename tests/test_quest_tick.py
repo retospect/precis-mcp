@@ -117,8 +117,15 @@ class TestDossierLedger:
         chunks = store.drafts.reading_order(did)
         ledger_chunks = [c for c in chunks if (c.meta or {}).get("pinned") == "ledger"]
         assert len(ledger_chunks) == 1
-        assert "## Attempts" in ledger_chunks[0].text
-        assert "(none yet)" in ledger_chunks[0].text
+        # the container starts blank — the tree lives in child node chunks,
+        # created lazily by add_attempt/mark_attempt, not in this chunk's
+        # own text (dossier.py's storage move off a markdown blob).
+        assert ledger_chunks[0].text == ""
+        # read_ledger's markdown RENDERING of the still-empty forest is
+        # unchanged — every existing substring assertion elsewhere in this
+        # file keeps working against it.
+        assert "## Attempts" in read_ledger(store, qid)
+        assert "(none yet)" in read_ledger(store, qid)
 
     def test_rewrite_dossier_leaves_ledger_byte_identical(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -353,29 +360,70 @@ class TestAttemptTree:
         qid = _mk_quest(store, "A striving")
         assert mark_attempt(store, qid, "nothing named this", "tried") is False
 
-    def test_legacy_flat_ledger_parses_as_depth_zero_nodes(self, store: Any) -> None:
+    def test_legacy_flat_ledger_backfills_to_node_chunks_lazily_without_loss(
+        self, store: Any
+    ) -> None:
+        # dossier.py's ledger storage moved off a markdown blob to real
+        # chunks + ATTEMPT tags; a dossier whose container chunk still holds
+        # the OLD three-section markdown converts in place, lazily, on first
+        # access — no migration, no data lost.
         qid = _mk_quest(store, "A striving with a pre-attempt-tree ledger")
         handle = ensure_ledger_chunk(store, qid)
+        did = dossier_ref_id(store, qid)
+        assert did is not None
         legacy = (
             "## Tried\n- Fe-N4 single atom sites\n\n"
             "## Ruled out\n- Pd(111) bare — beaten on barrier\n\n"
             "## Open\n- Does co-adsorbed H help?\n"
         )
         store.drafts.edit_text(handle, legacy, source={"reason": "test-seed-legacy"})
-        assert read_ledger(store, qid) == legacy  # human-edited, round-trips raw
+        container = next(
+            c for c in store.drafts.reading_order(did) if c.handle == handle
+        )
+        assert container.text == legacy  # untouched until something reads it
 
-        # a code mutation re-renders it into the new tree format — no data lost
-        assert add_attempt(store, qid, "a fresh direction") is True
+        # first access (read_ledger) triggers the lazy backfill.
         rendered = read_ledger(store, qid)
         assert "## Attempts" in rendered
         assert "- [tried] Fe-N4 single atom sites" in rendered
         assert "- [ruled-out] Pd(111) bare — beaten on barrier" in rendered
         assert "- [open] Does co-adsorbed H help?" in rendered
-        assert "- [open] a fresh direction" in rendered
 
-        # and mark_attempt can address a node that came from the legacy ledger
+        # the container is blanked ONLY once the node chunks it described
+        # are durably written (never destroy the one copy before the
+        # replacement exists — dossier 202546's loss).
+        container_after = next(
+            c for c in store.drafts.reading_order(did) if c.handle == handle
+        )
+        assert container_after.text == ""
+        node_chunks = [
+            c
+            for c in store.drafts.reading_order(did)
+            if (c.meta or {}).get("pinned") == "ledger-node"
+        ]
+        assert len(node_chunks) == 3
+        assert {c.parent_chunk_id for c in node_chunks} == {container.chunk_id}
+
+        # idempotent: re-reading doesn't reparse (container stays blank) or
+        # duplicate the materialized nodes.
+        assert read_ledger(store, qid) == rendered
+        assert (
+            len(
+                [
+                    c
+                    for c in store.drafts.reading_order(did)
+                    if (c.meta or {}).get("pinned") == "ledger-node"
+                ]
+            )
+            == 3
+        )
+
+        # mark_attempt can address a node that came from the legacy ledger
         assert mark_attempt(store, qid, "Fe-N4 single atom sites", "ruled-out") is True
         assert "- [ruled-out] Fe-N4 single atom sites" in read_ledger(store, qid)
+        # and add_attempt still works post-backfill
+        assert add_attempt(store, qid, "a fresh direction") is True
+        assert "- [open] a fresh direction" in read_ledger(store, qid)
 
     def test_ledger_do_not_repropose_inherits_ruled_out_over_open_descendants(
         self, store: Any
@@ -431,6 +479,111 @@ class TestAttemptTree:
         text = ledger_do_not_repropose(read_ledger(store, qid))
         assert "an untried lead" not in text
         assert text == "(nothing pinned yet)"
+
+    def test_ledger_do_not_repropose_forest_and_text_shim_agree(
+        self, store: Any
+    ) -> None:
+        # ledger_do_not_repropose's PRIMARY form takes the forest directly
+        # (matches storage now — no markdown round-trip needed); the legacy
+        # text-accepting form is a thin back-compat shim
+        # (precis.quest.tick's _ledger_constraints still calls it with
+        # read_ledger's text). Both must produce byte-identical output —
+        # the inheritance + dead-subtree-collapse rendering is unaffected by
+        # which form the caller uses.
+        from precis.quest.dossier import _load_ledger_nodes, ledger_do_not_repropose
+
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "dead direction d", status="ruled-out")
+        add_attempt(
+            store, qid, "d variant 1", parent="dead direction d", status="tried"
+        )
+        add_attempt(
+            store, qid, "d variant 2", parent="dead direction d", status="ruled-out"
+        )
+        add_attempt(store, qid, "an untried lead", status="open")
+        did = dossier_ref_id(store, qid)
+        assert did is not None
+
+        via_text = ledger_do_not_repropose(read_ledger(store, qid))
+        via_forest = ledger_do_not_repropose(_load_ledger_nodes(store, did))
+        assert via_text == via_forest
+        assert "(3 variants, all ruled out)" in via_forest
+        assert "an untried lead" not in via_forest
+
+    def test_forest_round_trips_through_chunk_storage(self, store: Any) -> None:
+        # the ledger's storage is real chunks: each node its own
+        # meta.pinned='ledger-node' child chunk, nested via parent_chunk_id
+        # under the container (or another node), status carried as an
+        # ATTEMPT:<status> chunk tag — not a markdown blob.
+        from precis.quest.dossier import _find_pinned_chunk
+
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "dope with a transition metal") is True
+        assert (
+            add_attempt(
+                store, qid, "Cu single-atom", parent="dope with a transition metal"
+            )
+            is True
+        )
+        assert mark_attempt(store, qid, "Cu single-atom", "ruled-out") is True
+        did = dossier_ref_id(store, qid)
+        assert did is not None
+
+        chunks = store.drafts.reading_order(did)
+        container = _find_pinned_chunk(chunks, "ledger")
+        assert container is not None
+        assert container.text == ""  # the tree lives in child chunks, not here
+
+        node_chunks = {
+            c.handle: c for c in chunks if (c.meta or {}).get("pinned") == "ledger-node"
+        }
+        assert len(node_chunks) == 2
+        parent = next(
+            c for c in node_chunks.values() if c.text == "dope with a transition metal"
+        )
+        child = next(c for c in node_chunks.values() if c.text == "Cu single-atom")
+        assert parent.parent_chunk_id == container.chunk_id
+        assert child.parent_chunk_id == parent.chunk_id
+
+        ord_map = store.drafts.chunk_ord_map(did)
+        from precis.store import Tag
+
+        assert Tag.closed("ATTEMPT", "open") in store.tags_for(
+            did, pos=ord_map[parent.chunk_id]
+        )
+        assert Tag.closed("ATTEMPT", "ruled-out") in store.tags_for(
+            did, pos=ord_map[child.chunk_id]
+        )
+
+    def test_node_chunks_are_tagged_and_excluded_from_narrative_body(
+        self, store: Any
+    ) -> None:
+        # a ledger-node chunk carries its status as an ATTEMPT:<status>
+        # chunk tag (the closed axis — precis.store.types._CLOSED_VOCAB),
+        # and — because it's stamped meta.pinned='ledger-node' — the
+        # narrative-body filters in read_narrative/rewrite_dossier (which
+        # already exclude ANY truthy meta.pinned) keep it out of the
+        # rewritable prose for free, with no filter change needed there.
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "a direction", status="tried") is True
+        did = dossier_ref_id(store, qid)
+        assert did is not None
+
+        chunks = store.drafts.reading_order(did)
+        node = next(c for c in chunks if (c.meta or {}).get("pinned") == "ledger-node")
+        chunk_ord = store.drafts.chunk_ord_map(did)[node.chunk_id]
+        tags = store.tags_for(did, pos=chunk_ord)
+        assert Tag.closed("ATTEMPT", "tried") in tags
+
+        # excluded from the narrative body a rewrite would touch
+        assert node.text not in read_narrative(store, qid)
+        rewrite_dossier(store, qid, "# Understanding\n\nFresh synthesis.")
+        chunks_after = store.drafts.reading_order(did)
+        node_after = next(c for c in chunks_after if c.handle == node.handle)
+        assert node_after.text == "a direction"  # untouched by the rewrite
+        assert node.text not in read_narrative(store, qid)
 
 
 # ── owner generalization ──────────────────────────────────
@@ -550,6 +703,36 @@ class TestQuestTick:
         assert "hypothesis" in body and "Fe–N₄ single-atom" in body
         _did, _h, dtext = read_dossier(store, qid)
         assert "current best lead" in dtext
+
+    def test_dossier_text_is_the_field_name(self, store: Any) -> None:
+        """The current (post-rename) field name parses on its own — the old
+        ``dossier_markdown`` key is a fallback only, not required."""
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        payload = {
+            "logbook": [{"entry_type": "observation", "text": "note"}],
+            "dossier_text": "Fe-N4 is the current best lead, plain prose.",
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert out.dossier_rewritten is True
+        _did, _h, dtext = read_dossier(store, qid)
+        assert "current best lead" in dtext
+
+    def test_dossier_text_preferred_over_legacy_dossier_markdown(
+        self, store: Any
+    ) -> None:
+        """When a response somehow carries both keys, the new name wins —
+        it's the one the current prompt actually asks for."""
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "dossier_text": "NEW FIELD WINS",
+            "dossier_markdown": "old field loses",
+        }
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        _did, _h, dtext = read_dossier(store, qid)
+        assert "NEW FIELD WINS" in dtext
+        assert "old field loses" not in dtext
 
     def test_logbook_entries_authored_by_agent(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -1316,7 +1499,14 @@ class TestPromptAndView:
         p = build_tick_prompt(store, qref)
         assert "NO→NH₃" in p
         assert "thin-support" in p  # a lonely quest surfaces this gap
-        assert "dossier_markdown" in p  # the JSON contract is in the prompt
+        assert "dossier_text" in p  # the JSON contract is in the prompt
+        # House style is taught to the model, and taught ACCURATELY: block
+        # markdown has no renderer, but the inline subset (_md_inline in
+        # precis_web/linkify.py) does render — including $…$ KaTeX, which a
+        # chemistry dossier needs. An earlier revision banned inline emphasis
+        # and math outright; that was wrong about the rendering surface.
+        assert "no code fences" in p
+        assert "$…$` math" in p
 
     def test_view_dossier_before_and_after(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
