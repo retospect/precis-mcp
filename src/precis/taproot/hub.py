@@ -112,12 +112,19 @@ _DEFAULT_ROLE = "corroborates"
 #: means for a Taproot claim hub (taproot.md open #15: "only paper-sourced
 #: claims become hubs"; the patent addition itself came from a deliberate
 #: design doc, docs/backlog/patent-evidence-parity.md; ``edgar`` was
-#: approved as an evidence source by a matching human call), not a
-#: mechanical fact this codebase already declared elsewhere. ``datasheet``
-#: remains excluded pending its own call — widening stays a human decision;
-#: see also :mod:`precis.taproot.seniority`'s read-query docstring, which
-#: needs the same set to stay in lock-step with whatever this evolves to.
-EVIDENCE_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent", "edgar"})
+#: approved as an evidence source by a matching human call, as was
+#: ``datasheet`` — a manufacturer datasheet is a primary technical document
+#: the same way a patent is), not a mechanical fact this codebase already
+#: declared elsewhere. The set currently *equals* the ``corpus_role``
+#: derivation, but a future evidence-flagged kind still joins here only by
+#: human call — widening stays a decision, and
+#: ``tests/test_kind_totality.py`` pins the two sets against each other so
+#: divergence in either direction is a visible failure, not drift. See also
+#: :mod:`precis.taproot.seniority`'s read-query docstring, which needs the
+#: same set to stay in lock-step with whatever this evolves to.
+EVIDENCE_SRC_KINDS: frozenset[str] = frozenset(
+    {"paper", "patent", "edgar", "datasheet"}
+)
 
 _STATUS_NS = "STATUS"
 _STATUS_CANONICAL = "canonical"

@@ -18,12 +18,13 @@ touch-point updated fails here instead of drifting silently. Mirrors
 test's scoping choice: plugin kinds, e.g. ``precis_bio``'s ``protein`` or
 ``precis_pathway``'s ``route``, are out of this repo's totality contract).
 
-Two of the constants below are **deliberately NOT** equal to their
-KindSpec-derived counterpart (``precis.taproot.hub.EVIDENCE_SRC_KINDS`` /
+Two of the constants below are **deliberately hand-maintained** rather than
+derived (``precis.taproot.hub.EVIDENCE_SRC_KINDS`` /
 ``precis.utils.eye_render._DOC_KINDS`` — see each module's docstring for
-why); those get an *invariant* pin (documenting exactly how far they
-diverge and why) rather than an equality pin, so an unnoticed widening of
-the divergence still fails CI.
+why; membership changes are human scope calls, not mechanical swaps); those
+get an *invariant* pin (documenting exactly how far they diverge, if at
+all, and why) rather than an equality pin, so an unnoticed widening of the
+divergence still fails CI.
 """
 
 from __future__ import annotations
@@ -139,18 +140,18 @@ def test_artifact_kind_fallback_matches_live_role_derivation() -> None:
 
 
 def test_taproot_evidence_src_kinds_is_a_corpus_role_evidence_subset() -> None:
-    """``precis.taproot.hub.EVIDENCE_SRC_KINDS`` is deliberately narrower
-    than ``corpus_role='evidence'`` (see that module's docstring: widening
-    it is a scope call on Taproot's evidence model, not a mechanical
-    derivation) — a STOP case, not a swap. This pins two things:
+    """``precis.taproot.hub.EVIDENCE_SRC_KINDS`` stays hand-maintained even
+    though it currently *equals* the ``corpus_role='evidence'`` derivation
+    (see that module's docstring: widening it is a scope call on Taproot's
+    evidence model, not a mechanical derivation) — a STOP case, not a swap.
+    This pins two things:
 
     1. The one invariant that must never break regardless: every kind this
        module treats as evidence-worthy really IS flagged
        ``corpus_role='evidence'`` in ``KindSpec`` — a kind here that isn't
        flagged evidence at all would be a real bug, not a scope call.
-    2. The exact, currently-known divergence (``datasheet`` is an
-       evidence-shaped document not yet approved as claim-hub evidence;
-       ``edgar`` WAS approved and is in the set), so another kind silently
+    2. That there is currently NO divergence (``edgar`` and ``datasheet``
+       were each approved by a human call), so another kind silently
        joining ``corpus_role='evidence'`` without a matching call on
        Taproot's evidence set fails here instead of nobody noticing.
 
@@ -161,7 +162,7 @@ def test_taproot_evidence_src_kinds_is_a_corpus_role_evidence_subset() -> None:
     live_evidence = kind_facts.corpus_role_kinds(_specs(), "evidence")
     assert live_evidence >= EVIDENCE_SRC_KINDS
     assert _SUPPORTER_KINDS == EVIDENCE_SRC_KINDS
-    assert live_evidence - EVIDENCE_SRC_KINDS == frozenset({"datasheet"})
+    assert live_evidence - EVIDENCE_SRC_KINDS == frozenset()
 
 
 def test_doc_kinds_diverges_from_corpus_role_only_by_known_gaps() -> None:
