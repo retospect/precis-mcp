@@ -547,6 +547,115 @@ def extract_claim_strict_big(chunk_text: str) -> ClaimExtraction:
     return _extract_claim_impl(chunk_text, strict=True, tier=Tier.BIG)
 
 
+#: Wall-clock ceiling for one haiku extraction call. One-shot JSON over a
+#: single sentence — generous headroom over the observed ~30-90 s
+#: subagent-probe latencies, well under the BIG chain's observed multi-minute
+#: stalls (fi176812's timeout).
+_HAIKU_EXTRACT_TIMEOUT_S = 240.0
+
+
+def extract_claim_strict_haiku(chunk_text: str) -> ClaimExtraction:
+    """Like :func:`extract_claim_strict`, but on Claude haiku via the
+    one-shot ``claude -p`` wrapper — deliberately **bypassing the router**
+    (the ``fix_gripe`` pattern; listed in
+    :data:`precis.utils.llm.operations.EXCLUDED_OPERATIONS`).
+
+    Why a bypass and not a tier: the 4-hub A/B raw-response probe
+    (2026-08-14, ``docs/backlog/
+    taproot-migration-extraction-quality-gates.md`` Round 2) showed the BIG
+    chain's models intermittently breaking the JSON output contract — prose
+    replies, self-invented schemas, empty responses — every one of which
+    parses to the empty extraction and reads as a silent NO-CLAIM, while
+    claude-haiku held the contract 12/12 on the same prompts. Inside
+    ``dispatch()`` an operator ``llm.chain.<tier>`` rung's model **beats** a
+    call-site ``model=`` pin, and prod pins ``llm.chain.medium`` to an OSS
+    model — so the only way to *guarantee* haiku serves this call is to not
+    enter the ladder. Model still steerable via ``PRECIS_MODEL_HAIKU``
+    (:func:`precis.utils.llm.router.resolve_model` at ``Tier.MEDIUM``).
+
+    Format-flake guard, two retryable shapes (each re-asked at most once):
+
+    * **Unparseable reply** (prose / empty output — ``call_claude_p``
+      raises :class:`~precis.utils.claude_p.ClaudePUnparseableError`
+      before ever returning): retried once; a repeat raises
+      :class:`ExtractionUnavailable` — a model persistently in prose mode
+      is an infra-grade failure, never a NO-CLAIM.
+    * **Empty-empty JSON** (valid payload, no atoms AND no ``not_claims``,
+      on non-empty input): retried once; a repeat is accepted as a genuine
+      NO-CLAIM (pure-pointer passages legitimately produce it).
+    * **Fast non-zero exit** (``ClaudeProcessError`` with a real
+      ``returncode`` — the CLI intermittently exits 1 with empty stderr;
+      observed on the first local canary run 2026-08-14): retried once; a
+      repeat raises :class:`ExtractionUnavailable`. A **timeout** or spawn
+      failure carries ``returncode is None`` and still raises immediately —
+      retrying a 240 s stall would double it for nothing.
+
+    The guard lives only here, not in the per-chunk SMALL backfill path,
+    where genuine no-claim chunks are common and a blanket retry would
+    double their cost.
+
+    Cost visibility: this lane prefers the OAuth subscription (see
+    ``call_claude_p``) and is NOT budget-metered — no ``llm_call_log``
+    row, no breaker gate (the ``fix_gripe`` precedent; per-call cost is
+    still capped by ``call_claude_p``'s ``max_usd`` default and logged at
+    debug).
+
+    Raises :class:`ExtractionUnavailable` when the subprocess itself fails
+    (CLI missing, timeout, non-zero exit) — same strict contract as the
+    other ``_strict`` variants.
+    """
+    from precis.utils._claude_subprocess import ClaudeProcessError
+    from precis.utils.claude_p import ClaudePUnparseableError, call_claude_p
+    from precis.utils.llm.router import resolve_model
+
+    text = (chunk_text or "").strip()
+    if not text:
+        return _EMPTY_EXTRACTION
+    excerpt = text[:_EXTRACT_EXCERPT_CHARS]
+    prompt = _EXTRACT_SYS + "\n\n" + _EXTRACT_PROMPT.format(excerpt=excerpt)
+    model = resolve_model(Tier.MEDIUM)
+
+    extraction = _EMPTY_EXTRACTION
+    for attempt in range(2):
+        try:
+            res = call_claude_p(prompt, model=model, timeout_s=_HAIKU_EXTRACT_TIMEOUT_S)
+        except ClaudePUnparseableError as exc:
+            if attempt == 0:
+                log.info(
+                    "taproot: haiku reply had no parseable JSON — retrying "
+                    "once (format-flake guard)"
+                )
+                continue
+            raise ExtractionUnavailable(str(exc)) from exc
+        except ClaudeProcessError as exc:
+            # returncode is None on timeout/spawn failure (raise now);
+            # a real code means the CLI ran and exited fast — flake-retry.
+            if attempt == 0 and getattr(exc, "returncode", None) is not None:
+                log.info(
+                    "taproot: claude -p exited %s — retrying once (format-flake guard)",
+                    exc.returncode,
+                )
+                continue
+            raise ExtractionUnavailable(str(exc)) from exc
+        log.debug("taproot: haiku extraction cost_usd=%s", res.cost_usd)
+        data = res.data if isinstance(res.data, dict) else None
+        if data is None:
+            data = _parse_json_object(res.text or res.raw_stdout)
+        extraction = (
+            _extraction_from_payload(data, excerpt)
+            if isinstance(data, dict)
+            else _EMPTY_EXTRACTION
+        )
+        if not (extraction.is_empty and not extraction.not_claims):
+            return extraction
+        if attempt == 0:
+            log.info(
+                "taproot: haiku extraction came back empty-empty on non-empty "
+                "input — retrying once (format-flake guard)"
+            )
+    return extraction
+
+
 def _extract_claim_impl(
     chunk_text: str, *, strict: bool, tier: Tier = Tier.SMALL
 ) -> ClaimExtraction:
@@ -579,7 +688,14 @@ def _extract_claim_impl(
     data = res.data or _parse_json_object(res.text)
     if not isinstance(data, dict):
         return _EMPTY_EXTRACTION
+    return _extraction_from_payload(data, excerpt)
 
+
+def _extraction_from_payload(data: dict[str, Any], excerpt: str) -> ClaimExtraction:
+    """Parse a model-response payload dict into a :class:`ClaimExtraction` —
+    the transport-independent half of extraction, shared by the routed
+    (:func:`_extract_claim_impl`) and router-bypassing
+    (:func:`extract_claim_strict_haiku`) paths."""
     raw_claims = data.get("claims")
     if isinstance(raw_claims, list):
         atoms = []

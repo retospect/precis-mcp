@@ -83,6 +83,18 @@ class ClaudePError(ClaudeProcessError):
     """
 
 
+class ClaudePUnparseableError(ClaudePError):
+    """The subprocess ran fine but its reply contained no parseable JSON
+    block anywhere — the *model* broke the output contract (prose reply,
+    empty reply), not the infrastructure. Split out from
+    :class:`ClaudePError` so a caller can retry a format flake without
+    also retrying timeouts / non-zero exits / a missing binary
+    (:func:`precis.taproot.canon.extract_claim_strict_haiku`'s
+    format-flake guard is the motivating consumer). Catching plain
+    :class:`ClaudePError` keeps working — this is a subclass.
+    """
+
+
 @dataclass(frozen=True)
 class ClaudePResult:
     """Parsed result of a successful :func:`call_claude_p` invocation.
@@ -212,7 +224,7 @@ def call_claude_p(
     payload, cost = _unwrap_envelope(res.stdout or "")
     data = _parse_last_json_block(payload)
     if data is None:
-        raise ClaudePError(
+        raise ClaudePUnparseableError(
             "claude -p returned no parseable JSON block",
             stdout=res.stdout,
             stderr=res.stderr,

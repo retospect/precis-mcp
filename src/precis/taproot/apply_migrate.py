@@ -1,0 +1,890 @@
+"""Taproot atomic-claims migration — Phase 2 (apply), the quiet-window
+write pass over ``docs/backlog/taproot-atomic-claims.md``'s Strategy.
+:mod:`precis.taproot.migrate` (Phase 0/1) is strictly read-only; this
+module is the one place that pass's dry-run outcomes actually turn into
+writes, one hub per transaction, resumable.
+
+**Quiet window (an operator step, not code).** Before running
+``precis taproot-migrate apply``, pause the derived-queue workers that
+touch hubs (``hub_refine``, ``chase_trigger``) so nothing refines/
+re-embeds a hub mid-repoint, and avoid 02:00-03:30 UTC (nightly backup +
+caspar's daily reboot) — see ``docs/backlog/taproot-atomic-claims.md``
+§"Quiet window definition". :func:`apply_dry_run` itself has no opinion
+about *when* it runs; it only assumes nothing else is mutating the same
+hubs concurrently.
+
+:func:`apply_dry_run` consumes the parsed JSONL rows
+:func:`precis.taproot.migrate.dump_outcomes_jsonl` writes (one
+``json.loads``'d dict per hub outcome) and, per hub, in one transaction:
+
+* ``verdict == "pass-through"`` — stamp ``meta.taproot_decomposed_at``
+  only. No structural writes; an already-atomic hub needed no split.
+* ``verdict == "split"`` — the **original hub becomes the compound**
+  (docs/backlog/taproot-atomic-claims.md's phase-2 wrinkle: minting a
+  *new* compound hub would never converge with the legacy hub's own
+  ``pub_id``, duplicating it forever). Each atom runs the same
+  ``block -> dedup_judge -> place`` cascade
+  :mod:`precis.taproot.backfill` uses, is minted/converged with **no**
+  evidence edge at placement time (mirroring
+  :func:`precis.taproot.hub.apply_extraction`'s compound-side
+  no-evidence mint — evidence is a separate, verified re-point, never a
+  placement-time blanket copy), and is linked
+  ``atom --conjunct-of--> original hub``. Every existing evidence edge on
+  the original hub is then re-pointed via the **add-first invariant**
+  (``docs/backlog/taproot-reground-add-first-invariant.md``, in
+  deterministic code, not a prompt): verify each atom against the
+  edge's grounding passage, add-and-read-back-confirm before ever
+  pruning, and never prune an edge with zero confirmed replacement adds.
+* ``verdict == "no-claim"`` — never stamped (still needs a human look):
+  filed ``needs_review`` if the hub carries evidence (a real edge that
+  would otherwise go unaccounted for), else just counted
+  (:attr:`ApplyReport.no_claim_unevidenced` — an un-evidenced non-claim
+  is comparatively low-stakes, Reto reviews the batch).
+* ``verdict in ("lossy", "nested", "error")`` — never stamped, never
+  written; counted (:attr:`ApplyReport.skipped_verdict`) so a re-run of
+  Phase 1 with a sharper extractor/escalation can pick these back up.
+
+**Never re-uses :func:`precis.taproot.hub.apply_placement` for the atom
+placement itself** despite reusing everything else that module offers
+(:func:`~precis.taproot.hub.mint_hub`, :func:`~precis.taproot.hub.
+link_claims`, :func:`~precis.taproot.hub.attach_evidence`):
+``apply_placement``'s ``attach``/``new``/``new_contradicts`` branches
+*always* write an evidence edge to the ``paper_ref_id`` they're given
+(there is no "mint but don't attach" mode in its signature) — exactly
+backwards from this migration's need, where the atom's hub must exist
+*before* the re-point step can even ask "which of the hub's existing
+edges does this atom verify against?". :func:`_place_atom` is the
+structural-only analogue (mirrors
+:func:`~precis.taproot.hub._apply_compound_placement`'s
+mint-without-evidence shape, which is private to ``hub.py`` and not
+reusable from here) — write door reuse for evidence attach happens later,
+once verification has actually named which atom earns which edge.
+
+**Two network-bearing stages never share a transaction with a write.**
+:func:`~precis.taproot.canon.dedup_judge`/``merge_confirm`` (the
+placement cascade) and ``extract_verify_fn`` (the evidence re-point
+check) are LLM dispatches; :func:`~precis.taproot.canon.block` and the
+grounding-passage lookup are read-only DB round trips. All of that runs
+*before* :func:`apply_dry_run` opens the one ``store.tx()`` per hub —
+holding a pgbouncer'd transaction across a network round trip risks
+pool-exhaustion deadlock under load, the same reasoning
+:func:`~precis.taproot.hub.attach_evidence`'s docstring gives for its own
+retraction check.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from precis.errors import BadInput
+from precis.handlers._link_tag_ops import validate_relation
+from precis.store.types import ActorSlug
+from precis.taproot.canon import (
+    Candidate,
+    CanonicalClaim,
+    Placement,
+    Verdict,
+    block,
+    dedup_judge,
+    merge_confirm,
+    place,
+)
+from precis.taproot.directed import QualifyResult, qualify_claim
+from precis.taproot.hub import (
+    EVIDENCE_SRC_KINDS,
+    HUB_ROLES,
+    attach_evidence,
+    link_claims,
+    mint_hub,
+    run_retraction_checks,
+)
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
+log = logging.getLogger(__name__)
+
+__all__ = [
+    "ApplyReport",
+    "HubApplyOutcome",
+    "NeedsReviewFn",
+    "apply_dry_run",
+]
+
+#: The Phase-2 idempotency stamp key. Mirrors
+#: :mod:`precis.taproot.migrate`'s private ``_DECOMPOSED_AT_META_KEY`` —
+#: that module only *reads* this key (to shrink the candidate pool once
+#: apply starts landing stamps); this module is the one that writes it, so
+#: it needs its own copy of the literal, not an import of a private name.
+_DECOMPOSED_AT_META_KEY = "taproot_decomposed_at"
+
+BlockFn = Callable[[CanonicalClaim, Any, Any], list[Candidate]]
+JudgeFn = Callable[[str, str], Verdict]
+MergeConfirmFn = Callable[[str, str], Verdict]
+#: The evidence re-point's one-way claim-vs-evidence check — production
+#: default is :func:`~precis.taproot.directed.qualify_claim` (BIG tier).
+#: Injectable so tests run with a deterministic stub and no LLM call.
+VerifyFn = Callable[[str, str], QualifyResult]
+NowFn = Callable[[], datetime]
+#: ``(hub_ref_id, reason, detail)`` -> anything. The needs_review filing
+#: door, same shape/spirit as :func:`~precis.taproot.hub.apply_placement`'s
+#: ``todo_fn`` (default ``None`` degrades to a log warning, never a
+#: silently-dropped review) but keyed by hub + free-text reason rather than
+#: ``(CanonicalClaim, Placement)`` — this module's needs_review cases (an
+#: unverified evidence edge, a no-claim hub with evidence, a would-strand
+#: hub) don't all carry a claim/placement pair the way a single-claim
+#: canonicalizer outcome does.
+NeedsReviewFn = Callable[[int, str, dict[str, Any]], Any]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class HubApplyOutcome:
+    """One hub's :func:`apply_dry_run` result — the per-hub row
+    :attr:`ApplyReport.hubs` collects. ``action`` is one of the
+    :class:`ApplyReport` counter names (``"stamped_passthrough"``,
+    ``"split_applied"``, ``"skipped_already_stamped"``,
+    ``"skipped_verdict"``, ``"no_claim_needs_review"``,
+    ``"no_claim_unevidenced"``, or ``"error"`` for a hub this pass
+    couldn't process at all — see ``detail``)."""
+
+    hub_ref_id: int
+    action: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class ApplyReport:
+    """The full result of one :func:`apply_dry_run` call — counts per
+    action plus :attr:`hubs`, one row per input outcome, for a human (or a
+    re-run) to see exactly what happened to which hub.
+
+    Every counter here is a plain total over the ``outcomes`` passed in,
+    not a nested breakdown — :attr:`hubs` carries the per-hub detail a
+    caller can filter for a specific action or ``partial_failures`` root
+    cause.
+    """
+
+    stamped_passthrough: int = 0
+    split_applied: int = 0
+    atoms_placed: int = 0
+    atoms_needs_review: int = 0
+    edges_repointed: int = 0
+    edges_kept_needs_review: int = 0
+    skipped_already_stamped: int = 0
+    skipped_verdict: int = 0
+    no_claim_needs_review: int = 0
+    no_claim_unevidenced: int = 0
+    #: Sub-hub-granular failures that didn't necessarily abort the whole
+    #: hub: one failed evidence add, an unparseable split extraction, a
+    #: hub gone missing/deleted since the dry-run, or a whole-hub abort
+    #: triggered by the would-strand-to-zero backstop (see
+    #: :func:`apply_dry_run`'s module docstring).
+    partial_failures: int = 0
+    hubs: list[HubApplyOutcome] = field(default_factory=list)
+
+
+# ── module-local read helpers ─────────────────────────────────────────────
+#
+# Each of these duplicates a query shape that already exists, privately, in
+# hub.py/seniority.py. Deliberate, not an oversight: hub.py's own
+# ``_is_compound_hub`` docstring documents this exact seam (each caller
+# keeps a connection-agnostic copy of a small predicate rather than the
+# modules sharing one) as the established precedent this module follows.
+
+
+def _hub_meta(store: Store, hub_ref_id: int) -> dict[str, Any] | None:
+    """``refs.meta`` for a live ``hub_ref_id``, or ``None`` if it's gone
+    (deleted, or never existed) since the dry-run ran."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (hub_ref_id,),
+        ).fetchone()
+    return dict(row[0] or {}) if row is not None else None
+
+
+def _is_compound(store: Store, ref_id: int, *, conn: Any) -> bool:
+    """Module-local copy of :func:`precis.taproot.hub._is_compound_hub`
+    (private there) — true iff ``ref_id`` carries a live inbound
+    ``conjunct-of`` edge from a live ``finding``."""
+    row = conn.execute(
+        """
+        SELECT 1
+          FROM links l
+          JOIN refs a ON a.ref_id = l.src_ref_id
+         WHERE l.dst_ref_id = %s
+           AND l.relation = 'conjunct-of'
+           AND a.kind = 'finding'
+           AND a.deleted_at IS NULL
+         LIMIT 1
+        """,
+        (ref_id,),
+    ).fetchone()
+    return row is not None
+
+
+@dataclass(frozen=True)
+class _EvidenceEdge:
+    """One raw ``paper -> hub`` evidence edge — one row per *edge*, not
+    deduped by paper (unlike
+    :func:`precis.taproot.seniority.derive_evidence`, which dedups for the
+    seniority split): the re-point step below adds/prunes each edge on its
+    own, so two edges from the same paper at two different passages must
+    stay distinguishable."""
+
+    paper_ref_id: int
+    src_chunk_id: int | None
+    src_ord: int | None
+    relation: str
+    meta: dict[str, Any]
+
+
+def _fetch_evidence_edges(store: Store, hub_ref_id: int) -> list[_EvidenceEdge]:
+    """Every live evidence edge landing on ``hub_ref_id`` — module-local
+    copy of :func:`precis.taproot.seniority._fetch_evidence_rows`'s query
+    shape (private there), extended to also project the edge's chunk
+    ``ord`` (needed to call :func:`~precis.taproot.hub.attach_evidence`/
+    :meth:`~precis.store.Store.remove_link`, both of which take a
+    ``pos``/``ord``, not a raw ``chunk_id``). The ``p.kind = ANY(EVIDENCE_SRC_KINDS)``
+    join excludes a hub<->hub ``contradicts`` link (the same slug a
+    ``new_contradicts`` placement writes) the same way
+    ``_fetch_evidence_rows`` does — a ``finding`` source is never in
+    :data:`~precis.taproot.hub.EVIDENCE_SRC_KINDS`.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.src_ref_id, l.src_chunk_id, sc.ord, l.relation, l.meta
+              FROM links l
+              JOIN refs p ON p.ref_id = l.src_ref_id
+              LEFT JOIN chunks sc ON sc.chunk_id = l.src_chunk_id
+             WHERE l.dst_ref_id = %(hub)s
+               AND l.relation = ANY(%(roles)s)
+               AND p.kind = ANY(%(kinds)s)
+               AND p.deleted_at IS NULL
+            """,
+            {
+                "hub": hub_ref_id,
+                "roles": list(HUB_ROLES),
+                "kinds": list(EVIDENCE_SRC_KINDS),
+            },
+        ).fetchall()
+    return [
+        _EvidenceEdge(
+            paper_ref_id=int(r[0]),
+            src_chunk_id=int(r[1]) if r[1] is not None else None,
+            src_ord=int(r[2]) if r[2] is not None else None,
+            relation=str(r[3]),
+            meta=dict(r[4] or {}),
+        )
+        for r in rows
+    ]
+
+
+def _passage_text(store: Store, edge: _EvidenceEdge) -> str | None:
+    """Best-effort grounding-passage text for one evidence edge — the
+    read-side mirror of :func:`precis.taproot.hub._grounding_chunk_ord`
+    (private there; duplicated per this module's copy-the-small-predicate
+    precedent), returning the chunk's *text* rather than its ``ord`` since
+    ``extract_verify_fn`` needs a passage to argue against, not a pointer.
+
+    Two grounding forms, mirroring the write side: (1) ``links.src_chunk_id``
+    already resolved at write time (the draft-backfill arm's storage), or
+    (2) ``meta['source_handle']`` — a ``pc<chunk_id>`` universal handle or a
+    ``slug~ord`` chase pointer — when ``src_chunk_id`` is unset (a
+    ref-level link carrying only a meta pointer). ``None`` when neither
+    resolves to a live body chunk of this edge's own paper — the caller
+    then verifies against ``""``, which ``extract_verify_fn``'s own
+    contract already treats as unsupported (a safe degrade: nothing can
+    verify against no passage, so the edge is correctly kept +
+    needs_review rather than guessed at).
+    """
+    if edge.src_chunk_id is not None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+                (edge.src_chunk_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    handle = edge.meta.get("source_handle")
+    if not handle or not isinstance(handle, str):
+        return None
+
+    candidate: int | None = None
+    try:
+        resolved = store.resolve_handle(handle)
+    except Exception:  # defensive — a malformed handle never raises
+        resolved = None
+    if resolved is not None and getattr(resolved, "chunk_id", None) is not None:
+        if resolved.ref_id != edge.paper_ref_id or resolved.chunk_ord is None:
+            return None
+        candidate = resolved.chunk_ord
+    else:
+        _, sep, tail = handle.rpartition("~")
+        if not sep:
+            return None
+        try:
+            candidate = int(tail)
+        except ValueError:
+            return None
+
+    if candidate is None or candidate < 0:
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s "
+            "AND retired_at IS NULL AND ord >= 0",
+            (edge.paper_ref_id, candidate),
+        ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def _live_evidence_count(store: Store, conn: Any, hub_ref_ids: list[int]) -> int:
+    """Total live evidence edges landing on any of ``hub_ref_ids`` — the
+    add-first invariant's post-write backstop
+    (``docs/backlog/taproot-reground-add-first-invariant.md`` step 3):
+    "re-check count(live evidence edges) > 0" after the transaction's adds
+    and prunes are staged, still inside the same connection so it sees
+    them. Runs against the SAME ``conn`` the writes used (not a fresh
+    ``store.pool.connection()``) — a not-yet-committed transaction is only
+    visible to its own connection."""
+    row = conn.execute(
+        """
+        SELECT count(*)
+          FROM links l
+          JOIN refs p ON p.ref_id = l.src_ref_id
+         WHERE l.dst_ref_id = ANY(%(ids)s)
+           AND l.relation = ANY(%(roles)s)
+           AND p.kind = ANY(%(kinds)s)
+           AND p.deleted_at IS NULL
+        """,
+        {
+            "ids": hub_ref_ids,
+            "roles": list(HUB_ROLES),
+            "kinds": list(EVIDENCE_SRC_KINDS),
+        },
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+# ── parsing the dry-run JSONL rows ────────────────────────────────────────
+
+
+def _parse_claim(d: dict[str, Any]) -> CanonicalClaim:
+    return CanonicalClaim(
+        sentence=str(d.get("sentence") or ""), scope=dict(d.get("scope") or {})
+    )
+
+
+def _parse_atoms(extraction: dict[str, Any] | None) -> list[CanonicalClaim]:
+    """The atom sentences+scopes out of one row's ``extraction`` dict —
+    the same shape :func:`precis.taproot.migrate.dump_outcomes_jsonl`
+    serializes (``_extraction_to_dict``, private there; this is this
+    module's own deserializer for that JSON shape, not an import of the
+    private encoder's inverse)."""
+    if not extraction:
+        return []
+    return [_parse_claim(a) for a in extraction.get("atoms") or []]
+
+
+# ── atom placement — structural only, no evidence edge ────────────────────
+
+
+def _run_cascade(
+    claim: CanonicalClaim,
+    store: Store,
+    embedder: Any,
+    *,
+    block_fn: BlockFn,
+    judge_fn: JudgeFn,
+    merge_confirm_fn: MergeConfirmFn,
+) -> Placement:
+    """The ``block -> dedup_judge -> place`` tail for one atom — mirrors
+    :mod:`precis.taproot.backfill`'s private ``_place_one`` closure (not
+    importable from here). No writes; every call here is a read (``block``)
+    or an LLM dispatch (``judge_fn``, and ``merge_confirm_fn`` on a
+    low-confidence ``same``) — this must run before the caller ever opens
+    a transaction (module docstring)."""
+    candidates = block_fn(claim, store, embedder)
+    judged = [(cand, judge_fn(claim.sentence, cand.claim)) for cand in candidates]
+    return place(claim, judged, merge_confirm_fn=merge_confirm_fn)
+
+
+def _place_atom(
+    store: Store,
+    claim: CanonicalClaim,
+    placement: Placement,
+    *,
+    set_by: ActorSlug,
+    file_review: Callable[[str], None],
+    conn: Any,
+) -> int | None:
+    """Mint-or-converge one atom hub with **no** evidence edge — the atom
+    counterpart of :func:`precis.taproot.hub._apply_compound_placement`'s
+    mint-without-evidence shape (private to ``hub.py``, not reusable from
+    here; the not-a-claim memo that function also writes has no analogue
+    here — an atom is a groundable fact, not a compound's audit trail).
+    Evidence is attached entirely by the separate re-point step in
+    :func:`apply_dry_run`, never at placement time (module docstring).
+
+    * ``"attach"`` onto a hub that turns out to be a **compound**
+      (``block``/``dedup_judge`` converged this atom onto an existing
+      bundling hub rather than one of its atoms) downgrades to
+      needs_review — mirrors
+      :func:`~precis.taproot.hub.apply_placement`'s own compound
+      downgrade; an atom must never itself become one of a compound's
+      *evidence* holders without first being one of its ``conjunct-of``
+      atoms, and this module never establishes that relationship for a
+      converge target it didn't itself place.
+    * ``"new"``/``"new_contradicts"`` mints via
+      :func:`~precis.taproot.hub.mint_hub` (no ``paper_ref_id`` — nothing
+      to attach); ``new_contradicts`` additionally links the fresh atom
+      hub ``contradicts`` its opposite-claim candidate, replicating
+      :func:`~precis.taproot.hub._mint_for_placement`'s hub<->hub link
+      (private there).
+    * ``"needs_review"`` files the review and mints nothing.
+
+    Returns the atom's hub ref_id, or ``None`` on any needs_review path.
+    """
+    action = placement.action
+    if action == "attach":
+        hub_ref_id = placement.hub_ref_id
+        if hub_ref_id is None:
+            raise BadInput("attach placement has no hub_ref_id")
+        if _is_compound(store, hub_ref_id, conn=conn):
+            file_review(
+                f"atom {claim.sentence!r} placed 'attach' onto compound "
+                f"hub_ref_id={hub_ref_id} — downgraded to needs_review "
+                "(an atom never attaches onto another compound)"
+            )
+            return None
+        return hub_ref_id
+
+    if action in ("new", "new_contradicts"):
+        hub_id = mint_hub(store, claim, set_by=set_by, conn=conn)
+        if action == "new_contradicts":
+            if placement.contradicts_hub_ref_id is None:
+                raise BadInput(
+                    "new_contradicts placement has no contradicts_hub_ref_id"
+                )
+            store.add_link(
+                src_ref_id=hub_id,
+                dst_ref_id=placement.contradicts_hub_ref_id,
+                relation=validate_relation("contradicts", store=store),
+                set_by=set_by,
+                conn=conn,
+            )
+        return hub_id
+
+    if action == "needs_review":
+        file_review(f"atom {claim.sentence!r} needs_review: {placement.reason}")
+        return None
+
+    raise BadInput(f"unknown placement action: {action!r}")  # pragma: no cover
+
+
+# ── the apply pass ─────────────────────────────────────────────────────────
+
+
+def apply_dry_run(
+    store: Store,
+    outcomes: list[dict[str, Any]],
+    *,
+    extract_verify_fn: VerifyFn = qualify_claim,
+    now_fn: NowFn = _utcnow,
+    embedder: Any = None,
+    block_fn: BlockFn = block,
+    judge_fn: JudgeFn = dedup_judge,
+    merge_confirm_fn: MergeConfirmFn = merge_confirm,
+    todo_fn: NeedsReviewFn | None = None,
+    set_by: ActorSlug = "agent",
+) -> ApplyReport:
+    """Phase 2: apply a Phase-1 dry-run report's outcomes to production
+    hubs — one transaction per hub, resumable (module docstring).
+
+    ``outcomes`` is the already-``json.loads``'d row list from
+    :func:`precis.taproot.migrate.dump_outcomes_jsonl`'s JSONL (one dict
+    per line — the CLI reads/parses/filters the file before calling this;
+    this function makes no assumption about ordering or which subset it
+    was handed). Each row's ``"hub"`` key is the hub's ``ref_id``.
+
+    Per hub:
+
+    1. Skip (``skipped_already_stamped``) if ``meta.taproot_decomposed_at``
+       is already set, or (partial failure) if the hub is gone (deleted
+       since the dry-run ran).
+    2. ``"pass-through"`` -> stamp only.
+    3. ``"no-claim"`` -> needs_review if the hub has evidence, else counted
+       and left untouched.
+    4. ``"lossy"``/``"nested"``/``"error"``/anything unrecognized ->
+       counted, untouched (``skipped_verdict``).
+    5. ``"split"`` -> the atom cascade + evidence re-point (see the module
+       docstring); a hub whose split extraction didn't actually carry
+       ``>=2`` atoms is a partial failure (the dry-run/apply contract
+       broke somewhere upstream), not a silent no-op.
+
+    ``extract_verify_fn``/``block_fn``/``judge_fn``/``merge_confirm_fn``
+    default to the real (LLM-dispatching / DB-backed) implementations;
+    every one is injectable for a fully offline test. ``now_fn`` is the
+    stamp's clock (injectable — never call ``datetime.now`` inline in the
+    per-hub loop). ``embedder`` is threaded to ``block_fn`` unchanged
+    (``None`` is a legal degrade for a faked ``block_fn`` that ignores it,
+    same convention as :mod:`precis.taproot.backfill`).
+    """
+
+    def _needs_review(hub_ref_id: int, reason: str, detail: dict[str, Any]) -> None:
+        if todo_fn is not None:
+            todo_fn(hub_ref_id, reason, detail)
+        else:
+            log.warning(
+                "taproot-apply: needs_review for hub_ref_id=%s: %s (%s)",
+                hub_ref_id,
+                reason,
+                detail,
+            )
+
+    stamped_passthrough = 0
+    split_applied = 0
+    atoms_placed = 0
+    atoms_needs_review = 0
+    edges_repointed = 0
+    edges_kept_needs_review = 0
+    skipped_already_stamped = 0
+    skipped_verdict = 0
+    no_claim_needs_review = 0
+    no_claim_unevidenced = 0
+    partial_failures = 0
+    hub_rows: list[HubApplyOutcome] = []
+
+    for row in outcomes:
+        hub_ref_id = int(row["hub"])
+        verdict = row.get("verdict")
+
+        meta = _hub_meta(store, hub_ref_id)
+        if meta is None:
+            log.warning(
+                "taproot-apply: hub_ref_id=%s not found (deleted since the "
+                "dry-run?) — skipping",
+                hub_ref_id,
+            )
+            partial_failures += 1
+            hub_rows.append(
+                HubApplyOutcome(hub_ref_id, "error", "hub not found/deleted")
+            )
+            continue
+        if _DECOMPOSED_AT_META_KEY in meta:
+            skipped_already_stamped += 1
+            hub_rows.append(HubApplyOutcome(hub_ref_id, "skipped_already_stamped"))
+            continue
+
+        if verdict == "pass-through":
+            with store.tx() as c:
+                store.update_ref(
+                    hub_ref_id,
+                    meta_patch={_DECOMPOSED_AT_META_KEY: now_fn().isoformat()},
+                    conn=c,
+                )
+            stamped_passthrough += 1
+            hub_rows.append(HubApplyOutcome(hub_ref_id, "stamped_passthrough"))
+            continue
+
+        if verdict == "no-claim":
+            # Only verdict shapes that can ever touch evidence pay the
+            # extra round trip (P2-13-ish 1,346-hub scale note): a
+            # pass-through/lossy/nested/error hub never reads its edges.
+            edges = _fetch_evidence_edges(store, hub_ref_id)
+            if edges:
+                _needs_review(
+                    hub_ref_id,
+                    "no-claim verdict on a hub carrying live evidence edges",
+                    {"n_edges": len(edges)},
+                )
+                no_claim_needs_review += 1
+                hub_rows.append(HubApplyOutcome(hub_ref_id, "no_claim_needs_review"))
+            else:
+                no_claim_unevidenced += 1
+                hub_rows.append(HubApplyOutcome(hub_ref_id, "no_claim_unevidenced"))
+            continue
+
+        if verdict != "split":
+            # "lossy" / "nested" / "error" / anything this build doesn't
+            # recognize — never stamp a still-possibly-compound hub
+            # (docs/backlog/taproot-atomic-claims.md P2-12 invariant).
+            skipped_verdict += 1
+            hub_rows.append(
+                HubApplyOutcome(hub_ref_id, "skipped_verdict", detail=str(verdict))
+            )
+            continue
+
+        # verdict == "split"
+        edges = _fetch_evidence_edges(store, hub_ref_id)
+        atoms = _parse_atoms(row.get("extraction"))
+        if len(atoms) < 2:
+            log.warning(
+                "taproot-apply: hub_ref_id=%s verdict='split' but its "
+                "extraction carries <2 atoms — treating as a partial "
+                "failure rather than silently skipping",
+                hub_ref_id,
+            )
+            partial_failures += 1
+            hub_rows.append(
+                HubApplyOutcome(
+                    hub_ref_id, "error", "split verdict with fewer than 2 atoms"
+                )
+            )
+            continue
+
+        # ── Phase A: network/read work, no open transaction ─────────────
+        placements = [
+            _run_cascade(
+                atom,
+                store,
+                embedder,
+                block_fn=block_fn,
+                judge_fn=judge_fn,
+                merge_confirm_fn=merge_confirm_fn,
+            )
+            for atom in atoms
+        ]
+        passages = [_passage_text(store, e) for e in edges]
+        # edge index -> atom indices whose sentence the passage supports.
+        verified_atoms: list[list[int]] = []
+        for passage in passages:
+            hits = [
+                a_idx
+                for a_idx, atom in enumerate(atoms)
+                if extract_verify_fn(atom.sentence, passage or "").supported
+            ]
+            verified_atoms.append(hits)
+
+        # ── Phase B: one transaction, structural + evidence writes only ─
+        hub_partial_failures = 0
+        hub_atoms_placed = 0
+        hub_atoms_review = 0
+        hub_edges_repointed = 0
+        hub_edges_review = 0
+        aborted = False
+        pending_checks: list[int] = []
+        # needs_review filings are collected here, never fired immediately —
+        # a later write in this SAME hub can still raise and roll the whole
+        # transaction back, and `todo_fn` commits its own separate
+        # transaction the moment it's called (chase.py's "side-effect for a
+        # human" pattern). Firing eagerly would leave a real todo on disk
+        # for a hub whose atoms/edges never actually landed, so a re-run
+        # (which re-derives the identical decision from scratch, the stamp
+        # never having been written) files a DUPLICATE. Flushed only after
+        # the `with store.tx()` below commits; on rollback, discarded —
+        # the re-run re-derives them for free.
+        pending_reviews: list[tuple[str, dict[str, Any]]] = []
+
+        def _atom_review(
+            msg: str, *, _reviews: list[tuple[str, dict[str, Any]]] = pending_reviews
+        ) -> None:
+            _reviews.append((msg, {}))
+
+        try:
+            with store.tx() as c:
+                atom_hub_ids: list[int | None] = []
+                for atom, placement in zip(atoms, placements, strict=True):
+                    hub_id = _place_atom(
+                        store,
+                        atom,
+                        placement,
+                        set_by=set_by,
+                        file_review=_atom_review,
+                        conn=c,
+                    )
+                    atom_hub_ids.append(hub_id)
+                    if hub_id is None:
+                        hub_atoms_review += 1
+                        continue
+                    hub_atoms_placed += 1
+                    link_claims(
+                        store,
+                        from_hub_ref_id=hub_id,
+                        to_hub_ref_id=hub_ref_id,
+                        relation="conjunct-of",
+                        set_by=set_by,
+                        conn=c,
+                    )
+
+                for e_idx, edge in enumerate(edges):
+                    candidate_hub_ids: list[int] = [
+                        hid
+                        for a in verified_atoms[e_idx]
+                        if (hid := atom_hub_ids[a]) is not None
+                    ]
+                    if not candidate_hub_ids:
+                        hub_edges_review += 1
+                        pending_reviews.append(
+                            (
+                                "no atom verified against an existing evidence "
+                                "edge — kept on the original hub",
+                                {
+                                    "paper_ref_id": edge.paper_ref_id,
+                                    "relation": edge.relation,
+                                },
+                            )
+                        )
+                        continue
+
+                    # Add-first: attach to every verified atom, read back
+                    # each add's commit before ever touching the original.
+                    confirmed: list[int] = []
+                    for atom_hub_id in candidate_hub_ids:
+                        try:
+                            with c.transaction():  # savepoint — isolate one add
+                                attach_evidence(
+                                    store,
+                                    hub_ref_id=atom_hub_id,
+                                    paper_ref_id=edge.paper_ref_id,
+                                    role=edge.relation,
+                                    meta=edge.meta,
+                                    set_by=set_by,
+                                    conn=c,
+                                    pending_checks=pending_checks,
+                                )
+                        except Exception:
+                            log.warning(
+                                "taproot-apply: evidence add failed "
+                                "(hub_ref_id=%s paper_ref_id=%s -> atom "
+                                "hub_ref_id=%s)",
+                                hub_ref_id,
+                                edge.paper_ref_id,
+                                atom_hub_id,
+                                exc_info=True,
+                            )
+                            hub_partial_failures += 1
+                            continue
+                        # Confirm "a live link now exists" — NOT that its
+                        # src_chunk_id exactly matches the original edge's.
+                        # attach_evidence re-derives grounding from
+                        # meta['source_handle'] at write time and can
+                        # legitimately degrade to a ref-level edge (e.g. the
+                        # grounding chunk was retired since the original
+                        # edge was written) even on a fully successful add —
+                        # an exact chunk-id match would misread that as a
+                        # failure and needlessly keep the original edge
+                        # (issue: over-strict confirm).
+                        confirm_row = c.execute(
+                            "SELECT 1 FROM links WHERE src_ref_id = %s "
+                            "AND dst_ref_id = %s AND relation = %s",
+                            (edge.paper_ref_id, atom_hub_id, edge.relation),
+                        ).fetchone()
+                        if confirm_row is not None:
+                            confirmed.append(atom_hub_id)
+                        else:  # pragma: no cover — defensive, add didn't raise
+                            hub_partial_failures += 1
+
+                    if not confirmed:
+                        # Every add failed — never prune. File review
+                        # rather than silently leaving the edge in place
+                        # unexplained.
+                        hub_edges_review += 1
+                        pending_reviews.append(
+                            (
+                                "atom evidence add(s) failed to commit — edge "
+                                "kept on the original hub",
+                                {
+                                    "paper_ref_id": edge.paper_ref_id,
+                                    "relation": edge.relation,
+                                },
+                            )
+                        )
+                        continue
+
+                    # >=1 confirmed replacement — safe to prune the original.
+                    store.remove_link(
+                        src_ref_id=edge.paper_ref_id,
+                        dst_ref_id=hub_ref_id,
+                        relation=edge.relation,
+                        src_pos=edge.src_ord,
+                        conn=c,
+                    )
+                    hub_edges_repointed += 1
+
+                # Add-first invariant's post-write backstop (step 3): total
+                # live evidence across (original hub + every atom hub) must
+                # never land at zero when this hub started with evidence.
+                if edges:
+                    all_ids = [hub_ref_id] + [h for h in atom_hub_ids if h is not None]
+                    if _live_evidence_count(store, c, all_ids) == 0:
+                        raise RuntimeError(
+                            f"taproot-apply: hub_ref_id={hub_ref_id} would "
+                            "land at zero live evidence edges post-repoint "
+                            "— aborting this hub's transaction rather than "
+                            "stranding it (add-first invariant backstop)"
+                        )
+
+                store.update_ref(
+                    hub_ref_id,
+                    meta_patch={_DECOMPOSED_AT_META_KEY: now_fn().isoformat()},
+                    conn=c,
+                )
+        except Exception:
+            log.warning(
+                "taproot-apply: split apply aborted for hub_ref_id=%s — no "
+                "writes for this hub were kept (whole-hub transaction "
+                "rolled back)",
+                hub_ref_id,
+                exc_info=True,
+            )
+            partial_failures += 1
+            hub_rows.append(HubApplyOutcome(hub_ref_id, "error", "split apply aborted"))
+            aborted = True
+
+        if aborted:
+            continue
+
+        # Now that the hub's transaction has actually committed, the
+        # needs_review filings collected during it are safe to fire — see
+        # `pending_reviews`' docstring above.
+        for reason, detail in pending_reviews:
+            _needs_review(hub_ref_id, reason, detail)
+
+        # Trigger-1 retraction checks (attach_evidence's deferred network
+        # check) — drained only now that the hub's transaction committed.
+        run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
+
+        split_applied += 1
+        atoms_placed += hub_atoms_placed
+        atoms_needs_review += hub_atoms_review
+        edges_repointed += hub_edges_repointed
+        edges_kept_needs_review += hub_edges_review
+        partial_failures += hub_partial_failures
+        hub_rows.append(
+            HubApplyOutcome(
+                hub_ref_id,
+                "split_applied",
+                detail=(
+                    f"atoms_placed={hub_atoms_placed} "
+                    f"atoms_needs_review={hub_atoms_review} "
+                    f"edges_repointed={hub_edges_repointed} "
+                    f"edges_kept_needs_review={hub_edges_review}"
+                ),
+            )
+        )
+
+    return ApplyReport(
+        stamped_passthrough=stamped_passthrough,
+        split_applied=split_applied,
+        atoms_placed=atoms_placed,
+        atoms_needs_review=atoms_needs_review,
+        edges_repointed=edges_repointed,
+        edges_kept_needs_review=edges_kept_needs_review,
+        skipped_already_stamped=skipped_already_stamped,
+        skipped_verdict=skipped_verdict,
+        no_claim_needs_review=no_claim_needs_review,
+        no_claim_unevidenced=no_claim_unevidenced,
+        partial_failures=partial_failures,
+        hubs=hub_rows,
+    )

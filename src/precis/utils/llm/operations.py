@@ -173,6 +173,12 @@ EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
     "classify_topics": ExcludedOp(
         "model pinned in code for correctness (local-serving `summarizer` alias)"
     ),
+    "taproot:extract-haiku": ExcludedOp(
+        "bypasses the router — one-shot `call_claude_p` pinned to haiku for "
+        "JSON-contract reliability (the BIG chain's OSS models intermittently "
+        "return prose/invented schemas that read as silent NO-CLAIMs, and an "
+        "operator `llm.chain.<tier>` rung would beat any in-dispatch pin)"
+    ),
 }
 
 

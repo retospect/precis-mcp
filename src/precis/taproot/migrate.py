@@ -83,7 +83,7 @@ from precis.taproot.canon import (
     TAPROOT_NAMESPACE,
     CanonicalClaim,
     ClaimExtraction,
-    extract_claim_strict_big,
+    extract_claim_strict_haiku,
 )
 
 if TYPE_CHECKING:
@@ -757,7 +757,7 @@ def dry_run(
     cohort: Cohort | None = None,
     controls: int = 0,
     control_seed: int = 0,
-    extract_fn: ExtractFn = extract_claim_strict_big,
+    extract_fn: ExtractFn = extract_claim_strict_haiku,
     escalate_fn: ExtractFn | None = None,
 ) -> DryRunReport:
     """Phase 1: run ``extract_fn`` over the top ``limit`` scored hubs
@@ -772,10 +772,12 @@ def dry_run(
     controls toward non-claims — a uniform draw doesn't share that bias.
     **Zero writes through ``store`` itself** — no ref/link/meta/chunk
     mutation. The default ``extract_fn`` is the real
-    :func:`~precis.taproot.canon.extract_claim_strict_big` — BIG tier
-    (round 2): the labelled-25 A/B re-run showed SMALL collapsing
-    multi-clause sentences to single truncated atoms, so SMALL is now
-    opt-in (CLI ``--tier small``), injectable for tests; when the calling
+    :func:`~precis.taproot.canon.extract_claim_strict_haiku` (round 2 +
+    the 4-hub raw-response probe): SMALL collapses multi-clause sentences
+    to single truncated atoms, and the BIG chain's OSS models
+    intermittently break the JSON contract into silent NO-CLAIMs — both
+    are now opt-in (CLI ``--tier small`` / ``--tier big``), injectable
+    for tests; when the calling
     process has bound a store to
     :mod:`precis.budget.meter` (the CLI does this), its LLM dispatch is
     budget-metered — it writes ``llm_call_log`` telemetry and transient

@@ -60,20 +60,53 @@ silent damage anywhere. BIG also correctly refuses all 5 junk/task-prose
 hubs SMALL hallucinated atoms for. 1 retryable dispatch timeout
 (fi176812).
 
-**New watch-item: over-conservative no-claim.** ~4/22 real claims came
-back `no-claim` (fi176603 + fi176465 labelled split, fi176361 + fi176468
-labelled pass-through; fi176399 ambiguous). Harmless in dry-run, but in
-phase-2 apply a false no-claim silently drops the hub from migration
-coverage. Measure the rate on the ~100-unseen run; phase-2 apply should
-treat `no-claim` on an evidenced hub as `needs_review`, not a skip-stamp
-(the canary's bidirectional no-claim check, promoted to an apply-time
-gate).
+**Watch-item RESOLVED — the false no-claims were mechanical.** ~4/22 real
+claims came back `no-claim` with a completely empty extraction (no atoms,
+no not_claims, no reason). A raw-response probe (4 hubs × 3 repeats
+through the same BIG dispatch, capturing text before parsing) showed the
+model never once *deciding* no-claim: every failure was a broken output
+contract — prose instead of JSON, a self-invented schema
+(`adhesion_mechanism`/`setae_count`…), or a literally empty reply — each
+parsing to `_EMPTY_EXTRACTION` and reading as a silent NO-CLAIM. Mostly
+flaky (2 hubs 3/3 clean on re-probe), but fi176399 (dense inline data:
+~200 nm, ~10⁹ setae) derailed the BIG chain 3/3. The chain also failed
+over local deepseek-v4-flash → cloud glm-5.2 mid-probe, so "BIG" is two
+backends. A control probe of the same 4 prompts × 3 repeats on
+**claude-haiku held the JSON contract 12/12** — including the gecko
+sentence — proving the prompt is fine; the flake is model-specific.
 
-**Remaining before the 1.3k:** deploy round 2 (BIG leg is done — safe to
-bounce daemons) → canary on melchior → ~100 unseen hubs with BIG primary
-(watch the false-no-claim rate) → full 1,346 dry-run. Consider
-re-labelling fi176365 (`pass-through` → `split`) once the BIG leg
-confirms; phase-2 apply is still NOT BUILT.
+**Round 3 (Reto, 2026-08-14): haiku becomes the primary extractor.**
+Implemented: `extract_claim_strict_haiku` — a documented router-bypass
+(`call_claude_p` + `resolve_model(Tier.MEDIUM)`, the `fix_gripe` pattern;
+listed in `EXCLUDED_OPERATIONS`) because inside `dispatch()` an operator
+`llm.chain.<tier>` rung's model beats a call-site pin, and prod pins
+`llm.chain.medium` to an OSS model. Format-flake guard, two retryable
+shapes (reviewer-corrected — `call_claude_p` RAISES on a prose/empty
+reply, it never returns one): unparseable reply
+(`ClaudePUnparseableError`, new subclass) retried once then
+`ExtractionUnavailable` (persistent prose mode is infra-grade, never a
+NO-CLAIM); empty-empty JSON retried once then accepted as genuine
+NO-CLAIM (pointer prose). Guard deliberately NOT in the per-chunk SMALL
+backfill path where legit no-claims are common. Accepted blind spot
+(fix_gripe precedent): the lane rides the OAuth subscription and writes
+no `llm_call_log` rows — invisible to the budget breaker; per-call
+`max_usd` cap + debug cost log only. CLI + `dry_run()` + canary default
+`--tier haiku`; `small`/`big` remain explicit opt-ins; `--escalate` now
+rejected with any non-SMALL primary. Third retryable shape added after
+the first local canary run: the `claude` CLI intermittently exits 1 fast
+with empty stderr — a `ClaudeProcessError` carrying a real `returncode`
+is retried once; a timeout/spawn failure (`returncode is None`) still
+raises immediately. Per-call cost measured on the 11-passage fixture:
+$0.044–0.069, comfortably under the $0.10 `max_usd` cap.
+
+**Remaining before the 1.3k (pivot 2026-08-14: run IN-SESSION on the
+Mac, no deploy needed — `claude -p` + OAuth are local and the dry-run
+writes zero prod rows):** canary local (GREEN 2026-08-14, 0 rejections /
+0 mismatches) → ~100 hubs local → full 1,346 dry-run. **Reto authorized
+production writes 2026-08-14**; phase-2 apply mode is in build — it must
+treat `no-claim` on an evidenced hub as `needs_review`, not a skip-stamp
+(cheap belt-and-braces even with the guard). Consider re-labelling
+fi176365 (`pass-through` → `split`).
 
 # Taproot migration: score the claim sentence, gate lossy/nested extractions
 

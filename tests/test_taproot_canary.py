@@ -22,6 +22,7 @@ from precis.taproot.canon import (
     ClaimExtraction,
     extract_claim_strict,
     extract_claim_strict_big,
+    extract_claim_strict_haiku,
 )
 from precis.taproot.eval_canon import (
     EXTRACTION_PASSAGES_FIXTURE,
@@ -94,14 +95,16 @@ def test_canary_fails_on_no_claim_mismatch_in_either_direction() -> None:
 
 
 def test_resolve_extract_fn_maps_tiers_to_strict_variants() -> None:
+    assert _resolve_extract_fn("haiku") is extract_claim_strict_haiku
     assert _resolve_extract_fn("big") is extract_claim_strict_big
     assert _resolve_extract_fn("small") is extract_claim_strict
 
 
-def test_dry_run_cli_rejects_escalate_with_big_tier() -> None:
-    """--escalate is the SMALL→BIG retry; with the BIG primary (the round-2
-    default) it is meaningless and must fail loud before touching the DB."""
-    args = argparse.Namespace(escalate=True, tier="big")
+@pytest.mark.parametrize("tier", ["big", "haiku"])
+def test_dry_run_cli_rejects_escalate_with_non_small_tier(tier: str) -> None:
+    """--escalate is the SMALL→BIG retry; with any non-SMALL primary it is
+    meaningless and must fail loud before touching the DB."""
+    args = argparse.Namespace(escalate=True, tier=tier)
     with pytest.raises(SystemExit) as exc_info:
         _run_dry_run(args)
     assert exc_info.value.code == 2

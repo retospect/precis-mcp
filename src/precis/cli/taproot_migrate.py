@@ -1,17 +1,24 @@
-"""``precis taproot-migrate {score,dry-run,canary}`` — the migration
-runner for existing (pre-decomposition) claim hubs, Phase 0 + Phase 1 of
-``docs/backlog/taproot-atomic-claims.md``'s Strategy. All subcommands make
-zero claim-data writes (no refs/links/meta/chunks) — a thin CLI skin over
-:mod:`precis.taproot.migrate` / :mod:`precis.taproot.eval_canon`.
-``dry-run`` and ``canary`` bind their store to :mod:`precis.budget.meter`
-so their real LLM dispatch resolves the host's serving endpoint and is
-budget-metered, which writes ``llm_call_log`` telemetry (never claim
-data); ``score`` makes no LLM calls at all.
+"""``precis taproot-migrate {score,dry-run,canary,apply}`` — the migration
+runner for existing (pre-decomposition) claim hubs,
+``docs/backlog/taproot-atomic-claims.md``'s Strategy end to end.
+``score``/``dry-run``/``canary`` make zero claim-data writes (no refs/
+links/meta/chunks) — thin CLI skin over :mod:`precis.taproot.migrate` /
+:mod:`precis.taproot.eval_canon`. ``apply`` is Phase 2 — the one
+subcommand here that writes, over :mod:`precis.taproot.apply_migrate`.
+``dry-run``, ``canary``, and ``apply`` all bind their store to
+:mod:`precis.budget.meter` so real LLM dispatch resolves the host's
+serving endpoint and is budget-metered (``llm_call_log`` telemetry, never
+claim data); ``score`` makes no LLM calls at all.
 
-The extractor tier defaults to **BIG** (round 2 of ``docs/backlog/
+The extractor tier defaults to **haiku** (round 2 of ``docs/backlog/
 taproot-migration-extraction-quality-gates.md``): the labelled-25 A/B
 re-run showed the SMALL tier collapsing multi-clause sentences to single
-truncated atoms — every SMALL run now needs an explicit ``--tier small``.
+truncated atoms, and the BIG chain's OSS models intermittently breaking
+the JSON contract (prose / invented schemas / empty responses — silent
+NO-CLAIMs), while claude-haiku held the contract 12/12 on the same
+prompts (:func:`precis.taproot.canon.extract_claim_strict_haiku`, a
+documented router-bypass). ``--tier small`` / ``--tier big`` remain as
+explicit opt-ins for A/B work.
 
 Run ``canary`` (11 hand-authored passages through the chosen tier + the
 migration gates, exit 1 on failure) before any bulk ``dry-run`` — it
@@ -26,9 +33,15 @@ of a burned bulk run.
     precis taproot-migrate dry-run --limit 50 --out /tmp/report.md
     precis taproot-migrate dry-run --limit 50 --json /tmp/report.jsonl \\
         --tier small --escalate
+    precis taproot-migrate apply --json /tmp/report.jsonl
+    precis taproot-migrate apply --json /tmp/report.jsonl --only-verdict split --limit 20
 
-Phase 2 (apply, the quiet-window write) and Phase 3 (human review) are not
-built here — see the build ticket's Strategy section.
+**``apply`` is a quiet-window operation (an operator step, not a code
+gate).** Before running it, pause the derived-queue workers that touch
+hubs (``hub_refine``, ``chase_trigger``) so nothing refines/re-embeds a
+hub mid-repoint, and avoid 02:00-03:30 UTC (nightly backup + caspar's
+daily reboot) — see ``docs/backlog/taproot-atomic-claims.md``'s "Quiet
+window definition". Phase 3 (human review) is not built here.
 """
 
 from __future__ import annotations
@@ -75,9 +88,9 @@ def add_parser(subparsers: Any) -> None:
     )
     c.add_argument(
         "--tier",
-        choices=("small", "big"),
-        default="big",
-        help="Extractor tier to smoke-test (default: big — the dry-run default).",
+        choices=("small", "big", "haiku"),
+        default="haiku",
+        help="Extractor tier to smoke-test (default: haiku — the dry-run default).",
     )
     c.add_argument(
         "--fixture",
@@ -125,10 +138,11 @@ def add_parser(subparsers: Any) -> None:
     )
     d.add_argument(
         "--tier",
-        choices=("small", "big"),
-        default="big",
-        help="Primary extractor tier (default: big — the A/B re-run showed "
-        "SMALL collapsing multi-clause sentences to single truncated atoms).",
+        choices=("small", "big", "haiku"),
+        default="haiku",
+        help="Primary extractor tier (default: haiku — held the JSON contract "
+        "12/12 on the sentences the BIG chain flaked to empty on; SMALL "
+        "collapses multi-clause sentences to single truncated atoms).",
     )
     d.add_argument(
         "--escalate",
@@ -143,6 +157,43 @@ def add_parser(subparsers: Any) -> None:
         help="Seed for the uniform random control sample (default: 0, deterministic).",
     )
     d.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
+
+    a = tsub.add_parser(
+        "apply",
+        help="Phase 2 (WRITES): apply a dry-run report's outcomes to "
+        "production hubs -- one transaction per hub, resumable "
+        "(re-running skips already-stamped hubs). Mint/converge atom "
+        "hubs, link conjunct-of, re-point evidence edges via the "
+        "add-first invariant, stamp meta.taproot_decomposed_at. "
+        "QUIET-WINDOW OP: pause hub_refine/chase_trigger first and avoid "
+        "02:00-03:30 UTC -- see docs/backlog/taproot-atomic-claims.md.",
+    )
+    a.add_argument(
+        "--json",
+        dest="json_path",
+        required=True,
+        help="The dry-run JSONL file (dump_outcomes_jsonl's output) to apply.",
+    )
+    a.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Apply at most this many outcomes (after --only-verdict filtering, "
+        "in file order). Default: all.",
+    )
+    a.add_argument(
+        "--only-verdict",
+        choices=("pass-through", "split", "no-claim", "lossy", "nested", "error"),
+        default=None,
+        help="Restrict to outcomes with this verdict (default: every verdict "
+        "present in the file).",
+    )
+    a.add_argument(
+        "--embedder",
+        default="bge-m3",
+        help="Embedder for the atom-placement block() ANN lookup (default: bge-m3).",
+    )
+    a.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
 
 
 def _run_score(args: argparse.Namespace) -> None:
@@ -198,8 +249,14 @@ def _resolve_extract_fn(tier: str) -> Any:
     """The strict extractor for a ``--tier`` value. Strict on purpose —
     both callers (dry-run, canary) must tell a dead dispatch apart from a
     semantic NO-CLAIM."""
-    from precis.taproot.canon import extract_claim_strict, extract_claim_strict_big
+    from precis.taproot.canon import (
+        extract_claim_strict,
+        extract_claim_strict_big,
+        extract_claim_strict_haiku,
+    )
 
+    if tier == "haiku":
+        return extract_claim_strict_haiku
     return extract_claim_strict_big if tier == "big" else extract_claim_strict
 
 
@@ -230,10 +287,10 @@ def _run_dry_run(args: argparse.Namespace) -> None:
 
     escalate_fn = None
     if args.escalate:
-        if args.tier == "big":
+        if args.tier != "small":
             print(
-                "taproot-migrate: --escalate is the SMALL→BIG retry; with "
-                "--tier big the primary already runs BIG",
+                "taproot-migrate: --escalate is the SMALL→BIG retry; it only "
+                f"applies with --tier small (got --tier {args.tier})",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -277,6 +334,104 @@ def _run_dry_run(args: argparse.Namespace) -> None:
         print(f"wrote {len(report.outcomes)} outcome(s) as JSONL to {args.json}")
 
 
+def _file_review_todo(
+    store: Any, hub_ref_id: int, reason: str, detail: dict[str, Any]
+) -> None:
+    """``apply``'s production ``todo_fn``: a minimal ``kind='todo'`` for a
+    hub :func:`~precis.taproot.apply_migrate.apply_dry_run` couldn't
+    auto-apply (an unverified evidence edge, a no-claim hub carrying
+    evidence, a would-strand-to-zero abort, ...). Mirrors
+    ``workers/chase.py``'s ``_file_taproot_review_todo`` shape (its own
+    ``store.tx()``, not any transaction the caller may still hold open —
+    filing a review is a side-effect for a human, never part of an atomic
+    hub write)."""
+    from precis.store.types import Tag
+
+    title = f"taproot-migrate apply: review hub_ref_id={hub_ref_id}"
+    with store.tx() as c:
+        todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title[:200],
+            # `detail` first so the fixed keys always win -- a caller-
+            # supplied detail dict (from apply_dry_run's needs_review call
+            # sites) must never be able to shadow `source`/`hub_ref_id`/
+            # `reason`, even if a future detail happens to carry one of
+            # those names.
+            meta={
+                **detail,
+                "source": "taproot-migrate:apply",
+                "hub_ref_id": hub_ref_id,
+                "reason": reason,
+            },
+            conn=c,
+        )
+        store.add_tag(
+            todo.id,
+            Tag.closed("STATUS", "open"),
+            set_by="agent",
+            replace_prefix=True,
+            conn=c,
+        )
+
+
+def _run_apply(args: argparse.Namespace) -> None:
+    from precis.embedder import make_embedder
+    from precis.store import Store
+    from precis.taproot.apply_migrate import apply_dry_run
+
+    with open(args.json_path, encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    if args.only_verdict is not None:
+        rows = [r for r in rows if r.get("verdict") == args.only_verdict]
+    if args.limit is not None:
+        rows = rows[: args.limit]
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    # Same reasoning as dry-run's bind: extract_verify_fn's real dispatch
+    # (BIG-tier qualify_claim) and the placement cascade's dedup_judge/
+    # merge_confirm all resolve the host's serving endpoint through the
+    # budget meter, and this run's spend is gated by the breaker. Writes
+    # telemetry only -- claim writes go through apply_dry_run's own doors.
+    from precis.budget import meter
+
+    meter.bind_store(store)
+    embedder = make_embedder(args.embedder, dim=store.embedding_dim())
+    try:
+        report = apply_dry_run(
+            store,
+            rows,
+            embedder=embedder,
+            todo_fn=lambda hub_ref_id, reason, detail: _file_review_todo(
+                store, hub_ref_id, reason, detail
+            ),
+        )
+    finally:
+        store.close()
+
+    print(f"taproot-migrate apply: {len(rows)} outcome(s) processed")
+    for field_name in (
+        "stamped_passthrough",
+        "split_applied",
+        "atoms_placed",
+        "atoms_needs_review",
+        "edges_repointed",
+        "edges_kept_needs_review",
+        "skipped_already_stamped",
+        "skipped_verdict",
+        "no_claim_needs_review",
+        "no_claim_unevidenced",
+        "partial_failures",
+    ):
+        print(f"  {field_name}: {getattr(report, field_name)}")
+
+    if report.partial_failures > 0:
+        # Mirrors _run_canary's exit(1) on failure -- an operator watching
+        # exit codes (a cron/runbook wrapper) must see an errored batch,
+        # not just a clean-looking summary print.
+        sys.exit(1)
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot-migrate <taproot_migrate_cmd>``."""
     if args.taproot_migrate_cmd == "score":
@@ -285,6 +440,8 @@ def run(args: argparse.Namespace) -> None:
         _run_canary(args)
     elif args.taproot_migrate_cmd == "dry-run":
         _run_dry_run(args)
+    elif args.taproot_migrate_cmd == "apply":
+        _run_apply(args)
     else:
         print(
             f"taproot-migrate: unknown subcommand {args.taproot_migrate_cmd!r}",
