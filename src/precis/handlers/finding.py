@@ -44,17 +44,37 @@ The chase worker (C5: ``precis.workers.chase``) does not live here
 — this handler only owns the storage door. The worker walks the
 ``links`` graph + ``chunks`` table directly; it does **not** create
 ``citation`` records under Path B (B-ii).
+
+Module split (docs/backlog/codereview-handler-size-cleanups.md):
+``FindingHandler`` still subclasses
+:class:`~precis.handlers._numeric_ref.NumericRefHandler` — it genuinely
+uses the shared CRUD contract (``tag``/``delete``, ``get``'s view
+dispatch + list-view infra, id coercion, live-ref resolution, the
+create-time put guard), so graduating it to a standalone handler would
+mean reimplementing all of that. What had actually outgrown the base was
+the finding-*specific* mass bolted onto it: three large, store-only state
+machines that never touch any other handler state. Those moved to
+sibling modules so this file stays legible:
+
+* :mod:`precis.handlers._finding_acquire` — the acquisition-mode
+  (``wants=``) mint, ``put_acquiring()``.
+* :mod:`precis.handlers._finding_edit` — the ``edit()`` verb's three ops
+  (pick_candidate / title / unacquirable_note).
+* :mod:`precis.handlers._finding_evidence` — ``get(view='evidence')``
+  rendering + patent-family collapsing.
+* :mod:`precis.handlers._finding_common` — the one helper
+  (``fetch_ref_any_kind``) shared across this file and those three.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers import _finding_acquire, _finding_edit, _finding_evidence
+from precis.handlers._finding_common import fetch_ref_any_kind
 from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
@@ -62,15 +82,11 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
-from precis.taproot import authoring, hub, seniority
+from precis.taproot import authoring, hub
 from precis.utils import handle_registry
-
-if TYPE_CHECKING:
-    from precis.store.protocols import PoolStore
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
-_STATUS_ACQUIRING = "acquiring"
 _DERIVED_FROM = "derived-from"
 _AWAITS_EVIDENCE = "awaits-evidence"
 # A taproot claim hub (``taproot/hub.py::mint_hub``) is a ``finding`` ref
@@ -82,31 +98,6 @@ _AWAITS_EVIDENCE = "awaits-evidence"
 # *tag* rather than a status, a minted hub is visible without the
 # ``status='*'`` workaround regardless of the hub's status value.
 _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
-
-
-@dataclass(frozen=True, slots=True)
-class _WantDescriptor:
-    """One parsed ``wants=`` entry (the acquisition-mode paper descriptor).
-
-    Exactly one of ``doi`` / ``arxiv`` / (``title`` and ``url``) is
-    guaranteed non-None by :meth:`FindingHandler._parse_want` — ``title``
-    and ``url`` may additionally ride along on a doi/arxiv descriptor as
-    enrichment (a nicer stub title, an informational landing-page url).
-    """
-
-    doi: str | None
-    arxiv: str | None
-    title: str | None
-    url: str | None
-    year: int | None
-
-
-def _clean_str(value: Any) -> str | None:
-    """Strip a scalar to ``None`` on empty/whitespace-only/absent."""
-    if value is None:
-        return None
-    s = str(value).strip()
-    return s or None
 
 
 class FindingHandler(NumericRefHandler):
@@ -190,7 +181,7 @@ class FindingHandler(NumericRefHandler):
         where the claim came from) INSTEAD of ``cited_in=``. Mints
         ``STATUS:acquiring`` plus one ``DREAM:acquire`` paper stub per
         descriptor; the chase worker grounds it once a stub lands a PDF.
-        See :meth:`_put_acquiring`.
+        See :func:`precis.handlers._finding_acquire.put_acquiring`.
 
         **Hub mode** — pass ``supporters=`` instead of
         ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub.
@@ -289,7 +280,9 @@ class FindingHandler(NumericRefHandler):
                         "a hub"
                     ),
                 )
-            return self._put_acquiring(
+            return _finding_acquire.put_acquiring(
+                self.store,
+                kind=self.kind,
                 title=title,
                 body_text=body_text,
                 scope=scope,
@@ -299,6 +292,7 @@ class FindingHandler(NumericRefHandler):
                 tags=tags,
                 link=link,
                 rel=rel,
+                collision_response=self._collision_response,
             )
 
         # Report EVERY missing required field at once, not one per call.
@@ -524,301 +518,6 @@ class FindingHandler(NumericRefHandler):
         )
 
     # ──────────────────────────────────────────────────────────────────
-    # _put_acquiring — the acquisition-mode (claim-first) mint
-    # ──────────────────────────────────────────────────────────────────
-
-    def _put_acquiring(
-        self,
-        *,
-        title: str | None,
-        body_text: str | None,
-        scope: dict[str, Any] | None,
-        wants: list[dict[str, Any]],
-        provenance: str | None,
-        parent_id: int | None,
-        tags: list[str] | None,
-        link: str | None,
-        rel: str | None,
-    ) -> Response:
-        """Mint an acquisition-mode finding: a claim whose supporting
-        paper(s) aren't in the corpus yet.
-
-        Atomically (one ``store.tx()``): creates the finding
-        ``STATUS:acquiring``, upserts a ``DREAM:acquire`` paper stub per
-        ``wants=`` descriptor (the existing :meth:`~precis.store.Store.
-        upsert_stub_paper` path — the same one ``put(kind='paper')``'s
-        ``acquire`` uses), links ``finding --awaits-evidence--> stub`` for
-        each, and links ``finding --derived-from--> provenance`` (the
-        weakened no-thin-air invariant: traceable to *something* at mint,
-        just not yet to corpus evidence). ``chase.py``'s acquiring arm
-        polls the linked stubs and grounds the finding once one gains
-        chunks; a doi/arxiv stub is separately auto-claimed by
-        ``fetch_oa``.
-        """
-        missing: list[str] = []
-        if not title or not title.strip():
-            missing.append("title=<short claim title>")
-        if not body_text or not body_text.strip():
-            missing.append("body=<claim text + setup as prose>")
-        if not wants:
-            missing.append(
-                "wants=[{'doi':…}|{'arxiv':…}|{'title':…,'url':…}, …] "
-                "(>=1 descriptor of the paper(s) this claim expects "
-                "grounding from)"
-            )
-        if not provenance or not str(provenance).strip():
-            missing.append(
-                "provenance=<ref/chunk handle for where this claim came from>"
-            )
-        if missing:
-            raise BadInput(
-                "put(kind='finding', wants=...) requires " + ", ".join(missing),
-                next=(
-                    "put(kind='finding', title='<short claim title>', "
-                    "body='<claim text + setup>', "
-                    "wants=[{'doi':'10.1234/xyz'}], provenance='pc42')  "
-                    "— provenance is the ref/chunk handle where this claim "
-                    "came from (a research note, the lit-hunt todo, or the "
-                    "citing chunk); each wants= entry is {'doi':…}, "
-                    "{'arxiv':…}, or {'title':…,'url':…}"
-                ),
-            )
-        if scope is not None and not isinstance(scope, dict):
-            raise BadInput(
-                f"scope must be a dict, got {type(scope).__name__}",
-                next="scope={'electrode': 'Cu', 'ambient': 'N2', ...}",
-            )
-        assert title is not None  # narrowed by the `missing` guard above
-        assert body_text is not None  # narrowed by the `missing` guard above
-        assert provenance is not None  # narrowed by the `missing` guard above
-
-        parsed_wants = [self._parse_want(i, w) for i, w in enumerate(wants)]
-
-        # Resolve provenance up front — a bad handle fails before any
-        # write, mirroring the ordinary mode's cited_in resolution.
-        provenance_target = parse_link_target(str(provenance).strip(), store=self.store)
-
-        # Auto-inject parent_id from the runtime context (PRECIS_CURRENT_TODO
-        # env), same as the ordinary path — a finding minted inside a
-        # lit-hunt tick must be parented on that todo so
-        # all_child_findings_resolved sees it.
-        if parent_id is None:
-            from precis.utils.workspace import current_todo_from_env
-
-            parent_id = current_todo_from_env()
-        parent_int: int | None = None
-        if parent_id is not None:
-            try:
-                parent_int = parent_id if isinstance(parent_id, int) else int(parent_id)
-            except (TypeError, ValueError) as exc:
-                raise BadInput(
-                    f"parent_id must be an integer, got {parent_id!r}",
-                    next="parent_id=<int> (the parent todo's id)",
-                ) from exc
-
-        extra_target: LinkTarget | None = None
-        extra_relation: str = rel or "cites"
-        if link is not None:
-            extra_target = parse_link_target(link, store=self.store)
-
-        body_clean = body_text.strip()
-        title_clean = title.strip()[:200]
-
-        # Deterministic dedup key: same (body, scope, wants) → same pub_id,
-        # mirroring the ordinary mode's cited_in-keyed collapse.
-        wants_key = "|".join(
-            sorted(
-                f"{field}={value}"
-                for w in parsed_wants
-                for field, value in (
-                    ("doi", w.doi),
-                    ("arxiv", w.arxiv),
-                    ("title", w.title),
-                    ("url", w.url),
-                )
-                if value
-            )
-        )
-        paper_id = make_finding_paper_id(
-            body_text=body_clean,
-            scope=scope or {},
-            initial_cite_pub_id=f"acquire:{wants_key}",
-        )
-        pub_id = make_pub_id(paper_id)
-
-        meta: dict[str, Any] = {
-            "scope": scope or {},
-            "paper_id": paper_id,
-            "pub_id": pub_id,
-            # Empty at mint — chase.py's acquiring arm seeds this once a
-            # linked stub is grounded (has chunks); an empty chain here is
-            # NOT dead_chain the way it is for the ordinary (tracing) mode.
-            "chain": [],
-            "wants": [
-                {
-                    field: value
-                    for field, value in (
-                        ("doi", w.doi),
-                        ("arxiv", w.arxiv),
-                        ("title", w.title),
-                        ("url", w.url),
-                        ("year", w.year),
-                    )
-                    if value is not None
-                }
-                for w in parsed_wants
-            ],
-        }
-
-        try:
-            with self.store.tx() as conn:
-                ref = self.store.insert_ref(
-                    kind=self.kind,
-                    slug=None,
-                    title=title_clean,
-                    meta=meta,
-                    parent_id=parent_int,
-                    conn=conn,
-                )
-                conn.execute(
-                    "INSERT INTO ref_identifiers "
-                    "(id_kind, id_value, ref_id, source) "
-                    "VALUES (%s, %s, %s, %s)",
-                    ("pub_id", pub_id, ref.id, "agent"),
-                )
-                self.store.blocks.insert_blocks(
-                    ref.id,
-                    [
-                        BlockInsert(
-                            pos=0,
-                            text=body_clean,
-                            meta={"chunk_kind": "finding_body"},
-                        )
-                    ],
-                    conn=conn,
-                )
-                self.store.add_tag(
-                    ref.id,
-                    Tag.closed(_STATUS_NAMESPACE, _STATUS_ACQUIRING),
-                    set_by="agent",
-                    replace_prefix=True,
-                    conn=conn,
-                )
-                apply_tag_ops(
-                    self.store, self.kind, ref.id, tags=tags, untags=None, conn=conn
-                )
-                self.store.add_link(
-                    src_ref_id=ref.id,
-                    dst_ref_id=provenance_target.ref_id,
-                    dst_pos=provenance_target.pos,
-                    relation=_DERIVED_FROM,
-                    conn=conn,
-                )
-                if extra_target is not None:
-                    self.store.add_link(
-                        src_ref_id=ref.id,
-                        dst_ref_id=extra_target.ref_id,
-                        dst_pos=extra_target.pos,
-                        relation=extra_relation,
-                        conn=conn,
-                    )
-                stub_lines: list[str] = []
-                for w in parsed_wants:
-                    identifiers: list[tuple[str, str]] = []
-                    if w.doi:
-                        identifiers.append(("doi", w.doi))
-                    if w.arxiv:
-                        identifiers.append(("arxiv", w.arxiv))
-                    stub_ref_id, created = self.store.upsert_stub_paper(
-                        identifiers=identifiers,
-                        title=w.title,
-                        year=w.year,
-                        set_by="dream",
-                        conn=conn,
-                    )
-                    if created:
-                        self.store.add_tag(
-                            stub_ref_id,
-                            Tag.closed("DREAM", "acquire"),
-                            set_by="agent",
-                            conn=conn,
-                        )
-                    if w.url:
-                        # Informational only in this build — no fetch leg
-                        # reads a bare URL yet (explicitly out of the
-                        # acquisition-mode scope); a human sees it via
-                        # get(kind='paper', id=<stub>).
-                        self.store.update_ref(
-                            stub_ref_id,
-                            meta_patch={"acquire_url": w.url},
-                            conn=conn,
-                        )
-                    self.store.add_link(
-                        src_ref_id=ref.id,
-                        dst_ref_id=stub_ref_id,
-                        relation=_AWAITS_EVIDENCE,
-                        conn=conn,
-                    )
-                    stub_handle = (
-                        handle_registry.try_format("paper", stub_ref_id)
-                        or f"ref:{stub_ref_id}"
-                    )
-                    stub_lines.append(
-                        f"  {stub_handle} ({'minted' if created else 'already tracked'})"
-                    )
-        except UniqueViolation:
-            # Collision on pub_id: this finding already exists.
-            return self._collision_response(pub_id)
-
-        return Response(
-            body=(
-                f"created finding id={ref.id} pub_id={pub_id}\n"
-                f"title: {title_clean}\n"
-                f"provenance: {provenance_target.raw}\n"
-                f"status: STATUS:{_STATUS_ACQUIRING}\n"
-                f"awaiting evidence from {len(parsed_wants)} paper(s):\n"
-                + "\n".join(stub_lines)
-                + "\n"
-                f"placeholder: [{pub_id}] (use in text; precis resolve "
-                f"substitutes the primary cite_key once STATUS:established)"
-            )
-        )
-
-    def _parse_want(self, index: int, want: Any) -> _WantDescriptor:
-        """Parse one ``wants=`` entry into a :class:`_WantDescriptor`.
-
-        Accepts ``{'doi': …}``, ``{'arxiv': …}``, or ``{'title': …, 'url':
-        …}`` — a ``title=``/``url=`` may additionally ride along a doi/arxiv
-        descriptor as enrichment. Rejects anything matching none of the
-        three shapes.
-        """
-        if not isinstance(want, dict):
-            raise BadInput(
-                f"wants[{index}] must be a dict, got {type(want).__name__}",
-                next="wants=[{'doi': '10.1234/xyz'}] — one descriptor per paper",
-            )
-        doi = _clean_str(want.get("doi"))
-        arxiv = _clean_str(want.get("arxiv"))
-        w_title = _clean_str(want.get("title"))
-        url = _clean_str(want.get("url"))
-        year: int | None = None
-        raw_year = want.get("year")
-        if raw_year is not None:
-            try:
-                year = int(raw_year)
-            except (TypeError, ValueError):
-                year = None
-        if not (doi or arxiv or (w_title and url)):
-            raise BadInput(
-                f"wants[{index}] needs doi=, arxiv=, or both title= and url=",
-                next=(
-                    "wants=[{'doi':'10.1234/xyz'}] or {'arxiv':'2401.00001'} "
-                    "or {'title':'<best-known title>','url':'<landing page>'}"
-                ),
-            )
-        return _WantDescriptor(doi=doi, arxiv=arxiv, title=w_title, url=url, year=year)
-
-    # ──────────────────────────────────────────────────────────────────
     # link — intercept Taproot evidence/refine edges on a claim hub
     # ──────────────────────────────────────────────────────────────────
 
@@ -976,7 +675,7 @@ class FindingHandler(NumericRefHandler):
         if view == "evidence":
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
-            return self._render_evidence_view(ref)
+            return _finding_evidence.render_evidence_view(self.store, ref)
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:
@@ -1024,93 +723,6 @@ class FindingHandler(NumericRefHandler):
                 ),
             )
         return ref_id
-
-    def _render_evidence_view(self, ref: Ref) -> Response:
-        """Render ``view='evidence'``: the hub's edges by derived role.
-
-        A patent evidence edge renders its full bibliography-style citation
-        (applicant, title, publication number + kind code, year) instead of
-        a bare title, and same-family patent edges within one role-list
-        collapse to one row keyed to the family's deterministic
-        representative (docs/backlog/patent-evidence-parity.md Phase 3;
-        :func:`_collapse_patent_families`) — a paper's own family is
-        untouched (papers carry no ``family_id``), so this is a no-op for
-        every pre-existing paper-only hub.
-
-        An evidence paper with zero body blocks — a stub never fetched —
-        renders with an ``(unfetched)`` annotation (gr180155's per-hub
-        analogue of the draft citations view's to-fetch worklist), so a
-        reader of one hub's evidence list, not just a citing draft's
-        worklist, can see which claims rest on un-verifiable evidence.
-        """
-        from precis.export._patent_cite import format_patent_bibliography_entry
-        from precis.format import render_agent_table
-
-        evidence = seniority.derive_evidence(self.store, ref.id)
-        all_edges = (
-            evidence.originators + evidence.corroborators + evidence.contradictors
-        )
-
-        header = [f"# evidence for finding {ref.id}", "", ref.title]
-        if not all_edges:
-            header.append("")
-            header.append("no evidence edges yet for this claim hub")
-            return Response(body="\n".join(header))
-
-        refs_by_id = self.store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
-        fetched_paper_ids = self.store.blocks.ref_ids_with_chunks(
-            [e.paper_ref_id for e in all_edges]
-        )
-
-        def _label(e: seniority.EvidenceEdge, note: str | None) -> str:
-            source_ref = refs_by_id.get(e.paper_ref_id)
-            if source_ref is not None and source_ref.kind == "patent":
-                label = format_patent_bibliography_entry(source_ref)
-            else:
-                label = e.title[:80] + ("…" if len(e.title) > 80 else "")
-            if note:
-                label = f"{label} ({note})"
-            if e.paper_ref_id not in fetched_paper_ids:
-                label = f"{label} (unfetched)"
-            if e.is_originator:
-                label = f"★ {label}"
-            return label
-
-        def _table(edges: list[seniority.EvidenceEdge]) -> str:
-            rows: list[dict[str, str]] = []
-            for e, note in _collapse_patent_families(self.store, edges, refs_by_id):
-                rows.append(
-                    {
-                        "paper": _label(e, note),
-                        "year": str(e.year) if e.year is not None else "—",
-                        "support": e.support or "—",
-                        "integrity": e.integrity,
-                        "caveats": "; ".join(e.caveats) if e.caveats else "—",
-                    }
-                )
-            schema = ["paper", "year", "support", "integrity", "caveats"]
-            return render_agent_table(rows, schema=schema)
-
-        lines = list(header)
-        lines += ["", "## originators (establishes)", ""]
-        lines.append(_table(evidence.originators) if evidence.originators else "(none)")
-
-        lines += ["", "## corroborators", ""]
-        lines.append(
-            _table(evidence.corroborators) if evidence.corroborators else "(none)"
-        )
-        if evidence.coverage_note:
-            lines += ["", evidence.coverage_note]
-
-        lines += ["", "## contradicts", ""]
-        lines.append(
-            _table(evidence.contradictors) if evidence.contradictors else "(none)"
-        )
-
-        if not any(e.support for e in all_edges):
-            lines += ["", "support outcomes are populated by chase (Phase 3)"]
-
-        return Response(body="\n".join(lines))
 
     # ──────────────────────────────────────────────────────────────────
     # search — status-filtered TOON table
@@ -1347,408 +959,25 @@ class FindingHandler(NumericRefHandler):
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
         retitle a ``TAPROOT:claim`` hub, or record an author's
         unacquirable-source override. Mutually exclusive kwargs — pass
-        exactly one.
-
-        **Pick a candidate.** When the chase reaches a chunk citing
-        multiple references (e.g. ``[12,13]``) and can't disambiguate
-        automatically, it tags the finding ``STATUS:multi_candidate`` and
-        writes one ``derived-from`` link per candidate with
-        ``meta.candidate=true``. The user reads the candidates via
-        ``get(kind='finding', id=N)``, then promotes one with:
-
-            edit(kind='finding', id=N, pick_candidate='miller23a')
-            edit(kind='finding', id=N, pick_candidate=42)   # by ref_id
-
-        Effect:
-        * The chosen candidate link loses its ``meta.candidate``
-          marker (becomes a regular ``derived-from`` edge).
-        * The other candidate links are deleted.
-        * The finding's status flips back to ``STATUS:tracing`` so
-          the chase advances on the next pass.
-        * ``meta.chain``'s frontier entry is replaced with the
-          picked target so the next chase pass walks the right path.
-
-        Idempotent — picking the same candidate twice is fine
-        (re-flips to tracing, no-op on links).
-
-        ``title=`` is a **different** operation, only valid on a
-        ``TAPROOT:claim`` hub (``id`` must resolve to one — see
-        :func:`~precis.taproot.authoring.resolve_hub_ref_id`): it reroutes
-        through :func:`precis.taproot.hub.refine_claim_sentence`, the single
-        write door that keeps ``refs.title``, the ``finding_body`` chunk,
-        and the content-derived ``pub_id`` in sync when a hub's claim
-        sentence is reworded (fixing a claim-quality issue, e.g. a dangling
-        demonstrative). A plain (non-hub) finding has no ``edit(title=…)``
-        door — mutate its claim via a fresh ``put()``.
-
-        **Unacquirable override.** A print-only / undigitized source is
-        legitimately citeable even when no digital copy is obtainable.
-        Recording that intent suppresses the trust surfaces' "unverified"
-        mark on this claim (the trust-surfaces override door; this is a
-        **claim-level** declaration about THIS finding, never inherited
-        from its source paper — a paper's own Meta-tab "can't get it" is a
-        plain acquirability fact and never softens a claim by itself, see
-        ``precis-taproot-help``. Never applies to the "unsupported" mark —
-        a negative terminal verification always outranks the override, the
-        paper was read):
-
-            edit(kind='finding', id=N, unacquirable_note='print-only 1962 monograph')
-            edit(kind='finding', id=N, unacquirable_note='abstract states the figure',
-                 unacquirable_mode='abstract')
-
-        Sets ``meta.unacquirable_override = {mode, by, at, note}``.
-        ``unacquirable_mode`` picks the trust state: ``'abstract'`` → Ⓐ
-        (the abstract on file backs THIS claim, full text unread) vs
-        ``'vouched'`` (✍ — author vouches, source unobtainable), the
-        default when omitted (also how a legacy no-``mode`` override reads
-        on the way in). Only meaningful alongside ``unacquirable_note``;
-        supplying it without a note is a ``BadInput``. Settable
-        pre-emptively on ANY lifecycle state — not gated to
-        ``STATUS:dead_chain(reason=unacquirable)``, since the author may
-        know a source is print-only before the chase ever attempts
-        acquisition. ``note`` is required (empty/whitespace rejected — a
-        silent override defeats the audit purpose); ``at`` is
-        server-stamped; ``by`` is ``'agent'`` today (no caller-identity
-        channel exists yet for a handler to read one from). Idempotent —
-        re-setting just overwrites the prior ``mode``/``by``/``at``/``note``.
-
-        No op here supports ``dry_run`` (see below).
+        exactly one; ``dry_run`` is rejected outright (neither op has a
+        faithful preview). See
+        :func:`precis.handlers._finding_edit.edit` for the full contract
+        (pick_candidate promotes a chase candidate + flips status back to
+        tracing; title retitles a TAPROOT:claim hub via
+        ``taproot/hub.py::refine_claim_sentence``; unacquirable_note writes
+        the trust-surfaces override) — the state machine lives there since
+        it only ever touches ``self.store``/``self.kind``, not any other
+        handler state.
         """
-        given = [
-            name
-            for name, value in (
-                ("pick_candidate", pick_candidate),
-                ("title", title),
-                ("unacquirable_note", unacquirable_note),
-            )
-            if value is not None
-        ]
-        if len(given) > 1:
-            raise BadInput(
-                "edit(kind='finding') accepts exactly one of pick_candidate, "
-                f"title, or unacquirable_note — got {', '.join(given)}",
-                next=(
-                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
-                    "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
-                    "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
-                ),
-            )
-        if unacquirable_mode is not None and unacquirable_note is None:
-            raise BadInput(
-                "edit(kind='finding') requires unacquirable_note when "
-                "unacquirable_mode is given",
-                next=(
-                    "edit(kind='finding', id=<N>, unacquirable_note='<why>', "
-                    "unacquirable_mode='abstract')"
-                ),
-            )
-        if title is not None:
-            if dry_run:
-                raise BadInput(
-                    "edit(kind='finding', title=…) does not support dry_run — "
-                    "the retitle has no preview; omit dry_run to apply",
-                    next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
-                )
-            return self._retitle_hub(id=id, title=title)
-        if dry_run:
-            # Neither op has a faithful preview yet: pick_candidate rewrites
-            # links + flips status; unacquirable_note writes an audit-trail
-            # meta patch. Reject loudly rather than silently apply on
-            # dry_run (a data-loss footgun either way).
-            raise BadInput(
-                "edit(kind='finding') does not support dry_run — it either "
-                "promotes a candidate cite (rewrites links + flips status) or "
-                "records an unacquirable-source override; omit dry_run to apply",
-                next=(
-                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
-                    "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
-                ),
-            )
-        if id is None:
-            raise BadInput(
-                "edit(kind='finding') requires id=<finding ref_id or pub_id>",
-                next=(
-                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
-                    "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
-                ),
-            )
-        if unacquirable_note is not None:
-            return self._set_unacquirable_override(
-                id, unacquirable_note, mode=unacquirable_mode
-            )
-        if pick_candidate is None or (
-            isinstance(pick_candidate, str) and not pick_candidate.strip()
-        ):
-            raise BadInput(
-                "edit(kind='finding') requires pick_candidate=<cite_key or ref_id> "
-                "or unacquirable_note=<why source can't be digitally acquired>",
-                next=(
-                    "pick_candidate='miller23a' (or the candidate's ref_id) — "
-                    "see get(kind='finding', id=N) for the candidate list"
-                ),
-            )
-
-        finding_ref_id = self._resolve_finding_ref_id(id)
-
-        # Pull all candidate links (outbound derived-from with
-        # meta.candidate=true). The chase worker writes these as a
-        # batch when it hits a multi-cite chunk.
-        candidates = [
-            link
-            for link in self.store.links_for(
-                finding_ref_id, direction="out", relation="derived-from"
-            )
-            if (link.meta or {}).get("candidate") is True
-        ]
-        if not candidates:
-            raise BadInput(
-                f"finding id={finding_ref_id} has no candidate links — nothing to pick",
-                next=(
-                    "get(kind='finding', id=<N>) — the chain may already "
-                    "be resolved (STATUS:established) or this finding is "
-                    "in a different state"
-                ),
-            )
-
-        picked_link, other_links = self._match_candidate(
-            candidates, pick_candidate=pick_candidate
-        )
-
-        with self.store.tx() as conn:
-            # Promote the picked link: clear the candidate flag.
-            # No store-level helper for "patch one link's meta", so
-            # update by primary key directly — the candidate marker
-            # was the only meaningful key on these links.
-            conn.execute(
-                "UPDATE links SET meta = meta - 'candidate' WHERE link_id = %s",
-                (picked_link.id,),
-            )
-            # Drop the losing candidates by primary key (the
-            # store-level ``remove_link`` matches endpoint pairs;
-            # we have the exact link rows already so this is
-            # tighter and skips the chunk_id resolution dance).
-            if other_links:
-                conn.execute(
-                    "DELETE FROM links WHERE link_id = ANY(%s)",
-                    ([link.id for link in other_links],),
-                )
-
-            # Replace the chain's frontier entry with the picked
-            # target so the next chase pass walks from there.
-            ref = self.store.get_ref(kind=self.kind, id=finding_ref_id)
-            assert ref is not None
-            meta = dict(ref.meta or {})
-            chain = list(meta.get("chain") or [])
-            if chain:
-                # The frontier (last hop) is the multi-cite source —
-                # swap it for the picked next-hop so the chain reads
-                # as "this is what the chase advanced to."
-                chain[-1] = {
-                    "ref_id": picked_link.dst_ref_id,
-                    "chunk_id": None,
-                    "ord": picked_link.dst_pos,
-                }
-                self.store.update_ref(
-                    finding_ref_id, meta_patch={"chain": chain}, conn=conn
-                )
-
-            # Flip status back to tracing so the chase worker
-            # re-claims this row on the next pass.
-            self.store.add_tag(
-                finding_ref_id,
-                Tag.closed(_STATUS_NAMESPACE, _STATUS_TRACING),
-                set_by="user",
-                replace_prefix=True,
-                conn=conn,
-            )
-
-        # Resolve a human-friendly handle for the response body.
-        picked_ref = self._fetch_ref_any_kind(picked_link.dst_ref_id)
-        picked_handle = picked_ref.slug or f"ref:{picked_link.dst_ref_id}"
-        return Response(
-            body=(
-                f"picked candidate {picked_handle} on finding id={finding_ref_id}\n"
-                f"dropped {len(other_links)} other candidate(s); "
-                f"status flipped to STATUS:{_STATUS_TRACING}\n"
-                f"next: precis worker --only chase --once  "
-                f"(or wait for the next pass)"
-            )
-        )
-
-    # ──────────────────────────────────────────────────────────────────
-    # edit(title=...) — retitle a TAPROOT:claim hub (taproot/hub.py door)
-    # ──────────────────────────────────────────────────────────────────
-
-    def _retitle_hub(self, *, id: int | str | None, title: str) -> Response:
-        """``edit(kind='finding', title=…)`` — reword a claim hub's sentence.
-
-        ``id`` must resolve to a live ``TAPROOT:claim`` hub (mirrors the
-        ``link()`` Taproot-routing check above). A plain finding — no
-        ``edit(title=…)`` door exists for it — raises the same sharp
-        ``BadInput`` an unresolvable/non-hub target does.
-        """
-        if id is None:
-            raise BadInput(
-                "edit(kind='finding', title=…) requires id=<hub ref_id, "
-                "fi<id> handle, or pub_id>",
-                next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
-            )
-        try:
-            hub_ref_id = authoring.resolve_hub_ref_id(self.store, id)
-        except BadInput:
-            hub_ref_id = None
-        if hub_ref_id is None:
-            raise BadInput(
-                f"edit(kind='finding', title=…) only retitles a TAPROOT:claim "
-                f"hub — id={id!r} does not resolve to one",
-                next=(
-                    "a plain (non-hub) finding has no title-edit door — "
-                    "record a fresh put(kind='finding', title=…) instead"
-                ),
-            )
-        try:
-            result = hub.refine_claim_sentence(
-                self.store, hub_ref_id, title, set_by="agent"
-            )
-        except ValueError as exc:
-            raise BadInput(
-                f"edit(kind='finding', id='fi{hub_ref_id}', title=…) failed: {exc}",
-                next=(
-                    "the reworded sentence's pub_id collides with a different "
-                    "hub — pick distinct wording, or resolve the dedup by hand "
-                    "(link_claims / delete one hub) before retitling"
-                ),
-            ) from exc
-        alias_note = (
-            " (old pub_id kept as an alias — existing [handle] cites still resolve)"
-            if result["pub_id_alias_kept"]
-            else ""
-        )
-        return Response(
-            body=(
-                f"retitled claim hub fi{hub_ref_id}\n"
-                f"old: {result['old_title']}\n"
-                f"new: {result['new_title']}\n"
-                f"pub_id: {result['pub_id']}{alias_note}"
-            )
-        )
-
-    # ──────────────────────────────────────────────────────────────────
-    # edit — unacquirable_note (trust-surfaces override write path)
-    # ──────────────────────────────────────────────────────────────────
-
-    def _set_unacquirable_override(
-        self, raw_id: int | str, note: str, *, mode: str | None = None
-    ) -> Response:
-        """Write ``meta.unacquirable_override`` — the write path behind
-        ``edit(kind='finding', unacquirable_note=…)``
-        (the trust-surfaces override door, claim-level — never inherited
-        from the source paper). ``note`` required non-empty; the override
-        is otherwise settable on any finding regardless of its current
-        lifecycle status. ``mode`` must be ``'abstract'`` or ``'vouched'``
-        when given; ``None`` defaults to ``'vouched'`` (matches how a
-        legacy no-``mode`` override reads on the way in)."""
-        if not note.strip():
-            raise BadInput(
-                "edit(kind='finding') requires a non-empty unacquirable_note "
-                "— a silent override defeats the audit purpose",
-                next=(
-                    "edit(kind='finding', id=<N>, "
-                    "unacquirable_note='<why this source cannot be digitally acquired>')"
-                ),
-            )
-        if mode is not None and mode not in ("abstract", "vouched"):
-            raise BadInput(
-                f"edit(kind='finding') unacquirable_mode must be 'abstract' or "
-                f"'vouched', got {mode!r}",
-                next=(
-                    "edit(kind='finding', id=<N>, unacquirable_note='<why>', "
-                    "unacquirable_mode='abstract')"
-                ),
-            )
-        resolved_mode = mode or "vouched"
-        finding_ref_id = self._resolve_finding_ref_id(raw_id)
-        override = {
-            "mode": resolved_mode,
-            "by": "agent",
-            "at": datetime.now(UTC).isoformat(),
-            "note": note.strip(),
-        }
-        self.store.update_ref(
-            finding_ref_id, meta_patch={"unacquirable_override": override}
-        )
-        mark = (
-            "Ⓐ abstract-backs-it" if resolved_mode == "abstract" else "✍ author-vouched"
-        )
-        return Response(
-            body=(
-                f"recorded unacquirable override on finding id={finding_ref_id}\n"
-                f"note: {override['note']}\n"
-                f"trust surfaces now render this claim {mark} — a calm mark, no "
-                "longer the ⚠ unverified triangle, but NOT clean (the full text "
-                "was never read). A terminal verification that the source "
-                "doesn't back it still outranks the override."
-            )
-        )
-
-    def _resolve_finding_ref_id(self, raw_id: int | str) -> int:
-        """Resolve ``id=`` to a finding ref_id.
-
-        Accepts a numeric ref_id, a numeric-string ref_id, or a
-        ``pub_id`` (the agent-facing placeholder shape).
-        """
-        if isinstance(raw_id, int):
-            ref = self.store.get_ref(kind=self.kind, id=raw_id)
-            if ref is None:
-                raise BadInput(f"no finding with ref_id={raw_id}")
-            return raw_id
-        s = str(raw_id).strip()
-        if s.isdigit():
-            return self._resolve_finding_ref_id(int(s))
-        # Treat as pub_id.
-        with self.store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT r.ref_id FROM ref_identifiers ri "
-                "JOIN refs r ON r.ref_id = ri.ref_id "
-                "WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s "
-                "  AND r.kind = 'finding' AND r.deleted_at IS NULL",
-                (s,),
-            ).fetchone()
-        if row is None:
-            raise BadInput(f"no finding with pub_id={s!r}")
-        return int(row[0])
-
-    def _match_candidate(
-        self, candidates: list, *, pick_candidate: str | int
-    ) -> tuple[Any, list]:
-        """Pick the link matching ``pick_candidate``; return
-        ``(picked, others)``. Accepts a cite_key (slug) or ref_id."""
-        if isinstance(pick_candidate, int) or (
-            isinstance(pick_candidate, str) and pick_candidate.strip().isdigit()
-        ):
-            target_ref_id = int(pick_candidate)
-            picked = [c for c in candidates if c.dst_ref_id == target_ref_id]
-            if not picked:
-                raise BadInput(
-                    f"ref_id={target_ref_id} is not in the candidate list",
-                    options=sorted(str(c.dst_ref_id) for c in candidates),
-                )
-            return picked[0], [c for c in candidates if c.id != picked[0].id]
-
-        # Match by cite_key (slug). Resolve each candidate ref's
-        # cite_key once and look the input up against that map.
-        target_slug = str(pick_candidate).strip()
-        for c in candidates:
-            ref = self._fetch_ref_any_kind(c.dst_ref_id)
-            if (ref.slug or "") == target_slug:
-                return c, [other for other in candidates if other.id != c.id]
-        candidate_slugs = sorted(
-            (self._fetch_ref_any_kind(c.dst_ref_id).slug or f"ref:{c.dst_ref_id}")
-            for c in candidates
-        )
-        raise BadInput(
-            f"no candidate matches pick_candidate={target_slug!r}",
-            options=candidate_slugs,
+        return _finding_edit.edit(
+            self.store,
+            kind=self.kind,
+            id=id,
+            pick_candidate=pick_candidate,
+            title=title,
+            unacquirable_note=unacquirable_note,
+            unacquirable_mode=unacquirable_mode,
+            dry_run=dry_run,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -1958,29 +1187,12 @@ class FindingHandler(NumericRefHandler):
     def _fetch_ref_any_kind(self, ref_id: int) -> Ref:
         """Look up a ref by id without knowing its kind.
 
-        The store's get_ref API requires kind; parse_link_target
-        returns the resolved kind on the LinkTarget so callers can
-        round-trip. We re-fetch here to read the slug (cite_key)
-        for the deterministic pub_id input.
+        Thin wrapper around the shared
+        :func:`precis.handlers._finding_common.fetch_ref_any_kind` —
+        kept as a method since ``put()`` and ``_render_one`` (both still
+        on this class) call it as ``self._fetch_ref_any_kind(...)``.
         """
-        from precis.store._mappers import _REFS_COLS, _row_to_ref
-
-        with self.store.pool.connection() as conn:
-            row = conn.execute(
-                f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s "
-                "AND deleted_at IS NULL",
-                (ref_id,),
-            ).fetchone()
-        if row is None:
-            raise BadInput(
-                f"cited_in target ref_id={ref_id} not found",
-                next=(
-                    "the target was deleted or never existed — find a live one "
-                    "with search(kind='paper', q='<topic>') or look up by DOI "
-                    "with get(kind='paper', id='<doi>')"
-                ),
-            )
-        return _row_to_ref(row)
+        return fetch_ref_any_kind(self.store, ref_id)
 
     def _fetch_body(self, ref_id: int) -> str | None:
         """Read the ``finding_body`` chunk text for ``ref_id``.
@@ -2014,81 +1226,6 @@ class FindingHandler(NumericRefHandler):
                 "no duplicate created)"
             )
         )
-
-
-def _collapse_patent_families(
-    store: PoolStore,
-    edges: list[seniority.EvidenceEdge],
-    refs_by_id: dict[int, Ref],
-) -> list[tuple[seniority.EvidenceEdge, str | None]]:
-    """Collapse same-family patent evidence edges to one row per family
-    (``view='evidence'``, docs/backlog/patent-evidence-parity.md Phase
-    3) — family identity is EPO-authoritative data, so two edges citing
-    sibling family members for the same claim are the same warrant, not
-    two separate ones. A non-patent edge, or a patent edge with no
-    ``family_id``, passes through unchanged (one row each); each role-list
-    (originators/corroborators/contradictors) already carries at most one
-    edge per paper (:class:`~precis.taproot.seniority.EvidenceEdge`), so
-    grouping by ``paper_ref_id`` for the non-family case can't collide.
-
-    The rendered row is the family's deterministic representative
-    (:func:`precis.handlers._patent_family.family_representative`) when
-    it's among this list's edges, else the first (already
-    seniority-ordered, i.e. senior-first) member. The second tuple element
-    is a ``"passage in <SLUG>[, <SLUG>...]"`` note naming EVERY *other*
-    family member still in the group (deduped, group order — with 3+
-    grounded siblings, an earlier version surfaced only the first and
-    silently dropped the rest), so a grounded passage that actually lives
-    in a non-representative sibling stays traceable rather than silently
-    dropped.
-    """
-    from precis.handlers._patent_family import family_representative
-
-    order: list[str] = []
-    groups: dict[str, list[seniority.EvidenceEdge]] = {}
-    for e in edges:
-        source_ref = refs_by_id.get(e.paper_ref_id)
-        family_id = (
-            (source_ref.meta or {}).get("family_id")
-            if source_ref is not None and source_ref.kind == "patent"
-            else None
-        )
-        key = f"family:{family_id}" if family_id else f"solo:{e.paper_ref_id}"
-        if key not in groups:
-            order.append(key)
-            groups[key] = []
-        groups[key].append(e)
-
-    out: list[tuple[seniority.EvidenceEdge, str | None]] = []
-    for key in order:
-        group = groups[key]
-        if not key.startswith("family:") or len(group) == 1:
-            out.append((group[0], None))
-            continue
-        family_id = key.split(":", 1)[1]
-        rep = family_representative(store, family_id)
-        canonical = group[0]
-        if rep is not None:
-            match = next((e for e in group if e.paper_ref_id == rep.id), None)
-            if match is not None:
-                canonical = match
-        others = [e for e in group if e.paper_ref_id != canonical.paper_ref_id]
-        note: str | None = None
-        if others:
-            other_slugs: list[str] = []
-            seen_slugs: set[str] = set()
-            for other in others:
-                other_ref = refs_by_id.get(other.paper_ref_id)
-                other_slug = (other_ref.slug if other_ref is not None else None) or str(
-                    other.paper_ref_id
-                )
-                other_slug = other_slug.upper()
-                if other_slug not in seen_slugs:
-                    seen_slugs.add(other_slug)
-                    other_slugs.append(other_slug)
-            note = f"passage in {', '.join(other_slugs)}"
-        out.append((canonical, note))
-    return out
 
 
 def _extract_status_tag(tags: Any) -> str | None:

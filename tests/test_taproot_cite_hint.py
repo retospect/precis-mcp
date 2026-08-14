@@ -1,5 +1,5 @@
-"""Draft-write-path Taproot claim-hub cite nudge (`DraftHandler.
-_pc_cite_claim_hub_hint`) + the draft-level scoreboard line
+"""Draft-write-path Taproot claim-hub cite nudge (`_draft_lint.
+pc_cite_claim_hub_hint`) + the draft-level scoreboard line
 (`_hygiene_lines`). DB-backed (real `refs`/`chunks`/`links`/
 `ref_identifiers` via the `store`/`hub` fixtures); `seed_claim_hub` seeds
 the hub + evidence, mirroring `tests/test_taproot_authoring.py`.

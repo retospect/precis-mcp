@@ -1308,7 +1308,7 @@ def _render_glossary(store: Store, ref_id: int) -> str:
     """List the draft's active abbreviations + definitions to the editor.
 
     The abbreviation system is otherwise purely *reactive* — it nags about
-    undefined acronyms only *after* a write (``_write_abbrev_hints``).
+    undefined acronyms only *after* a write (``_draft_lint.write_abbrev_hints``).
     Surfacing the whole live glossary up front lets the agent write *with*
     the established vocabulary: use the canonical short, don't redefine an
     existing term, and read what an acronym means in a chunk it's editing.

@@ -1,18 +1,23 @@
-# codereview: handler/mixin size + inheritance-as-config cleanups
+# codereview: handler/mixin size cleanups — residuals
 
-- `store/_draft_ops.py::DraftMixin` — 80 methods / 2217 code lines,
-  ≥7 responsibilities. First cut: lift the ~10-method review surface into
-  its own object. `handlers/draft.py::DraftHandler` (53 methods) hosts 11
-  unrelated `_*_hint` LLM lint generators — extract a draft-lint module.
-- `handlers/finding.py::FindingHandler` outgrew `NumericRefHandler`
-  (adds 15 methods incl. a 250-line `_put_acquiring` state machine; now
-  bigger than the shared base) — graduate it toward a standalone handler.
-- `handlers/perplexity.py` — `WebsearchHandler`/`ThinkHandler`/
-  `ResearchHandler` override zero methods; they exist to hold ClassVars.
-  Convert to a config-dataclass parameterization like
-  `diagram/handler.py::DiagramHandler.LANG` already does. The base also
-  reaches into an undeclared attr via
-  `_cache_base.py` `getattr(self, "cost_per_call_usd", 0.0)`.
-- `precis_web/item_view.py::ItemPresenter` — 10-method hierarchy with one
-  subclass overriding one method; keep an eye on whether it earns its
-  ceremony (module docstring already tracks promotion honestly).
+Done (shipped): DraftStore review surface lifted to `DraftReviewStore`
+(`store.drafts.review.*`, 12 methods, transitional delegations kept);
+draft-lint hint generators extracted to `handlers/_draft_lint.py`;
+finding.py's store-only state machines extracted to
+`handlers/_finding_acquire.py`/`_finding_edit.py`/`_finding_evidence.py`
+(FindingHandler stays on NumericRefHandler — it genuinely uses the
+shared CRUD contract); perplexity tiers collapsed to a `_SonarTier`
+config dataclass + `cost_per_call_usd` declared on `CacheBackedHandler`.
+
+REMAINING:
+
+- Migrate the review-surface call sites (`handlers/draft.py`,
+  `quest/review_fanout.py`, `handlers/_review_view.py`,
+  `precis_web/routes/drafts.py`) to `store.drafts.review.*` and delete
+  the 12 transitional delegations on DraftStore
+  (`tests/test_store_drafts_facade.py` pins their signature parity
+  meanwhile).
+- `precis_web/item_view.py::ItemPresenter` — 10-method hierarchy with
+  one subclass overriding one method; watch-item only, keep an eye on
+  whether it earns its ceremony (module docstring already tracks
+  promotion honestly).

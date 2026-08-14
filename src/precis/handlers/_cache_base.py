@@ -217,6 +217,13 @@ class CacheBackedHandler(Handler):
     #: they meant to fetch a URL. (MCP critic MAJOR — hint hardcoded.)
     example_query: ClassVar[str] = "your query"
 
+    #: Best pre-fetch estimate of one call's cost in USD, read by
+    #: :meth:`_expected_cost_usd` for the budget gate. Free / unpriced
+    #: kinds (web, youtube, math) leave the ``0.0`` default and are
+    #: never gated; priced kinds (the perplexity tiers, via
+    #: ``_PerplexityBase``) override it.
+    cost_per_call_usd: ClassVar[float] = 0.0
+
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.provider}: store required")
@@ -660,12 +667,12 @@ class CacheBackedHandler(Handler):
     def _expected_cost_usd(self) -> float:
         """Best pre-fetch estimate of this call's cost, for the budget gate.
 
-        Reads a subclass ``cost_per_call_usd`` ClassVar when present (perplexity
-        tiers set it); free / unpriced kinds (web, youtube, math) default to
-        ``0.0`` and are never gated.
+        Reads ``self.cost_per_call_usd`` (perplexity tiers override it via
+        their ``TIER`` config); free / unpriced kinds (web, youtube, math)
+        keep the ``0.0`` default and are never gated.
         """
         try:
-            return float(getattr(self, "cost_per_call_usd", 0.0) or 0.0)
+            return float(self.cost_per_call_usd or 0.0)
         except (TypeError, ValueError):
             return 0.0
 

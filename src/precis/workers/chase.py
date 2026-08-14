@@ -797,7 +797,7 @@ def _advance_acquiring(
     """Advance an ``acquiring`` finding by at most one step.
 
     Polls the finding's linked ``awaits-evidence`` stubs (see
-    :func:`~precis.handlers.finding.FindingHandler._put_acquiring`).
+    :func:`~precis.handlers._finding_acquire.put_acquiring`).
     The FIRST stub found with body chunks gets grounded (see
     :func:`_ground_on_stub`) — ``"advanced"``, flips to ``tracing``.
     While every stub is still bare, this is a no-op ``"waiting"`` pass

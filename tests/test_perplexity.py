@@ -525,15 +525,18 @@ def test_ttl_per_tier() -> None:
     ``ttl_days=`` on get; default forever beats default-stale-in-30d.
     Websearch stays at 7d because the fast-tier is mostly current-events.
     """
-    assert WebsearchHandler.ttl_seconds == 7 * 24 * 60 * 60
-    assert ThinkHandler.ttl_seconds is None
-    assert ResearchHandler.ttl_seconds is None
+    # ttl_seconds/cost_per_call_usd are properties proxying to TIER (config-
+    # dataclass parameterization, see handlers/perplexity.py::_SonarTier) —
+    # read the TIER ClassVar directly rather than the instance property.
+    assert WebsearchHandler.TIER.ttl_seconds == 7 * 24 * 60 * 60
+    assert ThinkHandler.TIER.ttl_seconds is None
+    assert ResearchHandler.TIER.ttl_seconds is None
 
 
 def test_cost_per_tier() -> None:
-    assert WebsearchHandler.cost_per_call_usd == pytest.approx(0.001)
-    assert ThinkHandler.cost_per_call_usd == pytest.approx(0.005)
-    assert ResearchHandler.cost_per_call_usd == pytest.approx(0.50)
+    assert WebsearchHandler.TIER.cost_per_call_usd == pytest.approx(0.001)
+    assert ThinkHandler.TIER.cost_per_call_usd == pytest.approx(0.005)
+    assert ResearchHandler.TIER.cost_per_call_usd == pytest.approx(0.50)
 
 
 def test_cost_appears_on_fresh_fetch(websearch: WebsearchHandler) -> None:

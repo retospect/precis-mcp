@@ -1,9 +1,15 @@
 """Pins the ``store.drafts`` (:class:`DraftStore`) carve finished in
-``docs/backlog/codereview-store-decomposition.md``.
+``docs/backlog/codereview-store-decomposition.md``, plus the
+``store.drafts.review`` (:class:`DraftReviewStore`) carve started in
+``docs/backlog/codereview-handler-size-cleanups.md``.
 
 Not a test of draft *semantics* (``test_draft_handler.py`` owns that) — just
 that the carve holds its final shape: drafts is composed, not mixed in, and
-the transitional flat delegations on ``Store`` stay deleted.
+the transitional flat delegations on ``Store`` stay deleted. The review
+sub-carve is mid-flight — unlike ``drafts``/``blocks``, its transitional
+flat delegations stay *on* ``DraftStore`` this round (see that module's
+docstring); the checks below pin the delegation shape instead of its
+absence.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import inspect
 
 from precis.store._draft_ops import DraftStore
+from precis.store._draft_review_ops import DraftReviewStore
 from precis.store.store import Store
 
 
@@ -74,3 +81,41 @@ def test_drafts_substore_reads_its_own_writes(store: Store) -> None:
     )
     got = store.drafts.get_draft_chunk(chunk.dc)
     assert got is not None
+
+
+def test_drafts_review_is_composed_not_mixed_in() -> None:
+    """The review sub-carve: ``DraftReviewStore`` is composed onto
+    ``DraftStore`` (``store.drafts.review``), not mixed into its bases —
+    it must not appear in ``DraftStore.__mro__``."""
+    assert "DraftReviewStore" not in {c.__name__ for c in DraftStore.__mro__}
+
+
+def test_drafts_review_property_is_cached(store: Store) -> None:
+    """``store.drafts.review`` returns the same :class:`DraftReviewStore`
+    instance on every access, same caching contract as :attr:`Store.drafts`
+    / :attr:`Store.blocks` themselves."""
+    assert isinstance(store.drafts.review, DraftReviewStore)
+    assert store.drafts.review is store.drafts.review
+
+
+def test_draft_review_delegations_have_matching_signatures() -> None:
+    """Every transitional ``DraftStore`` review delegation forwards to a
+    same-named :class:`DraftReviewStore` method with an identical
+    parameter list (minus ``self``) — a delegation drifting out of sync
+    with its target would silently swallow/misplace an argument."""
+    review_methods = {
+        name
+        for name in dir(DraftReviewStore)
+        if not name.startswith("_") and name not in ("pool", "tx")
+    }
+    assert review_methods, "sanity check — DraftReviewStore has no public methods?"
+    for name in sorted(review_methods):
+        assert hasattr(DraftStore, name), (
+            f"DraftReviewStore.{name} has no transitional delegation on DraftStore"
+        )
+        draft_sig = inspect.signature(getattr(DraftStore, name))
+        review_sig = inspect.signature(getattr(DraftReviewStore, name))
+        assert draft_sig == review_sig, (
+            f"DraftStore.{name} delegation signature {draft_sig} != "
+            f"DraftReviewStore.{name} {review_sig}"
+        )

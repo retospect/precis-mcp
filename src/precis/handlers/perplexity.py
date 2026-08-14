@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Upstream
@@ -58,6 +59,47 @@ _PERPLEXITY_ATTRIBUTION_TEMPLATE = (
 
 
 # ---------------------------------------------------------------------------
+# Per-kind tier configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _SonarTier:
+    """The knobs that differ across the three Sonar kinds.
+
+    Config-dataclass parameterization — mirrors
+    ``diagram/handler.py::DiagramHandler.LANG``: three
+    ClassVar-only subclasses that overrode zero methods collapsed
+    into one shared base (``_PerplexityBase``) whose behavior is
+    parameterized by a single ``TIER: ClassVar[_SonarTier]`` per
+    concrete subclass, instead of five separate ClassVars each.
+    ``spec`` stays a direct per-subclass ``ClassVar[KindSpec]``
+    (not folded in here) because boot-time registration
+    (``dispatch._try``) reads ``cls.spec`` via ``getattr`` *before*
+    constructing the handler, to gate kind-enablement without
+    importing/instantiating it — that needs one distinct class per
+    kind, exactly as ``FigureHandler``/``MermaidHandler`` each keep
+    their own ``spec`` alongside a shared ``LANG``.
+    """
+
+    model: str
+    """Sonar model identifier sent to the API."""
+
+    timeout: int
+    """HTTP timeout for this tier, in seconds."""
+
+    cost_per_call_usd: float
+    """Per-call cost estimate in USD (best estimate; recorded with the
+    cache row, and used as the pre-fetch budget-gate estimate)."""
+
+    ttl_seconds: int | None
+    """Default cache freshness window; ``None`` pins forever."""
+
+    attribution: str
+    """Legal-attribution footer text rendered on every response."""
+
+
+# ---------------------------------------------------------------------------
 # Shared base
 # ---------------------------------------------------------------------------
 
@@ -65,26 +107,40 @@ _PERPLEXITY_ATTRIBUTION_TEMPLATE = (
 class _PerplexityBase(CacheBackedHandler):
     """Common Perplexity Sonar handler. Subclasses pin the model + tier."""
 
-    # ── Sonar model identifier ────────────────────────────────────────
-    model: ClassVar[str] = ""
-
-    # ── HTTP timeout per tier (seconds) ───────────────────────────────
-    timeout: ClassVar[int] = 30
-
-    # ── per-call cost in USD (best estimate; recorded with cache row) ─
-    cost_per_call_usd: ClassVar[float] = 0.0
+    #: Set by each concrete subclass — the model/timeout/cost/TTL/
+    #: attribution bundle for that tier.
+    TIER: ClassVar[_SonarTier]
 
     # ── inherited from CacheBackedHandler (subclasses override) ──────
     provider: ClassVar[str] = "perplexity"
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "your question"
-    # ttl_seconds + attribution + spec set by subclasses.
+    # spec set by subclasses (see _SonarTier docstring for why it
+    # stays separate from TIER).
     #
     # __init__, _resolve_cache_slug, tag, link, search, search_hits,
     # and _blocks_from_report are all inherited from
     # :class:`CacheBackedHandler` — the web-bookmark patch promoted
     # them out of here so other cache-backed kinds (web) can share
     # the bookmarking / cross-linking surface.
+
+    # ── proxy the three fields CacheBackedHandler's shared machinery
+    #    reads generically (``self.ttl_seconds`` / ``self.attribution`` in
+    #    get()/_render(), ``self.cost_per_call_usd`` in the budget-gate
+    #    estimate) through to TIER, so the base class's cross-kind
+    #    contract (also used by web/youtube/math) is untouched.
+
+    @property
+    def ttl_seconds(self) -> int | None:  # type: ignore[override]
+        return self.TIER.ttl_seconds
+
+    @property
+    def attribution(self) -> str:  # type: ignore[override]
+        return self.TIER.attribution
+
+    @property
+    def cost_per_call_usd(self) -> float:  # type: ignore[override]
+        return self.TIER.cost_per_call_usd
 
     # ── canonicalize: trim + include model so kinds don't collide ────
 
@@ -123,7 +179,7 @@ class _PerplexityBase(CacheBackedHandler):
             )
         # Cache key includes the model so same query under different
         # tiers cache separately.
-        return f"{self.model}:{q}"
+        return f"{self.TIER.model}:{q}"
 
     def _coerce_query(self, id: str | int | None, q: str | None) -> str:
         # The literal incident shape is ``get(kind='websearch', id=171157)``
@@ -154,7 +210,7 @@ class _PerplexityBase(CacheBackedHandler):
         slug-only refresh (typically from the maintenance driver
         iterating ``WATCH:weekly`` research notes) can re-fetch
         without the caller having to remember the original prompt.
-        Falls back to the handler's pinned ``self.model`` if meta
+        Falls back to the handler's pinned ``self.TIER.model`` if meta
         was written before the model was tracked.
         (gripe:3681 phase 4.)
         """
@@ -162,7 +218,7 @@ class _PerplexityBase(CacheBackedHandler):
         query = meta.get("query")
         if not query:
             return None
-        model = meta.get("model") or self.model
+        model = meta.get("model") or self.TIER.model
         return f"{model}:{query}"
 
     # ── auth + transport ──────────────────────────────────────────────
@@ -190,13 +246,13 @@ class _PerplexityBase(CacheBackedHandler):
 
         api_key = self._api_key()
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": self.TIER.model,
             "messages": [{"role": "user", "content": query}],
             "return_citations": True,
             "web_search_options": {"search_context_size": "high"},
         }
         try:
-            with http_client(timeout=float(self.timeout)) as client:
+            with http_client(timeout=float(self.TIER.timeout)) as client:
                 resp = client.post(
                     _SONAR_URL,
                     headers={
@@ -207,7 +263,7 @@ class _PerplexityBase(CacheBackedHandler):
                 )
         except httpx.TimeoutException as exc:
             raise Upstream(
-                f"Perplexity {self.model} timed out after {self.timeout}s",
+                f"Perplexity {self.TIER.model} timed out after {self.TIER.timeout}s",
                 next=(
                     "try a shorter query, or use kind='perplexity-research' for "
                     "slow-paced multi-step work"
@@ -246,11 +302,11 @@ class _PerplexityBase(CacheBackedHandler):
         body, citations = _format_perplexity_body(data)
         title = _title_for_query(query)
         # Prefer the provider's *actual* reported cost (newer Sonar returns a
-        # ``usage.cost`` block) over the flat ClassVar estimate, so the budget
+        # ``usage.cost`` block) over the flat TIER estimate, so the budget
         # tote sums real spend. Fall back to the estimate when absent.
         usage = data.get("usage") or {}
         real_cost = _cost_from_usage(usage)
-        cost_usd = real_cost if real_cost is not None else self.cost_per_call_usd
+        cost_usd = real_cost if real_cost is not None else self.TIER.cost_per_call_usd
 
         # Block-parse + embed via the shared ingestion pipeline so
         # ``search(kind='perplexity-reasoning', q=...)`` can find content inside the
@@ -265,7 +321,7 @@ class _PerplexityBase(CacheBackedHandler):
             body_blocks=body_blocks,
             cost_usd=cost_usd,
             meta={
-                "model": self.model,
+                "model": self.TIER.model,
                 "query": query,
                 "citation_count": len(citations),
                 "citations": citations,
@@ -463,11 +519,11 @@ class _PerplexityBase(CacheBackedHandler):
             provider=self.provider,
             request_hash=request_hash,
             ttl_seconds=None,  # imports are pinned — never expire
-            model=self.model,
+            model=self.TIER.model,
             cost_usd=0.0,
             ref_meta={"source": "imported"},
             cache_meta={
-                "model": self.model,
+                "model": self.TIER.model,
                 "query": query,
                 "source": "imported",
                 "block_count": len(body_blocks),
@@ -522,11 +578,13 @@ class WebsearchHandler(_PerplexityBase):
         modes=("import",),
     )
 
-    model: ClassVar[str] = "sonar"
-    timeout: ClassVar[int] = 30
-    cost_per_call_usd: ClassVar[float] = 0.001
-    ttl_seconds: ClassVar[int | None] = 7 * 24 * 60 * 60  # 7 days
-    attribution: ClassVar[str] = _PERPLEXITY_ATTRIBUTION_TEMPLATE.format(model="sonar")
+    TIER: ClassVar[_SonarTier] = _SonarTier(
+        model="sonar",
+        timeout=30,
+        cost_per_call_usd=0.001,
+        ttl_seconds=7 * 24 * 60 * 60,  # 7 days
+        attribution=_PERPLEXITY_ATTRIBUTION_TEMPLATE.format(model="sonar"),
+    )
 
 
 class ThinkHandler(_PerplexityBase):
@@ -553,18 +611,20 @@ class ThinkHandler(_PerplexityBase):
         modes=("import",),
     )
 
-    model: ClassVar[str] = "sonar-reasoning-pro"
-    timeout: ClassVar[int] = 120
-    cost_per_call_usd: ClassVar[float] = 0.005
     # Cache forever by default. The pollution failure mode (a wrong
     # answer staying around) is bounded: citations come from real papers
     # (the chase + finding pipeline), not from perplexity, so a wrong
     # cached answer can be linked-out as wrong via a memory or deleted.
     # Agents can still override per-call via ``ttl_days=`` or force a
     # re-fetch via ``refresh=True``.
-    ttl_seconds: ClassVar[int | None] = None
-    attribution: ClassVar[str] = _PERPLEXITY_ATTRIBUTION_TEMPLATE.format(
-        model="sonar-reasoning-pro"
+    TIER: ClassVar[_SonarTier] = _SonarTier(
+        model="sonar-reasoning-pro",
+        timeout=120,
+        cost_per_call_usd=0.005,
+        ttl_seconds=None,
+        attribution=_PERPLEXITY_ATTRIBUTION_TEMPLATE.format(
+            model="sonar-reasoning-pro"
+        ),
     )
 
 
@@ -593,12 +653,14 @@ class ResearchHandler(_PerplexityBase):
         modes=("import",),
     )
 
-    model: ClassVar[str] = "sonar-deep-research"
-    timeout: ClassVar[int] = 600
-    cost_per_call_usd: ClassVar[float] = 0.50
-    ttl_seconds: ClassVar[int | None] = None  # pinned — too expensive to expire
-    attribution: ClassVar[str] = _PERPLEXITY_ATTRIBUTION_TEMPLATE.format(
-        model="sonar-deep-research"
+    TIER: ClassVar[_SonarTier] = _SonarTier(
+        model="sonar-deep-research",
+        timeout=600,
+        cost_per_call_usd=0.50,
+        ttl_seconds=None,  # pinned — too expensive to expire
+        attribution=_PERPLEXITY_ATTRIBUTION_TEMPLATE.format(
+            model="sonar-deep-research"
+        ),
     )
 
 
@@ -612,7 +674,7 @@ def _cost_from_usage(usage: dict[str, Any]) -> float | None:
 
     Newer Sonar responses carry ``usage.cost.total_cost`` (a float, USD). A
     top-level ``usage.total_cost`` is also accepted. Returns ``None`` when no
-    cost figure is present, so the caller falls back to the ClassVar estimate.
+    cost figure is present, so the caller falls back to the TIER estimate.
     """
     if not isinstance(usage, dict):
         return None
