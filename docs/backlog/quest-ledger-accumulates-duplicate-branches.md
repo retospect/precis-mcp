@@ -24,6 +24,14 @@ at exhaust-relevant conditions".
 
 These are one attempt each, phrased five ways across five ticks.
 
+Confirmed in prod logs 2026-08-14: spark's worker logs
+`ledger_ops entry ... not applied (bad shape / ambiguous / unmatched)` on most
+ticks — `add`s that restate an existing node, and `mark`s naming a node by a
+near-miss phrasing (`"NrfA mechanistic selectivity lessons..."` against the
+actual `"NrfA/ccNiR mechanistic selectivity lessons..."`). The no-op contract in
+`quest/tick.py` is behaving correctly — it never guesses — but the model has no
+way to learn the canonical node names, so it keeps missing.
+
 ## Why it matters
 
 `ledger_do_not_repropose` exists to stop the quest re-proposing what it already

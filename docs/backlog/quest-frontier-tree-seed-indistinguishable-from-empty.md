@@ -37,6 +37,13 @@ key, so it resolves its owner via the `dossier-of` link and this particular
 query reports 0 candidates for it spuriously — not a defect, just a join that
 misses older rows.)
 
+Note (2026-08-14): quest 202469's zero is not an idle quest. It proposes a
+candidate most ticks and every one dies in structure-op validation — see
+`docs/backlog/quest-candidate-proposals-die-on-slab-op-validation.md`. The
+ambiguity below is therefore hiding a live defect on at least one quest, which
+raises this item's value: the whole point of making the strings differ is to be
+able to alert on the case that is currently indistinguishable.
+
 ## Fix
 
 Make the two strings differ, so the chunk is self-describing. Cheapest version:
