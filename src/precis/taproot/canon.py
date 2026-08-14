@@ -230,15 +230,15 @@ _EXTRACT_SYS = (
     "requested JSON object, no prose."
 )
 
-_EXTRACT_PROMPT = """\
-Does this passage assert a specific, citable scientific claim (a concrete
-result, measurement, definition, capability, or finding), or does it only
-point to other work without asserting anything itself (e.g. "See [12]", a
-Related-Work sentence that is only a citation list, "several studies exist")?
-
-PASSAGE:
-{excerpt}
-
+#: The self-contained/world-claim/specific/plain-text rules a claim sentence
+#: must obey to be read ALONE, without its source passage — shared verbatim
+#: between :data:`_EXTRACT_PROMPT` (below) and
+#: :mod:`precis.taproot.directed`'s qualify prompt (docs/backlog/
+#: taproot-directed-claim-minting.md), so the two never drift into divergent
+#: copies of the same rule text. ``claim = null`` here maps to
+#: :mod:`.directed`'s ``"claim": null`` / ``supported: false`` convention —
+#: the same escape hatch, worded for whichever JSON contract is reading it.
+CLAIM_FORM_RULES = """\
 Rules — the claim will be read ALONE, without this passage:
 1. Self-contained: resolve every "this/these/it/such" from the passage and
    inline the referent. The same goes for temporal/discourse openers that
@@ -255,7 +255,21 @@ Rules — the claim will be read ALONE, without this passage:
    states; drop empty intensifiers ("extraordinary", "remarkable").
 4. Plain text, no TeX: the claim renders without a math engine — write
    formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
-   -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs").
+   -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs")."""
+
+_EXTRACT_PROMPT = (
+    """\
+Does this passage assert a specific, citable scientific claim (a concrete
+result, measurement, definition, capability, or finding), or does it only
+point to other work without asserting anything itself (e.g. "See [12]", a
+Related-Work sentence that is only a citation list, "several studies exist")?
+
+PASSAGE:
+{excerpt}
+
+"""
+    + CLAIM_FORM_RULES
+    + """
 
 Atomic: each claim you emit must assert exactly ONE subject-predicate fact.
 If the passage bundles several conjuncts ("X has A, B, and C" / "X, which
@@ -324,6 +338,7 @@ Respond with EXACTLY ONE JSON object, nothing else:
   ]
 }}
 """
+)
 
 _SCOPE_KEYS = ("material", "method", "quantity", "regime")
 
@@ -781,6 +796,7 @@ def place(
 
 
 __all__ = [
+    "CLAIM_FORM_RULES",
     "MERGE_CONFIDENCE_THRESHOLD",
     "TAPROOT_CLAIM",
     "TAPROOT_NAMESPACE",

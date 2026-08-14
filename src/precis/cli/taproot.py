@@ -24,7 +24,7 @@ from precis.cli._common import resolve_dsn
 
 def add_parser(subparsers: Any) -> None:
     """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
-    ``backfill``)."""
+    ``backfill`` / ``backfill-grounding`` / ``direct-mint``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -144,6 +144,50 @@ def add_parser(subparsers: Any) -> None:
         help="Output format (default: text).",
     )
     bg.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    dm = tsub.add_parser(
+        "direct-mint",
+        help="Argue a PROPOSED claim against one passage (chunk), then fit it "
+        "into the claim tree — the directed-mint front door (docs/backlog/"
+        "taproot-directed-claim-minting.md). Dry-run by default; zero "
+        "claim-data writes unless --apply is given.",
+    )
+    dm.add_argument(
+        "--claim", required=True, help="The proposed claim sentence to argue."
+    )
+    dm.add_argument(
+        "--chunk",
+        required=True,
+        type=int,
+        help="chunk_id of the passage to argue the claim against (a live "
+        "paper/patent/edgar body chunk).",
+    )
+    dm.add_argument(
+        "--demand",
+        default=None,
+        help="The demanding quest/draft/todo (provenance) — stamped onto the "
+        "minted/attached hub's meta.demanded_by so the mint is never unowned.",
+    )
+    dm.add_argument(
+        "--apply",
+        action="store_true",
+        help="Mint/attach through the write door. Default (omitted) is a "
+        "read-only dry-run that makes ZERO claim-data writes (the qualify "
+        "LLM call still runs, budget-metered).",
+    )
+    dm.add_argument(
+        "--out",
+        default=None,
+        help="Write the markdown report to this file instead of stdout.",
+    )
+    dm.add_argument(
+        "--set-by",
+        default="agent",
+        help="set_by actor slug for the writes (default: agent).",
+    )
+    dm.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -679,6 +723,63 @@ def _run_backfill_grounding(args: argparse.Namespace) -> None:
     _print_backfill_grounding(result, args.format)
 
 
+def _run_direct_mint(args: argparse.Namespace) -> None:
+    from precis.budget import meter
+    from precis.config import load_config
+    from precis.errors import BadInput
+    from precis.runtime import build_runtime
+    from precis.taproot.directed import directed_mint, render_report
+
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url)
+    if dsn:
+        cfg = cfg.model_copy(update={"database_url": dsn})
+    runtime = build_runtime(cfg)
+    store = runtime.store
+    embedder = getattr(runtime.hub, "embedder", None)
+    if store is None:
+        print("taproot direct-mint: no database configured", file=sys.stderr)
+        sys.exit(2)
+    if embedder is None:
+        print(
+            "taproot direct-mint: no embedder configured — the block() ANN "
+            "convergence step needs one (set config.embedder / "
+            "PRECIS_EMBEDDER_URL)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Bind the store to the budget meter so the qualify LLM dispatch (BIG
+    # tier) resolves the host's real served_by endpoint from the DB and is
+    # budget-metered — same rationale as taproot-migrate's dry-run: writes
+    # llm_call_log telemetry only, never claim data.
+    meter.bind_store(store)
+
+    try:
+        report = directed_mint(
+            store,
+            embedder,
+            proposed=args.claim,
+            chunk_id=args.chunk,
+            demand=args.demand,
+            apply=args.apply,
+            set_by=args.set_by,
+        )
+    except BadInput as exc:
+        print(f"taproot direct-mint: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    rendered = render_report(report)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(rendered)
+        print(f"wrote report to {args.out}")
+    else:
+        print(rendered)
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
@@ -689,6 +790,8 @@ def run(args: argparse.Namespace) -> None:
         _run_backfill(args)
     elif args.taproot_cmd == "backfill-grounding":
         _run_backfill_grounding(args)
+    elif args.taproot_cmd == "direct-mint":
+        _run_direct_mint(args)
     else:
         print(f"taproot: unknown subcommand {args.taproot_cmd!r}", file=sys.stderr)
         sys.exit(2)
