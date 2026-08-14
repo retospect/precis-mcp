@@ -75,10 +75,15 @@ signed off 2026-07-28** (`human_approved` field on those rows).
   actual mass).
 - 238 pairs is a v1 bar; expand as canonicalization is built against it.
 
-## `extraction_passages.jsonl` — the AIDA-Atomic gate
+## `extraction_passages.jsonl` — the AIDA-Atomic gate + pre-run canary
 
-A separate, smaller fixture for `canon.extract_claim`'s decomposition step
-(`eval_canon.eval_extraction`), not the dedup gate above. One object per
+Lives at `src/precis/data/taproot/extraction_passages.jsonl` (moved out of
+`tests/fixtures/` in round 2 so it ships in the wheel — the canary,
+`precis taproot-migrate canary`, runs it on a deployed host before any
+bulk dry-run; `eval_canon.EXTRACTION_PASSAGES_FIXTURE` is the canonical
+path). A separate, smaller fixture for `canon.extract_claim`'s
+decomposition step (`eval_canon.eval_extraction` +
+`eval_canon.canary_extraction`), not the dedup gate above. One object per
 row: `id`, `passage`, `expected_atom_count` (0 for NO-CLAIM),
 `expected_not_claims` (rejected-conjunct substrings, audit only — not
 graded as a hard gate in v1), `note` (provenance / rationale). Eleven rows,

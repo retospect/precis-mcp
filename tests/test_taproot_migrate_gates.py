@@ -8,20 +8,23 @@ model — this asserts the *gates*, not the extractor.
 **Known false positives (documented, not a bug to chase further).** The
 gates are lexical (token-set overlap); they can't distinguish "reworded
 but complete" from "a real clause is gone" any better than bag-of-words
-ever can. Three of the fixture's five correct ``pass-through`` rows
-(fi176365, fi176449, fi176468) drop an illustrative example or a
-summarizing/restating clause that a human judged non-essential — the same
-*lexical* pattern as the six pass-throughs that really are lossy, so no
-single recall threshold gets all of them right (the ``lossy``-vs-
-``pass-through`` recall values interleave; see :data:`precis.taproot.
-migrate._LOSSY_RECALL_THRESHOLD_PASS_THROUGH`'s docstring for the exact
-numbers). Per the backlog's own sequencing note, the gate is calibrated to
-catch every truly-lossy row (the dangerous class — a silent, permanent
-stamp on a still-compound hub) rather than to be precise about the safe
-ones (a false ``lossy`` only costs an extra P2-10 escalation call). These
-three rows are marked ``xfail`` below, not skipped — a future gate
-improvement that fixes one should surprise this suite (``xfail`` without
-``strict=False`` still reports XPASS loudly).
+ever can. Four of the fixture's five correct ``pass-through`` rows drop an
+illustrative example or a summarizing/restating clause that a human judged
+non-essential — the same *lexical* pattern as the six pass-throughs that
+really are lossy, so no single recall threshold gets all of them right
+(the ``lossy``-vs-``pass-through`` recall values interleave; see
+:data:`precis.taproot.migrate._LOSSY_RECALL_THRESHOLD_PASS_THROUGH`'s
+docstring for the exact numbers). fi176365/fi176449/fi176468 fall below
+the recall ratio; fi176361 (round 2) clears the ratio but drops exactly
+:data:`precis.taproot.migrate._LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH`
+content words — the absolute cap that catches the fi176441 truncation
+class flags it too. Per the backlog's own sequencing note, the gate is
+calibrated to catch every truly-lossy row (the dangerous class — a
+silent, permanent stamp on a still-compound hub) rather than to be
+precise about the safe ones (a false ``lossy`` only costs an extra P2-10
+escalation call). These four rows are marked ``xfail`` below, not
+skipped — a future gate improvement that fixes one should surprise this
+suite (``xfail`` without ``strict=False`` still reports XPASS loudly).
 """
 
 from __future__ import annotations
@@ -37,14 +40,16 @@ from precis.taproot.migrate import Verdict, classify_extraction
 
 FIXTURE = Path(__file__).parent / "fixtures" / "taproot" / "migration_pilot_25.jsonl"
 
-#: fi176365/fi176449/fi176468 — see the module docstring. All three are
-#: real ``pass-through`` rows the recall gate flags ``lossy`` because they
-#: drop an illustrative example or a summarizing clause; the fixture's
-#: other lossy pass-throughs (fi176545, fi176764, fi176812, fi176275,
-#: fi176360) drop real content at a lexically-similar or higher recall, so
-#: no single threshold separates both groups (see the gate constants'
-#: docstrings in ``precis/taproot/migrate.py`` for the exact numbers).
-_KNOWN_FALSE_POSITIVES = frozenset({"fi176365", "fi176449", "fi176468"})
+#: fi176365/fi176449/fi176468/fi176361 — see the module docstring. All
+#: four are real ``pass-through`` rows a coverage gate flags ``lossy``
+#: because they drop an illustrative example or a summarizing clause
+#: (the first three below the recall ratio, fi176361 at the round-2
+#: missing-content-word cap); the fixture's truly-lossy pass-throughs
+#: (fi176545, fi176764, fi176812, fi176275, fi176360) drop real content
+#: at a lexically-similar or higher recall, so no single threshold
+#: separates both groups (see the gate constants' docstrings in
+#: ``precis/taproot/migrate.py`` for the exact numbers).
+_KNOWN_FALSE_POSITIVES = frozenset({"fi176365", "fi176449", "fi176468", "fi176361"})
 
 
 def _load_rows() -> list[dict[str, Any]]:
@@ -104,7 +109,7 @@ def test_classify_extraction_matches_expected_gated_verdict(
     )
 
 
-def test_fixture_known_false_positives_are_exactly_three_pass_through_rows() -> None:
+def test_fixture_known_false_positives_are_exactly_four_pass_through_rows() -> None:
     """Guards the calibration note itself: if this ever drifts (a fixture
     edit, a gate change), the count/shape of the accepted false positives
     should be re-examined, not silently grow."""

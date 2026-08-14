@@ -83,7 +83,7 @@ from precis.taproot.canon import (
     TAPROOT_NAMESPACE,
     CanonicalClaim,
     ClaimExtraction,
-    extract_claim_strict,
+    extract_claim_strict_big,
 )
 
 if TYPE_CHECKING:
@@ -451,7 +451,8 @@ _EG_PAREN_RE = re.compile(r"\((?:e\.g\.|i\.e\.)[^)]*\)", re.IGNORECASE)
 _NUMBER_TOKEN_RE = re.compile(r"^[~±]?\d")
 _NUMBER_TOKEN_STRIP = ".,;:()[]{}\"'"
 
-#: Below this recall (see :func:`_content_word_recall`), a **pass-through**
+#: Below this recall (fraction of the original's :func:`_content_words`
+#: found in the extraction union), a **pass-through**
 #: (single atom, no compound — extraction claims the sentence was already
 #: atomic) is `lossy`. Set just above fi176360's 13/18≈0.722 recall (a real
 #: dropped scope-qualifier clause) and just below fi176361's 11/15≈0.733
@@ -476,6 +477,28 @@ _LOSSY_RECALL_THRESHOLD_SPLIT = 0.65
 #: any *sound* split in the fixture is ~0.5, so this has a wide margin.
 _NESTED_CONTAINMENT_THRESHOLD = 0.9
 
+#: A **pass-through** that drops at least this many content words is
+#: `lossy` regardless of its recall ratio (round 2, from the labelled-25
+#: A/B re-run): on a short sentence the ratio has too little resolution —
+#: fi176441's truncated re-extraction dropped an entire predicate
+#: ("supporting charge transport") plus a relation ("between metals and
+#: ligands") yet cleared the 0.73 ratio at 0.765 (4 of 17 content words
+#: gone). The absolute count is the complementary signal: the fixture's
+#: correct pass-throughs drop at most 3 (fi176448) — except fi176361 at
+#: exactly 4, accepted as a fourth known false positive (see the gates
+#: test's xfails). **Splits are exempt**: redistributing a compound across
+#: atoms legitimately drops 4–5 connective/summarizing words (fi176427,
+#: fi176435 — both sound splits).
+_LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH = 4
+
+#: Below this content-word precision (fraction of the extraction union's
+#: content words that come from the original), the extraction *added*
+#: material — the hallucination direction recall is blind to (round 2):
+#: recall checks what was kept, never what was invented. Every sound
+#: fixture extraction sits at ≥0.833; the one real offender (fi176275, a
+#: rewrite that invents its own framing) is at 0.600.
+_HALLUCINATION_PRECISION_THRESHOLD = 0.8
+
 
 def _token_set(text: str) -> frozenset[str]:
     """Casefold + strip punctuation -> the token set used by the
@@ -495,16 +518,6 @@ def _content_words(text: str) -> frozenset[str]:
         for t in (m.casefold() for m in _WORD_RE.findall(text))
         if t not in _STOPWORDS and len(t) > 1
     )
-
-
-def _content_word_recall(original: str, union_text: str) -> float:
-    """Fraction of ``original``'s content words found anywhere in
-    ``union_text``. ``1.0`` when ``original`` has no content words at all
-    (nothing to lose)."""
-    original_words = _content_words(original)
-    if not original_words:
-        return 1.0
-    return len(original_words & _content_words(union_text)) / len(original_words)
 
 
 def _number_bearing_tokens(text: str) -> list[str]:
@@ -536,6 +549,23 @@ def _missing_number_tokens(original: str, union_text: str) -> tuple[str, ...]:
         if token not in union_tokens and token not in missing:
             missing.append(token)
     return tuple(missing)
+
+
+def _invented_number_tokens(original: str, union_text: str) -> tuple[str, ...]:
+    """Number-bearing tokens in ``union_text`` absent from ``original`` —
+    the mirror of :func:`_missing_number_tokens`, catching the opposite
+    failure: a measurement the extractor *invented* rather than lost (the
+    A/B re-run's fi201713 hallucinated "10^208" into an atom; the pilot's
+    fi177406 invented "113"/"13"). Any invented number is a hard `lossy`
+    flag — a fabricated measurement in a mint-bound atom is worse than a
+    dropped one, and the same verbatim-copy contract that makes a missing
+    number decisive makes an invented one decisive too."""
+    original_tokens = frozenset(_number_bearing_tokens(original))
+    invented: list[str] = []
+    for token in _number_bearing_tokens(union_text):
+        if token not in original_tokens and token not in invented:
+            invented.append(token)
+    return tuple(invented)
 
 
 def _extraction_union_text(extraction: ClaimExtraction) -> str:
@@ -592,9 +622,20 @@ def classify_extraction(
 ) -> tuple[Verdict, dict[str, Any]]:
     """``extract_claim``'s outcome, gated (P0-2/P0-3) into migration-report
     terms. Returns ``(verdict, gate_meta)`` — ``gate_meta`` carries whatever
-    the fired (or checked) gate computed (``recall``, ``missing_numbers``,
-    ``containment``), for the report/JSONL to show its work. NO-CLAIM skips
-    both gates (nothing was kept to check coverage of, and nothing to nest).
+    the fired (or checked) gates computed (``recall``, ``missing_numbers``,
+    ``precision``, ``invented_numbers``, ``containment``,
+    ``missing_content``), for the report/JSONL to show its work. NO-CLAIM
+    skips every gate (nothing was kept to check coverage of, and nothing to
+    nest).
+
+    The coverage gate (P0-2) checks **both directions** (round 2): loss —
+    a dropped number or content-word recall below the shape's threshold —
+    and hallucination — an invented number, or content-word precision
+    below :data:`_HALLUCINATION_PRECISION_THRESHOLD` (the extraction added
+    material the sentence never said). A pass-through additionally fails on
+    an absolute missing-content-word count
+    (:data:`_LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH`) — the recall ratio
+    alone has too little resolution on short sentences (fi176441).
 
     Order: containment (`nested`) before coverage (`lossy`) — a nested
     "split" is never a valid unit to run a coverage check against (its
@@ -615,10 +656,17 @@ def classify_extraction(
 
     union_text = _extraction_union_text(extraction)
     missing_numbers = _missing_number_tokens(sentence, union_text)
-    recall = _content_word_recall(sentence, union_text)
+    invented_numbers = _invented_number_tokens(sentence, union_text)
+    original_words = _content_words(sentence)
+    union_words = _content_words(union_text)
+    kept = original_words & union_words
+    recall = len(kept) / len(original_words) if original_words else 1.0
+    precision = len(kept) / len(union_words) if union_words else 1.0
     gate_meta: dict[str, Any] = {
         "recall": round(recall, 3),
         "missing_numbers": missing_numbers,
+        "precision": round(precision, 3),
+        "invented_numbers": invented_numbers,
     }
     is_split = extraction.compound is not None
     threshold = (
@@ -628,6 +676,13 @@ def classify_extraction(
     )
     if missing_numbers or recall < threshold:
         return "lossy", gate_meta
+    if invented_numbers or precision < _HALLUCINATION_PRECISION_THRESHOLD:
+        return "lossy", gate_meta
+    if not is_split:
+        missing_content = sorted(original_words - union_words)
+        if len(missing_content) >= _LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH:
+            gate_meta["missing_content"] = tuple(missing_content)
+            return "lossy", gate_meta
 
     return ("split" if is_split else "pass-through"), gate_meta
 
@@ -702,7 +757,7 @@ def dry_run(
     cohort: Cohort | None = None,
     controls: int = 0,
     control_seed: int = 0,
-    extract_fn: ExtractFn = extract_claim_strict,
+    extract_fn: ExtractFn = extract_claim_strict_big,
     escalate_fn: ExtractFn | None = None,
 ) -> DryRunReport:
     """Phase 1: run ``extract_fn`` over the top ``limit`` scored hubs
@@ -717,8 +772,11 @@ def dry_run(
     controls toward non-claims — a uniform draw doesn't share that bias.
     **Zero writes through ``store`` itself** — no ref/link/meta/chunk
     mutation. The default ``extract_fn`` is the real
-    :func:`~precis.taproot.canon.extract_claim_strict` (injectable for
-    tests); when the calling process has bound a store to
+    :func:`~precis.taproot.canon.extract_claim_strict_big` — BIG tier
+    (round 2): the labelled-25 A/B re-run showed SMALL collapsing
+    multi-clause sentences to single truncated atoms, so SMALL is now
+    opt-in (CLI ``--tier small``), injectable for tests; when the calling
+    process has bound a store to
     :mod:`precis.budget.meter` (the CLI does this), its LLM dispatch is
     budget-metered — it writes ``llm_call_log`` telemetry and transient
     serving-slot rows, but never touches the claim tables (refs/chunks/

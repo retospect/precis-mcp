@@ -202,14 +202,17 @@ def _extraction_for(title: str) -> ClaimExtraction:
     two atoms that each restate the whole compound plus a suffix, which
     would itself look nested/lossy) + a compound; "NOCLAIM" yields the
     empty extraction; anything else is treated as already-atomic
-    (pass-through)."""
+    (pass-through). The rejected conjunct's text is drawn from the title
+    itself — a real not-claim quotes the sentence it rejects, and the
+    round-2 precision gate correctly flags invented not-claim wording as
+    added material (`lossy`)."""
     if "NOCLAIM" in title:
         return ClaimExtraction(atoms=(), compound=None, not_claims=())
     if "SPLIT" in title:
-        not_claims: tuple[NotClaim, ...] = (
-            NotClaim(text="a vague forward-looking bit", reason="forward-looking"),
-        )
         words = title.split()
+        not_claims: tuple[NotClaim, ...] = (
+            NotClaim(text=" ".join(words[-2:]), reason="forward-looking"),
+        )
         mid = max(1, len(words) // 2)
         return ClaimExtraction(
             atoms=(_claim(" ".join(words[:mid])), _claim(" ".join(words[mid:]))),
@@ -348,6 +351,92 @@ def test_classify_extraction_nested_checked_before_lossy() -> None:
     )
     verdict, _ = classify_extraction(original, extraction)
     assert verdict == "nested"
+
+
+def test_classify_extraction_pass_through_missing_word_cap() -> None:
+    """Round 2 (fi176441, verbatim from the labelled-25 A/B re-run): a
+    truncated single atom that drops an entire predicate yet clears the
+    recall *ratio* (0.765 > 0.73 — short sentences give the ratio too
+    little resolution) must still gate `lossy` via the absolute
+    missing-content-word cap."""
+    sentence = (
+        "Conductive 2D metal-organic frameworks exhibit strong electronic "
+        "coupling between metals and ligands, enabled by mixed valency of "
+        "both, supporting charge transport."
+    )
+    kept = (
+        "Conductive 2D metal-organic frameworks exhibit strong electronic "
+        "coupling enabled by mixed valency of metals."
+    )
+    extraction = ClaimExtraction(
+        atoms=(
+            _claim(kept, scope={"material": "Conductive 2D metal-organic frameworks"}),
+        ),
+        compound=None,
+        not_claims=(),
+    )
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "lossy"
+    assert gate_meta["recall"] > 0.73, "cap must be the firing gate, not the ratio"
+    assert len(gate_meta["missing_content"]) >= 4
+    assert "transport" in gate_meta["missing_content"]
+
+
+def test_classify_extraction_split_is_exempt_from_missing_word_cap() -> None:
+    """The missing-content-word cap applies to pass-throughs only: a sound
+    split legitimately drops 4+ connective/summarizing words when the
+    compound's framing is redistributed across atoms (fi176427/fi176435)."""
+    sentence = (
+        "Perovskite films crystallize rapidly under thermal annealing, and "
+        "remarkably, the resulting devices thereby achieve collectively "
+        "efficiencies above twenty percent overall."
+    )
+    atom1 = _claim("Perovskite films crystallize rapidly under thermal annealing.")
+    atom2 = _claim("The resulting devices achieve efficiencies above twenty percent.")
+    extraction = ClaimExtraction(
+        atoms=(atom1, atom2), compound=_claim(sentence), not_claims=()
+    )
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "split"
+    assert "missing_content" not in gate_meta
+
+
+def test_classify_extraction_invented_number_is_hard_lossy() -> None:
+    """Round 2's mirror of the dropped-number gate: a number-bearing token
+    the extraction *invented* (fi201713 hallucinated "10^208") is hard
+    `lossy` even at full recall — a fabricated measurement in a mint-bound
+    atom is worse than a lost one."""
+    sentence = (
+        "The layered cathode material retains structural stability across "
+        "repeated charge cycles under ambient operating conditions."
+    )
+    kept = (
+        "The layered cathode material retains structural stability across "
+        "92% of repeated charge cycles under ambient operating conditions."
+    )
+    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "lossy"
+    assert gate_meta["recall"] == 1.0
+    assert "92%" in gate_meta["invented_numbers"]
+
+
+def test_classify_extraction_low_precision_added_content_is_lossy() -> None:
+    """Round 2's hallucination backstop: an extraction whose union is
+    heavily padded with content words the sentence never said (precision
+    < 0.8) is `lossy` even with perfect recall — recall only checks what
+    was kept, never what was added (fi176275's invented framing)."""
+    sentence = "Zeolite catalysts convert methanol into gasoline-range hydrocarbons."
+    kept = (
+        "Zeolite catalysts convert methanol into gasoline-range hydrocarbons, "
+        "revolutionizing sustainable industrial commodity chemistry worldwide."
+    )
+    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "lossy"
+    assert gate_meta["recall"] == 1.0
+    assert gate_meta["precision"] < 0.8
+    assert gate_meta["invented_numbers"] == ()
 
 
 def _table_counts(store: Store) -> dict[str, int]:

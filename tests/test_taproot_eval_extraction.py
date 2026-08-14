@@ -1,9 +1,9 @@
 """Taproot Phase-1 live eval — the ``extract_claim`` AIDA-Atomic gate.
 
 Runs :func:`~precis.taproot.canon.extract_claim` (a real SMALL-tier LLM
-dispatch) over every row in
-``tests/fixtures/taproot/extraction_passages.jsonl`` and asserts the two
-hard gates: **zero compound-without-atoms** and **zero residual-
+dispatch) over every row in the packaged
+``precis/data/taproot/extraction_passages.jsonl`` fixture and asserts the
+two hard gates: **zero compound-without-atoms** and **zero residual-
 conjunction atoms** (see ``eval_canon.ExtractionReport`` for the rationale
 — atom-count agreement is a soft metric, not gated here).
 
@@ -21,11 +21,10 @@ the env var set).
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
-from precis.taproot.eval_canon import eval_extraction
+from precis.taproot.eval_canon import EXTRACTION_PASSAGES_FIXTURE, eval_extraction
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("PRECIS_TAPROOT_LIVE_EVAL") != "1",
@@ -35,7 +34,7 @@ pytestmark = pytest.mark.skipif(
     ),
 )
 
-FIXTURE = Path(__file__).parent / "fixtures" / "taproot" / "extraction_passages.jsonl"
+FIXTURE = EXTRACTION_PASSAGES_FIXTURE
 
 
 def test_extract_claim_hard_gates_are_zero_on_the_fixture() -> None:

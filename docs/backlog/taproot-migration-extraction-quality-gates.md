@@ -12,8 +12,52 @@ model: opus
 > `extract_claim_strict_big`). Calibration fixture:
 > `tests/fixtures/taproot/migration_pilot_25.jsonl` — 22/25 exact,
 > 3 xfail (correct pass-throughs lexically indistinguishable from lossy;
-> gate errs toward flagging). Remaining before the 1.3k: ship, A/B re-run
-> the same 25 on melchior, ~100 unseen hubs.
+> gate errs toward flagging).
+
+## Round 2 — labelled-25 A/B re-run on melchior (2026-08-14) + fixes
+
+**A/B result (SMALL leg, deployed gates, pure per-sentence driver over the
+fixture's stored sentences).** The gates work: the pilot's dangerous class
+— 6/25 silently stamped while still compound — is now **0/25**; every
+defective extraction was flagged `lossy` (P2-12 blocks stamping those).
+But the extractor regressed: **SMALL (glm-4.7-flash) + the
+enumerate-then-emit prompt collapses nearly every multi-clause sentence to
+a single truncated atom** (22/25 landed in the escalate set; the pilot's
+old prompt split 9/25 correctly). SMALL also now hallucinates atoms out of
+task-prose/junk hubs (3 expected-no-claim rows came back as 1-atom lossy)
+and, once, an invented measurement ("10^208", fi201713). One gate false
+negative surfaced: fi176441's truncated re-extraction dropped a predicate
+yet cleared the pass-through recall ratio at 0.765. One genuine
+improvement: fi176365's new 2-atom split cleanly partitions its sentence
+(the old pass-through label was the pilot's, not ground truth).
+
+**Decisions (Reto):** BIG tier becomes the primary extractor; the SMALL
+prompt is not worth tuning; fix the gates; skip the structural-truncation
+flag (the coverage gates already catch that shape).
+
+**Implemented (this round):**
+- **BIG primary** — `dry_run()` and the CLI default to
+  `extract_claim_strict_big`; SMALL is opt-in (`--tier small`), and
+  `--escalate` (the SMALL→BIG retry) is rejected with the BIG primary.
+- **Canary** (`precis taproot-migrate canary`) — the 11 hand-authored
+  passages (now packaged: `src/precis/data/taproot/
+  extraction_passages.jsonl`) through the chosen tier + the migration
+  gates; exit 1 on any `lossy`/`nested` or no-claim mismatch. Run before
+  every bulk dry-run: catches a collapsed extractor for 11 calls instead
+  of a burned run.
+- **Missing-content-word cap** (pass-through only, ≥4) — catches the
+  fi176441 class the recall ratio is too coarse for; costs one new
+  documented fixture false positive (fi176361, now the 4th xfail).
+- **Hallucination gates** — invented number tokens (mirror of the
+  missing-number gate) and content-word precision < 0.8 are hard `lossy`;
+  recall alone is blind to added material (fi201713, fi177406, fi176275).
+
+**Remaining before the 1.3k:** ship+deploy round 2 → BIG-leg A/B numbers
+(escalation pass over the 22 SMALL-failed hubs — in flight; early: 3/5
+lossy→split flips, 1 timeout, fi176603 went no-claim) → canary on melchior
+→ ~100 unseen hubs with BIG primary → full 1,346 dry-run. Consider
+re-labelling fi176365 (`pass-through` → `split`) once the BIG leg
+confirms; phase-2 apply is still NOT BUILT.
 
 # Taproot migration: score the claim sentence, gate lossy/nested extractions
 
@@ -117,6 +161,7 @@ it stamps ~19% of the population as atomic without reading the sentence that
 matters.
 
 The labelled 25 (verdict class per hub, above) should become a regression
-fixture alongside `tests/fixtures/taproot/extraction_passages.jsonl`, which
-also gives the un-evaluated `qualify_claim` step
-(`taproot-directed-claim-minting.md`) its eval harness.
+fixture alongside the packaged
+`src/precis/data/taproot/extraction_passages.jsonl`, which also gives the
+un-evaluated `qualify_claim` step (`taproot-directed-claim-minting.md`)
+its eval harness.

@@ -15,8 +15,21 @@ says ``same``) is tallied but tolerated (taproot.md's "safe direction").
 :func:`eval_extraction` is the sibling gate for the AIDA-Atomic constraint
 added to :func:`~precis.taproot.canon.extract_claim`
 (``docs/backlog/taproot-atomic-claims.md`` §AIDA): it runs the extractor
-over ``tests/fixtures/taproot/extraction_passages.jsonl`` and checks two
+over :data:`EXTRACTION_PASSAGES_FIXTURE` (11 hand-authored passages,
+shipped as package data so a deployed host can run it) and checks two
 hard gates (bar = 0) plus one soft metric — see its docstring.
+
+:func:`canary_extraction` is the **pre-bulk-run smoke test** (round 2 of
+``docs/backlog/taproot-migration-extraction-quality-gates.md``): the same
+fixture, but graded through the migration gates
+(:func:`~precis.taproot.migrate.classify_extraction`) instead of the
+AIDA heuristics. The labelled-25 A/B re-run showed the SMALL tier
+collapsing every multi-clause sentence to a single truncated atom — a
+failure ``eval_extraction``'s conjunction/compound gates are blind to but
+the coverage gate flags as ``lossy`` on sight. Run the canary (CLI:
+``precis taproot-migrate canary``) before any bulk dry-run: if the
+extractor can't cleanly handle 11 hand-authored passages, it has no
+business running 1,346 hubs.
 
 Both harnesses make live model calls when run with the real canon
 functions — they are **validation harnesses the builder runs
@@ -44,6 +57,18 @@ from precis.taproot.canon import (
     Verdict3,
     dedup_judge,
     extract_claim,
+)
+from precis.taproot.migrate import Verdict as GateVerdict
+from precis.taproot.migrate import classify_extraction
+
+#: The hand-authored extraction fixture, shipped as package data (not
+#: under ``tests/``) so :func:`canary_extraction` can run on a deployed
+#: host before a bulk migration pass.
+EXTRACTION_PASSAGES_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "taproot"
+    / "extraction_passages.jsonl"
 )
 
 #: The fixture's 5-relation labels collapsed onto the 3 verdicts v1 grades
@@ -392,6 +417,136 @@ def eval_extraction(
     return report
 
 
+# ── canary_extraction — the pre-bulk-run smoke test ─────────────────────
+
+
+@dataclass
+class CanaryResult:
+    """One canary passage: the extractor's output graded through the
+    migration gates."""
+
+    passage_id: int
+    expected_atom_count: int
+    actual_atom_count: int
+    verdict: GateVerdict
+    gate_meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CanaryReport:
+    """:func:`canary_extraction`'s output. The bar is deliberately tight —
+    these are 11 clean hand-authored passages — but granularity-tolerant:
+    a sound ``split`` where the fixture's author kept one atom (or vice
+    versa) is not a failure, because the gates already established that
+    nothing was lost. Only two things fail the canary, both bar-0:
+
+    * a **gate rejection** (``lossy``/``nested``) — the extractor
+      truncated, padded, or fake-split a clean passage (the SMALL-tier
+      collapse the A/B re-run exposed shows up here);
+    * a **no-claim mismatch** in either direction — claims extracted from
+      a NO-CLAIM passage, or a claim-bearing passage returned empty.
+    """
+
+    results: list[CanaryResult] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.results)
+
+    @property
+    def gate_rejections(self) -> list[CanaryResult]:
+        """Passages the migration gates rejected — bar is 0."""
+        return [r for r in self.results if r.verdict in ("lossy", "nested")]
+
+    @property
+    def no_claim_mismatches(self) -> list[CanaryResult]:
+        """Expected-no-claim vs got-no-claim disagreements, either
+        direction — bar is 0."""
+        return [
+            r
+            for r in self.results
+            if (r.expected_atom_count == 0) != (r.verdict == "no-claim")
+        ]
+
+    @property
+    def ok(self) -> bool:
+        return not self.gate_rejections and not self.no_claim_mismatches
+
+    def format(self) -> str:
+        counts = Counter(r.verdict for r in self.results)
+        lines = [
+            f"Taproot extraction canary — {self.total} passages",
+            "",
+            "verdicts: " + "  ".join(f"{v}={counts[v]}" for v in sorted(counts)),
+            f"gate rejections (lossy/nested): {len(self.gate_rejections)} — bar is 0",
+            f"no-claim mismatches: {len(self.no_claim_mismatches)} — bar is 0",
+            "",
+            "CANARY OK" if self.ok else "CANARY FAILED",
+        ]
+        for label, failures in (
+            ("Gate rejections", self.gate_rejections),
+            ("No-claim mismatches", self.no_claim_mismatches),
+        ):
+            if failures:
+                lines.append("")
+                lines.append(f"{label}:")
+                for r in failures:
+                    lines.append(
+                        f"  passage {r.passage_id}: verdict={r.verdict} "
+                        f"expected_atoms={r.expected_atom_count} "
+                        f"got_atoms={r.actual_atom_count} "
+                        f"gate_meta={r.gate_meta}"
+                    )
+        return "\n".join(lines)
+
+
+def canary_extraction(
+    fixture_path: str | Path = EXTRACTION_PASSAGES_FIXTURE,
+    *,
+    extract_fn: ExtractFn,
+    progress: bool = True,
+) -> CanaryReport:
+    """Run ``extract_fn`` over every fixture passage, grade each result
+    through :func:`~precis.taproot.migrate.classify_extraction`, and print
+    the report to stdout. See :class:`CanaryReport` for the pass bar.
+
+    ``extract_fn`` has **no default** — the caller must decide the tier
+    it is about to smoke-test (the CLI defaults to BIG, matching the
+    dry-run default). Use a *strict* extractor variant: a dispatch error
+    propagates and aborts the canary loudly, which is exactly what a
+    pre-run smoke test should do on dead infra.
+    """
+    rows = _load_jsonl(fixture_path)
+    total = len(rows)
+    results: list[CanaryResult] = []
+    for i, row in enumerate(rows, start=1):
+        extraction = extract_fn(row["passage"])
+        verdict, gate_meta = classify_extraction(row["passage"], extraction)
+        result = CanaryResult(
+            passage_id=int(row["id"]),
+            expected_atom_count=int(row["expected_atom_count"]),
+            actual_atom_count=len(extraction.atoms),
+            verdict=verdict,
+            gate_meta=gate_meta,
+        )
+        results.append(result)
+        if progress:
+            bad = verdict in ("lossy", "nested") or (
+                (result.expected_atom_count == 0) != (verdict == "no-claim")
+            )
+            print(
+                f"[{i}/{total}] passage {result.passage_id} "
+                f"expected_atoms={result.expected_atom_count} "
+                f"got_atoms={result.actual_atom_count} "
+                f"verdict={verdict}{'  ⚠ FAIL' if bad else ''}",
+                file=sys.stderr,
+                flush=True,
+            )
+    report = CanaryReport(results=results)
+    print(report.format())
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     fixture = (
@@ -414,11 +569,15 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "EXTRACTION_PASSAGES_FIXTURE",
+    "CanaryReport",
+    "CanaryResult",
     "ExtractFn",
     "ExtractionReport",
     "ExtractionResult",
     "PairResult",
     "Report",
+    "canary_extraction",
     "collapse_label",
     "eval_canonicalization",
     "eval_extraction",

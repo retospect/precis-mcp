@@ -24,6 +24,7 @@ original design are still open:
   NOT license, finding the strongest honest weakening) is exactly where
   small models over-agree — but that tier choice is un-evaluated. No
   fixture set for the qualify step exists yet alongside
-  `tests/fixtures/taproot/` (`claim_pairs.jsonl`, `extraction_passages.jsonl`,
-  `labels_fable.json`, `labels_opus.json`, which cover `extract_claim`, not
-  `qualify_claim`).
+  `tests/fixtures/taproot/` (`claim_pairs.jsonl`, `labels_fable.json`,
+  `labels_opus.json`) and the packaged
+  `src/precis/data/taproot/extraction_passages.jsonl`, which cover
+  `extract_claim`, not `qualify_claim`.
