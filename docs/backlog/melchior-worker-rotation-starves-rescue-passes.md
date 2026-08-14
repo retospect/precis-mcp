@@ -1,8 +1,13 @@
-# Melchior's worker rotation starves the rescue passes; restart-worker does not heal it
+# Melchior's worker rotation starves the rescue passes for hours at a time
 
 > Found 2026-08-14 while trying to observe a quest tick. The quest loop was the
-> victim, not the cause. Filed because the condition system detected this
-> correctly and its prescribed heal did not work.
+> victim, not the cause. Filed because a single starved pass silently stops the
+> whole quest subsystem, and the recovery takes hours with no bound on it.
+>
+> **Correction (same day):** an earlier draft of this file claimed
+> `restart-worker` does not heal the state. It does — it just takes ~95 min.
+> See "How it actually recovered" below. The defect is latency and silence,
+> not a dead heal.
 
 ## Symptom
 
@@ -39,13 +44,37 @@ So a single starved pass silently stops the entire quest subsystem. The
 `_RESCUE_HANDLERS = ("sweeper", "nursery", "quest_loop_reconcile")` tier exists
 precisely to prevent this and did not.
 
-## The part that needs a decision
+## How it actually recovered
 
 `conditions.py` prescribes `HealRequest("restart-worker", host, process)` for
-the pass-dead class. **That heal ran and did not fix it.** The 15:47 deploy
-restarted the worker (pid 74830, `Fri Aug 14 15:47:20`); 57 minutes later
-`quest_loop_reconcile` still had not run and no `quest_tick` had been minted.
-A restart therefore does not clear this state — the rotation re-collapses.
+the pass-dead class. The 15:47 deploy restarted the worker (pid 74830,
+`Fri Aug 14 15:47:20`). Timeline after that:
+
+| time | state |
+|---|---|
+| 15:47 | worker restarted |
+| 16:44 | rotation advanced, but still no `quest_loop_reconcile`; nothing minted |
+| 17:22 | loops minted for all 4 active quests — **recovered** |
+| 18:08 | normal re-mint cycle resumed |
+
+So the heal works, at **~95 minutes**. During that window the subsystem is
+indistinguishable from permanently broken by any available signal, which is
+what made it look dead at the 57-minute mark. A manual
+`reconcile_quest_loops(enabled=True)` run at 18:57 returned
+`ensured=4, minted=0` — by then there was nothing left to fix.
+
+## The part that needs a decision
+
+Not "make the heal work" — it works. The questions are:
+
+1. **Is ~95 min acceptable for the rescue tier?** Every active quest is frozen
+   for that whole window, silently. If not, the SLO passes need a cadence
+   independent of rotation position.
+2. **Why does the gap open at all?** A restart should not take an hour and a
+   half to reach a pass that had been running every ~2h.
+3. **Nothing says "recovering".** The alerts fire on entry and the operator has
+   no signal short of watching the rotation log. A "last ran / next due" per
+   rescue handler would have answered this in one query.
 
 ## Probable mechanism (unconfirmed)
 
