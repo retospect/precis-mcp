@@ -12,11 +12,19 @@ either way.
 
 ## Why it didn't get verified
 
-Quest 202469's narrative chunk `2856653` was last written **2026-08-14 00:32
-UTC**, 51 minutes before the fix commit existed. Every tick since has been
-queued behind cluster load; as of 19:31 all four quest loops sat `queued` with
-none running, spark being saturated with `autocatpath_seed`/`_aggregate` work.
-Nothing is broken — it is contention.
+Quest 202469's narrative chunk `2856653` (ord 6) was last written **2026-08-14
+00:32 UTC**, 51 minutes before the fix commit existed.
+
+An earlier version of this file blamed cluster contention. That was wrong, and
+worth recording because the correction points at a second defect. Quest 202469
+*does* tick — it wrote 30 chunks to this dossier at 07:40 on 2026-08-14, under
+the deployed fix. What it has not done since 00:32 is re-run the **narrative
+rewrite** specifically, nor written a `quest_log` entry (its three sibling
+quests — 202467, 202468, 164903 — log every couple of hours, so this is
+quest-specific, not a dead lane).
+
+So the tick reaches the dossier and stops short of the prose step. Why is
+unknown; it is the thing to chase if the check below stays unrunnable.
 
 ## The check
 
@@ -38,9 +46,12 @@ Three things decide it:
 2. **Structure refs linkify** — `[st201901]` in square brackets, not `(st…)` in
    parentheses. Parentheses do not linkify, so a parenthesised ref renders as
    dead text.
-3. **The ledger survived** — the pinned `ledger-node` chunks (2904088–2904117 on
-   this dossier) are still present and were not flattened back into the
-   narrative by the rewrite.
+3. **The ledger survived** — chunks 2904088–2904117 are still present and were
+   not flattened back into the narrative by the rewrite. Note these are *not*
+   pinned, contrary to what this file claimed before: they are plain
+   `chunk_kind='paragraph'` rows with empty `meta`, which is its own defect —
+   see `docs/backlog/dossier-ledger-nodes-land-as-unpinned-body-chunks.md`. If
+   that one is fixed first, re-derive the id range before running this check.
 
 The rendered page is
 `https://melchior.tailded4cf.ts.net/smartdraft/quest-202469-dossier`; reading
