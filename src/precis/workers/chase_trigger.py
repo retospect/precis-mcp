@@ -69,7 +69,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
@@ -77,6 +77,9 @@ from precis.store.types import Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.utils.embed_query import embed_query
 from precis.workers.hub_refine import _STATUS_CANONICAL, _STATUS_NAMESPACE
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -332,7 +335,7 @@ def _near_claims(
 
 
 def run_chase_trigger_pass(
-    store: Any,
+    store: Store,
     *,
     embedder: Any | None,
     batch_size: int | None = None,

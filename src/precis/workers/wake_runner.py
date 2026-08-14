@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING
 
 from psycopg import Connection
 
@@ -83,6 +83,9 @@ from precis.workers.executors._common import (
     set_status as _set_status,
 )
 from precis.workers.runner import BatchResult
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -400,7 +403,7 @@ def _tag_present(conn: Connection, ref_id: int, tag_pattern: str) -> bool:
     return row is not None
 
 
-def _requeue(store: Any, ref_id: int, reason: str) -> None:
+def _requeue(store: Store, ref_id: int, reason: str) -> None:
     """Transition ``ref_id`` back to ``STATUS:queued`` + audit chunk.
 
     Holds the connection only for the status + chunk writes so
@@ -421,7 +424,7 @@ def _requeue(store: Any, ref_id: int, reason: str) -> None:
 
 
 def _requeue_degraded(
-    store: Any, ref_id: int, still_running_child_ids: list[int]
+    store: Store, ref_id: int, still_running_child_ids: list[int]
 ) -> None:
     """Re-queue a past-deadline ``waiting_children`` parent "woken-
     degraded" (§H piece 5) — the master's "a parent never blocks forever
@@ -493,7 +496,7 @@ def _requeue_degraded(
 # ── Pass entry point ──────────────────────────────────────────────
 
 
-def run_wake_pass(store: Any, *, limit: int = 16) -> dict[str, int]:
+def run_wake_pass(store: Store, *, limit: int = 16) -> dict[str, int]:
     """Re-queue paused jobs whose wake conditions have fired.
 
     Runs five SELECTs (one per wake kind plus the cancel override),
@@ -588,7 +591,7 @@ def run_wake_pass(store: Any, *, limit: int = 16) -> dict[str, int]:
     return {"claimed": len(ready) + len(degraded), "ok": ok, "failed": failed}
 
 
-def wake_pass_for_runner(store: Any, batch_size: int) -> BatchResult:
+def wake_pass_for_runner(store: Store, batch_size: int) -> BatchResult:
     """Adapter matching :data:`precis.workers.runner.RefPass` shape.
 
     The CLI wiring in ``cli/worker.py`` registers this closure

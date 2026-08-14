@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shlex
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -40,6 +40,9 @@ from precis.tools.cli_adapter import _convert_value
 from precis.utils.handle_registry import format_handle
 from precis.utils.search_header import format_search_headline
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/console", tags=["console"])
 
@@ -453,7 +456,9 @@ _PAPER_SEARCH_UNSUPPORTED_PARAMS = frozenset(
 )
 
 
-def _paper_console_rows(store: Any, hits: Any, page_size: int) -> list[dict[str, str]]:
+def _paper_console_rows(
+    store: Store, hits: Any, page_size: int
+) -> list[dict[str, str]]:
     """Collapse ranked block hits to one row per paper (best rank first).
 
     ``hits`` is the ``search_hits()`` output — several hits often land

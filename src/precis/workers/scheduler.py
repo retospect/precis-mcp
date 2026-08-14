@@ -61,9 +61,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.runner import BatchResult
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +99,7 @@ class Cadence:
     spends: bool = False
 
 
-def _run_cron_tick(store: Any, batch_size: int) -> None:
+def _run_cron_tick(store: Store, batch_size: int) -> None:
     """Fire due schedule ticks — the §15i cadence, run in-process.
 
     Historically fired the retired ``kind='cron'`` engine
@@ -114,7 +117,7 @@ def _run_cron_tick(store: Any, batch_size: int) -> None:
     run_schedule_pass(store, limit=batch_size or 50)
 
 
-def _run_watch_poll(store: Any, batch_size: int) -> None:
+def _run_watch_poll(store: Store, batch_size: int) -> None:
     """Poll S2 for citing papers — the cadenced external acquisition pass that
     today runs via a dedicated ``precis worker --only watch_poll`` launchd
     timer."""
@@ -123,7 +126,7 @@ def _run_watch_poll(store: Any, batch_size: int) -> None:
     run_watch_pass(store, limit=batch_size)
 
 
-def _run_dream_agent(store: Any, batch_size: int) -> None:
+def _run_dream_agent(store: Store, batch_size: int) -> None:
     """One dream tick, fired from the melchior-pinned ``dream_agent`` cadence
     (§A) instead of the retired standalone 15-min hermes LaunchDaemon.
     ``batch_size`` is unused — ``run_dream_pass`` dispatches exactly one
@@ -143,7 +146,7 @@ def _run_dream_agent(store: Any, batch_size: int) -> None:
     )
 
 
-def _run_draft_refresh_scan(store: Any, batch_size: int) -> None:
+def _run_draft_refresh_scan(store: Store, batch_size: int) -> None:
     """One draft_refresh scan tick (docs/backlog/draft-refresh.md Part 2),
     fired from the host-agnostic ``draft_refresh_scan`` cadence — any live
     worker can win it, same as ``health_digest``/``materialize``.
@@ -162,7 +165,7 @@ def _run_draft_refresh_scan(store: Any, batch_size: int) -> None:
     )
 
 
-def _run_anki_sync(store: Any, batch_size: int) -> None:
+def _run_anki_sync(store: Store, batch_size: int) -> None:
     """One AnkiWeb sync tick, fired from the melchior-pinned ``anki_sync``
     cadence (§A) instead of the retired standalone 30-min launchd timer.
     Reads the fix/project flags from config (env), matching the plist's
@@ -179,7 +182,7 @@ def _run_anki_sync(store: Any, batch_size: int) -> None:
     log.info("scheduler: anki_sync — %s", summary)
 
 
-def _run_health_digest(store: Any, batch_size: int) -> None:
+def _run_health_digest(store: Store, batch_size: int) -> None:
     """One §D liveness-net eval, fired from the host-agnostic
     ``health_digest`` cadence (any live worker can win it — unpinned, like
     ``cron_tick``/``watch_poll``). ``batch_size`` is unused; the pass
@@ -196,7 +199,7 @@ def _run_health_digest(store: Any, batch_size: int) -> None:
     )
 
 
-def _run_materialize(store: Any, batch_size: int) -> None:
+def _run_materialize(store: Store, batch_size: int) -> None:
     """One demand-materializer tick (§F cycle a, ``docs/backlog/cluster-scheduling.md`` §F), fired from the host-agnostic
     ``materialize`` cadence (any live worker can win it — unpinned, like
     ``health_digest``). ``batch_size`` is unused. DARK unless
@@ -212,7 +215,13 @@ def _run_materialize(store: Any, batch_size: int) -> None:
     )
 
 
-def _run_structural(store: Any, batch_size: int) -> None:
+def _run_structural(
+    # test_scheduler_pass.py's wrapper-only unit test calls this directly
+    # with a bare sentinel object() (the downstream pass is monkeypatched
+    # out entirely), narrower than Store.
+    store: Any,
+    batch_size: int,
+) -> None:
     """One structural-review tick, fired from the host-agnostic
     ``structural`` cadence (gr192752) instead of the old default-rotation
     slot on the agent-profile worker. ``batch_size`` is unused — the review
@@ -232,7 +241,11 @@ def _run_structural(store: Any, batch_size: int) -> None:
     )
 
 
-def _run_deep_review(store: Any, batch_size: int) -> None:
+def _run_deep_review(
+    # see _run_structural -- same wrapper-only test, bare sentinel object()
+    store: Any,
+    batch_size: int,
+) -> None:
     """One deep-review tick, fired from the host-agnostic ``deep_review``
     cadence (gr192752) instead of the old default-rotation slot on the
     agent-profile worker. ``batch_size`` is unused — the review driver's own
@@ -291,13 +304,13 @@ def _anki_sync_eligible() -> bool:
     )
 
 
-def _dream_resolve_interval(store: Any) -> int:
+def _dream_resolve_interval(store: Store) -> int:
     from precis.workers import dream_throttle
 
     return int(dream_throttle.resolve_min_interval_minutes(store) * 60)
 
 
-def _over_daily_budget(store: Any, cadence: str) -> bool:
+def _over_daily_budget(store: Store, cadence: str) -> bool:
     """True when a ``spends=True`` cadence must skip this fire — the fleet has
     already burned ``PRECIS_DAILY_COST_CEILING`` over the trailing 24h.
 
@@ -447,6 +460,9 @@ CADENCES: tuple[Cadence, ...] = (
 
 
 def run_scheduler_pass(
+    # forwards into the Store-typed _run_*/_over_daily_budget helpers;
+    # test_scheduler_budget_gate.py calls this directly with a minimal
+    # _Store (only claim_scheduler_lease) narrower than Store.
     store: Any,
     *,
     host: str,

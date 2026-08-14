@@ -16,9 +16,12 @@ later slice. No MCP surface — consumed by the weave tick (rung 6e).
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Cosine-distance threshold at which :class:`AgglomerativeClustering`
 #: (average linkage) stops merging. The design (§Residual sub-questions:
@@ -40,7 +43,7 @@ _LABEL_TOP_K = 5
 _MAX_EXEMPLARS = 5
 
 
-def _gist_vectors(store: Any, paper_ref_ids: list[int]) -> dict[int, list[float]]:
+def _gist_vectors(store: Store, paper_ref_ids: list[int]) -> dict[int, list[float]]:
     """``{paper_ref_id: gist vector}`` for the subset that has one.
 
     Same primitive rung 6a uses (``seed_chunk_for_ref`` -> ``get_chunk_
@@ -57,7 +60,7 @@ def _gist_vectors(store: Any, paper_ref_ids: list[int]) -> dict[int, list[float]
     return out
 
 
-def unclusterable_paper_ids(store: Any, paper_ref_ids: list[int]) -> list[int]:
+def unclusterable_paper_ids(store: Store, paper_ref_ids: list[int]) -> list[int]:
     """The subset of ``paper_ref_ids`` with no gist vector at all.
 
     :func:`cluster_residual` silently drops these from every cluster (they
@@ -69,7 +72,7 @@ def unclusterable_paper_ids(store: Any, paper_ref_ids: list[int]) -> list[int]:
     return [pid for pid in paper_ref_ids if pid not in have]
 
 
-def _keyword_label(store: Any, member_ids: list[int]) -> list[str]:
+def _keyword_label(store: Store, member_ids: list[int]) -> list[str]:
     """Top ``_LABEL_TOP_K`` keywords across ``member_ids``' body chunks.
 
     Frequency count over already-computed ``chunks.keywords`` (the
@@ -88,7 +91,7 @@ def _keyword_label(store: Any, member_ids: list[int]) -> list[str]:
     return [term for term, _n in counts.most_common(_LABEL_TOP_K)]
 
 
-def _titles(store: Any, ref_ids: list[int]) -> dict[int, str]:
+def _titles(store: Store, ref_ids: list[int]) -> dict[int, str]:
     refs = store.fetch_refs_by_ids(ref_ids)
     return {rid: ref.title for rid, ref in refs.items()}
 
@@ -110,7 +113,7 @@ def _rank_by_cosine_to_centroid(member_vecs: np.ndarray[Any, Any]) -> list[int]:
 
 
 def _build_cluster(
-    store: Any,
+    store: Store,
     member_ids: list[int],
     member_vecs: np.ndarray[Any, Any],
     titles: dict[int, str],
@@ -129,7 +132,7 @@ def _build_cluster(
 
 
 def cluster_residual(
-    store: Any,
+    store: Store,
     paper_ref_ids: list[int],
     *,
     distance_threshold: float = DEFAULT_CLUSTER_DISTANCE,

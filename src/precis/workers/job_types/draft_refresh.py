@@ -49,9 +49,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -205,7 +208,7 @@ def _render_preserved(preserved: list[Any]) -> str:
     return "\n\n".join(lines) or "(none)"
 
 
-def _owning_quest_id(store: Any, draft_ref_id: int) -> int | None:
+def _owning_quest_id(store: Store, draft_ref_id: int) -> int | None:
     """The quest this draft ``serves``, or ``None`` — a quest-less draft is
     legal (``review_fanout.py`` notes the same). Best-effort: any lookup
     failure degrades to ``None``."""
@@ -234,7 +237,7 @@ def _owning_quest_id(store: Any, draft_ref_id: int) -> int | None:
     return None
 
 
-def _serving_quest_ids(store: Any, quest_id: int) -> list[int]:
+def _serving_quest_ids(store: Store, quest_id: int) -> list[int]:
     """Quests that ``serves`` ``quest_id``, transitively, up to
     :data:`_MAX_ARM_HOPS` hops — the "arms" of an umbrella quest, so a
     survey book hanging on the umbrella sees every arm's results. Bounded
@@ -269,7 +272,7 @@ def _serving_quest_ids(store: Any, quest_id: int) -> list[int]:
     return sorted(seen)
 
 
-def _frontier_digest(store: Any, quest_id: int) -> str:
+def _frontier_digest(store: Store, quest_id: int) -> str:
     """A compact Pareto-frontier rendering for ``quest_id`` — the same
     underlying data ``view='frontier'`` renders
     (:func:`precis.quest.frontier.quest_frontier`), condensed for the
@@ -298,7 +301,7 @@ def _frontier_digest(store: Any, quest_id: int) -> str:
     return "\n".join(lines)
 
 
-def _research_arm_digest(store: Any, quest_id: int) -> str:
+def _research_arm_digest(store: Store, quest_id: int) -> str:
     """The owning quest's frontier digest plus every quest that ``serves``
     it (the research arms), each labeled by its handle. ``""`` when the
     quest has no compute lane at all — folds into the prompt as an omitted
@@ -314,7 +317,7 @@ def _research_arm_digest(store: Any, quest_id: int) -> str:
     return "\n\n".join(parts)
 
 
-def _evidence_digest(store: Any, scope: str) -> str:
+def _evidence_digest(store: Store, scope: str) -> str:
     """Corpus-side missing-citation candidates for ``scope`` — the
     uncited-but-relevant hits :mod:`precis.backfill` surfaces. Uses the
     lightweight remote/none tick-time embedder

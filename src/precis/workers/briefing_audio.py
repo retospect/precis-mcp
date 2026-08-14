@@ -44,7 +44,12 @@ _MAX_AGE_HOURS = 30
 _FAIL_BACKOFF_MINUTES = 60
 
 
-def _latest_unnarrated_briefing(store: Any, *, max_age_hours: int, now: datetime):
+def _latest_unnarrated_briefing(
+    store: Any,  # test fake's get_ref/_Ref shape diverges from the real Store
+    *,
+    max_age_hours: int,
+    now: datetime,
+):
     """The newest ``briefing`` news ref with no ``audio_episode_id`` yet, within
     ``max_age_hours`` and not in a render-failure backoff window. Returns the ref
     (via ``store.get_ref``) or ``None``."""
@@ -69,7 +74,10 @@ def _latest_unnarrated_briefing(store: Any, *, max_age_hours: int, now: datetime
 
 
 def has_pending_briefing(
-    store: Any, *, now: datetime | None = None, max_age_hours: int = _MAX_AGE_HOURS
+    store: Any,  # see _latest_unnarrated_briefing — test fake diverges from Store
+    *,
+    now: datetime | None = None,
+    max_age_hours: int = _MAX_AGE_HOURS,
 ) -> bool:
     """Cheap existence check — is there an un-narrated briefing to work on?
 
@@ -83,7 +91,7 @@ def has_pending_briefing(
     )
 
 
-def _briefing_text(store: Any, ref_id: int) -> str:
+def _briefing_text(store: Any, ref_id: int) -> str:  # see _latest_unnarrated_briefing
     """Reconstruct the briefing markdown from its body chunks (``ord >= 0``, so
     the embeddable ``card_*`` variants at negative ord are excluded), in order."""
     with store.pool.connection() as conn:
@@ -103,7 +111,7 @@ def _briefing_text(store: Any, ref_id: int) -> str:
 # here is deleted) but must stay disabled — ``PRECIS_BRIEFING_AUDIO_ENABLED``
 # unset/false (its existing default).
 def run_briefing_audio(
-    store: Any,
+    store: Any,  # see _latest_unnarrated_briefing — test fake diverges from Store
     *,
     image: str | None = None,
     synth: Any | None = None,

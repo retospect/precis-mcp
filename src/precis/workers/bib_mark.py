@@ -37,9 +37,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.store.types import Tag
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +167,7 @@ def _write_chunk_citations(
     return written
 
 
-def run_bib_mark_pass(store: Any, *, batch_size: int | None = None) -> dict[str, int]:
+def run_bib_mark_pass(store: Store, *, batch_size: int | None = None) -> dict[str, int]:
     """One pass: claim a body-chunk batch, extract whitelisted inline
     markers, write ``chunk_citations``, mark every claimed chunk swept.
 

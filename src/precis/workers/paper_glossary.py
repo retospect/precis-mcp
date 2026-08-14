@@ -35,13 +35,16 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
 from precis.reading.term_quality import non_concept_reason
 from precis.utils.abbreviations import find_acronyms
 from precis.workers import ref_lease
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -222,7 +225,7 @@ def _claim(
 
 
 def _context(
-    store: Any, ref_id: int, title: str
+    store: Store, ref_id: int, title: str
 ) -> tuple[str, dict[str, str], list[str], list[str]]:
     """``(abstract, defined_abbrevs, undefined_acronyms, keywords)`` for one paper."""
     defined = store.drafts.defined_abbrevs(ref_id)
@@ -253,7 +256,7 @@ def _context(
 
 
 def _write(
-    store: Any, ref_id: int, text: str, clusters: list[dict], term_count: int
+    store: Store, ref_id: int, text: str, clusters: list[dict], term_count: int
 ) -> None:
     """(Re-)emit the ref's ``card_glossary`` chunk. DELETE+INSERT so the embed /
     keyword cascade re-runs (mirrors ``upsert_card_combined``)."""
@@ -287,7 +290,7 @@ def _write(
 
 
 def run_paper_glossary_pass(
-    store: Any, *, client: Any, batch_size: int = 8, ref_ids: list[int] | None = None
+    store: Store, *, client: Any, batch_size: int = 8, ref_ids: list[int] | None = None
 ) -> dict[str, int]:
     """One claim → extract → cluster → write cycle. Returns ``{claimed, ok, failed}``.
 

@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.registry import ServiceSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +108,7 @@ def _blocks_from_assembler(blocks: Any) -> list[ContextBlock]:
 # ── "last real" lookups ──────────────────────────────────────────────
 
 
-def _last_real_job(store: Any, *, job_type: str) -> LastReal | None:
+def _last_real_job(store: Store, *, job_type: str) -> LastReal | None:
     """Latest ``kind='job'`` ref of ``job_type`` carrying a capture."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -132,7 +135,7 @@ def _last_real_job(store: Any, *, job_type: str) -> LastReal | None:
     )
 
 
-def _last_real_digest(store: Any, *, tier_tag: str) -> LastReal | None:
+def _last_real_digest(store: Store, *, tier_tag: str) -> LastReal | None:
     """Latest ``kind='memory'`` digest ref tagged ``tier_tag`` carrying a capture."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -162,7 +165,7 @@ def _last_real_digest(store: Any, *, tier_tag: str) -> LastReal | None:
     )
 
 
-def load_last_real(store: Any, spec: ServiceSpec) -> LastReal | None:
+def load_last_real(store: Store, spec: ServiceSpec) -> LastReal | None:
     """The most recent captured context for ``spec``, or ``None``.
 
     ``None`` means either "nothing has landed yet" (job_claude_inproc,
@@ -190,7 +193,7 @@ def load_last_real(store: Any, spec: ServiceSpec) -> LastReal | None:
 # ── dry-run (zero-LLM-call) assembly ─────────────────────────────────
 
 
-def _representative_todo_ref_id(store: Any) -> int | None:
+def _representative_todo_ref_id(store: Store) -> int | None:
     """A recent ``meta.llm_tier``-set todo to assemble the planner dry-run against.
 
     ``meta.llm_tier`` is a closed-vocabulary field (the §M facet-
@@ -216,7 +219,7 @@ def _representative_todo_ref_id(store: Any) -> int | None:
     return int(row[0]) if row else None
 
 
-def _dry_run_planner(store: Any, *, target_ref_id: int | None) -> DryRun | None:
+def _dry_run_planner(store: Store, *, target_ref_id: int | None) -> DryRun | None:
     """Assemble the planner prompt for ``target_ref_id`` (or a representative
     todo when unset) — reuses :func:`build_planner_prompts`, no LLM call."""
     ref_id = (
@@ -237,7 +240,7 @@ def _dry_run_planner(store: Any, *, target_ref_id: int | None) -> DryRun | None:
     return DryRun(target_label=label, blocks=_blocks_from_assembler(prompts.blocks))
 
 
-def _dry_run_reviewer(store: Any, reviewer: Any, *, label: str) -> DryRun:
+def _dry_run_reviewer(store: Store, reviewer: Any, *, label: str) -> DryRun:
     """Assemble a reviewer's prompt against the CURRENT tree — reuses
     :func:`_assemble_reviewer_blocks`, no LLM call."""
     from precis.workers.review import _assemble_reviewer_blocks
@@ -250,7 +253,7 @@ def _dry_run_reviewer(store: Any, reviewer: Any, *, label: str) -> DryRun:
 
 
 def build_dry_run(
-    store: Any, spec: ServiceSpec, *, target_ref_id: int | None = None
+    store: Store, spec: ServiceSpec, *, target_ref_id: int | None = None
 ) -> DryRun | None:
     """Assemble a fresh, zero-LLM-call preview for ``spec``, or ``None``.
 
@@ -278,7 +281,7 @@ def build_dry_run(
 
 
 def build_panel(
-    store: Any, spec: ServiceSpec, *, target_ref_id: int | None = None
+    store: Store, spec: ServiceSpec, *, target_ref_id: int | None = None
 ) -> AssembledContextPanel:
     """Build both sub-sections ("last real" + "dry-run") for ``spec``.
 

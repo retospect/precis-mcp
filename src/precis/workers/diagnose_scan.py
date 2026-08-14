@@ -32,12 +32,15 @@ like the classifier and the groomer.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.store.types import Tag
 from precis.workers.backlog_groom import _OPT_OUT_TAG
 from precis.workers.job_types.diagnose_gripe import _DIAGNOSIS_PREFIX
 from precis.workers.runner import BatchResult
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +61,7 @@ _MINT_PRIO = 8
 _DIAGNOSIS_MARKER = _DIAGNOSIS_PREFIX.split("{", 1)[0].strip()
 
 
-def _already_diagnosed(store: Any, gripe_id: int) -> bool:
+def _already_diagnosed(store: Store, gripe_id: int) -> bool:
     """True when ``gripe_id`` already carries a ``DIAGNOSIS (auto`` comment."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -70,7 +73,7 @@ def _already_diagnosed(store: Any, gripe_id: int) -> bool:
     return row is not None
 
 
-def _mint(store: Any, *, gripe_id: int, prio: int | None) -> bool:
+def _mint(store: Store, *, gripe_id: int, prio: int | None) -> bool:
     """Mint ONE ``diagnose_gripe`` job for ``gripe_id``. Returns ``True``
     iff a new job was inserted, ``False`` when its ``idem_key`` already
     exists (any status — the dedup working as intended, not an error)."""
@@ -113,7 +116,7 @@ def _mint(store: Any, *, gripe_id: int, prio: int | None) -> bool:
     return True
 
 
-def run_diagnose_scan_pass(store: Any, batch_size: int = _CAP) -> BatchResult:
+def run_diagnose_scan_pass(store: Store, batch_size: int = _CAP) -> BatchResult:
     """One scan tick: mint at most ``min(batch_size, _CAP)`` ``diagnose_gripe``
     jobs for open, undiagnosed, non-opted-out gripes.
 

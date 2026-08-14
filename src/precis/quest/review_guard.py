@@ -46,9 +46,12 @@ minted (and queued as a wasted agent job) at all.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from psycopg import Connection
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def chunk_anchor_forms(conn: Connection, chunk_id: int) -> list[str]:
@@ -88,7 +91,7 @@ def has_open_change_request(conn: Connection, chunk_id: int) -> bool:
     return row is not None
 
 
-def has_open_change_request_via_store(store: Any, chunk_id: int) -> bool:
+def has_open_change_request_via_store(store: Store, chunk_id: int) -> bool:
     """:func:`has_open_change_request`, for a caller (e.g. the fanout) that
     holds a ``store`` rather than an open connection."""
     with store.pool.connection() as conn:
@@ -107,7 +110,7 @@ _PAPER_RELATION = "paper-of"
 MACHINE_OWNED_RELATIONS: tuple[str, ...] = (_DOSSIER_RELATION, _PAPER_RELATION)
 
 
-def is_machine_owned_draft(store: Any, draft_ref_id: int) -> bool:
+def is_machine_owned_draft(store: Store, draft_ref_id: int) -> bool:
     """True iff ``draft_ref_id`` is the SOURCE of an outbound ``dossier-of``/
     ``paper-of`` link — i.e. it is a process's machine-managed body (a quest
     dossier, or its reader-facing paper projection), not a hand-authored

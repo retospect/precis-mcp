@@ -38,9 +38,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ DESCRIPTION = (
 )
 
 
-def compose_message(store: Any, instruction: str, seeds: list[str]) -> str:
+def compose_message(store: Store, instruction: str, seeds: list[str]) -> str:
     """The turn message: the instruction, then the seed chunks inlined as
     reading material. Chunk handles (``dc…``/``pc…``) inline their text; other
     handles are listed as titled references. Empty ``seeds`` ⇒ just the
@@ -99,7 +102,7 @@ def compose_message(store: Any, instruction: str, seeds: list[str]) -> str:
     return "\n".join(parts)
 
 
-def _resolve_ref(store: Any, handle: str) -> str | None:
+def _resolve_ref(store: Store, handle: str) -> str | None:
     try:
         rh = store.resolve_handle(handle)
     except Exception:
@@ -129,7 +132,7 @@ def _agentic_enabled() -> bool:
 
 
 def _run_turn(
-    kind: str, store: Any, ref: Any, message: str, *, agentic: bool = False
+    kind: str, store: Store, ref: Any, message: str, *, agentic: bool = False
 ) -> Any:
     """Dispatch to the right turn shim. When ``agentic``, inject the tool-using
     drawer (:func:`precis.diagram.agent.build_agentic_claude_fn`) so the turn

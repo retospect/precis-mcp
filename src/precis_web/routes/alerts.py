@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -29,6 +29,9 @@ from starlette.responses import Response
 from precis.alerts import STATE_OPEN, STATE_RESOLVED, resolve_alert
 from precis_web.deps import get_store, templates
 from precis_web.timefmt import ago as _ago
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["alerts"])
 
@@ -41,7 +44,7 @@ _RESOLVED_LIMIT = 100
 _SEVERITY_RANK = {"critical": 0, "warn": 1, "info": 2}
 
 
-def _rows(store: Any, *, state_tag: str, limit: int | None) -> list[dict[str, Any]]:
+def _rows(store: Store, *, state_tag: str, limit: int | None) -> list[dict[str, Any]]:
     """Alerts carrying ``state_tag``, severity- then recency-ordered."""
     sql = """
         SELECT r.ref_id,

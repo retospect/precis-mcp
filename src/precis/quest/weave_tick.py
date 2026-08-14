@@ -36,7 +36,7 @@ for the next one — no state is lost, only deferred.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.quest.dossier import dossier_ref_id
 from precis.quest.logbook import append_entry
@@ -45,6 +45,10 @@ from precis.quest.residual_cluster import cluster_residual
 from precis.quest.weave import weave_section
 from precis.quest.weave_review import mint_weave_reviews
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.protocols import RefMetaStore
+    from precis.store.store import Store
 
 _TOPIC_PREFIX = "topic:"
 
@@ -60,7 +64,7 @@ QUEST_BODY_META_KEY = "quest_body"
 QUEST_BODY_WEAVE = "weave"
 
 
-def mark_weave_quest(store: Any, quest_id: int) -> None:
+def mark_weave_quest(store: RefMetaStore, quest_id: int) -> None:
     """Flag ``quest_id`` as a weave-body quest — the coordinator's ``_phase_tick``
     will run :func:`weave_tick` for it instead of ``run_quest_tick``.
 
@@ -80,7 +84,7 @@ _TITLE_SYS = (
 )
 
 
-def _dossier_topics(store: Any, did: int) -> list[str]:
+def _dossier_topics(store: Store, did: int) -> list[str]:
     """The dossier draft's own ``topic:<t>`` tags, as bare ``<t>`` slugs.
 
     Mirrors ``precis.handlers._integration_view._dossier_topics`` — that
@@ -159,7 +163,7 @@ def _judge_section_title(
 
 
 def weave_tick(
-    store: Any,
+    store: Store,
     client: Any,
     quest_id: int,
     *,

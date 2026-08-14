@@ -474,6 +474,13 @@ def _report_resource_slots(store: object, host: str) -> str:
     scheduling optimisation, never the liveness signal — a probe or write
     failure must not fail the heartbeat, so this swallows and logs. Returns
     a short ``gpu=1,podman=2`` summary for the CLI line (``n/a`` on error).
+
+    ``store: object`` (not ``Store``) is deliberate:
+    ``tests/cli/test_heartbeat.py``'s ``_RecordingStore`` covers only the
+    sync/delete methods this function calls directly, narrower than
+    ``Store`` — every call rides a ``try/except`` anyway (best-effort), so
+    the missing methods (e.g. ``reclaim_expired_slot_holds``) degrade
+    gracefully rather than needing the fake to implement them all.
     """
     from precis.workers.capability_probe import (
         RETRACTABLE_SOFT_SIGNALS,
@@ -522,7 +529,7 @@ def _report_resource_slots(store: object, host: str) -> str:
     try:
         from precis.workers.llm_serving import advertise_local_llm
 
-        advertise_local_llm(store, host)
+        advertise_local_llm(store, host)  # type: ignore[arg-type]
     except Exception:
         log.warning("heartbeat: local-llm advertise failed", exc_info=True)
     present = {r: c for r, c in evaluated.items() if c}
@@ -530,7 +537,7 @@ def _report_resource_slots(store: object, host: str) -> str:
 
 
 def _collect_and_upsert(
-    store: Any, host: str
+    store: Store, host: str
 ) -> tuple[float | None, float | None, str]:
     """Collect this host's snapshot and UPSERT it into ``host_heartbeat`` +
     ``resource_slots``. Returns ``(temp_c, load1, slots_summary)`` for a
@@ -597,7 +604,7 @@ def _history_retention_days() -> float:
     return 14.0
 
 
-def collect_and_report(store: Any, host: str | None = None) -> str:
+def collect_and_report(store: Store, host: str | None = None) -> str:
     """Unconditional collect+upsert — always fires (this is what the CLI
     ``precis heartbeat`` invokes, and the still-live launchd/systemd timers
     keep calling it directly too, until §L). Returns the CLI's summary line."""
@@ -627,7 +634,13 @@ def _interval_s() -> float:
     return 60.0
 
 
-def run_heartbeat_pass(store: Any, *, host: str | None = None) -> BatchResult:
+def run_heartbeat_pass(
+    # forwards into _collect_and_upsert (Store-typed); test_heartbeat_thread.py
+    # calls this directly with a minimal _FakeStore narrower than Store.
+    store: Any,
+    *,
+    host: str | None = None,
+) -> BatchResult:
     """The ``heartbeat`` worker pass (§A) — runs on EVERY node's system
     worker each cycle, self-throttled to at most once every
     ``PRECIS_HEARTBEAT_INTERVAL_SECONDS`` (default 60s) via the in-process
@@ -767,7 +780,7 @@ def start_heartbeat_thread(
     return thread
 
 
-def advertise_boot_id_now(store: Any, *, host: str | None = None) -> str:
+def advertise_boot_id_now(store: Store, *, host: str | None = None) -> str:
     """Mint (once) and immediately advertise this process's boot epoch.
 
     Called once at worker startup — BEFORE the first throttled

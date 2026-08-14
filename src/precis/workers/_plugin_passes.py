@@ -63,7 +63,7 @@ def _entry_points(group: str) -> list[Any]:
 
 
 def discover_plugin_ref_passes(
-    store: Any,
+    store: Any,  # forwarded verbatim to third-party factories -- duck-typed by design
     *,
     profile: str,
     args: Any,

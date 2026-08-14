@@ -100,7 +100,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
@@ -114,6 +114,9 @@ from precis.workers.chase import (
     _verify_support_with_caveats,
     load_s2_citation_graph,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +138,7 @@ def inbound_chase_enabled() -> bool:
     return bool(int(os.environ.get("PRECIS_INBOUND_CHASE_ENABLED", "0") or "0"))
 
 
-def mark_paper_active(store: Any, ref: Any) -> None:
+def mark_paper_active(store: Store, ref: Any) -> None:
     """Trigger the inbound sweep the first time paper ``ref`` is read.
 
     No-op when the feature is dark, when ``ref`` isn't a paper, or when
@@ -265,7 +268,7 @@ def _fetch_paper_claim_info(
 
 
 def _sweep_one_paper(
-    conn: Connection, store: Any, y_ref_id: int, *, with_llm: bool
+    conn: Connection, store: Store, y_ref_id: int, *, with_llm: bool
 ) -> _SweepResult:
     """Exhaustively resolve every S2-known citer of ``y_ref_id``.
 
@@ -341,7 +344,7 @@ def _sweep_one_paper(
 
 
 def _resolve_or_ingest_citer(
-    conn: Connection, store: Any, citing: dict[str, Any]
+    conn: Connection, store: Store, citing: dict[str, Any]
 ) -> int | None:
     """Find-or-mint a corpus ref for one S2 ``cited_by`` entry.
 
@@ -391,7 +394,7 @@ def _resolve_or_ingest_citer(
 
 def _resolve_citer_chunk(
     conn: Connection,
-    store: Any,
+    store: Store,
     *,
     citer_ref_id: int,
     cited_ref_id: int,
@@ -519,7 +522,7 @@ def _locate_dst_chunk(
 
 
 def _mark_swept(
-    conn: Connection, store: Any, ref_id: int, *, reason: str | None
+    conn: Connection, store: Store, ref_id: int, *, reason: str | None
 ) -> None:
     store.add_tag(
         ref_id,
@@ -541,7 +544,7 @@ def _mark_swept(
 
 
 def run_inbound_chase_pass(
-    store: Any,
+    store: Store,
     *,
     limit: int = 8,
     with_llm: bool = True,

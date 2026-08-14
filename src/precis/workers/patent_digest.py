@@ -33,6 +33,7 @@ DEPENDENT_EXTENT = "summary"
 
 
 def _claim_eyes(
+    # test's _FakeStore duck-types via getattr, diverging from real Store
     store: Any,
     patent_ref_ids: list[int],
     *,
@@ -79,7 +80,7 @@ def _claim_eyes(
 
 
 def build_claims_digest(
-    store: Any,
+    store: Any,  # see _claim_eyes -- test fake diverges from Store
     patent_ref_ids: list[int],
     *,
     our_claim_handles: list[str] | None = None,
@@ -114,7 +115,7 @@ def build_claims_digest(
 
 
 def stamp_claims_digest(
-    store: Any,
+    store: Any,  # see _claim_eyes -- test fake diverges from Store
     target_ref_id: int,
     patent_ref_ids: list[int],
     *,
@@ -135,7 +136,9 @@ def stamp_claims_digest(
     return ws
 
 
-def related_patent_ref_ids(store: Any, draft_ref_id: int) -> list[int]:
+def related_patent_ref_ids(
+    store: Any, draft_ref_id: int
+) -> list[int]:  # see _claim_eyes -- test fake diverges from Store
     """The patent ref_ids the draft cites / relates to (its prior art), via
     the draft's outbound links (the write-time autolinker materialises a
     ``cites`` edge for each bracketed patent). Deduped, order-stable."""
@@ -156,7 +159,9 @@ def related_patent_ref_ids(store: Any, draft_ref_id: int) -> list[int]:
     return [did for did in dst_ids if getattr(refs.get(did), "kind", None) == "patent"]
 
 
-def discover_our_claim_handles(store: Any, draft_ref_id: int) -> list[str]:
+def discover_our_claim_handles(
+    store: Any, draft_ref_id: int
+) -> list[str]:  # see _claim_eyes -- test fake diverges from Store
     """The draft's own claim chunks — the leaf chunks under a
     ``patent-claim``-styled section — as ``dc…`` handles, in
     reading order. These ride the digest verbatim so the claim-writing tick
@@ -179,7 +184,7 @@ def discover_our_claim_handles(store: Any, draft_ref_id: int) -> list[str]:
 
 
 def refresh_claims_digest(
-    store: Any,
+    store: Any,  # see _claim_eyes -- test fake diverges from Store
     todo_ref_id: int,
     draft_ref_id: int,
     *,

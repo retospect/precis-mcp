@@ -35,7 +35,7 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -60,6 +60,9 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
 from precis_web.timefmt import ago as _ago
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 router = APIRouter(tags=["cad"])
 
 log = logging.getLogger(__name__)
@@ -77,7 +80,7 @@ _EXPORT_MEDIA = {
 
 
 # ── list ─────────────────────────────────────────────────────────────────
-def _list_rows(store: Any) -> list[dict[str, Any]]:
+def _list_rows(store: Store) -> list[dict[str, Any]]:
     """Live cad designs, newest first, with node + part counts."""
     sql = """
         SELECT r.ref_id,
@@ -127,7 +130,7 @@ def _pose_str(node: Any) -> str:
     return pose
 
 
-def _detail_ctx(store: Any, ref: Any) -> dict[str, Any]:
+def _detail_ctx(store: Store, ref: Any) -> dict[str, Any]:
     """The cheap-to-render context: node list (coloured per part), a per-part
     legend, and counts. The heavy analysis (volume + interference) is computed
     lazily by :func:`cad_analysis` and fetched by the page after first paint."""
@@ -168,7 +171,7 @@ _ANALYSIS_CACHE: dict[tuple[int, str], dict[str, Any]] = {}
 _ANALYSIS_CACHE_MAX = 256
 
 
-def _ref_version(store: Any, ref_id: int) -> str:
+def _ref_version(store: Store, ref_id: int) -> str:
     """A cache-busting token for a ref's geometry (its ``updated_at``)."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -177,7 +180,7 @@ def _ref_version(store: Any, ref_id: int) -> str:
     return str(row[0]) if row and row[0] is not None else "0"
 
 
-def _analysis(store: Any, ref_id: int, version: str) -> dict[str, Any]:
+def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     """Bounding box + total volume + inter-part interference + the assembly
     connectivity graph, off the analytic IR. Memoised per ``(ref_id,
     version)``."""
@@ -235,7 +238,7 @@ def _analysis(store: Any, ref_id: int, version: str) -> dict[str, Any]:
     return analysis
 
 
-def _slug_of(store: Any, ref_id: int) -> str | None:
+def _slug_of(store: Store, ref_id: int) -> str | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
@@ -245,7 +248,7 @@ def _slug_of(store: Any, ref_id: int) -> str | None:
     return row[0] if row else None
 
 
-def _lineage(store: Any, ref_id: int) -> dict[str, list[dict[str, str]]]:
+def _lineage(store: Store, ref_id: int) -> dict[str, list[dict[str, str]]]:
     """Parents (this design is ``derived-from`` them) + children."""
     parents: list[dict[str, str]] = []
     for lnk in store.links_for(ref_id, direction="out", relation="derived-from"):
@@ -298,7 +301,9 @@ def _parse_proposal_row(row: Any) -> dict[str, Any]:
     }
 
 
-def _recent_proposals(store: Any, ref_id: int, limit: int = 6) -> list[dict[str, Any]]:
+def _recent_proposals(
+    store: Store, ref_id: int, limit: int = 6
+) -> list[dict[str, Any]]:
     """All recent proposal jobs for this design, newest first. This is the
     reload-safe view: every outstanding request rehydrates from the DB, not
     just the single newest one."""
@@ -308,13 +313,13 @@ def _recent_proposals(store: Any, ref_id: int, limit: int = 6) -> list[dict[str,
     return [_parse_proposal_row(r) for r in rows]
 
 
-def _latest_proposal(store: Any, ref_id: int) -> dict[str, Any] | None:
+def _latest_proposal(store: Store, ref_id: int) -> dict[str, Any] | None:
     """The newest proposal job (back-compat single-row view)."""
     rows = _recent_proposals(store, ref_id, limit=1)
     return rows[0] if rows else None
 
 
-def _proposal_by_job(store: Any, ref_id: int, job_id: int) -> dict[str, Any] | None:
+def _proposal_by_job(store: Store, ref_id: int, job_id: int) -> dict[str, Any] | None:
     """A specific proposal job for this design — so Apply resolves the card the
     user actually clicked, not merely the newest (matters once >1 outstanding)."""
     sql = _PROPOSAL_SELECT + " AND r.ref_id = %s"
@@ -324,7 +329,7 @@ def _proposal_by_job(store: Any, ref_id: int, job_id: int) -> dict[str, Any] | N
 
 
 def _discussion_thread(
-    store: Any, ref_id: int, limit: int = 40
+    store: Store, ref_id: int, limit: int = 40
 ) -> list[dict[str, Any]]:
     """The design's discussion turns (``cad_discuss`` jobs), oldest first — a
     conversational thread. Each turn is ``{job_id, status, instruction, answer,
@@ -368,7 +373,7 @@ def _discussion_thread(
     return turns
 
 
-def _require_ref(store: Any, slug: str) -> Any:
+def _require_ref(store: Store, slug: str) -> Any:
     return resolve_live_slug_ref(store, kind="cad", id=slug)
 
 

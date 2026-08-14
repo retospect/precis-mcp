@@ -1083,7 +1083,13 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
 
 
 def claim_trust_for_block(
-    store: Any, text: str, cache: dict[str, Any]
+    # `Any`, not `Store`: unit tests call this with a bare `object()` —
+    # the two store-touching calls (`resolve_head_ref_id`/`claim_trust`)
+    # are monkeypatched away in every test, so the sentinel never resolves
+    # a real attribute (precedent: `briefing_cast._lane_quest`).
+    store: Any,
+    text: str,
+    cache: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Worst-of claim trust across ``text``'s distinct cite heads —
     the trust-surfaces editor badges, the

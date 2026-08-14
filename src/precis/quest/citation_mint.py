@@ -20,18 +20,21 @@ weave does itself; it does not belong here.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers.citation import CitationHandler
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Matches CitationHandler.put's create-ack, e.g. "created citation id=42 (...)".
 _ID_RE = re.compile(r"\bid=(\d+)\b")
 
 
 def mint_citation(
-    store: Any,
+    store: Store,
     *,
     claim: str,
     paper_ref_id: int,

@@ -42,9 +42,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.runner import BatchResult
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -149,14 +152,14 @@ def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
     return _fn
 
 
-def _summarize_backlog_count(store: Any) -> int:
+def _summarize_backlog_count(store: Store) -> int:
     from precis.workers.llm_summarize import unsummarized_chunk_count
 
     with store.pool.connection() as conn:
         return unsummarized_chunk_count(conn)
 
 
-def _classify_backlog_count(store: Any) -> int:
+def _classify_backlog_count(store: Store) -> int:
     from precis.workers.classify import unclassified_chunk_count
 
     with store.pool.connection() as conn:
@@ -206,7 +209,7 @@ def _max_jobs() -> int:
         return _DEFAULT_MAX_JOBS
 
 
-def _embed_backlog_count(store: Any) -> int:
+def _embed_backlog_count(store: Store) -> int:
     from precis.workers.embed import unembedded_chunk_count
 
     with store.pool.connection() as conn:
@@ -289,7 +292,7 @@ def _band_source_enabled(env_name: str) -> bool:
 
 
 def _live_jobs(
-    store: Any,
+    store: Store,
     job_type: str,
     *,
     params_pass: str | None = None,
@@ -328,7 +331,7 @@ def _live_jobs(
 
 
 def _in_failed_cooldown(
-    store: Any, job_type: str, *, params_pass: str | None = None
+    store: Store, job_type: str, *, params_pass: str | None = None
 ) -> bool:
     """True when the MOST RECENT terminal ``job_type`` job failed within
     :data:`_FAILED_COOLDOWN_MINUTES` — no mint-fail loop. ``params_pass``
@@ -375,7 +378,7 @@ def _in_failed_cooldown(
     )
 
 
-def _mint_jobs(store: Any, src: _BacklogSource, n: int) -> int:
+def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
     """Mint up to ``n`` bounded ``src.job_type`` jobs, ``idem_key``d per
     (tick, index) so a crashed materializer re-run — OR a manual ``--only
     materialize`` invocation racing the standing 300s cadence — can't
@@ -444,7 +447,7 @@ def _mint_jobs(store: Any, src: _BacklogSource, n: int) -> int:
     return minted
 
 
-def _materialize_band(store: Any, src: _BacklogSource, count: int) -> int:
+def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
     """Job-queue BAND policy (SMALL derived-drain sources): keep ``[low, high]``
     live jobs for THIS source while its backlog remains. When live drops below
     ``low`` and backlog > 0, top the band back up toward ``high`` (capped by how
@@ -500,7 +503,7 @@ def _materialize_band(store: Any, src: _BacklogSource, count: int) -> int:
     return minted
 
 
-def _materialize_one(store: Any, src: _BacklogSource) -> int:
+def _materialize_one(store: Store, src: _BacklogSource) -> int:
     if not src.enabled_fn():
         return 0
     count = src.count_fn(store)
@@ -547,7 +550,7 @@ def _materialize_one(store: Any, src: _BacklogSource) -> int:
     return minted
 
 
-def run_materialize_pass(store: Any) -> BatchResult:
+def run_materialize_pass(store: Store) -> BatchResult:
     """One materializer tick. A pure no-op unless
     :func:`materialize_embed_enabled` — see the module docstring's
     DARK-ship discipline."""

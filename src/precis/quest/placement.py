@@ -14,9 +14,12 @@ MCP surface yet.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Cosine-similarity floor a section centroid must clear to receive a paper.
 #: The design (§11) flags the exact value as regime-dependent — looser in
@@ -61,7 +64,7 @@ def _subtree_chunk_ids(chunks: list[Any], root_chunk_id: int) -> list[int]:
     return [c.chunk_id for c in chunks if in_section(c)]
 
 
-def _section_centroids(store: Any, dossier_ref_id: int) -> list[_SectionCentroid]:
+def _section_centroids(store: Store, dossier_ref_id: int) -> list[_SectionCentroid]:
     """One centroid per dossier heading — the L2-renormalized mean of its
     subtree's available chunk vectors. A heading whose whole subtree has no
     embedded chunks (or whose mean collapses to the zero vector) is skipped:
@@ -103,7 +106,7 @@ def _cosine(a: np.ndarray[Any, Any], b: np.ndarray[Any, Any]) -> float:
 
 
 def place_papers(
-    store: Any,
+    store: Store,
     dossier_ref_id: int,
     paper_ref_ids: list[int],
     *,
@@ -159,7 +162,7 @@ def place_papers(
 
 
 def place_paper(
-    store: Any,
+    store: Store,
     dossier_ref_id: int,
     paper_ref_id: int,
     *,

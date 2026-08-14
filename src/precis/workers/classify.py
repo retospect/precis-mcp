@@ -62,11 +62,14 @@ import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from precis.store.types import Tag
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -367,7 +370,7 @@ def _enrich(conn, rows: list[dict]) -> None:
 
 
 def run_classify_pass(
-    store: Any,
+    store: Store,
     *,
     client: Any,
     batch_size: int = 16,

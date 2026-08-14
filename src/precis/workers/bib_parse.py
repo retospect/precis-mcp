@@ -53,10 +53,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.types.json import Jsonb
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 from precis.liveness import drain_sleep
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
@@ -594,7 +597,7 @@ def _write_crossref_match(
 
 
 def run_bib_parse_match_pass(
-    store: Any, ref_id: int, *, client: Any, mailto: str = ""
+    store: Store, ref_id: int, *, client: Any, mailto: str = ""
 ) -> dict[str, int]:
     """Match every still-unmatched (``match_conf IS NULL``) entry of one
     paper. Split out from :func:`run_bib_parse_pass` so it's independently
@@ -805,7 +808,7 @@ def _stamp_paper_version(conn: Any, ref_id: int) -> None:
 
 
 def run_bib_parse_pass(
-    store: Any,
+    store: Store,
     *,
     client: Any,
     batch_size: int = 4,

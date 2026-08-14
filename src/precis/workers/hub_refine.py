@@ -147,7 +147,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
@@ -158,6 +158,9 @@ from precis.taproot.resolve import resolve_citation
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -303,7 +306,7 @@ def _is_hub_due(
 
 
 def _claim_hubs_due_for_refine(
-    conn: Connection, store: Any, *, limit: int, backstop_h: float
+    conn: Connection, store: Store, *, limit: int, backstop_h: float
 ) -> list[int]:
     """Lock and return up to ``limit`` claim-hub ``ref_id``s due for refine.
 
@@ -542,7 +545,7 @@ class _Candidate:
 
 def _citation_candidates(
     conn: Connection,
-    store: Any,
+    store: Store,
     hub_ref_id: int,
     *,
     claim_sentence: str,
@@ -646,7 +649,7 @@ def _drop_patent_claim_blocks(
 
 def _refine_one_hub(
     conn: Connection,
-    store: Any,
+    store: Store,
     hub_ref_id: int,
     *,
     embedder: Any,
@@ -904,7 +907,7 @@ def _refine_one_hub(
 
 
 def run_hub_refine_pass(
-    store: Any,
+    store: Store,
     *,
     limit: int | None = None,
     embedder: Any | None = None,

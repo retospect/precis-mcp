@@ -78,6 +78,7 @@ from precis.workers.executors._common import (
 from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
+    from precis.store.store import Store
     from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def _claim_jobs(
     )
 
 
-def _linked_gripe_id(store: Any, job_ref_id: int) -> int | None:
+def _linked_gripe_id(store: Store, job_ref_id: int) -> int | None:
     """Find the gripe this job links to via ``rel='fixes'``."""
     links = store.links_for(job_ref_id, direction="out")
     fixes = [l for l in links if l.relation == "fixes"]
@@ -147,7 +148,7 @@ def _inproc_concurrency() -> int:
     return max(1, min(16, n))
 
 
-def _run_job_safe(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
+def _run_job_safe(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
     """Run one claimed job; record + swallow any failure. Returns ok."""
     try:
         _run_one(store, ref_id, title, meta)
@@ -170,7 +171,7 @@ def _run_job_safe(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> 
         return False
 
 
-def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
+def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
     """Process up to ``limit`` claude_inproc jobs.
 
     Returns ``{claimed, ok, failed}`` for runner aggregation.
@@ -257,7 +258,13 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
 # ── Per-job dispatch ──────────────────────────────────────────────
 
 
-def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
+def _run_one(
+    # tests call this directly with a narrow _FakeStore
+    store: Any,
+    ref_id: int,
+    title: str,
+    meta: dict[str, Any],
+) -> None:
     """Dispatch a single claimed job to its job_type handler."""
     job_type_name = meta.get("job_type")
     if not job_type_name:
@@ -337,7 +344,11 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
 
 
 def _build_dispatch_context(
-    store: Any, ref_id: int, title: str, meta: dict[str, Any]
+    # tests call this directly with a narrow _FakeStore
+    store: Any,
+    ref_id: int,
+    title: str,
+    meta: dict[str, Any],
 ) -> DispatchContext:
     """Construct a DispatchContext closing over executor helpers.
 
@@ -400,7 +411,7 @@ def _build_dispatch_context(
     )
 
 
-def _finalize_plugin_dispatch(store: Any, ref_id: int) -> None:
+def _finalize_plugin_dispatch(store: Store, ref_id: int) -> None:
     """Drive a plugin-dispatched job to ``SUCCEEDED`` after a clean run.
 
     Only transitions a job still in a non-terminal state — a dispatcher
@@ -414,7 +425,7 @@ def _finalize_plugin_dispatch(store: Any, ref_id: int) -> None:
             conn.commit()
 
 
-def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
+def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     """plan_tick dispatch: invoke the planner LLM under a parent todo.
 
     The job's ``parent_id`` points at the todo being worked on; the
@@ -659,7 +670,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
 
 def _build_job_result_text(
     *,
-    store: Any,
+    store: Store,
     job_ref_id: int,
     parent_ref_id: int,
     model: str,
@@ -703,39 +714,36 @@ def _build_job_result_text(
         finding_count = 0
         child_count = 0
         if project_tag:
-            cit_count = int(
-                conn.execute(
-                    """
-                    SELECT count(*) FROM refs r
-                      JOIN ref_tags rt ON rt.ref_id = r.ref_id
-                      JOIN tags t ON t.tag_id = rt.tag_id
-                     WHERE r.kind = 'citation' AND r.deleted_at IS NULL
-                       AND t.namespace = 'OPEN' AND t.value = %s
-                       AND r.created_at >= %s
-                    """,
-                    (project_tag, ts_started),
-                ).fetchone()[0]
-            )
-            finding_count = int(
-                conn.execute(
-                    """
-                    SELECT count(*) FROM refs r
-                      JOIN ref_tags rt ON rt.ref_id = r.ref_id
-                      JOIN tags t ON t.tag_id = rt.tag_id
-                     WHERE r.kind = 'finding' AND r.deleted_at IS NULL
-                       AND t.namespace = 'OPEN' AND t.value = %s
-                       AND r.created_at >= %s
-                    """,
-                    (project_tag, ts_started),
-                ).fetchone()[0]
-            )
-        child_count = int(
-            conn.execute(
-                "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'todo' "
-                "AND deleted_at IS NULL AND created_at >= %s",
-                (parent_ref_id, ts_started),
-            ).fetchone()[0]
-        )
+            cit_row = conn.execute(
+                """
+                SELECT count(*) FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'citation' AND r.deleted_at IS NULL
+                   AND t.namespace = 'OPEN' AND t.value = %s
+                   AND r.created_at >= %s
+                """,
+                (project_tag, ts_started),
+            ).fetchone()
+            cit_count = int(cit_row[0]) if cit_row else 0
+            finding_row = conn.execute(
+                """
+                SELECT count(*) FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+                   AND t.namespace = 'OPEN' AND t.value = %s
+                   AND r.created_at >= %s
+                """,
+                (project_tag, ts_started),
+            ).fetchone()
+            finding_count = int(finding_row[0]) if finding_row else 0
+        child_row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'todo' "
+            "AND deleted_at IS NULL AND created_at >= %s",
+            (parent_ref_id, ts_started),
+        ).fetchone()
+        child_count = int(child_row[0]) if child_row else 0
     # Build the text — terse, structured. When the LLM emitted a
     # tick-conclusion block, its synth lives at the top so the parent
     # re-tick reads it before the counts.
@@ -782,7 +790,7 @@ def _build_job_result_text(
     return "\n".join(lines)
 
 
-def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
+def _parent_todo_id(store: Store, job_ref_id: int) -> int | None:
     """Return the parent todo id of a job ref, or None when orphaned."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -820,7 +828,7 @@ def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
 # toc lens judges outline shape, not prose).
 
 
-def _review_meta(store: Any, parent_id: int) -> tuple[str, str] | None:
+def _review_meta(store: Store, parent_id: int) -> tuple[str, str] | None:
     """``(lens, anchor)`` when ``parent_id`` is a review-mode todo (its
     ``refs.meta`` carries both ``review`` and ``anchor``), else ``None``.
 
@@ -837,7 +845,7 @@ def _review_meta(store: Any, parent_id: int) -> tuple[str, str] | None:
 
 
 def _anchor_chunk_snapshot(
-    store: Any, anchor: str, lens: str
+    store: Store, anchor: str, lens: str
 ) -> tuple[int, str | None] | None:
     """Resolve a ``dc<id>`` anchor to ``(chunk_id, sha_before)`` via the
     shared handle resolver (``store.drafts.get_draft_chunk`` — same lookup
@@ -864,7 +872,7 @@ def _anchor_chunk_snapshot(
 
 
 def _maybe_record_review_pass(
-    store: Any,
+    store: Store,
     conn: Connection,
     *,
     review_todo_id: int,
@@ -1069,7 +1077,7 @@ def _decompose_already_attempted(conn: Connection, parent_ref_id: int) -> bool:
 
 
 def _mint_auto_decompose(
-    store: Any,
+    store: Store,
     conn: Connection,
     parent_ref_id: int,
     *,
@@ -1155,7 +1163,7 @@ def _mint_auto_decompose(
     return int(child.id)
 
 
-def _job_params(store: Any, job_ref_id: int) -> dict[str, Any]:
+def _job_params(store: Store, job_ref_id: int) -> dict[str, Any]:
     """Pull ``meta.params`` from a job ref as a plain dict."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1167,7 +1175,7 @@ def _job_params(store: Any, job_ref_id: int) -> dict[str, Any]:
     return dict(row[0])
 
 
-def _run_fix_gripe(store: Any, ref_id: int, spec: Any) -> None:
+def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
     """fix_gripe dispatch: find the linked gripe, invoke, transition."""
     gripe_id = _linked_gripe_id(store, ref_id)
     if gripe_id is None:

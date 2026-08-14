@@ -56,10 +56,13 @@ import logging
 import math
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +164,7 @@ def _clean_str_list(raw: Any, *, cap: int = _LEG_CAP) -> list[str]:
     return out[:cap]
 
 
-def _child_states(store: Any, child_ids: list[int]) -> dict[int, str]:
+def _child_states(store: Store, child_ids: list[int]) -> dict[int, str]:
     """Current ``STATUS:`` value per live child job.
 
     Missing / soft-deleted rows are simply absent from the returned
@@ -361,7 +364,7 @@ def _phase_triage(ctx: Any, state: dict[str, Any]) -> Any:
     )
 
 
-def _read_child_verdicts(store: Any, child_id: int) -> list[dict[str, Any]] | None:
+def _read_child_verdicts(store: Store, child_id: int) -> list[dict[str, Any]] | None:
     """Parse the child's latest ``job_result`` chunk into a verdict list.
 
     Returns ``None`` when the chunk is missing or malformed (the

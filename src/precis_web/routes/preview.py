@@ -21,7 +21,7 @@ needed.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -29,6 +29,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from precis.utils import kind_facts
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_abstract, paper_head
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["preview"])
 
@@ -104,7 +107,7 @@ _CHUNK_RE = re.compile(r"^(?P<from>\d+)(?:\.\.(?P<to>\d+))?$")
 
 
 def _resolve_ref_id(
-    store: Any, kind: str, raw_id: str, *, hub: Any = None
+    store: Store, kind: str, raw_id: str, *, hub: Any = None
 ) -> int | None:
     """Map a ``kind:id`` pair to the numeric ``refs.ref_id``.
 
@@ -156,7 +159,7 @@ def _resolve_ref_id(
     return None
 
 
-def _chunk_to_page(store: Any, ref_id: int, ord_pos: int) -> int | None:
+def _chunk_to_page(store: Store, ref_id: int, ord_pos: int) -> int | None:
     """Look up ``page_first`` for a chunk at ``ord=ord_pos`` on ``ref_id``."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -340,7 +343,7 @@ async def resolve(
     return RedirectResponse(url=target, status_code=303)
 
 
-def _page_from_chunk_suffix(store: Any, ref_id: int, suffix: str) -> int | None:
+def _page_from_chunk_suffix(store: Store, ref_id: int, suffix: str) -> int | None:
     """Translate a ``~chunk`` suffix into a PDF page number, or None."""
     m_page = _PAGE_RE.match(suffix)
     if m_page is not None:

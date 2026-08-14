@@ -102,10 +102,13 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.quest.allocator import active_quest_ids, cool_stalled
 from precis.quest.tick import quest_loop_enabled
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -188,7 +191,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _failed_rest_cooldown_active(
-    store: Any, quest_id: int, *, base_s: int, max_s: int
+    store: Store, quest_id: int, *, base_s: int, max_s: int
 ) -> bool:
     """RC1: is ``quest_id``'s loop inside its failed-rest backoff?
 
@@ -254,7 +257,7 @@ def _failed_rest_cooldown_active(
 
 
 def _dry_rest_cooldown_active(
-    store: Any, quest_id: int, *, base_s: int, max_s: int
+    store: Store, quest_id: int, *, base_s: int, max_s: int
 ) -> bool:
     """gr170252 cooldown symmetry: is ``quest_id``'s loop inside a *dry-rest*
     backoff?
@@ -316,7 +319,7 @@ def _dry_rest_cooldown_active(
 
 
 def _dry_rest_escalation_active(
-    store: Any, quest_id: int, *, threshold: int, cooldown_s: int
+    store: Store, quest_id: int, *, threshold: int, cooldown_s: int
 ) -> bool:
     """gr170252 escalation gate: is ``quest_id`` still inside its escalated
     dry-rest cooldown?
@@ -391,7 +394,7 @@ def _dry_rest_escalation_active(
         return False
 
 
-def _loop_params(store: Any, quest_id: int) -> tuple[str, str]:
+def _loop_params(store: Store, quest_id: int) -> tuple[str, str]:
     """Resolve ``(tier, target_node)`` — quest ``meta.loop`` override, else
     the module/env defaults."""
     tier = _DEFAULT_TIER
@@ -408,7 +411,7 @@ def _loop_params(store: Any, quest_id: int) -> tuple[str, str]:
 
 
 def ensure_quest_loop(
-    store: Any, quest_id: int, *, hub: Any = None
+    store: Store, quest_id: int, *, hub: Any = None
 ) -> tuple[int | None, bool]:
     """Guarantee ``quest_id`` has one live ``quest_tick`` coordinator loop.
 
@@ -444,7 +447,7 @@ def ensure_quest_loop(
         return None, False
 
 
-def _reap_orphaned_loop(store: Any, quest_id: int, *, grace_s: int) -> int | None:
+def _reap_orphaned_loop(store: Store, quest_id: int, *, grace_s: int) -> int | None:
     """Cancel ``quest_id``'s coordinator loop iff it is a provable reboot orphan.
 
     An orphan = the ``idem_key=quest_tick:<id>`` job that is (a) still
@@ -571,7 +574,7 @@ def _reap_orphaned_loop(store: Any, quest_id: int, *, grace_s: int) -> int | Non
 
 
 def reconcile_quest_loops(
-    store: Any, *, enabled: bool | None = None, hub: Any = None
+    store: Store, *, enabled: bool | None = None, hub: Any = None
 ) -> dict[str, Any]:
     """One reconcile pass: cool the cold, then ensure a loop for each active quest.
 

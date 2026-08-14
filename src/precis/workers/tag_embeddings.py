@@ -27,9 +27,12 @@ time.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.embedder import Embedder, EmbedderUnavailable
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ def _slug_for(namespace: str, value: str) -> str:
 
 
 def run_tag_embeddings_pass(
-    store: Any,
+    store: Store,
     embedder: Embedder,
     *,
     batch_size: int = 100,

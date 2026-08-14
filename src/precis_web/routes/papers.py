@@ -36,7 +36,7 @@ import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -75,6 +75,10 @@ from precis_web.deps import (
 from precis_web.item_view import _OPEN_URL_OVERRIDES
 from precis_web.paper_ident import paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
+
+if TYPE_CHECKING:
+    from precis.store.protocols import LinksStore, PoolStore
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -123,7 +127,7 @@ def _parse_identifier_conflict(body: str) -> dict[str, Any] | None:
 _SLUG_RE = re.compile(r"[a-z0-9]+")
 
 
-def _suggest_slug(store: Any, ref: Any, prefill: dict[str, Any] | None) -> str:
+def _suggest_slug(store: Store, ref: Any, prefill: dict[str, Any] | None) -> str:
     """A free ``cite_key`` suggestion from the paper's author + year.
 
     Uses the S2 ``prefill`` (author/year the operator is about to save)
@@ -302,7 +306,7 @@ def _src_url(ref: Any) -> str:
     return f"/refs/{ref.kind}/{ref.id}"
 
 
-def _backlinks(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _backlinks(store: LinksStore, ref_id: int) -> list[dict[str, Any]]:
     """ "Who links here" — every held incoming edge into this ref, grouped by
     ``(source kind, relation)`` and clickable to the source's canonical page.
     Kind-agnostic: drafts (``cites``/``related-to``), findings
@@ -413,7 +417,7 @@ def _retraction_notice(ref: Any) -> dict[str, str] | None:
     }
 
 
-def _detail_tags(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _detail_tags(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """Tag chips for the Meta tab. OPEN (free) tags are ``deletable`` so
     the template offers a × that removes them (the ``needs-triage`` review
     flag included); closed-vocab tags render as inert pills, matching the
@@ -622,7 +626,9 @@ def _render_detail(
 _SEL_RE = re.compile(r"^(?:pa(\d+)~)?(\d+)(?:\.\.\d+)?$")
 
 
-def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] | None:
+def _cited_chunk(
+    store: PoolStore, ref_id: int, chunk: str | None
+) -> dict[str, Any] | None:
     """Resolve a chunk selector — ``N``, ``N..M``, or the compound
     ``pa<ref_id>~N[..M]`` handle the TOC displays — to the cited chunk's
     verbatim text + PDF page, for the highlighted "cited passage" card. A
@@ -667,7 +673,7 @@ _DOC_FAMILY: tuple[str, ...] = ("paper", "cfp", "pres", "datasheet")
 
 
 def _resolve_paper(
-    store: Any, ident: str, *, kinds: tuple[str, ...] = ("paper",)
+    store: Store, ident: str, *, kinds: tuple[str, ...] = ("paper",)
 ) -> Any | None:
     """Resolve a path ``ident`` (numeric id *or* cite_key slug) to a ref
     in the document family ``kinds``.
@@ -1069,7 +1075,7 @@ class _BibEntryIndex:
         return be
 
 
-def _sources_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
+def _sources_rows(store: Store, ref: Any) -> list[dict[str, Any]]:
     """This paper's outgoing bibliography — our merged view (citation-
     sources-tab): the real bibliography marker from ``paper_bib_entries``
     replaces the positional index on any S2/held row it matches (bracket-
@@ -1172,7 +1178,7 @@ def _sources_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
     return [row for _, row in marker_bucket] + s2_bucket + held_bucket
 
 
-def _cited_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
+def _cited_rows(store: Store, ref: Any) -> list[dict[str, Any]]:
     """Papers citing this one: held incoming ``cites`` links unioned with
     the S2 ``cited_by`` neighbour list, deduped on the held ref — a held
     citer appearing in both shows once, as held."""

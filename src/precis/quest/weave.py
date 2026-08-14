@@ -39,13 +39,16 @@ up in the next tick's pending set (``unintegrated_papers``).
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from precis.errors import BadInput, NotFound
 from precis.quest.citation_mint import mint_citation
 from precis.quest.claims import extract_claims, own_chunks
 from precis.store.types import Relation
 from precis.utils.eye_render import render_eye
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 _SYS = (
     "You compose a section of a living research review. Integrate the "
@@ -91,7 +94,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _fallback_text(store: Any, paper_ref_id: int, ref: Any | None) -> str:
+def _fallback_text(store: Store, paper_ref_id: int, ref: Any | None) -> str:
     """A paper's ``card_abstract`` chunk text, else its ``refs.title`` —
     the composition input for a paper that yielded no claims."""
     with store.pool.connection() as conn:
@@ -108,7 +111,7 @@ def _fallback_text(store: Any, paper_ref_id: int, ref: Any | None) -> str:
     return f"(no abstract or title for paper {paper_ref_id})"
 
 
-def _ord_for_chunk_id(store: Any, chunk_id: int) -> int:
+def _ord_for_chunk_id(store: Store, chunk_id: int) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ord FROM chunks WHERE chunk_id = %s", (chunk_id,)
@@ -117,7 +120,7 @@ def _ord_for_chunk_id(store: Any, chunk_id: int) -> int:
     return int(row[0])
 
 
-def _find_woven_body(store: Any, heading_chunk_id: int) -> tuple[str, str] | None:
+def _find_woven_body(store: Store, heading_chunk_id: int) -> tuple[str, str] | None:
     """The ``(legacy handle, content_sha)`` of the heading's marked
     ``weave_body`` child, or ``None`` if this section has never been
     woven. The **legacy** ``¶`` handle (``chunks.handle``) — ``edit_text``
@@ -137,7 +140,7 @@ def _find_woven_body(store: Any, heading_chunk_id: int) -> tuple[str, str] | Non
 
 
 def _drop_matching_topic_tags(
-    store: Any, dossier_ref_id: int, paper_ref_id: int, *, conn: Any
+    store: Store, dossier_ref_id: int, paper_ref_id: int, *, conn: Any
 ) -> int:
     """Drop the paper's ``topic:<t>`` tag(s) that intersect the dossier's
     own ``topic:`` tags — the ``off-topic-for`` side effect (design:
@@ -252,7 +255,7 @@ def _normalize_papers_out(
 
 
 def weave_section(
-    store: Any,
+    store: Store,
     client: Any,
     dossier_ref_id: int,
     section_handle: str,

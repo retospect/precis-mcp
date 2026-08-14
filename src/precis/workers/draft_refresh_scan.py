@@ -42,9 +42,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.runner import BatchResult
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +93,7 @@ def _staleness_days(meta: dict[str, Any]) -> int:
     return days if days > 0 else _DEFAULT_STALENESS_DAYS
 
 
-def _opted_in_drafts(store: Any) -> list[tuple[int, str, dict[str, Any]]]:
+def _opted_in_drafts(store: Store) -> list[tuple[int, str, dict[str, Any]]]:
     """``(ref_id, slug, meta)`` for every live draft carrying
     ``meta.draft_refresh.enabled = true``.
 
@@ -112,7 +115,7 @@ def _opted_in_drafts(store: Any) -> list[tuple[int, str, dict[str, Any]]]:
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
 
 
-def _created_at_map(store: Any, ref_id: int) -> dict[int, datetime]:
+def _created_at_map(store: Store, ref_id: int) -> dict[int, datetime]:
     """``chunk_id -> created_at`` for every live chunk of ``ref_id``.
 
     ``reading_order`` itself doesn't carry ``created_at`` (it's built for
@@ -128,7 +131,7 @@ def _created_at_map(store: Any, ref_id: int) -> dict[int, datetime]:
     return {int(r[0]): r[1] for r in rows}
 
 
-def _stale_sections(store: Any, ref_id: int) -> list[_StaleSection]:
+def _stale_sections(store: Store, ref_id: int) -> list[_StaleSection]:
     """Every heading candidate in ``ref_id`` with at least one live direct
     paragraph, **stalest-first**: oldest clock wins, ties broken by deeper
     heading depth first, then earlier reading order. ``[]`` when no heading
@@ -179,7 +182,7 @@ def _stale_sections(store: Any, ref_id: int) -> list[_StaleSection]:
     return candidates
 
 
-def _stalest_section(store: Any, ref_id: int) -> _StaleSection | None:
+def _stalest_section(store: Store, ref_id: int) -> _StaleSection | None:
     """The single stalest heading in ``ref_id`` — the first element of
     :func:`_stale_sections`, or ``None`` when there are no candidates.
     Kept as a thin convenience wrapper (unit-tested selection/tie-break
@@ -189,7 +192,7 @@ def _stalest_section(store: Any, ref_id: int) -> _StaleSection | None:
     return sections[0] if sections else None
 
 
-def _mint(store: Any, *, slug: str, section: _StaleSection) -> bool:
+def _mint(store: Store, *, slug: str, section: _StaleSection) -> bool:
     """Mint ONE ``draft_refresh`` job for ``section``. Returns ``True``
     iff a new job was inserted, ``False`` when its ``idem_key`` already
     exists (any status — that's the dedup working, not an error)."""
@@ -236,7 +239,7 @@ def _mint(store: Any, *, slug: str, section: _StaleSection) -> bool:
     return True
 
 
-def run_draft_refresh_scan(store: Any, batch_size: int) -> BatchResult:
+def run_draft_refresh_scan(store: Store, batch_size: int) -> BatchResult:
     """One scan tick: mint at most ``batch_size`` ``draft_refresh`` jobs —
     still exactly ONE per opted-in draft per fire, same return shape as the
     other folded cadences (:func:`precis.workers.materialize.run_materialize_pass`)

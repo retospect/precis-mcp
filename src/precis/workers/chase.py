@@ -40,7 +40,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -64,6 +64,9 @@ from precis.workers._chase_llm import (
     _locate_chunk_in_target,
     _verify_support_with_caveats,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -409,7 +412,7 @@ def claim_tracing_findings(
 
 def advance_finding(
     conn: Connection,
-    store: Any,
+    store: Store,
     finding: FindingRow,
     *,
     with_llm: bool = False,
@@ -669,7 +672,7 @@ def _stub_exhausted(conn: Connection, stub_ref_id: int) -> bool:
 
 
 def _select_grounding_chunk(
-    store: Any,
+    store: Store,
     embedder: Any,
     claim_text: str,
     stub_ref_id: int,
@@ -718,7 +721,7 @@ def _select_grounding_chunk(
 
 def _ground_on_stub(
     conn: Connection,
-    store: Any,
+    store: Store,
     finding: FindingRow,
     ev: _Event,
     *,
@@ -784,7 +787,7 @@ def _ground_on_stub(
 
 def _advance_acquiring(
     conn: Connection,
-    store: Any,
+    store: Store,
     finding: FindingRow,
     ev: _Event,
     *,
@@ -855,7 +858,7 @@ def _advance_acquiring(
 
 
 def run_finding_chase_pass(
-    store: Any,
+    store: Store,
     *,
     limit: int = 32,
     with_llm: bool | None = None,
@@ -990,7 +993,7 @@ def _event_payload(ev: _Event) -> dict[str, Any]:
 
 
 def _flush_event(
-    store: Any,
+    store: Store,
     conn: Connection,
     ref_id: int,
     outcome: str,
@@ -1317,7 +1320,7 @@ def _load_s2_references(identifiers: dict[str, Any]) -> list[dict[str, Any]] | N
 
 
 def _resolve_or_create_stub(
-    conn: Connection, store: Any, target: _NextHopTarget
+    conn: Connection, store: Store, target: _NextHopTarget
 ) -> int | None:
     """Resolve a next-hop target to a ref_id, creating a stub if needed.
 
@@ -1390,7 +1393,7 @@ def _first_word(s: str) -> str | None:
 
 def _record_candidates(
     conn: Connection,
-    store: Any,
+    store: Store,
     finding_ref_id: int,
     candidates: list[_NextHopTarget],
 ) -> None:
@@ -1462,7 +1465,7 @@ def _evidence_edge_meta(
 
 
 def _snapshot_chain(
-    conn: Connection, store: Any, finding_ref_id: int, chain: list[dict[str, Any]]
+    conn: Connection, store: Store, finding_ref_id: int, chain: list[dict[str, Any]]
 ) -> None:
     """Run the chain-snapshot pass at chain termination.
 
@@ -1540,7 +1543,7 @@ def _snapshot_chain(
 
 def _taproot_bridge(
     conn: Connection,
-    store: Any,
+    store: Store,
     finding: FindingRow,
     *,
     chain: list[dict[str, Any]],
@@ -1688,7 +1691,7 @@ def _taproot_bridge(
 
 def _attach_intermediate_corroborators(
     conn: Connection,
-    store: Any,
+    store: Store,
     *,
     chain: list[dict[str, Any]],
     hub_ref_id: int,
@@ -1762,7 +1765,7 @@ def _attach_intermediate_corroborators(
 
 
 def _file_taproot_review_todo(
-    store: Any,
+    store: Store,
     claim: CanonicalClaim,
     placement: Placement,
     *,

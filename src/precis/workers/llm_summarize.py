@@ -55,6 +55,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from precis.store.protocols import PoolStore
 from precis.utils.llm.router import DispatchError
 from precis.utils.prompt import (
     AssemblyContext,
@@ -1109,7 +1110,9 @@ class _Outcome:
     error: Exception | None
 
 
-def _heartbeat_leases(store: Any, chunk_ids: list[int], *, summarizer: str) -> None:
+def _heartbeat_leases(
+    store: PoolStore, chunk_ids: list[int], *, summarizer: str
+) -> None:
     """Re-stamp ``claimed_at`` on the batch's still-held leases.
 
     Called from the *main* thread after each per-chunk LLM completion, in its
@@ -1149,7 +1152,7 @@ def _is_numeric_dump(text: str) -> bool:
 
 
 def run_llm_summarize_pass(
-    store: Any,
+    store: PoolStore,
     *,
     client: Any,
     summarizer: str = SUMMARIZER_NAME,

@@ -18,9 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.corpus_layout import corpus_pdf_dest
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def pdf_candidates(
@@ -62,7 +65,7 @@ def resolve_pdf(
     return None
 
 
-def ref_pdf_keys(store: Any, ref: Any) -> list[str]:
+def ref_pdf_keys(store: Store, ref: Any) -> list[str]:
     """De-duped cite_key probe order for ``ref``: display slug first, then
     every other ``cite_key`` alias the ref carries."""
     keys: list[str] = []
@@ -75,7 +78,7 @@ def ref_pdf_keys(store: Any, ref: Any) -> list[str]:
 
 
 def resolve_pdf_for_ref(
-    store: Any, corpus_dirs: tuple[Path, ...], ref: Any
+    store: Store, corpus_dirs: tuple[Path, ...], ref: Any
 ) -> Path | None:
     """Locate ``ref``'s held PDF, preferring the path recorded at ingest.
 

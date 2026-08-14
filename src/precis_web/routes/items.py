@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -30,6 +30,9 @@ from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis_web.deps import get_store
 from precis_web.item_view import item_row
 from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/items", tags=["items"])
 log = logging.getLogger(__name__)
@@ -96,7 +99,7 @@ def _parse_date(raw: str) -> datetime | None:
 
 
 def _run_search(
-    store: Any,
+    store: Store,
     embedder: Any,
     *,
     kinds: list[str],
@@ -160,7 +163,7 @@ def _run_search(
 
 
 def _recent_rows(
-    store: Any,
+    store: Store,
     kinds: list[str],
     tags: list[str],
     has_pdf: bool | None,
@@ -239,6 +242,7 @@ def _recent_rows(
     return rows, has_next
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _folder_options(store: Any) -> list[dict[str, Any]]:
     """Flat, indented folder list for the folder-facet ``<select>`` —
     the raw ``list_folders()`` edges walked depth-first (mirrors

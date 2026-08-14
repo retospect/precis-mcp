@@ -46,7 +46,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils.llm.router import (
     PLANNER_MODEL_ALIASES,
@@ -59,6 +59,9 @@ from precis.utils.llm.router import (
 from precis.utils.llm.router import (
     PLANNER_TIER_BY_ALIAS as _TIER_BY_ALIAS,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -178,7 +181,11 @@ class PlanTickOutcome:
 
 
 def validate_submit(
-    store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
+    # unused -- kept for the registry's uniform signature; tests pass None
+    store: Any,
+    *,
+    gripe_id: int | None = None,
+    params: dict[str, Any],
 ) -> str | None:
     """Submit-time check. Today: only validates the model value.
 
@@ -249,6 +256,9 @@ def _select_knobs(
 
 def run(
     *,
+    # tests call this directly with a bare object() sentinel (the actual
+    # store use is hidden behind monkeypatched collaborators), diverging
+    # from Store.
     store: Any,
     job_ref_id: int,
     parent_ref_id: int,
@@ -361,7 +371,7 @@ def run(
 
 def _run_oss_tick(
     *,
-    store: Any,
+    store: Store,
     prompts: Any,
     model: str,
     sel: dict[str, Any],
@@ -513,7 +523,7 @@ def _oss_exit(stop_reason: str) -> tuple[int, str | None]:
 
 def _run_claude_tick(
     *,
-    store: Any,
+    store: Store,
     prompts: Any,
     model: str,
     sel: dict[str, Any],
@@ -706,6 +716,7 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
 
 def _tick_env_overlay(
     *,
+    # tests call this directly with a bare object() sentinel
     store: Any,
     parent_ref_id: int,
     model: str,
@@ -739,7 +750,7 @@ def _tick_env_overlay(
     return overlay
 
 
-def _draft_prose_kind_gate(store: Any, parent_ref_id: int) -> tuple[str, str] | None:
+def _draft_prose_kind_gate(store: Store, parent_ref_id: int) -> tuple[str, str] | None:
     """The ``(kind, hint)`` prose-file kind to prohibit for this tick, or ``None``.
 
     When a draft is bound to the tick, the colliding file kind — the one whose
@@ -777,7 +788,10 @@ def _draft_prose_kind_gate(store: Any, parent_ref_id: int) -> tuple[str, str] | 
 
 
 def _disable_prose_file_kind(
-    store: Any, parent_ref_id: int, overlay: dict[str, str]
+    # tests call this directly with a bare object() sentinel
+    store: Any,
+    parent_ref_id: int,
+    overlay: dict[str, str],
 ) -> None:
     """Fold the draft prose-file kind-gate into the claude subprocess's
     ``PRECIS_KINDS_DISABLED`` env overlay (the claude-path side of
@@ -848,7 +862,10 @@ def _ambient_claude_md_paths(cwd: str) -> list[str]:
     return found
 
 
-def _refresh_patent_claims_digest(store: Any, parent_ref_id: int) -> None:
+def _refresh_patent_claims_digest(
+    store: Any,  # tests call this directly with a narrow local stub / object()
+    parent_ref_id: int,
+) -> None:
     """For a **patent** tick with a bound draft, stamp the freedom-to-operate
     claims digest onto the tick's ``meta.working_set`` so the planner injects
     the prior-art claims (``docs/backlog/patent-authoring-loop.md``). Discovers
@@ -873,7 +890,7 @@ def _refresh_patent_claims_digest(store: Any, parent_ref_id: int) -> None:
         log.warning("plan_tick: patent claims-digest refresh failed", exc_info=True)
 
 
-def _load_parent_workspace(store: Any, parent_ref_id: int):
+def _load_parent_workspace(store: Store, parent_ref_id: int):
     """Read meta.workspace from the parent todo, parse it.
 
     Returns a :class:`Workspace` or None when the todo carries no

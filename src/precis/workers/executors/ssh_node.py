@@ -69,7 +69,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
@@ -114,6 +114,9 @@ from precis.workers.executors._common import (
 # store handle + ref_id).
 from precis.workers.executors.claude_inproc import _build_dispatch_context
 from precis.workers.job_types import get_job_type, known_job_types
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -173,7 +176,7 @@ def _deadline_epoch(meta: dict[str, Any]) -> float:
 _warned_legacy_job_types: set[str] = set()
 
 
-def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
+def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     """Process up to ``limit`` ssh_node jobs.
 
     Returns ``{claimed, ok, failed}`` for runner aggregation. ``claimed``
@@ -329,7 +332,7 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
 
 
 def _polling_jobs(
-    store: Any, node: str | None
+    store: Store, node: str | None
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """In-flight detached ssh_node jobs (``STATUS:running`` +
     ``meta.compute_handle``) pinned to this host — mirrors
@@ -360,7 +363,7 @@ def _polling_jobs(
 
 
 def _kill_and_terminalize(
-    store: Any,
+    store: Store,
     ref_id: int,
     title: str,
     meta: dict[str, Any],
@@ -406,7 +409,7 @@ def _kill_and_terminalize(
     bubble_job_failure(store, ref_id)
 
 
-def _poll_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
+def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
     """Poll one in-flight detached job via its job_type's ``poll``.
 
     Returns ``True`` once the plugin has driven the job to a terminal
@@ -492,7 +495,7 @@ def _poll_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool
     return terminal
 
 
-def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
+def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     """Dispatch one claimed job — detached submit (§H piece 4, preferred)
     when the job_type exposes ``submit``/``poll``, else the legacy
     blocking ``dispatch`` (deprecated, gr187627)."""

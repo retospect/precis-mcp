@@ -110,7 +110,7 @@ the toggle is on.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.quest import review_guard
@@ -118,6 +118,9 @@ from precis.quest.weave_review import _LENS_BRIEFS as _WEAVE_LENS_BRIEFS
 from precis.quest.weave_review import mint_review_todo
 from precis.store._draft_ops import PROSE_CHUNK_KINDS
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Briefs for the lenses the per-weave trigger doesn't cover: the two
 #: deep/weekly per-chunk lenses plus the document-altitude ``toc`` lens.
@@ -222,7 +225,7 @@ def _lenses_for_kind(chunk_kind: str, lenses: tuple[str, ...]) -> list[str]:
     return [lens for lens in lenses if lens in allowed]
 
 
-def _draft_project_parent(store: Any, draft_ref_id: int) -> int:
+def _draft_project_parent(store: Store, draft_ref_id: int) -> int:
     """Resolve the draft's owning project todo via its ``draft-of`` link.
 
     Raises :class:`BadInput` when the draft has no such bind — the fanout
@@ -240,7 +243,7 @@ def _draft_project_parent(store: Any, draft_ref_id: int) -> int:
 
 
 def _scoped_chunks(
-    store: Any, draft_ref_id: int, scope: int | None
+    store: Store, draft_ref_id: int, scope: int | None
 ) -> list[dict[str, Any]]:
     """The chunk dicts (``chunk_id``/``handle``/``chunk_kind``) the fanout
     walks: every reviewable chunk when ``scope`` is ``None``, else a
@@ -267,7 +270,7 @@ def _scoped_chunks(
 
 
 def mint_review_fanout(
-    store: Any,
+    store: Store,
     draft_ref_id: int,
     *,
     lenses: tuple[str, ...] = ALL_LENSES,
@@ -400,7 +403,7 @@ def mint_review_fanout(
 
 
 def _mint_doc_lenses(
-    store: Any,
+    store: Store,
     draft_ref_id: int,
     *,
     parent_id: int,
@@ -448,7 +451,7 @@ def _mint_doc_lenses(
     return minted, skipped, 0
 
 
-def _toc_is_dirty(store: Any, draft_ref_id: int) -> bool:
+def _toc_is_dirty(store: Store, draft_ref_id: int) -> bool:
     """Whether the ``toc`` lens's approval is stale — the stored digest
     (the root chunk's ``chunk_review.approved_sha``) no longer matches the
     recomputed :meth:`~precis.store._draft_ops.DraftMixin.toc_digest`.

@@ -421,6 +421,7 @@ def _document_shape_stats(store: Store, ref_id: int) -> dict[str, Any]:
     }
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _cited_sources(store: Any, text: str) -> list[RefChip]:
     """The paper (``pc``/``pa``) sources the focus block cites, as
     hover-preview chips (gripe 56635) — reuses the classic ``/drafts``
@@ -467,6 +468,7 @@ def _flag_chips(flags: list[dict[str, Any]]) -> list[Any]:
     return chips
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
     """Open change-requests / LLM jobs on this draft for the right pane — the
     '✋ needs you' + in-flight status. Reuses the classic reader's walk; a bare
@@ -627,6 +629,7 @@ def _ref_tag_labels(store: Store, ref_id: int) -> list[str]:
     return [f"{ns}:{value}" if ns and ns != "tag" else value for ns, value in tags]
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _ref_connection_groups(store: Any, ref_id: int) -> list[dict[str, Any]]:
     """Whole-document edges grouped by (relation, direction), concerns first.
 

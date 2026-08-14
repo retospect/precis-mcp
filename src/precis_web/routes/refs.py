@@ -35,7 +35,7 @@ import logging
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request, Response
@@ -59,6 +59,10 @@ from precis_web.deps import (
 from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.routes.structure import _geom_payload
+
+if TYPE_CHECKING:
+    from precis.store.protocols import RefsByIdStore
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/refs", tags=["refs"])
 
@@ -197,7 +201,7 @@ def _author_dot(author: str) -> str:
 _TURN_SPECIAL_META: frozenset[str] = frozenset({"author", "ts", "chunk_kind"})
 
 
-def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _conv_turns(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """Structured turns for the conversation transcript view.
 
     Reads body chunks (one per turn) straight off the store so the web
@@ -237,7 +241,7 @@ def _conv_turns(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return turns
 
 
-def _followup_discussions(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _followup_discussions(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """Conv threads spawned from this ref via the "ask a follow-up" box.
 
     Each follow-up conv is linked ``conv --derived-from--> source``
@@ -272,7 +276,7 @@ def _followup_discussions(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return rows
 
 
-def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
+def _job_actions(store: Store, ref: Any, tags: list[Any]) -> dict[str, Any]:
     """Context for the job detail actions strip — retry, transcript, parent.
 
     The ``/refs/job/{id}`` page is where an operator lands on a
@@ -337,7 +341,7 @@ def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
     }
 
 
-def _youtube_meta(store: Any, ref: Any) -> dict[str, Any] | None:
+def _youtube_meta(store: Store, ref: Any) -> dict[str, Any] | None:
     """Header context for a ``kind='youtube'`` detail page.
 
     The watch-page scrape (channel / thumbnail / duration) lands in
@@ -455,7 +459,7 @@ def _quest_headline(title: str | None, qid: int) -> str:
     return lines[0] if lines else f"quest {qid}"
 
 
-def _quest_lineage_row(store: Any, ref: Any) -> dict[str, Any]:
+def _quest_lineage_row(store: Store, ref: Any) -> dict[str, Any]:
     """One quest→quest ``serves`` edge's display shape — shared by the hub
     dashboard's Lineage panel (``_quest_detail``) and the ``/refs/quest``
     tree (``_quest_index``)."""
@@ -466,7 +470,7 @@ def _quest_lineage_row(store: Any, ref: Any) -> dict[str, Any]:
     }
 
 
-def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
+def _quest_draft_url(store: RefsByIdStore, draft_ref_id: int) -> str:
     """``/smartdraft/<ident>`` for a draft ref id — slug when the draft has
     one (the human-legible address), else the numeric id (the reader
     route resolves both, ``_draft_ref`` in ``routes/drafts.py``)."""
@@ -476,7 +480,7 @@ def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
     return f"/smartdraft/{ident or draft_ref_id}"
 
 
-def _quest_last_agentlog_id(store: Any, qid: int) -> int | None:
+def _quest_last_agentlog_id(store: Store, qid: int) -> int | None:
     """The most recent ``quest_tick`` agentlog run for this quest, or
     ``None`` if the quest has never ticked. Mirrors the "latest job by
     meta field" SQL shape in ``precis.quest.status._tick_events`` — an
@@ -495,7 +499,7 @@ def _quest_last_agentlog_id(store: Any, qid: int) -> int | None:
     return int(row[0]) if row else None
 
 
-async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
+async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLResponse:
     """Hub dashboard for ``kind='quest'`` — the striving above the work.
 
     Replaces the generic ``refs/detail.html.j2`` render (which, for a
@@ -1215,7 +1219,7 @@ def _pathway_state_sections(
 
 
 def _pathway_state_geoms_and_measures(
-    store: Any,
+    store: Store,
     state_ids: list[str],
     structure_refs: dict[str, Any],
     measures: list[Measure],
@@ -1292,7 +1296,7 @@ def _pathway_state_geoms_and_measures(
 
 
 def _pathway_state_calc_identities(
-    store: Any, state_ids: list[str], structure_refs: dict[str, Any]
+    store: Store, state_ids: list[str], structure_refs: dict[str, Any]
 ) -> dict[str, str]:
     """One ``calc:`` line per state (gripe 161576 remainder) — the same
     ``format_calc_identity`` label ``view='atom'`` shows on the structure
@@ -1371,7 +1375,7 @@ def _pathway_quest_id(ref: Any, candidate_struct: Any | None) -> int | None:
     return None
 
 
-def _pathway_run_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _pathway_run_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """The (up to 10, most-recent-first) ``kind='job'`` refs that produced
     this pathway — the explore/aggregate tail (``precis_pathway.
     _dispatch_common.finish``) and each seed job (``seed_job.
@@ -1399,7 +1403,7 @@ def _pathway_run_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
 
 
 def _pathway_provenance(
-    store: Any,
+    store: Store,
     ref: Any,
     candidate: dict[str, Any] | None,
     candidate_struct: Any | None,
@@ -1523,7 +1527,7 @@ def _pathway_barrier_figure(meta: dict[str, Any]) -> float | None:
 
 
 def _pathway_tier_sibling(
-    store: Any, ref: Any, this_tier: str, candidate_ref_id: int | None
+    store: Store, ref: Any, this_tier: str, candidate_ref_id: int | None
 ) -> dict[str, Any] | None:
     """The other-tier pathway for the SAME candidate (item 2): the linked
     ``refines`` sibling in either direction when one exists (a verify
@@ -1707,7 +1711,7 @@ def _pathway_ghost_series(
 
 
 def _pathway_candidate_stepper(
-    store: Any, ref_id: int, substrate: Any, target: Any
+    store: Store, ref_id: int, substrate: Any, target: Any
 ) -> dict[str, Any] | None:
     """Sibling-candidate rank/N context for the stepper (item E): every
     OTHER ``pathway`` ref sharing this one's ``results.substrate`` +
@@ -1761,7 +1765,7 @@ def _pathway_candidate_stepper(
     }
 
 
-async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
+async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLResponse:
     """Detail page for ``kind='pathway'`` — a autocatpath reaction-energetics
     network (candidate structure → adsorbate/intermediate structures →
     computed barriers).
@@ -2061,7 +2065,7 @@ def _extract_handles(body: str) -> list[tuple[str, str, str | None]]:
 
 
 def _expand_handle(
-    store: Any, kind: str, ref_id: str, chunk: str | None
+    store: Store, kind: str, ref_id: str, chunk: str | None
 ) -> dict[str, Any]:
     """Resolve one ``(kind, id, chunk)`` triple to a display row.
 
@@ -2294,7 +2298,7 @@ def _consolidated_ref_url(kind: str, ref_id: int) -> str:
     return template.format(kind=kind, id=ref_id)
 
 
-async def _quest_index(request: Request, store: Any) -> HTMLResponse:
+async def _quest_index(request: Request, store: Store) -> HTMLResponse:
     """Tree view for ``kind='quest'`` — the ``serves`` DAG among quests.
 
     Replaces the generic flat ``refs/index.html.j2`` list (which had no

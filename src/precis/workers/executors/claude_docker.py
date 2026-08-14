@@ -74,7 +74,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils.llm.router import Backend, resolve_backend
 from precis.workers.executors import _sandbox_harvest, _sandbox_read_mcp
@@ -112,6 +112,9 @@ from precis.workers.executors._common import (
     set_status as _set_status,
 )
 from precis.workers.job_types import sandbox_run as _sandbox_run
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -413,7 +416,7 @@ def _list_sandbox_containers() -> list[str]:
 # ── Boot reconcile ─────────────────────────────────────────────────
 
 
-def reconcile_orphans(store: Any) -> int:
+def reconcile_orphans(store: Store) -> int:
     """``rm -f`` every ``sandbox-*`` container with no live owning job.
 
     A container is an orphan when its job ref is gone / soft-deleted /
@@ -438,7 +441,7 @@ def reconcile_orphans(store: Any) -> int:
     return reaped
 
 
-def _reap_orphan_read_mcp(store: Any, job_id: int) -> None:
+def _reap_orphan_read_mcp(store: Store, job_id: int) -> None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta->>'read_mcp_pid' FROM refs WHERE ref_id = %s", (job_id,)
@@ -456,7 +459,7 @@ def _reap_orphan_read_mcp(store: Any, job_id: int) -> None:
         )
 
 
-def _job_is_live(store: Any, job_id: int) -> bool:
+def _job_is_live(store: Store, job_id: int) -> bool:
     """A job is live when its ref exists, isn't deleted, and its STATUS is
     non-terminal (queued / running)."""
     with store.pool.connection() as conn:
@@ -483,7 +486,7 @@ def _job_is_live(store: Any, job_id: int) -> bool:
 # ── Pass entry point ───────────────────────────────────────────────
 
 
-def run_claude_docker_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
+def run_claude_docker_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
     """Poll in-flight runs, then claim + launch queued jobs.
 
     Returns ``{claimed, ok, failed}`` for runner aggregation. ``claimed``
@@ -559,7 +562,7 @@ def run_claude_docker_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
 
 
 def _claim(
-    store: Any, node: str | None, *, limit: int
+    store: Store, node: str | None, *, limit: int
 ) -> tuple[list[tuple[int, str, dict[str, Any]]], int]:
     """Claim queued claude_docker jobs and mark them running under a
     ``wall_seconds``-sized lease (in the claim tx, so no double-claim).
@@ -625,7 +628,7 @@ def _lease_seconds(meta: dict[str, Any]) -> int:
 
 
 def _launch_safe(
-    store: Any, ref_id: int, meta: dict[str, Any], node: str | None
+    store: Store, ref_id: int, meta: dict[str, Any], node: str | None
 ) -> bool:
     try:
         _launch(store, ref_id, meta, node)
@@ -636,7 +639,7 @@ def _launch_safe(
         return False
 
 
-def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> None:
+def _launch(store: Store, ref_id: int, meta: dict[str, Any], node: str | None) -> None:
     """Validate + branch to the mode-specific launcher.
 
     Defence in depth: a job minted by dispatch from a todo never went
@@ -656,7 +659,7 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
 
 
 def _launch_build(
-    store: Any, ref_id: int, params: dict[str, Any], node: str | None
+    store: Store, ref_id: int, params: dict[str, Any], node: str | None
 ) -> None:
     """Stage ``/work`` with ``PROMPT.md``, launch a detached claude
     container, record its handle (``mode:build``)."""
@@ -796,7 +799,7 @@ def _launch_build(
 
 
 def _launch_run(
-    store: Any, ref_id: int, params: dict[str, Any], node: str | None
+    store: Store, ref_id: int, params: dict[str, Any], node: str | None
 ) -> None:
     """Stage a prior build's harvested tarball into ``/work``, launch a
     detached re-run container (``mode:run`` — no claude, no OAuth).
@@ -891,7 +894,7 @@ def _launch_run(
 # ── Poll + reap ────────────────────────────────────────────────────
 
 
-def _running_jobs(store: Any, node: str | None) -> list[tuple[int, dict[str, Any]]]:
+def _running_jobs(store: Store, node: str | None) -> list[tuple[int, dict[str, Any]]]:
     """In-flight claude_docker jobs (``STATUS:running`` + ``meta.container``)
     pinned to this node."""
     with store.pool.connection() as conn:
@@ -917,11 +920,11 @@ def _running_jobs(store: Any, node: str | None) -> list[tuple[int, dict[str, Any
     return [(int(r[0]), dict(r[1] or {})) for r in rows]
 
 
-def _inflight_count(store: Any, node: str | None) -> int:
+def _inflight_count(store: Store, node: str | None) -> int:
     return len(_running_jobs(store, node))
 
 
-def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
+def _poll_job(store: Store, ref_id: int, meta: dict[str, Any]) -> str | None:
     """Poll one in-flight job. Returns the terminal STATUS applied
     (``succeeded`` / ``failed``), or ``None`` when it's still running
     (lease heartbeated)."""
@@ -1009,7 +1012,7 @@ def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
 
 
 def _terminate(
-    store: Any,
+    store: Store,
     ref_id: int,
     name: str,
     *,
@@ -1139,7 +1142,7 @@ def _terminate(
         bubble_job_failure(store, ref_id)
 
 
-def _duration_seconds(store: Any, ref_id: int) -> float | None:
+def _duration_seconds(store: Store, ref_id: int) -> float | None:
     """Best-effort run duration from the ref's created/updated timestamps.
     Cheap and approximate — the exact container runtime is a slice-2
     forensic; slice 1 only needs an order-of-magnitude figure."""
@@ -1160,7 +1163,7 @@ def _duration_seconds(store: Any, ref_id: int) -> float | None:
 # ── Failure helper ─────────────────────────────────────────────────
 
 
-def _fail(store: Any, ref_id: int, reason: str) -> None:
+def _fail(store: Store, ref_id: int, reason: str) -> None:
     """Fail a job before/without a container: event chunk + STATUS:failed
     + failure bubble. Mirrors ``_common.record_failure`` but keeps the
     job_summary shape consistent with the terminal path."""
@@ -1173,7 +1176,7 @@ def _fail(store: Any, ref_id: int, reason: str) -> None:
     bubble_job_failure(store, ref_id)
 
 
-def _skip(store: Any, ref_id: int, reason: str) -> None:
+def _skip(store: Store, ref_id: int, reason: str) -> None:
     """Cleanly terminate a job before/without a container — a config-
     mismatch no-op, not a failure (e.g. the backend-flip safety gate).
     Event chunk + STATUS:cancelled, **no** failure bubble — mirrors the

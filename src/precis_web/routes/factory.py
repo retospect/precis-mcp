@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -50,6 +50,9 @@ from precis_web.deps import get_store
 from precis_web.timefmt import abs_ts as _abs_ts
 from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/factory", tags=["factory"])
 
@@ -148,7 +151,7 @@ _CATEGORY_ORDER = [
 ]
 
 
-def _hosts(store: Any) -> list[dict[str, Any]]:
+def _hosts(store: Store) -> list[dict[str, Any]]:
     """Per-host load + liveness from ``host_heartbeat`` (empty on error)."""
     try:
         with store.pool.connection() as conn:
@@ -182,7 +185,7 @@ def _hosts(store: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _slots_by_host(store: Any) -> dict[str, list[dict[str, Any]]]:
+def _slots_by_host(store: Store) -> dict[str, list[dict[str, Any]]]:
     """host -> its advertised ``resource_slots`` rows (empty on error).
 
     The heartbeat self-probe (slice 6b) writes what each machine can do +
@@ -238,7 +241,7 @@ _ERROR_LEVELS = ("WARNING", "ERROR", "CRITICAL")
 _LATEST_ERROR_LINE_CHARS = 80
 
 
-def _errors_by_host(store: Any) -> dict[str, dict[str, Any]]:
+def _errors_by_host(store: Store) -> dict[str, dict[str, Any]]:
     """host -> {count, samples[], latest} of recent WARNING+ ``worker_logs``.
 
     A per-machine health readout for the host strip: how many warning-or-
@@ -285,7 +288,7 @@ def _errors_by_host(store: Any) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _quests(store: Any) -> dict[str, Any]:
+def _quests(store: Store) -> dict[str, Any]:
     """Active quests with prio + windowed usage in characters vs proportional share (§9).
 
     The quests tab is the same mental model as services — set a priority, the
@@ -307,7 +310,9 @@ def _quests(store: Any) -> dict[str, Any]:
         if not active:
             return {"window_days": window, "budget": budget, "rows": []}
         weights = {
-            q: reweight.base_weight(store.get_ref(kind="quest", id=q).prio)
+            q: reweight.base_weight(
+                ref.prio if (ref := store.get_ref(kind="quest", id=q)) else None
+            )
             for q in active
         }
         denom = sum(weights.values()) or 1.0
@@ -336,7 +341,7 @@ def _quests(store: Any) -> dict[str, Any]:
         return {"window_days": 7, "budget": None, "rows": []}
 
 
-def _config_rows(store: Any) -> list[tuple[str, str, int, str | None]]:
+def _config_rows(store: Store) -> list[tuple[str, str, int, str | None]]:
     """All ``service_config`` rows as ``(service, host, prio, model_pref)``."""
     try:
         with store.pool.connection() as conn:
@@ -350,7 +355,7 @@ def _config_rows(store: Any) -> list[tuple[str, str, int, str | None]]:
         return []
 
 
-def _activity(store: Any) -> dict[str, dict[str, Any]]:
+def _activity(store: Store) -> dict[str, dict[str, Any]]:
     """handler -> {last_ok, last_fail} from ``worker_logs`` BatchResult rows.
 
     Thin wrapper over :func:`precis.health_checks.activity_by_handler` (the
@@ -362,7 +367,7 @@ def _activity(store: Any) -> dict[str, dict[str, Any]]:
     return health_checks.activity_by_handler(store)
 
 
-def _reserves(store: Any) -> dict[str, dict[str, Any]]:
+def _reserves(store: Store) -> dict[str, dict[str, Any]]:
     """host -> its active (unexpired) reserve row (§B-2, gr162694 §K).
 
     ``service_config``'s ``reserve`` pseudo-service (``workers/
@@ -397,7 +402,7 @@ def _reserves(store: Any) -> dict[str, dict[str, Any]]:
 _JOB_EXECUTOR_PREFIX = "job_"
 
 
-def _scheduler_leases(store: Any) -> dict[str, dict[str, Any]]:
+def _scheduler_leases(store: Store) -> dict[str, dict[str, Any]]:
     """cadence name -> its ``scheduler_leases`` row (empty on error).
 
     Backs the Services sub-tab's "next run" column (gr162694 #1):
@@ -475,7 +480,7 @@ def _next_run(
     }
 
 
-def _llm_models(store: Any) -> list[str]:
+def _llm_models(store: Store) -> list[str]:
     """Model ids from the ``llm`` catalog for the model_pref dropdown."""
     try:
         cards = store.list_refs(kind="llm", limit=200)
@@ -599,7 +604,7 @@ _CHAIN_TIERS: dict[str, Tier] = {
 }
 
 
-def _set_chain_override(store: Any, tier: Tier, chain_json: str) -> None:
+def _set_chain_override(store: Store, tier: Tier, chain_json: str) -> None:
     """Write (or, for blank text, clear) one tier's placement-chain override.
 
     Blank ``chain_json`` reverts the tier to the compiled default ladder.
@@ -648,7 +653,7 @@ async def set_llm_chain(
     return RedirectResponse(url="/status?tab=services", status_code=303)
 
 
-def _set_op_override(store: Any, source: str, tier: str, model: str) -> None:
+def _set_op_override(store: Store, source: str, tier: str, model: str) -> None:
     """Write (or, for blank/"default" ``tier``, clear) one operation's
     override (the per-operation routing editor).
 
@@ -725,7 +730,7 @@ async def set_llm_op(
     return RedirectResponse(url="/status?tab=services", status_code=303)
 
 
-def _set_cloud_enabled(store: Any, enabled: bool) -> None:
+def _set_cloud_enabled(store: Store, enabled: bool) -> None:
     """Write the capability tiers + placement chains cloud-throttle dial. ``True`` clears the row
     (back to default-on); only an explicit ``False`` writes ``"false"``."""
     if enabled:

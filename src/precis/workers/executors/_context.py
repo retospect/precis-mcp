@@ -26,7 +26,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Parses the job id out of ``JobHandler.put``'s ack body. Both ack
 #: shapes carry it: ``created job id=N (STATUS:queued, …)`` and the
@@ -47,7 +50,7 @@ class DispatchContext:
     #: The Store handle. Plugins occasionally need to issue
     #: side-band queries (e.g. find a linked ref by relation) that
     #: don't fit the helpers below.
-    store: Any
+    store: Store
     #: The claimed job's ref_id.
     ref_id: int
     #: ``refs.title`` at claim time.

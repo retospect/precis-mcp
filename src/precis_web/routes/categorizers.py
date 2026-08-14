@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 import yaml
@@ -61,6 +61,9 @@ from precis.workers.service_config import (
     set_service_prio,
 )
 from precis_web.deps import get_store, templates
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/categorizers", tags=["categorizers"])
 
@@ -234,7 +237,7 @@ def _allowed_services() -> frozenset[str]:
     )
 
 
-def _override_rows(store: Any) -> frozenset[str]:
+def _override_rows(store: Store) -> frozenset[str]:
     """Services carrying an explicit all-hosts (``*``) ``service_config``
     row — the "overridden" (vs "env/profile default") signal the UI
     shows alongside the effective on/off state. Degrades to "no
@@ -248,7 +251,7 @@ def _override_rows(store: Any) -> frozenset[str]:
     return frozenset(str(r["service"]) for r in rows if r["host"] == ALL_HOSTS)
 
 
-def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
+def _effective_state(store: Store) -> dict[str, dict[str, Any]]:
     """``service -> {"enabled": bool, "overridden": bool, "concurrency": int}``
     for every service this page governs, scoped to the all-hosts (``*``) row
     — the live ``service_config`` override wins over the env/profile
@@ -409,7 +412,7 @@ def _safe(fn: Any) -> Any:
         return None
 
 
-def _chunk_eligible_total(store: Any) -> int:
+def _chunk_eligible_total(store: Store) -> int:
     """Count of eligible body chunks — the shared ``total`` denominator for
     every chunk-level axis, mirroring the ``classify`` cascade's claim
     predicate (``workers/classify.py``'s ``_claim``): real body paragraphs
@@ -424,7 +427,7 @@ def _chunk_eligible_total(store: Any) -> int:
 
 
 def _chunk_axis_progress(
-    store: Any, namespace: str, chunk_eligible_total: int
+    store: Store, namespace: str, chunk_eligible_total: int
 ) -> tuple[int, int, datetime | None]:
     """(done, total, last_ts) for a chunk-level axis's own namespace. ``done``
     = chunks already carrying a tag in this namespace; ``total`` is the
@@ -445,7 +448,7 @@ def _chunk_axis_progress(
 
 
 def _ref_axis_progress(
-    store: Any, namespace: str, paper_patent_total: int
+    store: Store, namespace: str, paper_patent_total: int
 ) -> tuple[int, int, datetime | None]:
     """(done, total, last_ts) for a ref-level axis: refs tagged in its
     namespace, over the paper+patent corpus. Each non-cascade axis now has a
@@ -469,7 +472,7 @@ def _ref_axis_progress(
     return done, paper_patent_total, last_ts
 
 
-def _paper_patent_total(store: Any) -> int:
+def _paper_patent_total(store: Store) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT count(*)::int FROM refs "
@@ -479,7 +482,7 @@ def _paper_patent_total(store: Any) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def _topics_marker_done(store: Any, marker_value: str) -> int:
+def _topics_marker_done(store: Store, marker_value: str) -> int:
     """Paper+patent refs carrying the current ``TOPICCASCADE:<marker>``
     marker — the ``classify_topics`` pass's coverage of the corpus under the
     *live enabled-topic set* (per-topic classify gating — a toggle changes the marker value,
@@ -502,7 +505,7 @@ def _topics_marker_done(store: Any, marker_value: str) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def _topic_hit_count(store: Any, slug: str) -> tuple[int, datetime | None]:
+def _topic_hit_count(store: Store, slug: str) -> tuple[int, datetime | None]:
     """(hit_count, last_ts) — how many paper+patent refs carry
     ``topic:<slug>`` (an OPEN tag — ``workers/classify_topics.py`` writes
     ``Tag.open(f"topic:{slug}")``, so the DB namespace is the ``OPEN``
@@ -524,7 +527,7 @@ def _topic_hit_count(store: Any, slug: str) -> tuple[int, datetime | None]:
     return hit_count, last_ts
 
 
-def _progress_rows(store: Any) -> dict[str, dict[str, Any]]:
+def _progress_rows(store: Store) -> dict[str, dict[str, Any]]:
     """One coverage row per categorizer, keyed by name. Each is computed
     independently via :func:`_safe` so one schema surprise degrades only
     that row (``error: True``, rendered as a dash) instead of the whole

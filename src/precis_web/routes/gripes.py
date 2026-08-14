@@ -27,7 +27,7 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,6 +41,9 @@ from precis_web.deps import (
     templates,
 )
 from precis_web.timefmt import ago as _ago
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/gripes", tags=["gripes"])
 
@@ -138,7 +141,7 @@ def _prio_of(tags: Any) -> str | None:
     return None
 
 
-def _rows(store: Any, *, status_filter: str) -> list[dict[str, Any]]:
+def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     """Live gripes with their STATUS/PRIO tags, workflow- then recency-sorted.
 
     ``status_filter``: ``'live'`` (default — everything but the

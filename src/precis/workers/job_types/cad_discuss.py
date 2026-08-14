@@ -29,11 +29,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.cad.scene import build_design, spec_to_source
 from precis.utils.llm.router import LlmRequest, Tier, dispatch
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +90,7 @@ def _feature_bounds(design: Any) -> dict[str, tuple[Any, Any]]:
     return acc
 
 
-def _design_facts(store: Any, cad_ref_id: int) -> tuple[str, str]:
+def _design_facts(store: Store, cad_ref_id: int) -> tuple[str, str]:
     """Return ``(source, facts)`` — the design source plus a measured-facts
     block (connectivity / interference / bbox / volume / node tree) so the
     discussion is grounded in real geometry, not a guess. ``facts`` is a
@@ -153,7 +156,7 @@ def _design_facts(store: Any, cad_ref_id: int) -> tuple[str, str]:
 
 
 def _prior_turns(
-    store: Any, cad_ref_id: int, exclude_job_id: int
+    store: Store, cad_ref_id: int, exclude_job_id: int
 ) -> list[dict[str, str]]:
     """The design's earlier discussion turns (oldest first): each a
     ``{instruction, answer}`` from a succeeded ``cad_discuss`` job."""

@@ -285,7 +285,12 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
 
 
 def validate_submit(
-    store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
+    # unused (deleted below) -- kept for the registry's uniform
+    # validate_submit signature; tests pass None directly.
+    store: Any,
+    *,
+    gripe_id: int | None = None,
+    params: dict[str, Any],
 ) -> str | None:
     """Submit-time fail-closed gate. Returns an error string or ``None``.
 

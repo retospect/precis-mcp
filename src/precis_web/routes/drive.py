@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Query, Request
@@ -65,6 +65,9 @@ from precis_web.routes.items import (
 from precis_web.routes.items import tags_suggest as _tags_suggest
 from precis_web.routes.papers_needed import _KIND_DROPZONES, _watch_dir_from_plist
 from precis_web.timefmt import ago as _ago
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/drive", tags=["drive"])
 
@@ -149,7 +152,7 @@ def _doctypes() -> list[dict[str, Any]]:
     ]
 
 
-def _folder_tree(store: Any) -> list[dict[str, Any]]:
+def _folder_tree(store: Store) -> list[dict[str, Any]]:
     """Every live folder as a nested tree (name-sorted per level)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -235,7 +238,7 @@ _CHILD_COLS = """
 """
 
 
-def _children(store: Any, folder_id: int) -> list[dict[str, Any]]:
+def _children(store: Store, folder_id: int) -> list[dict[str, Any]]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
@@ -249,7 +252,7 @@ def _children(store: Any, folder_id: int) -> list[dict[str, Any]]:
     return [_row(r) for r in rows]
 
 
-def _unfiled(store: Any, artifact_kinds: list[str]) -> list[dict[str, Any]]:
+def _unfiled(store: Store, artifact_kinds: list[str]) -> list[dict[str, Any]]:
     """Live artifact refs with no parent. Todos are exempt — an
     unfoldered strategic root is normal, not 'unfiled'."""
     kinds = [k for k in artifact_kinds if k != "todo"]
@@ -269,7 +272,7 @@ def _unfiled(store: Any, artifact_kinds: list[str]) -> list[dict[str, Any]]:
     return [_row(r) for r in rows]
 
 
-def _breadcrumb(store: Any, folder_id: int) -> list[dict[str, Any]]:
+def _breadcrumb(store: Store, folder_id: int) -> list[dict[str, Any]]:
     """(ref_id, title) pairs root→here, walking up folder parents."""
     crumbs: list[dict[str, Any]] = []
     seen: set[int] = set()

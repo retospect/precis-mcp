@@ -119,6 +119,7 @@ from precis.workers.executors.claude_inproc import _build_dispatch_context
 from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
+    from precis.store.store import Store
     from precis.workers.executors._context import DispatchContext  # noqa: F401
 
 log = logging.getLogger(__name__)
@@ -284,7 +285,13 @@ class _LeaseKeepalive:
     at worst performs one extra harmless renewal).
     """
 
-    def __init__(self, store: Any, ref_id: int, meta: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        # tests instantiate this directly with a narrow _FakeStore
+        store: Any,
+        ref_id: int,
+        meta: dict[str, Any],
+    ) -> None:
         self._store = store
         self._ref_id = ref_id
         # Snapshot the claim-time lease identity rather than aliasing the
@@ -347,7 +354,12 @@ class _LeaseKeepalive:
 # ── Pass entry point ──────────────────────────────────────────────
 
 
-def run_coordinator_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
+def run_coordinator_pass(
+    # tests call this directly with a narrow _FakeStore
+    store: Any,
+    *,
+    limit: int = 4,
+) -> dict[str, int]:
     """Process up to ``limit`` coordinator jobs.
 
     Returns ``{claimed, ok, failed}`` for the ref-pass aggregator.
@@ -413,7 +425,13 @@ def run_coordinator_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
 # ── Per-job dispatch ──────────────────────────────────────────────
 
 
-def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
+def _run_one(
+    # tests call this directly with a narrow _FakeStore
+    store: Any,
+    ref_id: int,
+    title: str,
+    meta: dict[str, Any],
+) -> None:
     """Dispatch a single claimed coordinator job.
 
     The coordinator path expects every job_type to declare its own
@@ -477,7 +495,7 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     _persist_dispatch_result(store, ref_id, result)
 
 
-def _persist_dispatch_result(store: Any, ref_id: int, result: Any) -> None:
+def _persist_dispatch_result(store: Store, ref_id: int, result: Any) -> None:
     """Advance a coordinator job from its dispatcher's return.
 
     ``Done`` → write the ``job_summary`` chunk, merge final scalars into

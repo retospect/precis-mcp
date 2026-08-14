@@ -14,7 +14,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -42,6 +42,9 @@ from precis_web.timefmt import abs_ts as _abs_ts
 from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
 from precis_web.timefmt import relative as _relative
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -77,7 +80,7 @@ _request_conn: ContextVar[Any | None] = ContextVar("_status_request_conn", defau
 
 
 @contextmanager
-def _connect(store: Any) -> Iterator[Any]:
+def _connect(store: Store) -> Iterator[Any]:
     """Yield the request-shared connection if one is parked, else a pooled one.
 
     When reusing the shared connection we must NOT close it (the route's
@@ -120,7 +123,7 @@ def _safe(fn) -> Any:
         return None
 
 
-def _kind_counts(store: Any) -> list[dict[str, Any]]:
+def _kind_counts(store: Store) -> list[dict[str, Any]]:
     with _connect(store) as conn:
         rows = conn.execute(
             "SELECT kind, count(*)::int FROM refs WHERE deleted_at IS NULL "
@@ -129,7 +132,7 @@ def _kind_counts(store: Any) -> list[dict[str, Any]]:
     return [{"kind": r[0], "count": int(r[1])} for r in rows]
 
 
-def _paper_summary(store: Any) -> dict[str, int]:
+def _paper_summary(store: Store) -> dict[str, int]:
     with _connect(store) as conn:
         row = conn.execute(
             "SELECT count(*)::int AS total, "
@@ -140,7 +143,7 @@ def _paper_summary(store: Any) -> dict[str, int]:
     return {"total": total, "held": held, "stub": total - held}
 
 
-def _todo_status(store: Any) -> list[dict[str, Any]]:
+def _todo_status(store: Store) -> list[dict[str, Any]]:
     with _connect(store) as conn:
         rows = conn.execute(
             """
@@ -158,7 +161,7 @@ def _todo_status(store: Any) -> list[dict[str, Any]]:
     return [{"status": r[0], "count": int(r[1])} for r in rows]
 
 
-def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+def _recent_dreams(store: Store, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent dream-tagged memories.
 
     Dream-pass writes new memory refs carrying ``tier:dream`` (see
@@ -200,7 +203,7 @@ def _recent_dreams(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     ]
 
 
-def _synthetic_insights_count(store: Any) -> int:
+def _synthetic_insights_count(store: Store) -> int:
     """How many ``tier:synthetic-insight`` memories exist total.
 
     Used as the badge on the "Recent dreams" panel link to the
@@ -222,7 +225,7 @@ def _synthetic_insights_count(store: Any) -> int:
     return int(row[0]) if row else 0
 
 
-def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+def _recent_todo_done(store: Store, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent todos that flipped to a terminal state.
 
     Reads ref_events for the ``status:done`` / ``auto-resolved`` /
@@ -255,7 +258,7 @@ def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     ]
 
 
-def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
+def _backlog_counts(store: Store) -> dict[str, dict[str, Any]]:
     """Per-pass backlog counts: how many *claimable* chunks are waiting?
 
     Thin wrapper over :func:`precis.health_checks.compute_backlog_counts`
@@ -267,7 +270,7 @@ def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
         return health_checks.compute_backlog_counts(conn)
 
 
-def _recent_agent_activity(store: Any, limit: int = 10) -> list[dict[str, Any]]:
+def _recent_agent_activity(store: Store, limit: int = 10) -> list[dict[str, Any]]:
     """Last N LLM-agent pass results — dream / reviewer / job runner.
 
     These passes each shell out to ``claude -p`` so they're the
@@ -311,7 +314,7 @@ def _recent_agent_activity(store: Any, limit: int = 10) -> list[dict[str, Any]]:
     ]
 
 
-def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+def _recent_passes(store: Store, limit: int = 5) -> list[dict[str, Any]]:
     """Most-recent chunk_keywords / summarize / embed pass batches.
 
     These workers DON'T write ref_events — pass summaries naturally
@@ -364,7 +367,7 @@ def _recent_passes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
     ]
 
 
-def _recent_events(store: Any, limit: int = 20) -> list[dict[str, Any]]:
+def _recent_events(store: Store, limit: int = 20) -> list[dict[str, Any]]:
     # NB: ``ref_events`` stamps its timestamp in column ``ts`` (see
     # 0001_initial.sql), not ``created_at`` — the earlier name made
     # this query raise and the panel silently rendered empty under
@@ -386,7 +389,7 @@ def _recent_events(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     ]
 
 
-def _claude_usage(store: Any) -> dict[str, Any]:
+def _claude_usage(store: Store) -> dict[str, Any]:
     """Roll up Claude spend from ``ref_events.cost_usd``.
 
     Every agentic call (dream / reviewers / plan_tick via
@@ -439,6 +442,7 @@ def _tote_state(spent: float, cap: float) -> str:
     return "amber" if spent / cap >= 0.8 else "green"
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _budget_tote(store: Any) -> dict[str, Any]:
     """Whole-runtime rolling spend vs the budget caps, with breakdowns.
 
@@ -522,7 +526,7 @@ def _budget_tote(store: Any) -> dict[str, Any]:
     }
 
 
-def _hosts(store: Any) -> list[dict[str, Any]]:
+def _hosts(store: Store) -> list[dict[str, Any]]:
     """Per-host liveness from ``worker_logs``: last-seen + recent errors.
 
     A host that logged anything in the last 7 days appears; its
@@ -552,7 +556,7 @@ def _hosts(store: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _heartbeats(store: Any) -> list[dict[str, Any]]:
+def _heartbeats(store: Store) -> list[dict[str, Any]]:
     """Per-host sensor snapshot from ``host_heartbeat`` (temp + load).
 
     Read via raw SQL (not the ``HeartbeatMixin``) so the fake-store
@@ -627,7 +631,7 @@ _LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
 ]
 
 
-def _liveness(store: Any) -> list[dict[str, Any]]:
+def _liveness(store: Store) -> list[dict[str, Any]]:
     """End-to-end freshness: last activity per pipeline stage + watch.
 
     Answers "is it alive?" at a glance — when did the corpus last take
@@ -696,7 +700,7 @@ _NOW_RECENT_ALERTS_LIMIT = 10
 _NOW_RECENT_TERMINAL_LIMIT = 20
 
 
-def _now_hosts(store: Any) -> list[dict[str, Any]]:
+def _now_hosts(store: Store) -> list[dict[str, Any]]:
     """Per-host live activity: each process's current pass (or idle),
     straight from ``host_heartbeat.meta.activity`` — the centerpiece of
     the Now tab. A host with no ``activity`` key yet (pre-first-pass, or
@@ -747,7 +751,7 @@ def _now_hosts(store: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _now_jobs(store: Any) -> dict[str, Any]:
+def _now_jobs(store: Store) -> dict[str, Any]:
     """Job STATUS-lane snapshot: running (with lease countdown), queued
     (flagging stalled), and the last N terminal transitions.
 
@@ -852,7 +856,7 @@ def _now_jobs(store: Any) -> dict[str, Any]:
     }
 
 
-def _now_alerts(store: Any) -> dict[str, Any]:
+def _now_alerts(store: Store) -> dict[str, Any]:
     """Active alerts first, then a short dimmed tail of recently-resolved
     ones — reuses ``/alerts``'s own row-shaping helper (:func:`_alert_rows`)
     so the two views can never drift on what "open" means."""
@@ -879,7 +883,7 @@ def _now_alerts(store: Any) -> dict[str, Any]:
     return {"active": active, "recent": recent}
 
 
-def _now_ctx(store: Any) -> dict[str, Any]:
+def _now_ctx(store: Store) -> dict[str, Any]:
     """Assemble the Now tab's fragment context — each section degrades to
     empty on its own query failure (:func:`_safe`), same as every other
     sub-tab."""
@@ -906,7 +910,7 @@ def _now_ctx(store: Any) -> dict[str, Any]:
 _SPIN_LOOP_EVENTS_24H = 200
 
 
-def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
+def _background_anomalies(store: Store) -> dict[str, list[dict[str, Any]]]:
     """Background-worker health: spin loops + failed passes (24h).
 
     Two cheap reads that turn the invisible failure modes of the
@@ -996,7 +1000,7 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
     return {"spin_loops": spin_loops, "failed_passes": failed_passes}
 
 
-def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
+def _automations(store: Store, limit: int = 20) -> list[dict[str, Any]]:
     """Standing automations — recurring todos (``meta.schedule`` set)
     carrying the ``automation`` tag (folded the retired
     ``kind='cron'`` push-notification mechanism onto the recurring facet
@@ -1090,7 +1094,7 @@ def _app_version() -> str:
         return "unknown"
 
 
-def _quota_view(store: Any) -> dict[str, Any]:
+def _quota_view(store: Store) -> dict[str, Any]:
     """The claude-OAuth quota lane: the snapshot's windows + the live pause
     decision (if any). Degrades to an empty view when no snapshot exists.
 
@@ -1131,7 +1135,7 @@ def _quota_view(store: Any) -> dict[str, Any]:
     }
 
 
-def _health_ctx(store: Any, cfg: Any) -> dict[str, Any]:
+def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
     """Health sub-tab: the old Status page's telemetry + the reconciled
     host strip (WS3 folds factory's capability chips + 6h error samples
     onto the same heartbeat row instead of a second, separate strip on
@@ -1185,7 +1189,7 @@ def _health_ctx(store: Any, cfg: Any) -> dict[str, Any]:
     }
 
 
-def _services_ctx(store: Any, host: str) -> dict[str, Any]:
+def _services_ctx(store: Store, host: str) -> dict[str, Any]:
     """Services sub-tab: the retired ``/factory`` page's category tables +
     editable prio/model_pref + Quests, unchanged (its SQL helpers already
     degrade to empty on their own — see ``factory.py``).
@@ -1266,7 +1270,7 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
     }
 
 
-def _llm_chain_ctx(store: Any) -> dict[str, Any]:
+def _llm_chain_ctx(store: Store) -> dict[str, Any]:
     """The capability tiers + placement chains Phase B operator placement-chain editor state — one row
     per pure-capability tier (``FRONTIER``/``BIG``/``MEDIUM``/``SMALL``) plus
     the cloud-throttle dial, for the Services sub-tab's chain-editor panel.
@@ -1313,7 +1317,7 @@ def _llm_chain_ctx(store: Any) -> dict[str, Any]:
         }
 
 
-def _llm_op_stats(store: Any) -> dict[str, dict[str, Any]]:
+def _llm_op_stats(store: Store) -> dict[str, dict[str, Any]]:
     """One ``GROUP BY source`` rollup over ``llm_call_log`` — last-run,
     7-day call volume, and last-seen model per observed ``source``, for the
     operations panel's row set (:func:`_llm_ops_ctx`) and its activity
@@ -1341,7 +1345,7 @@ def _llm_op_stats(store: Any) -> dict[str, dict[str, Any]]:
     }
 
 
-def _llm_ops_ctx(store: Any) -> dict[str, Any]:
+def _llm_ops_ctx(store: Store) -> dict[str, Any]:
     """Per-operation LLM routing panel state — one row per operation over
     **union(registry LLM_OPERATIONS keys, EXCLUDED_OPERATIONS keys, observed
     ``llm_call_log.source`` values)**, sorted last-run desc (never-run
@@ -1446,6 +1450,10 @@ _TIER_TOOLS: dict[str, bool] = {
 }
 
 
+# `Any`, not `Store`: unit tests (test_status_models.py) drive this with a
+# `_FakeStore` that only implements `list_refs`, narrower than the
+# `Store`-typed `meter.bind_store` call this forwards into (precedent:
+# `briefing_cast._lane_quest`).
 def _active_routing_ctx(store: Any) -> dict[str, Any]:
     """The capability tiers + placement chains "what each capability tier routes to *right now*" header for
     the Models sub-tab. For each pure-capability tier it resolves the live
@@ -1598,6 +1606,8 @@ def _llm_card_view(ref: Any) -> dict[str, Any]:
     }
 
 
+# `Any`, not `Store`: same `_FakeStore` (list_refs-only) as
+# `_active_routing_ctx`, which this forwards `store` into unchanged.
 def _models_ctx(store: Any) -> dict[str, Any]:
     """Models sub-tab: the ``llm`` catalog rendered as cards, split by where a
     model is *sourced* — Cloud (``tier_floor`` = ``cloud-*``: provider + list
@@ -1633,7 +1643,7 @@ def _models_ctx(store: Any) -> dict[str, Any]:
     return ctx
 
 
-def _budget_ctx(store: Any) -> dict[str, Any]:
+def _budget_ctx(store: Store) -> dict[str, Any]:
     """Budget sub-tab: the retired ``/budget`` page folded in verbatim —
     the tote, the quota live-pause banner, the cap-editor state, and the
     dream pass's cadence knob (Wave-0 §G)."""

@@ -15,7 +15,7 @@ debugging "why does this chunk look like that?".
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -24,6 +24,9 @@ from precis.agentlog import list_recent
 from precis.errors import NotFound
 from precis_web.deps import get_store, templates
 from precis_web.timefmt import ago as _ago
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["agentlogs"])
 
@@ -56,7 +59,7 @@ async def agentlogs(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "agentlogs/list.html.j2", ctx)
 
 
-def _touched_chunks(store: Any, log_id: int) -> list[dict[str, Any]]:
+def _touched_chunks(store: Store, log_id: int) -> list[dict[str, Any]]:
     """Draft chunks this run wrote/moved — slug + handle + a text clip,
     linking back to the block in the draft reader."""
     sql = """

@@ -54,12 +54,15 @@ import logging
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from precis.store.types import Tag
 from precis.workers import ref_lease
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -307,7 +310,7 @@ def _context_text(conn: Any, ref_id: int) -> str:
 
 
 def run_classify_topics_pass(
-    store: Any,
+    store: Store,
     *,
     client: Any,
     batch_size: int = 16,

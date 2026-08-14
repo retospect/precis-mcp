@@ -161,6 +161,7 @@ def _project_draft(store: Store, ancestor_ids: list[int]) -> dict[str, str] | No
     }
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _chunk_context(store: Any, *, anchor: str, prose: str) -> dict[str, Any] | None:
     """Inline reading context for an ask: the draft passage it is about.
 
@@ -242,6 +243,7 @@ def _chunk_context(store: Any, *, anchor: str, prose: str) -> dict[str, Any] | N
     }
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _ask_value(store: Any, ref_id: int, tag_value: str) -> str:
     """Turn an ``ask-user`` tag into the human question text.
 

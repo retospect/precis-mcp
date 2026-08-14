@@ -90,7 +90,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -109,6 +109,9 @@ from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.workers import activity
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -535,7 +538,7 @@ def _check_stub_retraction(stub: StubRef, *, mailto: str) -> Any:
     return result
 
 
-def _apply_retraction_gate(store: Any, stub: StubRef, *, mailto: str) -> bool:
+def _apply_retraction_gate(store: Store, stub: StubRef, *, mailto: str) -> bool:
     """Stamp the stub's provenance status; skip the cascade only if retracted.
 
     Returns ``True`` only when the stub is **retracted** — the caller
@@ -890,7 +893,7 @@ def _query_openalex_credits_remaining(api_key: str) -> int | None:
     return int(raw) if isinstance(raw, (int, float)) else None
 
 
-def check_openalex_balance(store: Any, *, api_key: str) -> int | None:
+def check_openalex_balance(store: Store, *, api_key: str) -> int | None:
     """Poll OpenAlex's ``credits_remaining`` and raise/clear the low-balance alert.
 
     Called once per fetch pass on the paid host (best-effort — never raises).
@@ -1373,7 +1376,7 @@ def _try_openalex_content(
     *,
     inbox_dir: Path,
     api_key: str,
-    store: Any = None,
+    store: Store | None = None,
     email: str = "",
 ) -> FetchOutcome | None:
     """Fetch full text from OpenAlex's content cache for one stub.
@@ -1708,7 +1711,7 @@ def _oa_fetch_enabled() -> bool:
 
 
 def run_oa_fetch_pass(
-    store: Any,
+    store: Store,
     *,
     limit: int = 8,
     inbox_dir: Path | str | None = None,
@@ -2042,7 +2045,7 @@ class _StagedMarkup:
 
 
 def _run_markup_cascade(
-    store: Any, stub: StubRef, inbox_dir: Path, elsevier_api_key: str = ""
+    store: Store, stub: StubRef, inbox_dir: Path, elsevier_api_key: str = ""
 ) -> _StagedMarkup | None:
     """Try each markup leg; on first hit drop the trigger + sidecar into
     ``inbox_dir / ".staging"`` — not yet watcher-visible.
@@ -2198,7 +2201,7 @@ def _run_markup_cascade(
 
 
 def _run_cascade(
-    store: Any,
+    store: Store,
     stub: StubRef,
     inbox_dir: Path,
     email: str,

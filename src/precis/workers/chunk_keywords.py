@@ -74,7 +74,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from psycopg import Connection
@@ -85,6 +85,9 @@ from precis.embedder import Embedder, EmbedderUnavailable
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.db_retry import retry_locked
 from precis.utils.rake import extract_keywords as _rake_phrases
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -407,7 +410,7 @@ def write_chunk_keywords(
     )
 
 
-def _ensure_paper_abbrevs_retrying(store: Any, ref_id: int) -> dict[str, str]:
+def _ensure_paper_abbrevs_retrying(store: Store, ref_id: int) -> dict[str, str]:
     """:func:`ensure_paper_abbrevs`, in its own short transaction wrapped
     in :func:`retry_locked` (see :func:`run_chunk_keywords_pass`'s
     docstring for why: its ``UPDATE refs`` write can contend with a
@@ -423,7 +426,7 @@ def _ensure_paper_abbrevs_retrying(store: Any, ref_id: int) -> dict[str, str]:
 
 
 def _run_chunk_keywords_batch(
-    store: Any, embedder: Embedder, *, batch_size: int
+    store: Store, embedder: Embedder, *, batch_size: int
 ) -> dict[str, int]:
     """The claim + per-chunk work. Runs while the caller
     (:func:`run_chunk_keywords_pass`) holds the single-runner advisory
@@ -536,7 +539,7 @@ def _run_chunk_keywords_batch(
 
 
 def run_chunk_keywords_pass(
-    store: Any, embedder: Embedder, *, batch_size: int = 50
+    store: Store, embedder: Embedder, *, batch_size: int = 50
 ) -> dict[str, int]:
     """One pass over the chunk_keywords queue, single-runner across the
     fleet.

@@ -66,11 +66,14 @@ loop over it.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.quest import review_guard
 from precis.store.types import Tag
 from precis.utils.ref_tree import is_orphaned
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 class OrphanedParentError(RuntimeError):
@@ -131,7 +134,7 @@ _DEFAULT_LENSES: tuple[str, ...] = ("flow", "cites")
 
 
 def _existing_review_todo(
-    store: Any, parent_id: int, lens: str, anchor: str
+    store: Store, parent_id: int, lens: str, anchor: str
 ) -> int | None:
     """A live ``kind='todo'`` child of ``parent_id`` already carrying this
     exact ``(review, anchor)`` pair, or ``None``. Manual idempotency check
@@ -149,7 +152,7 @@ def _existing_review_todo(
 
 
 def mint_review_todo(
-    store: Any,
+    store: Store,
     *,
     parent_id: int,
     lens: str,
@@ -226,7 +229,7 @@ def mint_review_todo(
 
 
 def mint_weave_reviews(
-    store: Any,
+    store: Store,
     quest_id: int,
     body_handle: str,
     *,

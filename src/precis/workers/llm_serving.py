@@ -23,10 +23,13 @@ import platform
 import re
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.llm_catalog import LLM_KIND, upsert_card
 from precis.workers.llm_reconcile import llm_served_slots_from_cards
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +135,7 @@ def _served_by_signature(served: list[dict[str, Any]]) -> frozenset[tuple[Any, .
 
 
 def advertise_local_llm(
-    store: Any, host: str, *, base_url: str | None = None
+    store: Store, host: str, *, base_url: str | None = None
 ) -> tuple[int, int]:
     """Reconcile THIS host's local-LLM advertisement to what its llama-swap serves.
 

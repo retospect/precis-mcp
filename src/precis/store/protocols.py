@@ -61,3 +61,37 @@ class OpenTagMetaStore(Protocol):
     """Look up the first ref meta carrying a given open tag (patent CQL lift)."""
 
     def find_first_meta_for_open_tag(self, *, kind: str, tag: str) -> dict | None: ...
+
+
+# ── wave 2 (codereview-store-typing-seam) ───────────────────────────────
+
+
+class LinksStore(Protocol):
+    """A "who links here" reader: the incoming/outgoing edge index plus a
+    batch ref lookup to resolve the endpoints (``papers._backlinks``)."""
+
+    def links_for(
+        self, ref_id: int, *, direction: str = ..., relation: str | None = ...
+    ) -> list[Any]: ...
+    def fetch_refs_by_ids(
+        self, ref_ids: Iterable[int], *, include_deleted: bool = ...
+    ) -> dict[int, Ref]: ...
+
+
+class RefsByIdStore(Protocol):
+    """Just the batch ref lookup — callers that only need to turn ids into
+    refs (e.g. resolving a dossier's own slug for a canonical URL)."""
+
+    def fetch_refs_by_ids(
+        self, ref_ids: Iterable[int], *, include_deleted: bool = ...
+    ) -> dict[int, Ref]: ...
+
+
+class RefMetaStore(Protocol):
+    """Read-modify a ref's ``meta`` JSONB by (kind, id) — the weave-tick
+    quest-body-flag write. ``get_ref`` returns ``Any`` rather than
+    ``Ref | None`` so a minimal test double can hand back its own
+    ref-like stand-in without subclassing the real type."""
+
+    def get_ref(self, *, kind: str, id: int) -> Any: ...
+    def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any]) -> None: ...

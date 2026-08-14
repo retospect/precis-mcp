@@ -13,6 +13,7 @@ Covers the two pure helpers behind the panel:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
@@ -51,9 +52,9 @@ class _FakeStore:
         return [lk for lk in self._links if lk.dst_ref_id == ref_id]
 
     def fetch_refs_by_ids(
-        self, ids: list[int], *, include_deleted: bool = False
+        self, ref_ids: Iterable[int], *, include_deleted: bool = False
     ) -> dict[int, Any]:
-        return {i: self._refs[i] for i in ids if i in self._refs}
+        return {i: self._refs[i] for i in ref_ids if i in self._refs}
 
 
 # ── _backlinks ──────────────────────────────────────────────────────────

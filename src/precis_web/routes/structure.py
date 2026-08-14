@@ -31,7 +31,7 @@ import json
 import logging
 import math
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from fastapi import APIRouter, Form, Request
@@ -47,6 +47,9 @@ from precis.structure.probe import coordination, detect_bonds
 from precis.structure.scene import FIX_X, FIX_Y, FIX_Z
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
 from precis_web.timefmt import ago as _ago
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["structure"])
 
@@ -81,7 +84,7 @@ def _fixed_str(fixed: int) -> str:
     return f"fixed {axes}"
 
 
-def _list_rows(store: Any) -> list[dict[str, Any]]:
+def _list_rows(store: Store) -> list[dict[str, Any]]:
     """Live structure designs, newest first, with atom / run counts and the
     most-recent successful energy (a one-glance ladder summary)."""
     sql = """
@@ -133,7 +136,7 @@ def _list_rows(store: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _pending_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _pending_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """In-flight ``struct_relax`` jobs for this design — the compute-lane jobs
      parented on the structure whose ``STATUS`` is not yet
     ``succeeded`` (a succeeded relax has sunk a ``struct_runs`` row, so it shows
@@ -167,7 +170,7 @@ def _pending_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return out
 
 
-def _run_count(store: Any, ref_id: int) -> int:
+def _run_count(store: Store, ref_id: int) -> int:
     """Total recorded runs for this design — the poll's reload trigger (a
     dispatched relax has *landed* once this grows)."""
     with store.pool.connection() as conn:
@@ -177,7 +180,7 @@ def _run_count(store: Any, ref_id: int) -> int:
     return int(row[0]) if row else 0
 
 
-def _run_rows(store: Any, ref_id: int) -> list[dict[str, Any]]:
+def _run_rows(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """The design's compute history with the §23.16 cache columns the MCP
     ``view='runs'`` table omits (``cache_key`` / ``structure_sha``)."""
     sql = """
@@ -351,7 +354,7 @@ def _geom_payload(scene: Any, comment: str) -> dict[str, Any]:
     }
 
 
-def _viewer(store: Any, ref: Any, runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _viewer(store: Store, ref: Any, runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Build the 3D viewer payload: the input geometry, the optional relaxed
     geometry (newest succeeded run carrying a ``final_geometry``), and a colour
     legend. Each geometry carries its own atoms/bonds/lattice."""
@@ -435,7 +438,7 @@ def _markers(scene: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _slug_of(store: Any, ref_id: int) -> str | None:
+def _slug_of(store: Store, ref_id: int) -> str | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
@@ -445,7 +448,7 @@ def _slug_of(store: Any, ref_id: int) -> str | None:
     return row[0] if row else None
 
 
-def _lineage(store: Any, ref_id: int) -> dict[str, list[dict[str, str]]]:
+def _lineage(store: Store, ref_id: int) -> dict[str, list[dict[str, str]]]:
     """Parents (this design is ``derived-from`` them) + children (derived from
     this one), for the lineage section — the same shape as _followup_discussions."""
     parents: list[dict[str, str]] = []
@@ -461,7 +464,7 @@ def _lineage(store: Any, ref_id: int) -> dict[str, list[dict[str, str]]]:
     return {"parents": parents, "children": children}
 
 
-def _latest_proposal(store: Any, ref_id: int) -> dict[str, Any] | None:
+def _latest_proposal(store: Store, ref_id: int) -> dict[str, Any] | None:
     """The newest ``structure_propose`` job for this design — its STATUS + the
     ``job_result`` proposal chunk. Keyed on ``params.structure_ref_id`` so the
     route never has to capture the job id at mint time."""
@@ -703,7 +706,7 @@ async def structure_relax(
     return RedirectResponse(url=f"/structure/{slug}#runs", status_code=303)
 
 
-def _require_ref(store: Any, slug: str) -> int:
+def _require_ref(store: Store, slug: str) -> int:
     return resolve_live_slug_ref(store, kind="structure", id=slug).id
 
 

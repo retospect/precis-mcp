@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._common import (
     FAILED as _FAILED,
@@ -78,6 +78,9 @@ from precis.workers.executors.claude_inproc import (
 )
 from precis.workers.job_types import get_job_type, known_job_types
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 log = logging.getLogger(__name__)
 
 _EXECUTOR_NAME = "job_inproc"
@@ -113,7 +116,7 @@ def _lease_seconds() -> int:
         return _DEFAULT_LEASE_S
 
 
-def renew_own_lease(store: Any, ref_id: int, meta: dict[str, Any]) -> bool:
+def renew_own_lease(store: Store, ref_id: int, meta: dict[str, Any]) -> bool:
     """Renew THIS job's own lease mid-drain — called by a long-running
     job_type's dispatch loop (``embed_batch``'s ``claim_batch`` iteration)
     so a batch slower than :func:`_lease_seconds` doesn't get epoch/
@@ -141,7 +144,7 @@ def renew_own_lease(store: Any, ref_id: int, meta: dict[str, Any]) -> bool:
     return renewed
 
 
-def run_job_inproc_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
+def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     """Process up to ``limit`` (default 1) job_inproc jobs.
 
     Returns ``{claimed, ok, failed}`` for runner aggregation.
@@ -213,7 +216,7 @@ def run_job_inproc_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
     return {"claimed": len(rows), "ok": ok, "failed": failed}
 
 
-def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
+def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     """Dispatch one claimed job — plugin ``dispatch`` only. job_inproc has
     no in-tree built-in switch (unlike ``claude_inproc``'s fix_gripe/
     plan_tick) and no legacy blocking-``dispatch``-vs-submit/poll split

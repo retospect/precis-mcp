@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Query, Request, Response
@@ -43,6 +43,9 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -445,7 +448,7 @@ def _split_tags(raw: str) -> list[str]:
     return [p for p in parts if p]
 
 
-def _load_freeform_tags(store: Any, ref_ids: list[int]) -> dict[int, list[str]]:
+def _load_freeform_tags(store: Store, ref_ids: list[int]) -> dict[int, list[str]]:
     """Return removable free tags per ref (canonical strings).
 
     Excludes ``STATUS:`` (dedicated dropdown) — the §M facet level is no
@@ -475,7 +478,7 @@ def _load_freeform_tags(store: Any, ref_ids: list[int]) -> dict[int, list[str]]:
     return out
 
 
-def _load_tags(store: Any, ref_ids: list[int]) -> dict[int, dict[str, str]]:
+def _load_tags(store: Store, ref_ids: list[int]) -> dict[int, dict[str, str]]:
     """Bulk-fetch STATUS + the §M facet-derived ``level`` for each todo.
 
     Returns ``{ref_id: {'status': ..., 'level': ...}}`` with sensible
@@ -519,7 +522,7 @@ def _load_tags(store: Any, ref_ids: list[int]) -> dict[int, dict[str, str]]:
     return out
 
 
-def _child_jobs(store: Any, todo_ids: list[int]) -> list[dict[str, Any]]:
+def _child_jobs(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
     """Return ``kind='job'`` children of the given todos.
 
     Jobs are where processing actually happens — a worker claims a
@@ -548,7 +551,7 @@ def _child_jobs(store: Any, todo_ids: list[int]) -> list[dict[str, Any]]:
     ]
 
 
-def _subtree_rows(store: Any, root_id: int) -> list[tuple[int, str, str]]:
+def _subtree_rows(store: Store, root_id: int) -> list[tuple[int, str, str]]:
     """Return ``(ref_id, kind, status)`` for the subtree of ``root_id``.
 
     A recursive walk over ``refs.parent_id`` (root inclusive), skipping
@@ -585,7 +588,7 @@ def _subtree_rows(store: Any, root_id: int) -> list[tuple[int, str, str]]:
     return [(int(r[0]), str(r[1]), str(r[2] or "")) for r in rows]
 
 
-def _halt_tags_for(store: Any, todo_ids: list[int]) -> dict[int, list[str]]:
+def _halt_tags_for(store: Store, todo_ids: list[int]) -> dict[int, list[str]]:
     """Return each todo's ``halt`` / ``halt:<reason>`` open tags.
 
     The start (▶) button clears every halt marker on a subtree — bare
@@ -618,7 +621,7 @@ def _halt_tags_for(store: Any, todo_ids: list[int]) -> dict[int, list[str]]:
     return out
 
 
-def _parent_todo_id(store: Any, ref_id: int) -> int | None:
+def _parent_todo_id(store: Store, ref_id: int) -> int | None:
     """Return the ``parent_id`` of one ref (the owner todo of a job), or None."""
     try:
         with store.pool.connection() as conn:
@@ -633,7 +636,7 @@ def _parent_todo_id(store: Any, ref_id: int) -> int | None:
     return int(row[0])
 
 
-def _job_notes(store: Any, job_ids: list[int]) -> dict[int, dict[str, Any]]:
+def _job_notes(store: Store, job_ids: list[int]) -> dict[int, dict[str, Any]]:
     """Bulk-fetch the ``job_result`` / ``job_event`` / ``job_summary`` chunks.
 
     Three signals per job:
@@ -737,7 +740,9 @@ def _lease_active(lease_until: str | None) -> bool:
     return ts > datetime.now(UTC)
 
 
-def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str, Any]]:
+def _build_rows(
+    store: Store, *, precis_root: Path | None = None
+) -> list[dict[str, Any]]:
     """Flatten the todo tree (with child jobs) into DFS-ordered rows.
 
     Each row carries ``id, kind, title, status, level, depth, done,
@@ -1675,7 +1680,7 @@ def _parse_transcript(raw: str) -> list[dict[str, Any]]:
     return turns
 
 
-def _transcript_for(store: Any, ref_id: int) -> tuple[int, str] | None:
+def _transcript_for(store: Store, ref_id: int) -> tuple[int, str] | None:
     """The (job_ref_id, raw transcript) for a ref. Accepts a job id
     directly, or a todo id (→ its most recent child job with a
     transcript). ``None`` when nothing's stored."""

@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.reading.cast_common import CAST_PROFILES, export_stem
 from precis.tts.render import (
@@ -36,6 +36,9 @@ from precis.tts.render import (
     ContainerRenderError,
     render_episode,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +98,7 @@ def selection_params(now: datetime, max_age_hours: int) -> tuple[Any, ...]:
     )
 
 
-def _latest_unnarrated_cast(store: Any, *, max_age_hours: int, now: datetime):
+def _latest_unnarrated_cast(store: Store, *, max_age_hours: int, now: datetime):
     """The newest cast ``draft`` with no ``audio_episode_id`` yet, within
     ``max_age_hours`` and not in a render-failure backoff window, or ``None``.
 
@@ -126,7 +129,7 @@ def _latest_unnarrated_cast(store: Any, *, max_age_hours: int, now: datetime):
 
 
 def has_pending_cast(
-    store: Any, *, now: datetime | None = None, max_age_hours: int = _MAX_AGE_HOURS
+    store: Store, *, now: datetime | None = None, max_age_hours: int = _MAX_AGE_HOURS
 ) -> bool:
     """Cheap existence check — is there an un-narrated cast to work on?
 
@@ -139,7 +142,7 @@ def has_pending_cast(
 
 
 def _stamp_failure(
-    store: Any, ref: Any, now: datetime, *, killed: bool = False
+    store: Store, ref: Any, now: datetime, *, killed: bool = False
 ) -> None:
     """Record a render failure on ``ref`` and bump the attempt counter that
     chooses the next backoff step (see :func:`_latest_unnarrated_cast`).
@@ -178,7 +181,7 @@ def _empty(reason: str, ref_id: int | None = None) -> dict[str, Any]:
 
 
 def _news_lead_in(
-    store: Any,
+    store: Store,
     segments: list[Any],
     *,
     date_tag: str,
@@ -237,7 +240,7 @@ def _news_lead_in(
 
 
 def narrate_cast_ref(
-    store: Any,
+    store: Store,
     ref: Any,
     *,
     image: str | None = None,
@@ -384,7 +387,7 @@ def narrate_cast_ref(
 
 
 def run_cast_audio(
-    store: Any,
+    store: Store,
     *,
     image: str | None = None,
     synth: Any | None = None,

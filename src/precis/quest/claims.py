@@ -30,9 +30,12 @@ robust ``_extract_json`` parse-or-``None`` approach. Which tier/model backs
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 _SYS = (
     "You are a precise scientific claim extractor. Reply with ONLY the "
@@ -68,7 +71,7 @@ def _extract_json(text: str) -> list[Any] | None:
     return None
 
 
-def own_chunks(store: Any, paper_ref_id: int) -> list[dict[str, Any]]:
+def own_chunks(store: Store, paper_ref_id: int) -> list[dict[str, Any]]:
     """The ``ROLE3:own`` selector — this paper's own-contribution chunks.
 
     Returns ``[{"ord": int, "handle": str, "text": str}, ...]`` in document
@@ -123,7 +126,7 @@ def _build_prompt(chunks: list[dict[str, Any]]) -> str:
 
 
 def extract_claims(
-    store: Any, client: Any, paper_ref_id: int, *, max_chunks: int = 12
+    store: Store, client: Any, paper_ref_id: int, *, max_chunks: int = 12
 ) -> list[dict[str, Any]]:
     """Extract the paper's own claims from its ``ROLE3:own`` chunks.
 

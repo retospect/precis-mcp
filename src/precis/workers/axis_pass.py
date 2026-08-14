@@ -76,12 +76,15 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from precis.store.types import Tag
 from precis.workers import ref_lease
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 _AXES_DIR = Path(__file__).resolve().parent.parent / "data" / "axes"
 _ABSTRACT_CHARS = 2000
@@ -559,7 +562,7 @@ def _enrich_ref(conn: Any, rows: list[dict[str, Any]]) -> None:
 
 
 def run_axis_pass(
-    store: Any,
+    store: Store,
     *,
     dispatch: Any,
     axis_id: str,

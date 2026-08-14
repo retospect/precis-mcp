@@ -29,14 +29,17 @@ zero rather than 500-ing the page — same posture as the env's
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
 
-def _asks_count(store: Any) -> int:
+def _asks_count(store: Store) -> int:
     """Open todos carrying an ``ask-user`` tag.
 
     Count-only mirror of the ``_load_asks`` WHERE clause in
@@ -64,7 +67,7 @@ def _asks_count(store: Any) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def _alerts_count(store: Any) -> int:
+def _alerts_count(store: Store) -> int:
     """Open ``kind='alert'`` rows — count-only mirror of alerts._rows."""
     from precis.alerts import STATE_OPEN
 
@@ -83,6 +86,7 @@ def _alerts_count(store: Any) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _gripes_count(store: Any) -> int:
     """Live (non-terminal) ``kind='gripe'`` rows.
 

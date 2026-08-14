@@ -58,13 +58,16 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
 # Reuse bib_parse's proven content-based detector so the remediation pass and
 # the parse pass agree, byte-for-byte, on what a bibliography chunk is.
 from precis.workers.bib_parse import _chunk_is_bibliography
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -212,7 +215,7 @@ def _stamp_paper_version(conn: Any, ref_id: int) -> None:
 
 
 def run_bib_retag_pass(
-    store: Any,
+    store: Store,
     *,
     batch_size: int = 8,
     ref_ids: list[int] | None = None,

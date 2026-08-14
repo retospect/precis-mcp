@@ -17,12 +17,15 @@ worker; these routes are thin reads over ``cluster_cells`` /
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, templates
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 router = APIRouter(tags=["clusters"])
 
@@ -30,7 +33,7 @@ _SCOPES = ("paper", "memory")
 _TILE_WORDS = 14  # words shown per tile
 
 
-def _current_run(store: Any, scope: str) -> int | None:
+def _current_run(store: Store, scope: str) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT run_id FROM cluster_runs "
@@ -162,7 +165,7 @@ async def cluster_word(request: Request, scope: str, path: str, w: str) -> HTMLR
     )
 
 
-def _members(store: Any, run_id: int, path: str) -> list[dict[str, Any]]:
+def _members(store: Store, run_id: int, path: str) -> list[dict[str, Any]]:
     pred, params = _members_clause(path)
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -178,7 +181,7 @@ def _members(store: Any, run_id: int, path: str) -> list[dict[str, Any]]:
     ]
 
 
-def _breadcrumb(store: Any, run_id: int, path: str | None) -> list[dict[str, str]]:
+def _breadcrumb(store: Store, run_id: int, path: str | None) -> list[dict[str, str]]:
     """Ancestor crumbs labelled by each cell's top word (or its index)."""
     if not path:
         return []

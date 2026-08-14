@@ -18,9 +18,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.anki.sync import AnkiSyncError
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +37,7 @@ class AnkiSyncMisconfigured(AnkiSyncError):
     """Required ``PRECIS_ANKI_*`` config (user/password/mirror dir) is unset."""
 
 
-def retired_ref_ids(store: Any, *, window_days: int = 90) -> list[int]:
+def retired_ref_ids(store: Store, *, window_days: int = 90) -> list[int]:
     """Recently soft-deleted *authored* cards (the card_forge retire/rewrite
     path, or a manual delete) whose Anki notes should be removed. Foreign
     projections are excluded — they were never pushed under a precis guid, and
@@ -51,7 +54,7 @@ def retired_ref_ids(store: Any, *, window_days: int = 90) -> list[int]:
 
 
 def run_anki_sync(
-    store: Any,
+    store: Store,
     cfg: Any,
     *,
     limit: int = 10000,
@@ -94,9 +97,10 @@ def run_anki_sync(
 
     # Single-runner guard: only one sync per account at a time.
     with store.pool.connection() as conn:
-        got = conn.execute(
+        lock_row = conn.execute(
             "select pg_try_advisory_lock(%s)", (_ANKI_SYNC_LOCK,)
-        ).fetchone()[0]
+        ).fetchone()
+        got = lock_row[0] if lock_row else False
         if not got:
             return "anki-sync: another sync holds the lock; skipping."
         try:

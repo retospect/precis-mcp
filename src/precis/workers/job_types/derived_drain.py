@@ -46,6 +46,7 @@ from precis.workers.executors.job_inproc import renew_own_lease
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
+    from precis.store.store import Store
     from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def _make_summarize_runner() -> _PassRunner:
         tier=Tier.SMALL, source="llm_summarize", log_call=True, log_blobs=False
     )
 
-    def run_once(store: Any, *, batch_size: int, concurrency: int) -> dict[str, Any]:
+    def run_once(store: Store, *, batch_size: int, concurrency: int) -> dict[str, Any]:
         return run_llm_summarize_pass(
             store,
             client=client,
@@ -160,7 +161,7 @@ def _make_classify_runner() -> _PassRunner:
         else None
     )
 
-    def run_once(store: Any, *, batch_size: int, concurrency: int) -> dict[str, Any]:
+    def run_once(store: Store, *, batch_size: int, concurrency: int) -> dict[str, Any]:
         return run_classify_pass(
             store,
             client=client,

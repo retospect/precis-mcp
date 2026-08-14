@@ -21,9 +21,12 @@ chunk never fails the whole scope.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 }
 
 
-def _build_embedder(store: Any) -> Any:
+def _build_embedder(store: Store) -> Any:
     """Build a real embedder for the cascade's ANN convergence step —
     mirroring :func:`precis.runtime.factory.build_runtime`'s construction,
     since this job dispatches in-worker, off its own hub, not the server's.

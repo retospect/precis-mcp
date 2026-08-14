@@ -30,9 +30,12 @@ claim-time lease rather than importing this module — see its docstring.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.store.types import Tag
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: How long a claim-time attempt lease brakes a failing ref before it's
 #: reclaimable again. These passes are batched, infrequent corpus-wide
@@ -47,7 +50,7 @@ def attempt_ns(marker_ns: str) -> str:
     return f"{marker_ns}ATTEMPT"
 
 
-def stamp_attempt(store: Any, ref_id: int, marker_ns: str, *, conn: Any) -> None:
+def stamp_attempt(store: Store, ref_id: int, marker_ns: str, *, conn: Any) -> None:
     """Write/refresh the claim-time attempt lease for ``ref_id``.
 
     Call BEFORE the LLM call, in its own short committed transaction ahead
@@ -65,7 +68,7 @@ def stamp_attempt(store: Any, ref_id: int, marker_ns: str, *, conn: Any) -> None
     )
 
 
-def clear_attempt(store: Any, ref_id: int, marker_ns: str, *, conn: Any) -> None:
+def clear_attempt(store: Store, ref_id: int, marker_ns: str, *, conn: Any) -> None:
     """Drop the attempt lease — call as part of the pass's own success write
     (same transaction) so a later legitimate re-trigger (version bump,
     toggled enabled-set) is never blocked by a stale lease left over from an

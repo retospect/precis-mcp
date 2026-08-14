@@ -172,7 +172,14 @@ def _parse_repos_env(raw: str | None) -> dict[str, Path]:
     return out
 
 
-def validate_submit(store: Any, *, gripe_id: int, params: dict[str, Any]) -> str | None:
+def validate_submit(
+    # tests pass narrow local stubs (tags_for-only / get_ref-only),
+    # diverging from Store
+    store: Any,
+    *,
+    gripe_id: int,
+    params: dict[str, Any],
+) -> str | None:
     """Pre-submit check: can we actually run this fix on this gripe?
 
     Returns an error message string if not, ``None`` if OK. The
@@ -213,7 +220,11 @@ def validate_submit(store: Any, *, gripe_id: int, params: dict[str, Any]) -> str
     return None
 
 
-def resolve_repo_for_gripe(store: Any, gripe_id: int, cfg: FixGripeConfig) -> Path:
+def resolve_repo_for_gripe(
+    store: Any,  # see validate_submit -- tests pass a tags_for-only stub
+    gripe_id: int,
+    cfg: FixGripeConfig,
+) -> Path:
     """Look up the repo path for a gripe at submit / claim time.
 
     Reads the gripe's tags; if a ``repo:<name>`` tag is present, the
@@ -301,6 +312,8 @@ def _unsandboxed_ack() -> bool:
 
 def run(
     *,
+    # tests pass narrow local stubs (get_ref-only, some raising past the
+    # gate), diverging from Store -- see validate_submit
     store: Any,
     job_id: int,
     gripe_id: int,

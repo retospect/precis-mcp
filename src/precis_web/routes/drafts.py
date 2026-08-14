@@ -491,6 +491,7 @@ def _list_markers(
     return marker, ordered
 
 
+# store stays Any: tests pass a hand-rolled fake narrower than Store
 def _paper_pdf_missing(store: Any, ident: str) -> bool:
     """A cited paper whose PDF is *held but absent* — the anomaly the reader
     flags. True only when the ref exists, claims a PDF (``pdf_sha256`` set),
@@ -1597,6 +1598,10 @@ def _draft_version(store: Store, ref_id: int) -> int:
     return int(row[0]) if row else 0
 
 
+# `Any`, not `Store`: test_pdf_cache_token_includes_ref_updated_at calls
+# this with a bare `None` — `_draft_version` is monkeypatched away in that
+# test, so the sentinel never reaches a real `store.pool` access
+# (precedent: `briefing_cast._lane_quest`).
 def _pdf_cache_token(store: Any, ref: Any) -> str:
     """Cache key for a compiled PDF — the chunk-level ``_draft_version``
     token *plus* the ref's ``updated_at`` epoch.

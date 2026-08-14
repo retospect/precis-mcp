@@ -66,12 +66,15 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.quest.allocator import active_quest_ids
 from precis.quest.weave_tick import QUEST_BODY_META_KEY, QUEST_BODY_WEAVE
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -214,7 +217,7 @@ DESCRIPTION = (
 )
 
 
-def _pending_sim_ids(store: Any, quest_id: int) -> list[int]:
+def _pending_sim_ids(store: Store, quest_id: int) -> list[int]:
     """Non-terminal sim jobs anywhere under this quest's candidate structures.
 
     A sim hangs off a *candidate structure* that ``serves`` the quest — but at
@@ -265,7 +268,7 @@ def _pending_sim_ids(store: Any, quest_id: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _queued_sim_count(store: Any) -> int:
+def _queued_sim_count(store: Store) -> int:
     """Count non-terminal sim jobs across ALL quests — the node-load signal for
     the starvation gate (don't stack a new batch onto an already-deep queue)."""
     with store.pool.connection() as conn:
@@ -328,7 +331,7 @@ def _carry_budgets(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _quest_status(store: Any, quest_id: int) -> str:
+def _quest_status(store: Store, quest_id: int) -> str:
     """The quest's own STATUS tag value — "deleted" when the quest is gone,
     "unknown" when present but untagged. Only used to annotate a RC2
     self-rest report; the routing decision itself is ``active_quest_ids``
@@ -345,7 +348,7 @@ def _quest_status(store: Any, quest_id: int) -> str:
     return "unknown"
 
 
-def _quest_body(store: Any, quest_id: int) -> str | None:
+def _quest_body(store: Store, quest_id: int) -> str | None:
     """The quest's ``meta.quest_body`` marker (rung 6e-2), or ``None``.
 
     ``"weave"`` (:data:`precis.quest.weave_tick.QUEST_BODY_WEAVE`) routes
@@ -366,7 +369,7 @@ def _quest_body(store: Any, quest_id: int) -> str | None:
     return str(val) if val is not None else None
 
 
-def _frontier_improved_this_tick(store: Any, quest_id: int) -> bool:
+def _frontier_improved_this_tick(store: Store, quest_id: int) -> bool:
     """Did this tick's ``cascade.update_cascade_state`` reset the stall clock?
 
     ``run_quest_tick`` calls ``update_cascade_state`` at the very end of a
@@ -388,7 +391,7 @@ def _frontier_improved_this_tick(store: Any, quest_id: int) -> bool:
     return int((ref.meta or {}).get("ticks_since_frontier_improve", 0) or 0) == 0
 
 
-def _reset_dry_rest_counter(store: Any, quest_id: int) -> None:
+def _reset_dry_rest_counter(store: Store, quest_id: int) -> None:
     """Zero the quest's ``consecutive_dry_rests`` escalation counter (gr170252).
 
     Called whenever the quest shows evidence it is not stuck: a frontier
@@ -411,7 +414,7 @@ def _reset_dry_rest_counter(store: Any, quest_id: int) -> None:
         log.exception("_reset_dry_rest_counter: failed to reset quest %s", quest_id)
 
 
-def _register_dry_rest(store: Any, quest_id: int) -> int:
+def _register_dry_rest(store: Store, quest_id: int) -> int:
     """Bump the quest's ``consecutive_dry_rests`` counter; escalate at threshold.
 
     Called exactly when ``_phase_tick`` rests the loop via the
@@ -538,7 +541,7 @@ def _phase_await(ctx: Any, state: dict[str, Any]) -> Any:
     )
 
 
-def _quest_topic(store: Any, quest_id: int) -> str:
+def _quest_topic(store: Store, quest_id: int) -> str:
     """Short topic string for the quest — ``meta.reaction_config`` (substrate
     + target + slab element) when present, else the quest's own title."""
     try:
@@ -563,7 +566,13 @@ def _quest_topic(store: Any, quest_id: int) -> str:
     return (ref.title or "").strip()
 
 
-def _fallback_queries(store: Any, quest_id: int, slice_count: int) -> list[str]:
+def _fallback_queries(
+    # test_quest_tick_job.py calls this directly with a bare SimpleNamespace
+    # (FakeCtx.store), diverging from Store.
+    store: Any,
+    quest_id: int,
+    slice_count: int,
+) -> list[str]:
     """One rotating lit-search query for the guaranteed-acquisition fallback
     (fired when a tick's propose step emitted no ``searches`` of its own — the
     loop should still ask the literature for something new every slice, not

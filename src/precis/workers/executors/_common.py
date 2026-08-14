@@ -22,7 +22,7 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -43,6 +43,9 @@ from precis.store._resource_slots_ops import (
 from precis.store.types import BlockInsert, Tag
 from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import reserve_active
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -842,7 +845,7 @@ def claim_executor_jobs(
 
 
 def set_status(
-    store: Any, ref_id: int, value: str, *, conn: Connection | None = None
+    store: Store, ref_id: int, value: str, *, conn: Connection | None = None
 ) -> None:
     """Replace the current ``STATUS:`` tag with ``value`` on ``ref_id``.
 
@@ -904,7 +907,7 @@ def current_status(conn: Connection, ref_id: int) -> str | None:
 
 
 def append_chunk(
-    store: Any,
+    store: Store,
     ref_id: int,
     chunk_kind: str,
     text: str,
@@ -946,7 +949,7 @@ def set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
 
 
 def record_failure(
-    store: Any,
+    store: Store,
     ref_id: int,
     reason: str,
     *,
@@ -1018,7 +1021,7 @@ def maybe_reset_gpu_after_kill(meta: dict[str, Any]) -> bool | None:
 
 
 def poison_guard(
-    store: Any,
+    store: Store,
     conn: Connection,
     ref_id: int,
     meta: dict[str, Any],
