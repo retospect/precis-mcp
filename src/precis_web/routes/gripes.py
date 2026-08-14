@@ -8,9 +8,10 @@ data-layer work: every mutation dispatches an existing verb (``tag`` /
 ``put`` / ``delete``) through the in-process runtime so validation and
 tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
-* ``GET /gripes`` — live gripes (default: everything but
-  ``STATUS:wontfix``), grouped by status, workflow-stage then recency
-  ordered. ``?status=wontfix`` / ``?status=all`` widen the view.
+* ``GET /gripes`` — live gripes (default: everything but the terminal
+  ``STATUS:done`` / ``STATUS:wontfix``), grouped by status,
+  workflow-stage then recency ordered. ``?status=wontfix`` /
+  ``?status=all`` widen the view.
 * ``GET /gripes/{id}`` — body + append-only comment timeline, a
   comment box, and the status controls.
 * ``POST /gripes/{id}/status`` — ``tag`` verb, closed ``STATUS:`` axis
@@ -43,11 +44,11 @@ from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/gripes", tags=["gripes"])
 
-#: STATUS axis vocabulary, in workflow order — also the list's CASE-rank
-#: sort order. Mirrors ``GripeHandler.default_tags_on_create`` + the
-#: lifecycle documented in ``precis-gripe-help``. There is no
-#: "done"/"fixed" value — a gripe whose fix has landed is *retired*
-#: (``delete``), not statused; see the ``retire`` route below.
+#: STATUS transitions the detail page offers, in workflow order.
+#: Mirrors ``GripeHandler.default_tags_on_create`` + the lifecycle
+#: documented in ``precis-gripe-help``. Deliberately no "done" button —
+#: a gripe whose fix has landed is *retired* (``delete``), not statused;
+#: see the ``retire`` route below.
 STATUS_VALUES: tuple[str, ...] = (
     "open",
     "triaged",
@@ -56,9 +57,32 @@ STATUS_VALUES: tuple[str, ...] = (
     "wontfix",
 )
 
-#: SQL ``CASE`` fragment for the STATUS_VALUES workflow rank — built
+#: Terminal STATUS values the "live" queue (and the nav badge,
+#: ``nav.py::_gripes_count``) excludes. ``wontfix`` is the vocabulary's
+#: own final state; ``done`` isn't in the gripe lifecycle at all
+#: (retire = ``delete``) but the STATUS axis vocabulary is a cross-kind
+#: union (``store/types.py::_CLOSED_VOCAB``), so agents drifting into
+#: the todo lifecycle do tag gripes ``STATUS:done`` — treat those as
+#: resolved, not live.
+TERMINAL_VALUES: tuple[str, ...] = ("done", "wontfix")
+
+#: Every STATUS value the list can render, in display order — the
+#: transition vocabulary plus the tolerated ``done`` drift, terminal
+#: states last. Drives the list's CASE-rank sort and grouping.
+_RANKED_VALUES: tuple[str, ...] = (
+    "open",
+    "triaged",
+    "ready_for_fix",
+    "in_review",
+    "done",
+    "wontfix",
+)
+
+#: SQL ``CASE`` fragment for the _RANKED_VALUES workflow rank — built
 #: once since the vocabulary is fixed, not user input.
-_STATUS_RANK_SQL = " ".join(f"WHEN '{v}' THEN {i}" for i, v in enumerate(STATUS_VALUES))
+_STATUS_RANK_SQL = " ".join(
+    f"WHEN '{v}' THEN {i}" for i, v in enumerate(_RANKED_VALUES)
+)
 
 #: Badge colour per status, distinct from Alerts' severity palette so
 #: the two tabs don't visually blur together.
@@ -67,6 +91,7 @@ _STATUS_BADGE: dict[str, str] = {
     "triaged": "bg-sky-100 text-sky-800 border-sky-300",
     "ready_for_fix": "bg-amber-100 text-amber-800 border-amber-300",
     "in_review": "bg-violet-100 text-violet-800 border-violet-300",
+    "done": "bg-emerald-100 text-emerald-800 border-emerald-300",
     "wontfix": "bg-rose-100 text-rose-800 border-rose-300",
 }
 
@@ -116,17 +141,19 @@ def _prio_of(tags: Any) -> str | None:
 def _rows(store: Any, *, status_filter: str) -> list[dict[str, Any]]:
     """Live gripes with their STATUS/PRIO tags, workflow- then recency-sorted.
 
-    ``status_filter``: ``'live'`` (default — everything but wontfix),
-    ``'wontfix'``, or ``'all'``. Shape mirrors ``alerts.py::_rows`` — one
-    ``refs``/``ref_tags``/``tags`` join keyed on the STATUS axis, plus a
-    correlated subquery for the optional ``PRIO:`` tag (a plain join
-    would duplicate rows for a multi-PRIO-tagged gripe).
+    ``status_filter``: ``'live'`` (default — everything but the
+    TERMINAL_VALUES), ``'wontfix'``, or ``'all'``. Shape mirrors
+    ``alerts.py::_rows`` — one ``refs``/``ref_tags``/``tags`` join keyed
+    on the STATUS axis, plus a correlated subquery for the optional
+    ``PRIO:`` tag (a plain join would duplicate rows for a
+    multi-PRIO-tagged gripe).
     """
     clauses = ["r.kind = 'gripe'", "r.deleted_at IS NULL", "t.namespace = 'STATUS'"]
     if status_filter == "wontfix":
         clauses.append("t.value = 'wontfix'")
     elif status_filter != "all":
-        clauses.append("t.value != 'wontfix'")
+        terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
+        clauses.append(f"t.value NOT IN ({terminals})")
     sql = f"""
         SELECT r.ref_id,
                r.title,
@@ -141,7 +168,7 @@ def _rows(store: Any, *, status_filter: str) -> list[dict[str, Any]]:
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
          WHERE {" AND ".join(clauses)}
-         ORDER BY CASE t.value {_STATUS_RANK_SQL} ELSE {len(STATUS_VALUES)} END,
+         ORDER BY CASE t.value {_STATUS_RANK_SQL} ELSE {len(_RANKED_VALUES)} END,
                   r.updated_at DESC
     """
     with store.pool.connection() as conn:
@@ -166,7 +193,7 @@ def _group_by_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         groups.setdefault(r["status"], []).append(r)
-    rank = {v: i for i, v in enumerate(STATUS_VALUES)}
+    rank = {v: i for i, v in enumerate(_RANKED_VALUES)}
     return [
         {
             "status": status,
@@ -175,7 +202,7 @@ def _group_by_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "badge": _status_badge(status),
         }
         for status, items in sorted(
-            groups.items(), key=lambda kv: rank.get(kv[0], len(STATUS_VALUES))
+            groups.items(), key=lambda kv: rank.get(kv[0], len(_RANKED_VALUES))
         )
     ]
 

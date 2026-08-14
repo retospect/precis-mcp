@@ -3809,9 +3809,10 @@ def test_gripes_nav_tab_renders_with_badge_hook(client) -> None:
     assert ">Gripes<" in resp.text
 
 
-def test_gripes_count_excludes_wontfix() -> None:
+def test_gripes_count_excludes_terminal_statuses() -> None:
     """``_gripes_count`` mirrors ``gripes.py``'s default 'live' filter —
-    a raw SQL count over non-wontfix STATUS rows."""
+    a raw SQL count excluding the terminal statuses (``wontfix`` plus
+    the ``STATUS:done`` drift agents leave on fixed gripes)."""
     from contextlib import contextmanager
 
     from precis_web.nav import _gripes_count
@@ -3822,7 +3823,7 @@ def test_gripes_count_excludes_wontfix() -> None:
 
     class _Conn:
         def execute(self, sql, params=None):
-            assert "t.value != 'wontfix'" in sql
+            assert "t.value NOT IN ('done', 'wontfix')" in sql
             return _Cursor()
 
     class _Pool:

@@ -10,10 +10,10 @@ The nav shows three live counts:
   under Browse, not here.) The ``Needs you`` tab
   (:mod:`precis_web.routes.needs_you`) lands on both.
 * **Gripes** — live ``kind='gripe'`` rows (every ``STATUS:`` value but
-  ``wontfix`` — the workbench's default "live" filter,
-  :mod:`precis_web.routes.gripes`). A distinct colour from both other
-  badges — dev-bug-tracker attention, not an operator health signal or
-  a planner block.
+  the terminal ``done``/``wontfix`` — the workbench's default "live"
+  filter, :mod:`precis_web.routes.gripes`). A distinct colour from both
+  other badges — dev-bug-tracker attention, not an operator health
+  signal or a planner block.
 * **Alerts** — open ``kind='alert'`` rows (machine-detected ops /
   health conditions). A different colour from "Needs you" on purpose —
   system-flagged vs you-must-act, mirroring how ``alert`` is kept
@@ -84,20 +84,25 @@ def _alerts_count(store: Any) -> int:
 
 
 def _gripes_count(store: Any) -> int:
-    """Live (non-``wontfix``) ``kind='gripe'`` rows.
+    """Live (non-terminal) ``kind='gripe'`` rows.
 
     Count-only mirror of ``gripes.py::_rows``'s default ``status='live'``
-    filter — keep the two in sync.
+    filter — keep the two in sync (both exclude
+    ``gripes.TERMINAL_VALUES``: ``wontfix`` plus the ``STATUS:done``
+    drift agents leave on fixed-but-unretired gripes).
     """
+    from precis_web.routes.gripes import TERMINAL_VALUES
+
+    terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT count(DISTINCT r.ref_id)
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'gripe' AND r.deleted_at IS NULL
-               AND t.namespace = 'STATUS' AND t.value != 'wontfix'
+               AND t.namespace = 'STATUS' AND t.value NOT IN ({terminals})
             """,
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
