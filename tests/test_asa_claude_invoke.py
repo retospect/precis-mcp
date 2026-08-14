@@ -540,3 +540,71 @@ def test_model_local_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-13"))
     assert isinstance(result, ClaudeResult)
     assert result.error is not None
+
+
+# ── chain-lane executor lifecycle ───────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_chain_executor() -> Any:
+    """Isolate the module-level chain-executor singleton per test — a
+    prior test's built pool (or shutdown) mustn't leak into the next."""
+    import asa_bot.claude_invoke as claude_invoke_mod
+
+    yield
+    claude_invoke_mod.shutdown_chain_executor()
+
+
+def test_chain_executor_not_built_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No thread pool exists until a chain-lane turn actually runs — the
+    old module-level ``_CHAIN_EXECUTOR = ThreadPoolExecutor(...)`` spun one
+    up just from importing the module."""
+    import asa_bot.claude_invoke as claude_invoke_mod
+
+    assert claude_invoke_mod._chain_executor is None
+
+
+def test_chain_executor_built_lazily_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asa_bot.claude_invoke as claude_invoke_mod
+
+    _chain_stubs(monkeypatch, _llm_result())
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-14"))
+
+    assert claude_invoke_mod._chain_executor is not None
+
+
+def test_shutdown_chain_executor_is_idempotent() -> None:
+    """Safe to call with nothing built (bot never ran a chain turn) or
+    twice in a row (bot.run's finally block on a shutdown that never
+    got that far)."""
+    import asa_bot.claude_invoke as claude_invoke_mod
+
+    claude_invoke_mod.shutdown_chain_executor()
+    claude_invoke_mod.shutdown_chain_executor()
+    assert claude_invoke_mod._chain_executor is None
+
+
+def test_shutdown_chain_executor_rejects_new_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After shutdown, a subsequent chain-lane turn transparently gets a
+    fresh pool rather than reusing (or erroring on) the closed one —
+    ``shutdown_chain_executor`` tears down, it doesn't permanently disable."""
+    import asa_bot.claude_invoke as claude_invoke_mod
+
+    _chain_stubs(monkeypatch, _llm_result())
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+    asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-15"))
+    first = claude_invoke_mod._chain_executor
+    assert first is not None
+
+    claude_invoke_mod.shutdown_chain_executor()
+    assert claude_invoke_mod._chain_executor is None
+
+    asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-16"))
+    second = claude_invoke_mod._chain_executor
+    assert second is not None
+    assert second is not first

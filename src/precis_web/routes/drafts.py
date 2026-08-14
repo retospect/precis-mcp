@@ -69,6 +69,7 @@ import base64
 import logging
 import re
 import tempfile
+import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -153,6 +154,11 @@ log = logging.getLogger(__name__)
 #: card (MPN / manufacturer / datasheet) for a manufacturing part.
 _ABBREV_CACHE: OrderedDict[tuple[int, int], dict[str, Any]] = OrderedDict()
 _ABBREV_CACHE_MAX = 64
+#: Guards :data:`_ABBREV_CACHE` — the on-demand per-block hydrate path can
+#: run several requests for the same draft concurrently, and an
+#: ``OrderedDict``'s move-to-end/popitem aren't atomic against a racing
+#: reader/writer without this.
+_ABBREV_CACHE_LOCK = threading.Lock()
 
 
 def _abbrevs_cached(store: Store, ref_id: int, version: int) -> dict[str, Any]:
@@ -161,17 +167,19 @@ def _abbrevs_cached(store: Store, ref_id: int, version: int) -> dict[str, Any]:
     draft each time. Falls back to the plain ``{short: str}`` map for a store
     that predates :meth:`defined_terms` (older FakeStore in tests)."""
     key = (ref_id, version)
-    hit = _ABBREV_CACHE.get(key)
-    if hit is not None:
-        _ABBREV_CACHE.move_to_end(key)
-        return hit
+    with _ABBREV_CACHE_LOCK:
+        hit = _ABBREV_CACHE.get(key)
+        if hit is not None:
+            _ABBREV_CACHE.move_to_end(key)
+            return hit
     drafts = store.drafts
     fn = getattr(drafts, "defined_terms", None) or drafts.defined_abbrevs
     val = fn(ref_id)
-    _ABBREV_CACHE[key] = val
-    _ABBREV_CACHE.move_to_end(key)
-    while len(_ABBREV_CACHE) > _ABBREV_CACHE_MAX:
-        _ABBREV_CACHE.popitem(last=False)
+    with _ABBREV_CACHE_LOCK:
+        _ABBREV_CACHE[key] = val
+        _ABBREV_CACHE.move_to_end(key)
+        while len(_ABBREV_CACHE) > _ABBREV_CACHE_MAX:
+            _ABBREV_CACHE.popitem(last=False)
     return val
 
 
@@ -183,19 +191,24 @@ def _abbrevs_cached(store: Store, ref_id: int, version: int) -> dict[str, Any]:
 #: Keyed by the version token, so any chunk create/edit/move invalidates.
 _RO_CACHE: OrderedDict[tuple[int, int], list[Any]] = OrderedDict()
 _RO_CACHE_MAX = 16
+#: Guards :data:`_RO_CACHE` — same race as :data:`_ABBREV_CACHE_LOCK`, one
+#: request per hydrated block against the same draft.
+_RO_CACHE_LOCK = threading.Lock()
 
 
 def _reading_order_cached(store: Store, ref_id: int, version: int) -> list[Any]:
     key = (ref_id, version)
-    hit = _RO_CACHE.get(key)
-    if hit is not None:
-        _RO_CACHE.move_to_end(key)
-        return hit
+    with _RO_CACHE_LOCK:
+        hit = _RO_CACHE.get(key)
+        if hit is not None:
+            _RO_CACHE.move_to_end(key)
+            return hit
     val = store.drafts.reading_order(ref_id)
-    _RO_CACHE[key] = val
-    _RO_CACHE.move_to_end(key)
-    while len(_RO_CACHE) > _RO_CACHE_MAX:
-        _RO_CACHE.popitem(last=False)
+    with _RO_CACHE_LOCK:
+        _RO_CACHE[key] = val
+        _RO_CACHE.move_to_end(key)
+        while len(_RO_CACHE) > _RO_CACHE_MAX:
+            _RO_CACHE.popitem(last=False)
     return val
 
 
@@ -2212,7 +2225,7 @@ async def split_block(
         split=False,
     )[0]
     handler = get_runtime(request).hub.handler_for("draft")
-    handler._sync_draft_links(ref.id)
+    handler.sync_draft_links(ref.id)
     return JSONResponse({"ok": True, "handle": new.handle, "dc": new.dc})
 
 
@@ -2263,7 +2276,7 @@ async def merge_prev_block(
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
         return JSONResponse({"ok": True, "noop": True})  # childless guard etc.
     handler = get_runtime(request).hub.handler_for("draft")
-    handler._sync_draft_links(ref.id)
+    handler.sync_draft_links(ref.id)
     return JSONResponse({"ok": True, "handle": prev.handle, "caret": caret})
 
 

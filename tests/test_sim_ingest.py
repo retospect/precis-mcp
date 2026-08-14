@@ -2,7 +2,7 @@
 
 A fixture sim repo (a ``docs/findings.md`` + an ``out/pareto.csv``) is
 projected into a fake ``PRECIS_ROOT`` and driven through the real
-prose-ingest walker (``handler._ensure_ingested`` — never the
+prose-ingest walker (``handler.ensure_ingested`` — never the
 create-only ``put()``): findings land as a ``markdown`` ref, the CSV as
 a ``plaintext`` ref (renamed ``.txt`` on disk), each stamped with the
 producing git SHA in ``meta``. A second run over unchanged files must

@@ -11,7 +11,7 @@ Slice 1 SHIPPED: `precis sim list/ingest/verify` as plain CLI verbs
 — manifest (`precis.sim.yaml` in each sim repo), registry
 (`slug → {path, git_remote, manifest, quest}`), findings/CSV projected into
 `PRECIS_ROOT/sim/<slug>/` and driven through the prose-ingest walker
-(`_ensure_ingested`, idempotent), verify with LLM judge → YAML writeback on a
+(`ensure_ingested`, idempotent), verify with LLM judge → YAML writeback on a
 `precis-verify/<date>` branch + `material`/`citation` mint + quest deed.
 Full slice-1 spec + four `ready` review rounds: git history of
 `docs/backlog/sim-harness.md`.

@@ -212,7 +212,7 @@ class TestProjectOut:
             ref = store.get_ref(kind="plaintext", id=ref_id)
             assert ref is not None
             assert ref.slug is not None
-            reingested = handler2._ensure_ingested(ref.slug, force=False)
+            reingested = handler2.ensure_ingested(ref.slug, force=False)
             assert reingested is not None
             assert reingested.id == ref_id
 

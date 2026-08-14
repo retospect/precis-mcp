@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -146,8 +147,13 @@ class ChatTurn:
 
 
 class HttpTransport(Protocol):
-    """Minimal HTTP-POST seam (mirrors the summarizer's) so the client is
-    offline-testable with a scripted fake."""
+    """Minimal HTTP-POST seam so a client is offline-testable with a
+    scripted fake. THE canonical transport seam for a ``/v1/chat/
+    completions`` caller in this codebase — :mod:`precis.workers.
+    llm_summarize` re-exports ``HttpTransport`` as ``Transport`` (its
+    established public name there) rather than defining its own copy, so
+    fixing a wire-level bug here (as with the HTTPError body-folding below)
+    fixes it for every caller at once."""
 
     def post_json(
         self,
@@ -172,8 +178,31 @@ class _UrllibTransport:
     ) -> dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            # `urlopen` raises on a 4xx/5xx *before* the body is read, so the
+            # upstream's rejection reason (e.g. an OpenRouter provider's "this
+            # gen-param isn't supported" message on a 400) is normally lost.
+            # Read the body here and fold it into the re-raised error's
+            # message so it survives into whatever the caller logs. Re-raise
+            # the SAME exception type with the SAME `.code`/`.url`/`.headers`
+            # so `_is_unavailability` (keys on `HTTPError.code`, not the
+            # message text) classifies it identically — this only enriches
+            # `str(exc)`. (Folded in from the summarizer's transport, which
+            # had this and the tool-chat client didn't — see the
+            # encapsulation-residuals cleanup that unified the two.)
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
+            reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
+            msg = f"{reason}: {body}" if body else reason
+            raise urllib.error.HTTPError(
+                exc.url, exc.code, msg, exc.headers, None
+            ) from exc
         out: dict[str, Any] = json.loads(raw)
         return out
 

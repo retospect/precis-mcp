@@ -671,7 +671,7 @@ def test_workspace_flag_survives_mtime_bump(
     handler: PlaintextHandler, pt_root: Path
 ) -> None:
     """Touching the file (same sha, new mtime) goes through the
-    sha-match branch of ``_ensure_ingested``. The flag must still
+    sha-match branch of ``ensure_ingested``. The flag must still
     be present after that path."""
     path = _write(pt_root, "note.txt", "body.\n")
     handler.get(id="note")

@@ -80,6 +80,7 @@ from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +195,11 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     failed = poisoned
     for ref_id, title, meta in to_run:
         try:
-            _run_one(store, ref_id, title, meta)
+            # Built once here (not re-derived downstream) — the single
+            # (store, ref_id, title, meta) cluster this job needs, threaded
+            # onward as one object rather than four positional args.
+            ctx = _build_dispatch_context(store, ref_id, title, meta)
+            _run_one(ctx)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
@@ -216,12 +221,20 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     return {"claimed": len(rows), "ok": ok, "failed": failed}
 
 
-def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> None:
+def _run_one(ctx: DispatchContext) -> None:
     """Dispatch one claimed job — plugin ``dispatch`` only. job_inproc has
     no in-tree built-in switch (unlike ``claude_inproc``'s fix_gripe/
     plan_tick) and no legacy blocking-``dispatch``-vs-submit/poll split
     (unlike ``ssh_node``) — every job_type on this lane declares
-    ``dispatch``, full stop."""
+    ``dispatch``, full stop.
+
+    Takes the already-built :class:`DispatchContext` (the caller mints it
+    once from the claimed row) rather than the raw ``(store, ref_id, title,
+    meta)`` cluster — ``ctx.meta`` is the SAME dict object the caller's
+    ``meta`` local names, so a mid-dispatch mutation (``renew_own_lease``
+    stamping :data:`_LEASE_LOST_META_KEY`) is visible here regardless of
+    which name reads it back."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     if not job_type_name:
         _record_failure(
@@ -253,7 +266,6 @@ def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> Non
         )
         return
 
-    ctx = _build_dispatch_context(store, ref_id, title, meta)
     spec.dispatch(ctx, spec)
     if meta.get(_LEASE_LOST_META_KEY):
         # A mid-drain renewal (renew_own_lease) found this job's lease

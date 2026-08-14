@@ -31,13 +31,19 @@ way :func:`acquire` returns ``False`` is a real, live "you are rate/
 quota limited" answer read from the shared row.
 
 **Store-free by design.** The S2 fetch functions this gates
-(``precis.ingest.citations``, ``precis.ingest.semantic_scholar``) don't
-carry a ``Store``/pool — they're plain functions called from workers and
-handlers alike. So this module owns a small, lazily-opened, module-level
-psycopg connection of its own (mirrors :mod:`precis.utils.db_log_handler`'s
-"dedicated connection, not the shared pool" pattern) rather than taking one
-as an argument. At the ~1 rps this coordinates, a single connection is
-plenty — no pooling needed.
+(``precis.ingest.citations``, ``precis.ingest.semantic_scholar``,
+``precis.workers.fetch_oa``) don't carry a ``Store``/pool — they're plain
+functions called from workers and handlers alike, several layers below any
+place a pool would be in scope, so threading one down would mean a wider
+signature change across all three call sites for no benefit. So this module
+owns a small, lazily-opened, module-level psycopg connection of its own
+(mirrors :mod:`precis.utils.db_log_handler`'s "dedicated connection, not the
+shared pool" pattern) rather than taking one as an argument. At the ~1 rps
+this coordinates, a single connection is plenty — no pooling needed. A
+:class:`threading.Lock` guards open/reopen/close so concurrent callers in
+one process can't race on the module-level handle, and :func:`close`
+(atexit-registered) gives it an explicit shutdown hook instead of leaking
+the connection until process exit.
 
 v1 wires only ``s2`` (rate lane) — see ``precis.ingest.citations``,
 ``precis.ingest.semantic_scholar``, and the straggler call site in
@@ -48,8 +54,10 @@ calls :func:`acquire` for them yet.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -63,9 +71,12 @@ log = logging.getLogger(__name__)
 #: Module-level dedicated connection. Opened lazily on first :func:`acquire`
 #: call; reopened if closed or the configured DSN changes (the latter
 #: matters for tests, which point different sessions at different clone
-#: DBs — see the module docstring's "store-free by design" note).
+#: DBs — see the module docstring's "store-free by design" note). All
+#: access goes through :data:`_lock` so open/reopen/close can't race across
+#: threads in one process.
 _conn: psycopg.Connection[Any] | None = None
 _conn_dsn: str | None = None
+_lock = threading.Lock()
 
 #: The atomic consume: refill (computed from elapsed time since
 #: ``last_refill``) then, in the same statement, consume ``n`` tokens and
@@ -144,21 +155,48 @@ def _get_conn() -> psycopg.Connection[Any] | None:
     """The lazily-opened module-level connection, or ``None`` when no
     ``database_url`` is configured. Raises on a genuine connect failure —
     the caller wraps every DB touch in a single broad ``try/except`` that
-    fails open, so this doesn't need its own."""
+    fails open, so this doesn't need its own.
+
+    Guarded by :data:`_lock` so concurrent callers in one process open/
+    reopen the shared connection exactly once instead of racing.
+    """
     global _conn, _conn_dsn
     dsn = load_config().database_url
     if not dsn:
         return None
-    if _conn is not None and dsn != _conn_dsn:
-        try:
-            _conn.close()
-        except Exception:
-            pass
-        _conn = None
-    if _conn is None or _conn.closed:
-        _conn = psycopg.connect(dsn, autocommit=True)
-        _conn_dsn = dsn
-    return _conn
+    with _lock:
+        if _conn is not None and dsn != _conn_dsn:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+        if _conn is None or _conn.closed:
+            _conn = psycopg.connect(dsn, autocommit=True)
+            _conn_dsn = dsn
+        return _conn
+
+
+def close() -> None:
+    """Explicit shutdown hook: close the module-level connection, if open.
+
+    Registered with :mod:`atexit` so a clean process exit doesn't just
+    let the connection leak until the OS reaps the socket. Safe to call
+    when nothing is open (idempotent) and safe to call again after —
+    :func:`_get_conn` reopens lazily on the next :func:`acquire`.
+    """
+    global _conn, _conn_dsn
+    with _lock:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+            _conn_dsn = None
+
+
+atexit.register(close)
 
 
 def _next_wait(n: int, avail: float, refill_per_sec: float, remaining: float) -> float:
@@ -223,4 +261,4 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
         return True
 
 
-__all__ = ["acquire"]
+__all__ = ["acquire", "close"]

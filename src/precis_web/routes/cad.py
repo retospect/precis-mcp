@@ -34,6 +34,7 @@ import json
 import logging
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -169,6 +170,10 @@ def _detail_ctx(store: Store, ref: Any) -> dict[str, Any]:
 #: interference quadrature never needs recomputing for the same version.
 _ANALYSIS_CACHE: dict[tuple[int, str], dict[str, Any]] = {}
 _ANALYSIS_CACHE_MAX = 256
+#: Guards :data:`_ANALYSIS_CACHE` — ``cad_analysis`` runs the build off the
+#: event loop (``asyncio.to_thread``), so two concurrent requests for the
+#: same design can race the cache's read-check-write without this.
+_ANALYSIS_CACHE_LOCK = threading.Lock()
 
 
 def _ref_version(store: Store, ref_id: int) -> str:
@@ -185,7 +190,8 @@ def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     connectivity graph, off the analytic IR. Memoised per ``(ref_id,
     version)``."""
     key = (ref_id, version)
-    cached = _ANALYSIS_CACHE.get(key)
+    with _ANALYSIS_CACHE_LOCK:
+        cached = _ANALYSIS_CACHE.get(key)
     if cached is not None:
         return cached
 
@@ -232,9 +238,10 @@ def _analysis(store: Store, ref_id: int, version: str) -> dict[str, Any]:
     except Exception:  # pragma: no cover - a bad build shouldn't blank the panel
         log.debug("cad analysis: build failed", exc_info=True)
 
-    if len(_ANALYSIS_CACHE) >= _ANALYSIS_CACHE_MAX:
-        _ANALYSIS_CACHE.clear()  # simple bound — the set is tiny and cheap to refill
-    _ANALYSIS_CACHE[key] = analysis
+    with _ANALYSIS_CACHE_LOCK:
+        if len(_ANALYSIS_CACHE) >= _ANALYSIS_CACHE_MAX:
+            _ANALYSIS_CACHE.clear()  # simple bound — the set is tiny, cheap to refill
+        _ANALYSIS_CACHE[key] = analysis
     return analysis
 
 

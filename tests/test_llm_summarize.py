@@ -344,7 +344,10 @@ def test_urllib_transport_folds_400_body_into_error(
     `urllib.error.HTTPError` with the SAME `.code` so
     `router._is_unavailability` still classifies a 400 as `paused=False`
     (semantic, not transient) — see `tests/test_llm_router.py::
-    test_is_unavailability_table`."""
+    test_is_unavailability_table`. This module re-exports the transport from
+    `utils/llm/openai_tools` (the encapsulation-residuals unification); the
+    fuller behavioral coverage now lives in `test_openai_tools.py`, this is a
+    smoke check that the re-export wires through unchanged."""
     import io
 
     from precis.workers import llm_summarize as mod
@@ -360,7 +363,7 @@ def test_urllib_transport_folds_400_body_into_error(
             io.BytesIO(body),
         )
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
 
     transport = mod._UrllibTransport()
     with pytest.raises(urllib.error.HTTPError) as excinfo:
@@ -374,37 +377,6 @@ def test_urllib_transport_folds_400_body_into_error(
     exc = excinfo.value
     assert exc.code == 400
     assert "reasoning.enabled is not supported" in str(exc)
-
-
-def test_urllib_transport_503_still_classifies_as_unavailability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A 5xx body is folded in too, but the re-raised HTTPError still keeps
-    `.code == 503` — `_is_unavailability` keys off the code, not the message,
-    so this must stay `paused=True`-eligible after the fix."""
-    from precis.workers import llm_summarize as mod
-
-    def _fake_urlopen(req: Any, timeout: float) -> Any:
-        raise urllib.error.HTTPError(
-            "http://x/v1/chat/completions",
-            503,
-            "Service Unavailable",
-            Message(),
-            None,
-        )
-
-    monkeypatch.setattr(mod.urllib.request, "urlopen", _fake_urlopen)
-
-    transport = mod._UrllibTransport()
-    with pytest.raises(urllib.error.HTTPError) as excinfo:
-        transport.post_json(
-            "http://x/v1/chat/completions",
-            {"model": "m"},
-            headers={},
-            timeout=1.0,
-        )
-
-    assert excinfo.value.code == 503
 
 
 # --------------------------------------------------------------------------

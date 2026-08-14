@@ -10,7 +10,7 @@ drive external Pareto-sim repos (``lighterthanair``, ``flowsim``,
   ``slug -> {path, git_remote, manifest, quest}``.
 - :mod:`precis.sim.ingest` — projects a manifest's prose/CSV outputs into
   ``PRECIS_ROOT`` and drives the existing prose-ingest walker
-  (``handler._ensure_ingested``, not the create-only ``put()``).
+  (``handler.ensure_ingested``, not the create-only ``put()``).
 - :mod:`precis.sim.verify` — lit-searches precis (read-only) for each
   low-confidence ``verify:`` YAML entry, an LLM judge clears it, then
   writes back ``verified: true`` + ``source:`` (git-committed on a

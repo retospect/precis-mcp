@@ -120,7 +120,7 @@ from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
     from precis.store.store import Store
-    from precis.workers.executors._context import DispatchContext  # noqa: F401
+    from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
 
@@ -397,11 +397,15 @@ def run_coordinator_pass(
     failed = 0
     for ref_id, title, meta in rows:
         try:
+            # Built once here — the (store, ref_id, title, meta) cluster
+            # this job needs, threaded onward as one DispatchContext rather
+            # than four positional args.
+            ctx = _build_dispatch_context(store, ref_id, title, meta)
             # gr204309: keep the claim-time lease alive for the whole
             # slice, not just its first _LEASE_MINUTES — see
             # _LeaseKeepalive's docstring.
             with _LeaseKeepalive(store, ref_id, meta):
-                _run_one(store, ref_id, title, meta)
+                _run_one(ctx)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
@@ -425,13 +429,7 @@ def run_coordinator_pass(
 # ── Per-job dispatch ──────────────────────────────────────────────
 
 
-def _run_one(
-    # tests call this directly with a narrow _FakeStore
-    store: Any,
-    ref_id: int,
-    title: str,
-    meta: dict[str, Any],
-) -> None:
+def _run_one(ctx: DispatchContext) -> None:
     """Dispatch a single claimed coordinator job.
 
     The coordinator path expects every job_type to declare its own
@@ -441,7 +439,13 @@ def _run_one(
     the submit-time validation in ``JobHandler.put`` rejects
     job_types whose ``COMPATIBLE_EXECUTORS`` doesn't include
     ``coordinator``.
+
+    Takes the already-built :class:`DispatchContext` (the caller mints it
+    once from the claimed row, alongside the ``_LeaseKeepalive`` it also
+    needs the raw fields for) rather than the raw ``(store, ref_id, title,
+    meta)`` cluster.
     """
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     if not job_type_name:
         _record_failure(store, ref_id, "missing meta.job_type", gripe_rollback=None)
@@ -485,7 +489,6 @@ def _run_one(
             conn.commit()
             return
 
-    ctx = _build_dispatch_context(store, ref_id, title, meta)
     # The dispatcher returns Done | Yield (see _yield.py). A resumed
     # slice reads its checkpoint from ``ctx.meta['coordinator_state']``
     # (persisted by the previous Yield below). Discarding this return —

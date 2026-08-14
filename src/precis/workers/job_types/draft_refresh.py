@@ -532,7 +532,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             ctx.store.drafts.edit_text(
                 heading.handle, new_heading_text, source={"reason": "draft_refresh"}
             )
-        draft_handler._sync_draft_links(ref_id)
+        draft_handler.sync_draft_links(ref_id)
         draft_handler._attribute_touch([c.chunk_id for c in new_chunks])
     except Exception as exc:
         if quest_id is not None:

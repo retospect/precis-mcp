@@ -20,7 +20,9 @@ Transport
 A tiny stdlib ``urllib`` OpenAI ``/v1/chat/completions`` client,
 identical in shape to ``RemoteEmbedder``. It points at the
 cluster's litellm proxy (the ``summarizer`` alias → Qwen3-Next-80B-A3B
-on llama.cpp). The :class:`Transport` seam keeps the pass
+on llama.cpp). The :class:`Transport` seam (re-exported from
+``utils/llm/openai_tools.HttpTransport``, the one canonical HTTP-POST
+seam every OpenAI-shaped client in this codebase shares) keeps the pass
 offline-testable — tests inject a fake that returns canned completions.
 
 Default-off
@@ -49,13 +51,13 @@ import json
 import logging
 import os
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from precis.store.protocols import PoolStore
+from precis.utils.llm.openai_tools import HttpTransport as Transport
+from precis.utils.llm.openai_tools import _UrllibTransport
 from precis.utils.llm.router import DispatchError
 from precis.utils.prompt import (
     AssemblyContext,
@@ -176,60 +178,15 @@ _BRIEF_MAX_WORDS = 15
 # ---------------------------------------------------------------------------
 # Transport seam + OpenAI chat client (RemoteEmbedder shape)
 # ---------------------------------------------------------------------------
-
-
-class Transport(Protocol):
-    """Minimal HTTP-POST seam so the pass is offline-testable."""
-
-    def post_json(
-        self,
-        url: str,
-        payload: dict[str, Any],
-        *,
-        headers: dict[str, str],
-        timeout: float,
-    ) -> dict[str, Any]: ...
-
-
-class _UrllibTransport:
-    """Default stdlib transport — one POST, JSON in / JSON out."""
-
-    def post_json(
-        self,
-        url: str,
-        payload: dict[str, Any],
-        *,
-        headers: dict[str, str],
-        timeout: float,
-    ) -> dict[str, Any]:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as exc:
-            # `urlopen` raises on a 4xx/5xx *before* the body is read, so the
-            # upstream's rejection reason (e.g. an OpenRouter provider's "this
-            # gen-param isn't supported" message on a 400) is normally lost —
-            # `llm_call_log.error` then holds only the generic "HTTP Error
-            # 400: Bad Request". Read the body here and fold it into the
-            # re-raised error's message so it survives into the log. Re-raise
-            # the SAME exception type with the SAME `.code`/`.url`/`.headers`
-            # so `_is_unavailability` (keys on `HTTPError.code`, not the
-            # message text) classifies it identically — this only enriches
-            # `str(exc)`.
-            body = ""
-            try:
-                body = exc.read().decode("utf-8", "replace")[:500]
-            except Exception:
-                pass
-            reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
-            msg = f"{reason}: {body}" if body else reason
-            raise urllib.error.HTTPError(
-                exc.url, exc.code, msg, exc.headers, None
-            ) from exc
-        result: dict[str, Any] = json.loads(raw)
-        return result
+#
+# ``Transport`` (the minimal HTTP-POST seam) and ``_UrllibTransport`` (its
+# stdlib default, including the HTTPError body-folding so a 400's real
+# rejection reason survives into ``llm_call_log.error`` instead of the
+# generic "HTTP Error 400: Bad Request") used to be defined here AND, nearly
+# identically, in ``utils/llm/openai_tools.py`` — the same client shape, two
+# copies to keep in sync. They now live in ``openai_tools`` (imported above)
+# as the one canonical seam; re-exported under this module's established
+# names so every existing caller/test keeps working unchanged.
 
 
 @dataclass(frozen=True)

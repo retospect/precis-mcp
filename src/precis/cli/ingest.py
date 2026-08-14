@@ -141,7 +141,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 # Per-kind walk descriptors. Kept here so adding a new prose-file kind
 # is a single-row change: register the handler, the slug encoder, and
 # the extension filter. The handler itself owns the mtime/sha gating
-# via ``_ensure_ingested``.
+# via ``ensure_ingested``.
 _PROSE_KINDS: tuple[str, ...] = ("md", "plaintext", "tex")
 
 
@@ -156,7 +156,7 @@ def _ingest_one_kind(
     """Walk ``root`` for one kind's files, run its handler's ingest.
 
     Returns ``(ingested, skipped, failed)``. The handler's
-    ``_ensure_ingested`` already mtime-gates, so re-runs on an
+    ``ensure_ingested`` already mtime-gates, so re-runs on an
     unchanged tree are cheap.
     """
     # File-slug encoders are shared across kinds (one implementation in
@@ -216,7 +216,7 @@ def _ingest_one_kind(
                 print(f"  fail  {rel}  - invalid slug for path")
                 continue
             ref_before = store.get_ref(kind=handler_kind, id=slug)  # type: ignore[attr-defined]
-            ref = handler._ensure_ingested(slug, force=force)  # type: ignore[attr-defined]
+            ref = handler.ensure_ingested(slug, force=force)  # type: ignore[attr-defined]
             if ref is None:
                 failed += 1
                 print(f"  fail  {rel}  - ingest returned None")

@@ -148,10 +148,16 @@ def _inproc_concurrency() -> int:
     return max(1, min(16, n))
 
 
-def _run_job_safe(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
-    """Run one claimed job; record + swallow any failure. Returns ok."""
+def _run_job_safe(ctx: DispatchContext) -> bool:
+    """Run one claimed job; record + swallow any failure. Returns ok.
+
+    Takes the already-built :class:`DispatchContext` — the caller mints one
+    per claimed row before Stage 2 (sequential or thread-pooled) rather than
+    threading the raw ``(store, ref_id, title, meta)`` cluster through here
+    and :func:`_run_one` separately."""
+    store, ref_id = ctx.store, ctx.ref_id
     try:
-        _run_one(store, ref_id, title, meta)
+        _run_one(ctx)
         return True
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("claude_inproc: job %d raised: %s", ref_id, exc, exc_info=True)
@@ -233,20 +239,18 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
 
     # Stage 2: run the claimed jobs. Sequential by default; a thread pool
     # when concurrency>1 (each _run_one blocks on a subprocess that
-    # releases the GIL, so threads parallelise the wall-clock).
+    # releases the GIL, so threads parallelise the wall-clock). One
+    # DispatchContext per row, minted here rather than re-derived inside
+    # _run_job_safe/_run_one from the raw (store, ref_id, title, meta).
+    contexts = [
+        _build_dispatch_context(store, rid, title, meta) for rid, title, meta in to_run
+    ]
     pool_size = min(concurrency, len(to_run))
     if pool_size <= 1:
-        results = [
-            _run_job_safe(store, rid, title, meta) for rid, title, meta in to_run
-        ]
+        results = [_run_job_safe(ctx) for ctx in contexts]
     else:
         with ThreadPoolExecutor(max_workers=pool_size) as ex:
-            results = list(
-                ex.map(
-                    lambda r: _run_job_safe(store, r[0], r[1], r[2]),
-                    to_run,
-                )
-            )
+            results = list(ex.map(_run_job_safe, contexts))
     ok = sum(1 for r in results if r)
     return {
         "claimed": len(rows),
@@ -258,14 +262,15 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
 # ── Per-job dispatch ──────────────────────────────────────────────
 
 
-def _run_one(
-    # tests call this directly with a narrow _FakeStore
-    store: Any,
-    ref_id: int,
-    title: str,
-    meta: dict[str, Any],
-) -> None:
-    """Dispatch a single claimed job to its job_type handler."""
+def _run_one(ctx: DispatchContext) -> None:
+    """Dispatch a single claimed job to its job_type handler.
+
+    Takes the already-built :class:`DispatchContext` (the caller mints it
+    once from the claimed row) rather than the raw ``(store, ref_id, title,
+    meta)`` cluster — ``ctx.meta`` is the SAME dict object the claim loop's
+    ``meta`` local names, so it stays interchangeable with the pre-ctx
+    call sites for anything that mutates it in place."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     if not job_type_name:
         _record_failure(
@@ -315,7 +320,6 @@ def _run_one(
         # Built-ins (fix_gripe, plan_tick) leave ``spec.dispatch`` as
         # ``None`` and fall through to the in-tree switch below.
         if spec.dispatch is not None:
-            ctx = _build_dispatch_context(store, ref_id, title, meta)
             spec.dispatch(ctx, spec)
             # Plugin dispatchers signal *failure* explicitly
             # (``ctx.record_failure`` → ``STATUS:failed``) and *cancellation*

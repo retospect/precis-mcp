@@ -106,12 +106,13 @@ class TestCoordinatorDispatch:
         )
 
         store = _FakeStore()
-        coordinator._run_one(
+        ctx = coordinator._build_dispatch_context(
             store,
             ref_id=101,
             title="campaign#101",
             meta={"job_type": "plugin_coordinator_demo"},
         )
+        coordinator._run_one(ctx)
 
         assert captured["spec"] is spec
         assert isinstance(captured["ctx"], DispatchContext)
@@ -142,12 +143,13 @@ class TestCoordinatorDispatch:
         )
 
         store = _FakeStore()
-        coordinator._run_one(
+        ctx = coordinator._build_dispatch_context(
             store,
             ref_id=42,
             title="t",
             meta={"job_type": "no_dispatch_plugin"},
         )
+        coordinator._run_one(ctx)
 
         assert len(failures) == 1
         assert "no spec.dispatch callable" in failures[0]
@@ -165,12 +167,13 @@ class TestCoordinatorDispatch:
         )
 
         store = _FakeStore()
-        coordinator._run_one(
+        ctx = coordinator._build_dispatch_context(
             store,
             ref_id=43,
             title="t",
             meta={"job_type": "totally_unknown"},
         )
+        coordinator._run_one(ctx)
 
         assert len(failures) == 1
         assert "unknown job_type" in failures[0]
@@ -190,12 +193,13 @@ class TestCoordinatorDispatch:
         )
 
         store = _FakeStore()
-        coordinator._run_one(
+        ctx = coordinator._build_dispatch_context(
             store,
             ref_id=44,
             title="t",
             meta={"job_type": "plugin_coordinator_demo"},
         )
+        coordinator._run_one(ctx)
 
         assert (44, "cancelled") in statuses
 
@@ -285,12 +289,13 @@ class TestCoordinatorPersistsReturn:
                 reason
             ),
         )
-        coordinator._run_one(
+        ctx = coordinator._build_dispatch_context(
             _FakeStore(),
             ref_id=7,
             title="t",
             meta={"job_type": "plugin_coordinator_demo"},
         )
+        coordinator._run_one(ctx)
         return calls
 
     def test_done_success_writes_summary_merges_meta_succeeds(

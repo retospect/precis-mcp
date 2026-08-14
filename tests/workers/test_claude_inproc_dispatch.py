@@ -106,12 +106,10 @@ class TestPluginDispatchRouting:
         monkeypatch.setattr(claude_inproc, "_is_cancel_requested", lambda *_: False)
 
         store = _FakeStore()
-        claude_inproc._run_one(
-            store,
-            ref_id=42,
-            title="job#42",
-            meta={"job_type": "plugin_demo"},
+        ctx = claude_inproc._build_dispatch_context(
+            store, ref_id=42, title="job#42", meta={"job_type": "plugin_demo"}
         )
+        claude_inproc._run_one(ctx)
 
         assert received["spec"] is spec
         assert isinstance(received["ctx"], DispatchContext)
@@ -146,12 +144,10 @@ class TestPluginDispatchRouting:
         )
 
         store = _FakeStore()
-        claude_inproc._run_one(
-            store,
-            ref_id=43,
-            title="job#43",
-            meta={"job_type": "fix_gripe"},
+        ctx = claude_inproc._build_dispatch_context(
+            store, ref_id=43, title="job#43", meta={"job_type": "fix_gripe"}
         )
+        claude_inproc._run_one(ctx)
 
         assert captured == [(43, spec)]
 
@@ -186,9 +182,10 @@ class TestPluginDispatchRouting:
             lambda store, ref_id, value, *, conn: calls.append((ref_id, value)),
         )
 
-        claude_inproc._run_one(
+        ctx = claude_inproc._build_dispatch_context(
             _FakeStore(), ref_id=50, title="t", meta={"job_type": "plugin_demo"}
         )
+        claude_inproc._run_one(ctx)
 
         assert calls == [(50, claude_inproc._SUCCEEDED)]
 
@@ -219,9 +216,10 @@ class TestPluginDispatchRouting:
             lambda store, ref_id, value, *, conn: calls.append((ref_id, value)),
         )
 
-        claude_inproc._run_one(
+        ctx = claude_inproc._build_dispatch_context(
             _FakeStore(), ref_id=51, title="t", meta={"job_type": "plugin_demo"}
         )
+        claude_inproc._run_one(ctx)
 
         assert calls == []  # finalize must not override a terminal status
 

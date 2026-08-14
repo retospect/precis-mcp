@@ -117,6 +117,7 @@ from precis.workers.job_types import get_job_type, known_job_types
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
 
@@ -196,7 +197,11 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     # cheap, never blocks longer than one status check per handle.
     for ref_id, title, meta in _polling_jobs(store, node):
         try:
-            terminal = _poll_one(store, ref_id, title, meta)
+            # Built once here — the (store, ref_id, title, meta) cluster
+            # this job needs, threaded onward through _poll_one /
+            # _kill_and_terminalize as one DispatchContext.
+            ctx = _build_dispatch_context(store, ref_id, title, meta)
+            terminal = _poll_one(ctx)
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
             log.warning(
@@ -306,7 +311,8 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                     conn.commit()
                 failed += 1
                 continue
-            _run_one(store, ref_id, title, meta)
+            ctx = _build_dispatch_context(store, ref_id, title, meta)
+            _run_one(ctx)
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
@@ -363,10 +369,7 @@ def _polling_jobs(
 
 
 def _kill_and_terminalize(
-    store: Store,
-    ref_id: int,
-    title: str,
-    meta: dict[str, Any],
+    ctx: DispatchContext,
     handle: Any,
     spec: Any,
     *,
@@ -378,8 +381,12 @@ def _kill_and_terminalize(
     optional ``spec.kill``, then a terminal ``STATUS:failed`` + the given
     ``swept:<tag>`` + a bubble to the parent — and, when the job's resolved
     requirements include ``gpu``, a best-effort GPU reclaim recorded on
-    ``meta.kill_gpu_reset`` (:func:`_common.maybe_reset_gpu_after_kill`)."""
-    ctx = _build_dispatch_context(store, ref_id, title, meta)
+    ``meta.kill_gpu_reset`` (:func:`_common.maybe_reset_gpu_after_kill`).
+
+    Takes the caller's already-built :class:`DispatchContext` (``_poll_one``
+    mints one per polled row) rather than the raw ``(store, ref_id, title,
+    meta)`` cluster."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     if spec.kill is not None:
         try:
             spec.kill(ctx, handle)
@@ -409,7 +416,7 @@ def _kill_and_terminalize(
     bubble_job_failure(store, ref_id)
 
 
-def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
+def _poll_one(ctx: DispatchContext) -> bool:
     """Poll one in-flight detached job via its job_type's ``poll``.
 
     Returns ``True`` once the plugin has driven the job to a terminal
@@ -417,7 +424,13 @@ def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bo
     function drove it terminal itself via the kill checks below);
     ``False`` while still running, having renewed the lease here (``poll``
     itself must not touch the lease — that's the executor's job, exactly
-    like the claim-time stamp)."""
+    like the claim-time stamp).
+
+    Takes the caller's already-built :class:`DispatchContext` (the pass
+    loop mints one per polled row) rather than the raw ``(store, ref_id,
+    title, meta)`` cluster, and hands the SAME context on to
+    :func:`_kill_and_terminalize` / ``spec.poll`` instead of rebuilding."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     spec = get_job_type(str(job_type_name)) if job_type_name else None
     handle = meta.get("compute_handle")
@@ -449,10 +462,7 @@ def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bo
             else "runner: killed by operator"
         )
         _kill_and_terminalize(
-            store,
-            ref_id,
-            title,
-            meta,
+            ctx,
             handle,
             spec,
             swept_tag="killed-by-operator",
@@ -470,10 +480,7 @@ def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bo
     deadline = meta.get("deadline")
     if deadline is not None and time.time() > float(deadline):
         _kill_and_terminalize(
-            store,
-            ref_id,
-            title,
-            meta,
+            ctx,
             handle,
             spec,
             swept_tag="wall-timeout",
@@ -481,7 +488,6 @@ def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bo
         )
         return True
 
-    ctx = _build_dispatch_context(store, ref_id, title, meta)
     terminal = bool(spec.poll(ctx, handle))
     if not terminal:
         with store.pool.connection() as conn:
@@ -495,10 +501,15 @@ def _poll_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> bo
     return terminal
 
 
-def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> None:
+def _run_one(ctx: DispatchContext) -> None:
     """Dispatch one claimed job — detached submit (§H piece 4, preferred)
     when the job_type exposes ``submit``/``poll``, else the legacy
-    blocking ``dispatch`` (deprecated, gr187627)."""
+    blocking ``dispatch`` (deprecated, gr187627).
+
+    Takes the caller's already-built :class:`DispatchContext` (the pass
+    loop mints one per freshly-claimed row) rather than the raw ``(store,
+    ref_id, title, meta)`` cluster."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     if not job_type_name:
         _record_failure(
@@ -546,7 +557,6 @@ def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> Non
         with store.pool.connection() as conn:
             _set_meta(conn, ref_id, submit_started_at=time.time())
             conn.commit()
-        ctx = _build_dispatch_context(store, ref_id, title, meta)
         try:
             handle = spec.submit(ctx, spec)
         except BaseException:
@@ -594,7 +604,6 @@ def _run_one(store: Store, ref_id: int, title: str, meta: dict[str, Any]) -> Non
             spec.name,
         )
 
-    ctx = _build_dispatch_context(store, ref_id, title, meta)
     spec.dispatch(ctx, spec)
 
 

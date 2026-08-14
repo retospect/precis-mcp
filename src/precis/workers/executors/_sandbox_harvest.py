@@ -35,11 +35,11 @@ harvest could write. Every harvested file — ``.py`` included — projects as
 **Where the projection lives on disk**: mirrors
 ``precis.sim.ingest.ingest_sim`` (the closest existing precedent — a
 compute run's outputs projected into the corpus and driven through
-``PlaintextHandler._ensure_ingested``, not the create-only ``put()``):
+``PlaintextHandler.ensure_ingested``, not the create-only ``put()``):
 files land under ``PRECIS_ROOT/sandbox/<container-name>/…`` so the
 resulting refs are genuine, disk-round-tripping plaintext refs — never a
 DB-only row a later ``get`` would silently soft-delete for "missing file"
-(``PlaintextHandler._ensure_ingested`` does exactly that when the backing
+(``PlaintextHandler.ensure_ingested`` does exactly that when the backing
 file is gone). When ``PRECIS_ROOT`` isn't configured on the host, the
 plaintext projection is skipped (logged, not fatal) — the tarball still
 lands, so harvest degrades to "artifact only" rather than failing the job
@@ -252,7 +252,7 @@ def _dest_name(rel_name: str) -> str:
     second embedded dot round-trips through a slug to the WRONG path
     (``main.py.txt`` -> slug encodes the embedded ``.`` as ``-`` too,
     losslessly on the way in but ``path_from_file_slug`` never puts it
-    back), so ``_ensure_ingested`` can't find the file it just wrote.
+    back), so ``ensure_ingested`` can't find the file it just wrote.
     Collapsing dots up front keeps exactly one real extension on disk,
     which is what that mapping actually supports.
 
@@ -260,7 +260,7 @@ def _dest_name(rel_name: str) -> str:
     lowercases every path segment on the way to a slug, and
     ``path_from_file_slug`` never recovers the original case — a mixed-
     case dest name (``README.txt``) round-trips to a lowercase path
-    (``readme.txt``) that doesn't exist, and ``_ensure_ingested`` reads
+    (``readme.txt``) that doesn't exist, and ``ensure_ingested`` reads
     that as "the file vanished" and returns ``None``.
     """
     lower = rel_name.lower()
@@ -314,7 +314,7 @@ def project_out(
 ) -> tuple[list[int], int, list[str]]:
     """Project every ``out_dir`` file as a disk-backed ``plaintext`` ref
     under ``dest_root/harvest_subdir/`` — drives the same
-    ``PlaintextHandler._ensure_ingested`` walker
+    ``PlaintextHandler.ensure_ingested`` walker
     ``precis.sim.ingest.ingest_sim`` uses, not the create-only ``put()``.
 
     Returns ``(ref_ids, n_skipped, messages)``.
@@ -385,7 +385,7 @@ def project_out(
             messages.append(f"skip  {rel}  - invalid slug for path")
             continue
 
-        ref = handler._ensure_ingested(slug, force=True)
+        ref = handler.ensure_ingested(slug, force=True)
         if ref is None:
             n_skipped += 1
             messages.append(f"fail  {rel}  - ingest returned None")

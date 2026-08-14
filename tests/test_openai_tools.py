@@ -19,6 +19,7 @@ from precis.utils.llm.openai_tools import (
     ToolChatClient,
     ToolSpec,
     _parse_tool_calls,
+    _UrllibTransport,
     build_tools_param,
     partial_artifact,
     run_tool_loop,
@@ -198,6 +199,89 @@ def test_client_missing_usage_cost_is_none() -> None:
     client = ToolChatClient(url="http://x/v1", api_key="k", model="m", transport=tx)
     turn = client.chat([{"role": "user", "content": "hi"}])
     assert turn.cost_usd is None
+
+
+# ── _UrllibTransport (real stdlib wrapper — HTTPError body capture) ────
+#
+# The canonical HTTP-POST seam for every OpenAI-shaped client in this
+# codebase (:mod:`precis.workers.llm_summarize` re-exports it as
+# ``Transport``/``_UrllibTransport`` rather than keeping its own near-
+# identical copy — the encapsulation-residuals unification).
+
+
+def test_urllib_transport_folds_400_body_into_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 400 from the upstream (e.g. OpenRouter rejecting `reasoning.enabled`
+    on some providers) discards its response body if `urlopen`'s HTTPError is
+    let through unhandled — the real rejection reason would otherwise never
+    reach a caller's error log. `_UrllibTransport.post_json` reads and folds
+    that body into the re-raised error's message, while keeping it a
+    `urllib.error.HTTPError` with the SAME `.code` so `router.
+    _is_unavailability` still classifies a 400 as `paused=False` (semantic,
+    not transient) — see `tests/test_llm_router.py::
+    test_is_unavailability_table`."""
+    import io
+    import urllib.error
+    from email.message import Message
+
+    body = b'{"error":{"message":"reasoning.enabled is not supported by upstream provider"}}'
+
+    def _fake_urlopen(req: Any, timeout: float) -> Any:
+        raise urllib.error.HTTPError(
+            "http://x/v1/chat/completions",
+            400,
+            "Bad Request",
+            Message(),
+            io.BytesIO(body),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    transport = _UrllibTransport()
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        transport.post_json(
+            "http://x/v1/chat/completions",
+            {"model": "m"},
+            headers={},
+            timeout=1.0,
+        )
+
+    exc = excinfo.value
+    assert exc.code == 400
+    assert "reasoning.enabled is not supported" in str(exc)
+
+
+def test_urllib_transport_503_still_classifies_as_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 5xx body is folded in too, but the re-raised HTTPError still keeps
+    `.code == 503` — `_is_unavailability` keys off the code, not the message,
+    so this must stay `paused=True`-eligible."""
+    import urllib.error
+    from email.message import Message
+
+    def _fake_urlopen(req: Any, timeout: float) -> Any:
+        raise urllib.error.HTTPError(
+            "http://x/v1/chat/completions",
+            503,
+            "Service Unavailable",
+            Message(),
+            None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    transport = _UrllibTransport()
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        transport.post_json(
+            "http://x/v1/chat/completions",
+            {"model": "m"},
+            headers={},
+            timeout=1.0,
+        )
+
+    assert excinfo.value.code == 503
 
 
 # ── streaming (SSE) ────────────────────────────────────────────────────

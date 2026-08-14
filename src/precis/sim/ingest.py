@@ -12,9 +12,9 @@ Slice 1 of ``docs/backlog/sim-harness.md`` (In-scope item 3, AC #3, the
    slice).
 2. **Ingest** — drive the same prose-ingest walker ``precis jobs ingest``
    uses (``cli/ingest.py:_ingest_one_kind``): construct the handler and
-   call ``handler._ensure_ingested(slug, force=...)`` directly. This is
+   call ``handler.ensure_ingested(slug, force=...)`` directly. This is
    the load-bearing choice — **not** the public, create-only ``put()``,
-   which raises on a second call. ``_ensure_ingested``'s mtime/sha256
+   which raises on a second call. ``ensure_ingested``'s mtime/sha256
    content gate is what makes a second run over unchanged files a
    true no-op (AC #3).
 
@@ -197,7 +197,7 @@ def ingest_sim(
             handler = txt_handler
 
         ref_before = store.get_ref(kind=kind, id=file_slug)
-        ref = handler._ensure_ingested(file_slug, force=force)
+        ref = handler.ensure_ingested(file_slug, force=force)
         if ref is None:
             failed += 1
             messages.append(f"fail  {rel}  - ingest returned None")

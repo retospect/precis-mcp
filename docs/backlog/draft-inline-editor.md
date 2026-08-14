@@ -146,7 +146,7 @@ typo fix, or block an autonomous planner minting a forward reference).
   breakage.
 * **Soft (save, show a note):** pre-existing dead refs, abbrev / citation-
   form / literal-cite hints, and best-effort link-graph sync
-  (`_sync_draft_links`, which never fails a write).
+  (`sync_draft_links`, which never fails a write).
 
 Blur semantics on a hard failure: **let go, badge it** — the block keeps
 its unsaved text under a "invalid — click to fix" badge rather than
@@ -188,7 +188,7 @@ command, not a toolchain.
 
 * `POST /drafts/{ident}/text` — `{handle, text, base_sha}` → `_newly_dangling`
   gate (422 on hard) → `store.edit_text` (+ blank-line auto-split, first keeps
-  the handle) → `_sync_draft_links` → re-rendered row(s) + soft warnings.
+  the handle) → `sync_draft_links` → re-rendered row(s) + soft warnings.
 * `POST /drafts/{ident}/block` — `{after_handle|into_handle, kind, text}` →
   `_insert_draft_chunk` at a fractional `pos` → new row.
 * `POST /drafts/{ident}/block/{handle}/delete` — `retire_chunk` (subtree

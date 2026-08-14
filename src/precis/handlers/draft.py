@@ -831,7 +831,7 @@ class DraftHandler(Handler):
                 c.handle, new_text, base_sha=content_sha(c.text or "")
             )
             if res is not None:
-                self._sync_draft_links(res.ref_id)
+                self.sync_draft_links(res.ref_id)
                 self._attribute_touch([res.chunk_id])
                 written += 1
         body = (
@@ -1026,7 +1026,7 @@ class DraftHandler(Handler):
                 at=at,
                 meta=meta,
             )
-            self._sync_draft_links(ref.id)
+            self.sync_draft_links(ref.id)
             self._attribute_touch([c.chunk_id for c in chunks])
             handles = " ".join(f"{c.dc}" for c in chunks)
             n = len(chunks)
@@ -1243,7 +1243,7 @@ class DraftHandler(Handler):
             at=at,
             figure_meta=fig_meta,
         )
-        self._sync_draft_links(ref_id)
+        self.sync_draft_links(ref_id)
         return Response(
             body=f"added figure {chunk.dc} [{org}] to {slug} ({len(raw)} bytes)"
         )
@@ -1310,7 +1310,7 @@ class DraftHandler(Handler):
         n = self.store.drafts.link_figure_plots(
             chunk.chunk_id, [t.chunk_id for t in targets]
         )
-        self._sync_draft_links(ref_id)
+        self.sync_draft_links(ref_id)
         self._attribute_touch([chunk.chunk_id])
         return Response(
             body=(
@@ -1711,7 +1711,7 @@ class DraftHandler(Handler):
             if c is not None:
                 if occurrences > 1:
                     body += f" ({occurrences} occurrences of find= replaced)"
-                self._sync_draft_links(c.ref_id)
+                self.sync_draft_links(c.ref_id)
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
@@ -1740,7 +1740,7 @@ class DraftHandler(Handler):
             )
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:
-                self._sync_draft_links(c.ref_id)
+                self.sync_draft_links(c.ref_id)
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
@@ -1778,7 +1778,7 @@ class DraftHandler(Handler):
             raise NotFound(f"draft chunk {handle!r} not found")
         self._refuse_if_machine_owned(int(chunk.ref_id))
         self.store.drafts.retire_chunk(chunk.handle, mode=mode)
-        self._sync_draft_links(chunk.ref_id)
+        self.sync_draft_links(chunk.ref_id)
         return Response(body=f"retired {chunk.dc}")
 
     # ── helpers ──────────────────────────────────────────────────────
@@ -1880,7 +1880,7 @@ class DraftHandler(Handler):
     #: links (a memory, another draft) are to our own notes.
     _CITABLE_KINDS: ClassVar[frozenset[str]] = frozenset({"paper", "patent", "finding"})
 
-    def _sync_draft_links(self, ref_id: int) -> None:
+    def sync_draft_links(self, ref_id: int) -> None:
         """Materialise graph edges from this draft to every ref its chunks
         reference — the superset grammar (``kind:ref`` mentions, ``¶``
         cross-refs, ``§``/``[pc<id>]`` citations). A reference to a
@@ -2019,7 +2019,7 @@ class DraftHandler(Handler):
             meta=chunk_meta,
             split=False,
         )
-        self._sync_draft_links(ref.id)
+        self.sync_draft_links(ref.id)
         self._attribute_touch([c.chunk_id for c in chunks])
         c = chunks[0]
         rows, cols = len(norm["rows"]), len(norm["header"])
@@ -2172,7 +2172,7 @@ class DraftHandler(Handler):
         c = self.store.drafts.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
         if c is not None:
             self._attribute_touch([c.chunk_id])
-            self._sync_draft_links(c.ref_id)
+            self.sync_draft_links(c.ref_id)
         rows, cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(

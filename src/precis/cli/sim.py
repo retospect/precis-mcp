@@ -7,7 +7,7 @@ job_type/executor/dispatch/worker.
   an unreachable checkout is reported, not a crash.
 - ``ingest`` — project a sim's manifest ``outputs:`` (findings +
   CSV) into ``PRECIS_ROOT/sim/<slug>/`` and drive the existing
-  prose-ingest walker (``handler._ensure_ingested``, not the
+  prose-ingest walker (``handler.ensure_ingested``, not the
   create-only ``put()``) so they land as searchable
   ``markdown``/``plaintext`` refs with the producing git SHA in
   ``meta``. Binary plots are skipped this slice.

@@ -585,7 +585,7 @@ def _backfill_grounding(store: Store, *, dry_run: bool) -> dict[str, Any]:
 
     PART A — draft ``cites``/``related-to`` auto-mention edges. Re-running
     the (already-fixed) draft autolinker
-    (:meth:`~precis.handlers.draft.DraftHandler._sync_draft_links`) over
+    (:meth:`~precis.handlers.draft.DraftHandler.sync_draft_links`) over
     every draft that still carries a ref-level auto-mention edge migrates
     it to chunk-grounded — the resync drops the stale ref-level rows and
     re-adds them at the citing chunk's ord.
@@ -644,7 +644,7 @@ def _backfill_grounding(store: Store, *, dry_run: bool) -> dict[str, Any]:
     else:
         handler = DraftHandler(hub=Hub(store=store))
         for ref_id in draft_ref_ids:
-            handler._sync_draft_links(ref_id)
+            handler.sync_draft_links(ref_id)
         result["drafts_resynced"] = len(draft_ref_ids)
         with store.pool.connection() as conn:
             after_row = conn.execute(

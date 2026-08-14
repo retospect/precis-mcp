@@ -3,7 +3,7 @@ regression tests for the atomic backspace-merge (gr176088 part 2b).
 
 Runs against the live ``store`` fixture (via ``runtime_with_store``, the
 shared full-``boot()`` runtime — the route reaches
-``hub.handler_for("draft")._sync_draft_links``, which needs a real
+``hub.handler_for("draft").sync_draft_links``, which needs a real
 registered ``DraftHandler``, not the ``FakeRuntime``/``FakeStore`` pair the
 rest of ``tests/precis_web`` uses). See CLAUDE.md "psycopg % LIKE /
 fake-store gap" for why some routes need this real-store companion.

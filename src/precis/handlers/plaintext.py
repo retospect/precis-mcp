@@ -481,7 +481,7 @@ class PlaintextHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
-            scope_ref = self._ensure_ingested(scope)
+            scope_ref = self.ensure_ingested(scope)
             if scope_ref is None:
                 raise NotFound(
                     f"{self._KIND} file {scope!r} not found",
@@ -758,7 +758,7 @@ class PlaintextHandler(Handler):
         if commit_sha is None:
             # Workspace-less path (no PRECIS_WORKSPACE): write directly.
             _atomic_write(path, body)
-        ref = self._ensure_ingested(slug)
+        ref = self.ensure_ingested(slug)
         assert ref is not None
         if tags:
             apply_tag_ops(self.store, self._KIND, ref.id, tags=tags, untags=None)
@@ -832,7 +832,7 @@ class PlaintextHandler(Handler):
             sep = "\n\n"
         new_content = existing.rstrip() + sep + text.rstrip() + "\n"
         _atomic_write(path, new_content)
-        ref = self._ensure_ingested(slug, force=True)
+        ref = self.ensure_ingested(slug, force=True)
         assert ref is not None
         # Unified response — name slug, block pos, block slug, and
         # line range so chained edits don't need a follow-up
@@ -901,7 +901,7 @@ class PlaintextHandler(Handler):
             )
         new_lines = text.rstrip("\n").split("\n")
         _replace_lines(path, target.line_start, target.line_end, new_lines)
-        ref = self._ensure_ingested(slug, force=True)
+        ref = self.ensure_ingested(slug, force=True)
         assert ref is not None
         # Recover (slug, pos, lines) of the post-replace block —
         # line_start survives equal/shorter splices; pos is the
@@ -946,7 +946,7 @@ class PlaintextHandler(Handler):
         deleted_line_start = target.line_start
         deleted_line_end = target.line_end
         _replace_lines(path, target.line_start, target.line_end, [])
-        self._ensure_ingested(slug, force=True)
+        self.ensure_ingested(slug, force=True)
         return Response(
             body=format_write_result(
                 verb="deleted",
@@ -1091,7 +1091,7 @@ class PlaintextHandler(Handler):
             ) from exc
 
         _atomic_write(path, new_full)
-        ref = self._ensure_ingested(slug, force=True)
+        ref = self.ensure_ingested(slug, force=True)
         assert ref is not None
 
         # Unified response — first edited span's (slug, pos, lines)
@@ -1354,7 +1354,7 @@ class PlaintextHandler(Handler):
     def _apply_workspace_tag(self, ref: Ref) -> None:
         """Idempotently stamp the ``workspace`` flag tag on *ref*.
 
-        Called at the tail of :meth:`_ensure_ingested`. ``add_tag``
+        Called at the tail of :meth:`ensure_ingested`. ``add_tag``
         uses ``ON CONFLICT DO NOTHING``, so repeated calls are cheap
         and safe (one INSERT that no-ops). The tag is set with
         ``set_by='system'`` to distinguish it from agent-authored
@@ -1368,7 +1368,7 @@ class PlaintextHandler(Handler):
             set_by="system",
         )
 
-    def _ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
+    def ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
         path = self._resolve_path(slug, must_exist=False)
         ref = self.store.get_ref(kind=self._KIND, id=slug)
 
@@ -1490,11 +1490,11 @@ class PlaintextHandler(Handler):
     def _require_existing_file(self, slug: str) -> Ref:
         """Ingest + return a file ref, or raise a suggestions-rich NotFound.
 
-        Wraps :meth:`_ensure_ingested` so every read/write entry point
+        Wraps :meth:`ensure_ingested` so every read/write entry point
         can guard against bogus slugs with one call, without each
         site re-inventing the error shape.
         """
-        ref = self._ensure_ingested(slug)
+        ref = self.ensure_ingested(slug)
         if ref is None:
             self._raise_file_not_found(slug)
         assert ref is not None  # _raise_file_not_found never returns

@@ -32,6 +32,7 @@ import io
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from autocatpath import __version__, provenance
@@ -135,6 +136,41 @@ def _prep(config: dict[str, Any], force_backend: str | None) -> Config:
         cfg.mlip.backend = force_backend
         cfg.mlip.models = []
     return cfg
+
+
+@dataclass(frozen=True)
+class _PreparedConfig:
+    """A ``Config`` paired with whether a prebuilt slab was stamped onto it.
+
+    autocatpath itself defines the injection point: ``pipeline.run``/
+    ``run_one_seed``/``aggregate_partials`` (via ``_build_net``) read the
+    slab back off the ``Config`` instance they're handed via
+    ``getattr(cfg, "_prebuilt_slab", None)`` — a runtime attr, not a
+    dataclass field, so it stays out of ``to_dict``/``content_key``. That's
+    autocatpath's own side-channel, not something precis can avoid by
+    calling it differently; the attribute has to land on the actual object
+    those functions see. What precis controls is not repeating the
+    "``cfg._prebuilt_slab = ...`` write, then a separate bare ``getattr``
+    read back" pattern at each of the three call sites — :func:`_stamp_slab`
+    does the write exactly once per prepared ``Config`` and returns this
+    pairing, so ``slab_injected`` is a typed field callers read instead of
+    re-deriving it.
+    """
+
+    cfg: Config
+    slab_injected: bool
+
+
+def _stamp_slab(cfg: Config, slab_extxyz: str | None) -> _PreparedConfig:
+    """Stamp ``cfg`` with the prebuilt-slab side-channel (if given) and
+    return it paired with whether the stamp happened. The injected geometry
+    addresses via ``config.slab.structure_ref`` (set by the caller) rather
+    than the Atoms bytes, so the stamp itself never leaks into
+    ``effective``/``content_key`` — only ``Config.from_dict`` output does."""
+    injected = slab_extxyz is not None
+    if slab_extxyz is not None:
+        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)
+    return _PreparedConfig(cfg=cfg, slab_injected=injected)
 
 
 def effective_config(
@@ -260,23 +296,18 @@ def run_pathway(
     # Key on the EFFECTIVE config (post-override) so the cache address
     # matches what actually ran — not the raw request.
     effective = cfg.to_dict()
-    if slab_extxyz is not None:
-        # Side-channel: a runtime attr `_build_net` stamps onto the Network.
-        # Not a dataclass field, so it stays out of `effective`/content_key —
-        # the injected geometry addresses via `config.slab.structure_ref`
-        # (set by the caller) rather than the Atoms bytes.
-        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)
-    results = run(cfg, log=log)
+    prepared = _stamp_slab(cfg, slab_extxyz)
+    results = run(prepared.cfg, log=log)
 
-    results_json, graph_json = _analysis_payloads(cfg, results)
+    results_json, graph_json = _analysis_payloads(prepared.cfg, results)
     return {
         "content_key": content_key(effective),
         "autocatpath_version": __version__,
         "config": effective,
-        "config_snapshot_yaml": _snapshot_yaml(cfg),
+        "config_snapshot_yaml": _snapshot_yaml(prepared.cfg),
         "results_json": results_json,
         "graph_json": graph_json,
-        "methods_md": provenance.methods_text(cfg, results),
+        "methods_md": provenance.methods_text(prepared.cfg, results),
         "structures_extxyz": _structures_extxyz(results),
         "warnings": list(results.warnings),
     }
@@ -381,9 +412,9 @@ def run_seed_partial(
 
     c = copy.deepcopy(cfg)
     c.mlip.backend, c.mlip.model, c.mlip.models = backend, model, []
-    if slab_extxyz is not None:
-        c._prebuilt_slab = _hydrate_slab(slab_extxyz)
-    injected = getattr(c, "_prebuilt_slab", None) is not None
+    prepared = _stamp_slab(c, slab_extxyz)
+    c = prepared.cfg
+    injected = prepared.slab_injected
 
     lattice: dict[str, float] = {}
     if c.slab.relax_lattice and c.slab.a is None and not injected:
@@ -980,11 +1011,10 @@ def aggregate_seed_partials(
 
     cfg = _prep(config, force_backend)
     effective = cfg.to_dict()
-    if slab_extxyz is not None:
-        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)
+    prepared = _stamp_slab(cfg, slab_extxyz)
 
     partials = [r["partial"] for r in seed_results]
-    results = aggregate_partials(cfg, partials)
+    results = aggregate_partials(prepared.cfg, partials)
     lattice: dict[str, float] = {}
     for r in seed_results:
         lattice.update(r.get("lattice") or {})
@@ -1002,15 +1032,15 @@ def aggregate_seed_partials(
                 best[name] = (energy, geo["extxyz"])
     structures_extxyz = {name: xyz for name, (_e, xyz) in best.items()}
 
-    results_json, graph_json = _analysis_payloads(cfg, results)
+    results_json, graph_json = _analysis_payloads(prepared.cfg, results)
     return {
         "content_key": content_key(effective),
         "autocatpath_version": __version__,
         "config": effective,
-        "config_snapshot_yaml": _snapshot_yaml(cfg),
+        "config_snapshot_yaml": _snapshot_yaml(prepared.cfg),
         "results_json": results_json,
         "graph_json": graph_json,
-        "methods_md": provenance.methods_text(cfg, results),
+        "methods_md": provenance.methods_text(prepared.cfg, results),
         "structures_extxyz": structures_extxyz,
         "warnings": list(results.warnings),
     }

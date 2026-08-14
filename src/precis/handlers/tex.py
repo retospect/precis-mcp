@@ -266,6 +266,6 @@ class TexHandler(PlaintextHandler):
             child_slug = file_slug_from_path(base)
             if not is_valid_file_slug(child_slug):
                 continue
-            return self._ensure_ingested(child_slug)
+            return self.ensure_ingested(child_slug)
 
         return None

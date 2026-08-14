@@ -92,8 +92,7 @@ def use_store_dsn(store: Store, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sto
     assert store.dsn is not None
     monkeypatch.setenv("PRECIS_DATABASE_URL", store.dsn)
     yield store
-    rate_limit._conn = None
-    rate_limit._conn_dsn = None
+    rate_limit.close()
 
 
 class TestRateLane:
@@ -245,6 +244,40 @@ class TestFailOpen:
 
         monkeypatch.setattr(rate_limit, "load_config", lambda: _FakeConfig())
         assert rate_limit.acquire("s2") is True
+
+
+class TestLifecycle:
+    def test_close_closes_and_clears_the_connection(self, use_store_dsn: Store) -> None:
+        """After a real acquire opens the module connection, ``close()``
+        closes it and resets the cached handle so the next call reopens."""
+        assert rate_limit.acquire("test_rl_no_such_provider", max_wait_s=1.0) is True
+        conn = rate_limit._conn
+        assert conn is not None
+        assert not conn.closed
+
+        rate_limit.close()
+
+        assert conn.closed
+        assert rate_limit._conn is None
+        assert rate_limit._conn_dsn is None
+
+    def test_close_is_idempotent(self) -> None:
+        """Calling ``close()`` with nothing open (or twice in a row) must
+        not raise — it's registered with ``atexit`` and can't assume a
+        connection exists."""
+        rate_limit.close()
+        rate_limit.close()
+        assert rate_limit._conn is None
+
+    def test_get_conn_reopens_after_close(self, use_store_dsn: Store) -> None:
+        """``close()`` followed by another ``acquire`` transparently
+        reopens the connection — ``close`` is a shutdown hook, not a
+        permanent kill switch."""
+        assert rate_limit.acquire("test_rl_no_such_provider", max_wait_s=1.0) is True
+        rate_limit.close()
+        assert rate_limit.acquire("test_rl_no_such_provider", max_wait_s=1.0) is True
+        assert rate_limit._conn is not None
+        assert not rate_limit._conn.closed
 
 
 class TestS2Wiring:

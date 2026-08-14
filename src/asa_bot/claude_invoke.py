@@ -44,6 +44,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -112,7 +113,42 @@ _ASA_DISALLOWED_TOOLS: tuple[str, ...] = (
 # user in the process. A dedicated small pool bounds the chain lane's
 # thread footprint instead; a 5th concurrent turn queues here (Discord
 # shows its working indicator) rather than eating the shared pool.
-_CHAIN_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="asa-chain")
+#
+# Built lazily (:func:`_get_chain_executor`) rather than at import time —
+# no thread pool should spin up just from importing this module (e.g. in
+# tests that never touch the chain lane) — and torn down explicitly via
+# :func:`shutdown_chain_executor` from ``bot.run``'s own shutdown path
+# (``bot.py``'s ``finally`` block, alongside the listener/precis-client
+# teardown) rather than left to leak until process exit.
+_chain_executor: ThreadPoolExecutor | None = None
+_chain_executor_lock = threading.Lock()
+
+
+def _get_chain_executor() -> ThreadPoolExecutor:
+    """The lazily-created, process-wide chain-lane thread pool."""
+    global _chain_executor
+    with _chain_executor_lock:
+        if _chain_executor is None:
+            _chain_executor = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="asa-chain"
+            )
+        return _chain_executor
+
+
+def shutdown_chain_executor(*, wait: bool = True) -> None:
+    """Explicit shutdown hook for the chain-lane pool.
+
+    Called from ``asa_bot.bot.run``'s own shutdown path so the pool's
+    threads are joined on a clean bot exit instead of left dangling.
+    Idempotent — safe to call when the pool was never built (no chain-lane
+    turn ever ran) or a second time.
+    """
+    global _chain_executor
+    with _chain_executor_lock:
+        if _chain_executor is not None:
+            _chain_executor.shutdown(wait=wait)
+            _chain_executor = None
+
 
 # The ``--model`` sentinel that routes a turn through the router's BIG
 # *placement chain* (operator-owned ``llm.chain.big``: local/OSS rung first,
@@ -353,10 +389,11 @@ async def _invoke_via_chain(
         log_call=True,
     )
     loop = asyncio.get_running_loop()
+    executor = _get_chain_executor()
     try:
-        await loop.run_in_executor(_CHAIN_EXECUTOR, warm_runtime)
+        await loop.run_in_executor(executor, warm_runtime)
         llm_result: LlmResult = await loop.run_in_executor(
-            _CHAIN_EXECUTOR, partial(dispatch, req)
+            executor, partial(dispatch, req)
         )
     except Exception:
         # Never raise out of invoke() — see its docstring's contract note.

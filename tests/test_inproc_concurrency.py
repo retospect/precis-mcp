@@ -30,9 +30,9 @@ def test_parallel_path_runs_every_claimed_job(monkeypatch, store: Store) -> None
     seen: set[int] = set()
     lock = threading.Lock()
 
-    def _fake_run_one(store_, ref_id, title, meta):
+    def _fake_run_one(ctx):
         with lock:
-            seen.add(ref_id)
+            seen.add(ctx.ref_id)
 
     monkeypatch.setattr(ci, "_run_one", _fake_run_one)
     monkeypatch.setenv("PRECIS_INPROC_CONCURRENCY", "3")

@@ -43,6 +43,7 @@ approval would hide an unreviewed section behind a green ✓.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC
@@ -237,6 +238,11 @@ def _trunc_tail(text: str, cap: int) -> str:
 # read the cache + re-run only the ~7ms assemble_view.
 #: {ref_id: (monotonic_stamp, version_token, base_nodes)}
 _NODE_CACHE: dict[int, tuple[float, str, list[ChunkNode]]] = {}
+#: Guards :data:`_NODE_CACHE` — request handlers run on FastAPI's threadpool
+#: (sync routes) or concurrently under async, so two requests can race a
+#: read-check-write on the same ref's entry without this (a `dict` mutation
+#: isn't atomic across the check-then-set in :func:`build_nodes`).
+_NODE_CACHE_LOCK = threading.Lock()
 #: Rebuild after this many seconds regardless of version — heals drift a worker
 #: made without minting a new chunk_id (summary/keyword rewrites, tag edits from
 #: outside the smartdraft write path, which calls :func:`invalidate` directly).
@@ -285,7 +291,8 @@ def invalidate(ref_id: int) -> None:
     """Drop a draft's cached base nodes — call from any smartdraft write path
     (tag add/remove) so the change shows on the very next render, not after the
     TTL. Body-text edits self-invalidate via :func:`_cache_version`."""
-    _NODE_CACHE.pop(ref_id, None)
+    with _NODE_CACHE_LOCK:
+        _NODE_CACHE.pop(ref_id, None)
 
 
 def _apply_marks(nodes: list[ChunkNode], marks: dict[str, Any] | None) -> None:
@@ -309,13 +316,15 @@ def build_nodes(
     overlay on top of the cached base."""
     ver = _cache_version(store, ref_id)
     now = time.monotonic()
-    ent = _NODE_CACHE.get(ref_id)
+    with _NODE_CACHE_LOCK:
+        ent = _NODE_CACHE.get(ref_id)
     if ver is not None and ent and ent[1] == ver and now - ent[0] < _NODE_TTL:
         nodes = ent[2]
     else:
         nodes = _build_nodes_uncached(store, ref_id)
         if ver is not None:
-            _NODE_CACHE[ref_id] = (now, ver, nodes)
+            with _NODE_CACHE_LOCK:
+                _NODE_CACHE[ref_id] = (now, ver, nodes)
     _apply_marks(nodes, marks)
     return nodes
 
