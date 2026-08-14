@@ -203,6 +203,38 @@ doubles as the loop's rolling context.
 get(kind="quest", id=7, view="dossier")  # read the synthesis
 ```
 
+### The dossier is draft chunks — read it, don't edit it
+
+A dossier is a real `draft`: a heading, **one** narrative body chunk, and
+a set of pinned chunks the writer never overwrites. It is not markdown in
+a text field, and block markdown (`##` headings, `-` bullets, fences,
+tables) has **no renderer** — it shows up as literal characters. Only the
+inline subset renders: `**bold**`, `*italic*`, backticks, `<sub>`/`<sup>`,
+and `$…$` KaTeX for species (`$C_{60}$`). Cross-references use square
+brackets, which linkify — `[st164913]`, `[pc1234]`, `[pa88]`, `[fi189542]`.
+Parentheses do not linkify, so `(st164913)` is a dead reference.
+
+**The quest tick owns this document.** `put`/`edit`/`delete` on a draft
+linked `dossier-of` (or `paper-of`) is refused with `Unsupported` — a
+generic draft-hygiene pass once "normalised" a live dossier into 13 chunks
+and stranded 12 of them, feeding weeks-stale prose back to the loop under
+the banner "the living synthesis". Read it however you like; to change it,
+run a tick.
+
+### The attempt ledger — why the proposer doesn't re-tread
+
+Pinned alongside the narrative is the **attempt ledger**: one chunk per
+attempt (`meta.pinned='ledger-node'`), nested through `parent_chunk_id` so
+a refinement sits under the attempt it refines. Each carries its state on
+the closed `ATTEMPT:` axis — `open` · `active` · `tried` · `ruled-out` ·
+`idea` ([[precis-tags]]).
+
+Because each attempt is its own chunk it is individually addressable,
+taggable, and linkable, and because the ledger is pinned it survives every
+narrative rewrite. That is what stops a tick from re-proposing something
+already ruled out. Older dossiers still holding a single markdown ledger
+blob convert on first read, so nothing needs a migration pass.
+
 A **research tick** is one bounded step of the (future) autonomous loop:
 it reads the quest's rolling context (statement + dossier + gaps +
 momentum + logbook tail), does one increment of reasoning, appends 1–4

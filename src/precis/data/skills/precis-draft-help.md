@@ -678,6 +678,14 @@ section (full per-candidate detail) or a draft slug (a slimmer roll-up).
 A topic-precision gate keeps candidates on-domain when the cited papers
 carry `topic:` tags — a no-op when they don't.
 
+**Some drafts are machine-owned and refuse your edits.** A draft linked
+`dossier-of` (a quest's dossier, [[precis-quest-help]]) or `paper-of` is
+written by the process that owns it; `put`/`edit`/`delete` on one raises
+`Unsupported`. Read it freely — the refusal exists because a hygiene pass
+once restructured a live dossier and silently stranded most of it, leaving
+the owning loop reading weeks-old prose. If such a draft looks wrong, the
+fix belongs in the process that writes it, not in the document.
+
 ## Writing well, and steering rather than hand-editing
 
 A research write-up is *flowing prose*, not a slide deck.

@@ -149,6 +149,7 @@ the canonical list:
 | `DREAM:` | `consolidated` / `speculative` / `acquire` | dreaming worker |
 | `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
 | `AUDIT:` | `missing-citation` / `empty-stub` / `unsupported-claim` / `citation-drift` / `missing-data` | content-QA audit (on the anchored change-request `todo`/`finding`) |
+| `ATTEMPT:` | `open` / `active` / `tried` / `ruled-out` / `idea` | quest tick (chunk-level — on a dossier's ledger-node chunks, not refs) |
 
 Any UPPERCASE prefix outside that table is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.
