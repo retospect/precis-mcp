@@ -22,16 +22,74 @@ Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, TypedDict, cast
 
 import numpy as np
 from psycopg import Connection
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from precis.structure.cell import Cell, as_image3
 from precis.structure.importers import ExternalId, ExternalRun
 from precis.structure.measures import evaluate as _evaluate_measure
 from precis.structure.scene import Atom, Bond, Measure, Scene
+
+
+class StructRunRow(TypedDict):
+    """One ``struct_runs`` row — the fidelity-ladder compute history
+    (``structure_runs``)."""
+
+    id: int
+    fidelity: str
+    status: str
+    model: str | None
+    on_version: int
+    converged: bool
+    n_steps: int
+    energy: float | None
+    max_force: float | None
+    max_disp: float | None
+    created_at: Any
+    forces: dict[str, Any] | None
+    charges: dict[str, Any] | None
+
+
+class StructCachedRunRow(TypedDict):
+    """A run-cube cache hit (``structure_find_cached_run``): the scalar
+    envelope of the newest ``succeeded`` computed run for a cache key, plus
+    its relaxed geometry and per-step convergence curve."""
+
+    id: int
+    fidelity: str
+    model: str | None
+    converged: bool
+    n_steps: int
+    energy: float | None
+    max_force: float | None
+    max_disp: float | None
+    final_geometry: dict[str, Any] | None
+    structure_sha: str | None
+    forces: dict[str, Any] | None
+    curve: list[float]
+
+
+class StructForcesRow(TypedDict):
+    id: int
+    fidelity: str
+    forces: dict[str, Any] | None
+
+
+class StructForcesPayload(TypedDict):
+    """``structure_run_forces``'s return shape — a per-atom force estimate
+    for one run, unpacked from that run's raw ``forces`` jsonb blob."""
+
+    run_id: int
+    fidelity: str
+    vectors: list[list[float]] | None
+    labels: list[str] | None
+    approx: bool
+    source: str | None
+
 
 _LABEL_RE = re.compile(r"^a([A-Z][a-z]?)(\d+)$")
 _SLUG_UNSAFE_RE = re.compile(r"[^a-z0-9]+")
@@ -500,36 +558,24 @@ class StructureMixin:
                 )
         return run_id
 
-    def structure_runs(self, ref_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
+    def structure_runs(self, ref_id: int, *, limit: int = 20) -> list[StructRunRow]:
         """A design's compute history, most-recent first (the fidelity ladder).
         ``forces``/``charges`` (gripe 161576) ride along raw (jsonb-decoded
         dict/``None``) so a renderer can flag which runs carry a per-atom force
         estimate without a second query."""
         with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT id, fidelity, status, model, on_version, converged, "
-                "n_steps, energy, max_force, max_disp, created_at, forces, charges "
-                "FROM struct_runs WHERE ref_id = %s ORDER BY id DESC LIMIT %s",
-                (ref_id, limit),
-            ).fetchall()
-        cols = [
-            "id",
-            "fidelity",
-            "status",
-            "model",
-            "on_version",
-            "converged",
-            "n_steps",
-            "energy",
-            "max_force",
-            "max_disp",
-            "created_at",
-            "forces",
-            "charges",
-        ]
-        return [dict(zip(cols, r, strict=True)) for r in rows]
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT id, fidelity, status, model, on_version, converged, "
+                    "n_steps, energy, max_force, max_disp, created_at, forces, "
+                    "charges FROM struct_runs "
+                    "WHERE ref_id = %s ORDER BY id DESC LIMIT %s",
+                    (ref_id, limit),
+                )
+                rows = cur.fetchall()
+        return [cast(StructRunRow, r) for r in rows]
 
-    def structure_find_cached_run(self, cache_key: str) -> dict[str, Any] | None:
+    def structure_find_cached_run(self, cache_key: str) -> StructCachedRunRow | None:
         """Look a relax request up in the run-cube cache.
 
         Returns the newest ``succeeded`` run for ``cache_key`` — its scalar
@@ -544,18 +590,20 @@ class StructureMixin:
         fingerprint) could silently serve as a false hit for a computed
         relax request."""
         with self.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT id, fidelity, model, converged, n_steps, energy, "
-                "max_force, max_disp, final_geometry, structure_sha, forces "
-                "FROM struct_runs "
-                "WHERE cache_key = %s AND status = 'succeeded' "
-                "AND provenance = 'computed' "
-                "ORDER BY id DESC LIMIT 1",
-                (cache_key,),
-            ).fetchone()
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT id, fidelity, model, converged, n_steps, energy, "
+                    "max_force, max_disp, final_geometry, structure_sha, forces "
+                    "FROM struct_runs "
+                    "WHERE cache_key = %s AND status = 'succeeded' "
+                    "AND provenance = 'computed' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (cache_key,),
+                )
+                row = cur.fetchone()
             if row is None:
                 return None
-            run_id = int(row[0])
+            run_id = int(row["id"])
             curve = [
                 float(c[0])
                 for c in conn.execute(
@@ -564,22 +612,9 @@ class StructureMixin:
                     (run_id,),
                 ).fetchall()
             ]
-        cols = [
-            "id",
-            "fidelity",
-            "model",
-            "converged",
-            "n_steps",
-            "energy",
-            "max_force",
-            "max_disp",
-            "final_geometry",
-            "structure_sha",
-            "forces",
-        ]
-        out = dict(zip(cols, row, strict=True))
+        out = cast(dict[str, Any], row)
         out["curve"] = curve
-        return out
+        return cast(StructCachedRunRow, out)
 
     def structure_run_forces(
         self,
@@ -587,7 +622,7 @@ class StructureMixin:
         *,
         run_id: int | None = None,
         on_version: int | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> StructForcesPayload | None:
         """The stored per-atom force payload for one run (gripe 161576) —
         ``run_id`` pins a specific run (returned regardless of design
         version — an explicit pin always answers with *that* run's forces);
@@ -605,32 +640,34 @@ class StructureMixin:
         a run on this design, or (with no ``run_id``) no matching run has
         ever recorded forces."""
         with self.pool.connection() as conn:
-            if run_id is not None:
-                row = conn.execute(
-                    "SELECT id, fidelity, forces FROM struct_runs "
-                    "WHERE id = %s AND ref_id = %s",
-                    (run_id, ref_id),
-                ).fetchone()
-            elif on_version is not None:
-                row = conn.execute(
-                    "SELECT id, fidelity, forces FROM struct_runs "
-                    "WHERE ref_id = %s AND forces IS NOT NULL AND on_version = %s "
-                    "ORDER BY id DESC LIMIT 1",
-                    (ref_id, on_version),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT id, fidelity, forces FROM struct_runs "
-                    "WHERE ref_id = %s AND forces IS NOT NULL "
-                    "ORDER BY id DESC LIMIT 1",
-                    (ref_id,),
-                ).fetchone()
+            with conn.cursor(row_factory=dict_row) as cur:
+                if run_id is not None:
+                    cur.execute(
+                        "SELECT id, fidelity, forces FROM struct_runs "
+                        "WHERE id = %s AND ref_id = %s",
+                        (run_id, ref_id),
+                    )
+                elif on_version is not None:
+                    cur.execute(
+                        "SELECT id, fidelity, forces FROM struct_runs "
+                        "WHERE ref_id = %s AND forces IS NOT NULL AND on_version = %s "
+                        "ORDER BY id DESC LIMIT 1",
+                        (ref_id, on_version),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id, fidelity, forces FROM struct_runs "
+                        "WHERE ref_id = %s AND forces IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1",
+                        (ref_id,),
+                    )
+                row = cast(StructForcesRow, cur.fetchone())
         if row is None:
             return None
-        blob = row[2] or {}
+        blob = row["forces"] or {}
         return {
-            "run_id": int(row[0]),
-            "fidelity": str(row[1]),
+            "run_id": int(row["id"]),
+            "fidelity": str(row["fidelity"]),
             "vectors": blob.get("vectors"),
             "labels": blob.get("labels"),
             "approx": bool(blob.get("approx", False)),

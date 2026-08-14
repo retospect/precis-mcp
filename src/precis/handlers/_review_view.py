@@ -18,11 +18,12 @@ API style and ``draft.py``'s ``_render_wordcount``'s ``toon.dump`` table.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from precis.errors import NotFound
 from precis.format import toon
 from precis.response import Response
+from precis.store._draft_ops import DraftReviewRow
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
@@ -42,36 +43,36 @@ def render_review_view(store: Store, ref: Ref) -> Response:
     if not chunks:
         return Response(body=f"{header}\n\n(no chunks yet)")
 
-    per_chunk: dict[int, dict[str, dict[str, Any]]] = {}
+    per_chunk: dict[int, dict[str, DraftReviewRow]] = {}
     checkers_seen: set[str] = {_HUMAN}
     for row in store.drafts.review_status_for_draft(ref.id):
-        if row["checker"] is None:  # never reviewed by anyone — no entry
+        if row.checker is None:  # never reviewed by anyone — no entry
             continue
-        by_checker = per_chunk.setdefault(row["chunk_id"], {})
-        by_checker[row["checker"]] = row
-        checkers_seen.add(row["checker"])
+        by_checker = per_chunk.setdefault(row.chunk_id, {})
+        by_checker[row.checker] = row
+        checkers_seen.add(row.checker)
     checkers = [_HUMAN, *sorted(checkers_seen - {_HUMAN})]
 
-    def _mark(status: dict[str, Any] | None) -> str:
+    def _mark(status: DraftReviewRow | None) -> str:
         if status is None:
             return "–"  # never reviewed
-        return "✗" if status["dirty"] else "✓"
+        return "✗" if status.dirty else "✓"
 
-    rows = []
+    rows: list[dict[str, str]] = []
     dirty_for_human: list[str] = []
     for c in chunks:
         by_checker = per_chunk.get(c.chunk_id, {})
         human = by_checker.get(_HUMAN)
-        if human is None or human["dirty"]:
+        if human is None or human.dirty:
             dirty_for_human.append(c.dc)
-        row = {
+        line: dict[str, str] = {
             "handle": c.dc,
             "kind": c.chunk_kind,
             "text": _preview(c.text),
         }
         for checker in checkers:
-            row[checker] = _mark(by_checker.get(checker))
-        rows.append(row)
+            line[checker] = _mark(by_checker.get(checker))
+        rows.append(line)
 
     table = toon.dump(rows, schema=["handle", "kind", "text", *checkers])
     trailer = (
@@ -102,7 +103,7 @@ def render_review_diff_view(store: Store, addr: str) -> Response:
     if chunk is None:
         raise NotFound(f"draft chunk {addr!r} not found")
     statuses = store.drafts.review_status_for_chunk(chunk.chunk_id)
-    human = next((s for s in statuses if s["checker"] == _HUMAN), None)
+    human = next((s for s in statuses if s.checker == _HUMAN), None)
     header = f"# {chunk.dc} — review-diff (human)"
     if human is None:
         return Response(
@@ -110,14 +111,15 @@ def render_review_diff_view(store: Store, addr: str) -> Response:
             f"Next: edit(kind='draft', id='{chunk.dc}', review='human') to approve "
             "the current text."
         )
-    diff = store.drafts.review_diff_since(chunk.chunk_id, human["approved_sha"])
+    assert human.approved_sha is not None  # human always has an approved_sha
+    diff = store.drafts.review_diff_since(chunk.chunk_id, human.approved_sha)
     if not diff:
         return Response(
             body=f"{header}\n\nno change since human approved "
-            f"@ {human['approved_sha'][:12]}…"
+            f"@ {human.approved_sha[:12]}…"
         )
     return Response(
-        body=f"{header} — approved @ {human['approved_sha'][:12]}… vs current\n\n{diff}"
+        body=f"{header} — approved @ {human.approved_sha[:12]}… vs current\n\n{diff}"
     )
 
 

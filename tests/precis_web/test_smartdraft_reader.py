@@ -22,6 +22,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.store._draft_ops import DraftReviewRow
 from precis.utils import handle_registry
 from precis_web import smartdraft
 from precis_web.app import create_app
@@ -151,22 +152,28 @@ class SmartDraftFakeStore(FakeStore):
         # by a human, clean (dirty=False) — exercises the ✓ port's on/plain
         # states in the focus header (test below).
         return [
-            {
-                "chunk_id": 2,
-                "checker": None,
-                "approved_sha": None,
-                "verdict": None,
-                "at": None,
-                "dirty": True,
-            },
-            {
-                "chunk_id": 3,
-                "checker": "human",
-                "approved_sha": "abc",
-                "verdict": "approved",
-                "at": None,
-                "dirty": False,
-            },
+            DraftReviewRow(
+                chunk_id=2,
+                handle="H000002",
+                chunk_kind="paragraph",
+                section_chunk_id=1,
+                checker=None,
+                approved_sha=None,
+                verdict=None,
+                at=None,
+                dirty=True,
+            ),
+            DraftReviewRow(
+                chunk_id=3,
+                handle="H000003",
+                chunk_kind="paragraph",
+                section_chunk_id=1,
+                checker="human",
+                approved_sha="abc",
+                verdict="approved",
+                at=None,
+                dirty=False,
+            ),
         ]
 
     def get_chunk_blob(self, handle):
@@ -224,16 +231,17 @@ class ReviewMatrixFakeStore(SmartDraftFakeStore):
         def row(
             chunk_id, checker, *, dirty, kind="paragraph", section=1, verdict="approved"
         ):
-            return {
-                "chunk_id": chunk_id,
-                "checker": checker,
-                "approved_sha": "old" if dirty else "cur",
-                "verdict": verdict,
-                "at": None,
-                "dirty": dirty,
-                "chunk_kind": kind,
-                "section_chunk_id": section,
-            }
+            return DraftReviewRow(
+                chunk_id=chunk_id,
+                handle=f"H{chunk_id:06d}",
+                chunk_kind=kind,
+                section_chunk_id=section,
+                checker=checker,
+                approved_sha="old" if dirty else "cur",
+                verdict=verdict,
+                at=None,
+                dirty=dirty,
+            )
 
         return [
             row(
@@ -322,16 +330,17 @@ class CitedBigDraftFakeStore(BigDraftFakeStore):
 
     def review_status_for_draft(self, ref_id):
         return [
-            {
-                "chunk_id": c.chunk_id,
-                "checker": None,
-                "approved_sha": None,
-                "verdict": None,
-                "at": None,
-                "dirty": True,
-                "chunk_kind": c.chunk_kind,
-                "section_chunk_id": None if c.chunk_kind == "heading" else 1,
-            }
+            DraftReviewRow(
+                chunk_id=c.chunk_id,
+                handle=c.handle,
+                chunk_kind=c.chunk_kind,
+                section_chunk_id=None if c.chunk_kind == "heading" else 1,
+                checker=None,
+                approved_sha=None,
+                verdict=None,
+                at=None,
+                dirty=True,
+            )
             for c in self._chunks
         ]
 
@@ -772,14 +781,17 @@ class ClaimTrustFakeStore(SmartDraftFakeStore):
 
     def review_status_for_draft(self, ref_id):
         return [
-            {
-                "chunk_id": c.chunk_id,
-                "checker": None,
-                "approved_sha": None,
-                "verdict": None,
-                "at": None,
-                "dirty": True,
-            }
+            DraftReviewRow(
+                chunk_id=c.chunk_id,
+                handle=c.handle,
+                chunk_kind=c.chunk_kind,
+                section_chunk_id=1,
+                checker=None,
+                approved_sha=None,
+                verdict=None,
+                at=None,
+                dirty=True,
+            )
             for c in self._chunks
             if c.chunk_kind != "heading"
         ]
@@ -889,16 +901,17 @@ class AllHumanReviewedFakeStore(SmartDraftFakeStore):
 
     def review_status_for_draft(self, ref_id):
         return [
-            {
-                "chunk_id": cid,
-                "checker": "human",
-                "approved_sha": "cur",
-                "verdict": "approved",
-                "at": None,
-                "dirty": False,
-                "chunk_kind": "paragraph",
-                "section_chunk_id": 1,
-            }
+            DraftReviewRow(
+                chunk_id=cid,
+                handle=f"H{cid:06d}",
+                chunk_kind="paragraph",
+                section_chunk_id=1,
+                checker="human",
+                approved_sha="cur",
+                verdict="approved",
+                at=None,
+                dirty=False,
+            )
             for cid in (2, 3, 7, 8, 9)
         ]
 

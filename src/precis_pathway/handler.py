@@ -33,6 +33,8 @@ from precis.store.types import BlockInsert
 if TYPE_CHECKING:
     from precis.store import Store
 
+    from .types import NetworkTopology, PathwayArtifact
+
 from .persist import BODY_KIND, pathway_title, persist_result
 
 #: When set, `put` routes the compute to a `autocatpath_explore` job pinned to this
@@ -175,7 +177,9 @@ class PathwayHandler(Handler):
             )
 
         # In-process on EMT (slice 0). Synchronous — keep demo configs small.
-        artifact = runner.run_pathway_from_yaml(text, force_backend="emt")
+        artifact: PathwayArtifact = runner.run_pathway_from_yaml(
+            text, force_backend="emt"
+        )
         if existing is None:
             with store.tx() as conn:
                 ref = store.insert_ref(
@@ -418,7 +422,7 @@ class PathwayHandler(Handler):
         from . import runner
         from .text_views import topology_to_mermaid, topology_to_text
 
-        topo = runner.network_topology(raw_config)
+        topo: NetworkTopology = runner.network_topology(raw_config)
         body = topology_to_text(topo)
         seed_meta = {
             "content_key": key,
@@ -462,7 +466,7 @@ class PathwayHandler(Handler):
 
         if meta.get("graph"):
             return "```mermaid\n" + graph_to_mermaid(meta["graph"]) + "\n```"
-        topo = meta.get("topology") or (
+        topo: NetworkTopology | None = meta.get("topology") or (
             runner.network_topology(meta["config"]) if meta.get("config") else None
         )
         if topo:
@@ -473,7 +477,7 @@ class PathwayHandler(Handler):
         from . import runner
         from .text_views import topology_to_text
 
-        topo = meta.get("topology") or (
+        topo: NetworkTopology | None = meta.get("topology") or (
             runner.network_topology(meta["config"]) if meta.get("config") else None
         )
         return topology_to_text(topo) if topo else "(no network)"
@@ -518,7 +522,7 @@ class PathwayHandler(Handler):
         return s or "pathway"
 
     @staticmethod
-    def _put_summary(slug: str, verb: str, artifact: dict[str, Any]) -> str:
+    def _put_summary(slug: str, verb: str, artifact: PathwayArtifact) -> str:
         r = artifact["results_json"]
         n_nodes = len(r["nodes"])
         n_edges = len(r["edges"])

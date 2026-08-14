@@ -29,7 +29,8 @@ import io
 import re
 from collections.abc import Iterable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -195,6 +196,62 @@ class DraftWorkItem:
     # waiting on a human answer. Surfaced inline in the draft so the
     # operator answers in place instead of hunting the Asks/alerts tab.
     asks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewableChunk:
+    """One live, reviewable chunk stub — the ``(chunk_id, handle,
+    chunk_kind)`` triple :meth:`DraftStore.reviewable_chunks` returns.
+    Walked by the review fanout (``quest/review_fanout.py::
+    mint_review_fanout``) to decide which ``(chunk, lens)`` pairs to mint
+    review-todos for, independent of any checker's ledger state."""
+
+    chunk_id: int
+    handle: str
+    chunk_kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkReviewEntry:
+    """One checker's ledger row — a ``chunk_review`` row (migration 0086)
+    joined against the chunk's current ``content_sha`` to derive
+    ``dirty``. Returned by :meth:`DraftStore.review_status_for_chunk`
+    (one chunk, every checker that has ever reviewed it — a checker with
+    no row simply doesn't appear) and reused, per-row, inside
+    :meth:`DraftStore.review_status_for_draft`'s :class:`DraftReviewRow`
+    (where ``checker is None`` instead marks a chunk with no ledger rows
+    at all)."""
+
+    checker: str | None
+    approved_sha: str | None
+    verdict: str | None
+    at: datetime | None
+    dirty: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DraftReviewRow:
+    """One ``(chunk, checker)`` row of the whole-draft review ledger —
+    :meth:`DraftStore.review_status_for_draft`'s return shape. Carries
+    the chunk's own fields (denormalized onto every checker row of that
+    chunk) plus one checker's :class:`ChunkReviewEntry` fields flattened
+    in, so a flat-list walk never needs a second lookup. A chunk with no
+    ledger rows at all still appears once, with ``checker=None`` (LEFT
+    JOIN) — ``dirty`` is then ``True`` (never reviewed)."""
+
+    chunk_id: int
+    handle: str
+    chunk_kind: str
+    #: Nearest enclosing HEADING chunk id (ancestor walk, self excluded;
+    #: ``None`` for a chunk with no heading ancestor) — the id a
+    #: paragraph's rollup uses to pull in its section's
+    #: ``structure``/``adversarial`` state ("via section").
+    section_chunk_id: int | None
+    checker: str | None
+    approved_sha: str | None
+    verdict: str | None
+    at: datetime | None
+    dirty: bool
 
 
 def _split_blocks(text: str) -> list[str]:
@@ -3389,7 +3446,7 @@ class DraftStore(_AbbrevMixin):
             return False
         return bool(row[0].get("authoring_enabled"))
 
-    def reviewable_chunks(self, ref_id: int) -> list[dict[str, Any]]:
+    def reviewable_chunks(self, ref_id: int) -> list[ReviewableChunk]:
         """Every live, reviewable chunk of ``ref_id`` — draft-family chunks
         with a non-NULL ``content_sha`` (the same population
         :meth:`chunks_requiring_review` / :meth:`review_status_for_draft`
@@ -3412,10 +3469,13 @@ class DraftStore(_AbbrevMixin):
                 (ref_id,),
             ).fetchall()
         return [
-            {"chunk_id": int(r[0]), "handle": r[1], "chunk_kind": r[2]} for r in rows
+            ReviewableChunk(
+                chunk_id=int(chunk_id), handle=handle, chunk_kind=chunk_kind
+            )
+            for chunk_id, handle, chunk_kind in rows
         ]
 
-    def review_status_for_chunk(self, chunk_id: int) -> list[dict[str, Any]]:
+    def review_status_for_chunk(self, chunk_id: int) -> list[ChunkReviewEntry]:
         """Every checker's ledger row for ``chunk_id`` — ``checker``,
         ``approved_sha``, ``verdict``, ``at``, and a derived ``dirty`` bit
         (``approved_sha`` no longer matches the chunk's current
@@ -3436,14 +3496,14 @@ class DraftStore(_AbbrevMixin):
                 (chunk_id,),
             ).fetchall()
         return [
-            {
-                "checker": r[0],
-                "approved_sha": r[1],
-                "verdict": r[2],
-                "at": r[3],
-                "dirty": r[1] != current_sha,
-            }
-            for r in rows
+            ChunkReviewEntry(
+                checker=checker,
+                approved_sha=approved_sha,
+                verdict=verdict,
+                at=at,
+                dirty=approved_sha != current_sha,
+            )
+            for checker, approved_sha, verdict, at in rows
         ]
 
     def review_root_chunk_id(self, ref_id: int) -> int | None:
@@ -3477,7 +3537,7 @@ class DraftStore(_AbbrevMixin):
             ).fetchone()
         return int(row[0]) if row else None
 
-    def review_status_for_draft(self, ref_id: int) -> list[dict[str, Any]]:
+    def review_status_for_draft(self, ref_id: int) -> list[DraftReviewRow]:
         """Every checker's ledger row for every live, reviewable chunk of
         ``ref_id`` — the whole-draft counterpart to
         :meth:`review_status_for_chunk`, in **one** query instead of one
@@ -3528,26 +3588,37 @@ class DraftStore(_AbbrevMixin):
             ).fetchall()
         # group ledger rows by chunk_id, keep each chunk's own fields once
         by_chunk: dict[int, dict[str, Any]] = {}
-        for r in rows:
-            chunk_id = int(r[0])
+        for (
+            chunk_id,
+            handle,
+            chunk_kind,
+            parent_chunk_id,
+            pos,
+            checker,
+            approved_sha,
+            verdict,
+            at,
+            dirty,
+        ) in rows:
+            chunk_id = int(chunk_id)
             entry = by_chunk.setdefault(
                 chunk_id,
                 {
-                    "handle": r[1],
-                    "chunk_kind": r[2],
-                    "parent_chunk_id": r[3],
-                    "pos": r[4],
+                    "handle": handle,
+                    "chunk_kind": chunk_kind,
+                    "parent_chunk_id": parent_chunk_id,
+                    "pos": pos,
                     "reviews": [],
                 },
             )
             entry["reviews"].append(
-                {
-                    "checker": r[5],
-                    "approved_sha": r[6],
-                    "verdict": r[7],
-                    "at": r[8],
-                    "dirty": bool(r[9]),
-                }
+                ChunkReviewEntry(
+                    checker=checker,
+                    approved_sha=approved_sha,
+                    verdict=verdict,
+                    at=at,
+                    dirty=bool(dirty),
+                )
             )
         # DFS pre-order over the chunks (not a per-checker row), same shape
         # as `reading_order`: children keyed by parent_chunk_id, siblings by
@@ -3593,36 +3664,45 @@ class DraftStore(_AbbrevMixin):
         root_id = self.review_root_chunk_id(ref_id)
         if root_id is not None:
             digest = self.toc_digest(ref_id)
-            root_reviews = by_chunk[root_id]["reviews"]
-            toc_row = next((rv for rv in root_reviews if rv["checker"] == "toc"), None)
-            if toc_row is not None:
-                toc_row["dirty"] = toc_row["approved_sha"] != digest
+            root_reviews: list[ChunkReviewEntry] = by_chunk[root_id]["reviews"]
+            toc_idx = next(
+                (i for i, rv in enumerate(root_reviews) if rv.checker == "toc"), None
+            )
+            if toc_idx is not None:
+                toc_row = root_reviews[toc_idx]
+                root_reviews[toc_idx] = replace(
+                    toc_row, dirty=toc_row.approved_sha != digest
+                )
             else:
                 root_reviews.append(
-                    {
-                        "checker": "toc",
-                        "approved_sha": None,
-                        "verdict": None,
-                        "at": None,
-                        "dirty": True,
-                    }
+                    ChunkReviewEntry(
+                        checker="toc",
+                        approved_sha=None,
+                        verdict=None,
+                        at=None,
+                        dirty=True,
+                    )
                 )
 
-        out: list[dict[str, Any]] = []
+        out: list[DraftReviewRow] = []
         stack = list(reversed(roots))
         while stack:
             chunk_id = stack.pop()
             entry = by_chunk[chunk_id]
             section_chunk_id = _section_chunk_id(chunk_id)
-            for review in sorted(entry["reviews"], key=lambda rv: rv["checker"] or ""):
+            for review in sorted(entry["reviews"], key=lambda rv: rv.checker or ""):
                 out.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "handle": entry["handle"],
-                        "chunk_kind": entry["chunk_kind"],
-                        "section_chunk_id": section_chunk_id,
-                        **review,
-                    }
+                    DraftReviewRow(
+                        chunk_id=chunk_id,
+                        handle=entry["handle"],
+                        chunk_kind=entry["chunk_kind"],
+                        section_chunk_id=section_chunk_id,
+                        checker=review.checker,
+                        approved_sha=review.approved_sha,
+                        verdict=review.verdict,
+                        at=review.at,
+                        dirty=review.dirty,
+                    )
                 )
             kids = children.get(chunk_id, [])
             stack.extend(reversed(kids))
@@ -3638,11 +3718,11 @@ class DraftStore(_AbbrevMixin):
         drift from what the per-chunk indicator renders."""
         prose: dict[int, bool] = {}
         for row in self.review_status_for_draft(ref_id):
-            if row["chunk_kind"] not in PROSE_CHUNK_KINDS:
+            if row.chunk_kind not in PROSE_CHUNK_KINDS:
                 continue
-            prose.setdefault(row["chunk_id"], False)
-            if row["checker"] == "human" and not row["dirty"]:
-                prose[row["chunk_id"]] = True
+            prose.setdefault(row.chunk_id, False)
+            if row.checker == "human" and not row.dirty:
+                prose[row.chunk_id] = True
         return {"done": sum(1 for v in prose.values() if v), "total": len(prose)}
 
     def review_diff_since(self, chunk_id: int, since_sha: str) -> str:

@@ -15,7 +15,10 @@ and renderable as a diagram by clients that want one). Pure — imports nothing.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .types import NetworkTopology
 
 _ID_RE = re.compile(r"[^A-Za-z0-9_]")
 
@@ -37,7 +40,7 @@ def _formula(composition: dict[str, Any]) -> str:
 
 
 # ── from the cheap pre-compute topology ─────────────────────────────────
-def topology_to_text(topo: dict[str, Any]) -> str:
+def topology_to_text(topo: NetworkTopology) -> str:
     s = topo.get("strategy", "?")
     head = (
         f"{topo['substrate']} → {topo['target']} on {topo['element']}  (network: {s})"
@@ -67,7 +70,7 @@ def topology_to_text(topo: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def topology_to_mermaid(topo: dict[str, Any]) -> str:
+def topology_to_mermaid(topo: NetworkTopology) -> str:
     lines = ["flowchart LR"]
     for st in topo.get("states", []):
         lines.append(

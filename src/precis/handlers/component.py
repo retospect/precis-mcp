@@ -48,7 +48,7 @@ See ``precis-component-help``.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypedDict
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
@@ -56,6 +56,11 @@ from precis.format import render_agent_table
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store._component_ops import (
+    ComponentCategoryRow,
+    ComponentSpecRow,
+    ComponentValueRowWithSource,
+)
 from precis.utils import handle_registry
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
@@ -233,7 +238,7 @@ class ComponentHandler(Handler):
             lines.append("aka: " + ", ".join(rmeta["aliases"]))
         return Response(body="\n".join(lines))
 
-    def _resolve_category(self, category_id: str) -> dict[str, Any]:
+    def _resolve_category(self, category_id: str) -> ComponentCategoryRow:
         """Look up ``category_id``, minting a fresh ``proposed`` row when
         it's unknown (never silently ``core`` — that tier is curated by
         migration only)."""
@@ -464,7 +469,7 @@ class ComponentHandler(Handler):
 
     @staticmethod
     def _check_type_consistency(
-        spec_row: dict[str, Any],
+        spec_row: ComponentSpecRow,
         *,
         value_type: str | None,
         allowed_values: list[Any] | None,
@@ -490,7 +495,7 @@ class ComponentHandler(Handler):
                 )
 
     def _check_applicability(
-        self, spec_row: dict[str, Any], component_category: str | None
+        self, spec_row: ComponentSpecRow, component_category: str | None
     ) -> None:
         spec_category = spec_row.get("category_id")
         if spec_category is None:
@@ -514,7 +519,7 @@ class ComponentHandler(Handler):
         category_id: str | None,
         value_type: str | None = None,
         allowed_values: list[Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ComponentSpecRow:
         """Mint a fresh ``proposed`` spec when ``spec=`` is unknown, scoped
         to the *writing component's* category (never universal — see
         ``component-kind`` (git-only)'s resolved "Runtime spec-mint
@@ -606,7 +611,7 @@ class ComponentHandler(Handler):
         )
 
     @staticmethod
-    def _check_unit(spec_row: dict[str, Any], unit: str | None) -> None:
+    def _check_unit(spec_row: ComponentSpecRow, unit: str | None) -> None:
         canonical = spec_row.get("canonical_unit")
         given = None if unit is None else (str(unit).strip() or None)
         if canonical is not None:
@@ -633,7 +638,7 @@ class ComponentHandler(Handler):
 
     @staticmethod
     def _route_value(
-        spec_row: dict[str, Any],
+        spec_row: ComponentSpecRow,
         value: Any,
         *,
         value_low: float | None = None,
@@ -922,7 +927,7 @@ class ComponentHandler(Handler):
         return summed
 
     def _render_bom(self, ref: Any, *, spec: str | None) -> Response:
-        spec_row: dict[str, Any] | None = None
+        spec_row: ComponentSpecRow | None = None
         if spec is not None:
             spec_row = self.store.component_spec_get(spec)
             if spec_row is None:
@@ -995,7 +1000,9 @@ class ComponentHandler(Handler):
 
         return Response(body="\n".join(lines))
 
-    def _render_table(self, ref: Any, values: list[dict[str, Any]]) -> Response:
+    def _render_table(
+        self, ref: Any, values: list[ComponentValueRowWithSource]
+    ) -> Response:
         if not values:
             return Response(
                 body=f"# {ref.title} ({ref.slug}) — no recorded values yet\n\n"
@@ -1019,7 +1026,9 @@ class ComponentHandler(Handler):
             )
         )
 
-    def _render_page(self, ref: Any, values: list[dict[str, Any]]) -> Response:
+    def _render_page(
+        self, ref: Any, values: list[ComponentValueRowWithSource]
+    ) -> Response:
         meta = ref.meta or {}
         lines = [f"# component {ref.slug}: {ref.title}"]
         if meta.get("category"):
@@ -1057,15 +1066,16 @@ class ComponentHandler(Handler):
             ]
             return Response(body="\n".join(lines))
 
-        grouped: dict[str, list[dict[str, Any]]] = {}
+        grouped: dict[str, list[ComponentValueRowWithSource]] = {}
         for v in values:
             grouped.setdefault(v["spec_id"], []).append(v)
 
         lines.append("")
         for spec_id, vs in grouped.items():
-            spec_row = self.store.component_spec_get(spec_id) or {}
-            unit = spec_row.get("canonical_unit")
-            header = f"## {spec_row.get('name') or spec_id} ({spec_id})"
+            spec_reg = self.store.component_spec_get(spec_id)
+            unit = spec_reg.get("canonical_unit") if spec_reg else None
+            spec_name = spec_reg.get("name") if spec_reg else None
+            header = f"## {spec_name or spec_id} ({spec_id})"
             if unit:
                 header += f" [{unit}]"
             lines.append(header)
@@ -1251,7 +1261,20 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
-def _display_value(v: dict[str, Any]) -> str:
+class _ValueDisplayFields(TypedDict):
+    """The subset of a value row ``_display_value`` needs — narrower than
+    :class:`ComponentValueRow` so ``_put_value``'s just-inserted
+    ``value_kwargs`` echo (no ``id``/``created_at``/... yet, since the row
+    isn't re-fetched after insert) satisfies it too."""
+
+    value_num: float | None
+    value_low: float | None
+    value_high: float | None
+    value_text: str | None
+    value_bool: bool | None
+
+
+def _display_value(v: _ValueDisplayFields) -> str:
     if v["value_num"] is not None:
         base = str(v["value_num"])
         low = v.get("value_low")
@@ -1272,7 +1295,7 @@ def _fmt_conditions(conditions: Any) -> str:
     return ", ".join(f"{k}={v}" for k, v in conditions.items())
 
 
-def _display_source(v: dict[str, Any]) -> str:
+def _display_source(v: ComponentValueRowWithSource) -> str:
     ref_id = v.get("source_ref_id")
     kind = v.get("source_kind")
     if ref_id is not None and kind:

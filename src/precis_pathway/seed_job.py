@@ -42,9 +42,12 @@ wall-clock backstop ``ssh_node`` calls past ``meta.deadline``.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from .types import DetachedHandle
 
 log = logging.getLogger(__name__)
 
@@ -197,7 +200,7 @@ def _run(*_a: Any, **_k: Any) -> Any:
     raise NotImplementedError("autocatpath_seed runs via dispatch(), not run()")
 
 
-def _submit(ctx: Any, spec: Any) -> dict[str, Any] | None:
+def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
     """Detached submit half (§H piece 4) — same param parsing/validation as
     ``_dispatch``; malformed params fail the SAME way, ``ctx.record_failure``
     + return ``None``. ``ssh_node._run_one`` still stamps

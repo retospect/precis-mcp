@@ -16,13 +16,20 @@ Mirrors ``_material_ops.py``'s star schema, plus a category dimension:
 
 Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 ``self.add_link``.
+
+Row mapping: every read goes through a cursor bound to psycopg's
+``dict_row`` factory (never positional tuple indexing over the long
+``_SPEC_COLS``/``_VALUE_COLS`` lists — a SELECT-list drift would
+otherwise silently mis-assign a field), then ``cast`` to the matching
+``TypedDict`` below so callers get named, typed access.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from psycopg import Connection
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 _CATEGORY_COLS = "category_id, name, status, description"
@@ -39,58 +46,80 @@ _VALUE_COLS = (
 )
 
 
-def _row_to_category(row: tuple[Any, ...]) -> dict[str, Any]:
-    return {
-        "category_id": row[0],
-        "name": row[1],
-        "status": row[2],
-        "description": row[3],
-    }
+class ComponentCategoryRow(TypedDict):
+    category_id: str
+    name: str
+    status: str
+    description: str | None
 
 
-def _row_to_spec(row: tuple[Any, ...]) -> dict[str, Any]:
-    return {
-        "spec_id": row[0],
-        "name": row[1],
-        "canonical_unit": row[2],
-        "dimension": row[3],
-        "value_type": row[4],
-        "allowed_values": row[5],
-        "standard_ref": row[6],
-        "status": row[7],
-        "higher_is_better": row[8],
-        "description": row[9],
-        "category_id": row[10],
-    }
+class ComponentSpecRow(TypedDict):
+    spec_id: str
+    name: str
+    canonical_unit: str | None
+    dimension: str | None
+    value_type: str
+    allowed_values: list[Any] | None
+    standard_ref: str | None
+    status: str
+    higher_is_better: bool | None
+    description: str | None
+    category_id: str | None
 
 
-def _row_to_value(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map a ``_VALUE_COLS`` row to a dict. ``row`` may carry one trailing
-    ``source_kind`` column (from the ``refs`` LEFT JOIN the read paths add);
-    it lands under that key, ``None`` if the row is exactly 19-wide."""
-    out = {
-        "id": row[0],
-        "component_ref_id": row[1],
-        "spec_id": row[2],
-        "value_num": row[3],
-        "value_low": row[4],
-        "value_high": row[5],
-        "value_text": row[6],
-        "value_bool": row[7],
-        "input_unit": row[8],
-        "conditions": row[9],
-        "maturity": row[10],
-        "method": row[11],
-        "source_ref_id": row[12],
-        "source_chunk": row[13],
-        "source_url": row[14],
-        "as_of": row[15],
-        "set_by": row[16],
-        "created_at": row[17],
-        "notes": row[18],
-    }
-    out["source_kind"] = row[19] if len(row) > 19 else None
-    return out
+class ComponentValueRow(TypedDict):
+    """One ``component_spec_values`` row — a 5-way tagged union over which
+    of ``value_num``/``value_low``/``value_high``/``value_text``/
+    ``value_bool`` is populated, keyed by the owning spec's ``value_type``
+    (quantity/ratio -> ``value_num`` [+ ``value_low``/``value_high``],
+    boolean -> ``value_bool``, categorical/text -> ``value_text``)."""
+
+    id: int
+    component_ref_id: int
+    spec_id: str
+    value_num: float | None
+    value_low: float | None
+    value_high: float | None
+    value_text: str | None
+    value_bool: bool | None
+    input_unit: str | None
+    conditions: dict[str, Any] | None
+    maturity: str
+    method: str | None
+    source_ref_id: int | None
+    source_chunk: str | None
+    source_url: str | None
+    as_of: str | None
+    set_by: str | None
+    created_at: Any
+    notes: str | None
+
+
+class ComponentValueRowWithSource(ComponentValueRow):
+    """A :class:`ComponentValueRow` joined to the source ref's kind (the
+    ``component-page``/table reads, which need to format a source handle
+    without a second query)."""
+
+    source_kind: str | None
+
+
+class ComponentValueSearchRow(ComponentValueRowWithSource):
+    """A :class:`ComponentValueRowWithSource` joined to the owning
+    component's title (``component_search_values``)."""
+
+    component_title: str
+
+
+def _fetchone(conn: Connection, sql: str, params: Any = ()) -> dict[str, Any] | None:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, params)
+        return cur.fetchone()
+
+
+def _fetchall(conn: Connection, sql: str, params: Any = ()) -> list[dict[str, Any]]:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
 
 
 class ComponentMixin:
@@ -142,26 +171,27 @@ class ComponentMixin:
 
     def component_category_get(
         self, category_id: str, *, conn: Connection | None = None
-    ) -> dict[str, Any] | None:
+    ) -> ComponentCategoryRow | None:
         """Look up one category row by ``category_id``, or ``None``."""
         sql = (
             f"SELECT {_CATEGORY_COLS} FROM component_categories WHERE category_id = %s"
         )
         if conn is not None:
-            row = conn.execute(sql, (category_id,)).fetchone()
+            row = _fetchone(conn, sql, (category_id,))
         else:
             with self.pool.connection() as c:
-                row = c.execute(sql, (category_id,)).fetchone()
-        return None if row is None else _row_to_category(row)
+                row = _fetchone(c, sql, (category_id,))
+        return None if row is None else cast(ComponentCategoryRow, row)
 
-    def component_category_list(self) -> list[dict[str, Any]]:
+    def component_category_list(self) -> list[ComponentCategoryRow]:
         """The whole registry, core first then proposed, then alphabetical."""
         with self.pool.connection() as conn:
-            rows = conn.execute(
+            rows = _fetchall(
+                conn,
                 f"SELECT {_CATEGORY_COLS} FROM component_categories "
-                "ORDER BY (status = 'core') DESC, category_id"
-            ).fetchall()
-        return [_row_to_category(r) for r in rows]
+                "ORDER BY (status = 'core') DESC, category_id",
+            )
+        return [cast(ComponentCategoryRow, r) for r in rows]
 
     def component_category_mint(
         self,
@@ -170,7 +200,7 @@ class ComponentMixin:
         name: str,
         description: str | None = None,
         conn: Connection | None = None,
-    ) -> dict[str, Any]:
+    ) -> ComponentCategoryRow:
         """Insert a new ``proposed``-tier category. Caller has already
         checked ``category_id`` doesn't exist. Never mints ``core`` — that
         tier is curated by migration only."""
@@ -182,31 +212,31 @@ class ComponentMixin:
         )
         params = (category_id, name, description)
         if conn is not None:
-            row = conn.execute(sql, params).fetchone()
+            row = _fetchone(conn, sql, params)
         else:
             with self.pool.connection() as c:
                 with c.transaction():
-                    row = c.execute(sql, params).fetchone()
+                    row = _fetchone(c, sql, params)
         assert row is not None
-        return _row_to_category(row)
+        return cast(ComponentCategoryRow, row)
 
     # -- spec registry -----------------------------------------------------
 
     def component_spec_get(
         self, spec_id: str, *, conn: Connection | None = None
-    ) -> dict[str, Any] | None:
+    ) -> ComponentSpecRow | None:
         """Look up one spec row by ``spec_id``, or ``None``."""
         sql = f"SELECT {_SPEC_COLS} FROM component_specs WHERE spec_id = %s"
         if conn is not None:
-            row = conn.execute(sql, (spec_id,)).fetchone()
+            row = _fetchone(conn, sql, (spec_id,))
         else:
             with self.pool.connection() as c:
-                row = c.execute(sql, (spec_id,)).fetchone()
-        return None if row is None else _row_to_spec(row)
+                row = _fetchone(c, sql, (spec_id,))
+        return None if row is None else cast(ComponentSpecRow, row)
 
     def component_specs_list(
         self, *, category_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[ComponentSpecRow]:
         """The spec registry, core first then proposed, then alphabetical.
 
         ``category_id=None`` (default) lists every spec. Pass a category to
@@ -220,8 +250,8 @@ class ComponentMixin:
             params = (category_id,)
         sql += "ORDER BY (status = 'core') DESC, spec_id"
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [_row_to_spec(r) for r in rows]
+            rows = _fetchall(conn, sql, params)
+        return [cast(ComponentSpecRow, r) for r in rows]
 
     def component_spec_mint(
         self,
@@ -235,7 +265,7 @@ class ComponentMixin:
         allowed_values: list[Any] | None = None,
         description: str | None = None,
         conn: Connection | None = None,
-    ) -> dict[str, Any]:
+    ) -> ComponentSpecRow:
         """Insert a new ``proposed``-tier spec, scoped to ``category_id``
         (``None`` mints a universal spec — the handler only does this for a
         component-scoped mint in practice, per the proposal's runtime-mint
@@ -259,13 +289,13 @@ class ComponentMixin:
             category_id,
         )
         if conn is not None:
-            row = conn.execute(sql, params).fetchone()
+            row = _fetchone(conn, sql, params)
         else:
             with self.pool.connection() as c:
                 with c.transaction():
-                    row = c.execute(sql, params).fetchone()
+                    row = _fetchone(c, sql, params)
         assert row is not None
-        return _row_to_spec(row)
+        return cast(ComponentSpecRow, row)
 
     # -- values --------------------------------------------------------
 
@@ -321,7 +351,9 @@ class ComponentMixin:
         assert row is not None
         return int(row[0])
 
-    def component_values_for_ref(self, component_ref_id: int) -> list[dict[str, Any]]:
+    def component_values_for_ref(
+        self, component_ref_id: int
+    ) -> list[ComponentValueRowWithSource]:
         """Every value row for one component, grouped by spec (ordered
         ``spec_id``, most-recent first within a spec) — the component-page
         read. Each row carries ``source_kind`` (the source ref's kind, e.g.
@@ -330,15 +362,16 @@ class ComponentMixin:
         format a handle without a second query."""
         cols = ", ".join("cv." + c.strip() for c in _VALUE_COLS.split(", "))
         with self.pool.connection() as conn:
-            rows = conn.execute(
+            rows = _fetchall(
+                conn,
                 f"SELECT {cols}, sr.kind AS source_kind "
                 "FROM component_spec_values cv "
                 "LEFT JOIN refs sr ON sr.ref_id = cv.source_ref_id "
                 "WHERE cv.component_ref_id = %s "
                 "ORDER BY cv.spec_id, cv.created_at DESC",
                 (component_ref_id,),
-            ).fetchall()
-        return [_row_to_value(r) for r in rows]
+            )
+        return [cast(ComponentValueRowWithSource, r) for r in rows]
 
     # -- made-of link ------------------------------------------------------
 
@@ -445,7 +478,7 @@ class ComponentMixin:
 
     def component_current_spec_value(
         self, ref_id: int, spec_id: str
-    ) -> dict[str, Any] | None:
+    ) -> ComponentValueRow | None:
         """THE single "current value" authority for one (component, spec):
         the most-recent row (``ORDER BY as_of DESC NULLS LAST, created_at
         DESC LIMIT 1``), or ``None`` if none is recorded. A
@@ -456,13 +489,14 @@ class ComponentMixin:
         per spec through this one helper, so they never disagree."""
         cols = ", ".join(_VALUE_COLS.split(", "))
         with self.pool.connection() as conn:
-            row = conn.execute(
+            row = _fetchone(
+                conn,
                 f"SELECT {cols} FROM component_spec_values "
                 "WHERE component_ref_id = %s AND spec_id = %s "
                 "ORDER BY as_of DESC NULLS LAST, created_at DESC LIMIT 1",
                 (ref_id, spec_id),
-            ).fetchone()
-        return None if row is None else _row_to_value(row)
+            )
+        return None if row is None else cast(ComponentValueRow, row)
 
     # -- search ----------------------------------------------------------
 
@@ -478,12 +512,13 @@ class ComponentMixin:
         """
         pat = f"%{q}%"
         with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT r.ref_id, "
+            rows = _fetchall(
+                conn,
+                "SELECT r.ref_id AS ref_id, "
                 "  (SELECT id_value FROM ref_identifiers ri "
                 "   WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
                 "   LIMIT 1) AS slug, "
-                "  r.title, r.meta "
+                "  r.title AS title, r.meta AS meta "
                 "FROM refs r "
                 "WHERE r.kind = 'component' AND r.deleted_at IS NULL AND ("
                 "  r.title ILIKE %(pat)s "
@@ -498,8 +533,8 @@ class ComponentMixin:
                 ") "
                 "ORDER BY r.updated_at DESC LIMIT %(limit)s",
                 {"pat": pat, "limit": limit},
-            ).fetchall()
-        return [(r[0], r[1], r[2], r[3] or {}) for r in rows]
+            )
+        return [(r["ref_id"], r["slug"], r["title"], r["meta"] or {}) for r in rows]
 
     def component_search_values(
         self,
@@ -510,7 +545,7 @@ class ComponentMixin:
         maturity: str | None = None,
         category_id: str | None = None,
         limit: int = 20,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ComponentValueSearchRow]:
         """Range filter over ``component_spec_values`` for one spec, joined
         back to the owning component's title/slug/category.
 
@@ -543,7 +578,7 @@ class ComponentMixin:
         cols = ", ".join("cv." + c.strip() for c in _VALUE_COLS.split(", "))
         sql = (
             f"SELECT {cols}, sr.kind AS source_kind, "
-            "r.title AS component_title, r.ref_id AS component_ref_id_out "
+            "r.title AS component_title "
             "FROM component_spec_values cv "
             "JOIN refs r ON r.ref_id = cv.component_ref_id AND r.deleted_at IS NULL "
             "LEFT JOIN refs sr ON sr.ref_id = cv.source_ref_id "
@@ -552,14 +587,15 @@ class ComponentMixin:
             "LIMIT %s"
         )
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        n_value_cols = len(_VALUE_COLS.split(", "))
-        out = []
-        for r in rows:
-            base = _row_to_value(r[: n_value_cols + 1])  # + source_kind
-            base["component_title"] = r[-2]
-            out.append(base)
-        return out
+            rows = _fetchall(conn, sql, params)
+        return [cast(ComponentValueSearchRow, r) for r in rows]
 
 
-__all__ = ["ComponentMixin"]
+__all__ = [
+    "ComponentCategoryRow",
+    "ComponentMixin",
+    "ComponentSpecRow",
+    "ComponentValueRow",
+    "ComponentValueRowWithSource",
+    "ComponentValueSearchRow",
+]

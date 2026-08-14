@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .types import PathwayArtifact
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +113,7 @@ def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def summarize(artifact: dict[str, Any]) -> dict[str, Any]:
+def summarize(artifact: PathwayArtifact) -> dict[str, Any]:
     """Reduce a run artifact to the scalar summary a caller ranks on.
 
     Computes the rate-limiting **barrier** (eV), the energetic **span**, and
@@ -159,7 +162,7 @@ def summarize(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def finish(
     ctx: Any,
-    artifact: dict[str, Any],
+    artifact: PathwayArtifact,
     pathway_ref_id: int,
     *,
     pathway_slug: str | None,

@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow
 from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
@@ -252,16 +253,17 @@ class DraftFakeStore(FakeStore):
         # sentinel entry per chunk, checker=None). ReviewFakeStore below
         # overrides this to actually track recorded reviews.
         return [
-            {
-                "chunk_id": c.chunk_id,
-                "handle": c.handle,
-                "chunk_kind": c.chunk_kind,
-                "checker": None,
-                "approved_sha": None,
-                "verdict": None,
-                "at": None,
-                "dirty": True,
-            }
+            DraftReviewRow(
+                chunk_id=c.chunk_id,
+                handle=c.handle,
+                chunk_kind=c.chunk_kind,
+                section_chunk_id=None,
+                checker=None,
+                approved_sha=None,
+                verdict=None,
+                at=None,
+                dirty=True,
+            )
             for c in self._chunks
         ]
 
@@ -1468,7 +1470,7 @@ class ReviewFakeStore(WsFakeStore):
 
     def review_status_for_chunk(self, chunk_id):
         return [
-            {"checker": checker, **status}
+            ChunkReviewEntry(checker=checker, **status)
             for checker, status in self._reviews.get(chunk_id, {}).items()
         ]
 
@@ -1478,27 +1480,29 @@ class ReviewFakeStore(WsFakeStore):
             revs = self._reviews.get(c.chunk_id, {})
             if not revs:
                 out.append(
-                    {
-                        "chunk_id": c.chunk_id,
-                        "handle": c.handle,
-                        "chunk_kind": c.chunk_kind,
-                        "checker": None,
-                        "approved_sha": None,
-                        "verdict": None,
-                        "at": None,
-                        "dirty": True,
-                    }
+                    DraftReviewRow(
+                        chunk_id=c.chunk_id,
+                        handle=c.handle,
+                        chunk_kind=c.chunk_kind,
+                        section_chunk_id=None,
+                        checker=None,
+                        approved_sha=None,
+                        verdict=None,
+                        at=None,
+                        dirty=True,
+                    )
                 )
                 continue
             for checker, status in revs.items():
                 out.append(
-                    {
-                        "chunk_id": c.chunk_id,
-                        "handle": c.handle,
-                        "chunk_kind": c.chunk_kind,
-                        "checker": checker,
+                    DraftReviewRow(
+                        chunk_id=c.chunk_id,
+                        handle=c.handle,
+                        chunk_kind=c.chunk_kind,
+                        section_chunk_id=None,
+                        checker=checker,
                         **status,
-                    }
+                    )
                 )
         return out
 
@@ -1564,9 +1568,7 @@ def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
 def test_retract_review_route_deletes_row_and_reverts_indicator(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
     _rt.store.drafts.record_review(2, "human", verdict="approved")  # dc2 == BBBBBB
-    assert [r["checker"] for r in _rt.store.drafts.review_status_for_chunk(2)] == [
-        "human"
-    ]
+    assert [r.checker for r in _rt.store.drafts.review_status_for_chunk(2)] == ["human"]
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
     assert r.status_code == 200
@@ -1586,7 +1588,7 @@ def test_retract_review_route_defaults_checker_to_human(tmp_path) -> None:
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
     assert r.status_code == 200
-    remaining = {row["checker"] for row in _rt.store.drafts.review_status_for_chunk(2)}
+    remaining = {row.checker for row in _rt.store.drafts.review_status_for_chunk(2)}
     assert remaining == {"flow"}  # only 'human' (the default) was retracted
 
 
@@ -1597,7 +1599,7 @@ def test_retract_review_route_retracts_named_checker(tmp_path) -> None:
 
     r = client.post("/drafts/nt/review/retract", json={"dc": "dc2", "checker": "flow"})
     assert r.status_code == 200
-    remaining = {row["checker"] for row in _rt.store.drafts.review_status_for_chunk(2)}
+    remaining = {row.checker for row in _rt.store.drafts.review_status_for_chunk(2)}
     assert remaining == {"human"}
 
 
@@ -2265,7 +2267,7 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
 
     # Human-approve the chunk at its pre-convert sha.
     store.drafts.record_review(chunk_id, "human")
-    assert store.drafts.review_status_for_chunk(chunk_id)[0]["dirty"] is False
+    assert store.drafts.review_status_for_chunk(chunk_id)[0].dirty is False
 
     # dry_run=True (also the default): a preview, nothing written.
     r = convert_client.post(
@@ -2278,9 +2280,7 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
     assert store.drafts.get_draft_chunk(dc).text.startswith(
         "Ribbons are semiconducting [pc"
     )
-    assert (
-        store.drafts.review_status_for_chunk(chunk_id)[0]["dirty"] is False
-    )  # unchanged
+    assert store.drafts.review_status_for_chunk(chunk_id)[0].dirty is False  # unchanged
 
     # apply: rewrites [pc<id>] -> [fi<hub>] through the normal edit door.
     r2 = convert_client.post(
@@ -2295,7 +2295,7 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
 
     # Acceptance criterion: the chunk's approval is now stale (content_sha
     # bumped through the edit door).
-    assert store.drafts.review_status_for_chunk(chunk_id)[0]["dirty"] is True
+    assert store.drafts.review_status_for_chunk(chunk_id)[0].dirty is True
 
 
 def test_convert_cites_dry_run_default_true(

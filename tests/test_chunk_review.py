@@ -143,12 +143,12 @@ def test_review_status_for_chunk_dirty_bit(store: Store) -> None:
     store.drafts.record_review(p.chunk_id, "human")
     statuses = store.drafts.review_status_for_chunk(p.chunk_id)
     assert len(statuses) == 1
-    assert statuses[0]["checker"] == "human"
-    assert statuses[0]["dirty"] is False
+    assert statuses[0].checker == "human"
+    assert statuses[0].dirty is False
 
     store.drafts.edit_text(p.handle, "now different")
     statuses = store.drafts.review_status_for_chunk(p.chunk_id)
-    assert statuses[0]["dirty"] is True
+    assert statuses[0].dirty is True
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ def test_retract_review_deletes_and_reports_existence(store: Store) -> None:
 
     store.drafts.record_review(p.chunk_id, "human")
     statuses = store.drafts.review_status_for_chunk(p.chunk_id)
-    assert statuses and statuses[0]["checker"] == "human"
+    assert statuses and statuses[0].checker == "human"
 
     assert store.drafts.retract_review(p.chunk_id, "human") is True
     assert store.drafts.review_status_for_chunk(p.chunk_id) == []
@@ -335,11 +335,11 @@ def test_review_status_for_draft_carries_section_chunk_id(store: Store) -> None:
         ref_id=ref.id, chunk_kind="paragraph", text="p", at={"into": section.handle}
     )[0]
 
-    rows = {r["chunk_id"]: r for r in store.drafts.review_status_for_draft(ref.id)}
-    assert rows[para.chunk_id]["section_chunk_id"] == section.chunk_id
+    rows = {r.chunk_id: r for r in store.drafts.review_status_for_draft(ref.id)}
+    assert rows[para.chunk_id].section_chunk_id == section.chunk_id
     # a top-level heading has no enclosing heading of its own
-    assert rows[section.chunk_id]["section_chunk_id"] is None
-    assert rows[title.chunk_id]["section_chunk_id"] is None
+    assert rows[section.chunk_id].section_chunk_id is None
+    assert rows[title.chunk_id].section_chunk_id is None
 
 
 def test_review_status_for_draft_toc_entry_pins_to_digest_not_content_sha(
@@ -355,11 +355,11 @@ def test_review_status_for_draft_toc_entry_pins_to_digest_not_content_sha(
 
     # never reviewed yet — a synthetic dirty 'toc' row on the first chunk
     rows = [
-        r for r in store.drafts.review_status_for_draft(ref.id) if r["checker"] == "toc"
+        r for r in store.drafts.review_status_for_draft(ref.id) if r.checker == "toc"
     ]
     assert len(rows) == 1
-    assert rows[0]["chunk_id"] == title.chunk_id
-    assert rows[0]["dirty"] is True
+    assert rows[0].chunk_id == title.chunk_id
+    assert rows[0].dirty is True
 
     # approve at the current digest — pinned to the digest, not this
     # chunk's own content_sha (which never changed)
@@ -373,18 +373,18 @@ def test_review_status_for_draft_toc_entry_pins_to_digest_not_content_sha(
         conn.commit()
 
     rows = [
-        r for r in store.drafts.review_status_for_draft(ref.id) if r["checker"] == "toc"
+        r for r in store.drafts.review_status_for_draft(ref.id) if r.checker == "toc"
     ]
-    assert rows[0]["dirty"] is False
-    assert rows[0]["approved_sha"] == digest
+    assert rows[0].dirty is False
+    assert rows[0].approved_sha == digest
 
     # editing the title's OWN text (not a section rename) still changes the
     # digest, since the title itself is a heading counted in it
     store.drafts.edit_text(title.handle, "T (renamed)")
     rows = [
-        r for r in store.drafts.review_status_for_draft(ref.id) if r["checker"] == "toc"
+        r for r in store.drafts.review_status_for_draft(ref.id) if r.checker == "toc"
     ]
-    assert rows[0]["dirty"] is True
+    assert rows[0].dirty is True
 
 
 # ---------------------------------------------------------------------------
@@ -439,15 +439,15 @@ def test_edit_review_records(draft: DraftHandler, hub: Hub) -> None:
     assert "human" in r.body and title.dc in r.body
 
     statuses = hub.live_store.drafts.review_status_for_chunk(title.chunk_id)
-    assert statuses[0]["checker"] == "human"
-    assert statuses[0]["verdict"] == "approved"
+    assert statuses[0].checker == "human"
+    assert statuses[0].verdict == "approved"
 
     # explicit verdict
     r2 = draft.edit(id=f"¶{title.handle}", review="cites", verdict="fail")
     assert "fail" in r2.body
     statuses = hub.live_store.drafts.review_status_for_chunk(title.chunk_id)
-    by_checker = {s["checker"]: s for s in statuses}
-    assert by_checker["cites"]["verdict"] == "fail"
+    by_checker = {s.checker: s for s in statuses}
+    assert by_checker["cites"].verdict == "fail"
 
 
 def test_edit_review_dry_run_rejected(draft: DraftHandler, hub: Hub) -> None:

@@ -1,22 +1,29 @@
-# codereview: DB row mapping — positional, no row_factory, abandoned in newer ops
+# codereview: DB row mapping — positional-mapper residuals
 
-`store/_mappers.py` maps rows → frozen dataclasses for refs/blocks/links,
-but every mapper is positional over up to 30 columns and **no
-`row_factory` is configured anywhere** (`store/pool.py`) — a SELECT-list
-drift silently mis-assigns fields (defensive `len(row) > N` probing in
-`_mappers.py` shows the bug class is known). Newer ops modules skip the
-layer entirely: `_draft_ops.py` (49 dict-returning sigs, 0 dataclasses),
-`_pcb_ops.py`, `_component_ops.py` (hand-rolls three dict mappers),
-`_structure_ops.py` (`dict(zip(cols, row))`).
+The three worst flows are DONE (shipped): draft review surface returns
+frozen dataclasses (`_draft_ops.py::ReviewableChunk`/`ChunkReviewEntry`/
+`DraftReviewRow`, consumed via attributes through `quest/review_fanout`
+→ `handlers/_review_view` → `precis_web/routes/drafts`); component +
+structure ops read via psycopg `dict_row` with TypedDict rows
+(`_component_ops.py::ComponentValueRow` union family,
+`_structure_ops.py::StructRunRow`/`StructForcesRow`); pathway payloads
+typed (`precis_pathway/types.py::PathwayArtifact`/`NetworkTopology`/
+`SeedPartialResult`/…). Pattern for new code: named column access
+(`dict_row` + `cast` to a TypedDict, or explicit named unpack) — never
+positional indexing over a long SELECT list.
 
-Worst untyped flows to model first (TypedDict or dataclass, no runtime
-change): draft review chunks
-(`_draft_ops.py::reviewable_chunks`/`review_status_for_draft` →
-`quest/review_fanout.py` → `handlers/_review_view.py` →
-`precis_web/smartdraft.py`, three different dict shapes), component
-spec/values (5-way tagged union as five nullable dict keys), pathway
-payloads (`precis_pathway/runner.py` — 0 dataclasses in the package).
+REMAINING (convert opportunistically, when the file is next touched):
 
-Fix: named-access row factory (psycopg `dict_row`/`class_row` or
-namedtuple) on new/refactored mappers, dataclass returns for the draft
-review surface, TypedDicts for the three flows.
+- `store/_mappers.py` — the original refs/blocks/links mappers are
+  still positional over up to 30 columns with defensive `len(row) > N`
+  probing, and no pool-level `row_factory` exists (`store/pool.py`).
+  Converting is a big, mechanical, test-heavy diff; do it per-mapper
+  when a mapper's SELECT next changes, not as a big bang.
+- `store/_material_ops.py` — identical `_row_to_property`/
+  `_row_to_value` positional mappers + the same 5-way tagged-union
+  values shape as component ops; same `dict_row` + TypedDict recipe
+  applies directly.
+- `store/_structure_ops.py::structure_load` — atom/bond/measure rows
+  use positional multi-variable unpacking (self-documenting but
+  drift-prone); larger Scene-construction diff, low urgency.
+- `store/_pcb_ops.py` — dict-returning sigs never audited in detail.

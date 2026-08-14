@@ -116,7 +116,7 @@ from precis.errors import BadInput
 from precis.quest import review_guard
 from precis.quest.weave_review import _LENS_BRIEFS as _WEAVE_LENS_BRIEFS
 from precis.quest.weave_review import mint_review_todo
-from precis.store._draft_ops import PROSE_CHUNK_KINDS
+from precis.store._draft_ops import PROSE_CHUNK_KINDS, ReviewableChunk
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -244,16 +244,14 @@ def _draft_project_parent(store: Store, draft_ref_id: int) -> int:
 
 def _scoped_chunks(
     store: Store, draft_ref_id: int, scope: int | None
-) -> list[dict[str, Any]]:
-    """The chunk dicts (``chunk_id``/``handle``/``chunk_kind``) the fanout
+) -> list[ReviewableChunk]:
+    """The chunks (``chunk_id``/``handle``/``chunk_kind``) the fanout
     walks: every reviewable chunk when ``scope`` is ``None``, else a
     heading's subtree or the single named chunk (item 1's ``scope``).
 
     Raises :class:`BadInput` when ``scope`` doesn't name a live reviewable
     chunk of this draft."""
-    all_chunks = {
-        c["chunk_id"]: c for c in store.drafts.reviewable_chunks(draft_ref_id)
-    }
+    all_chunks = {c.chunk_id: c for c in store.drafts.reviewable_chunks(draft_ref_id)}
     if scope is None:
         return list(all_chunks.values())
     target = all_chunks.get(scope)
@@ -263,7 +261,7 @@ def _scoped_chunks(
             f"{draft_ref_id}",
             next="pass the chunk_id of a live dc<id> chunk in this draft",
         )
-    if target["chunk_kind"] != "heading":
+    if target.chunk_kind != "heading":
         return [target]
     subtree_ids = store.drafts.review_subtree_chunk_ids(draft_ref_id, scope)
     return [all_chunks[cid] for cid in subtree_ids if cid in all_chunks]
@@ -351,8 +349,8 @@ def mint_review_fanout(
     unsettled_skipped = 0
     author_minted = 0
     for chunk in chunks:
-        chunk_id = chunk["chunk_id"]
-        chunk_lenses = _lenses_for_kind(chunk["chunk_kind"], lenses)
+        chunk_id = chunk.chunk_id
+        chunk_lenses = _lenses_for_kind(chunk.chunk_kind, lenses)
         if not chunk_lenses:
             continue
         if review_guard.has_open_change_request_via_store(store, chunk_id):
@@ -457,8 +455,8 @@ def _toc_is_dirty(store: Store, draft_ref_id: int) -> bool:
     recomputed :meth:`~precis.store._draft_ops.DraftStore.toc_digest`.
     ``True`` (dirty) when never approved."""
     for row in store.drafts.review_status_for_draft(draft_ref_id):
-        if row["checker"] == "toc":
-            return bool(row["dirty"])
+        if row.checker == "toc":
+            return row.dirty
     return True
 
 

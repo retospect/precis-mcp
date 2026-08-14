@@ -28,6 +28,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.store._draft_ops import DraftReviewRow
 from precis.structure.cell import Cell
 from precis.structure.scene import Scene
 from precis_web.app import create_app
@@ -706,7 +707,7 @@ class FakeStore(_FakeStoreBase):
         # fake reports OFF; a test can subclass to exercise the ON branch.
         return False
 
-    def review_status_for_draft(self, ref_id: int) -> list[dict[str, object]]:
+    def review_status_for_draft(self, ref_id: int) -> list[DraftReviewRow]:
         # Migration-0086 human/checker review ledger (the ✓ sign-off). The fake
         # reports no reviewable chunks; a subclass returns rows to exercise the
         # rendered ✓ state (see SmartDraftFakeStore).
@@ -721,13 +722,13 @@ class FakeStore(_FakeStoreBase):
         # already do) to get a correct rollup for free.
         from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
-        prose: dict[object, bool] = {}
+        prose: dict[int, bool] = {}
         for row in self.review_status_for_draft(ref_id):
-            if row.get("chunk_kind") not in PROSE_CHUNK_KINDS:
+            if row.chunk_kind not in PROSE_CHUNK_KINDS:
                 continue
-            prose.setdefault(row["chunk_id"], False)
-            if row.get("checker") == "human" and not row.get("dirty"):
-                prose[row["chunk_id"]] = True
+            prose.setdefault(row.chunk_id, False)
+            if row.checker == "human" and not row.dirty:
+                prose[row.chunk_id] = True
         return {"done": sum(1 for v in prose.values() if v), "total": len(prose)}
 
     def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:

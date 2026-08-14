@@ -31,11 +31,21 @@ import hashlib
 import io
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from autocatpath import __version__, provenance
 from autocatpath.config import Config
 from autocatpath.pipeline import Results, run
+
+from .types import (
+    DetachedHandle,
+    NetworkTopology,
+    PathwayArtifact,
+    PollResult,
+    SeedPartialResult,
+    SeedStructureEntry,
+)
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +81,7 @@ def _died_by_signal(returncode: int) -> bool:
     return returncode < 0
 
 
-def network_topology(config: dict[str, Any]) -> dict[str, Any]:
+def network_topology(config: dict[str, Any]) -> NetworkTopology:
     """Build the reaction network **cheaply** (rule-based, NO ML) and return its
     structure as plain data: intermediates (with composition), atom-conserving
     elementary steps, and stoichiometry supply links.
@@ -224,7 +234,7 @@ def run_pathway(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     log: Any = lambda *a, **k: None,
-) -> dict[str, Any]:
+) -> PathwayArtifact:
     """Run autocatpath in-process and return a self-contained artifact.
 
     ``config`` is the parsed pathway YAML (a plain dict). ``force_backend``
@@ -277,7 +287,7 @@ def run_pathway_from_yaml(
     *,
     force_backend: str | None = None,
     log: Any = lambda *a, **k: None,
-) -> dict[str, Any]:
+) -> PathwayArtifact:
     """Parse a pathway config YAML and run it. Uses autocatpath's chem-safe
     loader, so ``substrate: NO`` stays the string ``"NO"`` (YAML 1.1 would
     coerce it to ``False``)."""
@@ -329,7 +339,7 @@ def run_seed_partial(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     log: Any = lambda *a, **k: None,
-) -> dict[str, Any]:
+) -> SeedPartialResult:
     """Run ONE ``(model, seed)`` unit of a pathway exploration.
 
     The precis-side wrapper around ``autocatpath.pipeline.run_one_seed`` —
@@ -398,8 +408,8 @@ def run_seed_partial(
     collect: dict[str, Any] | None = {} if model_index == 0 else None
     partial = run_one_seed(c, seed, log=log, collect=collect)
     partial["model"] = tag
-    structures = {
-        name: {"energy": energy, "extxyz": _atoms_to_extxyz(atoms)}
+    structures: dict[str, SeedStructureEntry] = {
+        name: {"energy": float(energy), "extxyz": _atoms_to_extxyz(atoms)}
         for name, (energy, atoms) in (collect or {}).items()
         if not name.startswith("poison:")
     }
@@ -456,7 +466,7 @@ def run_seed_partial_subprocess(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     timeout: int = _DEFAULT_SEED_TIMEOUT_S,
-) -> dict[str, Any]:
+) -> SeedPartialResult:
     """Run :func:`run_seed_partial` in a FRESH child process — killable + isolated.
 
     Isolation is load-bearing on a GPU node (gr191351): loading MACE/CUDA in the
@@ -716,7 +726,7 @@ def submit_seed_partial_detached(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     work_dir: str | None = None,
-) -> dict[str, Any]:
+) -> DetachedHandle:
     """Launch :func:`run_seed_partial` in a DETACHED child — the ssh_node
     ``submit`` half of the detached submit/poll protocol (gr187627). Where
     :func:`run_seed_partial_subprocess` blocks the caller for the run's
@@ -782,7 +792,7 @@ def submit_seed_partial_detached(
     }
 
 
-def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
+def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
     """Poll one detached submit — the ssh_node ``poll`` half.
 
     Checks ``result.json`` FIRST: a child that wrote its envelope and exited
@@ -834,10 +844,10 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
             # every other ``result =`` rebinding in this function is a bare
             # reassignment of the SAME name, and mypy only allows one
             # explicit annotation per name per function — so this one decl
-            # widens the inferred type for all of them, letting the
-            # no-envelope branch's extra ``"infra": bool`` key coexist with
-            # the ``str``-only dicts the other branches build.
-            result: dict[str, Any] = {
+            # widens the inferred type for all of them, letting each
+            # branch's own subset of PollResult's (``total=False``) optional
+            # keys coexist without a per-branch cast.
+            result: PollResult = {
                 "state": "failed",
                 "error": f"result.json unreadable: {exc}",
                 "tail": _tail_logs(scratch),
@@ -894,7 +904,7 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def kill_seed_partial_detached(handle: dict[str, Any]) -> None:
+def kill_seed_partial_detached(handle: DetachedHandle) -> None:
     """Best-effort SIGKILL of a detached submit's whole process group — the
     ssh_node wall-clock kill hook (§H piece 2), invoked once
     ``meta.deadline`` passes. ``os.killpg`` reaches every descendant the
@@ -945,11 +955,16 @@ def kill_seed_partial_detached(handle: dict[str, Any]) -> None:
 
 def aggregate_seed_partials(
     config: dict[str, Any],
-    seed_results: list[dict[str, Any]],
+    # Covariant (Sequence + Mapping, not list[dict]) so a caller can pass
+    # either a fresh list[SeedPartialResult] (in-process fan-out, e.g. tests)
+    # or the loosely-reconstructed list[dict[str, Any]] the job glue rebuilds
+    # from persisted job meta (aggregate_job._collect_seed_results) — both
+    # are read-only here (only ``r["partial"]``/``r.get(...)`` access).
+    seed_results: Sequence[Mapping[str, Any]],
     *,
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
-) -> dict[str, Any]:
+) -> PathwayArtifact:
     """Combine N :func:`run_seed_partial` outputs into the same
     self-contained artifact shape :func:`run_pathway` returns, including the
     per-state relaxed geometries the fan-out now carries (slice-1b): the

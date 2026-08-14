@@ -127,8 +127,7 @@ def test_edit_review_verdict_retract_deletes_ledger_row(
 
     draft.edit(id=f"¶{para.handle}", review="human", verdict="approved")
     assert [
-        r["checker"]
-        for r in hub.live_store.drafts.review_status_for_chunk(para.chunk_id)
+        r.checker for r in hub.live_store.drafts.review_status_for_chunk(para.chunk_id)
     ] == ["human"]
 
     r = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")

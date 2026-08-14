@@ -41,6 +41,7 @@ from precis.workers import job_types as jt
 from precis_pathway import job as pathway_job
 from precis_pathway import runner
 from precis_pathway.handler import PathwayHandler
+from precis_pathway.types import DetachedHandle, PathwayArtifact, PollResult
 
 SMOKE = """
 name: bridge_smoke
@@ -479,7 +480,7 @@ def test_toon_views_and_aligned_compare() -> None:
     # aligned interleaved compare: two candidates sharing the branching network
     a2 = runner.run_pathway_from_yaml(BRANCH.replace("element: Pd", "element: Pt"))
 
-    def _cand(slug: str, art: dict, el: str) -> dict:
+    def _cand(slug: str, art: PathwayArtifact, el: str) -> dict:
         g, res = art["graph_json"], art["results_json"]
         r, t = analysis.roots(g, res)
         return {"slug": slug, "lever": el, "graph": g, "root": r, "target": t}
@@ -1210,12 +1211,10 @@ def _patch_child_cmd(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
     )
 
 
-def _poll_until_terminal(
-    handle: dict[str, Any], *, timeout: float = 5.0
-) -> dict[str, Any]:
+def _poll_until_terminal(handle: DetachedHandle, *, timeout: float = 5.0) -> PollResult:
     import time
 
-    status: dict[str, Any] = {"state": "running"}
+    status: PollResult = {"state": "running"}
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = runner.poll_seed_partial_detached(handle)

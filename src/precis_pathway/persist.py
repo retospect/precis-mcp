@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from precis.store import Store
 
+    from .types import PathwayArtifact
+
 log = logging.getLogger(__name__)
 
 BODY_KIND = "pathway_body"
@@ -41,7 +43,7 @@ def _json_finite(obj: Any) -> Any:
 
 
 def pathway_meta(
-    artifact: dict[str, Any], *, extra: dict[str, Any] | None = None
+    artifact: PathwayArtifact, *, extra: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """The `refs.meta` payload for a pathway ref: the authoritative config +
     snapshot, the reaction graph, the pooled-uncertainty results, warnings."""
@@ -61,7 +63,7 @@ def pathway_meta(
     return _json_finite(meta)
 
 
-def pathway_title(artifact: dict[str, Any]) -> str:
+def pathway_title(artifact: PathwayArtifact) -> str:
     r = artifact["results_json"]
     el = artifact["config"].get("slab", {}).get("element", "?")
     return f"{r['substrate']} → {r['target']} on {el}"
@@ -70,7 +72,7 @@ def pathway_title(artifact: dict[str, Any]) -> str:
 def persist_result(
     store: Store,
     ref_id: int,
-    artifact: dict[str, Any],
+    artifact: PathwayArtifact,
     *,
     pathway_slug: str | None = None,
     ingest: bool = True,

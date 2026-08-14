@@ -96,7 +96,7 @@ from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput, NotFound
 from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
-from precis.store._draft_ops import content_sha
+from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sha
 
 # The taproot backfill cascade fns (item 5b, "convert to living cites"),
 # referenced through THIS module's own names (not ``backfill.``/``canon.``
@@ -579,40 +579,42 @@ def _review_status_by_chunk(store: Store, ref_id: int) -> dict[int, dict[str, An
     out: dict[int, dict[str, Any]] = {}
     for row in store.drafts.review_status_for_draft(ref_id):
         entry = out.setdefault(
-            row["chunk_id"],
+            row.chunk_id,
             {
-                "_section_chunk_id": row.get("section_chunk_id"),
-                "_chunk_kind": row.get("chunk_kind"),
+                "_section_chunk_id": row.section_chunk_id,
+                "_chunk_kind": row.chunk_kind,
             },
         )
-        checker = row.get("checker")
+        checker = row.checker
         if checker:
             entry[checker] = _review_entry(row)
     return out
 
 
-def _review_entry(row: dict[str, Any]) -> dict[str, Any]:
+def _review_entry(row: ChunkReviewEntry | DraftReviewRow) -> dict[str, Any]:
     """One JSON-safe per-checker review record ``{approved_sha, verdict, at,
     dirty}`` — ``at`` ISO-stringified (a raw ``datetime`` isn't JSON
     serializable, and this rides into the skeleton JSON). The single shape
     both :func:`_review_status_by_chunk` and :func:`_review_json` build, so
-    the two paths can't drift on serializability."""
-    at = row.get("at")
+    the two paths can't drift on serializability. ``row`` accepts a
+    :class:`~precis.store._draft_ops.DraftReviewRow` too — it duck-types
+    the same checker-record fields."""
+    at = row.at
     return {
-        "approved_sha": row.get("approved_sha"),
-        "verdict": row.get("verdict"),
+        "approved_sha": row.approved_sha,
+        "verdict": row.verdict,
         "at": at.isoformat() if at is not None and hasattr(at, "isoformat") else at,
-        "dirty": row.get("dirty"),
+        "dirty": row.dirty,
     }
 
 
-def _review_json(status: list[dict[str, Any]]) -> dict[str, Any]:
+def _review_json(status: list[ChunkReviewEntry]) -> dict[str, Any]:
     """JSON-safe ``{checker: {approved_sha, verdict, at, dirty}}`` for the
     ``/human-review`` POST response — same per-checker record
     (:func:`_review_entry`) ``_review_status_by_chunk`` attaches to a row."""
     out: dict[str, Any] = {}
     for r in status:
-        checker = r.get("checker")
+        checker = r.checker
         if not checker:
             continue
         out[checker] = _review_entry(r)
