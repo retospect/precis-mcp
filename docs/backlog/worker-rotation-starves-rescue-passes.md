@@ -9,9 +9,10 @@
 >
 > 1. An earlier draft claimed `restart-worker` does not heal the state. It
 >    does — it just takes ~95 min. See "How it actually recovered".
-> 2. An earlier draft blamed melchior specifically. **It is not host-specific.**
->    Melchior recovered at 17:22 and spark entered the identical state by
->    17:25. See "It moves between hosts". Do not scope a fix to one host.
+> 2. A later draft generalized this to spark as a second instance. **That was
+>    wrong** — spark was busy, not starved. See "Spark is NOT a second
+>    instance". The evidenced occurrence is melchior's, and it is the one a fix
+>    should target.
 
 ## Symptom
 
@@ -80,40 +81,42 @@ Not "make the heal work" — it works. The questions are:
    no signal short of watching the rotation log. A "last ran / next due" per
    rescue handler would have answered this in one query.
 
-## It moves between hosts
+## Spark is NOT a second instance — don't chase it
 
-Melchior recovered at 17:22. By 19:05 **spark was in the same state**:
+A draft of this file claimed spark entered the same state, on the evidence that
+its log showed no `runner worker:` completion line between 17:25 and 19:05.
+**That inference was wrong and is recorded here so nobody repeats it.**
 
-```
-17:00:24  job_coordinator claimed=0
-17:00:42  paper_reconcile / openalex_enrich / paper_meta_enrich / disk_check
-17:25:11  summarize:rake-lemma claimed=32 ok=32      <- last entry, 1h40m of silence
-```
+`runner worker:` lines only emit when a pass *completes*, so a long pass looks
+identical to a dead worker if you grep only for them. Spark's worker was in
+fact busy throughout: raw log writes at 19:05, Semantic Scholar queries (some
+429-throttled), and a steady stream of `autocatpath_seed` /
+`autocatpath_aggregate` jobs succeeding with leases out to 21:2x. It was also
+claiming quest ticks normally — 207632 (quest 202468) ran until 19:09.
 
-This matters more than the melchior instance, because `quest_tick` jobs carry
-`params.target_node: spark` and are claimed by **spark's** `job_coordinator`.
-Job 207662 (quest 202469, minted 18:08) sat `queued`, unclaimed, for over an
-hour for exactly this reason — melchior's coordinator polls but always claims 0,
-since the work is targeted elsewhere.
+Job 207662 (quest 202469, minted 18:08) did sit `queued` for over an hour, but
+the explanation is contention with heavy pathway work, not a starved rotation.
 
-Earlier the same afternoon spark was saturated with `bib_parse`/crossref calls
-(15:54), which is the starvation `conditions.py` already names from 2026-08-12.
-So this is at least the third occurrence, on two hosts, with two different
-monopolizing passes.
+**Diagnostic lesson:** to tell a starved rotation from a busy one, check the raw
+log tail and `ps` uptime, not the pass-completion lines. Melchior's case is real
+because `quest_loop_reconcile` had a *known 2h cadence* it stopped meeting and
+two independent prod alerts fired; neither of those held for spark.
 
 ## Probable mechanism (unconfirmed)
 
-The common factor across all three occurrences is a high-volume derived-queue
-pass that refills as fast as it drains — `summarize:rake-lemma` (32/batch, back
-to back) on both hosts, `bib_parse` on spark, with `job_claude_inproc claimed=4`
-opening melchior's rotations and going unaccounted for 30–60 minutes. The SLO
-passes sit at the end of a rotation that never completes.
+On melchior, every full rotation opens with `job_claude_inproc claimed=4` and
+the worker is then unaccounted for 30–60 minutes, with `summarize:rake-lemma`
+(32/batch, back to back) filling the rest. `claude_inproc` jobs run only on
+melchior and are long. The SLO passes sit at the end of a rotation that, under
+that load, does not come round within its budget.
 
-That the same shape appears on two hosts with different monopolizing passes
-points at the rotation discipline itself rather than any one pass.
+This is one corroborated occurrence, not a pattern — see the spark section for
+an inference that looked like a second one and wasn't. `conditions.py` does
+record an earlier 2026-08-12 `bib_parse` starvation, so melchior's is at least
+the second in three days.
 
-If that is right, the fix is not a bigger budget — it is that a saturating queue
-must not share a rotation with the rescue passes. Candidates: give
+If the mechanism is right, the fix is not a bigger budget — it is that a
+saturating queue must not share a rotation with the rescue passes. Candidates: give
 `_RESCUE_HANDLERS` a dedicated cadence independent of rotation position, cap
 `job_claude_inproc` concurrency on the shared worker, or move claude_inproc to
 its own process (the `agent` profile exists; melchior currently runs `all`).
