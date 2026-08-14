@@ -35,7 +35,16 @@ vault_anthropic_api_key: "CHANGEME"
 # Research service API keys
 vault_kagi_api_key: "CHANGEME"
 vault_kagi_summarizer_engine: "cecil"
-vault_unpaywall_email: "CHANGEME"
+# Identity/contact env (gr204873) — routed to precis_identity_env
+# (deploy/group_vars/all.yml), which overrides the operator overlay's
+# plaintext precis_shared_env entries wherever set. Unset here → the
+# overlay's precis_shared_env value (if any) still wins, so these are
+# optional for a working deploy. CROSSREF_MAILTO defaults to
+# vault_unpaywall_email unless vault_crossref_mailto is also set.
+vault_unpaywall_email: "CHANGEME"  # Unpaywall/CrossRef contact email
+vault_semantic_scholar_api_key: "CHANGEME"  # Semantic Scholar (S2) API key
+vault_anki_user: "CHANGEME"  # AnkiWeb login email
+vault_edgar_user_agent: "CHANGEME"  # SEC EDGAR User-Agent string incl. contact email
 
 # Email (schedule-agent, alert-agent)
 vault_email_imap_host: "imap.example.com"

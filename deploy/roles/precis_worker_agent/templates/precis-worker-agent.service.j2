@@ -79,8 +79,10 @@ Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
 # use the image's baked /etc/precis/agent-mcp.json, not this var.
 
 # Shared config keys — see inventory/group_vars/all/precis_env.yml. Same block as
-# every precis-* unit so capability parity is automatic.
-{% for env_key, env_val in precis_shared_env.items() %}
+# every precis-* unit so capability parity is automatic. Identity keys
+# (email/API-key contacts) are vault-overridden via precis_identity_env
+# (gr204873).
+{% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
 

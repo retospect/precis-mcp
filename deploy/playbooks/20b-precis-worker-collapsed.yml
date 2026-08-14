@@ -158,8 +158,14 @@
     # — the source templates achieve the same end by skipping that one key
     # in their shared-env loop; `combine()`'s last-writer-wins ordering makes
     # that explicit skip unnecessary here.
+    #
+    # precis_identity_env combined directly after precis_shared_env (before
+    # the overrides below) so vault-sourced identity/contact values win over
+    # the overlay's plaintext precis_shared_env, while explicit play-level
+    # overrides (anki/container/dream/gateway extras) still win last (gr204873).
     _l_b_base_env: >-
       {{ precis_shared_env
+         | combine(precis_identity_env | default({}))
          | combine({
              'HOME': ('/var/lib/precis' if os_family == 'linux' else '/Users/deploy'),
              'PATH': (
@@ -246,7 +252,7 @@
       {{ (
         {
           'PRECIS_ANKI_ENABLED': '1',
-          'PRECIS_ANKI_USER': anki_user | default(vault_anki_user | default('')),
+          'PRECIS_ANKI_USER': vault_anki_user | default(anki_user | default('')),
           'PRECIS_ANKI_PASSWORD': vault_anki_password | default(''),
           'PRECIS_ANKI_MIRROR_DIR': anki_mirror_dir | default('/opt/mcps/anki-mirror'),
           'PRECIS_ANKI_DECK': anki_deck | default('Precis'),

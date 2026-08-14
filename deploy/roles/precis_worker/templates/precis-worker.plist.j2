@@ -145,8 +145,10 @@
        system worker rotation today (embed/summarize/chunk_keywords/
        fetch/auto_check/schedule/nursery/dispatch/sweeper) doesn't
        call out to Perplexity, future passes might, and the cost of
-       carrying unused env vars is negligible. #}
-    {% for env_key, env_val in precis_shared_env.items() %}
+       carrying unused env vars is negligible. Identity keys
+       (email/API-key contacts) are vault-overridden via
+       precis_identity_env (gr204873). #}
+    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
     {% if not (env_key == 'PRECIS_SUMMARIZE_MODEL' and precis_local_llm_model_override is defined) %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>

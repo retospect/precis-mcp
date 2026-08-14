@@ -56,8 +56,10 @@
        SEMANTIC_SCHOLAR_API_KEY here it hammered S2's anonymous limit and
        got 429-throttled on every paper, degrading metadata and slowing
        the drain. Carrying the full dict (incl. keys the watcher doesn't
-       use) is negligible and keeps it in lock-step with the worker. #}
-    {% for env_key, env_val in precis_shared_env.items() %}
+       use) is negligible and keeps it in lock-step with the worker.
+       Identity keys (email/API-key contacts) are vault-overridden via
+       precis_identity_env (gr204873). #}
+    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>
     {% endfor %}

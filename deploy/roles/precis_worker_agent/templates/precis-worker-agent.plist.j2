@@ -89,7 +89,7 @@
     <key>PRECIS_ANKI_ENABLED</key>
     <string>1</string>
     <key>PRECIS_ANKI_USER</key>
-    <string>{{ anki_user | default(vault_anki_user | default('')) }}</string>
+    <string>{{ vault_anki_user | default(anki_user | default('')) }}</string>
     <key>PRECIS_ANKI_PASSWORD</key>
     <string>{{ vault_anki_password | default('') }}</string>
     <key>PRECIS_ANKI_MIRROR_DIR</key>
@@ -192,8 +192,10 @@
     {% endif %}
     {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
        See inventory/group_vars/all/precis_env.yml. Same block in
-       every precis-* daemon so capability parity is automatic. #}
-    {% for env_key, env_val in precis_shared_env.items() %}
+       every precis-* daemon so capability parity is automatic. Identity
+       keys (email/API-key contacts) are vault-overridden via
+       precis_identity_env (gr204873). #}
+    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
     {% if not (env_key == 'PRECIS_SUMMARIZE_MODEL' and precis_local_llm_model_override is defined) %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>

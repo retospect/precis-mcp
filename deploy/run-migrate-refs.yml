@@ -32,7 +32,11 @@
         cmd: >-
           {{ precis_worker_venv }}/bin/precis migrate-refs
           {{ migrate_refs_args }}
-      environment: "{{ precis_shared_env | combine({'PRECIS_DATABASE_URL': precis_worker_dsn}) }}"
+      # precis_identity_env combined right after precis_shared_env so
+      # vault-sourced identity/contact values win over the overlay's
+      # plaintext precis_shared_env (gr204873); PRECIS_DATABASE_URL last so
+      # it always wins.
+      environment: "{{ precis_shared_env | combine(precis_identity_env | default({})) | combine({'PRECIS_DATABASE_URL': precis_worker_dsn}) }}"
       register: migrate_refs
       changed_when: "'[APPLY]' in (migrate_refs.stderr | default(''))"
 

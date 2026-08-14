@@ -52,8 +52,10 @@ Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
 # mirrors this host's agent_sandbox_hosts membership into a row the first
 # time this lands. No more PRECIS_SANDBOX_ENABLED here.
 
-# Shared API keys — see inventory/group_vars/all/precis_env.yml.
-{% for env_key, env_val in precis_shared_env.items() %}
+# Shared API keys — see inventory/group_vars/all/precis_env.yml. Identity
+# keys (email/API-key contacts) are vault-overridden via precis_identity_env
+# (gr204873).
+{% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
 

@@ -31,7 +31,11 @@
           {{ precis_worker_venv }}/bin/precis fix-metadata
           --corpus-dir {{ papers_corpus_path }}
           {{ fixmeta_args }}
-      environment: "{{ precis_shared_env | combine({'PRECIS_DATABASE_URL': precis_worker_dsn}) }}"
+      # precis_identity_env combined right after precis_shared_env so
+      # vault-sourced identity/contact values (e.g. SEMANTIC_SCHOLAR_API_KEY)
+      # win over the overlay's plaintext precis_shared_env (gr204873);
+      # PRECIS_DATABASE_URL last so it always wins.
+      environment: "{{ precis_shared_env | combine(precis_identity_env | default({})) | combine({'PRECIS_DATABASE_URL': precis_worker_dsn}) }}"
       register: fixmeta
       changed_when: "'[APPLY]' in (fixmeta.stderr | default('')) and 'fixed=' in (fixmeta.stdout | default(''))"
 

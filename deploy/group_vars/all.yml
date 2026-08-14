@@ -1,0 +1,14 @@
+---
+# Identity/contact env routed through the vault (gr204873).
+# Values here OVERRIDE the operator overlay's plaintext `precis_shared_env`
+# entries wherever a vault_* var is set; an empty/unset vault var drops out
+# of the dict entirely so the overlay's plaintext value (if any) still wins —
+# zero-breakage migration. Consumers combine:
+#   precis_shared_env | combine(precis_identity_env | default({}))
+precis_identity_env_raw:
+  UNPAYWALL_EMAIL: "{{ vault_unpaywall_email | default('') }}"
+  CROSSREF_MAILTO: "{{ vault_crossref_mailto | default(vault_unpaywall_email | default('')) }}"
+  SEMANTIC_SCHOLAR_API_KEY: "{{ vault_semantic_scholar_api_key | default('') }}"
+  PRECIS_ANKI_USER: "{{ vault_anki_user | default('') }}"
+  PRECIS_EDGAR_USER_AGENT: "{{ vault_edgar_user_agent | default('') }}"
+precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('value', 'equalto', '') | list | items2dict }}"

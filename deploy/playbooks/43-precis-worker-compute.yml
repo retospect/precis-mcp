@@ -217,9 +217,12 @@
         # $HOME/.cache/mace weights (roles/autocatpath pre-seed). PGPASSFILE
         # points at the pgpass role's file directly (this unit's HOME diverges
         # from /home/deploy — §L gr171431). precis_shared_env for API-key
-        # parity with every other precis-* unit.
+        # parity with every other precis-* unit; precis_identity_env combined
+        # right after it so vault-sourced identity/contact values win over
+        # the overlay's plaintext precis_shared_env (gr204873), before the
+        # explicit overrides below.
         service_unit_env: >-
-          {{ precis_shared_env | combine({
+          {{ precis_shared_env | combine(precis_identity_env | default({})) | combine({
                'HOME': '/var/lib/precis',
                'PATH': _compute_venv + '/bin:/usr/local/bin:/usr/bin:/bin',
                'PGPASSFILE': '/home/deploy/.pgpass',

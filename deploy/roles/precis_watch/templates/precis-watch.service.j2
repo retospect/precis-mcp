@@ -31,8 +31,10 @@ Environment=HF_HOME={{ precis_worker_hf_home | default('/var/lib/precis/hf-cache
 # Shared API keys (Semantic Scholar, Unpaywall, Elsevier, …) — same
 # block precis_worker carries. The ingest pipeline enriches metadata via
 # the S2 graph API; without SEMANTIC_SCHOLAR_API_KEY the watcher hits S2's
-# anonymous limit and gets 429-throttled on every paper.
-{% for env_key, env_val in precis_shared_env.items() %}
+# anonymous limit and gets 429-throttled on every paper. Identity keys
+# (email/API-key contacts) are vault-overridden via precis_identity_env
+# (gr204873).
+{% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
 

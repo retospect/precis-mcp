@@ -2,7 +2,9 @@
 
 A microsecond pre-commit check that catches the LLM's physically-impossible
 proposals before a relax spends time on them: sub-covalent atomic overlap,
-over-coordination, and an implausibly-long declared bond. Each finding names
+over-coordination, an implausibly-long declared bond, and declared bond
+orders an element can't support (single-bond and per-atom summed budget).
+Each finding names
 the rule, the offending value, and a ``suggested_fix`` in the op vocabulary
 (considerata §22-B). This is the DRC-lite read run as a *gate*; it is also the
 hard-reject step ahead of a cloud relax dispatch (gripe 51393) — a design with
@@ -125,11 +127,6 @@ def validate(scene: Scene) -> list[Finding]:
     # 4. declared bond order the atom's element can't support (cheap check —
     # order vs. nominal max valence only; a real hybridization/aromaticity
     # model is a later increment).
-    # deferred: this doesn't sum orders across an atom's *other* bonds (a
-    # real over-valence-by-order budget), just flags one bond whose own
-    # order already exceeds the element's ceiling — the single-bond case is
-    # cheap and unambiguous, the multi-bond budget needs hybridization
-    # modeling to do honestly.
     for bond in scene.bonds:
         if bond.provenance != "declared":
             continue
@@ -155,4 +152,43 @@ def validate(scene: Scene) -> list[Finding]:
                     )
                 )
                 break
+
+    # 5. per-atom valence budget: the SUM of an atom's declared bond orders
+    # exceeds its element's max valence even though no single bond does
+    # (that case is #4's). Declared-only keeps it conservative — inferred
+    # bonds carry a nominal order-1 the detector guessed, and counting them
+    # would false-flag a crowded-but-legal geometry #2 already polices.
+    # Fractional (aromatic) orders sum honestly: benzene C = 1.5+1.5+1 = 4.
+    budgets: dict[str, float] = {}
+    for bond in scene.bonds:
+        if bond.provenance != "declared":
+            continue
+        for label in (bond.i, bond.j):
+            if label in scene.atoms:
+                budgets[label] = budgets.get(label, 0.0) + bond.order
+    for label, total in budgets.items():
+        mv = elements.max_valence(scene.atoms[label].element)
+        if mv is None or total <= mv:
+            continue
+        incident = [
+            b for b in scene.bonds if b.provenance == "declared" and label in (b.i, b.j)
+        ]
+        if any(b.order > mv for b in incident):
+            continue  # each offending bond is already a #4 finding
+        partners = ", ".join(
+            f"{b.j if b.i == label else b.i}({b.order:g})" for b in incident
+        )
+        findings.append(
+            Finding(
+                rule="valence_budget_exceeded",
+                atoms=[label],
+                measured=total,
+                expected=mv,
+                suggested_fix=(
+                    f"{label} ({scene.atoms[label].element}) carries declared "
+                    f"bonds totalling order {total:g} [{partners}], but max "
+                    f"valence is {mv} — lower an order or remove a bond."
+                ),
+            )
+        )
     return findings

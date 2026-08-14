@@ -96,8 +96,10 @@
     {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
        See inventory/group_vars/all/precis_env.yml for the canonical
        list. Every precis-* daemon includes the same block so capability
-       parity is automatic; daemon-specific keys above are unique. #}
-    {% for env_key, env_val in precis_shared_env.items() %}
+       parity is automatic; daemon-specific keys above are unique.
+       Identity keys (email/API-key contacts) are vault-overridden via
+       precis_identity_env (gr204873). #}
+    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>
     {% endfor %}

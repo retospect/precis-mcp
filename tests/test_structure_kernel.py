@@ -302,6 +302,84 @@ def test_validate_bond_order_finding_deduped_when_both_endpoints_exceed() -> Non
     assert set(findings[0].atoms) == {"aO1", "aF1"}
 
 
+def test_validate_flags_valence_budget_exceeded() -> None:
+    # Three double bonds on one carbon: no single order exceeds C's max
+    # valence 4, but the sum (6) does — the budget rule's whole point.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.62, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.38, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.5, 0.62, 0.5]},
+            {"op": "add_bond", "i": "aC1", "j": "aO1", "order": 2},
+            {"op": "add_bond", "i": "aC1", "j": "aO2", "order": 2},
+            {"op": "add_bond", "i": "aC1", "j": "aO3", "order": 2},
+        ],
+    )
+    findings = [f for f in validate(scene) if f.rule == "valence_budget_exceeded"]
+    assert len(findings) == 1
+    assert findings[0].atoms == ["aC1"]
+    assert findings[0].measured == 6
+    assert findings[0].expected == 4
+    # the O endpoints are each within budget (2 <= 2) — no finding on them.
+
+
+def test_validate_valence_budget_allows_aromatic_fractional_sum() -> None:
+    # Benzene-carbon budget: 1.5 + 1.5 + 1 = 4 = C's max valence — legal.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.64, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.36, 0.5, 0.5]},
+            {"op": "add_atom", "element": "H", "frac": [0.5, 0.61, 0.5]},
+            {"op": "add_bond", "i": "aC1", "j": "aC2", "order": 1.5},
+            {"op": "add_bond", "i": "aC1", "j": "aC3", "order": 1.5},
+            {"op": "add_bond", "i": "aC1", "j": "aH1", "order": 1},
+        ],
+    )
+    assert not any(f.rule == "valence_budget_exceeded" for f in validate(scene))
+
+
+def test_validate_valence_budget_defers_to_single_bond_finding() -> None:
+    # A lone order-3 bond on O already fires bond_order_exceeds_valence;
+    # the budget rule must not double-report the same root cause.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "C", "frac": [0.1, 0.0, 0.0]},
+            {"op": "add_bond", "i": "aO1", "j": "aC1", "order": 3},
+        ],
+    )
+    findings = validate(scene)
+    assert any(f.rule == "bond_order_exceeds_valence" for f in findings)
+    assert not any(f.rule == "valence_budget_exceeded" for f in findings)
+
+
+def test_validate_valence_budget_ignores_inferred_bonds() -> None:
+    # Inferred bonds carry a guessed nominal order — only declared bonds
+    # count toward the budget.
+    from precis.structure.scene import Bond
+
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "H", "frac": [0.1, 0.0, 0.0]},
+            {"op": "add_atom", "element": "H", "frac": [0.9, 0.0, 0.0]},
+            {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
+        ],
+    )
+    scene.bonds.append(Bond(i="aO1", j="aH2", order=2.0, provenance="inferred"))
+    assert not any(f.rule == "valence_budget_exceeded" for f in validate(scene))
+
+
 # -- export (pure formats) ---------------------------------------------------
 
 
