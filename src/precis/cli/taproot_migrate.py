@@ -1,7 +1,11 @@
 """``precis taproot-migrate {score,dry-run}`` — the migration runner for
 existing (pre-decomposition) claim hubs, Phase 0 + Phase 1 of
-``docs/backlog/taproot-atomic-claims.md``'s Strategy. Both subcommands are
-strictly read-only — a thin CLI skin over :mod:`precis.taproot.migrate`.
+``docs/backlog/taproot-atomic-claims.md``'s Strategy. Both subcommands make
+zero claim-data writes (no refs/links/meta/chunks) — a thin CLI skin over
+:mod:`precis.taproot.migrate`. ``dry-run`` binds its store to
+:mod:`precis.budget.meter` so its real LLM dispatch resolves the host's
+serving endpoint and is budget-metered, which writes ``llm_call_log``
+telemetry (never claim data); ``score`` makes no LLM calls at all.
 
     precis taproot-migrate score
     precis taproot-migrate score --format json
@@ -30,7 +34,7 @@ def add_parser(subparsers: Any) -> None:
         "taproot-migrate",
         help="Taproot atomic-claims migration runner — phase 0 (score/cohort) "
         "+ phase 1 (dry-run decomposition) over EXISTING claim hubs. Both "
-        "subcommands are read-only.",
+        "subcommands make zero claim-data writes.",
     )
     tsub = p.add_subparsers(dest="taproot_migrate_cmd", required=True)
 
@@ -50,9 +54,10 @@ def add_parser(subparsers: Any) -> None:
 
     d = tsub.add_parser(
         "dry-run",
-        help="Phase 1: run extract_claim over the top-scored hubs' claim "
-        "sentences and report proposed splits as markdown. Writes NOTHING "
-        "(no refs/links/meta/chunks) -- LLM spend only.",
+        help="Phase 1: run extract_claim_strict over the top-scored hubs' "
+        "claim sentences and report proposed splits as markdown. Zero "
+        "claim-data writes (no refs/links/meta/chunks) -- LLM spend, "
+        "budget-metered, only.",
     )
     d.add_argument(
         "--limit",
@@ -135,6 +140,14 @@ def _run_dry_run(args: argparse.Namespace) -> None:
     from precis.taproot.migrate import dry_run, render_report
 
     store = Store.connect(resolve_dsn(args.database_url))
+    # Bind the store to the budget meter so LOCAL dispatch can resolve the
+    # host's real served_by llama-swap endpoint from the DB (instead of
+    # falling to the dead 127.0.0.1:4000 default) and this run's LLM spend
+    # is gated by the budget breaker. Writes telemetry only (llm_call_log +
+    # transient serving-slot rows), never claim data.
+    from precis.budget import meter
+
+    meter.bind_store(store)
     try:
         report = dry_run(
             store,

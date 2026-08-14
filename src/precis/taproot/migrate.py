@@ -12,17 +12,22 @@ compound / uncertain / likely-atomic — cheap enough to re-run any time
 (``precis taproot-migrate score``), used to size and prioritize Phase 1.
 
 **Phase 1 — :func:`dry_run`.** Runs the *first* stage of the canonicalizer
-cascade only — :func:`~precis.taproot.canon.extract_claim` — over the top-
-scored hubs' claim sentences (never ``block``/``dedup_judge``/``place``:
-those decide convergence against *other* hubs, which is Phase 2's concern,
-not "does this sentence split"). The claim sentence is read the same way
-:mod:`.backfill`/:mod:`.hub` do: the hub's ``finding_body`` chunk
-(``ord=0``), falling back to the hub's ``title`` when that chunk is
+cascade only — :func:`~precis.taproot.canon.extract_claim_strict` — over
+the top-scored hubs' claim sentences (never ``block``/``dedup_judge``/
+``place``: those decide convergence against *other* hubs, which is Phase
+2's concern, not "does this sentence split"). The claim sentence is read
+the same way :mod:`.backfill`/:mod:`.hub` do: the hub's ``finding_body``
+chunk (``ord=0``), falling back to the hub's ``title`` when that chunk is
 missing/empty. Every outcome is recorded into a :class:`DryRunReport` —
 :func:`render_report` turns it into a markdown table a human reviews.
-**Zero writes of any kind** (no refs, links, meta, or chunk mutation) —
-only :func:`~precis.taproot.canon.extract_claim`'s LLM spend touches the
-network; the store is read-only throughout.
+**Zero writes through ``store`` itself** (no refs, links, meta, or chunk
+mutation) — only the real extractor's LLM dispatch touches the network,
+and when the process has bound a store to :mod:`precis.budget.meter` (the
+CLI does), that dispatch is budget-metered: it writes ``llm_call_log``
+telemetry + transient serving-slot rows, never claim data. A consecutive
+run of infra failures (dispatch errors, not semantic no-claims) aborts the
+run rather than reporting a full batch of misclassified ``no-claim``
+verdicts — see :func:`dry_run`.
 
 Both phases exclude a hub that is already a **compound** (has a live
 inbound ``conjunct-of`` edge — see :func:`~precis.taproot.hub._is_compound_hub`,
@@ -44,7 +49,7 @@ from precis.taproot.canon import (
     TAPROOT_CLAIM,
     TAPROOT_NAMESPACE,
     ClaimExtraction,
-    extract_claim,
+    extract_claim_strict,
 )
 
 if TYPE_CHECKING:
@@ -70,6 +75,13 @@ Cohort = Literal["likely-compound", "uncertain", "likely-atomic"]
 COHORTS: tuple[Cohort, ...] = ("likely-compound", "uncertain", "likely-atomic")
 
 Verdict = Literal["pass-through", "split", "no-claim", "error"]
+
+#: :func:`dry_run`'s consecutive-infra-failure breaker: this many
+#: ``verdict="error"`` outcomes in a row aborts the whole run rather than
+#: silently producing a full-size report of misclassified NO-CLAIMs — the
+#: melchior incident (every dispatch ECONNREFUSED, all 25 hubs reported
+#: "no-claim") that motivated this guard.
+_CONSECUTIVE_ERROR_LIMIT = 3
 
 #: The Phase-2 idempotency stamp key (not yet written by any pass — Phase 2
 #: is a separate build) checked here so scoring degrades the candidate pool
@@ -297,20 +309,29 @@ def dry_run(
     limit: int,
     cohort: Cohort | None = None,
     controls: int = 0,
-    extract_fn: ExtractFn = extract_claim,
+    extract_fn: ExtractFn = extract_claim_strict,
 ) -> DryRunReport:
     """Phase 1: run ``extract_fn`` over the top ``limit`` scored hubs
     (optionally restricted to one ``cohort``), plus ``controls`` hubs
     sampled from the bottom of the likely-atomic cohort (a pass-through
     sanity check — an already-atomic hub should extract to one atom, no
-    compound). **Writes nothing** — no ``store`` write of any kind; the
-    only side effect is ``extract_fn``'s LLM dispatch (real
-    :func:`~precis.taproot.canon.extract_claim` by default, injectable for
-    tests).
+    compound). **Zero writes through ``store`` itself** — no ref/link/meta/
+    chunk mutation. The default ``extract_fn`` is the real
+    :func:`~precis.taproot.canon.extract_claim_strict` (injectable for
+    tests); when the calling process has bound a store to
+    :mod:`precis.budget.meter` (the CLI does this), its LLM dispatch is
+    budget-metered — it writes ``llm_call_log`` telemetry and transient
+    serving-slot rows, but never touches the claim tables (refs/chunks/
+    links/ref_tags).
 
-    A dispatch/parse failure inside ``extract_fn`` is caught per-hub
-    (``verdict="error"``) rather than aborting the whole run — one bad hub
-    must not lose every other outcome in a ~1.3k-hub pass.
+    A per-hub dispatch/parse failure is caught (``verdict="error"``) rather
+    than aborting the whole run — one bad hub must not lose every other
+    outcome in a ~1.3k-hub pass. But :data:`_CONSECUTIVE_ERROR_LIMIT`
+    consecutive errors aborts the run outright (``RuntimeError``): that
+    many in a row is infra failure (a dead LLM endpoint), not sporadic
+    per-hub noise, and continuing would silently produce a full-size report
+    of misclassified NO-CLAIMs instead of a signal that the run never
+    really happened.
     """
     all_scores = score_hubs(store)
     pool = (
@@ -333,6 +354,7 @@ def dry_run(
                 break
 
     outcomes: list[DryRunOutcome] = []
+    consecutive_errors = 0
     for hub_score, is_control in [(s, False) for s in selected] + [
         (s, True) for s in control_hubs
     ]:
@@ -340,6 +362,7 @@ def dry_run(
         try:
             extraction = extract_fn(sentence)
         except Exception as exc:  # isolate one hub, keep the batch going
+            consecutive_errors += 1
             outcomes.append(
                 DryRunOutcome(
                     hub=hub_score,
@@ -349,7 +372,15 @@ def dry_run(
                     is_control=is_control,
                 )
             )
+            if consecutive_errors >= _CONSECUTIVE_ERROR_LIMIT:
+                raise RuntimeError(
+                    f"taproot-migrate dry-run: LLM dispatch unavailable "
+                    f"({consecutive_errors} consecutive failures, last: {exc}) "
+                    "— aborting dry-run; a dead LLM must not produce a "
+                    "full-size garbage report"
+                ) from exc
             continue
+        consecutive_errors = 0
         outcomes.append(
             DryRunOutcome(
                 hub=hub_score,

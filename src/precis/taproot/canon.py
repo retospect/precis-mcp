@@ -359,6 +359,16 @@ def _parse_not_claim(item: dict[str, Any]) -> NotClaim | None:
     return NotClaim(text=text.strip(), reason=reason)
 
 
+class ExtractionUnavailable(RuntimeError):
+    """Raised by :func:`extract_claim_strict` when the dispatch itself
+    failed (infra error — transport down, timeout, dead endpoint) rather
+    than the model producing a semantic NO-CLAIM. Callers that need to tell
+    "the model said nothing groundable" apart from "the model never ran"
+    (e.g. a migration dry-run report) should use the strict variant and
+    catch this instead of reading :func:`extract_claim`'s empty-extraction
+    fail-safe as a verdict."""
+
+
 def extract_claim(chunk_text: str) -> ClaimExtraction:
     """Extract the atomic claims (+ optional compound + rejected conjuncts)
     from ``chunk_text`` — a :class:`ClaimExtraction`.
@@ -367,7 +377,9 @@ def extract_claim(chunk_text: str) -> ClaimExtraction:
     (``ClaimExtraction.is_empty``) when the chunk is pure-pointer / meta
     (the ``NO-CLAIM`` outcome, taproot.md Axis A stage 0') — including on a
     dispatch error or unparseable model output (fail safe: no claim rather
-    than a bad one).
+    than a bad one). A caller that must distinguish a real NO-CLAIM from a
+    dead dispatch (infra failure) should use :func:`extract_claim_strict`
+    instead, which raises on the latter.
 
     Parses the current ``{"claims": [...], "compound": ..., "not_claims":
     [...]}`` contract; tolerates the legacy ``{"claim": ..., "material":
@@ -376,6 +388,28 @@ def extract_claim(chunk_text: str) -> ClaimExtraction:
     as the rest of this module). :func:`_coerce_extraction` enforces the
     atoms/compound/not_claims invariants either way.
     """
+    return _extract_claim_impl(chunk_text, strict=False)
+
+
+def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
+    """Like :func:`extract_claim`, but raises :class:`ExtractionUnavailable`
+    on a dispatch error instead of degrading to the empty extraction.
+
+    A dispatch error is infrastructure failure (the model never ran) —
+    conflating it with a semantic NO-CLAIM is exactly the failure mode that
+    produced the melchior dry-run's all-``no-claim`` garbage report when
+    every call ECONNREFUSED'd. Unparseable-but-successful model output
+    still degrades to the empty extraction here too: the model *did*
+    respond, so that really is a semantic no-claim, not an infra failure.
+    """
+    return _extract_claim_impl(chunk_text, strict=True)
+
+
+def _extract_claim_impl(chunk_text: str, *, strict: bool) -> ClaimExtraction:
+    """Shared body of :func:`extract_claim` / :func:`extract_claim_strict`
+    — see those for the behavioral contract; ``strict`` controls only
+    whether a dispatch error raises (:class:`ExtractionUnavailable`) or
+    degrades to the empty extraction."""
     text = (chunk_text or "").strip()
     if not text:
         return _EMPTY_EXTRACTION
@@ -393,6 +427,8 @@ def extract_claim(chunk_text: str) -> ClaimExtraction:
     )
     if res.error:
         log.warning("taproot: extract_claim dispatch failed: %s", res.error)
+        if strict:
+            raise ExtractionUnavailable(res.error)
         return _EMPTY_EXTRACTION
     data = res.data or _parse_json_object(res.text)
     if not isinstance(data, dict):
@@ -752,6 +788,7 @@ __all__ = [
     "Candidate",
     "CanonicalClaim",
     "ClaimExtraction",
+    "ExtractionUnavailable",
     "NotClaim",
     "Placement",
     "Verdict",
@@ -759,6 +796,7 @@ __all__ = [
     "claim_sha",
     "dedup_judge",
     "extract_claim",
+    "extract_claim_strict",
     "merge_confirm",
     "place",
 ]

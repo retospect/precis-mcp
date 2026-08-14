@@ -14,6 +14,8 @@ Two layers, mirroring ``tests/test_taproot_backfill.py``'s split:
 
 from __future__ import annotations
 
+import pytest
+
 from precis.store.store import Store
 from precis.taproot.canon import CanonicalClaim, ClaimExtraction, NotClaim
 from precis.taproot.hub import link_claims, mint_hub
@@ -266,6 +268,49 @@ def test_dry_run_isolates_a_per_hub_extract_error(store: Store) -> None:
     assert by_id[boom_hub].verdict == "error"
     assert by_id[boom_hub].error == "dispatch exploded"
     assert by_id[ok_hub].verdict == "pass-through"
+
+
+def test_dry_run_aborts_after_consecutive_infra_failures(store: Store) -> None:
+    """An ``extract_fn`` that always raises (infra dead, e.g. ECONNREFUSED)
+    must abort the whole run rather than silently reporting every hub as
+    an error/no-claim — the melchior-incident guard. Only a handful of
+    hubs should have been evaluated before the abort."""
+    for i in range(8):
+        mint_hub(store, _claim(f"Always-fails claim number {i} for breaker test"))
+
+    calls: list[str] = []
+
+    def _always_fails(text: str) -> ClaimExtraction:
+        calls.append(text)
+        raise RuntimeError("dispatch exploded: ECONNREFUSED")
+
+    with pytest.raises(RuntimeError, match="ECONNREFUSED"):
+        dry_run(store, limit=100, extract_fn=_always_fails)
+
+    # 3-failure breaker: aborts on the 3rd consecutive error, not partway
+    # through the full 8-hub pool.
+    assert len(calls) <= 5
+
+
+def test_dry_run_breaker_resets_on_a_non_error_outcome(store: Store) -> None:
+    """A flaky ``extract_fn`` that fails twice then recovers must NOT trip
+    the breaker — the counter resets on any non-error outcome, so sporadic
+    infra blips stay isolated per-hub."""
+    for i in range(6):
+        mint_hub(store, _claim(f"Flaky claim number {i} for breaker reset test"))
+
+    state = {"calls": 0}
+
+    def _fails_twice_then_succeeds(text: str) -> ClaimExtraction:
+        state["calls"] += 1
+        if state["calls"] in (1, 2):
+            raise RuntimeError("transient dispatch failure")
+        return _extraction_for(text)
+
+    report = dry_run(store, limit=100, extract_fn=_fails_twice_then_succeeds)
+    counts = report.counts
+    assert counts.get("error", 0) == 2
+    assert len(report.outcomes) == 6
 
 
 def test_dry_run_performs_no_store_writes(store: Store) -> None:

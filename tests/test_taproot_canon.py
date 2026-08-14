@@ -19,11 +19,13 @@ from precis.taproot.canon import (
     Candidate,
     CanonicalClaim,
     ClaimExtraction,
+    ExtractionUnavailable,
     NotClaim,
     Placement,
     Verdict,
     dedup_judge,
     extract_claim,
+    extract_claim_strict,
     merge_confirm,
     place,
 )
@@ -280,6 +282,60 @@ def test_extract_claim_returns_empty_extraction_on_dispatch_error(
     result = extract_claim("some passage")
     assert result.is_empty
     assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
+
+
+def test_extract_claim_strict_raises_on_dispatch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The strict variant surfaces infra failure as an exception rather
+    than degrading to a silent NO-CLAIM — the melchior-incident guard."""
+    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    with pytest.raises(ExtractionUnavailable, match="ECONNREFUSED"):
+        extract_claim_strict("some passage")
+
+
+def test_extract_claim_still_degrades_to_empty_on_the_same_dispatch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The non-strict variant's fail-safe posture is unchanged by the
+    strict sibling's existence — same dispatch error, still empty."""
+    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    result = extract_claim("some passage")
+    assert result.is_empty
+
+
+def test_extract_claim_strict_returns_same_extraction_as_extract_claim_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a successful dispatch, the strict variant parses identically to
+    the plain one — the only behavioral difference is on ``res.error``."""
+    monkeypatch.setattr(
+        canon,
+        "dispatch",
+        lambda req: _result(
+            data={
+                "claims": [
+                    {"claim": "Pd/C catalyzes Suzuki coupling at RT with mild base"}
+                ],
+                "compound": None,
+                "not_claims": [],
+            }
+        ),
+    )
+    strict_result = extract_claim_strict("Pd/C catalyzes Suzuki coupling...")
+    plain_result = extract_claim("Pd/C catalyzes Suzuki coupling...")
+    assert strict_result == plain_result
+
+
+def test_extract_claim_strict_still_degrades_to_empty_on_unparseable_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unparseable-but-successful model output is a semantic no-claim, not
+    an infra failure — the strict variant does not raise on it."""
+    monkeypatch.setattr(
+        canon, "dispatch", lambda req: _result(data=None, text="not json at all")
+    )
+    assert extract_claim_strict("some passage").is_empty
 
 
 def test_extract_claim_returns_empty_extraction_on_empty_input() -> None:
