@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import psycopg
 import pytest
 
 from precis.errors import BadInput
@@ -288,6 +289,150 @@ def test_edit_text_stale_base_sha_raises(store: Store) -> None:
     survived = store.drafts.get_draft_chunk(p.handle)
     assert survived is not None
     assert survived.text == "v2"
+
+
+def test_merge_prev_block_happy_path(store: Store) -> None:
+    """Backspace-merge: text appends onto ``prev`` and the merged-away chunk
+    retires, both in one call (gr176088 part 2b)."""
+    from precis.store._draft_ops import content_sha
+
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
+    p1 = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="Hello", at={"after": title.handle}
+    )[0]
+    # add_chunks trims a bare block's trailing space; edit_text preserves it
+    store.drafts.edit_text(p1.handle, "Hello ")
+    p2 = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="world",
+        at={"after": "¶" + p1.handle},
+    )[0]
+    merged = store.drafts.merge_prev_block(
+        p2.handle, p1.handle, "world", base_sha=content_sha("Hello ")
+    )
+    assert merged is not None
+    assert merged.text == "Hello world"
+    retired = store.drafts.get_draft_chunk(p2.handle)
+    assert retired is not None and retired.retired  # retired, not deleted
+
+
+def test_merge_prev_block_stale_base_sha_raises_and_leaves_both_unchanged(
+    store: Store,
+) -> None:
+    """gr176088 part 2b: a concurrent edit to ``prev`` between the caller's
+    read and the merge must raise BadInput, leaving BOTH the retiree and prev
+    untouched — no partial write (this would be RED against the prior
+    two-op ``retire_chunk`` + ``edit_text`` implementation, which retires
+    first and only then discovers the stale edit, orphaning the retire)."""
+    from precis.store._draft_ops import content_sha
+
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
+    p1 = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="Hello ", at={"after": title.handle}
+    )[0]
+    p2 = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="world",
+        at={"after": "¶" + p1.handle},
+    )[0]
+    stale = content_sha(p1.text or "")  # what the caller "saw" on read
+    store.drafts.edit_text(p1.handle, "Hello there ")  # a concurrent writer lands
+    with pytest.raises(BadInput, match="changed since you read"):
+        store.drafts.merge_prev_block(p2.handle, p1.handle, "world", base_sha=stale)
+    # the concurrent writer's text survives — no clobber
+    prev_after = store.drafts.get_draft_chunk(p1.handle)
+    assert prev_after is not None
+    assert prev_after.text == "Hello there "
+    # and the retire never happened — p2 is still live, its text intact
+    retiree_after = store.drafts.get_draft_chunk(p2.handle)
+    assert retiree_after is not None
+    assert retiree_after.text == "world"
+    assert not retiree_after.retired
+
+
+def test_merge_prev_block_postlock_race_raises_and_leaves_both_unchanged(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr176088 part 2b, the second race window: a concurrent edit that
+    commits while the merge is BLOCKED on the section lock. The merge's
+    pre-lock read saw the old text, so its state checks must re-read under
+    the lock — comparing base_sha against the stale pre-lock copy would
+    pass and silently clobber the concurrent append. Simulated by injecting
+    the edit inside ``_lock_sections`` (locks already held → the edit is
+    "what committed while we waited")."""
+    from precis.store._draft_ops import DraftStore, content_sha
+
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
+    p1 = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="Hello ", at={"after": title.handle}
+    )[0]
+    p2 = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="world",
+        at={"after": "¶" + p1.handle},
+    )[0]
+    caller_sha = content_sha(p1.text or "")  # fresh at call time — passes pre-lock
+    real_lock = DraftStore._lock_sections
+    fired = False
+
+    def lock_then_racing_edit(
+        self: DraftStore,
+        conn: psycopg.Connection,
+        ref_id: int,
+        *parents: int | None,
+    ) -> None:
+        nonlocal fired
+        real_lock(self, conn, ref_id, *parents)
+        if not fired:
+            fired = True
+            # Commits on its own pooled connection; edit_text takes no
+            # section lock, so it lands while the merge txn holds the locks.
+            store.drafts.edit_text(p1.handle, "Hello there ")
+
+    monkeypatch.setattr(DraftStore, "_lock_sections", lock_then_racing_edit)
+    with pytest.raises(BadInput, match="changed since you read"):
+        store.drafts.merge_prev_block(
+            p2.handle, p1.handle, "world", base_sha=caller_sha
+        )
+    prev_after = store.drafts.get_draft_chunk(p1.handle)
+    assert prev_after is not None
+    assert prev_after.text == "Hello there "  # the racing edit survives
+    retiree_after = store.drafts.get_draft_chunk(p2.handle)
+    assert retiree_after is not None
+    assert retiree_after.text == "world"
+    assert not retiree_after.retired
+
+
+def test_merge_prev_block_childless_guard_raises_and_leaves_both_unchanged(
+    store: Store,
+) -> None:
+    """The retiree must still be a childless leaf: a child added concurrently
+    (or just present) raises BadInput rather than partial-merging a
+    subtree — mirrors ``retire_chunk``'s own guard, now checked inside the
+    same transaction as the append."""
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(name="nt", title="T", project_ref_id=proj)
+    p1 = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="Hello", at={"after": title.handle}
+    )[0]
+    heading = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="Sec", at={"after": "¶" + p1.handle}
+    )[0]
+    store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="kid", at={"into": heading.handle}
+    )
+    with pytest.raises(BadInput, match="requires"):
+        store.drafts.merge_prev_block(heading.handle, p1.handle, "Sec")
+    unchanged = store.drafts.get_draft_chunk(p1.handle)
+    assert unchanged is not None and unchanged.text == "Hello"
+    heading_after = store.drafts.get_draft_chunk(heading.handle)
+    assert heading_after is not None and not heading_after.retired
 
 
 def test_edit_text_invalidates_embedding_and_summary_cascade(store: Store) -> None:

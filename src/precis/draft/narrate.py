@@ -9,11 +9,17 @@ layer reads three things off a draft and never writes back:
   is metadata, no new kind and no migration.
 - **the words** — the chunk prose, made *speakable*: inline handles
   (``[pc12]`` / ``[[dc4]]``), math, code fences and markdown emphasis are
-  stripped/spoken so the ear gets clean text, never raw markup. Once
+  stripped/spoken so the ear gets clean text, never raw markup. Chemistry
+  notation pulled verbatim from a title/abstract is deterministically
+  respoken (:func:`precis.draft.chem_speak.speak_chemistry` — ``Zn(NO3)2·6H2O``
+  → "zinc nitrate hexahydrate", ``MOF-74`` → "MOF 74") *after* the lexicon so
+  a user override of a specific formula's surface form wins. Once
   :func:`split_by_script` has settled a span's language, its numerals are
   spelled out deterministically (:func:`precis.draft.verbalize.verbalize_numbers`)
   so the draft can keep "1,000" on the page while the synth hears "one
-  thousand" — Kokoro/espeak mispronounces raw digit strings otherwise.
+  thousand" — Kokoro/espeak mispronounces raw digit strings otherwise; this
+  also spells out the bare designator number ``chem_speak`` leaves behind
+  (``MOF 74`` → "MOF seventy-four").
 - **how special words sound** — an optional pronunciation **lexicon**
   (``surface → respelling``), the abbrev-class feature: keep the prose clean
   and fix "precis", arXiv, names, jargon out-of-band.
@@ -30,6 +36,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from precis.draft.chem_speak import speak_chemistry
 from precis.draft.verbalize import verbalize_numbers
 
 # Chunk kinds skipped for the ear (v1): structural containers, and
@@ -301,7 +308,7 @@ def markdown_segments(
         if not block:
             continue
         kind = "heading" if block.lstrip().startswith("#") else "para"
-        spoken = apply_lexicon(speakable_markdown(block), lexicon)
+        spoken = speak_chemistry(apply_lexicon(speakable_markdown(block), lexicon))
         if not _HAS_VOICE.search(spoken):
             continue
         for seg_text, seg_voice, seg_lang in split_by_script(
@@ -394,7 +401,7 @@ def render_narration(
     for c in store.drafts.reading_order(ref.id):
         if c.chunk_kind in _SKIP_KINDS:
             continue
-        spoken = apply_lexicon(speakable(c.text or ""), lexicon)
+        spoken = speak_chemistry(apply_lexicon(speakable(c.text or ""), lexicon))
         if not _HAS_VOICE.search(spoken):
             continue
         meta = c.meta or {}

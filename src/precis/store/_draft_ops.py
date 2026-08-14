@@ -3823,6 +3823,133 @@ class DraftStore(_AbbrevMixin):
                 )
                 self._log(conn, chunk_id, "retired", source, None)
 
+    def merge_prev_block(
+        self,
+        handle: str,
+        prev_handle: str,
+        text: str = "",
+        *,
+        base_sha: str | None = None,
+        source: dict[str, Any] | None = None,
+    ) -> DraftChunk | None:
+        """Backspace-merge: append ``text`` onto ``prev_handle`` and retire
+        ``handle`` — as ONE transaction, so the two halves can never split
+        (gr176088 part 2b). The former route did this as two separate store
+        calls (``retire_chunk`` then ``edit_text``); a concurrent edit to
+        ``prev_handle`` landing between them was silently lost, and an
+        optimistic guard on the edit alone can't fix that: retire-first
+        orphans the retire on a conflicting edit, edit-first defeats
+        ``retire_chunk``'s own childless guard (the "is this actually
+        mergeable" check). Doing both under one lock + one guard pass makes
+        either the whole merge lands, or nothing does.
+
+        Guards, checked inside the transaction (any failure raises
+        ``BadInput``/``NotFound``/``Gone`` and rolls back — no partial
+        write):
+
+        - ``base_sha`` (if given) must match ``prev_handle``'s *current*
+          content_sha, re-checked here rather than trusted from the
+          caller's earlier read — mirrors :meth:`edit_text`'s optimistic
+          guard.
+        - ``handle`` must still be retireable as a leaf: no live children
+          (mirrors ``retire_chunk``'s own guard — a chunk with kids raises
+          rather than partial-merging a subtree) and not the draft's last
+          live chunk.
+
+        Returns the merged ``prev_handle`` chunk (post-append)."""
+        with self.tx() as conn:
+            prev_row = self._row(conn, prev_handle)
+            if prev_row is None:
+                raise NotFound(f"no draft chunk ¶{_bare(prev_handle)}")
+            if prev_row[6] is not None:
+                raise Gone(
+                    f"¶{_bare(prev_handle)} is retired — it was removed or "
+                    "replaced; re-read the current previous block"
+                )
+            row = self._row(conn, handle)
+            if row is None:
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+            if row[6] is not None:
+                return self.get_draft_chunk(prev_handle)  # already retired — idempotent
+            chunk_id, ref_id, parent = row[0], row[1], row[3]
+            prev_chunk_id, prev_parent = prev_row[0], prev_row[3]
+            self._lock_sections(conn, ref_id, parent, prev_parent, chunk_id)
+            # The pre-lock reads only established WHICH sections to lock —
+            # while this txn blocked on the lock, a concurrent holder may
+            # have committed (another merge onto the same prev, a retire, a
+            # move). Re-read both rows under the lock and re-run every state
+            # check against the fresh copies; comparing base_sha against the
+            # stale pre-lock text would pass even after a concurrent append,
+            # silently losing it.
+            prev_row = self._row(conn, prev_handle)
+            if prev_row is None or prev_row[6] is not None:
+                raise Gone(
+                    f"¶{_bare(prev_handle)} is retired — it was removed or "
+                    "replaced; re-read the current previous block"
+                )
+            row = self._row(conn, handle)
+            if row is None or row[6] is not None:
+                return self.get_draft_chunk(
+                    prev_handle
+                )  # retired meanwhile — idempotent
+            if (row[3], prev_row[3]) != (parent, prev_parent):
+                raise BadInput(
+                    f"¶{_bare(handle)}/¶{_bare(prev_handle)} moved while the "
+                    "merge waited for the section lock — re-read and retry"
+                )
+            if base_sha is not None:
+                current = content_sha(prev_row[5])
+                nb = base_sha.strip().lower()
+                if len(nb) < 8:
+                    raise BadInput(
+                        f"base_sha {base_sha!r} too short — need ≥8 hex chars "
+                        "(the sha prefix shown on read)",
+                        next=f"get(kind='draft', id='¶{_bare(prev_handle)}') for the sha",
+                    )
+                if not current.startswith(nb):
+                    raise BadInput(
+                        f"¶{_bare(prev_handle)} changed since you read it "
+                        f"(you read {nb[:8]}…, now {current[:8]}…) — "
+                        "re-read and retry so you don't clobber the newer edit",
+                        next=(
+                            f"get(kind='draft', id='¶{_bare(prev_handle)}') for the "
+                            "current text + sha, then retry the merge"
+                        ),
+                    )
+            # Childless-leaf guard, mirroring retire_chunk's own (no
+            # cascade/promote here — a merge only ever retires a leaf; a
+            # chunk with children just fails the guard, same as before this
+            # atomic op existed).
+            kids = self._children(conn, ref_id, chunk_id)
+            if kids:
+                raise BadInput(
+                    "retiring a chunk with children requires "
+                    "mode='cascade' (delete contents) or "
+                    "mode='promote' (keep contents)"
+                )
+            live = self._live_count(conn, ref_id)
+            if live <= 1:
+                raise BadInput("cannot retire the last live chunk of a draft")
+            if text:
+                new_text = (prev_row[5] or "") + text
+                sha = content_sha(new_text)
+                conn.execute(
+                    "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
+                    (new_text, sha, prev_chunk_id),
+                )
+                conn.execute(
+                    """INSERT INTO chunk_events
+                           (chunk_id, event_kind, content_sha, prev_text, source)
+                       VALUES (%s, 'edited', %s, %s, %s)""",
+                    (prev_chunk_id, sha, prev_row[5], Jsonb(source or {})),
+                )
+            conn.execute(
+                "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s",
+                (chunk_id,),
+            )
+            self._log(conn, chunk_id, "retired", source, None)
+        return self.get_draft_chunk(prev_handle)
+
     def _resolve_move(
         self,
         conn: psycopg.Connection,

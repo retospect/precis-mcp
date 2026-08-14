@@ -17,8 +17,9 @@
 - name: "02 — PostgreSQL"
   ansible.builtin.import_playbook: playbooks/02-postgres.yml
 
-- name: "04 — Ollama"
-  ansible.builtin.import_playbook: playbooks/04-ollama.yml
+# Playbook 04 (Ollama) retired 2026-08 — ollama was purged fleet-wide by the
+# llamacpp migration (99-ollama-purge.yml, kept as the teardown record); a
+# full site run must not reinstall it (gripe 204603).
 
 - name: "05 — Autofs (the fileserver NAS)"
   ansible.builtin.import_playbook: playbooks/05-autofs.yml

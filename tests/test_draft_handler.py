@@ -317,7 +317,8 @@ def test_split_keeps_handle_and_inserts_tail_after(
 def test_merge_prev_joins_text_and_deletes_block(draft: DraftHandler, hub: Hub) -> None:
     """Backspace-merge (web `/block/{h}/merge-prev`): the block's text is
     appended onto the previous one and this block retired, caret at the join
-    offset. Mirrors what the endpoint does via retire_chunk + edit_text."""
+    offset. Mirrors what the endpoint does via the atomic
+    ``DraftStore.merge_prev_block`` (gr176088 part 2b)."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].handle
@@ -334,8 +335,7 @@ def test_merge_prev_joins_text_and_deletes_block(draft: DraftHandler, hub: Hub) 
     prev = hub.live_store.drafts.get_draft_chunk(p1)
     assert prev is not None
     caret = len(prev.text or "")
-    hub.live_store.drafts.retire_chunk(p2)
-    hub.live_store.drafts.edit_text(p1, (prev.text or "") + "world")
+    hub.live_store.drafts.merge_prev_block(p2, p1, "world")
 
     assert caret == 6
     merged = hub.live_store.drafts.get_draft_chunk(p1)
