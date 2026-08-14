@@ -230,9 +230,9 @@ cloud spend on SMALL by construction.** (Ops step — Slice 4.)
 ## Slice 4 activation runbook (ops)
 
 **Verified prereqs (2026-08-11, read-only prod):**
-- ✅ `resource_slots` `llm:qwen3.5-9b-q4_k_m` on **melchior**, capacity **6**,
-  free 6 — the cap-6 semaphore is live.
-- ✅ **`PRECIS_NODE` (was the blocker; FIXED here).** melchior's worker is
+- Verified: `resource_slots` `llm:qwen3.5-9b-q4_k_m` on **melchior**, capacity
+  **6**, free 6 — the cap-6 semaphore is live.
+- Verified: **`PRECIS_NODE` (was the blocker; FIXED here).** melchior's worker is
   `com.precis.worker` running `--profile all` (so `job_inproc` — a `system`-
   profile pass — is live), rendered from the `precis_worker` role, user `deploy`.
   It had **no** `PRECIS_NODE`, so a `target_node="melchior"` pin matched no host.
@@ -240,7 +240,7 @@ cloud spend on SMALL by construction.** (Ops step — Slice 4.)
   'melchior' else '' }}"` to `precis_shared_env` (same conditional pattern as
   `PRECIS_OA_FETCH`); compute nodes keep their own `PRECIS_NODE` via their
   systemd drop-in `EnvironmentFile` (loaded last → overrides the base "").
-- ✅ **Standing passes are melchior-only.** `precis_worker_summarize_llm`/
+- Verified: **Standing passes are melchior-only.** `precis_worker_summarize_llm`/
   `precis_worker_classify` are `true` **only** in `host_vars/melchior.yml`
   (default `false`); balthazar/caspar/spark don't run them. So the ~4.5:1 cloud
   is melchior's **own** passes spilling to the chain's cloud rung when the 9B is
