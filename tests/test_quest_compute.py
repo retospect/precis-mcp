@@ -184,6 +184,64 @@ class TestEnsureCandidate:
         qid = _mk_quest(store, "A striving")
         assert compute_mod.ensure_candidate(store, qid, {"name": "vague idea"}) is None
 
+
+class TestRejectedProposalFeedback:
+    """A refused proposal must tell the proposer *why*, or it re-emits the same
+    malformed spec every tick (prod: one `slab` arg-shape mistake, 13×)."""
+
+    @staticmethod
+    def _observations(store: Any, qid: int) -> list[str]:
+        return [
+            b.text
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+
+    def test_bad_op_args_logged_with_the_reason(self, store: Any) -> None:
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        # `size` as a scalar, not [nx, ny, nz] — the exact shape prod emitted.
+        spec = {"ops": [{"op": "slab", "element": "Pd", "size": 3}]}
+        step = compute_mod.run_compute_step(
+            store, qid, [{"name": "Pd(111)", "structure": spec}], dispatch=False
+        )
+        assert step.candidates_created == 0
+        notes = self._observations(store, qid)
+        assert len(notes) == 1
+        assert "Pd(111)" in notes[0]
+        assert "size" in notes[0]  # the actionable part of the OpError
+        assert notes[0] in step.notes  # and it reaches the tick's own notes
+
+    def test_unknown_op_logged(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        spec = {"cell": _SPEC["cell"], "ops": [{"op": "substitute", "element": "Cu"}]}
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = self._observations(store, qid)
+        assert len(notes) == 1
+        assert "substitute" in notes[0]
+
+    def test_missing_cell_logged(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        step = compute_mod.run_compute_step(
+            store,
+            qid,
+            [{"name": "floating atoms", "structure": {"ops": []}}],
+            dispatch=False,
+        )
+        assert step.candidates_created == 0
+        notes = self._observations(store, qid)
+        assert len(notes) == 1
+        assert "cell" in notes[0]
+
+    def test_reason_is_capped_and_single_line(self) -> None:
+        reason = compute_mod._reject_reason(ValueError("a\nb  c " + "x" * 500))
+        assert "\n" not in reason
+        assert "a b c" in reason
+        assert len(reason) <= compute_mod._REJECT_REASON_CAP
+
     def test_slab_op_spec_materialises_without_a_top_level_cell(
         self, store: Any
     ) -> None:

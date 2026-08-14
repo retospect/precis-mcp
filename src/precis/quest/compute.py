@@ -235,6 +235,41 @@ def _note_duplicate_proposal(
     )
 
 
+#: Cap on a rejection reason's length. A preflight report runs to several
+#: hundred characters; the proposer needs its actionable head, and the logbook
+#: tail this lands in shares the tick prompt's budget.
+_REJECT_REASON_CAP = 300
+
+
+def _reject_reason(exc: BaseException) -> str:
+    """One short single-line summary of why a candidate spec was refused."""
+    text = " ".join(str(exc).split())
+    if len(text) > _REJECT_REASON_CAP:
+        text = text[: _REJECT_REASON_CAP - 1].rstrip() + "…"
+    return text or exc.__class__.__name__
+
+
+def _note_rejected_proposal(store: Store, quest_id: int, name: str, reason: str) -> str:
+    """Log a `rejected proposal` observation so the proposer sees *why* its spec
+    produced no candidate, mirroring :func:`_note_duplicate_proposal`.
+
+    Without this the drop is invisible from both sides: the frontier tree reads
+    ``_(No candidates yet.)_`` as if the quest were idle, and the model — told
+    nothing — re-emits the same malformed spec every tick (prod logged one
+    ``slab`` arg-shape mistake 13× across three days before anyone noticed).
+    Returns the note so the caller can also surface it in ``ComputeStep.notes``.
+    """
+    note = f"rejected proposal: {name} — {reason}"
+    append_entry(
+        store,
+        quest_id,
+        text=note,
+        entry_type="observation",
+        by=MEASURED_BY,
+    )
+    return note
+
+
 def _resolve_parent_structure(
     store: Store, quest_id: int, parent_ref: Any
 ) -> Any | None:
@@ -310,12 +345,28 @@ def _ensure_candidate_detail(
 ) -> tuple[int | None, bool, str | None]:
     """:func:`ensure_candidate`'s full internals — ``(ref_id, was_duplicate,
     note)``. Split out so :func:`run_compute_step` can count dups + surface
-    lineage notes without changing :func:`ensure_candidate`'s public
-    ``int | None`` contract (existing direct callers/tests rely on it).
+    notes without changing :func:`ensure_candidate`'s public ``int | None``
+    contract (existing direct callers/tests rely on it).
+
+    The note carries either a lineage miss (candidate created, ``parent``
+    unresolvable) or — whenever ``ref_id`` is ``None`` — the reason the
+    proposal was refused. **Every ``None`` return pairs with a note**, so a
+    dropped candidate is never silent; see :func:`_note_rejected_proposal`.
     """
+    name = str(proposal.get("name") or "(unnamed)")
     spec = proposal.get("structure")
     if not isinstance(spec, dict):
-        return None, False, None
+        return (
+            None,
+            False,
+            _note_rejected_proposal(
+                store,
+                quest_id,
+                name,
+                "no `structure` spec — a candidate needs a structure object "
+                "(`ops` and/or `cell`), not a name alone",
+            ),
+        )
     # A candidate needs a cell — either given directly, or established by a bulk
     # template op (`slab`) / a `set_cell` op (a Pd(111) slab is 30+ atoms; the
     # proposer emits the compact `slab` op, not a hand-enumerated cell).
@@ -327,7 +378,17 @@ def _ensure_candidate_detail(
         )
     )
     if not has_cell:
-        return None, False, None
+        return (
+            None,
+            False,
+            _note_rejected_proposal(
+                store,
+                quest_id,
+                name,
+                "spec establishes no cell — give a top-level `cell`, or an op "
+                "that sets one (`slab` for a metal surface, else `set_cell`)",
+            ),
+        )
     slug = _candidate_slug(quest_id, spec)
     existing = store.get_ref(kind="structure", id=slug)
     if existing is not None:
@@ -338,10 +399,11 @@ def _ensure_candidate_detail(
     hub = hub or _hub_for(store)
     from precis.handlers.structure import StructureHandler
 
-    name = str(proposal.get("name") or slug)
+    if not proposal.get("name"):
+        name = slug
     try:
         StructureHandler(hub=hub).put(id=slug, text=json.dumps(spec), title=name)
-    except Exception:
+    except Exception as exc:
         log.warning(
             "ensure_candidate: StructureHandler.put raised for quest %s slug %s "
             "— candidate not created",
@@ -349,7 +411,11 @@ def _ensure_candidate_detail(
             slug,
             exc_info=True,
         )
-        return None, False, None
+        return (
+            None,
+            False,
+            _note_rejected_proposal(store, quest_id, name, _reject_reason(exc)),
+        )
     ref = store.get_ref(kind="structure", id=slug)
     if ref is None:  # pragma: no cover - insert_ref cite_key reclaim prevents this
         # put reported success but the slug still won't resolve to a live ref.
@@ -364,7 +430,17 @@ def _ensure_candidate_detail(
             slug,
             quest_id,
         )
-        return None, False, None
+        return (
+            None,
+            False,
+            _note_rejected_proposal(
+                store,
+                quest_id,
+                name,
+                f"internal error: candidate {slug} was stored but does not "
+                "resolve — not your spec's fault, re-propose next tick",
+            ),
+        )
     with store.tx() as conn:
         store.add_link(
             src_ref_id=ref.id, dst_ref_id=quest_id, relation="serves", conn=conn
@@ -2534,16 +2610,18 @@ def run_compute_step(
     for p in proposals or []:
         if not isinstance(p, dict):
             continue
-        sid, was_dup, lineage_note = _ensure_candidate_detail(
-            store, quest_id, p, hub=hub
-        )
+        sid, was_dup, cand_note = _ensure_candidate_detail(store, quest_id, p, hub=hub)
+        if cand_note is not None:
+            # Either a lineage miss on a created candidate, or — when `sid` is
+            # None — why the proposal was refused. Both belong in this step's
+            # notes; the refusal is also a logbook observation the proposer
+            # reads next tick, so it can fix the spec instead of re-emitting it.
+            notes.append(cand_note)
         if sid is None:
             continue
         created += 1
         if was_dup:
             duplicates += 1
-        if lineage_note is not None:
-            notes.append(lineage_note)
         if dispatch:
             note = dispatch_relax(store, sid, hub=hub, cell=relax_cell)
             notes.append(note)

@@ -54,5 +54,5 @@ intended.
 
 - `docs/backlog/dossier-present-tense-refinement.md` — the unbuilt redesign this
   fix is a precondition for.
-- `docs/backlog/quest-candidate-proposals-die-on-slab-op-validation.md` — found
+- `docs/backlog/quest-compute-lane-runs-on-a-literature-only-quest.md` — found
   while waiting for this tick.

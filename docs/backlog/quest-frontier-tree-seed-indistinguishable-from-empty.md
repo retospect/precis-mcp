@@ -37,12 +37,14 @@ key, so it resolves its owner via the `dossier-of` link and this particular
 query reports 0 candidates for it spuriously — not a defect, just a join that
 misses older rows.)
 
-Note (2026-08-14): quest 202469's zero is not an idle quest. It proposes a
-candidate most ticks and every one dies in structure-op validation — see
-`docs/backlog/quest-candidate-proposals-die-on-slab-op-validation.md`. The
-ambiguity below is therefore hiding a live defect on at least one quest, which
-raises this item's value: the whole point of making the strings differ is to be
-able to alert on the case that is currently indistinguishable.
+Note (2026-08-14): quest 202469's zero was not an idle quest — it proposed a
+candidate most ticks and every one died in structure-op validation, silently.
+That is now fixed (rejections write a `rejected proposal` observation), so the
+zero is once again just a zero. The ambiguity below stands as filed: it hid a
+live defect for three days, which is the argument for making the two strings
+differ — an operator could then alert on the case that is currently
+indistinguishable. Residual compute-lane question:
+`docs/backlog/quest-compute-lane-runs-on-a-literature-only-quest.md`.
 
 ## Fix
 
