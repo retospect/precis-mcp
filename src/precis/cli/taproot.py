@@ -17,9 +17,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.cli._common import resolve_dsn
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def add_parser(subparsers: Any) -> None:
@@ -204,7 +207,7 @@ def _load_spec(args: argparse.Namespace) -> list[dict[str, Any]]:
     return raw
 
 
-def _dry_run_result(store: Any, entry: dict[str, Any]) -> dict[str, Any]:
+def _dry_run_result(store: Store, entry: dict[str, Any]) -> dict[str, Any]:
     from precis.identity import make_pub_id, make_taproot_hub_paper_id
     from precis.taproot.authoring import (
         _evidence_edge_exists,
@@ -263,7 +266,7 @@ def _dry_run_result(store: Any, entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _preflight_resolve_supporters(store: Any, claims: list[dict[str, Any]]) -> None:
+def _preflight_resolve_supporters(store: Store, claims: list[dict[str, Any]]) -> None:
     """Resolve every supporter's ``paper`` across every claim, read-only.
 
     Runs BEFORE any write so a bad spec anywhere in the batch (an
@@ -409,7 +412,7 @@ def _run_refine(args: argparse.Namespace) -> None:
         store.close()
 
 
-def _resolve_backfill_chunks(store: Any, args: argparse.Namespace) -> list[int]:
+def _resolve_backfill_chunks(store: Store, args: argparse.Namespace) -> list[int]:
     """The draft body chunk_ids to backfill: one for ``--chunk``, all of a
     draft's body chunks (in reading order) for ``--draft``."""
     from precis.errors import BadInput
@@ -545,8 +548,7 @@ def _run_backfill(args: argparse.Namespace) -> None:
             _print_backfill(results, args.format, applied=args.apply)
         sys.exit(1)
     finally:
-        if hasattr(store, "close"):
-            store.close()
+        store.close()
 
     _print_backfill(results, args.format, applied=args.apply)
 
@@ -573,7 +575,7 @@ _PAPER_EVIDENCE_CANDIDATE_SQL = """
 """
 
 
-def _backfill_grounding(store: Any, *, dry_run: bool) -> dict[str, Any]:
+def _backfill_grounding(store: Store, *, dry_run: bool) -> dict[str, Any]:
     """Upgrade ref-level taproot/draft citation edges to chunk-grounded.
 
     Two independent passes, both idempotent (a live edge that's already
@@ -627,11 +629,11 @@ def _backfill_grounding(store: Any, *, dry_run: bool) -> dict[str, Any]:
                 _DRAFT_REF_LEVEL_MENTION_SQL.format(select="DISTINCT l.src_ref_id")
             ).fetchall()
         ]
-        draft_edges_before = int(
-            conn.execute(
-                _DRAFT_REF_LEVEL_MENTION_SQL.format(select="count(*)")
-            ).fetchone()[0]
-        )
+        count_row = conn.execute(
+            _DRAFT_REF_LEVEL_MENTION_SQL.format(select="count(*)")
+        ).fetchone()
+        assert count_row is not None  # count(*) always returns exactly one row
+        draft_edges_before = int(count_row[0])
     result["drafts_found"] = len(draft_ref_ids)
     result["draft_edges_before"] = draft_edges_before
 
@@ -645,11 +647,11 @@ def _backfill_grounding(store: Any, *, dry_run: bool) -> dict[str, Any]:
             handler._sync_draft_links(ref_id)
         result["drafts_resynced"] = len(draft_ref_ids)
         with store.pool.connection() as conn:
-            result["draft_edges_after"] = int(
-                conn.execute(
-                    _DRAFT_REF_LEVEL_MENTION_SQL.format(select="count(*)")
-                ).fetchone()[0]
-            )
+            after_row = conn.execute(
+                _DRAFT_REF_LEVEL_MENTION_SQL.format(select="count(*)")
+            ).fetchone()
+            assert after_row is not None  # count(*) always returns exactly one row
+            result["draft_edges_after"] = int(after_row[0])
 
     # ── Part B: paper/patent evidence edges with a stored source_handle ─
     with store.pool.connection() as conn:

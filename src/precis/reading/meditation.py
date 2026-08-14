@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.reading.cast_common import (
     CAST_PROFILES,
@@ -29,6 +29,9 @@ from precis.reading.cast_common import (
     link_sources,
     word_budget,
 )
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +63,7 @@ _NIDRA_SYS = (
 
 
 def _load(
-    store: Any,
+    store: Store,
     cohort: str | None,
     limit: int,
     *,
@@ -281,7 +284,7 @@ def _compose_long(
     return "\n\n".join(p for p in parts if p).strip()
 
 
-def ensure_reading_project(store: Any) -> int:
+def ensure_reading_project(store: Store) -> int:
     """Find-or-create the strategic todo that owns reading-prep casts (so cast
     drafts have a `draft-of` home). Marked by ``meta.reading_prep_root``."""
     with store.pool.connection() as conn:
@@ -301,7 +304,7 @@ def ensure_reading_project(store: Any) -> int:
 
 
 def build_meditation(
-    store: Any,
+    store: Store,
     *,
     client: Any | None = None,
     name: str | None = None,

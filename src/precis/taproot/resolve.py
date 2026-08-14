@@ -21,9 +21,12 @@ strips the prefix first.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from psycopg import Connection
+
+if TYPE_CHECKING:
+    from precis.store.protocols import PoolStore
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,7 @@ class BibResolution:
 
 
 def resolve_citation(
-    store: Any, chunk_id: int, marker: int, *, conn: Connection | None = None
+    store: PoolStore, chunk_id: int, marker: int, *, conn: Connection | None = None
 ) -> BibResolution | None:
     """Resolve inline marker ``[marker]`` in body chunk ``chunk_id`` to its
     parsed bib entry, or ``None`` if the sweep recorded no such citation

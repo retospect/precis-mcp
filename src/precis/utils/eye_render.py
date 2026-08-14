@@ -51,11 +51,14 @@ worker-internal, not an agent-facing verb.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
 from precis.utils.refeye import SEMANTIC_RELATIONS
 from precis.workers.working_set import Extent
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Reading-order tree kinds — routed to the spatial fisheye.
 _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
@@ -101,7 +104,14 @@ _HOME_FWD = 12
 _SKILL_HANDLE_PREFIX = handle_registry.code_for_kind("skill") + ":"
 
 
-def render_eye(store: Any, handle: str, extent: Extent | str | int) -> str:
+def render_eye(
+    # store stays Any: tests pass a hand-rolled fake narrower than Store
+    # (test_skill_eye_* pass None for the skill-eye path, which never
+    # touches store)
+    store: Any,
+    handle: str,
+    extent: Extent | str | int,
+) -> str:
     """Render one eye by its kind's neighborhood strategy. Raises ``ValueError``
     if the handle does not resolve to a live ref/chunk."""
     if handle.startswith(_SKILL_HANDLE_PREFIX):
@@ -123,7 +133,7 @@ def render_eye(store: Any, handle: str, extent: Extent | str | int) -> str:
 # ── shared helpers ───────────────────────────────────────────────────
 
 
-def _resolve_ref(store: Any, handle: str) -> Any:
+def _resolve_ref(store: Store, handle: str) -> Any:
     r = store.resolve_handle(handle)
     if r is None:
         return None
@@ -255,7 +265,7 @@ def _fisheye_split(
 
 
 def _render_doc_eye(
-    store: Any, handle: str, kind: str, ext: Extent, *, is_chunk: bool
+    store: Store, handle: str, kind: str, ext: Extent, *, is_chunk: bool
 ) -> str:
     """A doc-kind eye (paper / patent / web / …): the dynamic keyword-cluster TOC
     around the eyeball. A whole-doc handle renders the cluster map; a ``pc``
@@ -297,7 +307,7 @@ def _render_doc_eye(
 # ── link kinds: the note + its link graph (memory / finding / …) ──────
 
 
-def _ordered_body(store: Any, ref_id: int, *, cap: int) -> str:
+def _ordered_body(store: Store, ref_id: int, *, cap: int) -> str:
     """The ref's body — its ord≥0 chunks in order, capped."""
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -308,7 +318,7 @@ def _ordered_body(store: Any, ref_id: int, *, cap: int) -> str:
     return _cap(body, cap)
 
 
-def _render_note_eye(store: Any, handle: str, kind: str, ext: Extent) -> str:
+def _render_note_eye(store: Store, handle: str, kind: str, ext: Extent) -> str:
     """A link-kind ref (memory / finding / …): the note at its extent (title →
     gist → body), and at ``fisheye+1hop`` its **link neighborhood** — every ref
     linked to it, *either direction*, with its relation type. For a memory the
@@ -327,7 +337,7 @@ def _render_note_eye(store: Any, handle: str, kind: str, ext: Extent) -> str:
     return f"{block}\n\n{neighbors}" if neighbors else block
 
 
-def _link_neighbors(store: Any, ref_id: int) -> str:
+def _link_neighbors(store: Store, ref_id: int) -> str:
     """The ref's one-hop link neighborhood, grouped by relation type — the
     ``fisheye+1hop`` layer for a non-tree eye. Follows meaning edges
     (`SEMANTIC_RELATIONS`), **both directions** (``links_for`` matches either

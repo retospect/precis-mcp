@@ -36,10 +36,13 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.cli._common import resolve_dsn
 from precis.utils import handle_registry, mentions
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 # Kinds whose bare ``kind:ident`` mention we rewrite. The full linkify
 # allowlist minus ``paper`` (its mentions are citations, left as-is) and
@@ -158,7 +161,7 @@ def rewrite(
 # ── store-bound resolvers ─────────────────────────────────────────────
 
 
-def _make_resolvers(store: Any) -> tuple[RecordResolver, ChunkResolver]:
+def _make_resolvers(store: Store) -> tuple[RecordResolver, ChunkResolver]:
     def resolve_record(_kind: str, ident: str) -> str | None:
         ref = mentions.resolve_handle_ref(store, ident)
         if ref is None or getattr(ref, "deleted_at", None) is not None:
@@ -194,7 +197,7 @@ class Change:
     changes: list[tuple[str, str]]
 
 
-def _scan_drafts(store: Any) -> list[Change]:
+def _scan_drafts(store: Store) -> list[Change]:
     """A :class:`Change` for every live draft chunk whose text changes."""
     resolve_record, resolve_chunk = _make_resolvers(store)
     with store.pool.connection() as conn:
@@ -216,7 +219,7 @@ def _scan_drafts(store: Any) -> list[Change]:
     return out
 
 
-def _scan_memories(store: Any) -> list[Change]:
+def _scan_memories(store: Store) -> list[Change]:
     """A :class:`Change` for every live memory whose body changes.
 
     A memory's prose lives in its ``memory_body`` chunk (migration 0050),

@@ -30,13 +30,16 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.corpus_layout import (
     corpus_pdf_dest,
     corpus_roots_from_env,
     rebase_onto_local,
 )
+
+if TYPE_CHECKING:
+    from precis.store.protocols import PdfLookupStore
 
 # Kinds a cited handle may resolve to that carry an ingested PDF worth
 # bundling. Datasheets are citable (``corpus_role='evidence'``) so they can
@@ -118,7 +121,7 @@ def _bibtex_authors(authors: list[dict[str, Any]] | None) -> str:
 
 
 def _resolve_pdf_for_ref(
-    store: Any, corpus_dirs: tuple[Path, ...], ref: Any
+    store: PdfLookupStore, corpus_dirs: tuple[Path, ...], ref: Any
 ) -> Path | None:
     """This host's copy of ``ref``'s PDF, or ``None`` if absent locally.
 
@@ -146,7 +149,7 @@ def _resolve_pdf_for_ref(
     return None
 
 
-def _resolve_source_ref(store: Any, slug: str) -> Any | None:
+def _resolve_source_ref(store: PdfLookupStore, slug: str) -> Any | None:
     """The paper / patent / datasheet ref a cited slug names, or ``None``."""
     for kind in _SOURCE_KINDS:
         ref = store.get_ref(kind=kind, id=slug)
@@ -155,6 +158,10 @@ def _resolve_source_ref(store: Any, slug: str) -> Any | None:
     return None
 
 
+# store stays Any: when cited_slugs is omitted this forwards into
+# latex.render_body (Store-typed), but unit tests pass a hand-rolled fake
+# (_FakeStore) narrower than Store — always with cited_slugs given, so the
+# fake never actually reaches render_body.
 def collect_cited_sources(
     store: Any,
     ref: Any,
@@ -264,6 +271,9 @@ class ZipResult:
     bundle: SourceBundle
 
 
+# store stays Any: forwards straight into collect_cited_sources, which
+# stays Any for the same reason (a real caller, e.g. `precis draft export
+# --sources`, omits cited_slugs).
 def build_sources_zip(
     store: Any,
     ref: Any,

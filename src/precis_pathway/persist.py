@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +68,7 @@ def pathway_title(artifact: dict[str, Any]) -> str:
 
 
 def persist_result(
-    store: Any,
+    store: Store,
     ref_id: int,
     artifact: dict[str, Any],
     *,

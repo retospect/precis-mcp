@@ -40,7 +40,7 @@ multiplicative-penalty reasoning.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.format import render_agent_table
@@ -53,6 +53,9 @@ from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Broad-retrieval fan-out cap: ``queries=`` and ``answers=`` each accept
 #: at most this many entries. Mirrored at the MCP boundary
@@ -174,7 +177,7 @@ def _coerce_search_year(value: int | str | None, param: str) -> int | None:
     return iv
 
 
-def _normalise_exclude_slug(raw: str, *, store: Any) -> str | None:
+def _normalise_exclude_slug(raw: str, *, store: Store) -> str | None:
     """Coerce one ``exclude=`` entry to a bare paper slug.
 
     The exclude list is coarse-only (ref-level): ``wang2020state`` and
@@ -313,7 +316,7 @@ class BylineSearch:
     citation + a one-tap ``view='bibtex'`` path.
     """
 
-    store: Any
+    store: Store
 
     def run(
         self, *, field: str, q: str, page: int, page_size: int, kind: str
@@ -434,7 +437,7 @@ class FusedBlockSearch:
     not presentation.
     """
 
-    store: Any
+    store: Store
     embedder: Any
     kind: str
 

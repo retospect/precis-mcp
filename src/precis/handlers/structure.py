@@ -39,7 +39,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
@@ -74,6 +74,9 @@ from precis.structure.importers import catalysis_hub, get_adapter
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
+
+if TYPE_CHECKING:
+    from precis.store.protocols import LinksStore
 
 # NB: ``precis.structure`` re-exports the ``relax`` *function* under that
 # name (see ``run_relax`` above), shadowing the submodule — reach
@@ -546,7 +549,7 @@ def _resolve_catalysis_hub_filters(
 # the handler class.
 
 
-def paper_provenance_rows(store: Any, ref_id: int) -> list[dict[str, str]]:
+def paper_provenance_rows(store: LinksStore, ref_id: int) -> list[dict[str, str]]:
     """Paper-provenance links off a structure design: ``[{rel, paper, slug,
     doi, note}, ...]``, newest-link-first is not guaranteed — callers that
     care about order should sort. Empty list when there are none."""

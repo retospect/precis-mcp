@@ -26,7 +26,12 @@ is shortened to a space-free handle first, and only genuinely-malformed
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from psycopg import Connection
+
+    from precis.store.store import Store
 
 #: Tag namespaces whose values are LLM-authored prose and routinely want
 #: more than a tag's worth of room. A qualifying value gets redirected
@@ -58,11 +63,11 @@ def _value_needs_redirect(value: str) -> bool:
 
 
 def redirect_long_tag_values(
-    store: Any,
+    store: Store,
     *,
     ref_id: int,
     tags: list[str],
-    conn: Any | None = None,
+    conn: Connection | None = None,
 ) -> tuple[list[str], list[int]]:
     """Move long / whitespace ``ask-user:`` / ``halt:`` prose into chunks.
 
@@ -99,7 +104,7 @@ def redirect_long_tag_values(
             continue
         text = f"{ns}: {value}"
 
-        def _write(c: Any, *, text: str = text, ns: str = ns) -> int:
+        def _write(c: Connection, *, text: str = text, ns: str = ns) -> int:
             row = c.execute(
                 "SELECT COALESCE(MAX(ord) + 1, 0) FROM chunks "
                 "WHERE ref_id = %s AND ord >= 0",

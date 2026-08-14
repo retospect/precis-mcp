@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.export._trust_marks import (
@@ -45,6 +45,10 @@ from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.mentions import parse_pin_suffix
 from precis.utils.workspace import Workspace
+
+if TYPE_CHECKING:
+    from precis.store import Store
+    from precis.store.protocols import RefLookupStore
 
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
 _MAX_HEADING_LEVEL = 4
@@ -108,6 +112,9 @@ class DocxResult:
 
 @dataclass
 class _Ctx:
+    # store stays Any: unit tests (test_export_docx_patent.py) construct
+    # _Ctx directly with a hand-rolled fake (_Store: only get_ref) narrower
+    # than the Store the export_docx() path always threads through here.
     store: Any
     known_handles: set[str]
     abbrevs: dict[str, str] = field(default_factory=dict)  # short → long
@@ -212,7 +219,7 @@ def _render_byline(doc: Any, byline: dict[str, Any]) -> None:
 
 
 def export_docx(
-    store: Any,
+    store: Store,
     ref: Any,
     *,
     target_path: Path,
@@ -350,7 +357,7 @@ def export_docx(
 # ── figure rendering ──────────────────────────────────────────────
 
 
-def _render_figure(doc: Any, store: Any, chunk: Any, ctx: _Ctx) -> None:
+def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     """Embed a figure image + its caption. Raster blobs
     embed directly; an SVG (blob-SVG or a linked canvas) arrives pre-rasterised
     to PNG via ``figure_export_asset`` (docx can't consume SVG). An asset-less
@@ -759,7 +766,9 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> 
     run.font.superscript = True
 
 
-def _resolve_source(store: Any, slug: str, rec_number: int) -> dict[str, Any] | None:
+def _resolve_source(
+    store: RefLookupStore, slug: str, rec_number: int
+) -> dict[str, Any] | None:
     """Resolve a cited slug to the structured record EndNote embeds — the
     SAME paper/patent/datasheet lookup the plain path and the ``.bib`` path
     use, so the docx, PDF and EndNote outputs cite the identical resolved
@@ -831,7 +840,7 @@ def _cite_endnote(
 # ── references + glossary sections ────────────────────────────────
 
 
-def _format_reference(store: Any, slug: str, warnings: list[str]) -> str:
+def _format_reference(store: RefLookupStore, slug: str, warnings: list[str]) -> str:
     """One reference line, resolved through the SAME paper/patent/datasheet
     lookup as the ``.bib`` path (citation-integrity parity with the PDF). A
     slug with no matching source in the corpus degrades to a marked stub + a

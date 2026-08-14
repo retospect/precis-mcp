@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import io
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _FIX_ALL = 7  # FIX_X | FIX_Y | FIX_Z — a frozen slab atom
@@ -71,7 +74,7 @@ def _read_extxyz(text: str) -> Any:
 
 
 def ingest_intermediates(
-    store: Any,
+    store: Store,
     pathway_ref_id: int,
     pathway_slug: str,
     key: str,

@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 
 def _lcsc_number(raw: Any) -> str | None:
@@ -155,7 +158,7 @@ def read_jlcparts_sqlite(path: str, *, batch: int = 5000) -> Iterator[dict[str, 
         conn.close()
 
 
-def refresh_parts_from_sqlite(store: Any, path: str) -> dict[str, int]:
+def refresh_parts_from_sqlite(store: Store, path: str) -> dict[str, int]:
     """Flow A end-to-end: read a jlcparts SQLite dump → normalize → import
     (upsert + turnover). ``store`` provides :meth:`parts_import`. Returns the
     import counts. The per-minute worker / ``precis pcb refresh-parts`` CLI

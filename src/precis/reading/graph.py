@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.reading.concepts import normalize_name
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ def _extract_json(text: str) -> dict | None:
 
 
 def _load_cohort_concepts(
-    store: Any, cohort: str, limit: int
+    store: Store, cohort: str, limit: int
 ) -> list[tuple[int, str, str]]:
     """``(ref_id, name, definition)`` for every concept in the cohort. Uses
     ``jsonb_exists`` (the function form of the jsonb ``?`` array-membership
@@ -85,7 +88,7 @@ def _build_prompt(concepts: list[tuple[int, str, str]]) -> str:
 
 
 def infer_edges(
-    store: Any, *, cohort: str, client: Any, max_concepts: int = _MAX_CONCEPTS
+    store: Store, *, cohort: str, client: Any, max_concepts: int = _MAX_CONCEPTS
 ) -> dict[str, int]:
     """Infer + write the concept-graph edges for one cohort. Returns
     ``{prerequisite, analogy, contrast, skipped}``."""

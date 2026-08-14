@@ -21,7 +21,7 @@ neighborhood bands + gloss helpers from :mod:`precis.utils.fisheye`.
 from __future__ import annotations
 
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
 from precis.utils.eye_render import _TREE_KINDS, render_eye
@@ -36,6 +36,9 @@ from precis.utils.fisheye import (
 from precis.utils.refeye import _RING_CAP, collect_ring, render_ring_groups
 from precis.utils.section_keywords import rollup_label
 from precis.workers.working_set import Extent, WorkingSet
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Bridge a gap of at most this many undemanded chunks between two demanded
 #: chunks (§ gap closing) — a small hole in a passage is "probably relevant."
@@ -159,7 +162,7 @@ def _rollup_node_label(by_id: dict[int, Any], chunk_id: int) -> str:
 
 
 def render_link_rollup(
-    store: Any,
+    store: Store,
     ref_id: int,
     chunks: list[Any],
     demand: dict[int, Extent],
@@ -245,7 +248,7 @@ def render_link_rollup(
 
 
 def render_working_set(
-    store: Any,
+    store: Store,
     ws: WorkingSet,
     *,
     cap: int = _RING_CAP,

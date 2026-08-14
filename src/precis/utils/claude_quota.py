@@ -284,6 +284,7 @@ def parse_rate_limits(stdout: str) -> QuotaSnapshot | None:
 
 
 def refresh_snapshot(
+    # store stays Any: tests pass a hand-rolled fake narrower than Store
     store: Any,
     *,
     binary: str | None = None,

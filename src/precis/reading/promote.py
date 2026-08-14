@@ -17,7 +17,7 @@ couple promotion to the async embedder). Cohort membership is ``meta.cohorts`` (
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.reading.concepts import (
     concept_card_text,
@@ -26,12 +26,15 @@ from precis.reading.concepts import (
 )
 from precis.reading.term_quality import non_concept_reason
 
+if TYPE_CHECKING:
+    from precis.store import Store
+
 log = logging.getLogger(__name__)
 
 _GLOSSARY_KIND = "card_glossary"
 
 
-def _find_existing(store: Any, name: str) -> int | None:
+def _find_existing(store: Store, name: str) -> int | None:
     """Corpus-wide concept with the same normalized name, or None."""
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -43,7 +46,7 @@ def _find_existing(store: Any, name: str) -> int | None:
 
 
 def create_concept(
-    store: Any,
+    store: Store,
     *,
     name: str,
     definition: str = "",
@@ -75,7 +78,9 @@ def create_concept(
     return int(ref.id)
 
 
-def _attach(store: Any, *, concept_id: int, paper_id: int, cohort: str | None) -> None:
+def _attach(
+    store: Store, *, concept_id: int, paper_id: int, cohort: str | None
+) -> None:
     """Dedup path: give an existing concept the new paper as provenance and add
     it to the cohort (idempotent). Mastery + definition are left untouched."""
     store.add_link(src_ref_id=concept_id, dst_ref_id=paper_id, relation="derived-from")
@@ -90,7 +95,7 @@ def _attach(store: Any, *, concept_id: int, paper_id: int, cohort: str | None) -
         store.update_ref(concept_id, meta_patch={"cohorts": cohorts})
 
 
-def _read_glossary_meta(store: Any, paper_id: int) -> dict[str, Any]:
+def _read_glossary_meta(store: Store, paper_id: int) -> dict[str, Any]:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta FROM chunks WHERE ref_id = %s AND chunk_kind = %s "
@@ -101,7 +106,7 @@ def _read_glossary_meta(store: Any, paper_id: int) -> dict[str, Any]:
 
 
 def promote_paper(
-    store: Any, *, paper_id: int, cohort: str | None = None
+    store: Store, *, paper_id: int, cohort: str | None = None
 ) -> dict[str, int]:
     """Promote one paper's glossary terms to concepts. Returns
     ``{minted, linked, terms, dropped}`` (``dropped`` = non-concept terms the
@@ -147,7 +152,9 @@ def promote_paper(
     return {"minted": minted, "linked": linked, "terms": terms, "dropped": dropped}
 
 
-def promote_cohort(store: Any, *, paper_ids: list[int], cohort: str) -> dict[str, int]:
+def promote_cohort(
+    store: Store, *, paper_ids: list[int], cohort: str
+) -> dict[str, int]:
     """Promote a whole reading cohort. Returns aggregate ``{minted, linked,
     terms, dropped, papers}``."""
     totals = {"minted": 0, "linked": 0, "terms": 0, "dropped": 0, "papers": 0}

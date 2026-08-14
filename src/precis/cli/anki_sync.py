@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.cli._common import resolve_dsn
 
@@ -29,6 +29,9 @@ from precis.cli._common import resolve_dsn
 from precis.workers.anki_sync import (
     retired_ref_ids as _retired_ref_ids,  # noqa: F401  re-exported for tests
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -96,7 +99,7 @@ def run(args: argparse.Namespace) -> None:
         store.pool.close()
 
 
-def _run_sync(args: argparse.Namespace, cfg: Any, store: Any) -> None:
+def _run_sync(args: argparse.Namespace, cfg: Any, store: Store) -> None:
     from precis.anki.sync import AnkiNotInstalled, AnkiSyncError
     from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
 

@@ -26,9 +26,13 @@ no ``extent=`` kwarg and silently ignores one if passed.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Protocol
 
 from precis.workers.working_set import Extent
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Graduated forward-biased span for a ``fidelity`` eye (§6: "±5 full / ±10
 #: summary / ±15 kwd, forward-biased"). Measured over reading-order neighbours
@@ -43,14 +47,22 @@ _GLOSS_CAP = 100
 
 
 class _Chunk(Protocol):
-    chunk_id: int
-    ref_id: int
-    handle: str
-    chunk_kind: str
-    text: str
-    parent_chunk_id: int | None
-    depth: int
-
+    # Read-only properties, not plain attributes — frozen dataclasses
+    # (DraftChunk) don't satisfy a mutable-attribute protocol.
+    @property
+    def chunk_id(self) -> int: ...
+    @property
+    def ref_id(self) -> int: ...
+    @property
+    def handle(self) -> str: ...
+    @property
+    def chunk_kind(self) -> str: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def parent_chunk_id(self) -> int | None: ...
+    @property
+    def depth(self) -> int: ...
     @property
     def dc(self) -> str: ...
 
@@ -76,7 +88,7 @@ def _summary_text(chunk: _Chunk, views: dict[str, dict[str, str]]) -> str:
     return line[:300]
 
 
-def _ancestors(by_id: dict[int, _Chunk], target: _Chunk) -> list[_Chunk]:
+def _ancestors(by_id: Mapping[int, _Chunk], target: _Chunk) -> list[_Chunk]:
     """The ancestor branch root→…→parent (the ``section_path``), by walking
     ``parent_chunk_id`` up. Excludes the target."""
     chain: list[_Chunk] = []
@@ -92,7 +104,7 @@ def _ancestors(by_id: dict[int, _Chunk], target: _Chunk) -> list[_Chunk]:
 
 
 def render_fisheye(
-    store: Any,
+    store: Store,
     *,
     kind: str,
     handle: str,
@@ -151,7 +163,7 @@ def render_fisheye(
 
 
 def _render_fidelity_span(
-    chunks: list[_Chunk], target: _Chunk, views: dict[str, dict[str, str]]
+    chunks: Sequence[_Chunk], target: _Chunk, views: dict[str, dict[str, str]]
 ) -> list[str]:
     """A graduated, forward-biased window over reading-order neighbours (§6):
     the center full, fanning out to summary then keyword lines, reaching

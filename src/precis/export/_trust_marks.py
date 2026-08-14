@@ -20,9 +20,13 @@ calls :func:`~precis.taproot.trust.claim_trust` itself makes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.taproot.trust import TrustState, claim_trust
+
+if TYPE_CHECKING:
+    from precis.store import Store
+    from precis.store.protocols import ClaimTrustStore
 
 #: The louder mark's fixed text (Motivation / AC 2) — identical wording in
 #: both exporters, only the surrounding markup (bold/red run vs
@@ -56,7 +60,7 @@ class TrustTracker:
     """Per-export cache + accumulator, threaded through one export's
     citation-rendering pass via the format-specific ``_Ctx``."""
 
-    store: Any
+    store: ClaimTrustStore
     _cache: dict[int, TrustState] = field(default_factory=dict)
     #: finding_ref_id → (claim title, state), insertion order = first
     #: citation order — every non-clean mark, for the end-matter list.
@@ -127,7 +131,7 @@ def unverified_claims_entries(trust: Any) -> list[tuple[str, str, str]]:
     return entries
 
 
-def record_override_event(store: Any, ref: Any, trust: Any) -> None:
+def record_override_event(store: Store, ref: Any, trust: Any) -> None:
     """Append the ONE ``ref_events`` audit row for this export, when at
     least one finding rendered via an author's override — i.e. folded to the
     calm ``abstract``/``vouched`` state (§2) — never when nothing was

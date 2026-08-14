@@ -120,6 +120,10 @@ class DraftRetractionReport:
         return f"{len(self.papers)} cited papers — " + ", ".join(bits)
 
 
+# store stays Any: when cited_slugs is omitted this forwards into
+# latex.render_body (Store-typed), but tests drive draft_retraction_report
+# through the monkeypatched `cited_paper_refs` seam and pass bare
+# `object()` as store — no protocol could accept that.
 def cited_paper_refs(
     store: Any, ref: Any, *, cited_slugs: list[str] | None = None
 ) -> tuple[list[Any], list[str]]:
@@ -181,6 +185,8 @@ def _check_need_key(r: Any) -> tuple[bool, Any]:
     return (at is not None, at)
 
 
+# store stays Any: forwards into cited_paper_refs, which stays Any for the
+# same reason (tests pass bare `object()` — see that function's comment).
 def draft_retraction_report(
     store: Any,
     ref: Any,

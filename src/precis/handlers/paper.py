@@ -144,7 +144,7 @@ _DOI_EDIT_TITLE_MISMATCH_THRESHOLD = 0.6
 # additionally imported directly by ``tests/test_handle_resolution.py``.
 
 
-def _suggest_paper_slugs(slug: str, *, store: Any, kind: str = "paper") -> list[str]:
+def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> list[str]:
     """Return up to ``_SUGGEST_TOP_N`` ``kind`` slugs that look like ``slug``.
 
     Uses :func:`difflib.get_close_matches` with a ratio cutoff that

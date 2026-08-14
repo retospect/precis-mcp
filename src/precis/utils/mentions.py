@@ -27,7 +27,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -292,7 +295,9 @@ def chunk_to_pos(chunk: str | None) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def resolve_handle_ref(store: Any, ident: str, *, include_deleted: bool = True) -> Any:
+def resolve_handle_ref(
+    store: Store, ident: str, *, include_deleted: bool = True
+) -> Any:
     """Resolve a handle's ``ident`` to a ``Ref`` (or ``None``).
 
     Numeric idents fetch by id; slugs go through ``ref_identifiers``
@@ -338,7 +343,7 @@ class LinkTarget:
     dst_pos: int | None
 
 
-def resolve_handle_target(store: Any, token: str) -> LinkTarget | None:
+def resolve_handle_target(store: Store, token: str) -> LinkTarget | None:
     """A bare universal handle (``me5`` a memory, ``dc41`` a draft
     chunk, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
     decoder ``store.resolve_handle``. ``None`` if ``token`` is not a
@@ -360,7 +365,7 @@ def resolve_handle_target(store: Any, token: str) -> LinkTarget | None:
     return LinkTarget(int(r.ref_id), pos)
 
 
-def resolve_patent_pubnum(store: Any, token: str) -> LinkTarget | None:
+def resolve_patent_pubnum(store: Store, token: str) -> LinkTarget | None:
     """A patent public number (``US9927397B1``) → its patent ``LinkTarget``.
 
     A patent is addressed by its **DOCDB slug** — the lowercased
@@ -429,7 +434,13 @@ def _universal_handle_tokens(body: str) -> list[str]:
 
 
 def resolve_link_targets(
-    store: Any, body: str, *, exclude_ref_id: int | None = None
+    # store stays Any: tests pass a hand-rolled fake narrower than Store
+    # (resolve_handle_target below needs Store.resolve_handle, which the
+    # fake doesn't carry)
+    store: Any,
+    body: str,
+    *,
+    exclude_ref_id: int | None = None,
 ) -> list[LinkTarget]:
     """Resolve every handle in ``body`` to a live ``LinkTarget``.
 

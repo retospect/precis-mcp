@@ -17,10 +17,30 @@ recipe that worked: role protocol where tests pass a fake
 fakes are narrower than the `Store`-typed callees they forward into —
 commented in place).
 
+Wave 2 shipped: workers tree + precis_web + quest (~270 sites; new
+role protocols `LinksStore`/`RefsByIdStore`/`RefMetaStore`; 3 latent
+None-deref fixes typing surfaced: `factory._quests`,
+`anki_sync` lock-row, `claude_inproc._build_job_result_text` ×3).
+Gate lesson: coders' *targeted* host mypy runs miss cross-file
+test-fake incompatibilities — the container gate type-checks ALL
+files including every test, so a helper newly typed `Store` whose
+test passes a hand-rolled fake fails only there. Before shipping a
+typing batch, run full-tree mypy (or pre-check the fake-passing
+tests). Nine precis_web helpers stayed `Any` with the standard
+comment for exactly this reason (`smartdraft._cited_sources`/
+`_needs_items`/`_ref_connection_groups`, `asks._chunk_context`/
+`_ask_value`, `drafts._paper_pdf_missing`, `items._folder_options`,
+`status._budget_tote`, `nav._gripes_count`). Protocol structural
+matching needs matching parameter NAMES too (a fake's
+`ids: list[int]` vs protocol `ref_ids: Iterable[int]` fails on both
+name and variance).
+
 REMAINING — the long tail, convertible incrementally (each batch its
 own ship):
 
-- ~570 `store: Any` parameter sites across handlers/workers/web —
+- ~180 `store: Any` parameter sites: `src/precis/utils` (11 files),
+  `handlers` (11), `export` (6), `reading` (5), `taproot` (4),
+  `precis_pathway` (4), `cli` (3), `backfill` (3), `pcb` (2) —
   same recipe, deleting dead defensive `getattr` fallbacks as they go
   (e.g. `precis_web/routes/refs.py::_row` null-guarding non-optional
   `datetime` fields; `diagram/doc_context.py`'s `getattr(store,

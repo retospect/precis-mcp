@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 from .persist import BODY_KIND, pathway_title, persist_result
 
@@ -148,7 +151,7 @@ class PathwayHandler(Handler):
         except Exception as e:
             raise BadInput(f"could not parse pathway config: {e}") from e
 
-        store = self.hub.store
+        store = self.hub.live_store
         existing = store.get_ref(kind="pathway", id=slug)
 
         if mode == "preview":
@@ -203,7 +206,7 @@ class PathwayHandler(Handler):
 
     def _dispatch_job(
         self,
-        store: Any,
+        store: Store,
         slug: str,
         raw_config: dict[str, Any],
         effective: dict[str, Any],
@@ -291,7 +294,7 @@ class PathwayHandler(Handler):
                 "pathway get needs an id (the pathway slug)",
                 next="get(kind='pathway', id='no_to_no3_pd')",
             )
-        store = self.hub.store
+        store = self.hub.live_store
         ref = store.get_ref(kind="pathway", id=str(id))
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
@@ -352,7 +355,7 @@ class PathwayHandler(Handler):
         return Response(body=self._render_profile(ref.title, meta))
 
     # -- compare (cross-candidate) ---------------------------------------
-    def _compare(self, store: Any, ref: Any, meta: dict[str, Any]) -> str:
+    def _compare(self, store: Store, ref: Any, meta: dict[str, Any]) -> str:
         """Compare this pathway against every computed sibling sharing the same
         substrate→target (same reaction), as one interleaved TOON table."""
         from . import analysis
@@ -401,7 +404,7 @@ class PathwayHandler(Handler):
     # -- preview (cheap, no compute) -------------------------------------
     def _preview(
         self,
-        store: Any,
+        store: Store,
         slug: str,
         raw_config: dict[str, Any],
         effective: dict[str, Any],
@@ -479,7 +482,7 @@ class PathwayHandler(Handler):
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None:
             raise BadInput("pathway delete needs an id")
-        store = self.hub.store
+        store = self.hub.live_store
         ref = store.get_ref(kind="pathway", id=str(id))
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
@@ -497,7 +500,7 @@ class PathwayHandler(Handler):
     ) -> Response:
         if id is None:
             raise BadInput("pathway tag needs an id")
-        store = self.hub.store
+        store = self.hub.live_store
         ref = store.get_ref(kind="pathway", id=str(id))
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
@@ -564,14 +567,14 @@ class PathwayHandler(Handler):
             )
         return "\n".join(lines)
 
-    def _add_tag(self, store: Any, ref_id: int, raw: str, conn: Any) -> None:
+    def _add_tag(self, store: Store, ref_id: int, raw: str, conn: Any) -> None:
         from precis.store import Tag
 
         store.add_tag(
             ref_id, Tag.parse_strict(raw, kind="pathway"), set_by="agent", conn=conn
         )
 
-    def _remove_tag(self, store: Any, ref_id: int, raw: str, conn: Any) -> None:
+    def _remove_tag(self, store: Store, ref_id: int, raw: str, conn: Any) -> None:
         from precis.store import Tag
 
         store.remove_tag(ref_id, Tag.parse_strict(raw, kind="pathway"), conn=conn)

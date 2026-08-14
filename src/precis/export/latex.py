@@ -32,7 +32,7 @@ import shutil
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
@@ -47,6 +47,10 @@ from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.workspace import Workspace
+
+if TYPE_CHECKING:
+    from precis.store import Store
+    from precis.store.protocols import RefLookupStore
 
 #: ``meta.workspace.doc_type`` value that switches export into patent-spec
 #: mode: prior-art rendered in-text, no ``\cite`` / no bibliography.
@@ -364,7 +368,11 @@ class _Ctx:
 
     keymap: dict[str, str]  # abbreviation short → glossary key
     known_handles: set[str]  # every live dc<id> chunk handle in the draft
-    store: Any = None  # to resolve a paper handle (pc/pa) → cite_key
+    # store stays Any: unit tests construct _Ctx directly with hand-rolled
+    # fakes (_PaperStore/_FindingStore/types.SimpleNamespace) narrower than
+    # the Store render_body/build_bib need — to resolve a paper handle
+    # (pc/pa) → cite_key
+    store: Any = None
     legacy_to_dc: dict[str, str] = field(default_factory=dict)  # ¶base58 → dc
     cited: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -825,7 +833,7 @@ _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
 
 
 def render_body(
-    store: Any, ref: Any, *, doc_type: str = "", footnote_refs: bool = False
+    store: Store, ref: Any, *, doc_type: str = "", footnote_refs: bool = False
 ) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
@@ -1005,7 +1013,7 @@ def datasheet_pub_label(meta: dict[str, Any] | None) -> str:
     return _DATASHEET_SUBTYPE_LABELS.get(sub, "Datasheet")
 
 
-def build_bib(store: Any, slugs: list[str], warnings: list[str]) -> str:
+def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> str:
     """Generate ``refs.bib`` from the cited source refs. Resolves each
     slug to its paper / patent / datasheet ref, pulling
     title / authors / year / DOI / arXiv. A slug with no matching source
@@ -1232,7 +1240,7 @@ def assemble_document(
 
 
 def export_draft(
-    store: Any,
+    store: Store,
     ref: Any,
     *,
     target_dir: Path,

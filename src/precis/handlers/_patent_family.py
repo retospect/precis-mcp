@@ -28,13 +28,16 @@ that separately; it is not this module's job.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.store import Ref
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
 
+if TYPE_CHECKING:
+    from precis.store.protocols import PoolStore
 
-def family_members(store: Any, family_id: str | None) -> list[Ref]:
+
+def family_members(store: PoolStore, family_id: str | None) -> list[Ref]:
     """Every live ``patent`` ref carrying ``family_id`` in its meta.
 
     Unordered (see :func:`family_representative` for the deterministic
@@ -77,7 +80,7 @@ def _publication_sort_key(ref: Ref) -> tuple[bool, str, str]:
     return (date_key is None, date_key or "", ref.slug or "")
 
 
-def family_representative(store: Any, family_id: str | None) -> Ref | None:
+def family_representative(store: PoolStore, family_id: str | None) -> Ref | None:
     """The deterministic family representative for ``family_id``.
 
     Earliest-published ingested member; ties broken by cite-key slug

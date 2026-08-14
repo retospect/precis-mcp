@@ -50,7 +50,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg.errors import UniqueViolation
 
@@ -64,6 +64,9 @@ from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
 from precis.taproot import authoring, hub, seniority
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.protocols import PoolStore
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
@@ -2014,7 +2017,7 @@ class FindingHandler(NumericRefHandler):
 
 
 def _collapse_patent_families(
-    store: Any,
+    store: PoolStore,
     edges: list[seniority.EvidenceEdge],
     refs_by_id: dict[int, Ref],
 ) -> list[tuple[seniority.EvidenceEdge, str | None]]:

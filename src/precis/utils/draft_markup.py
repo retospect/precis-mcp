@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.utils.mentions import (
     DRAFT_CITE_PATTERN,
@@ -49,6 +49,9 @@ from precis.utils.mentions import (
     resolve_handle_target,
     resolve_link_targets,
 )
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +132,7 @@ def strip_markers(text: str) -> str:
 
 
 def resolve_draft_handle(
-    store: Any, handle: str, *, include_retired: bool = False
+    store: Store, handle: str, *, include_retired: bool = False
 ) -> LinkTarget | None:
     """A ``¶<handle>`` draft-chunk anchor → a chunk-level ``LinkTarget``.
 
@@ -153,7 +156,7 @@ def resolve_draft_handle(
     return LinkTarget(int(row[0]), int(row[1]))
 
 
-def resolve_universal_handle(store: Any, token: str) -> LinkTarget | None:
+def resolve_universal_handle(store: Store, token: str) -> LinkTarget | None:
     """A bare universal handle (``dc41`` a draft chunk, ``me5`` a
     memory, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
     decoder ``store.resolve_handle``. The simple, uniform rule the LLM
@@ -163,7 +166,7 @@ def resolve_universal_handle(store: Any, token: str) -> LinkTarget | None:
     return resolve_handle_target(store, token)
 
 
-def _resolve_reference(store: Any, ref: Reference) -> LinkTarget | None:
+def _resolve_reference(store: Store, ref: Reference) -> LinkTarget | None:
     """One parsed bracket reference → a live ``LinkTarget`` (or ``None``).
 
     A handle-shaped target (``[[dc41]]`` / ``[label](me5)``) resolves
@@ -191,7 +194,7 @@ def _resolve_reference(store: Any, ref: Reference) -> LinkTarget | None:
 
 
 def resolve_draft_link_targets(
-    store: Any, text: str, *, exclude_ref_id: int | None = None
+    store: Store, text: str, *, exclude_ref_id: int | None = None
 ) -> list[LinkTarget]:
     """Resolve the *superset* of references in a draft's prose to live
     ``LinkTarget``s: bare ``kind:ref`` mentions (incl. those inside

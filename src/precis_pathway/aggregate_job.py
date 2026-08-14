@@ -28,9 +28,12 @@ it does not gate the claim the way it does for the seed/monolith jobs.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
+
+if TYPE_CHECKING:
+    from precis.store.protocols import PoolStore
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +66,7 @@ DESCRIPTION = (
 )
 
 
-def _collect_seed_results(store: Any, agg_todo_id: int) -> list[dict[str, Any]]:
+def _collect_seed_results(store: PoolStore, agg_todo_id: int) -> list[dict[str, Any]]:
     """Every succeeded ``autocatpath_seed`` job under a seed-todo child of
     ``agg_todo_id`` — the partials this aggregate combines.
 

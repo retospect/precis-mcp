@@ -52,7 +52,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers import _todo_guards as guards
@@ -65,6 +65,10 @@ from precis.store import Ref, Tag
 from precis.store.types import BlockInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
+
+if TYPE_CHECKING:
+    from precis.store.protocols import PoolStore
+    from precis.store.store import Store
 
 #: Chunk kind holding a todo's optional details body (parallel to
 #: ``memory_body``, migration 0050). The task line stays in ``refs.title``
@@ -94,7 +98,7 @@ class TodoView(StrEnum):
     ATTENTION = "attention"
 
 
-def _view_doable(store: Any, args: dict[str, Any] | None, page_size: int) -> Response:
+def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> Response:
     """``view='doable'`` — the one tree view that reads ``args`` / paging.
 
     Pulled out of the dispatch table so the table stays a flat
@@ -153,7 +157,9 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 _RESERVED_PARENT_REL = "parent"
 
 
-def _inherit_workspace_from_parent(store: Any, parent_id: int) -> dict[str, Any] | None:
+def _inherit_workspace_from_parent(
+    store: PoolStore, parent_id: int
+) -> dict[str, Any] | None:
     """Pull ``meta.workspace`` from the parent ref, or None if unset.
 
     Returns a plain dict so the caller can splice it into the child's

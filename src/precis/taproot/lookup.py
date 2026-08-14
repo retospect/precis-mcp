@@ -10,15 +10,18 @@ seniority`'s "pure read/derive" stance.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
 from precis.taproot.hub import HUB_ROLES
 
+if TYPE_CHECKING:
+    from precis.store.protocols import PoolStore
+
 __all__ = ["hubs_grounded_by_paper"]
 
 
-def hubs_grounded_by_paper(store: Any, paper_ref_id: int) -> list[dict[str, Any]]:
+def hubs_grounded_by_paper(store: PoolStore, paper_ref_id: int) -> list[dict[str, Any]]:
     """Every live ``TAPROOT:claim`` hub ``paper_ref_id`` has an inbound
     evidence edge to — the many-to-many read a cite-time nudge needs
     ("this paper already grounds N claims").

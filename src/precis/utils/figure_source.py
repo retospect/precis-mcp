@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from precis.utils.figure_clearance import figure_status
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 Medium = Literal["blob", "canvas", "graph", "none"]
 RenderMode = Literal["image", "canvas", "placeholder"]
@@ -76,7 +79,7 @@ def _svg_has_content(svg: str | None) -> bool:
     return bool(svg and _DRAWABLE_RE.search(svg))
 
 
-def _canvas_source(store: Any, canvas_ref_id: int) -> str | None:
+def _canvas_source(store: Store, canvas_ref_id: int) -> str | None:
     """The ``figure_node`` SVG source for a canvas ref, or ``None``."""
     for c in store.drafts.reading_order(canvas_ref_id, kind="figure"):
         if c.chunk_kind == "figure_node":
@@ -117,7 +120,7 @@ def _svg_to_png(svg: str) -> bytes | None:
         return None
 
 
-def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
+def figure_export_asset(store: Store, chunk: Any) -> tuple[bytes, str] | None:
     """``(bytes, ext)`` for embedding a figure in an export, or ``None`` when the figure has no usable asset.
 
     Raster blobs pass through as-is; an SVG — whether a ``blob``-SVG (already
@@ -145,7 +148,7 @@ def figure_export_asset(store: Any, chunk: Any) -> tuple[bytes, str] | None:
     return None
 
 
-def resolve_figure_source(store: Any, chunk: Any) -> FigureSource:
+def resolve_figure_source(store: Store, chunk: Any) -> FigureSource:
     """Resolve a draft figure chunk to its :class:`FigureSource`.
 
     Resolution order: a ``has-figure`` link wins (``canvas``);

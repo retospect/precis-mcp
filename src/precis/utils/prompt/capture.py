@@ -24,12 +24,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.utils.prompt.model import Block
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +91,7 @@ def _write(conn: Connection, ref_id: int, meta: dict[str, Any]) -> None:
 
 
 def persist_assembled_context(
-    conn_or_store: Any, ref_id: int, blocks: Sequence[Block]
+    conn_or_store: Connection | Store, ref_id: int, blocks: Sequence[Block]
 ) -> None:
     """Write ``blocks`` — the full assembled prompt input — onto ``ref_id``'s meta.
 
@@ -110,12 +113,12 @@ def persist_assembled_context(
             "assembled_context": _capped_entries(blocks),
             "assembled_context_at": datetime.now(UTC).isoformat(),
         }
-        if hasattr(conn_or_store, "pool"):
+        if isinstance(conn_or_store, Connection):
+            _write(conn_or_store, ref_id, meta)
+        else:
             with conn_or_store.pool.connection() as conn:
                 _write(conn, ref_id, meta)
                 conn.commit()
-        else:
-            _write(conn_or_store, ref_id, meta)
     except Exception:
         log.exception(
             "persist_assembled_context: failed to capture assembled context "

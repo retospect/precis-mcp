@@ -30,7 +30,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils.embed_query import embed_query
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
@@ -40,6 +40,9 @@ from precis.workers.hub_refine import (
     _min_sim_default,
     _topk_default,
 )
+
+if TYPE_CHECKING:
+    from precis.store.protocols import BlockSearchStore
 
 VerifyFn = Any  # Callable[..., dict[str, Any] | None] — kept loose to match _verify_support_with_caveats
 
@@ -170,7 +173,7 @@ def _count_existing_edges(conn: Any, hub_ref_id: int) -> int | None:
 
 def _eval_one_hub(
     conn: Any,
-    store: Any,
+    store: BlockSearchStore,
     hub_ref_id: int,
     *,
     embedder: Any,
@@ -265,7 +268,7 @@ def _eval_one_hub(
 
 
 def eval_hub_slice(
-    store: Any,
+    store: BlockSearchStore,
     ref_ids: list[int],
     *,
     embedder: Any,

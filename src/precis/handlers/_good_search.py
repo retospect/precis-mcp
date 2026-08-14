@@ -30,13 +30,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from precis.errors import BadInput
 from precis.response import Response
 
 if TYPE_CHECKING:
     from precis.dispatch import Hub
+    from precis.store.protocols import PoolStore
 
 _TERMINAL = ("succeeded", "failed", "cancelled")
 
@@ -64,7 +65,7 @@ def _idem_key(q: str, queries: list[str], answers: list[str], want: str) -> str:
     return f"good_search:{digest}"
 
 
-def _count_nonterminal_campaigns(store: Any) -> int:
+def _count_nonterminal_campaigns(store: PoolStore) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             """

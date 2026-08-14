@@ -38,10 +38,13 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.backfill.candidates import LENS_CITATION, Candidate
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -181,7 +184,7 @@ def _s2_neighbor_row(
 # ── materialisation ──────────────────────────────────────────────────
 
 
-def _is_fresh(store: Any, ref_id: int, ttl_days: int) -> bool:
+def _is_fresh(store: Store, ref_id: int, ttl_days: int) -> bool:
     """True if this paper's citation edges were materialised within the TTL."""
     evs = store.events_for(ref_id, source=_EDGE_SOURCE, event=_EDGE_EVENT, limit=1)
     if not evs:
@@ -193,7 +196,7 @@ def _is_fresh(store: Any, ref_id: int, ttl_days: int) -> bool:
 
 
 def materialize_citation_edges(
-    store: Any, cited_ref_ids: set[int], *, ttl_days: int | None = None
+    store: Store, cited_ref_ids: set[int], *, ttl_days: int | None = None
 ) -> int:
     """Ensure the corpus-internal ``cites`` edges for every cited paper are
     materialised, fetching from S2 only for papers whose edges are missing/stale.
@@ -333,7 +336,7 @@ def materialize_citation_edges(
 
 
 def ensure_s2_neighbors(
-    store: Any, ref_id: int, *, ttl_days: int | None = None
+    store: Store, ref_id: int, *, ttl_days: int | None = None
 ) -> bool:
     """The single-ref on-demand entry point (the tabs' first-view backfill):
     fetch-and-persist ``s2_neighbors`` (+ held↔held ``cites`` edges) for
@@ -364,7 +367,7 @@ def ensure_s2_neighbors(
 
 
 def citation_neighbor_degrees(
-    store: Any, cited_ref_ids: set[int], *, exclude: set[int]
+    store: Store, cited_ref_ids: set[int], *, exclude: set[int]
 ) -> list[tuple[int, int]]:
     """Held **paper** refs one ``cites`` hop (either direction) from a cited
     paper — the citation-graph gaps. Returns ``(ref_id, degree)`` sorted by
@@ -415,7 +418,7 @@ def _lead_chunk(conn: Any, ref_id: int) -> int | None:
 
 
 def find_citation_candidates(
-    store: Any,
+    store: Store,
     cited_ref_ids: set[int],
     *,
     exclude: set[int],

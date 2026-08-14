@@ -19,9 +19,12 @@ still explored while a rejected hit stays gone.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.store.types import Tag
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ log = logging.getLogger(__name__)
 DISMISS_NS = "DISMISSED_SOURCE"
 
 
-def _ref_id_for_chunk(store: Any, chunk_id: int) -> int | None:
+def _ref_id_for_chunk(store: Store, chunk_id: int) -> int | None:
     """The owning ref of a body chunk, or ``None``. A light single-row lookup."""
     try:
         with store.pool.connection() as conn:
@@ -43,7 +46,7 @@ def _ref_id_for_chunk(store: Any, chunk_id: int) -> int | None:
         return None
 
 
-def _ref_id_for_cite_key(store: Any, slug: str) -> int | None:
+def _ref_id_for_cite_key(store: Store, slug: str) -> int | None:
     """The ref a ``cite_key`` slug names (``wang2020``), or ``None``. Best-effort:
     a live paper-family ref carrying that identifier."""
     try:
@@ -64,7 +67,7 @@ def _ref_id_for_cite_key(store: Any, slug: str) -> int | None:
         return None
 
 
-def resolve_source_ref_id(store: Any, value: Any) -> int | None:
+def resolve_source_ref_id(store: Store, value: Any) -> int | None:
     """Resolve a dismissal value to a **source ref_id**, robust to every form a
     model actually writes.
 
@@ -113,7 +116,7 @@ def resolve_source_ref_id(store: Any, value: Any) -> int | None:
 
 
 def dismiss_source(
-    store: Any,
+    store: Store,
     draft_ref_id: int,
     paper_ref_id: int | str,
     *,
@@ -145,7 +148,7 @@ def dismiss_source(
         )
 
 
-def dismissed_ref_ids(store: Any, draft_ref_id: int) -> set[int]:
+def dismissed_ref_ids(store: Store, draft_ref_id: int) -> set[int]:
     """The paper ref_ids dismissed for this draft — the ledger read back into the
     Tier-0 exclude set. Each tag value is resolved robustly
     (:func:`resolve_source_ref_id`), so a model that dismissed by handle

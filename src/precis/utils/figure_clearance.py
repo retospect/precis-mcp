@@ -18,9 +18,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def figure_status(fig: dict[str, Any]) -> tuple[bool, str]:
@@ -71,7 +74,7 @@ class ClearanceSummary:
         return self.total > 0 and not self.uncleared
 
 
-def draft_figure_clearance(store: Any, ref_id: int) -> ClearanceSummary:
+def draft_figure_clearance(store: Store, ref_id: int) -> ClearanceSummary:
     """Walk a draft's figure chunks and roll up their clearance.
 
     Clearance is ``origin × medium``: the per-figure verdict comes

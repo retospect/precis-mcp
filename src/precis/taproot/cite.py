@@ -21,7 +21,7 @@ author writes it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.taproot.seniority import (
     EvidenceEdge,
@@ -30,9 +30,12 @@ from precis.taproot.seniority import (
     is_claim_hub,
 )
 
+if TYPE_CHECKING:
+    from precis.store.protocols import ClaimTrustStore, PinStore
+
 
 def _cite_keys_for_group(
-    store: Any,
+    store: ClaimTrustStore,
     edges: list[EvidenceEdge],
     *,
     cite_key_map: dict[int, list[str]] | None = None,
@@ -67,7 +70,7 @@ def _cite_keys_for_group(
 
 
 def hub_cite_keys(
-    store: Any,
+    store: ClaimTrustStore,
     evidence: HubEvidence,
     *,
     cite_key_map: dict[int, list[str]] | None = None,
@@ -140,7 +143,7 @@ class FindingCite:
 
 
 def finding_cite_keys(
-    store: Any,
+    store: ClaimTrustStore,
     ref_id: int,
     *,
     assume_hub: bool = False,
@@ -199,7 +202,7 @@ def finding_cite_keys(
 # `apply_pin` so a pin behaves identically wherever an author writes it.
 
 
-def resolve_pin_handle(store: Any, handle: str) -> tuple[int, str] | None:
+def resolve_pin_handle(store: PinStore, handle: str) -> tuple[int, str] | None:
     """Resolve one authorial pin handle to ``(paper_ref_id, cite_key)``.
 
     A ``pc<id>`` (paper-chunk/passage) handle resolves to its **parent
@@ -239,7 +242,7 @@ class PinResult:
 
 
 def apply_pin(
-    store: Any,
+    store: PinStore,
     *,
     label: str,
     op: str,

@@ -19,14 +19,17 @@ fetcher's url, etc.).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import Unsupported
 from precis.response import Response
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 
 def render_event_log(
-    store: Any,
+    store: Store,
     ref_id: int,
     *,
     source: str | None = None,

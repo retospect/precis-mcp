@@ -31,12 +31,15 @@ import difflib
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +95,7 @@ class FilingDiff:
 # ---------------------------------------------------------------------------
 
 
-def find_prior_ref(store: Any, ref: Ref) -> Ref | None:
+def find_prior_ref(store: Store, ref: Ref) -> Ref | None:
     """Most-recent locally-ingested same-form filing for the same CIK,
     with a period/filed date strictly before ``ref``'s.
 
@@ -128,7 +131,7 @@ def find_prior_ref(store: Any, ref: Ref) -> Ref | None:
 
 
 def _sections_for_ref(
-    store: Any, ref_id: int
+    store: Store, ref_id: int
 ) -> dict[str, tuple[list[str], list[str]]]:
     """Group a filing's blocks by canonical section id.
 
@@ -219,7 +222,7 @@ def diff_sections(current: Sections, prior: Sections) -> list[SectionDelta]:
     return deltas
 
 
-def compute_diff(store: Any, ref: Ref) -> FilingDiff | None:
+def compute_diff(store: Store, ref: Ref) -> FilingDiff | None:
     """Compute the material section deltas of ``ref`` vs its predecessor.
 
     Pure read: no writes, no network. Returns ``None`` when there's no
@@ -259,7 +262,7 @@ def diff_tags(diff: FilingDiff) -> list[str]:
     return tags
 
 
-def apply_diff_tags(store: Any, ref: Ref, diff: FilingDiff) -> list[str]:
+def apply_diff_tags(store: Store, ref: Ref, diff: FilingDiff) -> list[str]:
     """Idempotently stamp the change tags on the current filing ref.
 
     Returns the tags applied. Best-effort per tag — a malformed value
@@ -283,7 +286,7 @@ _MAX_EXAMPLES = 3
 _EXAMPLE_CHARS = 300
 
 
-def render_diff(*, store: Any, ref: Ref, apply_tags: bool = True) -> Response:
+def render_diff(*, store: Store, ref: Ref, apply_tags: bool = True) -> Response:
     """Render the quarter-to-quarter section diff for a filing.
 
     Computes the delta, tags the ref (unless ``apply_tags=False``), and

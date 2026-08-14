@@ -32,10 +32,13 @@ so ordinary section work keeps the intent attached.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.store.types import BlockInsert
 from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 #: ``meta.heading_intent`` values.
 HARD = "hard"
@@ -79,7 +82,7 @@ def _derive_title(text: str) -> str:
     return "heading intent"
 
 
-def _intent_ref_for(store: Any, heading_handle: str) -> int | None:
+def _intent_ref_for(store: Store, heading_handle: str) -> int | None:
     """The ref_id of the live intent note anchored to ``heading_handle``, or
     ``None`` — the upsert probe (one intent per heading)."""
     with store.pool.connection() as conn:
@@ -94,7 +97,7 @@ def _intent_ref_for(store: Any, heading_handle: str) -> int | None:
 
 
 def set_intent(
-    store: Any,
+    store: Store,
     heading_handle: str,
     text: str,
     *,
@@ -150,7 +153,7 @@ def _rows_to_intents(rows: list[tuple[Any, ...]]) -> dict[str, Intent]:
     return out
 
 
-def intents_for(store: Any, heading_handles: list[str]) -> dict[str, Intent]:
+def intents_for(store: Store, heading_handles: list[str]) -> dict[str, Intent]:
     """Map each heading handle to its intent note (absent handles are omitted).
 
     The deterministic surfacing channel — the render (breadcrumb up + siblings
@@ -175,7 +178,7 @@ def intents_for(store: Any, heading_handles: list[str]) -> dict[str, Intent]:
 
 
 def intents_for_draft(
-    store: Any, draft_ref_id: int, *, kind: str = "draft"
+    store: Store, draft_ref_id: int, *, kind: str = "draft"
 ) -> dict[str, Intent]:
     """Every heading-intent in a draft, keyed by heading handle — walks the draft's
     heading chunks and looks each one up. (Live headings only; an orphan whose
@@ -219,7 +222,7 @@ def _kind_of(handle: str) -> str | None:
     return parsed[0] if parsed else None
 
 
-def section_intents(store: Any, anchor_handle: str) -> IntentContext:
+def section_intents(store: Store, anchor_handle: str) -> IntentContext:
     """Resolve the intent context around ``anchor_handle`` (a draft/plan chunk):
     the breadcrumb of intents (root heading → the chunk's enclosing heading) and the
     sibling-heading intents. The chunk's kind is derived from its own handle
@@ -277,13 +280,13 @@ def section_intents(store: Any, anchor_handle: str) -> IntentContext:
     return IntentContext(_rungs(breadcrumb_chunks), _rungs(sibling_chunks))
 
 
-def retire_intent(store: Any, ref_id: int, *, conn: Any = None) -> None:
+def retire_intent(store: Store, ref_id: int, *, conn: Any = None) -> None:
     """Retire (soft-delete) an intent note — the heading it belonged to is gone or
     the section was cut."""
     store.soft_delete_ref(int(ref_id), conn=conn)
 
 
-def prune_dangling(store: Any) -> list[int]:
+def prune_dangling(store: Store) -> list[int]:
     """Retire every heading-intent whose anchored heading chunk no longer resolves
     (deleted / merged / renamed). The deterministic hygiene heal (slice 8b.4) — the
     counterpart to ``paper_hygiene`` repointing links off soft-deleted refs. Returns

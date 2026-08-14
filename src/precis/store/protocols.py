@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from psycopg import Connection
 
@@ -95,3 +95,82 @@ class RefMetaStore(Protocol):
 
     def get_ref(self, *, kind: str, id: int) -> Any: ...
     def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any]) -> None: ...
+
+
+# ── long-tail (codereview-store-typing-seam) ────────────────────────────
+
+
+class _BlocksAccessor(Protocol):
+    """Just the read surface :mod:`precis.utils.toc_db`'s clustering
+    renderer needs off the composed ``store.blocks`` sub-store."""
+
+    def list_blocks_for_ref(
+        self, ref_id: int, *, pos_range: tuple[int, int] | None = ...
+    ) -> Sequence[Any]: ...
+
+
+class BlockListingStore(Protocol):
+    """A store exposing only ``blocks.list_blocks_for_ref`` — the TOC
+    renderer (``render_from_store`` / ``build_toc_segments``) never
+    touches anything else on ``Store``. ``blocks`` is a read-only
+    ``@property`` (not a plain attribute) so the real ``Store``'s
+    composed, non-settable ``blocks`` sub-store satisfies it."""
+
+    @property
+    def blocks(self) -> _BlocksAccessor: ...
+
+
+# ── long-tail, export/reading/taproot/pathway/backfill/pcb batch ───────
+
+
+class RefLookupStore(Protocol):
+    """Resolve a paper/patent/datasheet slug to its ref, plus the batch
+    DOI/arXiv alias lookup — the citation resolvers shared by the docx and
+    LaTeX exporters (``export/docx.py::_resolve_source``/``_format_reference``,
+    ``export/latex.py::build_bib``)."""
+
+    def get_ref(self, *, kind: str, id: int | str) -> Any: ...
+    def identifiers_for_refs(self, ref_ids: list[int]) -> dict[int, dict[str, str]]: ...
+
+
+class PdfLookupStore(Protocol):
+    """Resolve a cited slug to its ref, then locate its PDF by sha — the
+    draft-export "which cited sources have a local copy" surface
+    (``export/sources.py``'s private per-slug/per-ref resolvers)."""
+
+    def get_ref(self, *, kind: str, id: int | str) -> Any: ...
+    def pdf_storage_path(self, pdf_sha256: str) -> str | None: ...
+
+
+class DraftsSubStore(Protocol):
+    """Callers that only need the ``drafts`` sub-store facade (composed off
+    :class:`~precis.store.Store`) — e.g. the audio narration walk
+    (``export/audio.py::export_audio``, which forwards ``store`` into
+    :func:`precis.draft.narrate.render_narration`). ``drafts`` is a
+    read-only property typed ``Any`` (matching ``Store.drafts``, itself a
+    property) rather than the concrete sub-store type, so a minimal test
+    double (a ``.drafts`` property returning ``self``) doesn't need to
+    subclass the real mixin."""
+
+    @property
+    def drafts(self) -> Any: ...
+
+
+class BlockSearchStore(PoolStore, Protocol):
+    """Raw SQL (via :class:`PoolStore`) plus the ``blocks`` sub-store's
+    semantic search — the hub-refine dry-run harness's read-only surface
+    (``taproot/slice_refine_eval.py``). ``blocks`` is a read-only property
+    typed ``Any`` (matching ``Store.blocks``, itself a property) rather
+    than the concrete sub-store type, so a minimal fake (a ``blocks``
+    property returning itself) doesn't need to subclass the real mixin."""
+
+    @property
+    def blocks(self) -> Any: ...
+
+
+class PinStore(ClaimTrustStore, Protocol):
+    """:class:`ClaimTrustStore` plus universal-handle resolution — the
+    authorial-pin application policy shared by ``precis resolve`` and the
+    draft exporters (``taproot/cite.py::resolve_pin_handle``/``apply_pin``)."""
+
+    def resolve_handle(self, handle: str, *, conn: Connection | None = ...) -> Any: ...

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.taproot.seniority import (
     ClaimLinks,
@@ -56,6 +56,9 @@ from precis.utils.mentions import (
     resolve_link_targets,
 )
 from precis.utils.pub_id_lookup import PLACEHOLDER_RE, lookup_pub_id_finding, parse_pin
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Relations that carry *meaning* (as opposed to structure/plumbing). The ring
 #: follows these — which is where linked memories/notes live — and ignores the
@@ -307,7 +310,7 @@ _HANDLE_BARE_RE = re.compile(r"^[a-z]{2}\d+$")
 
 
 def _mine_claim_hub_ids(
-    store: Any, span: Sequence[_Chunk], *, exclude_ref_id: int
+    store: Store, span: Sequence[_Chunk], *, exclude_ref_id: int
 ) -> list[tuple[int, str | None, list[str]]]:
     """First-seen-ordered ``(hub_ref_id, pin_op, pin_handles)`` cited via a
     content-hash ``[pub_id]`` or a finding handle ``[fi<id>]`` (either
@@ -377,7 +380,7 @@ def _mine_claim_hub_ids(
     return ordered
 
 
-def _resolve_pin_paper_ref_ids(store: Any, handles: list[str]) -> list[int]:
+def _resolve_pin_paper_ref_ids(store: Store, handles: list[str]) -> list[int]:
     """Resolve pin handles (Taproot slice A2) to paper ref_ids for the
     ring's render-only marking — a ``pc<id>`` (passage) handle resolves to
     its parent paper, same as the shared
@@ -400,7 +403,7 @@ def _resolve_pin_paper_ref_ids(store: Any, handles: list[str]) -> list[int]:
 
 
 def _render_claims_group(
-    store: Any,
+    store: Store,
     hub_cites: list[tuple[int, str | None, list[str]]],
     *,
     cap: int,
@@ -454,7 +457,7 @@ def _render_claims_group(
 
 
 def render_reference_ring(
-    store: Any,
+    store: Store,
     target: _Chunk,
     chunks: Sequence[_Chunk],
     *,
@@ -470,7 +473,7 @@ def render_reference_ring(
 
 
 def collect_ring(
-    store: Any,
+    store: Store,
     target: _Chunk,
     chunks: Sequence[_Chunk],
     *,

@@ -16,9 +16,12 @@ land-pattern generator for standard packages — the PCB netlist+placement IR fo
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import Unsupported
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 #: A fetcher takes a C-number and returns the footprint dict
 #: ``{pads, pin_map, courtyard, centroid, kicad_mod, source}`` or None.
@@ -26,7 +29,7 @@ Fetcher = Callable[[str], "dict[str, Any] | None"]
 
 
 def ensure_footprint(
-    store: Any, lcsc: str, *, fetcher: Fetcher | None = None
+    store: Store, lcsc: str, *, fetcher: Fetcher | None = None
 ) -> dict[str, Any] | None:
     """Return the cached footprint for ``lcsc``, fetching + caching on a miss.
 

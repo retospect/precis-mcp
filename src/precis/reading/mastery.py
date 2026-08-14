@@ -30,9 +30,12 @@ from __future__ import annotations
 import logging
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +102,7 @@ def concept_mastery(card_stats: list[dict[str, Any] | None]) -> float:
 
 
 def _cards_by_concept(
-    store: Any,
+    store: Store,
 ) -> dict[int, list[tuple[dict[str, Any] | None, datetime]]]:
     """``{concept_ref_id: [(anki_stats, card_created_at), …]}`` over live
     `represents` links, written from either side (concept `represents` card, or
@@ -143,7 +146,7 @@ def _has_recovered(
     )
 
 
-def run_mastery_pass(store: Any, *, now: datetime | None = None) -> dict[str, int]:
+def run_mastery_pass(store: Store, *, now: datetime | None = None) -> dict[str, int]:
     """Recompute mastery + state for every concept that has cards, and run the
     **recovery reset**: a concept whose cards have proven healthy again gets its
     ``remunge_streak`` zeroed and ``escalated_at`` cleared, so the rework

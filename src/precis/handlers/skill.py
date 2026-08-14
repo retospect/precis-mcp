@@ -43,7 +43,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 from precis.dispatch import Hub
@@ -52,6 +52,9 @@ from precis.format import render_agent_table
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.skill_index import FileCorpusIndex, SearchHit
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 from precis.utils.next_block import render_next_section
 from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
@@ -1724,7 +1727,7 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
     ]
 
 
-def _collect_database_info(store: Any) -> list[tuple[str, str]] | str:
+def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
     """Return DB facts as rows, or a one-line error string.
 
     On stateless builds (``store is None``) returns a sentinel string.
@@ -1742,7 +1745,7 @@ def _collect_database_info(store: Any) -> list[tuple[str, str]] | str:
         return "stateless build — no DB configured"
 
     rows: list[tuple[str, str]] = []
-    if getattr(store, "dsn", None):
+    if store.dsn:
         try:
             parsed = urlparse(store.dsn)
             if parsed.hostname:

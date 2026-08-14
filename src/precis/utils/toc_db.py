@@ -60,10 +60,13 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.format import render_agent_table
 from precis.utils.segmentation import Segment, segment_dp
+
+if TYPE_CHECKING:
+    from precis.store.protocols import BlockListingStore
 
 #: Below this chunk count, a *top-level* TOC (no scope) renders per-chunk
 #: keywords directly instead of clustering — a short paper is scannable
@@ -113,7 +116,7 @@ _TOPICS_TOP_K = 5
 
 def render_from_store(
     *,
-    store: Any,
+    store: BlockListingStore,
     ref_id: int,
     handle: str,
     kind: str,
@@ -188,7 +191,7 @@ def render_from_store(
 
 def build_toc_segments(
     *,
-    store: Any,
+    store: BlockListingStore,
     ref_id: int,
     handle: str,
     scope: tuple[int, int] | None = None,

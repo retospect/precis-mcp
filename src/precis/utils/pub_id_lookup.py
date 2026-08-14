@@ -33,9 +33,12 @@ this figure"). A plain ``[pub_id]`` (no pin) parses exactly as before.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Placeholder grammar: ``[<6 base32 lowercase chars>]`` — the same
 #: alphabet :func:`precis.identity.make_pub_id` produces, so any pub id
@@ -71,7 +74,7 @@ def parse_pin(
     return pub_id, op, handles
 
 
-def lookup_pub_id_finding(store: Any, pub_id: str) -> dict[str, Any] | None:
+def lookup_pub_id_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
     """Resolve a pub_id to its finding ref, or ``None`` when there's no
     matching finding (different kind, no such row, soft-deleted).
 
