@@ -97,7 +97,10 @@ section *points at*, one edge out
   Evidence population depends on the forward chase
   (`PRECIS_TAPROOT_CHASE_ENABLED`, default-off, not yet run at corpus
   scale) — most hubs today show the claim with little or no derived
-  evidence, so a populated Claims group is rare.
+  evidence, so a populated Claims group is rare. The ring surfaces
+  `refines` neighbours only — it does not yet render a compound hub's
+  `conjunct-of` atom structure; `get(id='fi<id>', view='links')` is the
+  meanwhile way to see a compound's atoms.
 
 It follows **edges only**, both directions, capped per group with a
 visible `+N more — focus to expand` line — never a silent truncation.

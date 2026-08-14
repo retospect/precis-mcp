@@ -64,6 +64,7 @@ from precis.cli import (
     stats,
     stubs,
     taproot,
+    taproot_migrate,
     tools,
     verify,
     watch,
@@ -261,6 +262,10 @@ def main() -> None:
         taproot.run(args)
         return
 
+    if args.cmd == "taproot-migrate":
+        taproot_migrate.run(args)
+        return
+
     if args.cmd == "email":
         email.run(args)
         return
@@ -353,6 +358,7 @@ def _build_parser() -> argparse.ArgumentParser:
     heartbeat.add_parser(sub)
     service.add_parser(sub)
     taproot.add_parser(sub)
+    taproot_migrate.add_parser(sub)
     email.add_parser(sub)
     sim.add_parser(sub)
 

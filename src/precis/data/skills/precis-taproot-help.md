@@ -51,6 +51,12 @@ hub raises. Attach evidence to the atom hub the passage actually supports
 instead — `get(id='fi<id>', view='links')` lists a compound's `conjunct-of`
 atoms.
 
+A compound's **trust** is derived, not absent: worst-of its atoms' own trust
+states (`taproot/trust.py::_compound_trust`, status `hub-compound`). So
+`get(id='fi<id>', view='evidence')` on a compound shows a trust label with no
+direct evidence edges underneath it — that's the expected depth-1 rollup, not
+missing data.
+
 **Edges are chunk-grounded.** An evidence edge names the *specific
 passage* that supports the claim: supply a supporter's `source_handle`
 (a `[pc<id>]` paper chunk) and the edge is stored `pc<id>`-granular, so
@@ -114,6 +120,13 @@ asserts two distinct claims can supply evidence to two different hubs
 — so a given `[pc<id>]` handle doesn't map to a single `[fi<id>]`. Pick
 the hub for the specific claim your sentence makes, not just "the hub
 near this chunk."
+
+**Atom vs compound — same rule, one level up.** When a claim decomposed
+into a bundling **compound** hub over several atomic hubs (`conjunct-of`,
+above), cite the atom when your sentence asserts just that one conjunct;
+cite the compound only when your sentence genuinely restates the bundled
+claim as a whole. `get(id='fi<id>', view='links')` lists a compound's
+`conjunct-of` atoms if you need to pick among them.
 
 **If a cited `[fi<id>]` errors "not a TAPROOT:claim finding":** the
 finding either never was a hub, or was demoted to `TAPROOT:review` — a
@@ -253,6 +266,12 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   - Salvage rule: when meta-prose wraps real content, extract the
     underlying fact (the specific properties or values being compared),
     not the practice. If the passage states only the practice, don't mint.
+- **One atomic claim per hub — don't hand-bundle.** `conjunct-of` (atom →
+  compound) is written only by the automated decomposition
+  (`taproot/hub.py::apply_extraction`, run through `taproot_backfill`) — not
+  hand-authored. Hand-minting from a passage that bundles several atomic
+  claims? Mint each atom as its own hub with its own grounded supporter,
+  rather than one bundled sentence.
 - **Ground on the primary, not the proxy.** If the grounding passage
   attributes the fact onward ("Ganji et al. [15] showed…"), that passage
   is testimony, not the source. Search the corpus for the primary
@@ -455,6 +474,7 @@ it's gone.
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links — `link(kind='finding', rel='refines')` and CLI `precis taproot refine` | live (advisory-only, no evidence flow) |
 | Whole-draft/section/chunk `[pc<id>]`→`[fi<id>]` backfill — `put(kind='job', job_type='taproot_backfill')` (serial, checkpointed, melchior `claude_inproc` lane) and CLI `precis taproot backfill` | live (on-demand; LLM runs on the cluster worker, never the MCP) |
+| Atomic decomposition — `extract_claim` splits a span into atom hubs + an optional bundling **compound** hub, `conjunct-of`-linked via `taproot/hub.py::apply_extraction`; runs inside the `taproot_backfill` cascade above, no separate door | live (compound hubs are excluded from `hub_refine`'s due-set and `chase_trigger`'s embed/probe — those two touch atoms only) |
 | Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `params.ref_level`/`--ref-level` whole-paper promote) | live (slices 1+2; job + CLI) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED` — a `chase`-pass sub-feature, not its own service) | dark, default-OFF |
 | Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF — `precis service prio '*' hub_refine <n>` / `/categorizers` |
