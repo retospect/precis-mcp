@@ -74,6 +74,18 @@ attach where verified, leave the compound's edge dropped and file
 `needs_review` when nothing verifies. Never blanket-copy the edge to every
 atom — that recreates the mis-grain lie this whole build exists to fix.
 
+The re-point MUST implement the **add-first invariant in deterministic
+code** (`taproot-reground-add-first-invariant.md` — the manual 173020
+reground pass stranded 2 hubs at zero evidence edges when the invariant
+lived only in an applier prompt): adds first with read-back confirmation
+from `links`, prunes only for confirmed adds, post-transaction
+`count(live edges) > 0` re-check, partial-failure counts in the result,
+and an intent-vs-committed diff as the verification/repair mode. Related:
+atom hubs mint with `scope` in their dedup identity but hubs have **no
+scope write door** after mint (`taproot-hub-scope-no-edit-door.md`) — any
+apply-time scope mistake is currently uncorrectable through the product
+surface.
+
 **Phase 3 — human review, triaged not exhaustive.** At 112 hubs a full
 human pass was plausible; at 1,346 it is not. Review only: (a)
 `needs_review` placements from phase 2, (b) low-confidence splits, (c) a

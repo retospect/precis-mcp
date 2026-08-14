@@ -149,7 +149,20 @@ Reto signed off on the three fi177584 artifacts 2026-08-14.
 
 ### Mint gates (from the wargame — machine-checkable, run before sign)
 
-- **Commensurability for compounds (2026-08-14, Reto's catch).** Clause
+- **No live unresolved `contradicts` edge (2026-08-14, Reto — the
+  fi189542 85°-vs-83.6° case).** A hub carrying an unresolved
+  `contradicts` edge is **unmintable** until adjudicated. Policy in one
+  line: *disputed claims are visible internally, unpublishable
+  externally.* Internally the hub keeps working as raw material — the
+  edge honestly records the dispute (and should depress trust); but
+  signing and OTS-anchoring a disputed value would fabricate exactly the
+  certainty this apparatus exists to prevent. Adjudication means the
+  dispute is resolved by artifacts, not by edit: the edge's source is
+  retracted, or a primary is acquired and the claim corrected/re-minted
+  (fi189542 waits on Krishnan 1997, `10.1038/41284`). Applies worst-of
+  to compounds and hypotheses: one disputed member atom blocks the
+  bundle, same shape as trust. SQL-cheap — a `links` existence check —
+  so it runs first, before any LLM-layer gate. Clause
   coverage is not enough: the wargame merge bound "scalable" (earned by
   atom B, for *static* QI signatures in DPB/DPF cages) to "switching"
   (earned by atom A, in a different molecular family nobody scaled) —
@@ -766,6 +779,25 @@ integrity work, the UI only surfaces the state machine.
   (editable while unsigned), state, live `claim_sha` match against
   `finding.title`, batch/anchor status, and one action button whose label
   is the current state's transition.
+- **Contradictions are first-class (2026-08-14, Reto — pairs with the
+  no-unresolved-`contradicts` mint gate).** A live `contradicts` edge
+  renders in the per-hub graph as a dashed edge with the contradicting
+  node pulled into the neighborhood, and the hub carries a **disputed**
+  marker (shape + colour, never colour alone); its publish-state colour
+  is *blocked* — the mint gate means there is no forward transition to
+  offer. The side panel shows the dispute **symmetrically**: the hub's
+  claim + grounding quote beside each contradicting passage's quote, so
+  the reviewer sees the actual conflict without hunting (fi189542: the
+  verbatim "85°" passage next to the formula passage that yields 83.6°)
+  — making disputes *legible* is the internal-visibility half of
+  "visible internally, unpublishable externally". When the blocker is a
+  missing primary, the action button becomes the adjudication
+  affordance: "queue primary for acquisition" (`put(kind='paper',
+  doi=…)` → the /drive hand-download queue). The queue table gets a
+  `disputed` bucket sorted by age — disputes must not rot invisibly. A
+  `contradicts` edge arriving **after** publication is the urgent
+  variant (the signed artifact now overstates): top of the queue,
+  routed to the supersede/epistemic-survey flow, never a silent edit.
 - **"See all the things" is a table, not a graph** — every hub by publish
   state, drifted rows flagged, proofs pending past threshold. Derived
   entirely from publish rows + the drift recompute; no new state.
