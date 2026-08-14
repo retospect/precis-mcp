@@ -2,8 +2,9 @@
 every diagram kind (slice 4 factoring).
 
 A diagram kind is a slug-addressed ref on the ``draft`` chunk-tree substrate
-(the :class:`~precis.store._draft_ops.DraftMixin` ops, parameterised by the
-kind), never exported (``corpus_role='none'``). The CRUD is identical across
+(the :class:`~precis.store._draft_ops.DraftStore` ops, reached as
+``store.drafts``, parameterised by the kind), never exported
+(``corpus_role='none'``). The CRUD is identical across
 languages — create the ref + source chunk (+ optional vocab), edit the source /
 vocab / notes (/ bounds), render source + vocab + notes + node→chunk bindings +
 lints, bind a source element to the chunk it depicts — differing only in the

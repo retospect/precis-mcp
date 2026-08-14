@@ -409,7 +409,7 @@ class RefsMixin:
         identifiers: list[tuple[str, str]],
         title: str | None = None,
         year: int | None = None,
-        set_by: str = "dream",
+        set_by: ActorSlug = "dream",
         s2_meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
     ) -> tuple[int, bool]:

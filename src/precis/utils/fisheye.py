@@ -10,7 +10,7 @@ it never floats free of its heading. ``fisheye+1hop`` adds the reference ring
 (``utils.refeye``). It is pure **assembly of existing data** (``reading_order``
 + ``block_views``: ``chunk_summaries`` / ``chunks.keywords``) — no new storage.
 
-Scope: the DraftMixin-backed tree kinds (``draft`` / ``plan``), which share
+Scope: the DraftStore-backed tree kinds (``draft`` / ``plan``), which share
 ``reading_order`` and ``block_views``. Non-tree kinds (``calc`` / ``web`` /
 ``memory``) have no neighborhood — the caller renders the ref itself. ``paper``
 (a different chunk-op family) is a follow-up.

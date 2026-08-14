@@ -28,6 +28,7 @@ from precis.handlers.citation import CitationHandler
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.store.types import ActorSlug
 
 #: Matches CitationHandler.put's create-ack, e.g. "created citation id=42 (...)".
 _ID_RE = re.compile(r"\bid=(\d+)\b")
@@ -41,7 +42,7 @@ def mint_citation(
     source_handle: str | None = None,
     source_quote: str | None = None,
     verifier_confidence: float | None = None,
-    set_by: str = "weave",
+    set_by: ActorSlug = "weave",
 ) -> int:
     """Mint a ``citation`` ref for ``claim``, sourced from ``paper_ref_id``.
 

@@ -3,7 +3,7 @@
 Wires the pure 8a.2 rollup into the turn-taking persona threads composer as a **post-assembly
 overlay**: ``render_link_rollup`` for one doc, and the ``link_map`` gate on
 ``render_working_set`` (default off → byte-identical). Uses ``plan`` docs (a
-DraftMixin tree kind) like the other backfill/composer tests.
+DraftStore tree kind) like the other backfill/composer tests.
 """
 
 from __future__ import annotations

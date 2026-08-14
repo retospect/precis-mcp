@@ -1,6 +1,6 @@
 """source-backfill slice 1 — Tier-0 dedup, seed derivation, workspace assembly.
 
-Uses ``plan`` docs (a DraftMixin tree kind, like ``draft``) built via the
+Uses ``plan`` docs (a DraftStore tree kind, like ``draft``) built via the
 ``PlanHandler``, mirroring ``test_working_set_render`` / ``test_refeye``. The
 recall search itself (``find_candidates``) is monkeypatched in the assembly
 tests so they don't depend on embeddings — the search leg is exercised

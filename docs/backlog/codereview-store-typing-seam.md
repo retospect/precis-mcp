@@ -35,24 +35,31 @@ matching needs matching parameter NAMES too (a fake's
 `ids: list[int]` vs protocol `ref_ids: Iterable[int]` fails on both
 name and variance).
 
-REMAINING — the long tail, convertible incrementally (each batch its
-own ship):
+Wave 3 (batch 3) shipped: the full remaining file list — `utils`,
+`handlers`, `export`, `reading`, `taproot`, `precis_pathway`, `cli`,
+`backfill`, `pcb` (~120 sites, 6 new role protocols in
+`store/protocols.py`: `BlockListingStore`/`RefLookupStore`/
+`PdfLookupStore`/`DraftsSubStore`/`BlockSearchStore`/`PinStore`); also
+fixed several `precis_pathway/handler.py` sites that read `self.hub.store`
+where `self.hub.live_store` was meant. A handful of sites stayed `Any`
+with the standard fake-mismatch comment (`claude_quota.refresh_snapshot`,
+`mentions.*`, `eye_render.*`), matching the wave-1/2 convention.
 
-- ~180 `store: Any` parameter sites: `src/precis/utils` (11 files),
-  `handlers` (11), `export` (6), `reading` (5), `taproot` (4),
-  `precis_pathway` (4), `cli` (3), `backfill` (3), `pcb` (2) —
-  same recipe, deleting dead defensive `getattr` fallbacks as they go
-  (e.g. `precis_web/routes/refs.py::_row` null-guarding non-optional
-  `datetime` fields; `diagram/doc_context.py`'s `getattr(store,
-  "figure_owning_draft"/"get_ref"/"block_views", …)` variance shims).
-- `upsert_stub_paper(set_by: str)` and friends take plain `str` for
-  actor slugs that land in FK-checked columns elsewhere — audit which
-  `set_by` params should be `ActorSlug` (wave 1 already widened the
-  taproot write doors: `mint_hub`/`apply_placement`/`seed_claim_hub`/
-  `apply_chunk`/`_file_review_todo`). Note: `dream`/`weave`/`orcid`
-  are used as `set_by=` strings but are NOT seeded actors; they only
-  work because those params never hit the `actors` FK — decide seed vs
-  rename before typing them.
+REMAINING — convertible incrementally (each batch its own ship):
+
+- `precis_web` / `workers`-adjacent stragglers not yet swept (check via
+  `grep -rn 'store: Any' src/precis src/precis_web src/precis_pathway`
+  before starting the next batch — the count above is stale the moment
+  a new file lands).
+- set_by audit SHIPPED: `dream`/`weave`/`orcid` seeded (migration
+  0127), `ActorSlug` widened, `upsert_stub_paper`/`mint_citation`
+  retyped. Residual coverage gap: `draftimport/{resolve,build}.py`
+  pass `set_by="tex-import"` into `upsert_stub_paper` through an
+  `Any`-typed `store` param, so mypy can't see the Literal mismatch —
+  benign at runtime (lands only in `refs.meta` JSON +
+  `ref_identifiers.source`, no FK), but whoever tightens
+  `draftimport`'s `store: Any` must add `"tex-import"` to `ActorSlug`
+  (or seed an actor) at that point.
 
 Related: [codereview-store-decomposition] (the facade work will keep
 these protocols as its public role surface).

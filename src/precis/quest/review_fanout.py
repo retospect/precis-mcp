@@ -454,7 +454,7 @@ def _mint_doc_lenses(
 def _toc_is_dirty(store: Store, draft_ref_id: int) -> bool:
     """Whether the ``toc`` lens's approval is stale — the stored digest
     (the root chunk's ``chunk_review.approved_sha``) no longer matches the
-    recomputed :meth:`~precis.store._draft_ops.DraftMixin.toc_digest`.
+    recomputed :meth:`~precis.store._draft_ops.DraftStore.toc_digest`.
     ``True`` (dirty) when never approved."""
     for row in store.drafts.review_status_for_draft(draft_ref_id):
         if row["checker"] == "toc":

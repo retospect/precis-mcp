@@ -3,7 +3,7 @@
 A durable teleological note per heading: a ``memory`` ref anchored to the heading
 by ``meta.anchor`` with its strength in ``meta.heading_intent``. Verifies
 set/read/upsert/retire, the prune-dangling hygiene heal, and the non-export
-guarantee. Uses ``plan`` docs (a DraftMixin tree kind) like ``test_backfill``.
+guarantee. Uses ``plan`` docs (a DraftStore tree kind) like ``test_backfill``.
 """
 
 from __future__ import annotations

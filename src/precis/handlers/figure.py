@@ -1,8 +1,9 @@
 """FigureHandler — the interactive SVG-canvas kind (migration 0057).
 
 A ``figure`` is the **SVG instance** of the shared diagram core: a
-slug-addressed ref on the ``draft`` chunk-tree substrate (the DraftMixin ops,
-parameterised ``kind='figure'``), never exported (``corpus_role='none'``). The
+slug-addressed ref on the ``draft`` chunk-tree substrate (the DraftStore ops,
+reached as ``store.drafts``, parameterised ``kind='figure'``), never exported
+(``corpus_role='none'``). The
 whole MCP surface (get / put / edit / delete / link, incl. the element→chunk
 binding) lives in :class:`precis.diagram.handler.DiagramHandler`; this class is
 the thin binding — it sets ``LANG = SVG_LANG`` (which carries the SVG mechanics

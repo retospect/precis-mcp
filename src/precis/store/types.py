@@ -248,10 +248,14 @@ Relation = Literal[
     # seed in 0115_patent_family_relation.sql.
     "same-family-as",
 ]
-# Keep in sync with the ``actors`` seed rows (0001_initial.sql): every
+# Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
+# 0004_finding_and_queue_family.sql for ``chase`` and
+# 0127_seed_worker_actors.sql for ``dream``/``weave``/``orcid``): every
 # slug here must exist in ``actors`` — ``set_by`` columns FK into it.
-# ``chase`` is the citation-chase worker's actor.
-ActorSlug = Literal["agent", "user", "system", "chase"]
+# ``chase`` is the citation-chase worker's actor; ``dream`` is the dreaming
+# worker; ``weave`` is the quest weave pass; ``orcid`` is the ORCID
+# author-discovery stub minter.
+ActorSlug = Literal["agent", "user", "system", "chase", "dream", "weave", "orcid"]
 
 
 # Built-in inverse relations — the static typo-safety reference for the

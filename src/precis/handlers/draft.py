@@ -9,8 +9,8 @@ addresses are the immutable ``chunk_id`` (hierarchy in
 ``parent_chunk_id``, order in fractional ``pos``), so a move never
 touches text, and a text edit bumps ``content_sha`` so derived rows
 re-derive instead of going stale. The handler wraps the
-:class:`~precis.store._draft_ops.DraftMixin` store ops behind the
-existing seven verbs — **no new verbs**:
+:class:`~precis.store._draft_ops.DraftStore` store ops (``store.drafts``)
+behind the existing seven verbs — **no new verbs**:
 
 - ``put``   — create a draft (`project=`, born with a title heading) or
   add a chunk (`chunk_kind=`, `text=`, placed by `at=`).
@@ -1155,7 +1155,7 @@ class DraftHandler(Handler):
         """``put(kind='draft', copy_of='<slug>', project=<todo>)`` — deep-copy
         the WHOLE source draft (every chunk + its hierarchy + every link
         touching it) into a NEW draft bound to ``project``, via
-        :meth:`~precis.store._draft_ops.DraftMixin.fork_draft`. The source is
+        :meth:`~precis.store._draft_ops.DraftStore.fork_draft`. The source is
         never touched. Refuses (does not clobber) if ``project`` already owns
         a draft — unlike ``draftimport``'s re-import path, a fork never
         retires an existing draft out from under a project. ``project=`` may

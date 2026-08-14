@@ -5,7 +5,8 @@ A ``plan`` is a slug-addressed ref whose body chunks are a hierarchical
 logbook. It rides the **same** chunk-tree substrate as ``draft`` (the
 mutable ``handle``/``pos``/``parent_chunk_id``/``content_sha``/
 ``retired_at`` columns + ``chunk_events``, added by migration 0031) and
-the same :class:`~precis.store._draft_ops.DraftMixin` store ops — but it
+the same :class:`~precis.store._draft_ops.DraftStore` store ops
+(``store.drafts``) — but it
 is a **distinct kind** so it is *never* exported as the deliverable
 (``corpus_role='none'``; the export guard rejects it).
 
