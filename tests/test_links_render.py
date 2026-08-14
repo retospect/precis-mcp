@@ -67,7 +67,7 @@ class TestRenderLinksSection:
         fin = store.insert_ref(kind="finding", slug=None, title="a canonical claim")
         # paper chunk (ord 0) --corroborates--> finding
         paper = store.insert_ref(kind="paper", slug="wu2022a", title="Rotaxane paper")
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             paper.id, [BlockInsert(pos=0, text="the supporting passage", meta={})]
         )
         store.add_link(
@@ -75,7 +75,7 @@ class TestRenderLinksSection:
         )
         # draft chunk (ord 0) --cites--> finding
         dref = store.insert_ref(kind="draft", slug="nano-computer", title="A draft")
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             dref.id, [BlockInsert(pos=0, text="cites the claim", meta={})]
         )
         store.add_link(

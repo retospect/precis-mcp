@@ -65,7 +65,7 @@ def test_bump_advances_last_seen_and_accesses(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="p1", title="P1", meta={})
     cid = _mk_chunk(store, ref.id, 0, "body")
     seen0, _, acc0 = _salience(store, cid)
-    n = store.bump_salience([cid])
+    n = store.blocks.bump_salience([cid])
     assert n == 1
     seen1, _, acc1 = _salience(store, cid)
     assert seen1 > seen0
@@ -73,7 +73,7 @@ def test_bump_advances_last_seen_and_accesses(store: Store) -> None:
 
 
 def test_bump_empty_is_noop(store: Store) -> None:
-    assert store.bump_salience([]) == 0
+    assert store.blocks.bump_salience([]) == 0
 
 
 def test_dream_actor_reads_do_not_bump(store: Store) -> None:
@@ -81,19 +81,19 @@ def test_dream_actor_reads_do_not_bump(store: Store) -> None:
     cid = _mk_chunk(store, ref.id, 0, "body")
     _, _, acc0 = _salience(store, cid)
     with as_dream_actor():
-        assert store.bump_salience([cid]) == 0
+        assert store.blocks.bump_salience([cid]) == 0
     _, _, acc1 = _salience(store, cid)
     assert acc1 == acc0  # suppressed: the dreamer must not heat itself
 
 
 def test_touch_last_dreamt_resets_rotation(store: Store) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="m", meta={})
-    cid = store.upsert_card_combined(ref.id, "m")
+    cid = store.blocks.upsert_card_combined(ref.id, "m")
     # bump so last_seen > last_dreamt (score > 0)
-    store.bump_salience([cid])
+    store.blocks.bump_salience([cid])
     seen, dreamt, _ = _salience(store, cid)
     assert seen > dreamt
-    store.touch_last_dreamt([cid])
+    store.blocks.touch_last_dreamt([cid])
     seen2, dreamt2, _ = _salience(store, cid)
     assert dreamt2 >= seen2  # rotated out: score back to <= 0
 
@@ -104,30 +104,30 @@ def test_select_dream_seed_picks_argmax_and_rotates(store: Store) -> None:
     ca = _mk_chunk(store, pa.id, 0, "a")
     cb = _mk_chunk(store, pb.id, 0, "b")
     # ca is accessed → highest last_seen - last_dreamt → the seed
-    store.bump_salience([ca])
-    assert store.select_dream_seed() == ca
+    store.blocks.bump_salience([ca])
+    assert store.blocks.select_dream_seed() == ca
     # surfacing ca stamps last_dreamt → cb (untouched, score 0) now tops
-    store.touch_last_dreamt([ca])
-    assert store.select_dream_seed() == cb
+    store.blocks.touch_last_dreamt([ca])
+    assert store.blocks.select_dream_seed() == cb
 
 
 def test_select_dream_seed_excludes_non_target_kinds(store: Store) -> None:
     todo = store.insert_ref(kind="todo", slug=None, title="t", meta={})
     ct = _mk_chunk(store, todo.id, 0, "t")
-    store.bump_salience([ct])  # hot, but a todo is never a dream target
-    assert store.select_dream_seed() != ct
+    store.blocks.bump_salience([ct])  # hot, but a todo is never a dream target
+    assert store.blocks.select_dream_seed() != ct
 
 
 def test_select_dream_seed_empty_corpus(store: Store) -> None:
-    assert store.select_dream_seed() is None
+    assert store.blocks.select_dream_seed() is None
 
 
 def test_select_dream_seed_skips_deleted_refs(store: Store) -> None:
     pa = store.insert_ref(kind="paper", slug="pd", title="D", meta={})
     ca = _mk_chunk(store, pa.id, 0, "a")
-    store.bump_salience([ca])
+    store.blocks.bump_salience([ca])
     store.soft_delete_ref(pa.id)
-    assert store.select_dream_seed() is None
+    assert store.blocks.select_dream_seed() is None
 
 
 @pytest.mark.parametrize("kinds", [("paper",), ("memory",)])
@@ -137,10 +137,10 @@ def test_select_dream_seed_respects_kind_filter(
     pa = store.insert_ref(kind="paper", slug="pf", title="F", meta={})
     cp = _mk_chunk(store, pa.id, 0, "p")
     mem = store.insert_ref(kind="memory", slug=None, title="m", meta={})
-    cm = store.upsert_card_combined(mem.id, "m")
+    cm = store.blocks.upsert_card_combined(mem.id, "m")
     _embed(store, cm, "m")  # dream seed is embedded_only (gr48249)
-    store.bump_salience([cp, cm])
-    seed = store.select_dream_seed(kinds=kinds)
+    store.blocks.bump_salience([cp, cm])
+    seed = store.blocks.select_dream_seed(kinds=kinds)
     assert seed == (cp if kinds == ("paper",) else cm)
 
 
@@ -153,7 +153,7 @@ def test_background_actor_suppresses_bump(store: Store) -> None:
     cid = _mk_chunk(store, ref.id, 0, "body")
     _, _, acc0 = _salience(store, cid)
     with as_background_actor("watch"):
-        assert store.bump_salience([cid]) == 0
+        assert store.blocks.bump_salience([cid]) == 0
     _, _, acc1 = _salience(store, cid)
     assert acc1 == acc0
 
@@ -163,10 +163,10 @@ def test_select_salient_watch_argmax_and_limit(store: Store) -> None:
     pb = store.insert_ref(kind="paper", slug="wb", title="B", meta={})
     ca = _mk_chunk(store, pa.id, 0, "a")
     cb = _mk_chunk(store, pb.id, 0, "b")
-    store.bump_salience([ca])  # ca hottest
-    assert store.select_salient("watch", kinds=("paper",), limit=1) == [ca]
+    store.blocks.bump_salience([ca])  # ca hottest
+    assert store.blocks.select_salient("watch", kinds=("paper",), limit=1) == [ca]
     # limit returns top-N most-due, ca first
-    top2 = store.select_salient("watch", kinds=("paper",), limit=2)
+    top2 = store.blocks.select_salient("watch", kinds=("paper",), limit=2)
     assert top2[0] == ca and set(top2) == {ca, cb}
 
 
@@ -179,24 +179,24 @@ def test_dream_and_watch_rotate_independently(store: Store) -> None:
     pb = store.insert_ref(kind="paper", slug="wj", title="J", meta={})
     ca = _mk_chunk(store, pa.id, 0, "a")
     cb = _mk_chunk(store, pb.id, 0, "b")
-    store.bump_salience([ca])  # ca hottest for BOTH actors
-    assert store.select_salient("dream", kinds=("paper",))[0] == ca
-    assert store.select_salient("watch", kinds=("paper",))[0] == ca
+    store.blocks.bump_salience([ca])  # ca hottest for BOTH actors
+    assert store.blocks.select_salient("dream", kinds=("paper",))[0] == ca
+    assert store.blocks.select_salient("watch", kinds=("paper",))[0] == ca
     # Dreamer rotates ca out → cb tops for dream...
-    store.touch_attended("dream", [ca])
-    assert store.select_salient("dream", kinds=("paper",))[0] == cb
+    store.blocks.touch_attended("dream", [ca])
+    assert store.blocks.select_salient("dream", kinds=("paper",))[0] == cb
     # ...but the watcher still sees ca as most-due (independent stamp).
-    assert store.select_salient("watch", kinds=("paper",))[0] == ca
+    assert store.blocks.select_salient("watch", kinds=("paper",))[0] == ca
     # Watcher rotates ca out on its own clock → cb tops for watch too.
-    store.touch_attended("watch", [ca])
-    assert store.select_salient("watch", kinds=("paper",))[0] == cb
+    store.blocks.touch_attended("watch", [ca])
+    assert store.blocks.select_salient("watch", kinds=("paper",))[0] == cb
 
 
 def test_touch_attended_unknown_actor_raises(store: Store) -> None:
     with pytest.raises(KeyError):
-        store.touch_attended("bogus", [1])
+        store.blocks.touch_attended("bogus", [1])
     with pytest.raises(KeyError):
-        store.select_salient("bogus", kinds=("paper",))
+        store.blocks.select_salient("bogus", kinds=("paper",))
 
 
 def test_touch_last_dreamt_still_works_via_wrapper(store: Store) -> None:
@@ -205,10 +205,12 @@ def test_touch_last_dreamt_still_works_via_wrapper(store: Store) -> None:
     pb = store.insert_ref(kind="paper", slug="wd", title="D", meta={})
     ca = _mk_chunk(store, pa.id, 0, "a")
     cb = _mk_chunk(store, pb.id, 0, "b")
-    store.bump_salience([ca])
-    store.touch_last_dreamt([ca])
-    assert store.select_dream_seed(kinds=("paper",)) == cb  # dream rotated to cb
-    assert store.select_salient("watch", kinds=("paper",))[0] == ca  # watch untouched
+    store.blocks.bump_salience([ca])
+    store.blocks.touch_last_dreamt([ca])
+    assert store.blocks.select_dream_seed(kinds=("paper",)) == cb  # dream rotated to cb
+    assert (
+        store.blocks.select_salient("watch", kinds=("paper",))[0] == ca
+    )  # watch untouched
 
 
 # ── draft over-weighting in the dream seed ─────────────────────────
@@ -239,7 +241,7 @@ def test_dream_seed_overweights_draft_within_boost(store: Store, monkeypatch) ->
     cd = _mk_chunk(store, da.id, 0, "draft body")
     _set_salience_secs(store, cp, dreamt_secs_ago=1 * _DAY)  # score 1d
     _set_salience_secs(store, cd, dreamt_secs_ago=0)  # score 0 → +2d boost
-    assert store.select_dream_seed(kinds=_DREAM_KINDS) == cd
+    assert store.blocks.select_dream_seed(kinds=_DREAM_KINDS) == cd
 
 
 def test_dream_seed_paper_wins_when_far_overdue(store: Store, monkeypatch) -> None:
@@ -252,7 +254,7 @@ def test_dream_seed_paper_wins_when_far_overdue(store: Store, monkeypatch) -> No
     cd = _mk_chunk(store, da.id, 0, "draft body")
     _set_salience_secs(store, cp, dreamt_secs_ago=5 * _DAY)  # score 5d
     _set_salience_secs(store, cd, dreamt_secs_ago=0)  # score 0 → +2d boost = 2d
-    assert store.select_dream_seed(kinds=_DREAM_KINDS) == cp
+    assert store.blocks.select_dream_seed(kinds=_DREAM_KINDS) == cp
 
 
 def test_dream_seed_boost_disabled(store: Store, monkeypatch) -> None:
@@ -264,4 +266,4 @@ def test_dream_seed_boost_disabled(store: Store, monkeypatch) -> None:
     cd = _mk_chunk(store, da.id, 0, "draft body")
     _set_salience_secs(store, cp, dreamt_secs_ago=1 * _DAY)  # score 1d
     _set_salience_secs(store, cd, dreamt_secs_ago=0)  # score 0, no boost
-    assert store.select_dream_seed(kinds=_DREAM_KINDS) == cp
+    assert store.blocks.select_dream_seed(kinds=_DREAM_KINDS) == cp

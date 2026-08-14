@@ -160,7 +160,7 @@ class TestClaimMarking:
         self, store: Store, fake_ops: FakeOpsClient, raw_root: Path
     ) -> None:
         ref = self._ingest(store, fake_ops, raw_root)
-        blocks = store.list_blocks_for_ref(ref.id)  # type: ignore[attr-defined]
+        blocks = store.blocks.list_blocks_for_ref(ref.id)  # type: ignore[attr-defined]
         kinds = [(b.meta or {}).get("patent_block") for b in blocks]
         # 4 description paragraphs first, then 3 claims.
         assert kinds == ["description"] * 4 + ["claim"] * 3
@@ -171,7 +171,7 @@ class TestClaimMarking:
         ref = self._ingest(store, fake_ops, raw_root)
         claims = [
             b.meta
-            for b in store.list_blocks_for_ref(ref.id)  # type: ignore[attr-defined]
+            for b in store.blocks.list_blocks_for_ref(ref.id)  # type: ignore[attr-defined]
             if (b.meta or {}).get("patent_block") == "claim"
         ]
         # Claim 1 independent; claims 2 and 3 each depend on claim 1.
@@ -336,7 +336,7 @@ class TestForceReingest:
         assert second.ref_id == first.ref_id
         assert second.inserted is False
         assert len(fake_ops.calls) > calls_after_first  # OPS was hit again
-        assert store.count_blocks(first.ref_id) == 7
+        assert store.blocks.count_blocks(first.ref_id) == 7
         assert second.block_count == 7
 
     def test_force_stamps_markers_on_previously_unmarked_ref(
@@ -358,7 +358,7 @@ class TestForceReingest:
                 (result.ref_id,),
             )
         # Confirm they're unmarked now.
-        blocks = store.list_blocks_for_ref(result.ref_id)
+        blocks = store.blocks.list_blocks_for_ref(result.ref_id)
         assert all(not (b.meta or {}).get("patent_block") for b in blocks)
 
         ingest_patent(
@@ -371,7 +371,7 @@ class TestForceReingest:
         )
         kinds = [
             (b.meta or {}).get("patent_block")
-            for b in store.list_blocks_for_ref(result.ref_id)
+            for b in store.blocks.list_blocks_for_ref(result.ref_id)
         ]
         assert kinds == ["description"] * 4 + ["claim"] * 3
 
@@ -459,7 +459,7 @@ class TestForceReingest:
         )
         assert result.inserted is False
         # Blocks untouched (still 7), meta not regressed, no awaiting tag.
-        assert store.count_blocks(first.ref_id) == 7
+        assert store.blocks.count_blocks(first.ref_id) == 7
         ref = store.get_ref(kind="patent", id="ep1234567b1")
         assert ref is not None
         assert ref.meta.get("has_description") is True
@@ -726,7 +726,7 @@ class TestSimpleFamilyStubbing:
 
         assert stub.inserted is True
         assert stub.block_count == 0
-        assert store.count_blocks(stub.ref_id) == 0
+        assert store.blocks.count_blocks(stub.ref_id) == 0
         # Stubbing never fetches description/claims — no wasted OPS quota.
         endpoints = {call[0] for call in sibling_ops.calls}
         assert endpoints == {"biblio"}

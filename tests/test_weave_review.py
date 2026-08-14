@@ -74,7 +74,7 @@ def _paper(
     seed_chunk(store, ref_id=ref.id, text=claim_text, ord=0)
     store.add_tag(ref.id, Tag.closed("ROLE3", "own"), pos=0, set_by="agent")
     if vec is not None:
-        cid = store.upsert_card_combined(ref.id, "gist")
+        cid = store.blocks.upsert_card_combined(ref.id, "gist")
         _embed(store, cid, vec)
     return ref.id
 

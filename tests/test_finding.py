@@ -45,7 +45,7 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
         title=f"Test paper {cite_key}",
         meta={},
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [BlockInsert(pos=0, text=f"Body chunk of {cite_key}.", meta={})],
     )
@@ -58,7 +58,7 @@ def _seed_memory(store, *, text: str = "a research note") -> int:
     from precis.store.types import BlockInsert
 
     ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
     return ref.id
 
 
@@ -746,7 +746,7 @@ class TestSearchSurfacesHubs:
         ref = store.insert_ref(
             kind="paper", slug="perov-src", title="Perovskite source", meta={}
         )
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [BlockInsert(pos=0, text="Perovskite body chunk.", meta={})],
         )

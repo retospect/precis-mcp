@@ -28,7 +28,7 @@ def test_tag_suggest_treats_percent_literally(store) -> None:
     ``%`` would turn it into a "t, anything, t" wildcard and wrongly pull
     in the latter too (and must not 500)."""
     ref = store.insert_ref(kind="draft", slug="sql-tagsuggest", title="t")
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text="body")])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text="body")])
     store.add_tag(ref.id, Tag.open("pct%tag"), pos=0)
     store.add_tag(ref.id, Tag.open("tXt-plain"), pos=0)
 

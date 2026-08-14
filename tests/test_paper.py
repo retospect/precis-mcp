@@ -213,7 +213,7 @@ def _seed_paper(
         store.insert_ref_identifiers(ref.id, [("doi", doi, "manual")])
     if blocks is None:
         blocks = ["Introduction.", "Methods.", "Results.", "Discussion."]
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(pos=i, text=t, embedding=e.embed_one(t))

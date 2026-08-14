@@ -226,7 +226,9 @@ class TestHarvest:
         step = compute_mod.harvest_measures(store, qid)
         assert step.results_harvested == 1
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any("E=-12.5 eV" in b.text for b in logs)
         # gr-linkify: the candidate's handle is BRACKETED (a bare handle only
@@ -265,7 +267,7 @@ class TestHarvest:
             energy=-5.0,
         )
         compute_mod.harvest_measures(store, qid, by="agent")
-        blocks = store.list_blocks_for_ref(qid)
+        blocks = store.blocks.list_blocks_for_ref(qid)
         logs = [
             b
             for b in blocks
@@ -296,7 +298,7 @@ class TestHarvest:
         assert any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
         dead_ends = [
             b
-            for b in store.list_blocks_for_ref(qid)
+            for b in store.blocks.list_blocks_for_ref(qid)
             if b.chunk_kind == "quest_log"
             and (b.meta or {}).get("entry_type") == "dead-end"
         ]
@@ -1790,7 +1792,9 @@ class TestAutocatpathHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta
         assert meta["barrier"] == 0.7 and meta["span"] == 1.2
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any("barrier=0.7" in b.text for b in logs)
         assert any(
@@ -3205,7 +3209,9 @@ class TestDispatchAutocatpath:
         handle = handle_registry.try_format("structure", sid)
         assert handle is not None
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         dead_end = next(b for b in logs if f"ruled out [{handle}]" in b.text)
         assert "failed substrate preflight" in dead_end.text
@@ -3592,7 +3598,9 @@ class TestTickProposals:
         assert out.proposals == 2
         assert out.candidates_created == 0  # compute off
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any("Fe-N4" in b.text and "buildable" in b.text for b in logs)
 
@@ -3725,7 +3733,9 @@ class TestDuplicateProposalFeedback:
         assert sid2 == slug_first
         assert was_dup is True
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         dup_logs = [b for b in logs if "duplicate proposal" in b.text]
         assert dup_logs, logs
@@ -3746,7 +3756,9 @@ class TestDuplicateProposalFeedback:
         )
         assert was_dup is True
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         dup_logs = [b for b in logs if "duplicate proposal" in b.text]
         assert dup_logs and "status: ruled-out:relax-failed" in dup_logs[-1].text

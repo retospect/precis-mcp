@@ -68,7 +68,7 @@ def test_create_without_body_writes_no_chunk(handler: TodoHandler) -> None:
     """The common case: a todo is just a task line — no body chunk at all."""
     handler.put(text="finish the report")
     tid = _latest_todo_id(handler)
-    assert handler.store.list_blocks_for_ref(tid) == []
+    assert handler.store.blocks.list_blocks_for_ref(tid) == []
 
 
 def test_create_with_body_writes_todo_body_chunk(handler: TodoHandler) -> None:

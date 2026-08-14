@@ -53,7 +53,7 @@ def _seed_paper(
         kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
     )
     if blocks:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id, [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)]
         )
     return ref.id

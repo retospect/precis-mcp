@@ -94,7 +94,7 @@ def _seed_paper_chunk(
     ref = store.insert_ref(
         kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
     )
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)
@@ -125,7 +125,7 @@ def _seed_patent_block(
     ref = store.insert_ref(
         kind="patent", slug=cite_key, title=f"Test patent {cite_key}", meta={}
     )
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta=block_meta)])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta=block_meta)])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)
@@ -704,7 +704,7 @@ def test_ac4_paper_reached_by_both_sources_is_verified_once(store: Any) -> None:
     # Precondition: the SEMANTIC source alone ALSO surfaces the cited paper,
     # so a single verify proves the shared dedup did the work — not that the
     # semantic source simply missed it.
-    sem = store.search_blocks(
+    sem = store.blocks.search_blocks(
         q=claim,
         query_vec=embedder.embed_one(claim),
         mode="semantic",

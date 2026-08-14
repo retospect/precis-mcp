@@ -24,7 +24,7 @@ _EMB = MockEmbedder(dim=1024)
 
 def _memory(store: Store, text: str, *, speculative: bool) -> int:
     ref = store.insert_ref(kind="memory", slug=None, title=text[:20])
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id, [BlockInsert(pos=0, text=text, embedding=_EMB.embed_one(text))]
     )
     if speculative:
@@ -63,7 +63,7 @@ def test_fence_decision() -> None:
 def test_lexical_fences_speculative_by_default(store: Store) -> None:
     plain = _memory(store, "quantum annealing notes", speculative=False)
     spec = _memory(store, "quantum annealing inspiration", speculative=True)
-    ids = {ref.id for _b, ref, _s in store.search_blocks_lexical(q="quantum")}
+    ids = {ref.id for _b, ref, _s in store.blocks.search_blocks_lexical(q="quantum")}
     assert plain in ids
     assert spec not in ids
 
@@ -73,7 +73,7 @@ def test_lexical_shows_speculative_on_explicit_tag(store: Store) -> None:
     _memory(store, "quantum annealing notes", speculative=False)
     ids = {
         ref.id
-        for _b, ref, _s in store.search_blocks_lexical(
+        for _b, ref, _s in store.blocks.search_blocks_lexical(
             q="quantum", tags=[SPECULATIVE_TAG]
         )
     }
@@ -85,7 +85,7 @@ def test_lexical_include_flag_shows_both(store: Store) -> None:
     spec = _memory(store, "quantum annealing inspiration", speculative=True)
     ids = {
         ref.id
-        for _b, ref, _s in store.search_blocks_lexical(
+        for _b, ref, _s in store.blocks.search_blocks_lexical(
             q="quantum", include_speculative=True
         )
     }
@@ -101,7 +101,9 @@ def test_semantic_fences_speculative_by_default(store: Store) -> None:
     qv = _EMB.embed_one("quantum annealing")
     ids = {
         ref.id
-        for _b, ref, _s in store.search_blocks_semantic(query_vec=qv, max_distance=None)
+        for _b, ref, _s in store.blocks.search_blocks_semantic(
+            query_vec=qv, max_distance=None
+        )
     }
     assert plain in ids
     assert spec not in ids
@@ -112,7 +114,7 @@ def test_semantic_include_flag_shows_speculative(store: Store) -> None:
     qv = _EMB.embed_one("quantum annealing inspiration")
     ids = {
         ref.id
-        for _b, ref, _s in store.search_blocks_semantic(
+        for _b, ref, _s in store.blocks.search_blocks_semantic(
             query_vec=qv, max_distance=None, include_speculative=True
         )
     }
@@ -127,7 +129,8 @@ def test_fused_fences_speculative_by_default(store: Store) -> None:
     spec = _memory(store, "quantum annealing inspiration", speculative=True)
     qv = _EMB.embed_one("quantum annealing")
     ids = {
-        ref.id for _b, ref, _s in store.search_blocks_fused(q="quantum", query_vec=qv)
+        ref.id
+        for _b, ref, _s in store.blocks.search_blocks_fused(q="quantum", query_vec=qv)
     }
     assert plain in ids
     assert spec not in ids
@@ -139,7 +142,7 @@ def test_fused_include_flag_shows_both(store: Store) -> None:
     qv = _EMB.embed_one("quantum annealing")
     ids = {
         ref.id
-        for _b, ref, _s in store.search_blocks_fused(
+        for _b, ref, _s in store.blocks.search_blocks_fused(
             q="quantum", query_vec=qv, include_speculative=True
         )
     }

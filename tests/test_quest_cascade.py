@@ -177,7 +177,9 @@ class TestTickCascade:
         )
         assert out.escalated is True and out.mode == "frontier-review"
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any(
             (b.meta or {}).get("entry_type") == "decision" and "directions" in b.text

@@ -262,7 +262,7 @@ def test_dispatch_happy_path_applies_and_writes_process_memory(
     assert summaries and "applied" in summaries[0]
 
     # process memory: logbook entry + attempt-tree node on the owning quest.
-    blocks = store.list_blocks_for_ref(quest_id)
+    blocks = store.blocks.list_blocks_for_ref(quest_id)
     logs = [b for b in blocks if b.chunk_kind == "quest_log"]
     assert logs and "refreshed" in logs[0].text
     ledger = dossier_mod.read_ledger(store, quest_id)

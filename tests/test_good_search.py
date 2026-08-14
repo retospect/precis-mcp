@@ -737,7 +737,7 @@ def _seed_paper(store: Any, slug: str, blocks: list[str]) -> None:
     from precis.store import BlockInsert
 
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id, [BlockInsert(pos=i, text=t) for i, t in enumerate(blocks)]
     )
 
@@ -808,6 +808,6 @@ class TestEndToEnd:
         assert result["children_failed"] == 0
         assert result["timed_out"] is False
         # The merged verdict is on the job as a job_summary chunk.
-        blocks = store.list_blocks_for_ref(job_id)
+        blocks = store.blocks.list_blocks_for_ref(job_id)
         summaries = [b.text for b in blocks if b.chunk_kind == "job_summary"]
         assert summaries and "deep search: kept" in summaries[-1]

@@ -48,7 +48,7 @@ def _seed_paper_chunk(
     ref = store.insert_ref(
         kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
     )
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)

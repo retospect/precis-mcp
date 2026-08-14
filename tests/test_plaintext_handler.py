@@ -741,7 +741,7 @@ def test_put_edit_cascades_stale_embedding_away(
     ref = handler.store.get_ref(kind="plaintext", id="doc")
     assert ref is not None
     old_block = next(
-        b for b in handler.store.list_blocks_for_ref(ref.id) if "fox" in b.text
+        b for b in handler.store.blocks.list_blocks_for_ref(ref.id) if "fox" in b.text
     )
     with handler.store.pool.connection() as conn:
         old_vector = conn.execute(
@@ -770,7 +770,9 @@ def test_put_edit_cascades_stale_embedding_away(
     fresh_ref = handler.store.get_ref(kind="plaintext", id="doc")
     assert fresh_ref is not None
     new_block = next(
-        b for b in handler.store.list_blocks_for_ref(fresh_ref.id) if "cat" in b.text
+        b
+        for b in handler.store.blocks.list_blocks_for_ref(fresh_ref.id)
+        if "cat" in b.text
     )
     assert new_block.id != old_block.id
     with handler.store.pool.connection() as conn:

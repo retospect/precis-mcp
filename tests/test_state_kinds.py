@@ -45,7 +45,7 @@ class TestGripe:
         ref = next(r for r in refs if "VS Code" in r.title)
         # Body materialises as a chunk so the embed + chunk_keywords
         # workers can index it for search.
-        blocks = gripe.store.list_blocks_for_ref(ref.id)
+        blocks = gripe.store.blocks.list_blocks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].chunk_kind == "gripe_body"
         assert "VS Code" in blocks[0].text
@@ -62,7 +62,7 @@ class TestGripe:
         refs = gripe.store.list_refs(kind="gripe", limit=10)
         gripe_id = refs[0].id
         gripe.put(id=gripe_id, text="only triggers when the slug has a hyphen")
-        blocks = gripe.store.list_blocks_for_ref(gripe_id)
+        blocks = gripe.store.blocks.list_blocks_for_ref(gripe_id)
         assert len(blocks) == 2
         assert blocks[0].chunk_kind == "gripe_body"
         assert blocks[1].chunk_kind == "gripe_comment"
@@ -393,7 +393,9 @@ class TestOracle:
                 meta={},
                 conn=conn,
             )
-            store.insert_blocks(ref.id, [BlockInsert(pos=0, text=body_text)], conn=conn)
+            store.blocks.insert_blocks(
+                ref.id, [BlockInsert(pos=0, text=body_text)], conn=conn
+            )
         return ref.id
 
     def test_get_renders_blocks(self, oracle: OracleHandler) -> None:
@@ -454,7 +456,7 @@ class TestOracle:
                 )
                 for i, (entry_title, body) in enumerate(entries)
             ]
-            store.insert_blocks(ref.id, inserts, conn=conn)
+            store.blocks.insert_blocks(ref.id, inserts, conn=conn)
         return ref.id
 
     def test_multi_entry_get_returns_one_random(self, oracle: OracleHandler) -> None:
@@ -628,7 +630,7 @@ class TestConversation:
                 meta={"participants": ["agent", "user"]},
                 conn=conn,
             )
-            store.insert_blocks(
+            store.blocks.insert_blocks(
                 ref.id,
                 [BlockInsert(pos=i, text=t) for i, t in enumerate(turns)],
                 conn=conn,
@@ -723,7 +725,7 @@ class TestConversation:
         assert ref is not None
         assert ref.title == "kickoff"
         assert ref.meta.get("platform") == "discord"
-        blocks = conv.store.list_blocks_for_ref(ref.id)
+        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].text == "hi there"
         assert blocks[0].meta.get("author") == "alice"
@@ -735,7 +737,7 @@ class TestConversation:
         conv.put(id="t1", text="three", author="alice", msg_id="m3")
         ref = conv.store.get_ref(kind="conv", id="t1")
         assert ref is not None
-        blocks = conv.store.list_blocks_for_ref(ref.id)
+        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
         assert [b.text for b in blocks] == ["one", "two", "three"]
         assert [b.pos for b in blocks] == [0, 1, 2]
 
@@ -745,7 +747,7 @@ class TestConversation:
         assert "already captured" in out.body
         ref = conv.store.get_ref(kind="conv", id="t1")
         assert ref is not None
-        blocks = conv.store.list_blocks_for_ref(ref.id)
+        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
         # No duplicate. Replay text is ignored.
         assert len(blocks) == 1
         assert blocks[0].text == "one"
@@ -755,7 +757,7 @@ class TestConversation:
         conv.put(id="t1", text="two", author="bob")
         ref = conv.store.get_ref(kind="conv", id="t1")
         assert ref is not None
-        blocks = conv.store.list_blocks_for_ref(ref.id)
+        blocks = conv.store.blocks.list_blocks_for_ref(ref.id)
         assert len(blocks) == 2
         # No msg_id idempotency key on either block.
         assert "msg_id" not in (blocks[0].meta or {})
@@ -799,7 +801,7 @@ class TestPresentation:
         assert ref is not None
         assert ref.title == "Talk Foo"
         assert ref.meta.get("venue") == "demo day"
-        blocks = pres.store.list_blocks_for_ref(ref.id)
+        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].text == "Title slide"
         assert blocks[0].chunk_kind == "pres_slide"
@@ -810,7 +812,7 @@ class TestPresentation:
         pres.put(id="d", text="slide 2")
         ref = pres.store.get_ref(kind="pres", id="d")
         assert ref is not None
-        blocks = pres.store.list_blocks_for_ref(ref.id)
+        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
         assert [b.text for b in blocks] == ["slide 0", "slide 1", "slide 2"]
         assert [b.pos for b in blocks] == [0, 1, 2]
 
@@ -821,7 +823,7 @@ class TestPresentation:
         assert "overwrote" in out.body
         ref = pres.store.get_ref(kind="pres", id="d")
         assert ref is not None
-        blocks = pres.store.list_blocks_for_ref(ref.id)
+        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
         assert [b.pos for b in blocks] == [0, 1]
         # Block 0 holds the new text; block 1 untouched.
         by_pos = {b.pos: b.text for b in blocks}
@@ -840,7 +842,7 @@ class TestPresentation:
         )
         ref = pres.store.get_ref(kind="pres", id="postmortem")
         assert ref is not None
-        blocks = pres.store.list_blocks_for_ref(ref.id)
+        blocks = pres.store.blocks.list_blocks_for_ref(ref.id)
         assert blocks[0].chunk_kind == "paragraph"
 
     def test_get_overview_lists_block_count(self, pres: PresentationHandler) -> None:

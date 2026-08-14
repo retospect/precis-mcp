@@ -21,7 +21,9 @@ def _seed_paper(store: Store, slug: str, title: str = "a paper") -> None:
     store.insert_ref(kind="paper", slug=slug, title=title, provider="manual")
     paper_ref = store.get_ref(kind="paper", id=slug)
     assert paper_ref is not None
-    store.insert_blocks(paper_ref.id, [BlockInsert(pos=0, text="body", slug="b0")])
+    store.blocks.insert_blocks(
+        paper_ref.id, [BlockInsert(pos=0, text="body", slug="b0")]
+    )
 
 
 def _new_project(hub: Hub) -> int:

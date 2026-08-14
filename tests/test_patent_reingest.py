@@ -74,7 +74,8 @@ def test_pass_remarks_existing_patent(
     assert o.blocks_after == 7
     # Markers are back on the chunks.
     kinds = [
-        (b.meta or {}).get("patent_block") for b in store.list_blocks_for_ref(ref_id)
+        (b.meta or {}).get("patent_block")
+        for b in store.blocks.list_blocks_for_ref(ref_id)
     ]
     assert kinds == ["description"] * 4 + ["claim"] * 3
 
@@ -95,7 +96,8 @@ def test_dry_run_mutates_nothing(
     # No OPS calls, chunks still unmarked.
     assert len(fake_ops.calls) == calls_before
     kinds = [
-        (b.meta or {}).get("patent_block") for b in store.list_blocks_for_ref(ref_id)
+        (b.meta or {}).get("patent_block")
+        for b in store.blocks.list_blocks_for_ref(ref_id)
     ]
     assert all(k is None for k in kinds)
 

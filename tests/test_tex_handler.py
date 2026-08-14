@@ -241,7 +241,7 @@ def test_section_blocks_stored_with_metadata(
     handler.get(id="paper")  # force ingest
     ref = handler.store.get_ref(kind="tex", id="paper")
     assert ref is not None
-    blocks = handler.store.list_blocks_for_ref(ref.id)
+    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
     # Find each by content.
     methods = [b for b in blocks if b.text == r"\section{Methods}"][0]
     kinetics = [b for b in blocks if b.text == r"\subsection{Kinetics}"][0]
@@ -280,7 +280,7 @@ def test_inputs_stored_in_block_meta(handler: TexHandler, tex_root: Path) -> Non
     handler.get(id="main")
     ref = handler.store.get_ref(kind="tex", id="main")
     assert ref is not None
-    blocks = handler.store.list_blocks_for_ref(ref.id)
+    blocks = handler.store.blocks.list_blocks_for_ref(ref.id)
     input_block = [b for b in blocks if "\\input" in b.text][0]
     assert input_block.meta["inputs"] == ["chapters/intro"]
 

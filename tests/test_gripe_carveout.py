@@ -36,7 +36,7 @@ def test_inserts_ref_body_chunk_and_status_open_tag(store: Store) -> None:
     assert ref.kind == "gripe"
     assert ref.title == "the search page 500s on a percent sign"
 
-    blocks = store.list_blocks_for_ref(ref_id)
+    blocks = store.blocks.list_blocks_for_ref(ref_id)
     assert len(blocks) == 1
     assert blocks[0].chunk_kind == "gripe_body"
     assert blocks[0].text == "the search page 500s on a percent sign"
@@ -57,8 +57,8 @@ def test_two_calls_create_two_independent_gripes(store: Store) -> None:
     first = _call(store, "first friction report")
     second = _call(store, "second friction report")
     assert first != second
-    assert len(store.list_blocks_for_ref(first)) == 1
-    assert len(store.list_blocks_for_ref(second)) == 1
+    assert len(store.blocks.list_blocks_for_ref(first)) == 1
+    assert len(store.blocks.list_blocks_for_ref(second)) == 1
 
 
 def test_security_definer_survives_a_role_with_no_table_grants(store: Store) -> None:
@@ -80,6 +80,6 @@ def test_security_definer_survives_a_role_with_no_table_grants(store: Store) -> 
         conn.commit()
     assert row is not None
     ref_id = int(row[0])
-    blocks = store.list_blocks_for_ref(ref_id)
+    blocks = store.blocks.list_blocks_for_ref(ref_id)
     assert len(blocks) == 1
     assert blocks[0].chunk_kind == "gripe_body"

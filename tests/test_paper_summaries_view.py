@@ -21,7 +21,7 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     case). Returns the paper ``ref_id``."""
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = MockEmbedder(dim=1024)
-    blocks = store.insert_blocks(
+    blocks = store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(pos=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
@@ -79,15 +79,15 @@ def test_summaries_view_in_supported_views(store: Store) -> None:
 def test_chunk_glosses_for_ref_shape_and_scope(store: Store) -> None:
     """The store helper the web /chunks + /search endpoints read."""
     ref_id = _seed_paper(store, slug="scoped07", n=6)
-    glosses = store.chunk_glosses_for_ref(ref_id)
+    glosses = store.blocks.chunk_glosses_for_ref(ref_id)
     assert [g["ord"] for g in glosses] == [0, 1, 2, 3, 4, 5]
     assert glosses[0]["summary"] == "The opening gloss."
     assert glosses[1]["summary"] == ""  # no gloss → empty, keyword fallback
     assert glosses[0]["keywords"] == "alpha, beta"
     # Scope narrows to an ord range inclusively.
-    scoped = store.chunk_glosses_for_ref(ref_id, pos_range=(2, 4))
+    scoped = store.blocks.chunk_glosses_for_ref(ref_id, pos_range=(2, 4))
     assert [g["ord"] for g in scoped] == [2, 3, 4]
 
     # And the targeted summary batch used by the search path.
-    summ = store.chunk_summaries_for(ref_id, [0, 1, 2])
+    summ = store.blocks.chunk_summaries_for(ref_id, [0, 1, 2])
     assert summ == {0: "The opening gloss."}

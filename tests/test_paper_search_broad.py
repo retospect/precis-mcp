@@ -41,7 +41,7 @@ def _seed(store: Store, *, slug: str, blocks: list[str], embed: bool = True) -> 
         BlockInsert(pos=i, text=t, embedding=(e.embed_one(t) if embed else None))
         for i, t in enumerate(blocks)
     ]
-    store.insert_blocks(ref.id, rows)
+    store.blocks.insert_blocks(ref.id, rows)
     return ref.id
 
 

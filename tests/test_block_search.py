@@ -22,7 +22,7 @@ def _seed_paper(
     for i, t in enumerate(blocks):
         emb = e.embed_one(t) if embed else None
         rows.append(BlockInsert(pos=i, text=t, embedding=emb))
-    store.insert_blocks(ref.id, rows)
+    store.blocks.insert_blocks(ref.id, rows)
     return ref.id
 
 
@@ -43,7 +43,7 @@ class TestSearchBlocksLexical:
                 "Catalysts for nitrogen oxides reduction.",
             ],
         )
-        hits = store.search_blocks_lexical(q="nitrate copper", kind="paper")
+        hits = store.blocks.search_blocks_lexical(q="nitrate copper", kind="paper")
         assert len(hits) >= 1
         block, ref, rank = hits[0]
         assert "nitrate" in block.text.lower()
@@ -60,11 +60,11 @@ class TestSearchBlocksLexical:
         )
         # Memory ref with same word — should be excluded by kind filter.
         mem = store.insert_ref(kind="memory", slug=None, title="M")
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             mem.id, [BlockInsert(pos=0, text="nitrate is in memory too")]
         )
 
-        hits = store.search_blocks_lexical(q="nitrate", kind="paper")
+        hits = store.blocks.search_blocks_lexical(q="nitrate", kind="paper")
         assert all(ref.kind == "paper" for _, ref, _ in hits)
 
     def test_scope_ref_id(self, store: Store) -> None:
@@ -82,7 +82,7 @@ class TestSearchBlocksLexical:
             blocks=["nitrate cycling biology"],
             embed=False,
         )
-        hits = store.search_blocks_lexical(
+        hits = store.blocks.search_blocks_lexical(
             q="nitrate", kind="paper", scope_ref_id=rid_a
         )
         assert len(hits) == 1
@@ -97,7 +97,7 @@ class TestSearchBlocksLexical:
             embed=False,
         )
         store.soft_delete_ref(rid)
-        hits = store.search_blocks_lexical(q="xenophilus", kind="paper")
+        hits = store.blocks.search_blocks_lexical(q="xenophilus", kind="paper")
         assert hits == []
 
     def test_no_matches_returns_empty(self, store: Store) -> None:
@@ -108,7 +108,7 @@ class TestSearchBlocksLexical:
             blocks=["alpha"],
             embed=False,
         )
-        hits = store.search_blocks_lexical(q="zzqqxx", kind="paper")
+        hits = store.blocks.search_blocks_lexical(q="zzqqxx", kind="paper")
         assert hits == []
 
 
@@ -134,7 +134,7 @@ class TestSearchBlocksSemantic:
         # Query with the first block's exact text — distance should be ~0
         # for that block.
         qv = e.embed_one("alpha beta gamma")
-        hits = store.search_blocks_semantic(query_vec=qv, kind="paper")
+        hits = store.blocks.search_blocks_semantic(query_vec=qv, kind="paper")
         assert len(hits) == 3
         # Top hit must be the matching block (distance ~0).
         assert hits[0][0].text == "alpha beta gamma"
@@ -146,7 +146,7 @@ class TestSearchBlocksSemantic:
         # ``has`` is 3 chars and now filtered by the noise-floor guard
         # (MCP critic MAJOR #11). Use a longer phrase so the test
         # exercises only the embedding-presence filter it cares about.
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(
@@ -158,7 +158,7 @@ class TestSearchBlocksSemantic:
             ],
         )
         qv = e.embed_one("has-an-embedding")
-        hits = store.search_blocks_semantic(query_vec=qv, kind="paper")
+        hits = store.blocks.search_blocks_semantic(query_vec=qv, kind="paper")
         assert {b.text for b, _, _ in hits} == {"has-an-embedding"}
 
     def test_scope_ref_id(self, store: Store) -> None:
@@ -178,7 +178,7 @@ class TestSearchBlocksSemantic:
             embedder=e,
         )
         qv = e.embed_one("target text")
-        hits = store.search_blocks_semantic(
+        hits = store.blocks.search_blocks_semantic(
             query_vec=qv, kind="paper", scope_ref_id=rid_a
         )
         assert all(ref.id == rid_a for _, ref, _ in hits)
@@ -198,7 +198,7 @@ class TestSearchBlocksFused:
             blocks=["nitrate reduction"],
             embed=False,
         )
-        hits = store.search_blocks_fused(q="nitrate", kind="paper")
+        hits = store.blocks.search_blocks_fused(q="nitrate", kind="paper")
         assert len(hits) == 1
         assert "nitrate" in hits[0][0].text
 
@@ -216,7 +216,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("alpha beta gamma")
-        hits = store.search_blocks_fused(q="nitrate", query_vec=qv, kind="paper")
+        hits = store.blocks.search_blocks_fused(q="nitrate", query_vec=qv, kind="paper")
         # Both the lex-matching and the sem-matching block should
         # surface; unrelated text scores 0.
         texts = [b.text for b, _, _ in hits]
@@ -233,7 +233,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("one two three")
-        hits = store.search_blocks_fused(q="one two", query_vec=qv, kind="paper")
+        hits = store.blocks.search_blocks_fused(q="one two", query_vec=qv, kind="paper")
         scores = [s for _, _, s in hits]
         assert scores == sorted(scores, reverse=True)
 
@@ -254,7 +254,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("nitrate cycle")
-        hits = store.search_blocks_fused(
+        hits = store.blocks.search_blocks_fused(
             q="nitrate", query_vec=qv, kind="paper", scope_ref_id=rid_a
         )
         assert all(ref.id == rid_a for _, ref, _ in hits)
@@ -292,7 +292,7 @@ class TestSearchBlocksFused:
         )
         qv = e.embed_one("nitrate reduction")
         # No exclude: all three refs surface.
-        hits_all = store.search_blocks_fused(
+        hits_all = store.blocks.search_blocks_fused(
             q="nitrate",
             query_vec=qv,
             kind="paper",
@@ -301,7 +301,7 @@ class TestSearchBlocksFused:
         slugs_all = {ref.slug for _b, ref, _s in hits_all}
         assert slugs_all == {"a", "b", "c"}
         # Exclude two; only the third remains.
-        hits_excluded = store.search_blocks_fused(
+        hits_excluded = store.blocks.search_blocks_fused(
             q="nitrate",
             query_vec=qv,
             kind="paper",
@@ -344,7 +344,7 @@ class TestSearchBlocksFused:
             embedder=e,
         )
         qv = e.embed_one("nitrate")
-        hits = store.search_blocks_fused(
+        hits = store.blocks.search_blocks_fused(
             q="nitrate",
             query_vec=qv,
             kind="paper",
@@ -373,7 +373,7 @@ class TestSearchBlocksFused:
             blocks=["alpha topic"],
             embed=False,
         )
-        hits = store.search_blocks_fused(
+        hits = store.blocks.search_blocks_fused(
             q="alpha", kind="paper", exclude_ref_ids=[rid_a]
         )
         assert {ref.slug for _b, ref, _s in hits} == {"b"}
@@ -396,8 +396,8 @@ class TestSearchBlocksFused:
             blocks=["alpha topic"],
             embed=False,
         )
-        total_full = store.count_blocks_lexical(q="alpha", kind="paper")
-        total_excl = store.count_blocks_lexical(
+        total_full = store.blocks.count_blocks_lexical(q="alpha", kind="paper")
+        total_excl = store.blocks.count_blocks_lexical(
             q="alpha", kind="paper", exclude_ref_ids=[rid_a]
         )
         assert total_full == 2

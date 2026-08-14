@@ -83,7 +83,7 @@ def _seed_paper_ref(
         year=kw.pop("year", 2020),
         meta=kw.pop("meta", {"abstract": "Original abstract."}),
     )
-    hub.live_store.insert_blocks(
+    hub.live_store.blocks.insert_blocks(
         ref.id, [BlockInsert(pos=0, text="Body chunk.", meta={})]
     )
     return ref.id

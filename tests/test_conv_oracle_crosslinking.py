@@ -37,7 +37,7 @@ def _seed_oracle(store: Store, slug: str, title: str = "Test Oracle") -> int:
 def _seed_conv(store: Store, slug: str, title: str = "Test Thread") -> int:
     ref = store.insert_ref(kind="conv", slug=slug, title=title)
     # One block so list_blocks_for_ref / chunk parsing has data to chew on.
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text="hello")])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text="hello")])
     return ref.id
 
 
@@ -158,9 +158,9 @@ class TestConvPutRejected:
     def test_put_appends_a_turn(self, conv: ConversationHandler, store: Store) -> None:
         """put(text=…) appends a block to the conv ref; not unsupported."""
         rid = _seed_conv(store, "thread-1")
-        before = len(store.list_blocks_for_ref(rid))
+        before = len(store.blocks.list_blocks_for_ref(rid))
         conv.put(id="thread-1", text="follow-up message", author="alice")
-        assert len(store.list_blocks_for_ref(rid)) == before + 1
+        assert len(store.blocks.list_blocks_for_ref(rid)) == before + 1
 
     def test_unknown_slug_on_link(self, conv: ConversationHandler) -> None:
         with pytest.raises(NotFound, match="conv slug 'no-such' not found"):

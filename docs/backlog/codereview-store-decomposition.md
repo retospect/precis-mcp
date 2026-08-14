@@ -29,7 +29,7 @@ recipe that worked: hand-rolled fakes get a one-line
 REAL store must patch `store.drafts` instead (the flat patch silently
 stops intercepting).
 
-Step 3a SHIPPED: blocks carved — `_blocks_ops.py::BlockStore`
+Step 3 SHIPPED (both halves): blocks carved — `_blocks_ops.py::BlockStore`
 composed as `store.blocks`, transitional flat delegations on `Store`,
 all src call sites migrated (244 sites, 87 files; store-internal
 consumers too: `_cache_ops` insert_blocks, and
@@ -41,11 +41,16 @@ and `get_ref`/`insert_ref`/`add_tag` are the most-called methods in
 the codebase, so refs is core-adjacent and needs its own design pass
 (maybe its flat names *stay* on the facade permanently).
 
+Step 3b SHIPPED: all 433 test call sites migrated, the 41 flat
+delegations DELETED from `Store`, `tests/test_store_blocks_facade.py`
+pins the inverse. Test-double recipe held (12 class fakes shimmed
+`blocks = property(lambda self: self)`; 2 `__init__`-assigned fakes got
+`self.blocks = self`; 7 real-store monkeypatches retargeted to
+`store.blocks`; one fake used `self.blocks` as its own recording list —
+renamed).
+
 REMAINING (one domain per ship):
-- Step 3b: migrate the 429 test call sites to `store.blocks.*`, delete
-  the delegation block, extend the facade test (same recipe as
-  `tests/test_store_drafts_facade.py`; test-double recipe above).
-- Then: refs design pass (see measurement), then tags/links/cache/…
+- Refs design pass (see measurement above), then tags/links/cache/…
 - Endgame (per carve, as done for drafts): delete the delegation
   block once call sites migrate; `Store` ends as core + sub-store
   properties + the small cross-cutting ops it already owns.

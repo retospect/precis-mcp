@@ -252,7 +252,7 @@ def test_pass_ingests_blocks_on_success(
     # Blocks landed.
     ref = store.get_ref(kind="patent", id="us20240000001a1")
     assert ref is not None
-    blocks = store.list_blocks_for_ref(ref.id)
+    blocks = store.blocks.list_blocks_for_ref(ref.id)
     assert len(blocks) >= 4  # at least 4 desc + 2 claim minus any merging
 
     # Meta got the gp_* stamps + has_description / has_claims.

@@ -742,7 +742,9 @@ class TestQuestTick:
         }
         run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert logs[-1].meta["by"] == "agent"
 
@@ -758,7 +760,7 @@ class TestQuestTick:
         # 162594); the model's clamped entry is the one carrying its text.
         logs = [
             b
-            for b in store.list_blocks_for_ref(qid)
+            for b in store.blocks.list_blocks_for_ref(qid)
             if b.chunk_kind == "quest_log" and "still recorded" in b.text
         ]
         assert logs[-1].meta["entry_type"] == "note"
@@ -779,7 +781,9 @@ class TestQuestTick:
         assert out.status == "failed" and "boom" in out.note
         # nothing written
         assert not [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
 
     def test_breaker_pause_is_not_a_failure(self, store: Any) -> None:
@@ -797,7 +801,9 @@ class TestQuestTick:
         # …and it is the *window* kind: the coordinator retries it for free.
         assert out.pause_kind == "window"
         assert not [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
 
     def test_timeout_pause_is_flagged_pause_kind_timeout(self, store: Any) -> None:
@@ -1143,7 +1149,7 @@ class TestNarrativeGateIntegration:
         # the refusal is logged with structured word counts + reason
         entries = [
             b
-            for b in store.list_blocks_for_ref(qid)
+            for b in store.blocks.list_blocks_for_ref(qid)
             if (b.meta or {}).get("entry_type") == "observation"
             and "narrative rewrite refused" in (b.text or "")
         ]
@@ -1213,7 +1219,7 @@ class TestNarrativeGateIntegration:
         assert len(dispatch.calls) == 2
         entries = [
             b
-            for b in store.list_blocks_for_ref(qid)
+            for b in store.blocks.list_blocks_for_ref(qid)
             if (b.meta or {}).get("gate_reason") == "ceiling"
         ]
         assert len(entries) == 1
@@ -1434,7 +1440,7 @@ class TestModelCannotFabricateResults:
     as unverified."""
 
     def _logs(self, store: Any, qid: int) -> list[Any]:
-        blocks = store.list_blocks_for_ref(qid)
+        blocks = store.blocks.list_blocks_for_ref(qid)
         return [b for b in blocks if b.chunk_kind == "quest_log"]
 
     def test_model_result_with_fabricated_barrier_is_downgraded_and_flagged(
@@ -2020,7 +2026,9 @@ class TestCommitReRepromptLadder:
 
     def _logs(self, store: Any, qid: int) -> list[Any]:
         return [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
 
     def test_first_dry_tick_advances_counter_without_a_commit_reprompt(
@@ -2319,7 +2327,9 @@ class TestWipCap:
 
     def _logs(self, store: Any, qid: int) -> list[Any]:
         return [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
 
     def _stub_run_compute_step(self, monkeypatch: Any) -> list[list[dict[str, Any]]]:

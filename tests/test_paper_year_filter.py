@@ -23,7 +23,7 @@ _TEXT = "quantum batteries store energy efficiently"
 def _seed(store: Store, *, slug: str, year: int | None, embed: bool = True) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=slug, year=year)
     e = MockEmbedder(dim=1024)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(
@@ -44,14 +44,18 @@ def _slugs(hits: list) -> set[str]:
 def test_year_from_excludes_older(store: Store) -> None:
     _seed(store, slug="p2018", year=2018, embed=False)
     _seed(store, slug="p2022", year=2022, embed=False)
-    hits = store.search_blocks(q=_TEXT, mode="lexical", kind="paper", year_from=2020)
+    hits = store.blocks.search_blocks(
+        q=_TEXT, mode="lexical", kind="paper", year_from=2020
+    )
     assert _slugs(hits) == {"p2022"}
 
 
 def test_year_to_excludes_newer(store: Store) -> None:
     _seed(store, slug="p2018", year=2018, embed=False)
     _seed(store, slug="p2022", year=2022, embed=False)
-    hits = store.search_blocks(q=_TEXT, mode="lexical", kind="paper", year_to=2020)
+    hits = store.blocks.search_blocks(
+        q=_TEXT, mode="lexical", kind="paper", year_to=2020
+    )
     assert _slugs(hits) == {"p2018"}
 
 
@@ -59,7 +63,7 @@ def test_range_is_inclusive(store: Store) -> None:
     _seed(store, slug="p2019", year=2019, embed=False)
     _seed(store, slug="p2020", year=2020, embed=False)
     _seed(store, slug="p2021", year=2021, embed=False)
-    hits = store.search_blocks(
+    hits = store.blocks.search_blocks(
         q=_TEXT, mode="lexical", kind="paper", year_from=2019, year_to=2021
     )
     assert _slugs(hits) == {"p2019", "p2020", "p2021"}
@@ -69,7 +73,7 @@ def test_semantic_mode_applies_year_filter(store: Store) -> None:
     _seed(store, slug="p2018", year=2018, embed=True)
     _seed(store, slug="p2022", year=2022, embed=True)
     qv = MockEmbedder(dim=1024).embed_one(_TEXT)
-    hits = store.search_blocks(
+    hits = store.blocks.search_blocks(
         q=_TEXT,
         query_vec=qv,
         mode="semantic",
@@ -84,21 +88,25 @@ def test_hybrid_mode_applies_year_filter(store: Store) -> None:
     _seed(store, slug="p2018", year=2018, embed=True)
     _seed(store, slug="p2022", year=2022, embed=True)
     qv = MockEmbedder(dim=1024).embed_one(_TEXT)
-    hits = store.search_blocks(q=_TEXT, query_vec=qv, kind="paper", year_from=2020)
+    hits = store.blocks.search_blocks(
+        q=_TEXT, query_vec=qv, kind="paper", year_from=2020
+    )
     assert _slugs(hits) == {"p2022"}
 
 
 def test_null_year_excluded_from_range(store: Store) -> None:
     _seed(store, slug="pNone", year=None, embed=False)
     _seed(store, slug="p2022", year=2022, embed=False)
-    hits = store.search_blocks(q=_TEXT, mode="lexical", kind="paper", year_from=2000)
+    hits = store.blocks.search_blocks(
+        q=_TEXT, mode="lexical", kind="paper", year_from=2000
+    )
     assert _slugs(hits) == {"p2022"}  # pNone dropped (NULL year)
 
 
 def test_count_yearless_matches(store: Store) -> None:
     _seed(store, slug="pNone", year=None, embed=False)
     _seed(store, slug="p2022", year=2022, embed=False)
-    n = store.count_paper_yearless_matches(q=_TEXT)
+    n = store.blocks.count_paper_yearless_matches(q=_TEXT)
     assert n == 1  # only pNone lacks a year
 
 

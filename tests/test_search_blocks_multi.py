@@ -20,7 +20,7 @@ def _seed(store: Store, *, slug: str, blocks: list[str], embed: bool = True) -> 
         BlockInsert(pos=i, text=t, embedding=(e.embed_one(t) if embed else None))
         for i, t in enumerate(blocks)
     ]
-    store.insert_blocks(ref.id, rows)
+    store.blocks.insert_blocks(ref.id, rows)
     return ref.id
 
 
@@ -41,7 +41,7 @@ def _vec(text: str) -> list[float]:
 def test_multi_fuses_lexical_and_semantic_legs(store: Store) -> None:
     _seed(store, slug="amA", blocks=_A)
     _seed(store, slug="amB", blocks=_B)
-    hits = store.search_blocks_multi(
+    hits = store.blocks.search_blocks_multi(
         q_texts=["nitrate ammonia", "copper selectivity"],
         query_vecs=[_vec("single-atom copper ammonia"), _vec("faradaic efficiency")],
         kind="paper",
@@ -63,7 +63,7 @@ def test_multi_fuses_lexical_and_semantic_legs(store: Store) -> None:
 def test_multi_per_paper_cap_spreads(store: Store) -> None:
     _seed(store, slug="capA", blocks=_A)
     _seed(store, slug="capB", blocks=_B)
-    hits = store.search_blocks_multi(
+    hits = store.blocks.search_blocks_multi(
         q_texts=["nitrate ammonia copper carbon hydrogen faradaic"],
         query_vecs=[_vec("nitrate ammonia copper")],
         kind="paper",
@@ -79,7 +79,7 @@ def test_multi_per_paper_cap_spreads(store: Store) -> None:
 def test_multi_lexical_mode_ignores_vectors(store: Store) -> None:
     # mode='lexical' must run only the text legs even with vectors present.
     _seed(store, slug="lexA", blocks=_A)
-    hits = store.search_blocks_multi(
+    hits = store.blocks.search_blocks_multi(
         q_texts=["nitrate ammonia"],
         query_vecs=[_vec("anything")],
         mode="lexical",
@@ -94,13 +94,13 @@ def test_multi_leg_hard_cap_raises(store: Store) -> None:
     # the store enforces a defensive hard ceiling (32 total legs) so a
     # direct (agentic-tier) caller can't fire unbounded SQL fan-out.
     with pytest.raises(ValueError, match="hard cap"):
-        store.search_blocks_multi(
+        store.blocks.search_blocks_multi(
             q_texts=[f"query variant {i}" for i in range(33)],
             query_vecs=[],
             kind="paper",
         )
     with pytest.raises(ValueError, match="hard cap"):
-        store.search_blocks_multi(
+        store.blocks.search_blocks_multi(
             q_texts=["ok"],
             query_vecs=[_vec(f"t{i}") for i in range(32)],
             kind="paper",
@@ -115,7 +115,7 @@ def test_lexical_tie_determinism_chunk_id_order(store: Store) -> None:
     same = "Deterministic tiebreak sentinel phrase for lexical ranking."
     _seed(store, slug="tieA", blocks=[same, same], embed=False)
     _seed(store, slug="tieB", blocks=[same, same], embed=False)
-    hits = store.search_blocks_lexical(
+    hits = store.blocks.search_blocks_lexical(
         q="deterministic tiebreak sentinel", kind="paper", limit=10
     )
     assert len(hits) == 4
@@ -129,7 +129,7 @@ def test_multi_semantic_only_degrades_without_vecs(store: Store) -> None:
     # semantic mode but no usable vectors → lexical legs answer (degrade),
     # mirroring the single-path embedder-down fallback.
     _seed(store, slug="degA", blocks=_A, embed=False)
-    hits = store.search_blocks_multi(
+    hits = store.blocks.search_blocks_multi(
         q_texts=["hydrogen evolution"],
         query_vecs=[],
         mode="semantic",

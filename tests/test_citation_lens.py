@@ -24,7 +24,7 @@ from precis.store.types import BlockInsert
 def _paper(store, slug: str, *, body: bool = True) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=f"Paper {slug}")
     if body:
-        store.insert_blocks(ref.id, [BlockInsert(pos=0, text=f"body of {slug}")])
+        store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=f"body of {slug}")])
     return int(ref.id)
 
 

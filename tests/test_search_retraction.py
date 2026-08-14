@@ -36,7 +36,7 @@ _HANDLE_RE = re.compile(r"\bpc\d+\b")
 
 def _seed(store: Store, *, slug: str, text: str, embedder: MockEmbedder) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [BlockInsert(pos=0, text=text, embedding=embedder.embed_one(text))],
     )

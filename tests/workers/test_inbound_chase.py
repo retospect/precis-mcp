@@ -34,7 +34,7 @@ def _seed_paper(
         meta={"abstract": abstract} if abstract else {},
     )
     if blocks:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)],
         )
@@ -328,7 +328,7 @@ def test_followup_resolves_once_citer_stub_lands_chunks(store) -> None:
     assert _cites_links(store, src=citer_ref_id, dst=y)[0].src_pos is None
 
     # The PDF lands later (fetch_oa or similar) — chunks appear.
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         citer_ref_id,
         [
             BlockInsert(

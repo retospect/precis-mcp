@@ -56,7 +56,7 @@ def _seed_paper(store: Store, slug: str = "wang2020state", n_blocks: int = 4) ->
         meta={},
     )
     if n_blocks:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(pos=i, text=f"block {i} content text", slug=f"b{i}")
@@ -277,7 +277,7 @@ class TestPaperOverviewStripsJats:
 class TestSearchNoiseFloor:
     def test_short_blocks_excluded_from_lexical(self, store: Store) -> None:
         ref = store.insert_ref(kind="paper", slug="p", title="P")
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(pos=0, text="."),
@@ -286,7 +286,7 @@ class TestSearchNoiseFloor:
                 BlockInsert(pos=3, text="real content with words"),
             ],
         )
-        hits = store.search_blocks_lexical(q="content", kind="paper")
+        hits = store.blocks.search_blocks_lexical(q="content", kind="paper")
         for block, _ref, _rank in hits:
             assert len(block.text.strip()) >= 4
 
@@ -540,7 +540,7 @@ class TestSlugKindInference:
 
     def _seed_paper(self, store: Store, slug: str) -> None:
         ref = store.insert_ref(kind="paper", slug=slug, title="P", provider="manual")
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(pos=i, text=f"block {i} text", slug=f"b{i}")

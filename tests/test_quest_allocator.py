@@ -160,7 +160,11 @@ class TestCooling:
         cooled = alloc.cool_stalled(store)
         assert q in cooled
         assert "STATUS:dormant" in [str(t) for t in store.tags_for(q)]
-        logs = [b for b in store.list_blocks_for_ref(q) if b.chunk_kind == "quest_log"]
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(q)
+            if b.chunk_kind == "quest_log"
+        ]
         assert any((b.meta or {}).get("entry_type") == "reflection" for b in logs)
 
     def test_fresh_quest_not_cooled(self, store: Any) -> None:

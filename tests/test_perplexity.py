@@ -633,7 +633,7 @@ def test_import_parses_markdown_into_multiple_blocks(
     )
     assert cached is not None
     ref, _cache = cached
-    blocks = h.store.list_blocks_for_ref(ref.id)
+    blocks = h.store.blocks.list_blocks_for_ref(ref.id)
     # Sample report has multiple sections → must produce >1 block.
     assert len(blocks) >= 4
 
@@ -669,7 +669,7 @@ def test_import_is_idempotent_on_repeat(
     cached = h.store.get_cache_entry(provider="perplexity", request_hash=request_hash)
     assert cached is not None
     ref, _cache = cached
-    blocks = h.store.list_blocks_for_ref(ref.id)
+    blocks = h.store.blocks.list_blocks_for_ref(ref.id)
     full = "\n".join(b.text for b in blocks)
     # The second import wins; the first is gone.
     assert "second body" in full
@@ -736,7 +736,7 @@ def test_import_then_search_finds_imported_blocks(
     # Use the store's block search directly — the perplexity handler
     # doesn't expose `search` itself, but the data should be findable
     # by anyone who does kind-filtered block search.
-    hits = h.store.search_blocks_fused(
+    hits = h.store.blocks.search_blocks_fused(
         q="cobalt phthalocyanine",
         query_vec=None,
         kind="perplexity-research",
@@ -915,7 +915,7 @@ def test_fetch_path_block_parses_body(think_with_embedder: ThinkHandler) -> None
         kind="perplexity-reasoning", provider="perplexity", limit=10
     )
     assert len(refs) == 1
-    n_blocks = h.store.count_blocks(refs[0].id)
+    n_blocks = h.store.blocks.count_blocks(refs[0].id)
     # Three paragraphs + three headings + the Sources trailer ≥ 4 blocks.
     assert n_blocks >= 4, f"expected fetch path to produce ≥4 blocks, got {n_blocks}"
 
@@ -939,7 +939,7 @@ def test_fetch_path_embeds_blocks(think_with_embedder: ThinkHandler) -> None:
     # ``with_embedding=True`` is required — the default loads only the
     # block bodies (cheap path for rendering) and leaves the vector
     # column NULL.
-    blocks = h.store.list_blocks_for_ref(refs[0].id, with_embedding=True)
+    blocks = h.store.blocks.list_blocks_for_ref(refs[0].id, with_embedding=True)
     embedded = [b for b in blocks if b.embedding is not None]
     assert embedded, "expected fetch-path blocks to be embedded"
     # Mock embedder yields 1024-dim unit-norm vectors.
@@ -1033,7 +1033,7 @@ def test_fetch_survives_embedder_outage(store: Store, embedder_cls: type) -> Non
     # worker can backfill them; lexical search works immediately.
     refs = h.store.list_refs(kind="websearch", provider="perplexity", limit=10)
     assert len(refs) == 1
-    blocks = h.store.list_blocks_for_ref(refs[0].id, with_embedding=True)
+    blocks = h.store.blocks.list_blocks_for_ref(refs[0].id, with_embedding=True)
     assert blocks, "expected the fetched report to be stored as blocks"
     assert all(b.embedding is None for b in blocks)
 

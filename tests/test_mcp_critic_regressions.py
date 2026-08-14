@@ -283,7 +283,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
         slug="paper-a",
         title="A",
     )
-    blocks = store.insert_blocks(
+    blocks = store.blocks.insert_blocks(
         paper.id,
         [
             BlockInsert(
@@ -813,7 +813,7 @@ class TestSemanticRelevanceFloor:
         ref = store.insert_ref(kind="paper", slug="p", title="P")
         # Three blocks of meaningful text — none lexically or
         # semantically close to the gibberish query.
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(
@@ -1686,7 +1686,7 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
         '<span id="page-3-0"></span>![](_page_3_Figure_3.jpeg) photocatalytic'
     )
     caption_block_text = "**Fig. 3.** Photocatalytic NOx reduction mechanism on Cu/ZnO."
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(pos=10, text=image_block_text),

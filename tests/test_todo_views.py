@@ -385,7 +385,7 @@ def test_attention_view_lists_child_failed_parents(
         kind="job", slug=None, title="fix attempt", meta={}, parent_id=rid
     )
     # Use the store's chunk-insert path so chunk_kind lands correctly.
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         job.id,
         [
             BlockInsert(

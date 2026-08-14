@@ -67,7 +67,7 @@ def _seed_paper(
         meta={},
     )
     if blocks:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)],
         )
@@ -703,7 +703,7 @@ def test_card_combined_reemits_at_chain_termination(store) -> None:
 
 def _seed_memory(store, *, text: str = "a research note") -> int:
     ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
     return ref.id
 
 
@@ -777,7 +777,7 @@ def test_acquiring_finding_grounds_once_stub_gains_chunks(store) -> None:
 
     # The stub "lands a PDF": give it a body chunk (what fetch_oa +
     # ingest would have done).
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         stub_id,
         [BlockInsert(pos=0, text=f"{claim_text}, stated directly.", meta={})],
     )
@@ -915,7 +915,7 @@ def test_acquiring_stays_acquiring_when_fetch_ok_pending_ingest_past_grace(
         conn.commit()
 
     # Ingest lands the chunks on a later pass -- grounds normally.
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         stub_id,
         [BlockInsert(pos=0, text=f"{claim_text}, stated directly.", meta={})],
     )

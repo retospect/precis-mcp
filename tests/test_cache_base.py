@@ -239,7 +239,7 @@ def test_high_verdict_withholds_body(handler: _FakeCacheKindAsMath) -> None:
     assert "body withheld" in resp.body
     assert "the later flagged answer" not in resp.body
     # stored text untouched — quarantine gates rendering, not storage
-    blocks = handler.store.list_blocks_for_ref(
+    blocks = handler.store.blocks.list_blocks_for_ref(
         handler.store.list_refs(kind="math", provider="wolfram", limit=1)[0].id
     )
     assert any("the later flagged answer" in b.text for b in blocks)

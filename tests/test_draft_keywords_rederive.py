@@ -98,7 +98,7 @@ def test_draft_chunks_jump_queue_ahead_of_papers(store: Store) -> None:
 
     # an older paper chunk lacking keywords (lower ref_id), embedded.
     paper = store.insert_ref(kind="paper", slug="qjump1", title="Paper")
-    pblk = store.insert_blocks(paper.id, [BlockInsert(pos=0, text=_LONG)])[0]
+    pblk = store.blocks.insert_blocks(paper.id, [BlockInsert(pos=0, text=_LONG)])[0]
     _insert_embedding(store, pblk.id, None)  # papers leave content_sha NULL
 
     # a newer draft chunk (higher ref_id), embedded at its current sha.

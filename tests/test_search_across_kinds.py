@@ -18,7 +18,7 @@ from precis.store import BlockInsert, Store, Tag
 
 def _seed(store: Store, kind: str, slug: str, blocks: list[str], emb: MockEmbedder):
     ref = store.insert_ref(kind=kind, slug=slug, title=slug)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(pos=i, text=t, embedding=emb.embed_one(t))
@@ -41,7 +41,7 @@ def test_reaches_multiple_kinds_and_collapses_per_ref(store: Store) -> None:
     # A third kind that should NOT appear when we scope to paper+web.
     _seed(store, "pres", "pres-mof", ["slide: MOF carbon dioxide idea."], emb)
 
-    hits = store.search_chunks_across_kinds(
+    hits = store.blocks.search_chunks_across_kinds(
         kinds=["paper", "web"],
         q="MOF carbon dioxide capture",
         query_vec=emb.embed_one("MOF carbon dioxide capture"),
@@ -61,7 +61,7 @@ def test_kind_scope_excludes_unlisted_kinds(store: Store) -> None:
     pid = _seed(store, "paper", "p1", ["nitrate reduction on copper"], emb)
     _seed(store, "web", "w1", ["nitrate reduction on copper"], emb)
 
-    hits = store.search_chunks_across_kinds(
+    hits = store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="nitrate copper",
         query_vec=emb.embed_one("nitrate copper"),
@@ -76,7 +76,7 @@ def test_recency_sort_orders_newest_first(store: Store) -> None:
     older = _seed(store, "paper", "older", [text], emb)
     newer = _seed(store, "web", "newer", [text], emb)  # inserted later → newer
 
-    hits = store.search_chunks_across_kinds(
+    hits = store.blocks.search_chunks_across_kinds(
         kinds=["paper", "web"],
         q="graphene transistor mobility",
         query_vec=emb.embed_one("graphene transistor mobility"),
@@ -93,7 +93,7 @@ def test_oldest_sort_orders_oldest_first(store: Store) -> None:
     older = _seed(store, "paper", "o-older", [text], emb)
     newer = _seed(store, "web", "o-newer", [text], emb)  # inserted later → newer
 
-    hits = store.search_chunks_across_kinds(
+    hits = store.blocks.search_chunks_across_kinds(
         kinds=["paper", "web"],
         q="graphene transistor mobility",
         query_vec=emb.embed_one("graphene transistor mobility"),
@@ -110,14 +110,14 @@ def test_date_window_bounds_results(store: Store) -> None:
     qv = emb.embed_one("perovskite solar")
 
     # Far-past floor keeps everything; far-future floor drops everything.
-    assert store.search_chunks_across_kinds(
+    assert store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="perovskite solar",
         query_vec=qv,
         max_distance=None,
         since=datetime(2000, 1, 1, tzinfo=UTC),
     )
-    assert not store.search_chunks_across_kinds(
+    assert not store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="perovskite solar",
         query_vec=qv,
@@ -125,7 +125,7 @@ def test_date_window_bounds_results(store: Store) -> None:
         since=datetime(2999, 1, 1, tzinfo=UTC),
     )
     # Far-past ceiling drops everything (created_at is "now").
-    assert not store.search_chunks_across_kinds(
+    assert not store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="perovskite solar",
         query_vec=qv,
@@ -138,12 +138,14 @@ def test_lexical_only_when_no_vector(store: Store) -> None:
     """No query_vec → lexical leg alone still answers (embedder-down path)."""
     emb = MockEmbedder(dim=store.embedding_dim())
     pid = _seed(store, "paper", "lex", ["thermoelectric figure of merit ZT"], emb)
-    hits = store.search_chunks_across_kinds(kinds=["paper"], q="thermoelectric ZT")
+    hits = store.blocks.search_chunks_across_kinds(
+        kinds=["paper"], q="thermoelectric ZT"
+    )
     assert pid in {ref.id for _, ref, _ in hits}
 
 
 def test_empty_kinds_returns_empty(store: Store) -> None:
-    assert store.search_chunks_across_kinds(kinds=[], q="anything") == []
+    assert store.blocks.search_chunks_across_kinds(kinds=[], q="anything") == []
 
 
 def test_offset_pages_past_the_limit_window(store: Store) -> None:
@@ -156,7 +158,7 @@ def test_offset_pages_past_the_limit_window(store: Store) -> None:
     ]
     qv = emb.embed_one("xenon isotope separation")
 
-    page1 = store.search_chunks_across_kinds(
+    page1 = store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="xenon isotope separation",
         query_vec=qv,
@@ -164,7 +166,7 @@ def test_offset_pages_past_the_limit_window(store: Store) -> None:
         limit=2,
         offset=0,
     )
-    page2 = store.search_chunks_across_kinds(
+    page2 = store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="xenon isotope separation",
         query_vec=qv,
@@ -180,7 +182,7 @@ def test_offset_pages_past_the_limit_window(store: Store) -> None:
     assert p1_ids | p2_ids <= set(ids)
 
     # Recency sort pages the same relevance-qualified pool by date.
-    r1 = store.search_chunks_across_kinds(
+    r1 = store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="xenon isotope separation",
         query_vec=qv,
@@ -189,7 +191,7 @@ def test_offset_pages_past_the_limit_window(store: Store) -> None:
         limit=2,
         offset=0,
     )
-    r2 = store.search_chunks_across_kinds(
+    r2 = store.blocks.search_chunks_across_kinds(
         kinds=["paper"],
         q="xenon isotope separation",
         query_vec=qv,

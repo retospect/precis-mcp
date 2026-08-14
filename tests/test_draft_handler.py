@@ -893,7 +893,7 @@ def test_resolve_ask_question_resolves_see_chunk_overflow(hub: Hub) -> None:
         "Which did you mean? (A) fold the ~100 label-headings back inline "
         "(B) point me at a specific chunk (C) a renderer/export setting."
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         todo.id,
         [
             BlockInsert(
@@ -931,7 +931,7 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
         "Which did you mean? (A) fold the label-headings back inline "
         "(B) point me at a specific chunk (C) a renderer/export setting."
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         asking.id,
         [
             BlockInsert(
@@ -952,7 +952,7 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
     store.add_tag(
         job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         job.id,
         [
             BlockInsert(
@@ -998,7 +998,7 @@ def test_requests_by_handle_fail_reason_falls_back_to_job_event(
     store.add_tag(
         job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         job.id,
         [
             BlockInsert(

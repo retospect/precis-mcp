@@ -54,7 +54,7 @@ def _seed_paper_with_blocks(
     store: Store, slug: str = "wang2020state", n_blocks: int = 3
 ) -> int:
     ref_id = _seed_paper(store, slug=slug)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref_id,
         [BlockInsert(pos=i, text=f"block {i}", slug=f"b{i}") for i in range(n_blocks)],
     )

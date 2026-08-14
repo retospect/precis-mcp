@@ -63,7 +63,7 @@ def _seed_paper(
     embedder needed — the handler fixture wires no embedder, so search
     degrades to lexical, same as ``test_search_finds_by_description``)."""
     ref = store.insert_ref(kind="paper", slug=slug, title=title, meta=meta or {})
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=body)])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=body)])
     return ref.id
 
 

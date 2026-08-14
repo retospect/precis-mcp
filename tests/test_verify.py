@@ -38,7 +38,7 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
     ref = store.insert_ref(
         kind="paper", slug=cite_key, title=f"paper {cite_key}", meta={}
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id, [BlockInsert(pos=0, text=f"body of {cite_key}", meta={})]
     )
     return ref.id

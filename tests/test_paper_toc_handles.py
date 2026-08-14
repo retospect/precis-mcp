@@ -28,7 +28,7 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     """
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = MockEmbedder(dim=1024)
-    blocks = store.insert_blocks(
+    blocks = store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(pos=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))

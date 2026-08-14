@@ -564,7 +564,7 @@ def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
     from precis.utils import handle_registry
 
     paper = store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
     )
     with store.pool.connection() as conn:
@@ -622,7 +622,9 @@ def test_search_excludes_retired_draft_chunk(store: Store) -> None:
     )[0]
     texts = {
         b.text
-        for b, _r, _s in store.search_blocks_lexical(q="xenophilus", kind="draft")
+        for b, _r, _s in store.blocks.search_blocks_lexical(
+            q="xenophilus", kind="draft"
+        )
     }
     assert {"xenophilus alpha", "xenophilus beta"} <= texts
 
@@ -631,7 +633,9 @@ def test_search_excludes_retired_draft_chunk(store: Store) -> None:
     )  # p1 now retired (p2 keeps the draft non-empty)
     texts2 = {
         b.text
-        for b, _r, _s in store.search_blocks_lexical(q="xenophilus", kind="draft")
+        for b, _r, _s in store.blocks.search_blocks_lexical(
+            q="xenophilus", kind="draft"
+        )
     }
     assert "xenophilus alpha" not in texts2  # the ghost is gone
     assert "xenophilus beta" in texts2  # its live sibling stays
@@ -699,7 +703,7 @@ def test_job_fail_reason_falls_back_to_job_event(store: Store) -> None:
     from precis.store.types import BlockInsert
 
     job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         job.id,
         [
             BlockInsert(
@@ -729,7 +733,7 @@ def test_job_fail_reason_prefers_job_summary_over_job_event(store: Store) -> Non
     from precis.store.types import BlockInsert
 
     job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         job.id,
         [
             BlockInsert(
@@ -753,7 +757,7 @@ def test_job_fail_reason_picks_latest_job_event(store: Store) -> None:
     from precis.store.types import BlockInsert
 
     job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         job.id,
         [
             BlockInsert(

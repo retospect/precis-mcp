@@ -171,7 +171,7 @@ def test_status_tick_events_from_coordinator_job(store: Any) -> None:
         parent_id=todo.id,
     )
     with store.tx() as conn:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             job.id,
             [
                 BlockInsert(

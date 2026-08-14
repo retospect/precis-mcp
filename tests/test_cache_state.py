@@ -89,7 +89,7 @@ def test_replace_existing_cache_entry(store: Store) -> None:
         ttl_seconds=7200,
     )
     assert ref2.title == "speed of light (revised)"
-    assert store.count_blocks(ref2.id) == 2
+    assert store.blocks.count_blocks(ref2.id) == 2
 
     # Lookup returns the new entry.
     found = store.get_cache_entry(provider="wolfram", request_hash="sol-hash")
@@ -188,7 +188,7 @@ def test_blocks_persist_with_cache_entry(store: Store) -> None:
         request_hash="multi",
         ttl_seconds=3600,
     )
-    blocks = store.list_blocks_for_ref(ref.id)
+    blocks = store.blocks.list_blocks_for_ref(ref.id)
     assert [b.pos for b in blocks] == [0, 1, 2]
     assert [b.text for b in blocks] == ["line 1", "line 2", "line 3"]
 

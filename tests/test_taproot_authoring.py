@@ -118,7 +118,9 @@ def test_source_handle_grounds_edge_at_paper_chunk(store: Any) -> None:
     from precis.store.types import BlockInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.insert_blocks(paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})])
+    store.blocks.insert_blocks(
+        paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})]
+    )
     with store.pool.connection() as conn:
         chunk_id = int(
             conn.execute(
@@ -148,7 +150,7 @@ def test_two_passages_of_one_paper_are_two_edges(store: Any) -> None:
     from precis.store.types import BlockInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         paper,
         [
             BlockInsert(pos=0, text="First supporting passage.", meta={}),
@@ -636,7 +638,9 @@ def test_backfill_grounding_part_b_grounds_paper_evidence_edge(store: Any) -> No
     from precis.store.types import BlockInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.insert_blocks(paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})])
+    store.blocks.insert_blocks(
+        paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})]
+    )
     with store.pool.connection() as conn:
         chunk_id = int(
             conn.execute(
@@ -686,7 +690,7 @@ def test_backfill_grounding_part_a_resyncs_draft_cites_edge(store: Any) -> None:
     from precis.store.types import BlockInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         paper, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
     )
     with store.pool.connection() as conn:
@@ -747,7 +751,9 @@ def test_backfill_grounding_dry_run_writes_nothing(store: Any) -> None:
     from precis.store.types import BlockInsert
 
     paper = seed_ref(store, title="Wu 2022", kind="paper")
-    store.insert_blocks(paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})])
+    store.blocks.insert_blocks(
+        paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})]
+    )
     with store.pool.connection() as conn:
         chunk_id = int(
             conn.execute(

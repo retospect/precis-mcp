@@ -28,7 +28,7 @@ def _open_gripe(store: Store, title: str, *, prio: int | None = None) -> int:
 
 def _mark_diagnosed(store: Store, gripe_id: int) -> None:
     """Append a DIAGNOSIS (auto...) comment — the marker diagnose_scan skips."""
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         gripe_id,
         [
             BlockInsert(

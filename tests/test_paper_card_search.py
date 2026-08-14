@@ -35,16 +35,16 @@ def _seed(
     """
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = embedder or MockEmbedder(dim=1024)
-    blocks = store.insert_blocks(
+    blocks = store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(pos=i, text=t, embedding=e.embed_one(t))
             for i, t in enumerate(body)
         ],
     )
-    cid = store.upsert_card_combined(ref.id, card_text)
+    cid = store.blocks.upsert_card_combined(ref.id, card_text)
     if embed_card:
-        store.update_block_embedding(cid, e.embed_one(card_text))
+        store.blocks.update_block_embedding(cid, e.embed_one(card_text))
     return ref.id, [b.id for b in blocks], cid
 
 
@@ -61,9 +61,9 @@ def test_lexical_card_kinds_opts_card_in(store: Store) -> None:
         card_text="Attention Is All You Need Transformer",
     )
     # Default (cards excluded) — the body has no 'transformer'.
-    assert store.search_blocks_lexical(q="transformer", kind="paper") == []
+    assert store.blocks.search_blocks_lexical(q="transformer", kind="paper") == []
     # Opted in — the card surfaces.
-    hits = store.search_blocks_lexical(
+    hits = store.blocks.search_blocks_lexical(
         q="transformer", kind="paper", card_kinds=("card_combined",)
     )
     assert len(hits) == 1
@@ -85,10 +85,12 @@ def test_semantic_card_kinds_opts_card_in(store: Store) -> None:
     )
     qv = e.embed_one("attention transformer architecture")
     # Default excludes the card.
-    base = store.search_blocks_semantic(query_vec=qv, kind="paper", max_distance=None)
+    base = store.blocks.search_blocks_semantic(
+        query_vec=qv, kind="paper", max_distance=None
+    )
     assert all(b.chunk_kind != "card_combined" for b, _r, _s in base)
     # Opted in finds the card as the nearest neighbour.
-    hits = store.search_blocks_semantic(
+    hits = store.blocks.search_blocks_semantic(
         query_vec=qv,
         kind="paper",
         max_distance=None,
@@ -107,9 +109,9 @@ def test_count_blocks_lexical_card_kinds(store: Store) -> None:
         body=["neural sequence modeling"],
         card_text="Attention Is All You Need Transformer",
     )
-    assert store.count_blocks_lexical(q="transformer", kind="paper") == 0
+    assert store.blocks.count_blocks_lexical(q="transformer", kind="paper") == 0
     assert (
-        store.count_blocks_lexical(
+        store.blocks.count_blocks_lexical(
             q="transformer", kind="paper", card_kinds=("card_combined",)
         )
         == 1
@@ -119,7 +121,9 @@ def test_count_blocks_lexical_card_kinds(store: Store) -> None:
 def test_bad_card_kind_rejected(store: Store) -> None:
     """A non-``card_`` kind is rejected (literal interpolation guard)."""
     with pytest.raises(BadInput, match="card_kind"):
-        store.search_blocks_lexical(q="x", kind="paper", card_kinds=("paragraph",))
+        store.blocks.search_blocks_lexical(
+            q="x", kind="paper", card_kinds=("paragraph",)
+        )
 
 
 # ── handler-level: end-to-end through PaperHandler.search ──────────

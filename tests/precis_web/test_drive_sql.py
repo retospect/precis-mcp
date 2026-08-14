@@ -96,7 +96,7 @@ def test_recent_refs_has_chunks_filter(store):
 
     emb = MockEmbedder(dim=store.embedding_dim())
     with_chunk = store.insert_ref(kind="web", slug="has-a-chunk", title="chunked")
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         with_chunk.id,
         [BlockInsert(pos=0, text="some body text", embedding=emb.embed_one("x"))],
     )
@@ -205,7 +205,7 @@ def test_count_recent_refs_matches_list_under_same_filters(store):
     # Two chunked, one stub (no PDF, no chunk) — distinct kind to isolate.
     for slug in ("cnt-chunked-1", "cnt-chunked-2"):
         r = store.insert_ref(kind="wikipedia", slug=slug, title=slug)
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             r.id, [BlockInsert(pos=0, text="body", embedding=emb.embed_one("x"))]
         )
     store.insert_ref(kind="wikipedia", slug="cnt-bare", title="bare")
@@ -317,7 +317,7 @@ def test_recent_refs_untried_composes_with_has_chunks_filter(store):
 
     emb = MockEmbedder(dim=store.embedding_dim())
     chunked = store.insert_ref(kind="paper", slug="ut-hc-chunked", title="Chunked")
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         chunked.id, [BlockInsert(pos=0, text="body", embedding=emb.embed_one("x"))]
     )
     untried_stub = store.insert_ref(kind="paper", slug="ut-hc-untried", title="Untried")
@@ -378,7 +378,7 @@ def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
         ref = store.insert_ref(
             kind="conv", slug="discord/1/2/3", title="#general", meta={}, conn=conn
         )
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(

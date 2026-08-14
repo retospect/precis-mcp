@@ -21,7 +21,7 @@ from precis.store import BlockInsert, Store
 
 def _paper(store: Store, *, slug: str, blocks: list[str]) -> int:
     ref = store.insert_ref(kind="paper", slug=slug, title=f"Paper {slug}")
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id, [BlockInsert(pos=i, text=t, meta={}) for i, t in enumerate(blocks)]
     )
     return ref.id

@@ -151,7 +151,7 @@ class TestIngestPaper:
         assert ref.meta["tradition"] == "minitest"
         assert "ingested_at" in ref.meta
 
-        blocks = store.list_blocks_for_ref(ref.id)
+        blocks = store.blocks.list_blocks_for_ref(ref.id)
         assert len(blocks) == 2
         assert blocks[0].text.startswith("The first lesson.")
         assert "_source_: test/1" in blocks[0].text
@@ -235,7 +235,7 @@ class TestIngestPaper:
         ref = store.get_ref(kind="oracle", id="minitest")
         assert ref is not None
         assert ref.title == "Mini Test (v2)"
-        blocks = store.list_blocks_for_ref(ref.id)
+        blocks = store.blocks.list_blocks_for_ref(ref.id)
         assert len(blocks) == 1
         assert blocks[0].text.startswith("Replaced.")
 
@@ -513,7 +513,7 @@ class TestBundledIngest:
         )
         ref = store.get_ref(kind="oracle", id="iching")
         assert ref is not None
-        blocks = store.list_blocks_for_ref(ref.id)
+        blocks = store.blocks.list_blocks_for_ref(ref.id)
         positions = sorted(b.pos for b in blocks)
         assert positions == list(range(1, 65)), (
             "I-Ching positions must be 1..64 inclusive; got "
@@ -542,5 +542,5 @@ class TestBundledIngest:
         )
         ref = store.get_ref(kind="oracle", id="minitest")
         assert ref is not None
-        blocks = store.list_blocks_for_ref(ref.id)
+        blocks = store.blocks.list_blocks_for_ref(ref.id)
         assert sorted(b.pos for b in blocks) == [1, 2]

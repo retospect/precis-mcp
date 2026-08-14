@@ -42,7 +42,7 @@ def _seed_oracle_with_embeddings(
     assert embedder is not None
     ref = store.insert_ref(kind="oracle", slug=slug, title=f"Oracle {slug}")
     embs = embedder.embed(texts)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(
@@ -66,7 +66,7 @@ def _seed_memory(store: Store, hub: Hub, text: str) -> int:
     embedder = hub.embedder
     assert embedder is not None
     ref = store.insert_ref(kind="memory", slug=None, title=text[:40])
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             BlockInsert(
@@ -244,7 +244,7 @@ def test_blocks_without_embeddings_excluded(
     ref = store.insert_ref(kind="oracle", slug="mixed", title="Mixed")
     embedder = hub.embedder
     assert embedder is not None
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [
             # pos=0 has no embedding → must be excluded.

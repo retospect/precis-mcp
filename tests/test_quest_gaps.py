@@ -123,7 +123,7 @@ class TestMomentum:
         for i in range(3):
             h.put(id=qid, text=f"observation {i}", entry="observation")
         log_entries = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == LOG_KIND
+            b for b in store.blocks.list_blocks_for_ref(qid) if b.chunk_kind == LOG_KIND
         ]
         assert len(log_entries) == 3
         m_default = quest_momentum(store, qid)

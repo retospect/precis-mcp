@@ -107,13 +107,13 @@ def test_ingest_sim_creates_markdown_and_plaintext_refs(
     assert md_ref is not None
     assert md_ref.meta["sim_slug"] == "fixture-sim"
     assert md_ref.meta["sim_git_sha"] == sha
-    assert store.count_blocks(md_ref.id) > 0
+    assert store.blocks.count_blocks(md_ref.id) > 0
 
     txt_ref = store.get_ref(kind="plaintext", id="sim--fixture-sim--out--pareto")
     assert txt_ref is not None
     assert txt_ref.meta["sim_slug"] == "fixture-sim"
     assert txt_ref.meta["sim_git_sha"] == sha
-    assert store.count_blocks(txt_ref.id) > 0
+    assert store.blocks.count_blocks(txt_ref.id) > 0
 
     # Projected onto disk under PRECIS_ROOT/sim/<slug>/ — CSV normalized
     # to .txt (PlaintextHandler's extension set omits .csv), markdown
@@ -209,8 +209,8 @@ def test_ingest_sim_second_run_over_unchanged_files_is_a_no_op(
     assert md_ref is not None
     assert txt_ref is not None
     md_id_before, txt_id_before = md_ref.id, txt_ref.id
-    md_blocks_before = store.count_blocks(md_ref.id)
-    txt_blocks_before = store.count_blocks(txt_ref.id)
+    md_blocks_before = store.blocks.count_blocks(md_ref.id)
+    txt_blocks_before = store.blocks.count_blocks(txt_ref.id)
 
     second = ingest_sim(
         slug="fixture-sim",
@@ -234,8 +234,8 @@ def test_ingest_sim_second_run_over_unchanged_files_is_a_no_op(
     assert md_ref_after.id == md_id_before
     assert txt_ref_after.id == txt_id_before
     # Same block counts — nothing was re-chunked/re-inserted.
-    assert store.count_blocks(md_ref_after.id) == md_blocks_before
-    assert store.count_blocks(txt_ref_after.id) == txt_blocks_before
+    assert store.blocks.count_blocks(md_ref_after.id) == md_blocks_before
+    assert store.blocks.count_blocks(txt_ref_after.id) == txt_blocks_before
     # Provenance survives the no-op run.
     assert md_ref_after.meta.get("sim_slug") == "fixture-sim"
     assert txt_ref_after.meta.get("sim_slug") == "fixture-sim"

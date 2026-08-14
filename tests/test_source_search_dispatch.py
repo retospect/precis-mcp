@@ -19,7 +19,7 @@ def _seed(rt: PrecisRuntime, kind: str, slug: str, title: str, text: str) -> int
     ref = store.insert_ref(kind=kind, slug=slug, title=title)
     emb = rt.hub.embedder
     vec = emb.embed_one(text) if emb is not None else None
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, embedding=vec)])
+    store.blocks.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, embedding=vec)])
     return ref.id
 
 

@@ -67,7 +67,9 @@ def test_record_review_rejects_body_chunk(store: Store) -> None:
     only; recording a review for it must raise BadInput, not silently
     write a row that can never go dirty."""
     ref = store.insert_ref(kind="paper", slug="rv-body", title="Body")
-    store.insert_blocks(ref.id, [BlockInsert(pos=0, text="body text", embedding=None)])
+    store.blocks.insert_blocks(
+        ref.id, [BlockInsert(pos=0, text="body text", embedding=None)]
+    )
     with store.pool.connection() as conn:
         chunk_row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id=%s ORDER BY ord LIMIT 1",

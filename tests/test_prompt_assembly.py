@@ -611,7 +611,9 @@ def _paper_with_matching_chunk(hub: Hub, *, slug: str) -> tuple[int, str]:
     from precis.store.types import BlockInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug=slug, title="Cartridge Paper")
-    hub.live_store.insert_blocks(paper.id, [BlockInsert(pos=0, text=_PAPER_CHUNK_TEXT)])
+    hub.live_store.blocks.insert_blocks(
+        paper.id, [BlockInsert(pos=0, text=_PAPER_CHUNK_TEXT)]
+    )
     return paper.id, _PAPER_CHUNK_TEXT
 
 

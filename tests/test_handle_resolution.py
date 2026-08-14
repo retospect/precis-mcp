@@ -226,10 +226,10 @@ def test_resolve_relative_sibling_steps(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="uh36-rel", title="p")
     cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(4)]
     h1 = handle_registry.format_handle("paper", cids[1], chunk=True)  # ord 1
-    assert store.resolve_relative(f"{h1}+1") == ("paper", "uh36-rel~2")
-    assert store.resolve_relative(f"{h1}+2") == ("paper", "uh36-rel~3")
-    assert store.resolve_relative(f"{h1}-1") == ("paper", "uh36-rel~0")
-    assert store.resolve_relative(f"{h1}++") == ("paper", "uh36-rel~2")
+    assert store.blocks.resolve_relative(f"{h1}+1") == ("paper", "uh36-rel~2")
+    assert store.blocks.resolve_relative(f"{h1}+2") == ("paper", "uh36-rel~3")
+    assert store.blocks.resolve_relative(f"{h1}-1") == ("paper", "uh36-rel~0")
+    assert store.blocks.resolve_relative(f"{h1}++") == ("paper", "uh36-rel~2")
 
 
 def test_resolve_relative_zero_step_is_the_chunk_itself(store: Store) -> None:
@@ -237,8 +237,8 @@ def test_resolve_relative_zero_step_is_the_chunk_itself(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="uh36-rel-zero", title="p")
     cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(3)]
     h1 = handle_registry.format_handle("paper", cids[1], chunk=True)  # ord 1
-    assert store.resolve_relative(f"{h1}-0") == ("paper", "uh36-rel-zero~1")
-    assert store.resolve_relative(f"{h1}+0") == ("paper", "uh36-rel-zero~1")
+    assert store.blocks.resolve_relative(f"{h1}-0") == ("paper", "uh36-rel-zero~1")
+    assert store.blocks.resolve_relative(f"{h1}+0") == ("paper", "uh36-rel-zero~1")
 
 
 def test_resolve_relative_out_of_range_is_none(store: Store) -> None:
@@ -246,31 +246,31 @@ def test_resolve_relative_out_of_range_is_none(store: Store) -> None:
     cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(3)]
     last = handle_registry.format_handle("paper", cids[2], chunk=True)  # ord 2 = max
     first = handle_registry.format_handle("paper", cids[0], chunk=True)  # ord 0
-    assert store.resolve_relative(f"{last}+1") is None  # past the end
-    assert store.resolve_relative(f"{first}-1") is None  # before the start
+    assert store.blocks.resolve_relative(f"{last}+1") is None  # past the end
+    assert store.blocks.resolve_relative(f"{first}-1") is None  # before the start
 
 
 def test_resolve_relative_span_clamps(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="uh36-span", title="p")
     cids = [_insert_chunk(store, ref.id, ord_=i) for i in range(5)]
     h2 = handle_registry.format_handle("paper", cids[2], chunk=True)  # ord 2
-    assert store.resolve_relative(f"{h2}-1..1") == ("paper", "uh36-span~1..3")
+    assert store.blocks.resolve_relative(f"{h2}-1..1") == ("paper", "uh36-span~1..3")
     # clamps to the document bounds [0, 4]
-    assert store.resolve_relative(f"{h2}-9..9") == ("paper", "uh36-span~0..4")
+    assert store.blocks.resolve_relative(f"{h2}-9..9") == ("paper", "uh36-span~0..4")
 
 
 def test_resolve_relative_ancestor_on_flat_kind_is_none(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="uh36-flat", title="p")
     cid = _insert_chunk(store, ref.id, ord_=0)
     h = handle_registry.format_handle("paper", cid, chunk=True)
-    assert store.resolve_relative(f"{h}^") is None  # papers have no hierarchy
+    assert store.blocks.resolve_relative(f"{h}^") is None  # papers have no hierarchy
 
 
 def test_resolve_relative_non_relative_is_none(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="uh36-abs", title="p")
     cid = _insert_chunk(store, ref.id, ord_=0)
     h = handle_registry.format_handle("paper", cid, chunk=True)
-    assert store.resolve_relative(h) is None  # absolute handle, no operator
+    assert store.blocks.resolve_relative(h) is None  # absolute handle, no operator
 
 
 @_NEEDS_PAPER_EXTRA

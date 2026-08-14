@@ -148,7 +148,7 @@ def test_paper_chunk_ref_is_a_cites_edge_not_related_to(
     from precis.store.types import BlockInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    hub.live_store.insert_blocks(
+    hub.live_store.blocks.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
     )
     with hub.live_store.pool.connection() as conn:
@@ -192,7 +192,7 @@ def test_cites_edge_grounds_at_source_draft_chunk(
     from precis.store.types import BlockInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug="wu2022a", title="Paper")
-    hub.live_store.insert_blocks(
+    hub.live_store.blocks.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
     )
     with hub.live_store.pool.connection() as conn:
@@ -238,7 +238,7 @@ def test_same_ref_cited_from_two_chunks_is_two_edges(
     from precis.store.types import BlockInsert
 
     paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
-    hub.live_store.insert_blocks(
+    hub.live_store.blocks.insert_blocks(
         paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
     )
     with hub.live_store.pool.connection() as conn:

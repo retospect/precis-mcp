@@ -67,7 +67,9 @@ class TestGraduation:
         assert graduated == [sid]
         assert any(str(t) == "needs-experiment" for t in store.tags_for(sid))
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any(
             (b.meta or {}).get("entry_type") == "milestone" and "graduated" in b.text
@@ -190,7 +192,9 @@ class TestBarrierQualityGate:
         assert graduated == []
         assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any(
             (b.meta or {}).get("entry_type") == "note" and "held back" in b.text
@@ -277,7 +281,9 @@ class TestTierLadderGraduationGate:
         assert graduated == []
         assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
         logs = [
-            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
         ]
         assert any(
             (b.meta or {}).get("entry_type") == "note" and "pending verify" in b.text

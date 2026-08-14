@@ -41,7 +41,7 @@ def _seed_paper(store, *, cite_key: str, pdf_sha256: str | None = None) -> int:
         title=f"Test paper {cite_key}",
         meta={},
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [BlockInsert(pos=0, text=f"Body of {cite_key}.", meta={})],
     )

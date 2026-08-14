@@ -179,7 +179,7 @@ def _seed_paper_with_keyworded_body(
     """Insert a paper + one body chunk per keyword set, stamping the keywords the
     ``chunk_keywords`` worker would (it doesn't run in tests). Returns ref_id."""
     ref = store.insert_ref(kind="paper", slug=slug, title=title)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [BlockInsert(pos=i, text=f"body of chunk {i}") for i in range(len(regimes))],
     )
@@ -216,7 +216,7 @@ def test_doc_eye_chunk_handle_opens_that_chunk(hub: Hub) -> None:
         regimes=[["a"], ["a"], ["a"], ["a"], ["a"]],
     )
     # resolve the ord=2 chunk's universal pc handle, then eye it
-    blocks = store.list_blocks_for_ref(ref_id)
+    blocks = store.blocks.list_blocks_for_ref(ref_id)
     eye = blocks[2]
     pc = handle_registry.format_handle("paper", eye.id, chunk=True)
     out = render_eye(store, pc, "verbatim")
