@@ -1,10 +1,10 @@
 ---
 status: draft
-title: Taproot reground (draft 173020) — two residual hubs, both with defects beyond their sourcing
+title: Taproot reground (draft 173020) — fi189542 open, awaiting its primary; fi189543 resolved
 model: opus
 ---
 
-# Reground residual: `fi189542` and `fi189543`
+# Reground residual: `fi189542` (open) and `fi189543` (resolved)
 
 The manual reground pass over draft 173020 is complete — evidence, prose and
 hub-claim passes all applied and verified on prod (123 hubs; 108 edge adds, 36
@@ -138,9 +138,10 @@ Two mechanical gotchas, both paid for once already:
 
 - `edit(kind='finding', …)` accepts **exactly one of** `pick_candidate=` |
   `title=` | `unacquirable_note=`. It supports neither find-replace nor
-  `dry_run`. So the `fi189542` angle correction and its unacquirable note are
-  necessarily two separate calls, and the correction must pass the **full**
-  replacement claim string.
+  `dry_run`, and `title=` must carry the **full** replacement claim string —
+  there is no partial edit. (An earlier version of this bullet went on to
+  prescribe an `fi189542` angle correction plus an unacquirable note; both are
+  ruled out above. The API fact stands; the instruction did not.)
 - `refs.title` is capped at 200 characters and only mirrors the claim; the
   authoritative text is the `ord=0` chunk. A retitle whose change falls past
   character 200 produces before/after echo lines that look identical. Verify
