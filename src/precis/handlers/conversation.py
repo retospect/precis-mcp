@@ -157,7 +157,7 @@ class ConversationHandler(Handler):
                 next_hint="search(kind='conv', q='...')",
             )
             scope_ref_id = scope_ref.id
-        hits = self.store.search_blocks_fused(
+        hits = self.store.blocks.search_blocks_fused(
             q=q,
             query_vec=None,  # phase 5 — lexical only for state kinds
             kind="conv",
@@ -166,7 +166,7 @@ class ConversationHandler(Handler):
         )
         if not hits:
             return Response(body=f"no conv turns match {q!r}")
-        total = self.store.count_blocks_lexical(
+        total = self.store.blocks.count_blocks_lexical(
             q=q, kind="conv", scope_ref_id=scope_ref_id
         )
         lines = [
@@ -206,7 +206,7 @@ class ConversationHandler(Handler):
         """
         if not (q and q.strip()):
             return []
-        triples = self.store.search_blocks_fused(
+        triples = self.store.blocks.search_blocks_fused(
             q=q,
             query_vec=None,
             kind="conv",
@@ -315,7 +315,7 @@ class ConversationHandler(Handler):
         # after a reconnect. Cheap per-ref scan — turns counts cap in
         # the low thousands per conv even for long threads.
         if msg_id_s is not None:
-            existing = self.store.list_blocks_for_ref(ref.id)
+            existing = self.store.blocks.list_blocks_for_ref(ref.id)
             for b in existing:
                 if (b.meta or {}).get("msg_id") == msg_id_s:
                     handle = (
@@ -329,7 +329,7 @@ class ConversationHandler(Handler):
                     )
             next_pos = (existing[-1].pos + 1) if existing else 0
         else:
-            next_pos = self.store.count_blocks(ref.id)
+            next_pos = self.store.blocks.count_blocks(ref.id)
 
         block_meta: dict[str, Any] = dict(meta or {})
         block_meta["author"] = author_s
@@ -341,7 +341,7 @@ class ConversationHandler(Handler):
         # (0001_initial.sql line 1578).
         block_meta.setdefault("chunk_kind", "conv_message")
 
-        inserted = self.store.insert_blocks(
+        inserted = self.store.blocks.insert_blocks(
             ref.id,
             [BlockInsert(pos=next_pos, text=body, meta=block_meta)],
         )
@@ -437,7 +437,7 @@ class ConversationHandler(Handler):
         )
 
     def _render_overview(self, slug: str, ref: Any) -> Response:
-        n_blocks = self.store.count_blocks(ref.id)
+        n_blocks = self.store.blocks.count_blocks(ref.id)
         meta = ref.meta or {}
         participants = meta.get("participants") or []
         handle = handle_registry.format_handle("conv", ref.id)
@@ -463,7 +463,7 @@ class ConversationHandler(Handler):
         return Response(body=body)
 
     def _render_transcript(self, slug: str, ref: Any) -> Response:
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{slug}: no turns")
         handle = handle_registry.format_handle("conv", ref.id)
@@ -475,7 +475,7 @@ class ConversationHandler(Handler):
         return Response(body="\n".join(lines).rstrip())
 
     def _render_turn(self, slug: str, ref_id: int, pos: int) -> Response:
-        blocks = self.store.list_blocks_for_ref(ref_id, pos_range=(pos, pos))
+        blocks = self.store.blocks.list_blocks_for_ref(ref_id, pos_range=(pos, pos))
         if not blocks:
             raise NotFound(
                 f"no turn at ~{pos} in conv {slug!r}",
@@ -501,7 +501,7 @@ class ConversationHandler(Handler):
         """
         if n <= 0:
             return Response(body=f"{slug}: no turns inlined (recent=0)")
-        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         if not all_blocks:
             return Response(body=f"{slug}: no turns")
         tail = all_blocks[-n:]
@@ -549,7 +549,7 @@ class ConversationHandler(Handler):
         """
         if n <= 0:
             return Response(body=f"{slug}: digest empty (digest=0)")
-        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         if not all_blocks:
             return Response(body=f"{slug}: no turns")
         # Window: drop the trailing skip_recent, then take the last n
@@ -595,7 +595,7 @@ class ConversationHandler(Handler):
         just emits it as code-block markdown so asa_bot can parse
         without ambiguity).
         """
-        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         if not all_blocks:
             return Response(body=f"{slug}: no turns yet")
         last = all_blocks[-1]

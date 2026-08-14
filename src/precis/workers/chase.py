@@ -690,7 +690,7 @@ def _select_grounding_chunk(
     if embedder is not None and claim_text.strip():
         try:
             query_vec = embedder.embed_one(claim_text)
-            hits = store.search_blocks(
+            hits = store.blocks.search_blocks(
                 q=claim_text,
                 query_vec=query_vec,
                 mode="semantic",

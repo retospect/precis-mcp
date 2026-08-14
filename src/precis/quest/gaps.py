@@ -214,7 +214,9 @@ def quest_gaps(
 def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
     """Hypothesis logbook entries with no later result / dead-end entry."""
     blocks = [
-        b for b in store.list_blocks_for_ref(quest_id) if b.chunk_kind == _LOG_KIND
+        b
+        for b in store.blocks.list_blocks_for_ref(quest_id)
+        if b.chunk_kind == _LOG_KIND
     ]
     if not blocks:
         return []
@@ -262,7 +264,11 @@ def quest_momentum(
         return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
     log_blocks = (
-        [b for b in store.list_blocks_for_ref(quest_id) if b.chunk_kind == _LOG_KIND]
+        [
+            b
+            for b in store.blocks.list_blocks_for_ref(quest_id)
+            if b.chunk_kind == _LOG_KIND
+        ]
         if entries is None
         else entries
     )
@@ -350,7 +356,7 @@ def quest_alignment(
     live = _live_servers(store, quest_id) if servers is None else servers
     if not live:
         return [], 0
-    qblock = store.get_block(quest_id, pos=-1, with_embedding=True)
+    qblock = store.blocks.get_block(quest_id, pos=-1, with_embedding=True)
     qvec = getattr(qblock, "embedding", None) if qblock is not None else None
     if not qvec:
         return [], 0
@@ -358,7 +364,7 @@ def quest_alignment(
     flags: list[AlignmentFlag] = []
     checked = 0
     for r in live[:_ALIGN_MAX_SERVERS]:
-        sb = store.get_block(r.id, pos=-1, with_embedding=True)
+        sb = store.blocks.get_block(r.id, pos=-1, with_embedding=True)
         svec = getattr(sb, "embedding", None) if sb is not None else None
         if not svec:
             continue

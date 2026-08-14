@@ -475,7 +475,7 @@ def _render_detail(
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
     verified_at = getattr(ref, "human_verified_at", None)
     stamps = store.ingest_timestamps(ref_id)
-    n_chunks = store.count_blocks(ref_id)
+    n_chunks = store.blocks.count_blocks(ref_id)
     tags = _detail_tags(store, ref_id)
     initial_tab = initial_tab or ("Meta" if has_triage else "Navigate")
     # Suggest a real cite_key from the (fixed) author + year. Pre-fill the
@@ -742,7 +742,7 @@ async def detail(
     # a bump failure must never 500 the reader. Skipped on the id→slug
     # redirect above (the follow-up slug request does the bump).
     try:
-        store.bump_salience_for_ref(ref.id)
+        store.blocks.bump_salience_for_ref(ref.id)
         # Also stamp refs.last_viewed_at — a clean, search-hit-free open signal
         # (chunks.last_seen is bumped by search too) that the reading-brief's
         # "reading" lane can migrate onto once enough history has accumulated.
@@ -785,20 +785,22 @@ async def search_in_paper(
         embedder = getattr(hub, "embedder", None)
         vec = embed_query(embedder, q)
         if vec is not None:
-            hits = store.search_blocks_semantic(
+            hits = store.blocks.search_blocks_semantic(
                 query_vec=vec, scope_ref_id=ref.id, limit=_NAV_LIMIT, max_distance=None
             )
         else:
             m = "keyword"  # embedder down → degrade to a lexical find
     if m != "semantic":
         m = "keyword"
-        hits = store.search_blocks_lexical(q=q, scope_ref_id=ref.id, limit=_NAV_LIMIT)
+        hits = store.blocks.search_blocks_lexical(
+            q=q, scope_ref_id=ref.id, limit=_NAV_LIMIT
+        )
 
     ords = [b.pos for b, _r, _s in hits]
-    pages = store.chunk_pages(ref.id, ords)
+    pages = store.blocks.chunk_pages(ref.id, ords)
     # llm-v1 gloss per hit for the Semantic-mode row (falls back to the
     # keyword chips client-side when a chunk hasn't been summarised yet).
-    summaries = store.chunk_summaries_for(ref.id, ords)
+    summaries = store.blocks.chunk_summaries_for(ref.id, ords)
     is_sem = m == "semantic"
     results = [
         {
@@ -854,7 +856,7 @@ async def toc_in_paper(
     segments = build_toc_segments(
         store=store, ref_id=ref.id, handle=handle, scope=scope
     )
-    pages = store.chunk_pages(ref.id, [seg["lo"] for seg in segments])
+    pages = store.blocks.chunk_pages(ref.id, [seg["lo"] for seg in segments])
     for seg in segments:
         seg["page"] = pages.get(seg["lo"])
     return JSONResponse({"segments": segments})
@@ -874,7 +876,7 @@ async def chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunks": []})
-    return JSONResponse({"chunks": store.chunk_glosses_for_ref(ref.id)})
+    return JSONResponse({"chunks": store.blocks.chunk_glosses_for_ref(ref.id)})
 
 
 @router.get("/{ref_id}/rawchunks")
@@ -893,8 +895,8 @@ async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunks": []})
-    blocks = store.list_blocks_for_ref(ref.id)
-    pages = store.chunk_pages(ref.id, [b.pos for b in blocks])
+    blocks = store.blocks.list_blocks_for_ref(ref.id)
+    pages = store.blocks.chunk_pages(ref.id, [b.pos for b in blocks])
     return JSONResponse(
         {
             "chunks": [

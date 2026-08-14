@@ -106,7 +106,7 @@ def redirect_long_tag_values(
                 (ref_id,),
             ).fetchone()
             next_pos = int(row[0]) if row and row[0] is not None else 0
-            store.insert_blocks(
+            store.blocks.insert_blocks(
                 ref_id,
                 [
                     BlockInsert(

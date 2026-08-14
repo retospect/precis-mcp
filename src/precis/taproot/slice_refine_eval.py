@@ -202,7 +202,7 @@ def _eval_one_hub(
         hub_eval.discovery_skipped = True
         return hub_eval
 
-    candidates = store.search_blocks(
+    candidates = store.blocks.search_blocks(
         q=claim_sentence,
         query_vec=query_vec,
         mode="semantic",

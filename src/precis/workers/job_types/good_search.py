@@ -225,7 +225,7 @@ def _phase_plan(ctx: Any) -> Any:
     # handle on the worker pass — see the module docstring); the HyDE
     # ``answers`` still contribute as extra lexical legs. Leg count is
     # bounded at 1 + 8 + 8 = 17, under the store's hard cap of 32.
-    hits = ctx.store.search_blocks_multi(
+    hits = ctx.store.blocks.search_blocks_multi(
         q_texts=[q, *queries, *answers],
         query_vecs=[],
         mode="lexical",
@@ -368,7 +368,7 @@ def _read_child_verdicts(store: Any, child_id: int) -> list[dict[str, Any]] | No
     caller counts the child as failed).
     """
     try:
-        blocks = store.list_blocks_for_ref(child_id)
+        blocks = store.blocks.list_blocks_for_ref(child_id)
     except Exception:  # pragma: no cover — defensive
         log.warning("good_search: reading child %d blocks failed", child_id)
         return None

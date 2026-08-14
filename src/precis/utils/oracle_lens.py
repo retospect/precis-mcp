@@ -155,7 +155,7 @@ def _pick_ref_with_blocks(
     remaining = list(pool)
     while remaining:
         ref = remaining.pop(_below(len(remaining), rng))
-        blocks = store.list_blocks_for_ref(ref.id)
+        blocks = store.blocks.list_blocks_for_ref(ref.id)
         if blocks:
             return ref, blocks
     return None

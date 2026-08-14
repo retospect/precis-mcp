@@ -343,7 +343,7 @@ def _retry_one_ref(
 
     # Block positions follow the existing block count so a partial
     # earlier ingest (unlikely, but defensive) doesn't collide.
-    offset = store.count_blocks(ref_id)
+    offset = store.blocks.count_blocks(ref_id)
     inserts = [
         BlockInsert(
             pos=offset + i,
@@ -355,7 +355,7 @@ def _retry_one_ref(
         for i, b in enumerate(seeds)
     ]
     if inserts:
-        store.insert_blocks(ref_id, inserts)
+        store.blocks.insert_blocks(ref_id, inserts)
 
     # Update meta: flip has_description / has_claims, clear retry
     # bookkeeping. Accumulate fair_use_bytes so the rolling-window

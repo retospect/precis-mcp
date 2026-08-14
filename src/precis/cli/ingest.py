@@ -223,14 +223,14 @@ def _ingest_one_kind(
                 continue
             if ref_before is None:
                 ingested += 1
-                n_blocks = store.count_blocks(ref.id)  # type: ignore[attr-defined]
+                n_blocks = store.blocks.count_blocks(ref.id)  # type: ignore[attr-defined]
                 print(f"  ok    [{kind:<9}] {slug}  ({n_blocks} blocks)")
             else:
                 before_sha = (ref_before.meta or {}).get("sha256")
                 after_sha = (ref.meta or {}).get("sha256")
                 if force or before_sha != after_sha:
                     ingested += 1
-                    n_blocks = store.count_blocks(ref.id)  # type: ignore[attr-defined]
+                    n_blocks = store.blocks.count_blocks(ref.id)  # type: ignore[attr-defined]
                     print(f"  upd   [{kind:<9}] {slug}  ({n_blocks} blocks)")
                 else:
                     skipped += 1

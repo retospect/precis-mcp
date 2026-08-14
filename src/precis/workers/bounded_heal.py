@@ -150,7 +150,7 @@ def _file_cap_gripe(store: Store, spec: HealSpec, attempts: int) -> int | None:
             ref = store.insert_ref(
                 kind="gripe", slug=None, title=title, meta={}, conn=conn
             )
-            store.insert_blocks(
+            store.blocks.insert_blocks(
                 ref.id,
                 [BlockInsert(pos=0, text=body, meta={"chunk_kind": "gripe_body"})],
                 conn=conn,

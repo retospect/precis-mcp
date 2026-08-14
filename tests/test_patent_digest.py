@@ -42,6 +42,9 @@ class _Chunk:
 
 
 class _FakeStore:
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
     drafts = property(
         lambda self: self
     )  # sub-store facade shim (see conftest FakeStore)

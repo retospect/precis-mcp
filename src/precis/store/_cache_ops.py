@@ -37,7 +37,7 @@ Mixin assumes the concrete Store provides:
 * ``self.tx()``                 — context-manager transaction
 * ``self.insert_ref(...)``      — RefsMixin method (writes refs +
                                   ref_identifiers row for the slug)
-* ``self.insert_blocks(...)``   — BlocksMixin method used for the
+* ``self.blocks.insert_blocks(...)`` — BlockStore method used for the
                                   body-on-replace path (v2: writes
                                   to ``chunks``)
 """
@@ -57,7 +57,7 @@ from precis.store._mappers import (
     _row_to_cache_entry,
     _row_to_ref,
 )
-from precis.store.types import Block, BlockInsert, CacheEntry, Ref
+from precis.store.types import BlockInsert, CacheEntry, Ref
 
 
 class CacheMixin:
@@ -65,7 +65,7 @@ class CacheMixin:
 
     pool: ConnectionPool
 
-    # Provided by ``RefsMixin`` / ``BlocksMixin``; declared here so the
+    # Provided by ``RefsMixin`` / the concrete Store; declared here so the
     # cache create-or-replace paths type-check against the cross-mixin
     # calls. **Must be TYPE_CHECKING only** — a runtime ``def`` here
     # shadows the real implementation for any mixin ordered after
@@ -73,6 +73,8 @@ class CacheMixin:
     # ``_refs_ops.py``; gripe 202377). ``tests/test_store_mixin_guard.py``
     # enforces this class-wide.
     if TYPE_CHECKING:
+        from precis.store._blocks_ops import BlockStore
+
         # Provided by the concrete Store (store.py).
         def tx(self) -> AbstractContextManager[Connection]: ...
 
@@ -87,14 +89,8 @@ class CacheMixin:
             conn: Connection | None = None,
         ) -> Ref: ...
 
-        def insert_blocks(
-            self,
-            ref_id: int,
-            blocks: list[BlockInsert],
-            *,
-            replace: bool = False,
-            conn: Connection | None = None,
-        ) -> list[Block]: ...
+        @property
+        def blocks(self) -> BlockStore: ...
 
     def get_cache_entry(
         self,
@@ -233,7 +229,7 @@ class CacheMixin:
             # Ref-level tags/links/identifiers are untouched.
             conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
             if body_blocks:
-                self.insert_blocks(ref_id, body_blocks, conn=conn)
+                self.blocks.insert_blocks(ref_id, body_blocks, conn=conn)
 
             # Update cache_state. Keep existing request_hash unless
             # caller passed a new one.
@@ -352,7 +348,7 @@ class CacheMixin:
             )
 
             if body_blocks:
-                self.insert_blocks(ref.id, body_blocks, conn=conn)
+                self.blocks.insert_blocks(ref.id, body_blocks, conn=conn)
 
             cache_sql = (
                 "INSERT INTO cache_state "

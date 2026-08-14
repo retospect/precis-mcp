@@ -128,12 +128,12 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
                     kind="anki", slug=None, title=title, meta=meta, conn=conn
                 )
                 store.add_tag(ref.id, Tag.flag(FOREIGN_FLAG), conn=conn)
-                store.upsert_card_combined(ref.id, text, conn=conn)
+                store.blocks.upsert_card_combined(ref.id, text, conn=conn)
             res.inserted += 1
         else:
             with store.tx() as conn:
                 store.update_ref(prior[0], title=title, meta_patch=meta, conn=conn)
-                store.upsert_card_combined(prior[0], text, conn=conn)
+                store.blocks.upsert_card_combined(prior[0], text, conn=conn)
             res.updated += 1
 
     for guid, (ref_id, _sha) in existing.items():

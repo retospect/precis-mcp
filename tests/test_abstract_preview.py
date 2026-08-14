@@ -1,7 +1,7 @@
 """Unit tests for the abstract-preview chunk picker (no DB).
 
 Exercises the pure ``_pick_abstract_text`` heuristic used by
-``BlocksMixin.abstract_previews`` to populate the web papers hover
+``BlockStore.abstract_previews`` to populate the web papers hover
 card from leading body chunks.
 """
 

@@ -396,7 +396,7 @@ def _deliver(store: Store, target: str, brief: str, date_tag: str) -> None:
                     meta=meta,
                     conn=conn,
                 )
-                store.insert_blocks(
+                store.blocks.insert_blocks(
                     ref.id,
                     [
                         BlockInsert(

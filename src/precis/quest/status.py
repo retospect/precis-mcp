@@ -84,7 +84,9 @@ class QuestStatus:
 
 def _logbook_tail(store: Store, quest_id: int, *, n: int) -> list[LogbookLine]:
     lines = [
-        b for b in store.list_blocks_for_ref(quest_id) if b.chunk_kind == _LOG_KIND
+        b
+        for b in store.blocks.list_blocks_for_ref(quest_id)
+        if b.chunk_kind == _LOG_KIND
     ]
     lines.sort(key=lambda b: b.pos)
     tail = lines[-n:] if n > 0 else lines
@@ -181,7 +183,9 @@ def _tick_events(store: Store, quest_id: int, *, n: int) -> list[TickEvent]:
         return []
     job_id = int(row[0])
     events = [
-        b for b in store.list_blocks_for_ref(job_id) if b.chunk_kind == _JOB_EVENT_KIND
+        b
+        for b in store.blocks.list_blocks_for_ref(job_id)
+        if b.chunk_kind == _JOB_EVENT_KIND
     ]
     events.sort(key=lambda b: b.pos)
     tail = events[-n:] if n > 0 else events

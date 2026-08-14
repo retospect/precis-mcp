@@ -397,7 +397,7 @@ def mint_hub(
             meta=meta,
             conn=c,
         )
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [
                 BlockInsert(
@@ -582,7 +582,7 @@ def refine_claim_sentence(
         )
 
         # (2) finding_body chunk — DELETE+INSERT at ord=0.
-        store.replace_body_chunk(
+        store.blocks.replace_body_chunk(
             hub_ref_id, stripped, chunk_kind="finding_body", source=set_by, conn=c
         )
 

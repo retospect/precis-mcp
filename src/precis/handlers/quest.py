@@ -399,7 +399,7 @@ class QuestHandler(NumericRefHandler):
                 # Re-embed the card so search/alignment reads the rewritten
                 # statement, not the stale one (DELETE+INSERT re-enters the
                 # embed worker's queue).
-                self.store.upsert_card_combined(ref.id, text, conn=conn)
+                self.store.blocks.upsert_card_combined(ref.id, text, conn=conn)
         old_words = len((old_text or "").split())
         new_words = len(text.split())
         return Response(
@@ -547,7 +547,7 @@ class QuestHandler(NumericRefHandler):
         """The logbook chunks (quest_log) in append order."""
         return [
             b
-            for b in self.store.list_blocks_for_ref(ref_id)
+            for b in self.store.blocks.list_blocks_for_ref(ref_id)
             if b.chunk_kind == _LOG_KIND
         ]
 

@@ -474,11 +474,11 @@ class FusedBlockSearch:
                 ref = refs_map.get(rid)
                 if ref is None:
                     continue
-                block = self.store.get_block(rid, pos=0) or self.store.get_block(
-                    rid, pos=-1
-                )
+                block = self.store.blocks.get_block(
+                    rid, pos=0
+                ) or self.store.blocks.get_block(rid, pos=-1)
                 if block is None:
-                    body = self.store.list_blocks_for_ref(rid)
+                    body = self.store.blocks.list_blocks_for_ref(rid)
                     block = body[0] if body else None
                 if block is None:
                     continue
@@ -641,7 +641,7 @@ class FusedBlockSearch:
                 )
             # Probe one row past the page so ``broad_has_more`` is exact
             # for the next-page trailer, then slice back to page_size.
-            probe = self.store.search_blocks_multi(
+            probe = self.store.blocks.search_blocks_multi(
                 q_texts=q_texts,
                 query_vecs=query_vecs,
                 mode=mode,
@@ -666,7 +666,7 @@ class FusedBlockSearch:
             # answers (gripe #38684: search q='*' returned a 500). See
             # :func:`embed_query`.
             query_vec = query_vec_for(self.embedder, q, mode)
-            hits = self.store.search_blocks(
+            hits = self.store.blocks.search_blocks(
                 q=q,
                 query_vec=query_vec,
                 mode=mode,
@@ -711,7 +711,7 @@ class FusedBlockSearch:
         # real cause is missing metadata (the corpus has many such rows).
         year_notice = ""
         if year_from is not None or year_to is not None:
-            omitted = self.store.count_paper_yearless_matches(
+            omitted = self.store.blocks.count_paper_yearless_matches(
                 q=q,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
@@ -731,7 +731,7 @@ class FusedBlockSearch:
         if hits:
             # Salience: heat the chunks this page surfaced (block-level).
             # One set-based bump; no-op for dream-actor reads.
-            self.store.bump_salience([block.id for block, _ref, _score in hits])
+            self.store.blocks.bump_salience([block.id for block, _ref, _score in hits])
 
             # Total-hits header: count blocks the lexical filter would
             # match without the LIMIT, so the agent sees "10 of K" when
@@ -755,7 +755,7 @@ class FusedBlockSearch:
             # total=None (headline renders the plain count, no "of K") and
             # gate the nav on ``broad_has_more`` instead.
             if not broad:
-                total = self.store.count_blocks_lexical(
+                total = self.store.blocks.count_blocks_lexical(
                     q=q,
                     kind=self.kind,
                     scope_ref_id=scope_ref_id,

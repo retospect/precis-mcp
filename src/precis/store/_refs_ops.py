@@ -69,7 +69,7 @@ class RefsMixin:
     # Provided by ``TagsMixin`` on the concrete Store; declared here so
     # the retraction-cascade path in ``regrade_finding_for_retraction``
     # type-checks against the cross-mixin call. **Must be TYPE_CHECKING
-    # only** — Store's MRO is (Store, RefsMixin, BlocksMixin, TagsMixin,
+    # only** — Store's MRO is (Store, RefsMixin, TagsMixin,
     # ...), so a runtime ``def add_tag`` here wins over TagsMixin's real
     # implementation and every numeric-ref put dies with
     # NotImplementedError. Filed gripe: see CHANGELOG entry for

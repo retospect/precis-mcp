@@ -753,6 +753,10 @@ class TestRunExceptionMapping:
             id: int = 42
 
         class _Store:
+            blocks = property(
+                lambda self: self
+            )  # blocks carve: flat fake doubles as its own sub-store
+
             def get_ref(self, **_kw: object) -> _Ref:
                 return _Ref()
 

@@ -415,7 +415,7 @@ def run(
     # deployments) or the single-repo fallback.
     repo_dir = resolve_repo_for_gripe(store, gripe_id, cfg)
 
-    blocks = store.list_blocks_for_ref(gripe_id)
+    blocks = store.blocks.list_blocks_for_ref(gripe_id)
     if not blocks:
         raise RuntimeError(f"fix_gripe: gripe id={gripe_id} has no body chunk")
     prompt = _compose_prompt(ref_title=ref.title, blocks=blocks)

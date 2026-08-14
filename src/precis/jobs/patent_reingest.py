@@ -182,7 +182,9 @@ def run_reingest_pass(
         outcome = ReingestOutcome(slug=slug)
         try:
             ref = store.get_ref(kind="patent", id=slug)
-            outcome.blocks_before = store.count_blocks(ref.id) if ref is not None else 0
+            outcome.blocks_before = (
+                store.blocks.count_blocks(ref.id) if ref is not None else 0
+            )
         except Exception:  # pragma: no cover — best-effort lookup/count
             ref = None
         is_stub = bool(ref is not None and (ref.meta or {}).get(FAMILY_STUB_META_KEY))

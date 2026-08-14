@@ -560,7 +560,9 @@ def _plan_pa_group(
       (``ungrounded``) evidence edge, rewriting ``[pa]`` → ``[fi<hub>]``. For
       whole-paper claims with no single grounding passage.
     """
-    fetched = [(h, rid) for (h, rid) in supporters if store.count_blocks(rid) > 0]
+    fetched = [
+        (h, rid) for (h, rid) in supporters if store.blocks.count_blocks(rid) > 0
+    ]
     if len(fetched) < len(supporters):
         # All stubs, or a mixed run — either way skip with no write (a mixed
         # run's prose collapse would erase the un-fetched token; see docstring).

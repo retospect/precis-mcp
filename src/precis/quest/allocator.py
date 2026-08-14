@@ -193,7 +193,7 @@ def weekly_chars(store: Store, quest_id: int, *, days: int = 7) -> int:
         return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
     total = 0
-    for b in store.list_blocks_for_ref(quest_id):
+    for b in store.blocks.list_blocks_for_ref(quest_id):
         if b.chunk_kind != LOG_KIND or b.created_at is None:
             continue
         if _aware(b.created_at) < since:

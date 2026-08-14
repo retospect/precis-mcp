@@ -1,5 +1,7 @@
-"""Block-level CRUD against the v2 ``chunks`` table. Mixin on
-:class:`precis.store.Store`.
+"""Block-level CRUD against the v2 ``chunks`` table — the composed
+:class:`BlockStore` sub-store, reached as ``store.blocks`` (second
+domain carved out of the flat mixin stack; see
+``docs/backlog/codereview-store-decomposition.md``).
 
 "Blocks" is the original (v1) name; v2 calls them ``chunks``. The
 public Python surface keeps the historical name to avoid churning
@@ -25,14 +27,11 @@ Two columns the v2 schema requires that v1 didn't have:
 - ``chunks.section_path``  TEXT[]; populated from ``BlockInsert.meta
                             ['section_path']`` when present, else ``{}``.
 
-**Phase 2 scope**: insert / get / list / count / density+embedding
-update / random / blocks_missing_embeddings.
+Scope: insert / get / list / count / density+embedding update /
+random / blocks_missing_embeddings, plus the lexical / semantic /
+RRF-fused search paths.
 
-**Phase 3 (not yet implemented)**: the four lexical+semantic+fused
-search paths still hold v1 SQL and raise NotImplementedError when
-called.
-
-Mixin assumes the concrete Store provides ``self.pool``.
+``pool`` comes from the shared :class:`~precis.store.core.StoreCore`.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ from __future__ import annotations
 import os
 import random
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -59,6 +58,7 @@ from precis.store._mappers import (
     _upsert_tag,
 )
 from precis.store._salience import background_actor_active
+from precis.store.core import StoreCore
 
 #: Whitelist mapping a background actor's name to its per-actor rotation
 #: column on ``chunks``. The column name is interpolated into selection /
@@ -72,7 +72,7 @@ _ATTENTION_COLUMNS: dict[str, str] = {
 }
 
 #: Hard ceiling on the total leg count (lexical + semantic) accepted by
-#: :meth:`BlocksOpsMixin.search_blocks_multi`. The MCP surface and the
+#: :meth:`BlockStore.search_blocks_multi`. The MCP surface and the
 #: paper handler cap ``queries=`` / ``answers=`` at 8 each; this is the
 #: last-resort bound for direct (agentic-tier) callers.
 _MULTI_LEG_HARD_CAP = 32
@@ -111,6 +111,9 @@ from precis.store._tag_filter import (
 from precis.store.types import Block, BlockInsert, Density, Ref
 from precis.utils import handle_registry
 from precis.utils.angle import angle_anchors
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 # Default chunk_kind for inserts via this mixin. Phase 2 keeps the
 # block surface kind-agnostic; ingesters that want richer typing
@@ -277,7 +280,7 @@ def _pick_abstract_text(items: list[tuple[str, str]]) -> str:
     """Choose the best abstract-preview text from leading chunks.
 
     ``items`` is the ordered ``(text, section_path)`` list for one
-    ref. See :meth:`BlocksMixin.abstract_previews` for the preference
+    ref. See :meth:`BlockStore.abstract_previews` for the preference
     order. Returns ``""`` when nothing usable is present.
     """
     # 1. An explicit abstract chunk wins (label stripped).
@@ -319,10 +322,21 @@ def _unpack_search_row(row: tuple) -> tuple[Block, Ref, float]:
     )
 
 
-class BlocksMixin:
-    """Block insert / get / list + (phase 3) lexical / semantic / fused search."""
+class BlockStore:
+    """Composed sub-store for block (chunk) ops — reached as
+    ``store.blocks``. Block insert / get / list + lexical / semantic /
+    fused search. Holds a reference to the shared
+    :class:`~precis.store.core.StoreCore` (pool lifecycle) rather than
+    its own pool; it makes no cross-domain calls, so the ``host``
+    back-reference exists only for parity with the carve pattern."""
 
-    pool: ConnectionPool
+    def __init__(self, core: StoreCore, *, host: Store) -> None:
+        self._core = core
+        self._host = host
+
+    @property
+    def pool(self) -> ConnectionPool:
+        return self._core.pool
 
     # -- helpers ------------------------------------------------------------
 
@@ -2675,4 +2689,4 @@ def _refetch_block(conn: Connection, chunk_id: int) -> Block:
     return _row_to_block(row)
 
 
-__all__ = ["BlocksMixin"]
+__all__ = ["BlockStore"]

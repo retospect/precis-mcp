@@ -301,7 +301,9 @@ class QuestTickOutcome:
 def _logbook_tail(store: Store, quest_id: int, n: int = _LOGBOOK_TAIL) -> list[str]:
     """The last ``n`` logbook entries, formatted one per line (oldest first)."""
     entries = [
-        b for b in store.list_blocks_for_ref(quest_id) if b.chunk_kind == LOG_KIND
+        b
+        for b in store.blocks.list_blocks_for_ref(quest_id)
+        if b.chunk_kind == LOG_KIND
     ]
     lines: list[str] = []
     for b in entries[-n:]:
@@ -351,7 +353,7 @@ def _paper_abstract_snippet(store: Store, ref: Ref) -> str:
     text = abstract.strip() if isinstance(abstract, str) else ""
     if not text:
         try:
-            blocks = store.list_blocks_for_ref(ref.id)
+            blocks = store.blocks.list_blocks_for_ref(ref.id)
         except Exception:
             blocks = []
         for b in blocks:
@@ -387,7 +389,7 @@ def _paper_citable_handle(store: Store, ref: Ref) -> str | None:
     export/bibliography materializer already recognizes it inline.
     """
     try:
-        blocks = store.list_blocks_for_ref(ref.id)
+        blocks = store.blocks.list_blocks_for_ref(ref.id)
     except Exception:
         return None
     for b in blocks:

@@ -72,7 +72,7 @@ class StructureMixin:
     tx: Any
     insert_ref: Any
     get_ref: Any
-    _replace_card_combined: Any  # BlocksMixin — the shared card_combined write
+    blocks: Any  # BlockStore sub-store — the shared card_combined write
     find_ref_by_identifier: Any  # IdentifiersMixin — external-id collapse
     insert_ref_identifiers: Any  # IdentifiersMixin — external-id collapse
 
@@ -174,7 +174,7 @@ class StructureMixin:
                     ),
                 )
             self._write_measures(conn, ref_id=ref.id, scene=scene)
-            self._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
+            self.blocks._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
         return ref, created
 
     def _write_measures(self, conn: Connection, *, ref_id: int, scene: Scene) -> None:

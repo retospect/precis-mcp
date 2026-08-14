@@ -31,7 +31,7 @@ class CadMixin:
     tx: Any
     insert_ref: Any
     get_ref: Any
-    _replace_card_combined: Any  # BlocksMixin — the shared card_combined write
+    blocks: Any  # BlockStore sub-store — the shared card_combined write
 
     def cad_save(
         self,
@@ -86,7 +86,7 @@ class CadMixin:
                     ),
                 )
                 n += 1
-            self._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
+            self.blocks._replace_card_combined(conn, ref_id=ref.id, card_text=card_text)
         return ref, created, n
 
     # -- read ------------------------------------------------------------

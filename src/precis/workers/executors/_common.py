@@ -928,9 +928,9 @@ def append_chunk(
         ).fetchone()
         next_pos = int(row[0]) if row and row[0] is not None else 0
     else:
-        blocks = store.list_blocks_for_ref(ref_id)
+        blocks = store.blocks.list_blocks_for_ref(ref_id)
         next_pos = len(blocks)
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref_id,
         [BlockInsert(pos=next_pos, text=text, meta={"chunk_kind": chunk_kind})],
         conn=conn,

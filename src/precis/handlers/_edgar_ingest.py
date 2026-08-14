@@ -14,7 +14,7 @@ Drives the fetch-as-ingest flow (spec § "Mental model"):
         ↓
     Store.insert_ref('edgar', slug=<accession dashed>, ...)
         ↓
-    Store.insert_blocks([one block per paragraph, section labels on meta])
+    Store.blocks.insert_blocks([one block per paragraph, section labels on meta])
         ↓
     Store.add_tag(...) for each auto-tag (form:, cik:, fiscal-year:)
         ↓
@@ -137,7 +137,7 @@ def ingest_filing(
             ref_id=existing.id,
             slug=slug,
             accession=parsed,
-            block_count=store.count_blocks(existing.id),
+            block_count=store.blocks.count_blocks(existing.id),
             inserted=False,
             bytes_fetched=0,
         )
@@ -211,7 +211,7 @@ def ingest_filing(
             conn=conn,
         )
         if block_inserts:
-            store.insert_blocks(ref.id, block_inserts, conn=conn)
+            store.blocks.insert_blocks(ref.id, block_inserts, conn=conn)
 
     _apply_auto_tags(store, ref.id, parsed_filing)
 

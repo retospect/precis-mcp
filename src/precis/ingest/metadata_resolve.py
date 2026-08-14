@@ -190,7 +190,9 @@ def _title_candidates(store: Store, ref: Any) -> list[str]:
     t = (ref.title or "").strip()
     if t and not is_garbage_title(t) and not is_pii(t):
         return [t]
-    blocks = store.list_blocks_for_ref(ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1))
+    blocks = store.blocks.list_blocks_for_ref(
+        ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
+    )
     seen: set[str] = set()
     cands: list[str] = []
     for block in blocks:

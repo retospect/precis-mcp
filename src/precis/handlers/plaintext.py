@@ -491,7 +491,7 @@ class PlaintextHandler(Handler):
 
         query_vec = query_vec_for(self.embedder, q, mode)
 
-        hits = self.store.search_blocks(
+        hits = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -517,7 +517,7 @@ class PlaintextHandler(Handler):
             )
             return Response(body=body)
 
-        total = self.store.count_blocks_lexical(
+        total = self.store.blocks.count_blocks_lexical(
             q=q, kind=self._KIND, scope_ref_id=scope_ref_id
         )
         # Detect a score cliff — unique-literal queries
@@ -567,7 +567,7 @@ class PlaintextHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.search_blocks(
+        triples = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -762,7 +762,7 @@ class PlaintextHandler(Handler):
         assert ref is not None
         if tags:
             apply_tag_ops(self.store, self._KIND, ref.id, tags=tags, untags=None)
-        n = self.store.count_blocks(ref.id)
+        n = self.store.blocks.count_blocks(ref.id)
         suffix = f" [commit={commit_sha[:8]}]" if commit_sha else ""
         return Response(
             body=f"created {self._KIND} {slug!r} ({n} paragraph(s)){suffix}"
@@ -837,7 +837,7 @@ class PlaintextHandler(Handler):
         # Unified response — name slug, block pos, block slug, and
         # line range so chained edits don't need a follow-up
         # /toc round-trip (MCP critic MAJOR-C 2026-05-02).
-        last = _last_block(self.store.list_blocks_for_ref(ref.id))
+        last = _last_block(self.store.blocks.list_blocks_for_ref(ref.id))
         return Response(
             body=format_write_result(
                 verb="appended",
@@ -906,7 +906,7 @@ class PlaintextHandler(Handler):
         # Recover (slug, pos, lines) of the post-replace block —
         # line_start survives equal/shorter splices; pos is the
         # fallback.
-        fresh = self.store.list_blocks_for_ref(ref.id)
+        fresh = self.store.blocks.list_blocks_for_ref(ref.id)
         new_block = _block_at_line(fresh, target.line_start) or _block_at_pos(
             fresh, target.pos
         )
@@ -1100,7 +1100,7 @@ class PlaintextHandler(Handler):
         # multiple locations that may cross block boundaries.
         spans = result.edited_spans or ()
         verb = "edited" if op_kind == "edit" else "inserted"
-        fresh = self.store.list_blocks_for_ref(ref.id)
+        fresh = self.store.blocks.list_blocks_for_ref(ref.id)
         if spans:
             first_line = spans[0][0]
             last_line = spans[-1][1]
@@ -1427,7 +1427,7 @@ class PlaintextHandler(Handler):
             else:
                 self.store.update_ref(ref.id, title=title, meta_patch=new_meta)
 
-            self.store.insert_blocks(ref.id, inserts, replace=True, conn=conn)
+            self.store.blocks.insert_blocks(ref.id, inserts, replace=True, conn=conn)
 
         fresh = self.store.get_ref(kind=self._KIND, id=slug)
         if fresh is not None:
@@ -1532,7 +1532,7 @@ class PlaintextHandler(Handler):
 
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
-        n_blocks = self.store.count_blocks(ref.id)
+        n_blocks = self.store.blocks.count_blocks(ref.id)
         rel = meta.get("path", "?")
         size = meta.get("size") or "?"
         # "paragraphs" is the plaintext-native noun. Subclasses that
@@ -1552,7 +1552,7 @@ class PlaintextHandler(Handler):
             lines.append(f"mtime:       {meta['mtime_iso']}")
 
         # Block-preview pane — subclasses can inject headings / TOC.
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         lines.extend(self._overview_body_extras(ref, blocks))
 
         body = "\n".join(lines)
@@ -1594,7 +1594,7 @@ class PlaintextHandler(Handler):
                     f"unparseable pos selector: {sel.value!r}",
                     next=f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
                 ) from exc
-            block = self.store.get_block(ref.id, pos=pos)
+            block = self.store.blocks.get_block(ref.id, pos=pos)
             if block is None:
                 raise NotFound(
                     f"no {self._block_noun()} at ~{pos} in {ref.slug!r}",
@@ -1603,12 +1603,12 @@ class PlaintextHandler(Handler):
                     ),
                 )
         else:
-            block = self.store.get_block(ref.id, slug=sel.value)
+            block = self.store.blocks.get_block(ref.id, slug=sel.value)
             if block is None:
                 # Fallback 1: unique prefix shorthand — recover from
                 # ``inserted-by-probe-marker`` → full hash-suffixed
                 # slug (MCP critic MINOR-C 2026-05-02).
-                all_blocks = self.store.list_blocks_for_ref(ref.id)
+                all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
                 prefix_hits = _prefix_shorthand_matches(all_blocks, sel.value)
                 if len(prefix_hits) == 1:
                     block = next(b for b in all_blocks if b.slug == prefix_hits[0])
@@ -1681,7 +1681,7 @@ class PlaintextHandler(Handler):
         2026-05-02). Each matching block's header cites the
         canonical slug so follow-up calls can move to Track B.
         """
-        all_blocks = self.store.list_blocks_for_ref(ref.id)
+        all_blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         matched: list[Any] = []
         for b in all_blocks:
             meta = b.meta or {}

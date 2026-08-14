@@ -279,11 +279,11 @@ class GripeHandler(NumericRefHandler):
         # Next pos = current chunk count (body is pos=0, comments
         # follow). list_blocks_for_ref excludes synthetic cards
         # (ord<0) so the count is exactly the body + comment count.
-        existing = self.store.list_blocks_for_ref(ref.id)
+        existing = self.store.blocks.list_blocks_for_ref(ref.id)
         next_pos = len(existing)
         try:
             with self.store.tx() as conn:
-                self.store.insert_blocks(
+                self.store.blocks.insert_blocks(
                     ref.id,
                     [
                         BlockInsert(
@@ -338,7 +338,7 @@ class GripeHandler(NumericRefHandler):
     # ── rendering: body + comment timeline ──────────────────────────
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         lines = [f"# {self._sense()} {ref.id}"]
         if ref.set_by:
             lines.append(f"filed by: {ref.set_by}")

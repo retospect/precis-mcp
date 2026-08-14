@@ -116,7 +116,7 @@ def set_intent(
             title=title or _derive_title(text),
             meta_patch={"anchor": heading_handle, _META_KEY: strength},
         )
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             existing,
             [BlockInsert(pos=0, text=text, meta={"chunk_kind": _BODY_KIND})],
             replace=True,
@@ -128,7 +128,7 @@ def set_intent(
         title=title or _derive_title(text),
         meta={"anchor": heading_handle, _META_KEY: strength},
     )
-    store.insert_blocks(
+    store.blocks.insert_blocks(
         ref.id,
         [BlockInsert(pos=0, text=text, meta={"chunk_kind": _BODY_KIND})],
     )

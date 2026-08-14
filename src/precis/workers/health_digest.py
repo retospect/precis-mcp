@@ -1382,14 +1382,14 @@ def _auto_close_marker_gripe(
     level."""
     from precis.store.types import BlockInsert
 
-    existing = store.list_blocks_for_ref(gripe_id)
+    existing = store.blocks.list_blocks_for_ref(gripe_id)
     next_pos = len(existing)
     comment = (
         f"auto-closed by health_digest: condition {fingerprint} returned "
         f"fresh at {datetime.now(UTC).isoformat()}"
     )
     with store.tx() as conn:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             gripe_id,
             [
                 BlockInsert(
@@ -1443,7 +1443,7 @@ def _file_router_gripe(
         ref = store.insert_ref(
             kind="gripe", slug=None, title=gripe_title, meta={}, conn=conn
         )
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             ref.id,
             [BlockInsert(pos=0, text=body, meta={"chunk_kind": "gripe_body"})],
             conn=conn,

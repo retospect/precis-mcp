@@ -869,7 +869,7 @@ class PaperHandler(Handler):
         # Opt the title/meta card in (same as :meth:`search`) so a paper
         # is reachable by title in the cross-kind merge too, then dedup
         # so a body hit wins over its own card.
-        triples = self.store.search_blocks(
+        triples = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -882,7 +882,7 @@ class PaperHandler(Handler):
         )
         triples = _dedup_card_hits(triples)
         # Salience bump (block-level); no-op for dream-actor reads.
-        self.store.bump_salience([block.id for block, _ref, _score in triples])
+        self.store.blocks.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind=self.spec.kind)
 
     # -- seven-verb surface --------------------------------------------------
@@ -1283,7 +1283,7 @@ class PaperHandler(Handler):
         authors_raw = meta.get("authors")
         authors = _format_authors(authors_raw)
         journal = _clean_inline_text(str(meta.get("journal") or ""))
-        n_blocks = self.store.count_blocks(ref.id)
+        n_blocks = self.store.blocks.count_blocks(ref.id)
 
         lines: list[str] = []
         banner = _retraction_banner(ref)
@@ -1667,7 +1667,7 @@ class PaperHandler(Handler):
 
     def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
         lo, hi = chunk
-        blocks = self.store.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise NotFound(
                 f"no blocks in {ref.slug} for range ~{lo}..{hi}",
@@ -1682,7 +1682,9 @@ class PaperHandler(Handler):
         # (MCP critic MAJOR — figure block returns image marker with no
         # caption.)
         if len(blocks) == 1 and lo == hi and _is_image_only_block(blocks[0].text):
-            tail = self.store.list_blocks_for_ref(ref.id, pos_range=(hi + 1, hi + 1))
+            tail = self.store.blocks.list_blocks_for_ref(
+                ref.id, pos_range=(hi + 1, hi + 1)
+            )
             if tail and _looks_like_caption(tail[0].text):
                 blocks = [*blocks, *tail]
                 hi = tail[0].pos
@@ -1740,7 +1742,7 @@ class PaperHandler(Handler):
         # finished in one).  The promoted "navigate via TOC" hint
         # comes first in single-block mode, since paging-by-block is
         # almost never the right strategy when scanning a paper.
-        total = self.store.count_blocks(ref.id)
+        total = self.store.blocks.count_blocks(ref.id)
         nav: list[tuple[str, str]] = []
         single_block = lo == hi
 
@@ -1839,7 +1841,7 @@ class PaperHandler(Handler):
         """
         from precis.handlers._paper_toc import detect_heading
 
-        blocks = self.store.list_blocks_for_ref(ref.id, with_embedding=True)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id, with_embedding=True)
         if not blocks:
             return ChunksForToc(
                 chunks_text=(),
@@ -1916,7 +1918,7 @@ class PaperHandler(Handler):
         fallback the reader falls back to. For a clustered overview use
         ``view='toc'``; for a chunk's full text use ``get(id='pa<id>~N')``.
         """
-        glosses = self.store.chunk_glosses_for_ref(ref.id)
+        glosses = self.store.blocks.chunk_glosses_for_ref(ref.id)
         if not glosses:
             return Response(
                 body=(
@@ -1994,7 +1996,7 @@ class PaperHandler(Handler):
         suffix = "" if total <= limit else f" of {total}"
         # Surface total corpus depth so the agent doesn't have to
         # estimate chunk volume from per-paper counts (#38683).
-        total_chunks = self.store.count_chunks_for_kind("paper")
+        total_chunks = self.store.blocks.count_chunks_for_kind("paper")
         lines = [
             f"# {len(refs)} paper{'s' if len(refs) != 1 else ''}{suffix}"
             f"  ({total_chunks} chunks)"

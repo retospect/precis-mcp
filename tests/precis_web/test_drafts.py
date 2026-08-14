@@ -93,6 +93,10 @@ class _WorkspacePool:
 
 
 class DraftFakeStore(FakeStore):
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(self) -> None:
         super().__init__()
         # Mirrors refs.meta for the /workspace route's read-modify-write

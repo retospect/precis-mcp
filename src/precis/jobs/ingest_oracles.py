@@ -303,7 +303,7 @@ def ingest_paper(
                 conn=c,
             )
             ref_id = ref.id
-        store.insert_blocks(ref_id, inserts, conn=c)
+        store.blocks.insert_blocks(ref_id, inserts, conn=c)
         for tag_str in open_tags:
             store.add_tag(ref_id, Tag.open(tag_str), set_by="system", conn=c)
 

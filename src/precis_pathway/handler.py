@@ -237,7 +237,7 @@ class PathwayHandler(Handler):
                     meta=seed_meta,
                     conn=conn,
                 )
-                store.insert_blocks(
+                store.blocks.insert_blocks(
                     ref.id,
                     [
                         BlockInsert(
@@ -307,7 +307,7 @@ class PathwayHandler(Handler):
         if v == "config":
             return Response(body=meta.get("config_snapshot_yaml", "(no config)"))
         if v == "methods":
-            blocks = store.list_blocks_for_ref(ref.id)
+            blocks = store.blocks.list_blocks_for_ref(ref.id)
             body = "\n\n".join(b.text for b in blocks if b.text)
             return Response(body=body or "(no methods)")
         if v == "mermaid":
@@ -430,7 +430,7 @@ class PathwayHandler(Handler):
                 ref = store.insert_ref(
                     kind="pathway", slug=slug, title=title, meta=seed_meta, conn=conn
                 )
-                store.insert_blocks(
+                store.blocks.insert_blocks(
                     ref.id,
                     [BlockInsert(pos=0, text=body, meta={"chunk_kind": BODY_KIND})],
                     conn=conn,
@@ -439,7 +439,9 @@ class PathwayHandler(Handler):
             else:
                 ref_id = existing.id
                 store.stamp_ref_meta(ref_id, seed_meta, conn=conn)
-                store.replace_body_chunk(ref_id, body, chunk_kind=BODY_KIND, conn=conn)
+                store.blocks.replace_body_chunk(
+                    ref_id, body, chunk_kind=BODY_KIND, conn=conn
+                )
             for t in tags or []:
                 self._add_tag(store, ref_id, t, conn)
         return Response(

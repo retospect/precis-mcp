@@ -599,7 +599,7 @@ def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") 
                 meta=meta,
                 conn=conn,
             )
-            store.insert_blocks(
+            store.blocks.insert_blocks(
                 ref.id,
                 [BlockInsert(pos=0, text=body, meta={"chunk_kind": "message_body"})],
                 conn=conn,

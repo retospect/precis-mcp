@@ -128,7 +128,7 @@ class MarkdownHandler(PlaintextHandler):
         patent overviews use) so the ``/toc`` view looks consistent
         across every slug-addressed block-bearing kind.
         """
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{ref.slug}: no blocks indexed")
         handle = handle_registry.format_handle(self._KIND, ref.id)

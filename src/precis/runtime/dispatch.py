@@ -940,7 +940,7 @@ class DispatchMixin(RuntimeShape):
         if self.store is None:
             return False
         try:
-            resolved = self.store.resolve_relative(ident)
+            resolved = self.store.blocks.resolve_relative(ident)
         except Exception:  # pragma: no cover — store outage etc.
             log.exception("resolve_relative lookup failed")
             return False

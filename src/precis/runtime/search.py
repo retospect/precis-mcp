@@ -378,7 +378,7 @@ class SearchMixin(RuntimeShape):
             except Exception:
                 log.exception("source search: query embed failed; lexical-only")
 
-        results = store.search_chunks_across_kinds(
+        results = store.blocks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
             query_vec=query_vec,

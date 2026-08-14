@@ -62,6 +62,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.pool = _FakePool()
         self.add_tag = MagicMock()
+        self.blocks = self  # blocks carve: flat fake doubles as its own sub-store
         self.insert_blocks = MagicMock()
         self.list_blocks_for_ref = MagicMock(return_value=[])
 

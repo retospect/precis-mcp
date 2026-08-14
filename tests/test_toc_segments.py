@@ -14,6 +14,10 @@ from precis.utils.toc_db import _BUCKETING_THRESHOLD, build_toc_segments
 
 
 class _Store:
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(self, blocks):
         self._blocks = blocks
 

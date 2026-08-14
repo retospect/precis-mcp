@@ -56,6 +56,10 @@ class FakeStore(_FakeStoreBase):
     """``list_blocks_for_ref`` is inherited from the shared base — it
     reads the same ``self._blocks`` map populated below."""
 
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(
         self,
         hits: list[tuple[Any, Any, float]] | None = None,

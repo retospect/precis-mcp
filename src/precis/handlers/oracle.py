@@ -143,7 +143,7 @@ class OracleHandler(Handler):
 
         ref = resolve_live_slug_ref(self.store, kind="oracle", id=slug)
         handle = handle_registry.format_handle("oracle", ref.id)
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
 
         # Empty oracle — no blocks, body lives in the title only.
         if not blocks:
@@ -223,7 +223,7 @@ class OracleHandler(Handler):
             scope_ref_id = scope_ref.id
 
         query_vec = query_vec_for(self.embedder, q, mode)
-        hits = self.store.search_blocks(
+        hits = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -248,7 +248,7 @@ class OracleHandler(Handler):
             )
             return Response(body=body)
 
-        total = self.store.count_blocks_lexical(
+        total = self.store.blocks.count_blocks_lexical(
             q=q, kind="oracle", scope_ref_id=scope_ref_id
         )
         lines = [
@@ -297,7 +297,7 @@ class OracleHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.search_blocks(
+        triples = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,

@@ -81,6 +81,10 @@ class FakeStore:
     writing fails the test immediately instead of silently mutating a
     fake (or, worse, a real store)."""
 
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(
         self, conn: FakeConn, candidates: list[tuple[Any, Any, float]]
     ) -> None:

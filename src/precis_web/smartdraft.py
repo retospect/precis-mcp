@@ -334,7 +334,7 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
     # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
     # floats and (with a python cosine) blocks the page for seconds. Semantic is
     # served by the HNSW index at query time (`semantic_ranks`), not a full scan.
-    blocks = {b.id: b for b in store.list_blocks_for_ref(ref_id)}
+    blocks = {b.id: b for b in store.blocks.list_blocks_for_ref(ref_id)}
     views = store.drafts.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
     nodes: list[ChunkNode] = []
@@ -1075,7 +1075,7 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
             ref_id = pk
         held = cache.get(ref_id)
         if held is None:
-            held = store.count_blocks(ref_id) > 0
+            held = store.blocks.count_blocks(ref_id) > 0
             cache[ref_id] = held
         if not held:
             return False  # cited paper isn't held (a stub)

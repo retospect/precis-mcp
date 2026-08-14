@@ -303,7 +303,7 @@ def gripe_items(db_url: str) -> list[WorkItem]:
         )
         items: list[WorkItem] = []
         for ref in refs:
-            blocks = store.list_blocks_for_ref(ref.id)
+            blocks = store.blocks.list_blocks_for_ref(ref.id)
             entries = [_TimelineEntry(b.chunk_kind, b.pos, b.text) for b in blocks]
             item = _work_item_from_gripe(ref.id, ref.title, ref.prio, entries)
             if item is not None:

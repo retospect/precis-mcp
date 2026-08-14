@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from precis.embedder import MockEmbedder
 from precis.store import BlockInsert, Store
-from precis.store._blocks_ops import BlocksMixin
+from precis.store._blocks_ops import BlockStore
 from precis.store._tag_filter import (
     SPECULATIVE_TAG,
     is_speculative_tag,
@@ -50,7 +50,7 @@ def test_speculative_fence_is_parameterless_not_exists() -> None:
 
 
 def test_fence_decision() -> None:
-    decide = BlocksMixin._fence_speculative
+    decide = BlockStore._fence_speculative
     assert decide(None, False) is True
     assert decide(["topic:x"], False) is True
     assert decide(None, True) is False  # forced include

@@ -165,7 +165,7 @@ class TexHandler(PlaintextHandler):
         # Pull this file's blocks in pos order. We need both their
         # section meta and their raw text (to scan for \input{} that
         # appear in non-section blocks).
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         n_emitted = 0
         # Compute the depth of the outermost section in this file so we
         # can render its hierarchy starting at the current indent.

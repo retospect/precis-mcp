@@ -16,7 +16,7 @@ from precis.handlers.wikipedia import (
     _parse_extract,
     _pick_title,
 )
-from precis.store._blocks_ops import BlocksMixin
+from precis.store._blocks_ops import BlockStore
 from precis.store._tag_filter import WIKI_TAG, is_wiki_tag, wiki_fence
 
 # ── pure parse helpers ────────────────────────────────────────────────
@@ -119,7 +119,7 @@ def test_wiki_fence_is_parameterless_sql() -> None:
     ],
 )
 def test_fence_wiki_decision_table(tags, kind, expect_fence) -> None:
-    assert BlocksMixin._fence_wiki(tags, kind) is expect_fence
+    assert BlockStore._fence_wiki(tags, kind) is expect_fence
 
 
 # ── spec sanity ───────────────────────────────────────────────────────

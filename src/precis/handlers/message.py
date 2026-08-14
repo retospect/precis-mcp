@@ -230,7 +230,7 @@ class MessageHandler(NumericRefHandler):
                 meta=meta,
                 conn=conn,
             )
-            self.store.insert_blocks(
+            self.store.blocks.insert_blocks(
                 ref.id,
                 [
                     BlockInsert(

@@ -16,7 +16,7 @@ Drives the fetch-as-ingest flow:
         ↓
     Store.insert_ref('patent', slug=..., title=...)
         ↓
-    Store.insert_blocks([description blocks, claim blocks])  ← FULL path only,
+    Store.blocks.insert_blocks([description blocks, claim blocks])  ← FULL path only,
         embedding=None on every block; the embed:bge-m3 worker fills
         chunks.embedding lazily off the derived queue (ingest never embeds
         inline — see AGENTS.md's ingest guarantees)
@@ -317,7 +317,7 @@ def ingest_patent(
             ref_id=existing.id,
             slug=slug,
             docdb=parsed_id,
-            block_count=store.count_blocks(existing.id),
+            block_count=store.blocks.count_blocks(existing.id),
             inserted=False,
             bytes_fetched=0,
         )
@@ -506,7 +506,7 @@ def ingest_patent(
             ref_id=existing.id,  # type: ignore[union-attr]
             slug=slug,
             docdb=parsed_id,
-            block_count=store.count_blocks(existing.id),  # type: ignore[union-attr]
+            block_count=store.blocks.count_blocks(existing.id),  # type: ignore[union-attr]
             inserted=False,
             bytes_fetched=bytes_fetched,
         )
@@ -572,7 +572,7 @@ def ingest_patent(
             # embed / keyword / classify workers re-derive over the newly
             # marked blocks — an in-place marker patch would leave stale
             # derived rows (AGENTS.md "don't mutate body chunks").
-            store.insert_blocks(ref_id, inserts, replace=reingest, conn=conn)
+            store.blocks.insert_blocks(ref_id, inserts, replace=reingest, conn=conn)
 
     # Auto-tags. Lowercase open prefixes — see
     # store/types.py::Tag.open() for the storage rule.

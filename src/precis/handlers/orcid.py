@@ -327,7 +327,7 @@ class OrcidHandler(Handler):
 
     def _card_hits(self, q: str, *, limit: int, mode: str | None):
         query_vec = embed_query(self.embedder, q)
-        return self.store.search_blocks(
+        return self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -477,7 +477,9 @@ class OrcidHandler(Handler):
             else:
                 ref_id = existing_ref_id
                 self.store.update_ref(ref_id, title=title, meta_patch=meta, conn=conn)
-            self.store.insert_blocks(ref_id, [card_block], replace=True, conn=conn)
+            self.store.blocks.insert_blocks(
+                ref_id, [card_block], replace=True, conn=conn
+            )
         return ref_id
 
     def _apply_tag_ops_if_any(

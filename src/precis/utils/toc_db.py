@@ -132,7 +132,7 @@ def render_from_store(
     followed by a ``Next:`` drill-in block.
     """
     pos_range = scope
-    blocks = store.list_blocks_for_ref(ref_id, pos_range=pos_range)
+    blocks = store.blocks.list_blocks_for_ref(ref_id, pos_range=pos_range)
     if not blocks:
         return _empty_body(handle=handle, kind=kind, scope=scope)
 
@@ -214,7 +214,7 @@ def build_toc_segments(
     segment's ``lo`` chunk (a separate ``chunk_pages`` lookup) so a row
     click can jump the viewer. Returns ``[]`` for an empty range.
     """
-    blocks = store.list_blocks_for_ref(ref_id, pos_range=scope)
+    blocks = store.blocks.list_blocks_for_ref(ref_id, pos_range=scope)
     if not blocks:
         return []
 

@@ -596,7 +596,7 @@ def _citation_candidates(
             # one passage per cited paper), so rank just that — not topk.
             # No max_distance floor: we verify against what the author cited
             # even at low corpus-wide similarity (the verify step backstops).
-            hits = store.search_blocks(
+            hits = store.blocks.search_blocks(
                 q=claim_sentence,
                 query_vec=query_vec,
                 mode="semantic",
@@ -764,7 +764,7 @@ def _refine_one_hub(
         # grow with the number of kinds feeding discovery. Patent
         # legal-claim blocks are dropped before the merge: legal scope is
         # not empirical support (grounding policy).
-        paper_hits = store.search_blocks(
+        paper_hits = store.blocks.search_blocks(
             q=claim_sentence,
             query_vec=query_vec,
             mode="semantic",
@@ -773,7 +773,7 @@ def _refine_one_hub(
             max_distance=min_sim,
         )
         patent_hits = _drop_patent_claim_blocks(
-            store.search_blocks(
+            store.blocks.search_blocks(
                 q=claim_sentence,
                 query_vec=query_vec,
                 mode="semantic",

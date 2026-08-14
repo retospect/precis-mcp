@@ -664,7 +664,7 @@ class DraftHandler(Handler):
         chunk_kinds = ["heading"] if headings_only else None
         query_vec = query_vec_for(self.embedder, q, mode)
         offset = max(0, (int(page) - 1) * int(page_size))
-        hits = self.store.search_blocks(
+        hits = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,

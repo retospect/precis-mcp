@@ -596,7 +596,7 @@ class CacheBackedHandler(Handler):
             return
         agentlog.touch_from_env(
             self.store,
-            chunk_ids=[b.id for b in self.store.list_blocks_for_ref(ref_id)],
+            chunk_ids=[b.id for b in self.store.blocks.list_blocks_for_ref(ref_id)],
         )
 
     def _recover_key(self, ref: Ref, cache: CacheEntry) -> str | None:
@@ -773,7 +773,7 @@ class CacheBackedHandler(Handler):
                 lines.append(cite)
             return Response(body="\n".join(lines), cost=self._cost_str(cache, hit=hit))
 
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         # Blocks may be overlapping chunks from ``_split_body_blocks`` (a big
         # single body split for the embedder). Drop the overlap when rejoining
         # so the reader sees the original text, not ~150-char echoes at each
@@ -1014,7 +1014,7 @@ class CacheBackedHandler(Handler):
 
         query_vec = query_vec_for(self.embedder, q, mode)
 
-        hits = self.store.search_blocks(
+        hits = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -1044,9 +1044,9 @@ class CacheBackedHandler(Handler):
             return Response(body=body)
 
         # Salience: heat the chunks this page surfaced; no-op for dreamer.
-        self.store.bump_salience([block.id for block, _ref, _score in hits])
+        self.store.blocks.bump_salience([block.id for block, _ref, _score in hits])
 
-        total = self.store.count_blocks_lexical(q=q, kind=self.spec.kind)
+        total = self.store.blocks.count_blocks_lexical(q=q, kind=self.spec.kind)
         lines = [
             format_search_headline(
                 n_returned=len(hits),
@@ -1092,7 +1092,7 @@ class CacheBackedHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        triples = self.store.search_blocks(
+        triples = self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -1101,7 +1101,7 @@ class CacheBackedHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         # Salience bump (block-level); no-op for dream-actor reads.
-        self.store.bump_salience([block.id for block, _ref, _score in triples])
+        self.store.blocks.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind=self.spec.kind)
 
     # ── block ingestion helper ────────────────────────────────────

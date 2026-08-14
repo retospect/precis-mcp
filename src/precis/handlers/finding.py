@@ -461,7 +461,7 @@ class FindingHandler(NumericRefHandler):
                 )
                 # finding_body chunk at ord=0 (Path B: one body
                 # chunk; setup folded into prose).
-                self.store.insert_blocks(
+                self.store.blocks.insert_blocks(
                     ref.id,
                     [
                         BlockInsert(
@@ -683,7 +683,7 @@ class FindingHandler(NumericRefHandler):
                     "VALUES (%s, %s, %s, %s)",
                     ("pub_id", pub_id, ref.id, "agent"),
                 )
-                self.store.insert_blocks(
+                self.store.blocks.insert_blocks(
                     ref.id,
                     [
                         BlockInsert(
@@ -1055,7 +1055,7 @@ class FindingHandler(NumericRefHandler):
             return Response(body="\n".join(header))
 
         refs_by_id = self.store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
-        fetched_paper_ids = self.store.ref_ids_with_chunks(
+        fetched_paper_ids = self.store.blocks.ref_ids_with_chunks(
             [e.paper_ref_id for e in all_edges]
         )
 

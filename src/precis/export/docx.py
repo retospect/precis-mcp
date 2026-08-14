@@ -822,7 +822,7 @@ def _cite_endnote(
     notes: str | None = None
     if chunk_id is not None and ctx.store is not None:
         try:
-            notes = ctx.store.chunk_text_by_id(chunk_id)
+            notes = ctx.store.blocks.chunk_text_by_id(chunk_id)
         except Exception:  # pragma: no cover — chunk fetch best-effort
             notes = None
     add_citation_field(paragraph, source, notes=notes)

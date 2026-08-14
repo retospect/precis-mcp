@@ -149,9 +149,10 @@ class _FakeConn:
 
 class _FakeDeliverStore:
     def __init__(self, existing: tuple | None = None) -> None:
+        self.blocks = self  # blocks carve: flat fake doubles as its own sub-store
         self.conn = _FakeConn(existing)
         self.inserted: list[dict] = []
-        self.blocks: list[tuple] = []
+        self.inserted_blocks: list[tuple] = []
 
     def tx(self):
         import contextlib
@@ -169,7 +170,7 @@ class _FakeDeliverStore:
     def insert_blocks(
         self, ref_id: object, blocks: object, conn: object = None
     ) -> None:
-        self.blocks.append((ref_id, blocks))
+        self.inserted_blocks.append((ref_id, blocks))
 
 
 def test_deliver_queues_message_and_notifies() -> None:
@@ -185,7 +186,7 @@ def test_deliver_queues_message_and_notifies() -> None:
     # thread as an attributed proactive turn (gripe #47321)
     assert store.inserted[0]["meta"]["author"] == "asa"
     assert store.inserted[0]["meta"]["proactive"] is True
-    assert store.blocks, "expected a message_body block"
+    assert store.inserted_blocks, "expected a message_body block"
     # and the precis.messages notify fired with the new ref id + author
     notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]
     assert notifies, "expected a precis.messages pg_notify"
@@ -224,7 +225,7 @@ def test_deliver_splits_long_brief_into_multiple_messages() -> None:
         assert rec["meta"]["briefing_part"] == i
         assert rec["meta"]["briefing_parts"] == total
     # every part's body is within the Discord cap
-    for _ref_id, blocks in store.blocks:
+    for _ref_id, blocks in store.inserted_blocks:
         assert len(blocks[0].text) <= DISCORD_MAX_CHARS
     # one notify per part
     notifies = [c for c in store.conn.calls if "precis.messages" in c[0]]

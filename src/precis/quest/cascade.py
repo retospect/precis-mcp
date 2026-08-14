@@ -60,7 +60,7 @@ def _merge_meta(store: Store, ref_id: int, patch: dict[str, Any]) -> None:
 def _n_entries(store: Store, quest_id: int, entry_type: str) -> int:
     return sum(
         1
-        for b in store.list_blocks_for_ref(quest_id)
+        for b in store.blocks.list_blocks_for_ref(quest_id)
         if b.chunk_kind == LOG_KIND and (b.meta or {}).get("entry_type") == entry_type
     )
 
@@ -125,7 +125,7 @@ def _recent_cost(store: Store, quest_id: int, window: int = 10) -> float:
     """Sum of the cost on the last ``window`` result entries (a tote slice)."""
     results = [
         b
-        for b in store.list_blocks_for_ref(quest_id)
+        for b in store.blocks.list_blocks_for_ref(quest_id)
         if b.chunk_kind == LOG_KIND and (b.meta or {}).get("entry_type") == "result"
     ]
     return sum(float((b.meta or {}).get("cost", 0) or 0) for b in results[-window:])

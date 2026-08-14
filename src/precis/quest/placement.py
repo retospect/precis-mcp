@@ -74,7 +74,9 @@ def _section_centroids(store: Any, dossier_ref_id: int) -> list[_SectionCentroid
     for h in headings:
         member_ids = _subtree_chunk_ids(chunks, h.chunk_id)
         vecs = [
-            v for cid in member_ids if (v := store.get_chunk_vector(cid)) is not None
+            v
+            for cid in member_ids
+            if (v := store.blocks.get_chunk_vector(cid)) is not None
         ]
         if not vecs:
             continue
@@ -129,8 +131,12 @@ def place_papers(
     for paper_ref_id in paper_ref_ids:
         rows: list[dict[str, Any]] = []
         if centroids:
-            seed_cid = store.seed_chunk_for_ref(paper_ref_id)
-            vec = store.get_chunk_vector(seed_cid) if seed_cid is not None else None
+            seed_cid = store.blocks.seed_chunk_for_ref(paper_ref_id)
+            vec = (
+                store.blocks.get_chunk_vector(seed_cid)
+                if seed_cid is not None
+                else None
+            )
             if vec is not None:
                 gist = np.asarray(vec, dtype=np.float64)
                 scored = [

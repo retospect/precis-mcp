@@ -261,6 +261,10 @@ class _FakeRef:
 
 
 class _FakeStore:
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(
         self, refs: list[_FakeRef], blocks_by_ref: dict[int, list[_FakeBlock]]
     ) -> None:

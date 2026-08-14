@@ -31,6 +31,10 @@ class _Store:
     seeded ``{pos: (chunk_id, text, page)}`` rows — the 3-column shape
     ``_cited_chunk`` now selects (``chunk_id`` drives the ``pc<id>`` handle)."""
 
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(self, rows: dict[int, tuple[int, str, int]]) -> None:
         self._rows = rows
 

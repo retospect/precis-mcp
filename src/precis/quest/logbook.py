@@ -94,9 +94,9 @@ def append_entry(
             entry_meta.setdefault(k, v)
     # Next pos = current chunk count. list_blocks_for_ref excludes the synthetic
     # card (ord=-1), so the first logbook entry lands at pos=0.
-    next_pos = len(store.list_blocks_for_ref(quest_id))
+    next_pos = len(store.blocks.list_blocks_for_ref(quest_id))
     with store.tx() as conn:
-        store.insert_blocks(
+        store.blocks.insert_blocks(
             quest_id,
             [BlockInsert(pos=next_pos, text=text, meta=entry_meta)],
             conn=conn,

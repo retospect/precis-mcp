@@ -272,7 +272,7 @@ def _render_doc_eye(
     if ext <= Extent.TOC:
         return f"· {head}"
 
-    blocks = store.list_blocks_for_ref(ref_id)
+    blocks = store.blocks.list_blocks_for_ref(ref_id)
     if blocks:
         from precis.utils.toc_db import cluster_blocks
 

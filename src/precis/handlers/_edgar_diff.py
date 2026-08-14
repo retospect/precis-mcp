@@ -134,7 +134,7 @@ def _sections_for_ref(
 
     Returns ``{canonical_id: (section_path, [paragraph texts in order])}``.
     """
-    blocks = store.list_blocks_for_ref(ref_id)
+    blocks = store.blocks.list_blocks_for_ref(ref_id)
     out: dict[str, tuple[list[str], list[str]]] = {}
     for b in blocks:
         meta = b.meta or {}

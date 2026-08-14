@@ -41,6 +41,10 @@ class FakeStore:
     satisfy the call sites each subclass's tests hit.
     """
 
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     #: Advisory-lock / raw-SQL call sites that read ``store.pool``
     #: degrade gracefully against ``None`` — the intended behaviour for
     #: a non-Postgres fixture. Subclasses that exercise a real

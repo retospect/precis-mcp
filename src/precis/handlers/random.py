@@ -108,7 +108,7 @@ class RandomHandler(Handler):
                     "'slug' (random short identifier)"
                 ),
             )
-        picked = self.store.random_embedded_block()
+        picked = self.store.blocks.random_embedded_block()
         if picked is None:
             raise NotFound(
                 "corpus has no embedded blocks to pick from",

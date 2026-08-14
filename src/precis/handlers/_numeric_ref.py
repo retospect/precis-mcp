@@ -469,7 +469,9 @@ class NumericRefHandler(Handler):
         # Salience: heat the entries this page surfaced. Ref-level kinds
         # carry their salience on the card_combined chunk (ord=-1); kinds
         # without a card contribute nothing. No-op for dream-actor reads.
-        self.store.bump_salience(self.store.card_chunk_ids([r.id for r, _ in hits]))
+        self.store.blocks.bump_salience(
+            self.store.blocks.card_chunk_ids([r.id for r, _ in hits])
+        )
 
         # Total-hits header: a second COUNT(*) with the same WHERE
         # clause so the agent sees "10 of 1234 hits" when results are
@@ -672,7 +674,9 @@ class NumericRefHandler(Handler):
             q=q, kind=self.kind, tags=normalized_tags, limit=page_size
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
-        self.store.bump_salience(self.store.card_chunk_ids([r.id for r, _ in pairs]))
+        self.store.blocks.bump_salience(
+            self.store.blocks.card_chunk_ids([r.id for r, _ in pairs])
+        )
         return ref_hits_to_search_hits(pairs, kind=self.kind)
 
     # ── shared body-chunk search (opt-in via search_body_chunks) ────
@@ -711,7 +715,7 @@ class NumericRefHandler(Handler):
         one. The over-fetch pool grows with ``page`` so later pages
         still have enough distinct refs to dedupe from.
         """
-        raw = self.store.search_blocks_lexical(
+        raw = self.store.blocks.search_blocks_lexical(
             q=q, kind=self.kind, tags=tags, limit=page_size * 5 * max(1, page)
         )
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
@@ -723,7 +727,7 @@ class NumericRefHandler(Handler):
         ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
             window_start : window_start + page_size
         ]
-        total = self.store.count_blocks_lexical(
+        total = self.store.blocks.count_blocks_lexical(
             q=q, kind=self.kind, tags=tags, distinct_refs=True
         )
         return ordered, total
@@ -740,8 +744,8 @@ class NumericRefHandler(Handler):
         """Rendered body-chunk search: headline + one block per matching ref."""
         hits, total = self._best_body_hits(q, tags, page_size, page=page)
         if self.heat_salience_on_body_search:
-            self.store.bump_salience(
-                self.store.card_chunk_ids([ref.id for _, ref, _ in hits])
+            self.store.blocks.bump_salience(
+                self.store.blocks.card_chunk_ids([ref.id for _, ref, _ in hits])
             )
         if not hits:
             if page > 1 and total > 0:
@@ -1205,7 +1209,7 @@ class NumericRefHandler(Handler):
             if self.emits_card:
                 # Emit the embeddable card in the same tx as the ref
                 # insert so the embed worker can vectorize it lazily.
-                self.store.upsert_card_combined(
+                self.store.blocks.upsert_card_combined(
                     ref.id, self._card_combined_text(text), conn=conn
                 )
             if self.autolink_mentions:

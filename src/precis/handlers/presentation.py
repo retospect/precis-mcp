@@ -146,7 +146,7 @@ class PresentationHandler(Handler):
                 next_hint="search(kind='pres', q='...')",
             )
             scope_ref_id = scope_ref.id
-        hits = self.store.search_blocks_fused(
+        hits = self.store.blocks.search_blocks_fused(
             q=q,
             query_vec=None,
             kind="pres",
@@ -155,7 +155,7 @@ class PresentationHandler(Handler):
         )
         if not hits:
             return Response(body=f"no pres blocks match {q!r}")
-        total = self.store.count_blocks_lexical(
+        total = self.store.blocks.count_blocks_lexical(
             q=q, kind="pres", scope_ref_id=scope_ref_id
         )
         lines = [
@@ -187,7 +187,7 @@ class PresentationHandler(Handler):
     ) -> list[SearchHit]:
         if not (q and q.strip()):
             return []
-        triples = self.store.search_blocks_fused(
+        triples = self.store.blocks.search_blocks_fused(
             q=q,
             query_vec=None,
             kind="pres",
@@ -269,7 +269,7 @@ class PresentationHandler(Handler):
             # an ingester replaying slides doesn't accidentally retag.
             pass
 
-        existing = self.store.list_blocks_for_ref(ref.id)
+        existing = self.store.blocks.list_blocks_for_ref(ref.id)
         if pos is None:
             target_pos = (existing[-1].pos + 1) if existing else 0
             replace = False
@@ -294,14 +294,14 @@ class PresentationHandler(Handler):
                     "DELETE FROM chunks WHERE ref_id = %s AND ord = %s",
                     (ref.id, target_pos),
                 )
-                inserted = self.store.insert_blocks(
+                inserted = self.store.blocks.insert_blocks(
                     ref.id,
                     [BlockInsert(pos=target_pos, text=body, meta=block_meta)],
                     conn=conn,
                 )
             verb = "overwrote"
         else:
-            inserted = self.store.insert_blocks(
+            inserted = self.store.blocks.insert_blocks(
                 ref.id,
                 [BlockInsert(pos=target_pos, text=body, meta=block_meta)],
             )
@@ -479,7 +479,7 @@ class PresentationHandler(Handler):
         )
 
     def _render_overview(self, slug: str, ref: Any) -> Response:
-        n_blocks = self.store.count_blocks(ref.id)
+        n_blocks = self.store.blocks.count_blocks(ref.id)
         meta = ref.meta or {}
         handle = handle_registry.format_handle("pres", ref.id)
         lines = [f"# {handle}", f"_{ref.title}_"]
@@ -514,7 +514,7 @@ class PresentationHandler(Handler):
         return Response(body=body)
 
     def _render_full(self, slug: str, ref: Any) -> Response:
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         if not blocks:
             return Response(body=f"{slug}: no blocks")
         handle = handle_registry.format_handle("pres", ref.id)
@@ -527,7 +527,7 @@ class PresentationHandler(Handler):
         return Response(body="\n".join(lines).rstrip())
 
     def _render_block(self, slug: str, ref_id: int, pos: int) -> Response:
-        blocks = self.store.list_blocks_for_ref(ref_id, pos_range=(pos, pos))
+        blocks = self.store.blocks.list_blocks_for_ref(ref_id, pos_range=(pos, pos))
         if not blocks:
             raise NotFound(
                 f"no block at ~{pos} in pres {slug!r}",

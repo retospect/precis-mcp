@@ -85,6 +85,10 @@ class _FakePool:
 
 
 class FakeStore(_FakeStoreBase):
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(self) -> None:
         super().__init__()
         self.pool = _FakePool()

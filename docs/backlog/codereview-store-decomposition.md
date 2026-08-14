@@ -29,11 +29,23 @@ recipe that worked: hand-rolled fakes get a one-line
 REAL store must patch `store.drafts` instead (the flat patch silently
 stops intercepting).
 
+Step 3a SHIPPED: blocks carved — `_blocks_ops.py::BlockStore`
+composed as `store.blocks`, transitional flat delegations on `Store`,
+all src call sites migrated (244 sites, 87 files; store-internal
+consumers too: `_cache_ops` insert_blocks, and
+`_replace_card_combined` in cad/pcb/structure now via
+`self.blocks.*`). Measurement that picked blocks over refs: blocks =
+41 methods, 243 src + 429 test sites, 0 outbound cross-domain, 2
+inbound; refs = 48 methods, 761 src + 2,477 test sites, 20 inbound —
+and `get_ref`/`insert_ref`/`add_tag` are the most-called methods in
+the codebase, so refs is core-adjacent and needs its own design pass
+(maybe its flat names *stay* on the facade permanently).
+
 REMAINING (one domain per ship):
-- Next carves, same pattern: refs (`_refs_ops`, 108KB) and blocks
-  (`_blocks_ops`, 110KB) are the big ones; then tags/links/cache/…
-  Measure each mixin's outbound `self.*` cross-domain calls first (the
-  drafts carve needed only insert_ref/resolve_handle/add_link on host).
+- Step 3b: migrate the 429 test call sites to `store.blocks.*`, delete
+  the delegation block, extend the facade test (same recipe as
+  `tests/test_store_drafts_facade.py`; test-double recipe above).
+- Then: refs design pass (see measurement), then tags/links/cache/…
 - Endgame (per carve, as done for drafts): delete the delegation
   block once call sites migrate; `Store` ends as core + sub-store
   properties + the small cross-cutting ops it already owns.

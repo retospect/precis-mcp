@@ -596,7 +596,7 @@ class JobHandler(NumericRefHandler):
         if ref.title:
             lines.append(ref.title)
 
-        blocks = self.store.list_blocks_for_ref(ref.id)
+        blocks = self.store.blocks.list_blocks_for_ref(ref.id)
         for block in blocks:
             kind = block.chunk_kind
             if kind == _JOB_SUMMARY_KIND:

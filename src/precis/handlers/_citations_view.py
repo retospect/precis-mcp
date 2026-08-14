@@ -244,7 +244,7 @@ def _evidence_unfetched_paper_ids(
     all_ids = {pid for ids in evidence_by_hub.values() for pid in ids}
     if not all_ids:
         return evidence_by_hub, set()
-    unfetched = all_ids - store.ref_ids_with_chunks(list(all_ids))
+    unfetched = all_ids - store.blocks.ref_ids_with_chunks(list(all_ids))
     return evidence_by_hub, unfetched
 
 
@@ -253,7 +253,7 @@ def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, s
     finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
     dois = store.identifiers_for_refs(list(paper_ids))
-    block_counts = {rid: store.count_blocks(rid) for rid in paper_ids}
+    block_counts = {rid: store.blocks.count_blocks(rid) for rid in paper_ids}
     evidence_by_hub, evidence_unfetched = _evidence_unfetched_paper_ids(
         store, finding_ids
     )
@@ -359,7 +359,7 @@ def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:
     # Bulk "which of these have body chunks" (one query) minus set — the
     # to-fetch papers are those with none. Avoids an N+1 count per cited paper
     # (a lit-review draft cites 50–100+).
-    direct_unfetched = paper_ids - store.ref_ids_with_chunks(list(paper_ids))
+    direct_unfetched = paper_ids - store.blocks.ref_ids_with_chunks(list(paper_ids))
     _, evidence_unfetched = _evidence_unfetched_paper_ids(store, finding_ids)
     return sorted(direct_unfetched | evidence_unfetched)
 

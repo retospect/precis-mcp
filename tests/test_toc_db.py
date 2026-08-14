@@ -30,6 +30,10 @@ class _Stub:
 
 
 class _StubStore:
+    blocks = property(
+        lambda self: self
+    )  # blocks carve: flat fake doubles as its own sub-store
+
     def __init__(self, blocks: list[_Stub]) -> None:
         self._blocks = blocks
 

@@ -631,7 +631,7 @@ def _fetch_and_ingest(
         )
         return outcome
 
-    offset = store.count_blocks(ref.id)
+    offset = store.blocks.count_blocks(ref.id)
     inserts: list[BlockInsert] = []
 
     for i, text in enumerate(parsed.description_paragraphs):
@@ -653,7 +653,7 @@ def _fetch_and_ingest(
         )
 
     if inserts:
-        store.insert_blocks(ref.id, inserts)
+        store.blocks.insert_blocks(ref.id, inserts)
 
     # Update meta with the abstract (only if longer than what OPS gave
     # us) + the has_* flags.

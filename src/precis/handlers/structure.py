@@ -2280,7 +2280,7 @@ class StructureHandler(Handler):
             query_vec = None
         elif query_vec is None:
             query_vec = embed_query(self.embedder, q)
-        return self.store.search_blocks(
+        return self.store.blocks.search_blocks(
             q=q,
             query_vec=query_vec,
             mode=mode,
@@ -2303,7 +2303,7 @@ class StructureHandler(Handler):
         triples = self._card_search(
             q, query_vec=query_vec, mode=mode, page_size=page_size
         )
-        self.store.bump_salience([b.id for b, _r, _s in triples])
+        self.store.blocks.bump_salience([b.id for b, _r, _s in triples])
         out: list[SearchHit] = []
         for block, ref, score in triples:
             text = (getattr(block, "text", "") or "").strip()
