@@ -52,10 +52,26 @@ flag (the coverage gates already catch that shape).
   missing-number gate) and content-word precision < 0.8 are hard `lossy`;
   recall alone is blind to added material (fi201713, fi177406, fi176275).
 
-**Remaining before the 1.3k:** ship+deploy round 2 → BIG-leg A/B numbers
-(escalation pass over the 22 SMALL-failed hubs — in flight; early: 3/5
-lossy→split flips, 1 timeout, fi176603 went no-claim) → canary on melchior
-→ ~100 unseen hubs with BIG primary → full 1,346 dry-run. Consider
+**BIG-leg A/B result (escalation pass over the 22 SMALL-failed hubs,
+2026-08-14).** BIG-as-primary validated: 8/22 sound (6 split + 2
+pass-through, incl. fi177406 whose pilot extraction invented "113" — now
+clean), 3 nested (gate blocks them, hub untouched), **zero lossy** — no
+silent damage anywhere. BIG also correctly refuses all 5 junk/task-prose
+hubs SMALL hallucinated atoms for. 1 retryable dispatch timeout
+(fi176812).
+
+**New watch-item: over-conservative no-claim.** ~4/22 real claims came
+back `no-claim` (fi176603 + fi176465 labelled split, fi176361 + fi176468
+labelled pass-through; fi176399 ambiguous). Harmless in dry-run, but in
+phase-2 apply a false no-claim silently drops the hub from migration
+coverage. Measure the rate on the ~100-unseen run; phase-2 apply should
+treat `no-claim` on an evidenced hub as `needs_review`, not a skip-stamp
+(the canary's bidirectional no-claim check, promoted to an apply-time
+gate).
+
+**Remaining before the 1.3k:** deploy round 2 (BIG leg is done — safe to
+bounce daemons) → canary on melchior → ~100 unseen hubs with BIG primary
+(watch the false-no-claim rate) → full 1,346 dry-run. Consider
 re-labelling fi176365 (`pass-through` → `split`) once the BIG leg
 confirms; phase-2 apply is still NOT BUILT.
 
