@@ -1,0 +1,58 @@
+# Claim 2 — flexible MOFs: softest-direction Young's modulus below 1 GPa
+# Grounded verbatim in the body text (chunk ord=23) of Ortiz et al. (2012).
+
+@prefix np:     <http://www.nanopub.org/nschema#> .
+@prefix npx:    <http://purl.org/nanopub/x/> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix precis: <https://precis.retostamm.com/vocab#> .
+@prefix agent:  <https://precis.retostamm.com/id/> .
+@prefix this:   <https://precis.retostamm.com/np/sha256-PLACEHOLDER-2> .
+@prefix sub:    <https://precis.retostamm.com/np/sha256-PLACEHOLDER-2#> .
+
+sub:Head {
+  this: a np:Nanopublication ;
+    np:hasAssertion       sub:assertion ;
+    np:hasProvenance      sub:provenance ;
+    np:hasPublicationInfo sub:pubinfo .
+}
+
+sub:assertion {
+  sub:claim a precis:AtomicClaim ;
+    rdfs:label "In flexible metal-organic frameworks the Young's modulus in the direction of lowest rigidity is below 1 GPa, lower than the 1-10 GPa typical of other MOFs and zeolites."@en ;
+    precis:material "flexible metal-organic frameworks: MIL-53(Al), MIL-53(Ga), MIL-47, DMOF-1" ;
+    precis:method   "ab initio calculation of elastic constant tensors" ;
+    precis:quantity "below 1 GPa (flexible MOF minimum) vs 1-10 GPa (typical MOFs and zeolites)" .
+}
+
+sub:provenance {
+  sub:assertion
+    prov:wasDerivedFrom <https://doi.org/10.1103/PhysRevLett.109.195502> ;
+    precis:evidenceRole precis:corroborates ;
+    precis:sourceQuote  """It can also be seen that the values of Young's modulus for flexible MOFs in their direction of lowest rigidity, all below 1 GPa, are much lower than that of other MOFs and zeolites, which are typically in the range of 1 to 10 GPa."""@en ;
+    precis:searchSnip   "youngs modulus lowest rigidity below 1 gpa zeolites" ;
+    precis:sourcePdfSha256 "cf2cf2561f321e9c166d61810b0d2fc390b823f47aea3a1c535c490bf3ff3469" .
+
+  <https://doi.org/10.1103/PhysRevLett.109.195502>
+    dct:title "Anisotropic Elastic Properties of Flexible Metal-Organic Frameworks: How Soft are Soft Porous Crystals?" ;
+    rdfs:seeAlso <https://arxiv.org/abs/1209.6378> .
+}
+
+sub:pubinfo {
+  this: dct:created "2026-08-14T12:00:00Z"^^xsd:dateTime ;
+    dct:creator agent:precis ;
+    dct:license <https://creativecommons.org/licenses/by/4.0/> ;
+    precis:mintedFromHub <https://precis.retostamm.com/ref/fi176435> ;
+    precis:otsProof <https://precis.retostamm.com/ots/2026-08-14/proof> .
+
+  agent:precis a prov:SoftwareAgent ;
+    rdfs:label "precis (non-attesting bot identity)" .
+
+  sub:sig npx:hasSignatureTarget this: ;
+    npx:hasAlgorithm "RSA" ;
+    npx:hasPublicKey "PLACEHOLDER-BOT-PUBKEY" ;
+    npx:hasSignature "PLACEHOLDER-SIGNATURE" ;
+    npx:signedBy agent:precis .
+}

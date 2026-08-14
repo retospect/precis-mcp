@@ -12,6 +12,7 @@ telemetry (never claim data); ``score`` makes no LLM calls at all.
     precis taproot-migrate dry-run --limit 50
     precis taproot-migrate dry-run --limit 50 --cohort likely-compound --controls 10
     precis taproot-migrate dry-run --limit 50 --out /tmp/report.md
+    precis taproot-migrate dry-run --limit 50 --json /tmp/report.jsonl --escalate
 
 Phase 2 (apply, the quiet-window write) and Phase 3 (human review) are not
 built here — see the build ticket's Strategy section.
@@ -83,6 +84,24 @@ def add_parser(subparsers: Any) -> None:
         default=None,
         help="Write the markdown report to this file instead of stdout.",
     )
+    d.add_argument(
+        "--json",
+        default=None,
+        help="Also write one JSON object per outcome (hub, score, verdict, "
+        "gate metadata, full extraction, escalation results) to this file.",
+    )
+    d.add_argument(
+        "--escalate",
+        action="store_true",
+        help="Re-extract lossy/nested/junk-candidate outcomes with the "
+        "BIG-tier extractor and record both results (P2-10).",
+    )
+    d.add_argument(
+        "--control-seed",
+        type=int,
+        default=0,
+        help="Seed for the uniform random control sample (default: 0, deterministic).",
+    )
     d.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
 
 
@@ -137,7 +156,15 @@ def _run_score(args: argparse.Namespace) -> None:
 
 def _run_dry_run(args: argparse.Namespace) -> None:
     from precis.store import Store
-    from precis.taproot.migrate import dry_run, render_report
+    from precis.taproot.migrate import dry_run, dump_outcomes_jsonl, render_report
+
+    escalate_fn = None
+    if args.escalate:
+        # Lazy, in-handler import: only the --escalate path pays the
+        # canon-module import cost.
+        from precis.taproot.canon import extract_claim_strict_big
+
+        escalate_fn = extract_claim_strict_big
 
     store = Store.connect(resolve_dsn(args.database_url))
     # Bind the store to the budget meter so LOCAL dispatch can resolve the
@@ -154,6 +181,8 @@ def _run_dry_run(args: argparse.Namespace) -> None:
             limit=args.limit,
             cohort=args.cohort,
             controls=args.controls,
+            control_seed=args.control_seed,
+            escalate_fn=escalate_fn,
         )
     finally:
         store.close()
@@ -165,6 +194,11 @@ def _run_dry_run(args: argparse.Namespace) -> None:
         print(f"wrote {len(report.outcomes)} hub outcome(s) to {args.out}")
     else:
         print(rendered)
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            f.write(dump_outcomes_jsonl(report))
+        print(f"wrote {len(report.outcomes)} outcome(s) as JSONL to {args.json}")
 
 
 def run(args: argparse.Namespace) -> None:

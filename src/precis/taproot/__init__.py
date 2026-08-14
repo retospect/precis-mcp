@@ -69,6 +69,18 @@ Module map (each module's docstring carries its own detail):
 - :mod:`.authoring` / :mod:`.backfill` / :mod:`.lookup` — cite-seeded hub
   mint (``seed_claim_hub``), legacy ``[pc]``/``[pa]`` draft-cite conversion
   through the same cascade, and read-only "what hubs does this paper ground".
+- :mod:`.migrate` — the compound→atomic migration runner (``precis taproot
+  migrate`` CLI): scores the *body* claim sentence (never ``refs.title`` —
+  they differ on 572/1346 hubs), dry-run extraction with gated verdicts
+  (``split``/``pass``/``no-claim``, plus ``lossy``/``nested`` held for
+  review rather than applied), JSONL persistence for A/B runs against
+  ``tests/fixtures/taproot/migration_pilot_25.jsonl``, seeded random
+  controls. Phase-2 apply mode not built; dry-run writes nothing.
+- :mod:`.directed` — demand-driven claim minting (``precis taproot
+  direct-mint``, dry-run default): ``qualify_claim`` (BIG; one-way fit
+  claim→evidence + verbatim-quote anti-hallucination) then the same
+  block→judge→place cascade through :mod:`.hub`; ``meta.demanded_by``
+  accumulates the requesting passages. Directed, never harvest.
 
 Producers (all default-OFF env flags; each degrades to a logged no-op when no
 embedder is available):

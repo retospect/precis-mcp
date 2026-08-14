@@ -11,6 +11,9 @@ the fixture eval scores **zero over-merges** — bar = 0, no exceptions
    decomposition actually split something), and the rejected conjuncts
    (:class:`NotClaim`) that couldn't be grounded — the ``NO-CLAIM`` outcome
    is an *empty* extraction (``ClaimExtraction.is_empty``), not ``None``.
+   :func:`extract_claim_strict_big` is the identical contract at BIG tier
+   — selective escalation of hubs SMALL got wrong (P2-10), not a blanket
+   bump.
 2. :func:`block` — no model. ANN over the existing ``TAPROOT:claim`` hub card
    embeddings (bge-m3, same embedder as the rest of the card index) ->
    the ``k`` nearest :class:`Candidate` hubs.
@@ -156,6 +159,7 @@ def _coerce_extraction(
     atoms: list[CanonicalClaim],
     compound: CanonicalClaim | None,
     not_claims: list[NotClaim],
+    source_sentence: str = "",
 ) -> ClaimExtraction:
     """Enforce the atoms/compound/not_claims invariants on parsed model
     output — the ``ClaimExtraction`` analogue of :func:`_coerce_verdict`.
@@ -168,24 +172,40 @@ def _coerce_extraction(
     - A compound is kept only when decomposition did something real:
       ``len(atoms) >= 2`` (an actual split) or ``not_claims`` non-empty
       (something was rejected out of the bundle).
-    - Two-plus atoms with **no** compound -> NO-CLAIM: the model asserted a
-      split but returned no bundling sentence, so downstream (backfill's
-      prose rewrite targets the compound, else ``atoms[0]``) would silently
-      cite only the first atom — degrade whole rather than mint a partial
-      citation. The chunk stays un-decomposed and is retried on a later
-      pass.
+    - Two-plus atoms with **no** compound -> **synthesize** the compound
+      from ``source_sentence`` instead of discarding (P1-8:
+      ``docs/backlog/taproot-migration-extraction-quality-gates.md``). The
+      source sentence *is* the bundle by construction — the model asserted
+      a real split but missed the bundling-sentence field, a formatting
+      miss, not evidence the split itself was wrong (fi177585 lost a good
+      2-atom split this way). Only when the caller has no source text to
+      fall back on (empty ``source_sentence`` — shouldn't happen once a
+      caller passes it, kept as a bias-safe floor) does this still degrade
+      to NO-CLAIM: without a bundle, downstream (backfill's prose rewrite
+      targets the compound, else ``atoms[0]``) would silently cite only the
+      first atom.
     """
     atoms_t = tuple(atoms)
     not_claims_t = tuple(not_claims)
     if not atoms_t or (len(atoms_t) == 1 and not not_claims_t):
         compound = None
     elif len(atoms_t) >= 2 and compound is None:
-        log.warning(
-            "taproot: extract_claim returned %d atoms with no compound; "
-            "degrading to NO-CLAIM (partial-citation guard)",
-            len(atoms_t),
-        )
-        return _EMPTY_EXTRACTION
+        synthesized = source_sentence.strip()
+        if synthesized:
+            log.info(
+                "taproot: extract_claim returned %d atoms with no compound; "
+                "synthesizing compound from the source sentence",
+                len(atoms_t),
+            )
+            compound = CanonicalClaim(sentence=synthesized, scope={})
+        else:
+            log.warning(
+                "taproot: extract_claim returned %d atoms with no compound "
+                "and no source sentence to synthesize from; degrading to "
+                "NO-CLAIM (partial-citation guard)",
+                len(atoms_t),
+            )
+            return _EMPTY_EXTRACTION
     return ClaimExtraction(atoms=atoms_t, compound=compound, not_claims=not_claims_t)
 
 
@@ -257,6 +277,17 @@ Rules — the claim will be read ALONE, without this passage:
    formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
    -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs")."""
 
+#: Why the prompt's "mechanism clauses stay attached" rule exists (P2-13,
+#: ``docs/backlog/taproot-migration-extraction-quality-gates.md``): the only
+#: relation :mod:`precis.taproot.migrate` mints between atoms of a split is
+#: ``conjunct-of``, a symmetric-ish "these are peers of one bundle" edge —
+#: there is no vocabulary for "Y is the mechanism/cause for X". Splitting a
+#: causal clause ("because…", "enabled by…", "due to…") into its own atom
+#: therefore doesn't just lose information, it *misrepresents* it: two
+#: independent peer facts where the source stated one fact and its
+#: explanation (pilot: fi176422, fi176399). Keeping it attached — inside
+#: the explaining atom's sentence or its method/regime scope — is the only
+#: shape the current relation model can carry correctly.
 _EXTRACT_PROMPT = (
     """\
 Does this passage assert a specific, citable scientific claim (a concrete
@@ -271,17 +302,47 @@ PASSAGE:
     + CLAIM_FORM_RULES
     + """
 
-Atomic: each claim you emit must assert exactly ONE subject-predicate fact.
-If the passage bundles several conjuncts ("X has A, B, and C" / "X, which
-also does Y"), split it into self-contained atoms — each one obeying rules
-1-4 above (resolve referents per atom, carry its own material/method/
-quantity/regime, not the bundle's). A conjunct that is forward-looking
-("will enable…", "paves the way for…"), vague with no concrete referent, or
-a comparative with no stated comparator ("exceptional", "superior") cannot
-be grounded as its own atom — put it in "not_claims" with a one-phrase
-reason instead of forcing it into a weak atom. Only return the original
-sentence as "compound" when it genuinely bundles two or more
-groundable-or-rejected parts — an already-atomic passage has no compound.
+Atomic, by enumeration: each claim you emit must assert exactly ONE
+subject-predicate fact. Work in two steps:
+  Step 1 — ENUMERATE first, into "assertions": list every distinct
+  assertion the passage makes, one entry per subject-predicate fact, in
+  the order they appear. If the passage bundles several conjuncts ("X has
+  A, B, and C" / "X, which also does Y"), each conjunct is its own entry.
+  Do this before you write a single "claim" — emitting atoms without
+  enumerating first is how a bundled sentence silently loses conjuncts
+  (in practice, every conjunct but the last).
+  Step 2 — EMIT one outcome per enumerated entry: either one self-
+  contained atom in "claims" (obeying rules 1-4 above — resolve referents
+  per atom, carry its own material/method/quantity/regime, not the
+  bundle's), or one entry in "not_claims" if it can't be grounded alone.
+  The union of "claims" and "not_claims" must cover every entry in
+  "assertions" — dropping an enumerated assertion without recording it in
+  either list is an error, never a silent simplification.
+
+A conjunct that is forward-looking ("will enable…", "paves the way for…"),
+vague with no concrete referent, or a comparative with no stated comparator
+("exceptional", "superior") cannot be grounded as its own atom — put it in
+"not_claims" with a one-phrase reason instead of forcing it into a weak
+atom.
+
+Modality: a clause asserted only under a counterfactual, hypothetical, or
+contrastive foil — "would", "could", "if", "whereas X would…", "absent
+Y…" — is not something the passage asserts as true. It must NEVER become a
+bare indicative atom. Either give it an explicit regime qualifier that
+keeps the hypothetical visible in the claim itself, or — if it names no
+factual regime worth keeping — put it in "not_claims" with reason
+"counterfactual — not asserted by the source". Never drop the qualifier
+and keep the clause as if it were a fact.
+
+Mechanism clauses ("because…", "enabled by…", "due to…", "arises from…")
+are not a peer conjunct in the enumeration — they explain a claim, they
+don't add a second one. Fold a mechanism clause into the atom it explains
+(inline in the sentence, or into that atom's method/regime scope); never
+enumerate it, split it into its own atom, or file it under "not_claims".
+
+Only return the original sentence as "compound" when it genuinely bundles
+two or more groundable-or-rejected parts — an already-atomic passage has no
+compound.
 (*Absolute* is already handled by the material/method/quantity/regime
 scope fields; *Declarative* is implied by normalizing to sentences — this
 rule adds *Atomic*, the one AIDA criterion not yet enforced.)
@@ -307,19 +368,40 @@ Examples:
 - "Carbon nanomaterials have exceptional mechanical, optoelectronic, and
   physicochemical characteristics and tunability that enable
   next-generation technologies, particularly in advanced electronics." ->
-  splits into atoms for the concrete, groundable conjuncts ("Carbon
-  nanomaterials exhibit tunable mechanical characteristics.", "Carbon
-  nanomaterials exhibit tunable optoelectronic characteristics.", ...);
-  "enable next-generation technologies" (forward-looking) and
-  "exceptional"/"particularly in advanced electronics" (comparative/vague,
-  no comparator) go to not_claims; the original sentence is the compound.
+  assertions = [mechanical characteristics, optoelectronic characteristics,
+  "enable next-generation technologies", "exceptional"/"particularly in
+  advanced electronics"]; splits into atoms for the concrete, groundable
+  conjuncts ("Carbon nanomaterials exhibit tunable mechanical
+  characteristics.", "Carbon nanomaterials exhibit tunable optoelectronic
+  characteristics.", ...); "enable next-generation technologies"
+  (forward-looking) and "exceptional"/"particularly in advanced
+  electronics" (comparative/vague, no comparator) go to not_claims; the
+  original sentence is the compound.
+- "The tandem catalyst's two sites operate independently on the shared
+  support, whereas in homogeneous solution the same sites would
+  immediately neutralize each other."  -> assertions = [the sites operate
+  independently on the shared support, the counterfactual homogeneous-
+  solution foil]; the first is a claim ("The tandem catalyst's two sites
+  operate independently on the shared support."); the "whereas ... would"
+  clause is a counterfactual foil, NOT an assertion — it goes to
+  not_claims with reason "counterfactual — not asserted by the source".
+  Never mint "The sites neutralize each other in homogeneous solution" as
+  a fact — that flips the foil into a false indicative claim.
 
 For each claim you emit: give the normalized sentence plus any of
-material/method/quantity/regime it names (omit keys it doesn't name). If
-the passage asserts nothing groundable at all, "claims" is an empty list.
+material/method/quantity/regime it names (omit keys it doesn't name).
+material = the substance/compound the claim is about; method = the named
+technique, procedure, or instrument; quantity = a numeric measure with
+units ("130 GPa", "450 h⁻¹", "92% yield") — never a bare description or
+label; regime = the named condition the claim holds under ("RT", "under
+UV", "homogeneous solution"). If the passage asserts nothing groundable at
+all, "claims" is an empty list.
 
 Respond with EXACTLY ONE JSON object, nothing else:
 {{
+  "assertions": [
+    "<each distinct assertion you found in step 1, one per subject-predicate fact>"
+  ],
   "claims": [
     {{
       "claim": "<one normalized, atomic sentence>",
@@ -342,20 +424,50 @@ Respond with EXACTLY ONE JSON object, nothing else:
 
 _SCOPE_KEYS = ("material", "method", "quantity", "regime")
 
+#: Sane cap on a scope value's length (P1-9). Scope is a short qualifier
+#: ("RT", "450 h⁻¹"), not a second sentence — anything longer is the model
+#: dumping prose into a scope key rather than the claim text, so drop it
+#: rather than let it perturb hub identity (``hub.mint_hub`` feeds scope
+#: into ``make_taproot_hub_paper_id``).
+_SCOPE_VALUE_MAX_CHARS = 120
+
+
+def _valid_scope_value(key: str, value: str) -> bool:
+    """P1-9: constrain scope values so junk never reaches hub identity.
+
+    Drop empty or absurdly long values outright. ``quantity`` specifically
+    must contain at least one digit — fi176359's ``quantity: "rectangular
+    outline"`` / ``"pin count conventions"`` were prose descriptions, not
+    measures, and junk scope perturbs
+    ``hub.mint_hub``/``make_taproot_hub_paper_id``'s identity key. Never
+    raises — an invalid value is dropped, not a reason to fail the whole
+    extraction."""
+    if not value or len(value) > _SCOPE_VALUE_MAX_CHARS:
+        return False
+    if key == "quantity" and not any(ch.isdigit() for ch in value):
+        return False
+    return True
+
 
 def _parse_claim_item(item: dict[str, Any]) -> CanonicalClaim | None:
     """Parse one ``{"claim": ..., "material": ..., ...}`` object (a
     ``claims[]`` entry, or the whole payload under the legacy single-object
     shape) into a :class:`CanonicalClaim`, or ``None`` if it carries no
-    usable claim text."""
+    usable claim text.
+
+    Scope values are validated per :func:`_valid_scope_value` (P1-9) — a
+    key with a bad value is dropped, never the whole claim."""
     claim = item.get("claim")
     if not isinstance(claim, str) or not claim.strip():
         return None
-    scope = {
-        key: str(item[key]).strip()
-        for key in _SCOPE_KEYS
-        if isinstance(item.get(key), str) and item[key].strip()
-    }
+    scope = {}
+    for key in _SCOPE_KEYS:
+        raw = item.get(key)
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if _valid_scope_value(key, value):
+            scope[key] = value
     return CanonicalClaim(sentence=claim.strip(), scope=scope)
 
 
@@ -420,24 +532,43 @@ def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
     return _extract_claim_impl(chunk_text, strict=True)
 
 
-def _extract_claim_impl(chunk_text: str, *, strict: bool) -> ClaimExtraction:
-    """Shared body of :func:`extract_claim` / :func:`extract_claim_strict`
-    — see those for the behavioral contract; ``strict`` controls only
-    whether a dispatch error raises (:class:`ExtractionUnavailable`) or
-    degrades to the empty extraction."""
+def extract_claim_strict_big(chunk_text: str) -> ClaimExtraction:
+    """Like :func:`extract_claim_strict`, but dispatches at :data:`Tier.BIG`
+    instead of :data:`Tier.SMALL` (P2-10, ``docs/backlog/
+    taproot-migration-extraction-quality-gates.md``).
+
+    Same prompt, same :func:`_coerce_extraction` contract — only the model
+    tier differs. For selective escalation of the extractions the SMALL
+    pass got wrong (``lossy``/``nested``/``no-claim`` verdicts) rather than
+    a blanket BIG-tier bump over the whole corpus; the caller (``taproot
+    migrate``'s escalation path) decides which hubs qualify, this function
+    just dispatches the same contract at higher capability.
+    """
+    return _extract_claim_impl(chunk_text, strict=True, tier=Tier.BIG)
+
+
+def _extract_claim_impl(
+    chunk_text: str, *, strict: bool, tier: Tier = Tier.SMALL
+) -> ClaimExtraction:
+    """Shared body of :func:`extract_claim` / :func:`extract_claim_strict` /
+    :func:`extract_claim_strict_big` — see those for the behavioral
+    contract; ``strict`` controls only whether a dispatch error raises
+    (:class:`ExtractionUnavailable`) or degrades to the empty extraction;
+    ``tier`` controls only which model capability the dispatch targets."""
     text = (chunk_text or "").strip()
     if not text:
         return _EMPTY_EXTRACTION
-    prompt = _EXTRACT_PROMPT.format(excerpt=text[:_EXTRACT_EXCERPT_CHARS])
+    excerpt = text[:_EXTRACT_EXCERPT_CHARS]
+    prompt = _EXTRACT_PROMPT.format(excerpt=excerpt)
     res = dispatch(
         LlmRequest(
-            tier=Tier.SMALL,
+            tier=tier,
             messages=[
                 {"role": "system", "content": _EXTRACT_SYS},
                 {"role": "user", "content": prompt},
             ],
             prompt=prompt,
-            source="taproot:extract",
+            source="taproot:extract" if tier is Tier.SMALL else "taproot:extract-big",
         )
     )
     if res.error:
@@ -467,13 +598,40 @@ def _extract_claim_impl(chunk_text: str, *, strict: bool) -> ClaimExtraction:
         raw_compound = data.get("compound")
         if isinstance(raw_compound, str) and raw_compound.strip():
             compound = CanonicalClaim(sentence=raw_compound.strip(), scope={})
-        return _coerce_extraction(atoms, compound, not_claims)
+        _log_assertion_arity_drift(data.get("assertions"), atoms, not_claims)
+        return _coerce_extraction(atoms, compound, not_claims, source_sentence=excerpt)
 
     # Legacy single-object degrade: {"claim": ..., "material": ...}.
     single = _parse_claim_item(data)
     if single is None:
         return _EMPTY_EXTRACTION
     return ClaimExtraction(atoms=(single,), compound=None, not_claims=())
+
+
+def _log_assertion_arity_drift(
+    raw_assertions: Any, atoms: list[CanonicalClaim], not_claims: list[NotClaim]
+) -> None:
+    """P1-5 telemetry: the prompt now forces an enumerate-then-emit step —
+    the model lists ``assertions`` before emitting ``claims``/``not_claims``.
+    This is diagnostic only (never changes the extraction result — the
+    bias-safe posture of this module is to never fail an extraction on a
+    format nit): a mismatch between the enumerated count and
+    ``len(atoms) + len(not_claims)`` signals the model skipped emitting an
+    outcome for something it enumerated (or enumerated coarser/finer than
+    it emitted), an early warning for the exact recency-drop failure mode
+    P1-5 targets, without gating on a heuristic that doesn't know sentence
+    semantics."""
+    if not isinstance(raw_assertions, list):
+        return
+    enumerated = len(raw_assertions)
+    emitted = len(atoms) + len(not_claims)
+    if enumerated != emitted:
+        log.info(
+            "taproot: extract_claim enumerated %d assertion(s) but emitted "
+            "%d claim(s)/not_claim(s) — possible dropped conjunct",
+            enumerated,
+            emitted,
+        )
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
@@ -813,6 +971,7 @@ __all__ = [
     "dedup_judge",
     "extract_claim",
     "extract_claim_strict",
+    "extract_claim_strict_big",
     "merge_confirm",
     "place",
 ]

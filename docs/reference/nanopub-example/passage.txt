@@ -1,0 +1,37 @@
+THE JOIN LIVES HERE — a prose passage, not a fourth nanopub.
+
+The three claims are published independently; their composition into the
+point the original hub fi176435 was making happens in a paragraph that
+cites them, exactly like a paper cites its sources:
+
+    Soft porous crystals are mechanically distinctive. DFT elastic-tensor
+    calculations show flexible MOFs reach elastic anisotropy ratios of up
+    to 400:1 [1], with Young's modulus below 1 GPa in their softest
+    directions — under the 1-10 GPa typical of other MOFs and zeolites
+    [2] — while rigid frameworks such as MOF-5 and ZIF-8 show anisotropy
+    two orders of magnitude lower [3]. High elastic anisotropy is thus a
+    mechanical signature of framework flexibility.
+
+    [1] https://precis.retostamm.com/np/sha256-PLACEHOLDER-1
+    [2] https://precis.retostamm.com/np/sha256-PLACEHOLDER-2
+    [3] https://precis.retostamm.com/np/sha256-PLACEHOLDER-3
+
+What holds where:
+
+  - Published surface: the three claim nanopubs (tight, one assertion
+    each, each carrying its own verbatim quote) + prose passages like the
+    one above. No compound nanopub — a compound restates the atoms and,
+    as fi176435 demonstrated, tends to smuggle in unearned extras.
+  - Internal DB: the hub keeps its conjunct-of edges grouping the three
+    claims, trust stays worst-of-atoms, drafts render the passage from
+    the group. The fi id never appears in public; each nanopub carries
+    precis:mintedFromHub as a private back-pointer.
+
+What the original hub said that was NOT minted (and why):
+
+  - "rigid MOFs (e.g., MOF-5, ZIF-8, MIL-47, MIL-53(Al), DMOF-1)" — the
+    paper classifies MIL-47, MIL-53(Al) and DMOF-1 as FLEXIBLE; the
+    example list was wrong. Corrected in claim 3.
+  - "Young's moduli of approximately 2-30 GPa" — appears nowhere in the
+    paper's text; Table II's rigid-MOF range is 2.7-19.7 GPa. A rounded
+    paraphrase, not a supported figure. Dropped.

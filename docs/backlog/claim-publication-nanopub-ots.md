@@ -107,6 +107,181 @@ live typo'd predicate in the corpus).
   in PROV-O plus an explicit attestation predicate. This decision matters
   more than any crypto choice.
 
+## Composition model — atoms first (decided 2026-08-14, wargamed on prod)
+
+Wargamed end-to-end on real prod hubs; artifacts (with placeholder codes)
+in `docs/reference/nanopub-example/`. fi176435 rejiggered into 3 tight
+atoms + a prose join; fi177584 minted as 2 cross-paper atoms + 1 merge.
+Reto signed off on the three fi177584 artifacts 2026-08-14.
+
+- **The fi hub is raw material, not the publication unit.** Publication-
+  grade claims are minted downstream of per-atom verification
+  (`taproot/directed.py` `qualify_claim`: one-way fit + verbatim quote);
+  a hub that fails decomposes further or stays internal. Empirically
+  vindicated: tight grounding exposed two factual errors in fi176435
+  (misattributed rigid-MOF list; unsupported "2–30 GPa") that a
+  verbatim-fi micropub would have published under our signature.
+- **Compound nanopubs are rare and earned.** Valid only when the
+  synthesis is asserted by no single source (cross-paper, or genuinely
+  emergent) AND every clause maps onto exactly one atom. A single-paper
+  compound that restates its atoms is not minted — the join is prose:
+  a passage citing claim URIs.
+- **Merge structure.** Assertion carries conjunct edges naming the atoms
+  by AIDA URI (semantic, supersede-stable — per "reference claims by
+  AIDA URI" above); provenance `prov:wasDerivedFrom` the atom nanopubs'
+  **trusty** URIs, hash-chaining the merge to the atoms' exact content —
+  a Merkle-DAG before any batch tree. The merge cites no paper directly;
+  its trust is derived worst-of-atoms, never serialized. (The wargame
+  example used trusty URIs in the assertion too — corrected here.)
+- **Publish is a release, not a write.** Sign-then-hash freezes bytes at
+  mint; the daily sweep anchors a content-blind 32-byte Merkle root, so
+  an embargo holds indefinitely and release ships the frozen files
+  unaltered. The OTS proof is **detached** — stored beside the artifact,
+  never inside hashed content (circular). Everything post-mint —
+  attestation, retraction, supersede — is a new signed artifact naming
+  the frozen URI.
+- **Comments are outside the integrity envelope.** Trusty hashing and
+  the signature cover the canonicalized *quads*; `#` comments are
+  lexical syntax discarded at parse time, so they are unsigned and
+  freely alterable in any served copy without breaking verification.
+  Rule: strip comments at mint; anything worth saying in the published
+  artifact must be a triple (`rdfs:comment` if prose).
+
+### Mint gates (from the wargame — machine-checkable, run before sign)
+
+- **Commensurability for compounds (2026-08-14, Reto's catch).** Clause
+  coverage is not enough: the wargame merge bound "scalable" (earned by
+  atom B, for *static* QI signatures in DPB/DPF cages) to "switching"
+  (earned by atom A, in a different molecular family nobody scaled) —
+  every clause mapped, yet the binding asserted transfer no paper shows.
+  Rule: a compound's conjunction must range over an entity/mechanism the
+  atoms share by their own content; predicate–argument **cross-binding**
+  (a property from system B applied to a phenomenon from system A) is
+  new content requiring its own evidence or a bridging atom. The
+  verifier LLM must be prompted for cross-binding explicitly; human
+  attestation is the backstop. A merge that survives only as a strict
+  conjunction is prose, not a compound. If the insinuated transfer is
+  *wanted*, it mints as a hypothesis (below) — the fi177584 merge was
+  re-minted exactly so.
+
+### Hypothesis nanopubs (decided 2026-08-14 — "a hypothesis nanopub")
+
+A third artifact type, `precis:Hypothesis`, for well-motivated unproven
+conjectures — e.g. a cross-binding rejected by the commensurability gate
+that is nonetheless the interesting statement. Example:
+`docs/reference/nanopub-example/qi-hypothesis-scaled-switching.trig`.
+
+- **Sentence declarative and unhedged; the TYPE carries epistemic
+  status.** No "conceivably/maybe" in the label — a future confirming
+  claim can then carry the same sentence (same AIDA URI) and the graph
+  converges on one content address. Hedges baked into the sentence would
+  mint the hedge forever. Machine-filterable by type, so hypotheses can
+  never leak into a fact surface.
+- **Motivation, not evidence.** Provenance cites the motivating
+  artifacts (`prov:wasDerivedFrom` + `precis:motivatedBy` the atoms'
+  trusty URIs) plus a `precis:motivation` prose triple naming the
+  inferential leap. NO `evidenceRole`, NO `sourceQuote` — a hypothesis
+  has no supporting passage, by definition; presence of a quote on a
+  Hypothesis (or absence on a claim) is a lint error.
+- **`precis:testableBy` names the discriminating experiment** — what
+  distinguishes a scientific conjecture from vibes, and pairs with the
+  negative-results pathway: a grounded refutation resolves it as
+  cleanly as a confirmation.
+- **Outside the trust ladder, permanently.** No rung; workers and
+  search must never let a Hypothesis corroborate anything.
+- **Attestation sentence differs**: not "passage supports claim" but
+  "this conjecture is well-motivated by the cited artifacts" — keep the
+  distinct semantics explicit in the attestation artifact.
+- **Resolution is new artifacts**: a later evidence-bearing claim (same
+  sentence → same AIDA URI, or a `precis:resolves` link nanopub with
+  outcome), never an edit. A signed, OTS-anchored hypothesis is a
+  **priority claim on an idea** — arguably the apparatus's strongest
+  use case, and one papers do badly.
+- **Quote containment for structured fields.** Every
+  `precis:material`/`method`/`quantity` value must be contained in a
+  `sourceQuote` of the same atom. The atom-B draft carried "~42×/~9×"
+  figures its quotes don't state — the same defect class as fi176435's
+  "2–30 GPa", caught only by this check.
+- **searchSnip is lowercase ASCII tokens** (letters/digits/hyphens
+  only) — it doubles as the PDF deep-link query
+  (`/pdf/<sha256>?search=<snip>`) and must survive any encoding; the
+  unique-within-paper validation (provenance-content resolution above)
+  applies on the normalized form.
+- **Universal anchors only in the provenance graph (2026-08-14, Reto).**
+  Chunks are our segmentation, not a fact about the paper — local
+  coordinates (chunk ord, ref ids) never appear in the published
+  evidence graph. Provenance carries DOI + `pdf_sha256` of the exact
+  copy quoted + verbatim quote + normalized snip; the snip's
+  unique-match validation makes the quote self-locating in any copy, so
+  no chunk anchor is needed. Local coordinates live in the internal
+  publish row. Pubinfo may name internal process identifiers
+  (`mintedFromHub`) as opaque production metadata — that is not
+  evidence citation.
+- **No ingested chunks, or no unique `pdf_sha256` row → not mintable**;
+  file the hygiene gripe instead (live examples: ref 5937 has two sha
+  rows from dup ingest, ref 42109 has chunks but none —
+  `docs/backlog/pdf-sha256-identifier-hygiene.md`).
+- **License honesty.** The nanopub's CC-BY covers our triples; verbatim
+  `sourceQuote` text remains © its publisher (fair-use quotation).
+  Scope the license triple to the assertion graph or add a note triple —
+  don't assert CC-BY over the quote bytes.
+- **Timestamps are mint-time facts** — `dct:created` is written by the
+  mint step, never authored by hand into a draft.
+
+### Mint pipeline in practice (2026-08-14) — layers, not an agent swarm
+
+Each check lives in the cheapest layer that can catch it; LLM reviewers
+do not stack (the pilot's defects were LLM-authored — more LLM review is
+the weakest tool). Three filters, in order:
+
+- **A. Mechanical validators** (pure code in the mint path, no LLM):
+  eligibility, quote verbatim-containment, snip uniqueness,
+  structured-field containment, schema lint (Hypothesis-with-quote /
+  claim-without-quote are hard errors), RDF/vocab checks. Failures
+  auto-route (hygiene gripe, or back to decomposition).
+- **B. Targeted LLM verification** (ordinary derived-queue worker jobs,
+  BIG tier, prompted to *refute*): `qualify_claim` one-way fit per atom;
+  a dedicated commensurability/cross-binding prompt per compound; a
+  lighter motivation-plausibility pass per hypothesis. ~2 calls/atom,
+  ~3/compound — bounded, not ongoing.
+- **C. Human attestation, once, batched**: the review queue shows only
+  survivors of A+B — the human is the judgment layer for novel failure
+  modes. **The ratchet:** every human catch that reveals a *class* is
+  promoted down into a B prompt or an A validator (cross-binding is the
+  precedent), so the human never checks the same thing twice.
+
+Post-signature everything is mechanical again: mint+sign, publish row,
+nightly OTS sweep.
+
+### Discovery paths — where mint demand comes from (2026-08-14)
+
+Two demand generators, one pipeline; both stay directed (never harvest).
+
+- **Prose-first** ("support this passage") — directed mint's home turf
+  (`taproot/directed.py`, `meta.demanded_by`). Per clause: search the
+  existing claim graph first (converge, don't re-mint) → hunt evidence →
+  `qualify_claim` → verdict: supported = mint atom; partial = **narrow
+  the claim and the prose retreats to match** (adjustment always runs
+  prose→evidence, never the reverse); motivated-unproven = hypothesis;
+  unsupported = the sentence goes or the source gets ingested. Compound
+  only if the join is emergent + commensurable; else the passage is the
+  join. Passage rewritten citing claim URIs; attestation covers claims,
+  prose hedges freely on top.
+- **Topic-first** ("what do we know about foobar") — quest layer + broad
+  retrieval (agentic Tier 2 of the search roadmap is the engine) →
+  directed extraction *against the question* → canonicalizer
+  corroboration/contradiction as usual → a new **epistemic-survey
+  synthesis pass** classifying the landscape onto the type system:
+  well-established = independently corroborated atoms ("established"
+  stays a computed grade, per publish-facts-not-derivations);
+  worth-writing = earned compounds; field-should-explore =
+  **hypothesis nanopubs with testableBy** (this class at scale);
+  possible-but-unbacked = hypotheses or contested. Output: a topic
+  dossier draft where every sentence cites a typed claim.
+
+The paths form a cycle: exploration builds the claim inventory, writing
+consumes it, writing's unmet demands trigger new directed exploration.
+
 ## OpenTimestamps
 
 `npx:wasCreatedAt` is **self-asserted** and proves nothing against a lying
@@ -278,6 +453,24 @@ hardening if that ever itches: keep the attesting key
 passphrase-encrypted at rest and prompt at sign time. Revisit the posture
 if the deployment stops being local.
 
+**Agent strings (decided 2026-08-14).** Two kinds, different rules:
+
+- *Signing identities* are names we must own for decades — never a
+  GitHub or platform URL (rented namespace). Bot:
+  `https://precis.retostamm.com/id/precis`; that URI doubles as the
+  out-of-band fingerprint page this doc already requires (resolve it to
+  the public key fingerprints + validity windows — one URL, name and
+  key binding both). Human attesting identity: the ORCID URI, per the
+  vocabulary table; the allowlist keys on it. Neither needs to resolve
+  for verification — the signature binds the key, the allowlist binds
+  key→identity; resolution is courtesy.
+- *Software provenance* (`composedBy`) is structured triples, not a
+  prose label: software name, version + deployed sha (resolved live at
+  mint time, never hardcoded), and the **LLM model ids** used for
+  extraction and verification — the provenance a reader of an
+  LLM-extracted claim actually wants. `rdfs:seeAlso <repo URL>` only
+  if/when the repo is public; a private URL adds nothing verifiable.
+
 **One key per identity, deliberately** — corpus multi-key is a tooling
 artifact (each web tool silently generates its own pair). Sign only
 through our tooling; a stray web-tool signature creates an accidental
@@ -320,6 +513,27 @@ the files; a server only adds *discovery*, worth little at 87k nanopubs
 with zero field coverage. Serve the TriG files from `precis_web` alongside
 the existing `/claim/<head>` page — a route handler, not a daemon.
 Revisit only if SPARQL over our own claim set becomes desirable.
+
+**Base URI — decided 2026-08-14: `https://w3id.org/np/RA…`, the
+ecosystem standard — with a table-first caveat.** A trusty URI is an
+identifier, not a hosting promise: verification needs only the file plus
+the artifact code embedded in the URI, and any registry can be queried by
+bare `RA…` code regardless of domain. w3id is a community-run
+permanent-redirect service pointing at live registry mirrors; once
+published to the registry, the artifact resolves forever with **zero
+servers run by us**. (Rejected: our own domain — branded, but a hosting
+obligation in perpetuity.)
+
+The caveat, load-bearing: **the w3id base is in the URI from mint**, even
+while the artifact lives only in our table — the base is inside the
+hashed content, so minting under our domain and "moving" to w3id at
+publication would change every hash and force re-signing (including
+anchored material). Lifecycle: mint w3id-based URIs day one → bytes in
+the append-only proof-store table → during embargo the URL resolves
+nowhere publicly (the review surface serves by artifact code locally) →
+the registry POST at release makes the name resolve. The `precis:` vocab
+namespace stays on our domain but can be a static page; `precis_web`
+serving is a convenience mirror, never an obligation.
 
 ## Signing and web of trust
 
@@ -427,6 +641,30 @@ last anyway.
 **State machine:** `candidate` → `reviewed` → `signed` → `anchored` →
 `published` → `superseded`/`retracted`; `rejected` terminal branches off
 `reviewed`.
+
+**WIP vs release — re-mint cascades (decided 2026-08-14).** The a→c→D
+cascade (fix atom a; compound c and citer D re-hash) is contained by
+three rules:
+
+- **WIP refers by `ref_id`, never by hash.** While artifacts are
+  working state, dependency edges are `links` rows on ref ids —
+  rewording a breaks nothing. Trusty URIs/signatures are derived
+  output, materialized at mint in topo order (atoms → compounds →
+  citers). No hashes in WIP ⇒ no cascade in WIP.
+- **Pre-release re-mint is recompute, not surgery.** Each publish row
+  stores the artifact codes of its dependencies (the `claim_sha`
+  staleness pattern, one level up); a dependency's code changing IS the
+  dirty signal — downstream rows flip `signed` → `reviewed` and the
+  mint pass regenerates the closure in topo order. Only loss: OTS
+  anchors over the old bytes (dated artifacts, never cited) — hence
+  **anchor when text stops moving**, batch the sweep after audit
+  settles, not eagerly per mint.
+- **The audit queue is topologically sorted.** A compound enters the
+  human queue only when all dependencies are signed and stable; an
+  upstream fix during audit invalidates unminted downstream work, never
+  a signature already made. Post-release the cascade is the feature —
+  one fix = a chain of public supersedes — which is exactly why audit
+  happens pre-release.
 
 | step | reversible |
 |---|---|
@@ -539,6 +777,13 @@ integrity work, the UI only surfaces the state machine.
   re-mints — reversible per the irreversibility map.
   Post-publication: the edit path *is* the supersede flow; a silent edit
   does not exist.
+- **Prototype exists**: `docs/reference/nanopub-example/viewer.html`
+  (2026-08-14) — standalone zero-dependency SVG DAG + one-at-a-time
+  detail pane + "open PDF at passage" buttons implementing the deep-link
+  contract (`/pdf/<sha256>?search=<snip>`; fallback
+  `/paper/<handle>?chunk=<ord>&search=<snip>`). Its `NODES` data model
+  is the shape a `precis_web` route should serve; SVG chosen over
+  mermaid for reliable click interactivity.
 - **The sign button signs for real.** The attesting key is in the secret
   store (Key custody), so the button works wherever the UI runs. The
   guard is invocation, not location: only the interactive sign route may

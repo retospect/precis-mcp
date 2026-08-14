@@ -1,0 +1,71 @@
+# Merge — the VALID compound: cross-paper synthesis
+# Why this compound is legitimate where fi176435's was not: no single paper
+# asserts it. Atom A (Angew 2023) establishes active mechanical switching;
+# Atom B (PNAS 2022) establishes scale persistence. The merge's novelty is
+# the CONJUNCTION — "established AND tunable AND scalable" — and every
+# clause maps onto exactly one atom (coverage gate satisfiable, nothing
+# unearned rides along).
+# Watertight structure: the merge's assertion and provenance reference the
+# atoms by their trusty URIs, so its own content hash transitively commits
+# to both atoms' full content (a Merkle-DAG before any batch tree).
+# It cites NO paper directly: evidence flows only through the atoms, and
+# merge trust is derived worst-of-atoms, never asserted.
+
+@prefix np:     <http://www.nanopub.org/nschema#> .
+@prefix npx:    <http://purl.org/nanopub/x/> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix precis: <https://precis.retostamm.com/vocab#> .
+@prefix agent:  <https://precis.retostamm.com/id/> .
+@prefix npA:    <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_A> .
+@prefix npAs:   <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_A#> .
+@prefix npB:    <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_B> .
+@prefix npBs:   <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_B#> .
+@prefix this:   <https://precis.retostamm.com/np/RAPLACEHOLDER_MERGE> .
+@prefix sub:    <https://precis.retostamm.com/np/RAPLACEHOLDER_MERGE#> .
+
+sub:Head {
+  this: a np:Nanopublication ;
+    np:hasAssertion       sub:assertion ;
+    np:hasProvenance      sub:provenance ;
+    np:hasPublicationInfo sub:pubinfo .
+}
+
+sub:assertion {
+  sub:claim a precis:CompoundClaim ;
+    rdfs:label "Quantum-interference conductance switching is an experimentally established, scalable transport mechanism: interference pathways can be switched mechanically in single-molecule junctions, and interference signatures persist from single ligands through molecular cages to monolayer thin films."@en .
+
+  npAs:claim precis:conjunctOf sub:claim .
+  npBs:claim precis:conjunctOf sub:claim .
+}
+
+sub:provenance {
+  # Derivation is from the ATOM NANOPUBS, not from papers. Their trusty
+  # URIs are content hashes, so this graph pins the exact atom text and
+  # evidence this synthesis was made from.
+  sub:assertion
+    prov:wasDerivedFrom npA: , npB: ;
+    precis:composedBy [
+      a prov:SoftwareAgent ;
+      rdfs:label "taproot extract_claim_strict (SMALL tier) via hub fi177584 decomposition" ;
+    ] ;
+    precis:gateVerdict "split" .
+}
+
+sub:pubinfo {
+  this: dct:created "2026-08-14T12:00:00Z"^^xsd:dateTime ;
+    dct:creator agent:precis ;
+    dct:license <https://creativecommons.org/licenses/by/4.0/> ;
+    precis:publishedFormOf <https://precis.retostamm.com/ref/fi177584> .
+
+  agent:precis a prov:SoftwareAgent ;
+    rdfs:label "precis (non-attesting bot identity)" .
+
+  sub:sig npx:hasSignatureTarget this: ;
+    npx:hasAlgorithm "RSA" ;
+    npx:hasPublicKey "PLACEHOLDER-BOT-PUBKEY" ;
+    npx:hasSignature "PLACEHOLDER-SIGNATURE" ;
+    npx:signedBy agent:precis .
+}

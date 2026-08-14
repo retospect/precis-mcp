@@ -26,6 +26,7 @@ from precis.taproot.canon import (
     dedup_judge,
     extract_claim,
     extract_claim_strict,
+    extract_claim_strict_big,
     merge_confirm,
     place,
 )
@@ -36,6 +37,7 @@ from precis.taproot.eval_canon import (
     eval_canonicalization,
     eval_extraction,
 )
+from precis.utils.llm.router import Tier
 
 
 def _result(
@@ -343,6 +345,112 @@ def test_extract_claim_returns_empty_extraction_on_empty_input() -> None:
     assert extract_claim("   ").is_empty
 
 
+# ── extract_claim_strict_big — P2-10, same contract at BIG tier ────────
+
+
+def test_extract_claim_strict_big_dispatches_at_big_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Identical parsing/coercion to :func:`extract_claim_strict` — the only
+    difference is the ``LlmRequest.tier`` the dispatch is made at."""
+    seen_requests: list[Any] = []
+
+    def fake_dispatch(req: Any) -> Any:
+        seen_requests.append(req)
+        return _result(
+            data={
+                "claims": [
+                    {"claim": "Pd/C catalyzes Suzuki coupling at RT with mild base"}
+                ],
+                "compound": None,
+                "not_claims": [],
+            }
+        )
+
+    monkeypatch.setattr(canon, "dispatch", fake_dispatch)
+    result = extract_claim_strict_big("Pd/C catalyzes Suzuki coupling...")
+    assert len(seen_requests) == 1
+    assert seen_requests[0].tier == Tier.BIG
+    assert result == ClaimExtraction(
+        atoms=(
+            CanonicalClaim(
+                sentence="Pd/C catalyzes Suzuki coupling at RT with mild base",
+                scope={},
+            ),
+        ),
+        compound=None,
+        not_claims=(),
+    )
+
+
+def test_extract_claim_strict_big_raises_on_dispatch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shares the strict variant's infra-failure posture — a dispatch error
+    raises rather than degrading to a silent NO-CLAIM."""
+    monkeypatch.setattr(canon, "dispatch", lambda req: _result(error="ECONNREFUSED"))
+    with pytest.raises(ExtractionUnavailable, match="ECONNREFUSED"):
+        extract_claim_strict_big("some passage")
+
+
+# ── scope constraints — P1-9 ────────────────────────────────────────────
+
+
+def test_valid_scope_value_rejects_empty_and_overlong_values() -> None:
+    assert not canon._valid_scope_value("material", "")
+    assert not canon._valid_scope_value("material", "x" * 1000)
+    assert canon._valid_scope_value("material", "graphene")
+
+
+def test_valid_scope_value_requires_a_digit_in_quantity() -> None:
+    """fi176359: ``quantity: "rectangular outline"`` / ``"pin count
+    conventions"`` were prose descriptions, not measures — junk scope
+    perturbs hub identity (``make_taproot_hub_paper_id``), so quantity
+    without a digit is dropped."""
+    assert not canon._valid_scope_value("quantity", "rectangular outline")
+    assert not canon._valid_scope_value("quantity", "pin count conventions")
+    assert canon._valid_scope_value("quantity", "450 h⁻¹")
+    assert canon._valid_scope_value("quantity", "92%")
+
+
+def test_parse_claim_item_drops_junk_quantity_but_keeps_the_claim() -> None:
+    """A bad scope value is dropped, never a reason to fail the whole
+    claim."""
+    item = {
+        "claim": "The board specifies pin count conventions.",
+        "quantity": "pin count conventions",
+        "material": "graphene",
+    }
+    parsed = canon._parse_claim_item(item)
+    assert parsed is not None
+    assert parsed.scope == {"material": "graphene"}
+    assert "quantity" not in parsed.scope
+
+
+def test_extract_claim_drops_junk_scope_values_from_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        canon,
+        "dispatch",
+        lambda req: _result(
+            data={
+                "claims": [
+                    {
+                        "claim": "The connector follows a rectangular outline.",
+                        "quantity": "rectangular outline",
+                    }
+                ],
+                "compound": None,
+                "not_claims": [],
+            }
+        ),
+    )
+    result = extract_claim("The connector follows a rectangular outline...")
+    assert len(result.atoms) == 1
+    assert result.atoms[0].scope == {}
+
+
 def test_extract_claim_returns_empty_extraction_on_unparseable_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -398,13 +506,36 @@ def test_coerce_extraction_multi_atom_keeps_compound() -> None:
     assert result.atoms == (a1, a2)
 
 
-def test_coerce_extraction_multi_atom_without_compound_degrades_to_empty() -> None:
-    """Partial-citation guard: 2+ atoms with no compound is a contract
-    violation (backfill's prose rewrite would cite only atoms[0]) — degrade
-    to NO-CLAIM so the chunk is retried whole rather than partially cited."""
+def test_coerce_extraction_multi_atom_without_compound_synthesizes_from_source() -> (
+    None
+):
+    """P1-8: 2+ atoms with no compound no longer discards the whole
+    extraction — the compound is synthesized from the source sentence (the
+    source *is* the bundle, by construction) instead of degrading to
+    NO-CLAIM. fi177585 lost a good 2-atom split to exactly this formatting
+    miss."""
     a1 = CanonicalClaim(sentence="x", scope={})
     a2 = CanonicalClaim(sentence="y", scope={})
-    result = canon._coerce_extraction([a1, a2], None, [])
+    result = canon._coerce_extraction(
+        [a1, a2], None, [], source_sentence="X does one thing and Y does another."
+    )
+    assert not result.is_empty
+    assert result.atoms == (a1, a2)
+    assert result.compound == CanonicalClaim(
+        sentence="X does one thing and Y does another.", scope={}
+    )
+
+
+def test_coerce_extraction_multi_atom_without_compound_or_source_degrades_to_empty() -> (
+    None
+):
+    """The synthesis fallback still needs *something* to synthesize from —
+    with no source sentence available either, this still degrades to
+    NO-CLAIM (the bias-safe floor, not the normal path once callers pass
+    the source text)."""
+    a1 = CanonicalClaim(sentence="x", scope={})
+    a2 = CanonicalClaim(sentence="y", scope={})
+    result = canon._coerce_extraction([a1, a2], None, [], source_sentence="")
     assert result.is_empty
     assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
 

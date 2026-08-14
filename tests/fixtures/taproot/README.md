@@ -81,13 +81,17 @@ A separate, smaller fixture for `canon.extract_claim`'s decomposition step
 (`eval_canon.eval_extraction`), not the dedup gate above. One object per
 row: `id`, `passage`, `expected_atom_count` (0 for NO-CLAIM),
 `expected_not_claims` (rejected-conjunct substrings, audit only — not
-graded as a hard gate in v1), `note` (provenance / rationale). Ten rows,
-hand-authored (2026-08-13) to cover: the carbon-nanomaterials worked
+graded as a hard gate in v1), `note` (provenance / rationale). Eleven rows,
+hand-authored (2026-08-13/14) to cover: the carbon-nanomaterials worked
 example (`docs/backlog/taproot-atomic-claims.md` §Worked example) —
 multi-atom + not_claims + surviving compound; an already-atomic claim (no
 compound); two NO-CLAIM shapes (pure pointer, meta-prose); a
 not-claims-only row (zero atoms survive but rejects are still recorded); a
 clean 2-atom split; a legitimate bare-`and` condition list that must
 *not* be treated as an un-split atom (regression guard for
-`eval_extraction`'s lexical conjunction heuristic); and the one-atom+
-reject edge case that keeps a compound despite a single surviving atom.
+`eval_extraction`'s lexical conjunction heuristic); the one-atom+
+reject edge case that keeps a compound despite a single surviving atom; and
+a P1-6 modality regression (fi176422, `docs/backlog/
+taproot-migration-extraction-quality-gates.md`) — a counterfactual
+`whereas ... would` foil that a prior prompt version promoted into a false
+indicative claim, and must instead stay out of `claims` entirely.

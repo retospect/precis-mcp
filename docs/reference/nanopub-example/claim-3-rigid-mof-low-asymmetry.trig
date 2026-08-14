@@ -1,0 +1,64 @@
+# Claim 3 — rigid MOFs (MOF-5, ZIF-8): asymmetry two orders of magnitude lower
+# Grounded verbatim in the body text (chunk ord=23); Table II gives the values
+# behind it (anisotropy A_E = 2.1 for MOF-5, 1.4 for ZIF-8).
+# NOTE: the original hub fi176435 attributed MIL-47/MIL-53(Al)/DMOF-1 to the
+# "rigid" group — the paper classifies those as flexible. This claim is the
+# corrected, tightly-grounded version; the hub's "2-30 GPa" figure appears
+# nowhere in the paper's text (Table II rigid range is 2.7-19.7 GPa) and is
+# deliberately NOT minted.
+
+@prefix np:     <http://www.nanopub.org/nschema#> .
+@prefix npx:    <http://purl.org/nanopub/x/> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix precis: <https://precis.retostamm.com/vocab#> .
+@prefix agent:  <https://precis.retostamm.com/id/> .
+@prefix this:   <https://precis.retostamm.com/np/sha256-PLACEHOLDER-3> .
+@prefix sub:    <https://precis.retostamm.com/np/sha256-PLACEHOLDER-3#> .
+
+sub:Head {
+  this: a np:Nanopublication ;
+    np:hasAssertion       sub:assertion ;
+    np:hasProvenance      sub:provenance ;
+    np:hasPublicationInfo sub:pubinfo .
+}
+
+sub:assertion {
+  sub:claim a precis:AtomicClaim ;
+    rdfs:label "The elastic anisotropy of the rigid frameworks MOF-5 and ZIF-8 is two orders of magnitude lower than that of flexible metal-organic frameworks."@en ;
+    precis:material "MOF-5, ZIF-8" ;
+    precis:method   "ab initio calculation of elastic constant tensors" ;
+    precis:quantity "Young's modulus anisotropy A_E = 2.1 (MOF-5), 1.4 (ZIF-8)" .
+}
+
+sub:provenance {
+  sub:assertion
+    prov:wasDerivedFrom <https://doi.org/10.1103/PhysRevLett.109.195502> ;
+    precis:evidenceRole precis:corroborates ;
+    precis:sourceQuote  """This is in sharp contrast with behaviour of Young's modulus for MOF-5 and ZIF-8 whose asymmetry is two orders of magnitude lower."""@en ;
+    precis:searchSnip   "mof-5 zif-8 asymmetry two orders magnitude lower" ;
+    precis:sourcePdfSha256 "cf2cf2561f321e9c166d61810b0d2fc390b823f47aea3a1c535c490bf3ff3469" .
+
+  <https://doi.org/10.1103/PhysRevLett.109.195502>
+    dct:title "Anisotropic Elastic Properties of Flexible Metal-Organic Frameworks: How Soft are Soft Porous Crystals?" ;
+    rdfs:seeAlso <https://arxiv.org/abs/1209.6378> .
+}
+
+sub:pubinfo {
+  this: dct:created "2026-08-14T12:00:00Z"^^xsd:dateTime ;
+    dct:creator agent:precis ;
+    dct:license <https://creativecommons.org/licenses/by/4.0/> ;
+    precis:mintedFromHub <https://precis.retostamm.com/ref/fi176435> ;
+    precis:otsProof <https://precis.retostamm.com/ots/2026-08-14/proof> .
+
+  agent:precis a prov:SoftwareAgent ;
+    rdfs:label "precis (non-attesting bot identity)" .
+
+  sub:sig npx:hasSignatureTarget this: ;
+    npx:hasAlgorithm "RSA" ;
+    npx:hasPublicKey "PLACEHOLDER-BOT-PUBKEY" ;
+    npx:hasSignature "PLACEHOLDER-SIGNATURE" ;
+    npx:signedBy agent:precis .
+}

@@ -1,0 +1,60 @@
+# Atom B — QI signatures persist from ligands to cages to monolayers
+# Support 2 of the merge. Grounded verbatim in Yang et al., PNAS 119,
+# e2211786119 (2022) — prod ref 42109, evidence edge corroborates.
+# NOTE: ref 42109 has ingested chunks but NO pdf_sha256 identifier row in
+# prod (data-hygiene gap) — sourcePdfSha256 omitted, deep-link falls back
+# to ref handle + chunk anchor.
+
+@prefix np:     <http://www.nanopub.org/nschema#> .
+@prefix npx:    <http://purl.org/nanopub/x/> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix precis: <https://precis.retostamm.com/vocab#> .
+@prefix agent:  <https://precis.retostamm.com/id/> .
+@prefix this:   <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_B> .
+@prefix sub:    <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_B#> .
+
+sub:Head {
+  this: a np:Nanopublication ;
+    np:hasAssertion       sub:assertion ;
+    np:hasProvenance      sub:provenance ;
+    np:hasPublicationInfo sub:pubinfo .
+}
+
+sub:assertion {
+  sub:claim a precis:AtomicClaim ;
+    rdfs:label "Constructive and destructive quantum-interference signatures observed in single organic ligands persist in their coordination cages and in monolayer thin films of those cages."@en ;
+    precis:material "DPB and DPF ligands, their Pd coordination cages, and monolayer thin films of the cages" ;
+    precis:method   "single-molecule break-junction conductance and EGaIn large-area junction measurements" ;
+    precis:quantity "DPF cage conductance ~42x DPB cage; DPF ligand ~9x DPB ligand" .
+}
+
+sub:provenance {
+  sub:assertion
+    prov:wasDerivedFrom <https://doi.org/10.1073/pnas.2211786119> ;
+    precis:evidenceRole precis:corroborates ;
+    precis:sourceQuote  """These results showed that the conductance of monolayer thin films evaluated by EGaIn agreed well with the trends observed in single-ligand/cage junctions. This suggests that the quantum interference effects in DPB and DPF ligands, either constructive or destructive, can further transfer to their monolayer thin films in a larger length scale."""@en ;
+    precis:sourceQuote  """We reported the scaling of QI effects from organic ligands to the molecular cages and the monolayer thin film of these molecular cages."""@en ;
+    precis:searchSnip   "quantum interference transfer monolayer thin films larger length scale" .
+
+  <https://doi.org/10.1073/pnas.2211786119>
+    dct:title "Scaling of Quantum Interference from Single Molecules to Molecular Cages and Their Monolayers" .
+}
+
+sub:pubinfo {
+  this: dct:created "2026-08-14T12:00:00Z"^^xsd:dateTime ;
+    dct:creator agent:precis ;
+    dct:license <https://creativecommons.org/licenses/by/4.0/> ;
+    precis:mintedFromHub <https://precis.retostamm.com/ref/fi177584> .
+
+  agent:precis a prov:SoftwareAgent ;
+    rdfs:label "precis (non-attesting bot identity)" .
+
+  sub:sig npx:hasSignatureTarget this: ;
+    npx:hasAlgorithm "RSA" ;
+    npx:hasPublicKey "PLACEHOLDER-BOT-PUBKEY" ;
+    npx:hasSignature "PLACEHOLDER-SIGNATURE" ;
+    npx:signedBy agent:precis .
+}

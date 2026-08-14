@@ -4,7 +4,7 @@ migration runner for pre-existing (pre-decomposition) claim hubs
 
 Two layers, mirroring ``tests/test_taproot_backfill.py``'s split:
 
-* Pure scoring (``score_title`` / ``cohort_for_score``) — no DB, no model.
+* Pure scoring (``score_sentence`` / ``cohort_for_score``) — no DB, no model.
 * DB-backed ``score_hubs`` / ``dry_run`` over real ``refs``/``chunks``/
   ``links`` via the ``store`` fixture, hubs seeded through the real write
   door (``mint_hub`` / ``link_claims``) so the compound/stamp exclusions
@@ -14,6 +14,8 @@ Two layers, mirroring ``tests/test_taproot_backfill.py``'s split:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from precis.store.store import Store
@@ -22,74 +24,76 @@ from precis.taproot.hub import link_claims, mint_hub
 from precis.taproot.migrate import (
     COHORTS,
     DryRunReport,
+    classify_extraction,
     cohort_for_score,
     dry_run,
+    dump_outcomes_jsonl,
     render_report,
     score_hubs,
-    score_title,
+    score_sentence,
 )
 
-# ── score_title / cohort_for_score — pure, no DB ────────────────────────
+# ── score_sentence / cohort_for_score — pure, no DB ────────────────────────
 
 
-def test_score_title_no_signals_is_zero() -> None:
-    score, signals = score_title("Pd/C catalyzes Suzuki coupling at RT")
+def test_score_sentence_no_signals_is_zero() -> None:
+    score, signals = score_sentence("Pd/C catalyzes Suzuki coupling at RT")
     assert score == 0
     assert signals == ()
 
 
-def test_score_title_conjunction_and_scores() -> None:
-    score, signals = score_title("Graphene has high strength and high conductivity")
+def test_score_sentence_conjunction_and_scores() -> None:
+    score, signals = score_sentence("Graphene has high strength and high conductivity")
     assert "conjunction" in signals
     assert score >= 2
 
 
-def test_score_title_word_boundary_does_not_match_band() -> None:
+def test_score_sentence_word_boundary_does_not_match_band() -> None:
     """ "band" contains the substring "and" but must never trip the
     conjunction heuristic — the word-boundary regex is the whole point."""
-    score, signals = score_title("Optical absorption band shifts with strain")
+    score, signals = score_sentence("Optical absorption band shifts with strain")
     assert "conjunction" not in signals
     assert score == 0
 
 
-def test_score_title_but_and_while_both_trigger() -> None:
-    _, signals_but = score_title("It is fast but not accurate")
-    _, signals_while = score_title("It degrades while heating")
+def test_score_sentence_but_and_while_both_trigger() -> None:
+    _, signals_but = score_sentence("It is fast but not accurate")
+    _, signals_while = score_sentence("It degrades while heating")
     assert "conjunction" in signals_but
     assert "conjunction" in signals_while
 
 
-def test_score_title_long_title_scores() -> None:
+def test_score_sentence_long_title_scores() -> None:
     long_title = "A" * 161
-    score, signals = score_title(long_title)
+    score, signals = score_sentence(long_title)
     assert "long-title" in signals
     assert score >= 2
 
 
-def test_score_title_short_title_no_length_signal() -> None:
-    _, signals = score_title("A" * 160)
+def test_score_sentence_short_title_no_length_signal() -> None:
+    _, signals = score_sentence("A" * 160)
     assert "long-title" not in signals
 
 
-def test_score_title_semicolon_scores() -> None:
-    score, signals = score_title("X increases yield; Y decreases side products")
+def test_score_sentence_semicolon_scores() -> None:
+    score, signals = score_sentence("X increases yield; Y decreases side products")
     assert "semicolon" in signals
     assert score >= 2
 
 
-def test_score_title_multi_comma_scores() -> None:
-    score, signals = score_title("X, Y, and Z were measured")
+def test_score_sentence_multi_comma_scores() -> None:
+    score, signals = score_sentence("X, Y, and Z were measured")
     assert "multi-comma" in signals
     assert score >= 1
 
 
-def test_score_title_single_comma_no_signal() -> None:
-    _, signals = score_title("X, Y were measured")
+def test_score_sentence_single_comma_no_signal() -> None:
+    _, signals = score_sentence("X, Y were measured")
     assert "multi-comma" not in signals
 
 
-def test_score_title_combined_signals_sum() -> None:
-    score, signals = score_title(
+def test_score_sentence_combined_signals_sum() -> None:
+    score, signals = score_sentence(
         "X shows A and B; also C, D, and E over a long qualifying tail " + "z" * 120
     )
     assert {"conjunction", "semicolon", "multi-comma", "long-title"} <= set(signals)
@@ -117,8 +121,8 @@ def test_cohorts_constant_matches_literal_set() -> None:
 # ── score_hubs — DB-backed ───────────────────────────────────────────────
 
 
-def _claim(sentence: str) -> CanonicalClaim:
-    return CanonicalClaim(sentence=sentence, scope={})
+def _claim(sentence: str, scope: dict[str, str] | None = None) -> CanonicalClaim:
+    return CanonicalClaim(sentence=sentence, scope=scope or {})
 
 
 def test_score_hubs_scores_and_sorts_live_claim_hubs(store: Store) -> None:
@@ -161,6 +165,23 @@ def test_score_hubs_excludes_compound_hubs(store: Store) -> None:
     assert compound not in ids  # the compound is excluded
 
 
+def test_score_hubs_scores_claim_sentence_not_truncated_title(store: Store) -> None:
+    """P0-1: :func:`mint_hub` truncates ``title`` to 200 chars but writes
+    the full sentence to the ``finding_body`` chunk — scoring must read
+    that chunk (via :data:`_CANDIDATE_HUBS_SQL`'s JOIN), not ``ref.title``,
+    or a conjunction past the truncation point is invisible."""
+    lead = "A" * 210  # past the 200-char title truncation boundary
+    sentence = f"{lead} and this trailing clause only exists past the title cutoff"
+    hub_id = mint_hub(store, _claim(sentence))
+
+    scores = score_hubs(store)
+    by_id = {s.ref_id: s for s in scores}
+    assert by_id[hub_id].sentence == sentence
+    assert "and" not in by_id[hub_id].title  # truncated title never reaches "and"
+    assert "conjunction" in by_id[hub_id].signals
+    assert by_id[hub_id].cohort == "likely-compound"
+
+
 def test_score_hubs_excludes_already_stamped_hubs(store: Store) -> None:
     hub_id = mint_hub(store, _claim("Already migrated claim, stamped and done"))
     store.update_ref(
@@ -176,16 +197,22 @@ def test_score_hubs_excludes_already_stamped_hubs(store: Store) -> None:
 
 def _extraction_for(title: str) -> ClaimExtraction:
     """Deterministic fake ``extract_fn``: a title containing "SPLIT" splits
-    into two atoms + a compound; "NOCLAIM" yields the empty extraction;
-    anything else is treated as already-atomic (pass-through)."""
+    into two atoms (a genuine word-halves partition of the title, so the
+    P0-2/P0-3 gates see a realistic, fully-covered, non-nested split — not
+    two atoms that each restate the whole compound plus a suffix, which
+    would itself look nested/lossy) + a compound; "NOCLAIM" yields the
+    empty extraction; anything else is treated as already-atomic
+    (pass-through)."""
     if "NOCLAIM" in title:
         return ClaimExtraction(atoms=(), compound=None, not_claims=())
     if "SPLIT" in title:
         not_claims: tuple[NotClaim, ...] = (
             NotClaim(text="a vague forward-looking bit", reason="forward-looking"),
         )
+        words = title.split()
+        mid = max(1, len(words) // 2)
         return ClaimExtraction(
-            atoms=(_claim(f"{title} atom A"), _claim(f"{title} atom B")),
+            atoms=(_claim(" ".join(words[:mid])), _claim(" ".join(words[mid:]))),
             compound=_claim(title),
             not_claims=not_claims,
         )
@@ -194,6 +221,133 @@ def _extraction_for(title: str) -> ClaimExtraction:
 
 def _fake_extract(chunk_text: str) -> ClaimExtraction:
     return _extraction_for(chunk_text)
+
+
+# ── classify_extraction — pure, no DB (full calibration against the ────
+# labelled 25-hub fixture lives in test_taproot_migrate_gates.py) ────────
+
+
+def test_classify_extraction_no_claim_skips_gates() -> None:
+    verdict, gate_meta = classify_extraction(
+        "Some sentence.", ClaimExtraction(atoms=(), compound=None, not_claims=())
+    )
+    assert verdict == "no-claim"
+    assert gate_meta == {}
+
+
+def test_classify_extraction_pass_through_with_full_recall() -> None:
+    sentence = "Palladium on carbon catalyzes Suzuki coupling at room temperature."
+    extraction = ClaimExtraction(
+        atoms=(_claim(sentence),), compound=None, not_claims=()
+    )
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "pass-through"
+    assert gate_meta["recall"] == 1.0
+    assert gate_meta["missing_numbers"] == ()
+
+
+def test_classify_extraction_pass_through_dropping_content_is_lossy() -> None:
+    """A single atom that keeps only a fragment of a long compound sentence
+    (P0-2's headline pilot defect — 6 of 11 pass-throughs did exactly
+    this) must gate to `lossy`, never `pass-through`."""
+    sentence = (
+        "Widget alloys self-assemble from base metals and rare-earth dopants via "
+        "a slow annealing process; larger crystals based on cubic and hexagonal "
+        "lattices have been grown, and defect clustering in mixtures of dopant "
+        "species produces multiple distinct grain boundary types with high yield."
+    )
+    kept = "Defect clustering in mixtures of dopant species produces multiple distinct grain boundary types with high yield."
+    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "lossy"
+    assert gate_meta["recall"] < 0.73
+
+
+def test_classify_extraction_dropped_number_is_hard_lossy() -> None:
+    """Even with otherwise-decent recall, a dropped number-bearing token
+    (a measurement, not a catalog name) is a hard `lossy` (P0-2's "n-type
+    409 uA/um" pilot control)."""
+    sentence = (
+        "The device achieves on-state currents of 800 uA/um for p-type and "
+        "409 uA/um for n-type applications, exceeding prior results."
+    )
+    kept = "The device achieves on-state currents of 800 uA/um for p-type applications."
+    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "lossy"
+    assert "409" in gate_meta["missing_numbers"]
+
+
+def test_classify_extraction_dropped_number_never_hides_in_larger_number() -> None:
+    """A dropped short number must not evade the coverage gate by being a
+    digit-substring of a retained larger number: "9" dropped while "409"
+    is kept is still hard `lossy` (exact token membership, not substring —
+    reviewer catch on the P0-2 gate, 2026-08-14)."""
+    sentence = (
+        "The sample shows 9 distinct grain boundary types and reaches "
+        "on-state currents of 409 uA/um at room temperature."
+    )
+    kept = "The sample reaches on-state currents of 409 uA/um at room temperature."
+    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "lossy"
+    assert "9" in gate_meta["missing_numbers"]
+
+
+def test_classify_extraction_catalog_name_digit_is_not_a_number_token() -> None:
+    """A material name that merely contains a digit ("MOF-5") is not a
+    number-bearing token — dropping it from an "(e.g., ...)" example list
+    when a split generalizes it away must not hard-fail the coverage
+    gate (fi176435)."""
+    sentence = (
+        "Rigid frameworks (e.g., MOF-5, ZIF-8) have moduli of 2-30 GPa, while "
+        "flexible frameworks can reach anisotropy ratios up to 400:1."
+    )
+    atom1 = _claim(
+        "Rigid frameworks have moduli of 2-30 GPa.", scope={"quantity": "2-30 GPa"}
+    )
+    atom2 = _claim(
+        "Flexible frameworks can reach anisotropy ratios up to 400:1.",
+        scope={"quantity": "400:1"},
+    )
+    extraction = ClaimExtraction(
+        atoms=(atom1, atom2), compound=_claim(sentence), not_claims=()
+    )
+    verdict, gate_meta = classify_extraction(sentence, extraction)
+    assert verdict == "split"
+    assert gate_meta["missing_numbers"] == ()
+
+
+def test_classify_extraction_nested_atoms_is_nested() -> None:
+    """P0-3: one atom's content strictly contained in another's — a fake
+    split, not three facts (fi176441's A1⊂A2⊂A3 pattern)."""
+    a1 = _claim("Conductive frameworks exhibit strong electronic coupling.")
+    a2 = _claim(
+        "Conductive frameworks exhibit strong electronic coupling enabled by "
+        "mixed valency."
+    )
+    compound = _claim(
+        "Conductive frameworks exhibit strong electronic coupling enabled by "
+        "mixed valency, supporting charge transport."
+    )
+    extraction = ClaimExtraction(atoms=(a1, a2), compound=compound, not_claims=())
+    verdict, gate_meta = classify_extraction(compound.sentence, extraction)
+    assert verdict == "nested"
+    assert gate_meta["containment"]
+
+
+def test_classify_extraction_nested_checked_before_lossy() -> None:
+    """A nested extraction that would *also* fail the coverage gate must
+    still report `nested` — containment runs first (docs/backlog/
+    taproot-migration-extraction-quality-gates.md item 3)."""
+    original = "A rare, dropped clause plus: conductive frameworks couple strongly."
+    a1 = _claim("Conductive frameworks couple strongly.")
+    a2 = _claim("Conductive frameworks couple strongly indeed.")
+    extraction = ClaimExtraction(
+        atoms=(a1, a2), compound=_claim(a2.sentence), not_claims=()
+    )
+    verdict, _ = classify_extraction(original, extraction)
+    assert verdict == "nested"
 
 
 def _table_counts(store: Store) -> dict[str, int]:
@@ -238,7 +392,7 @@ def test_dry_run_respects_limit_and_cohort_filter(store: Store) -> None:
     assert report.cohort_filter == "likely-compound"
 
 
-def test_dry_run_samples_controls_from_atomic_tail(store: Store) -> None:
+def test_dry_run_samples_controls_from_atomic_cohort(store: Store) -> None:
     top_hub = mint_hub(store, _claim("SPLIT top scored claim and another; also, x, y"))
     atomic_hub = mint_hub(store, _claim("A plain atomic control claim"))
 
@@ -252,6 +406,135 @@ def test_dry_run_samples_controls_from_atomic_tail(store: Store) -> None:
     ids_by_control = {o.hub.ref_id: o.is_control for o in report.outcomes}
     assert ids_by_control.get(top_hub) is False
     assert ids_by_control.get(atomic_hub) is True
+
+
+def test_dry_run_control_sample_is_deterministic_per_seed(store: Store) -> None:
+    """P2-11: the control draw is a uniform random sample, but a fixed
+    ``control_seed`` (default 0) must reproduce the same draw against an
+    unchanged population — a re-run isn't a re-roll."""
+    for i in range(10):
+        mint_hub(store, _claim(f"Atomic control candidate number {i} for seed test"))
+
+    first = dry_run(store, limit=0, controls=4, extract_fn=_fake_extract)
+    second = dry_run(store, limit=0, controls=4, extract_fn=_fake_extract)
+    assert {o.hub.ref_id for o in first.outcomes} == {
+        o.hub.ref_id for o in second.outcomes
+    }
+
+    different_seed = dry_run(
+        store, limit=0, controls=4, control_seed=1, extract_fn=_fake_extract
+    )
+    # Not asserting inequality (a different seed *could* coincidentally draw
+    # the same set) — just that the seed parameter is threaded through and
+    # this call succeeds with a full-size sample from the 10-hub pool.
+    assert len(different_seed.outcomes) == 4
+
+
+def test_dry_run_flags_junk_candidate_on_non_control_no_claim(store: Store) -> None:
+    """P2-12: a NO-CLAIM on a hub that was NOT sampled as a pass-through
+    control means the hub isn't a claim at all (a research note, task
+    prose, ...) — route to junk-triage, never treat as an atomic hub with
+    nothing to do."""
+    noclaim_hub = mint_hub(store, _claim("NOCLAIM this asserts nothing groundable"))
+
+    report = dry_run(store, limit=100, extract_fn=_fake_extract)
+    by_id = {o.hub.ref_id: o for o in report.outcomes}
+
+    assert by_id[noclaim_hub].verdict == "no-claim"
+    assert by_id[noclaim_hub].junk_candidate is True
+
+
+def test_dry_run_does_not_flag_junk_candidate_on_control_no_claim(store: Store) -> None:
+    """A NO-CLAIM control hub is the *expected* pass-through-control
+    outcome shape when the control itself isn't a claim — it's still
+    surfaced (verdict stays no-claim) but must not be marked
+    ``junk_candidate`` twice-over as if it were an unexpected top-scored
+    finding."""
+    top_hub = mint_hub(store, _claim("SPLIT top scored claim and another; also, x, y"))
+    noclaim_control = mint_hub(store, _claim("NOCLAIM control that is not a claim"))
+
+    report = dry_run(
+        store,
+        limit=1,
+        cohort="likely-compound",
+        controls=1,
+        control_seed=0,
+        extract_fn=_fake_extract,
+    )
+    by_id = {o.hub.ref_id: o for o in report.outcomes}
+    assert by_id[top_hub].junk_candidate is False
+    assert by_id[noclaim_control].verdict == "no-claim"
+    assert by_id[noclaim_control].junk_candidate is False
+
+
+def test_dry_run_escalates_lossy_nested_and_junk_candidate_outcomes(
+    store: Store,
+) -> None:
+    """P2-10: ``escalate_fn`` re-runs exactly the three dangerous outcome
+    shapes and keeps both results — a good escalated re-extraction can flip
+    a lossy pass-through into a sound split without discarding the
+    original for the reviewer."""
+    lossy_sentence = (
+        "Widget alloys self-assemble from base metals and rare-earth dopants "
+        "via slow annealing; larger crystals based on cubic lattices have "
+        "been grown, and defect clustering produces distinct grain types."
+    )
+    lossy_hub = mint_hub(store, _claim(lossy_sentence))
+    noclaim_hub = mint_hub(store, _claim("NOCLAIM this asserts nothing groundable"))
+    fine_hub = mint_hub(store, _claim("A single atomic claim that is fine"))
+
+    def _first_extract(sentence: str) -> ClaimExtraction:
+        # The primary pass keeps only the trailing clause of the compound
+        # sentence — the recurring pilot defect (P0-2) — everything else
+        # falls straight through unchanged (already-atomic, full recall).
+        if sentence == lossy_sentence:
+            return ClaimExtraction(
+                atoms=(_claim("Defect clustering produces distinct grain types."),),
+                compound=None,
+                not_claims=(),
+            )
+        return _fake_extract(sentence)
+
+    def _escalate(sentence: str) -> ClaimExtraction:
+        # A better extractor: full coverage this time.
+        return ClaimExtraction(atoms=(_claim(sentence),), compound=None, not_claims=())
+
+    report = dry_run(store, limit=100, extract_fn=_first_extract, escalate_fn=_escalate)
+    by_id = {o.hub.ref_id: o for o in report.outcomes}
+
+    lossy_outcome = by_id[lossy_hub]
+    assert lossy_outcome.verdict == "lossy"
+    assert lossy_outcome.escalated_verdict == "pass-through"
+    assert lossy_outcome.escalated_extraction is not None
+    assert lossy_outcome.escalation_error is None
+
+    noclaim_outcome = by_id[noclaim_hub]
+    assert noclaim_outcome.junk_candidate is True
+    assert noclaim_outcome.escalated_extraction is not None
+
+    # A verdict escalation never touches an outcome that didn't need it.
+    fine_outcome = by_id[fine_hub]
+    assert fine_outcome.verdict == "pass-through"
+    assert fine_outcome.escalated_extraction is None
+    assert fine_outcome.escalated_verdict is None
+
+
+def test_dry_run_isolates_a_per_hub_escalation_error(store: Store) -> None:
+    """An escalation dispatch failure is caught per-hub — it must not
+    abort the run or trip the primary extractor's consecutive-error
+    breaker (that breaker watches ``extract_fn``, not ``escalate_fn``)."""
+    noclaim_hub = mint_hub(store, _claim("NOCLAIM this asserts nothing groundable"))
+
+    def _boom_escalate(sentence: str) -> ClaimExtraction:
+        raise RuntimeError("escalation dispatch exploded")
+
+    report = dry_run(
+        store, limit=100, extract_fn=_fake_extract, escalate_fn=_boom_escalate
+    )
+    outcome = next(o for o in report.outcomes if o.hub.ref_id == noclaim_hub)
+    assert outcome.junk_candidate is True
+    assert outcome.escalation_error == "escalation dispatch exploded"
+    assert outcome.escalated_extraction is None
 
 
 def test_dry_run_isolates_a_per_hub_extract_error(store: Store) -> None:
@@ -356,3 +639,46 @@ def test_render_report_empty_report_still_renders(store: Store) -> None:
     empty_report = DryRunReport(outcomes=[], requested_limit=0, cohort_filter=None)
     rendered = render_report(empty_report)
     assert "Evaluated**: 0 hub(s)" in rendered
+
+
+def test_render_report_shows_junk_candidate_count_and_marker(store: Store) -> None:
+    mint_hub(store, _claim("NOCLAIM rendering nothing groundable here"))
+
+    report = dry_run(store, limit=100, extract_fn=_fake_extract)
+    rendered = render_report(report)
+
+    assert "Junk candidates" in rendered
+    assert "JUNK CANDIDATE" in rendered
+    assert "| lossy |" in rendered
+    assert "| nested |" in rendered
+
+
+# ── dump_outcomes_jsonl — persistence (P0-4) ─────────────────────────────
+
+
+def test_dump_outcomes_jsonl_round_trips_every_outcome(store: Store) -> None:
+    mint_hub(store, _claim("SPLIT rendering claim and other; also, a, b"))
+    mint_hub(store, _claim("A plain rendering claim"))
+    mint_hub(store, _claim("NOCLAIM rendering nothing groundable here"))
+
+    report = dry_run(store, limit=100, extract_fn=_fake_extract)
+    dumped = dump_outcomes_jsonl(report)
+    lines = dumped.splitlines()
+    assert len(lines) == len(report.outcomes)
+
+    records = [json.loads(line) for line in lines]
+    by_hub = {r["hub"]: r for r in records}
+    for outcome in report.outcomes:
+        record = by_hub[outcome.hub.ref_id]
+        assert record["sentence"] == outcome.claim_sentence
+        assert record["verdict"] == outcome.verdict
+        assert record["junk_candidate"] == outcome.junk_candidate
+        assert record["control"] == outcome.is_control
+        if outcome.extraction is not None:
+            assert record["extraction"] is not None
+            assert len(record["extraction"]["atoms"]) == len(outcome.extraction.atoms)
+
+
+def test_dump_outcomes_jsonl_empty_report_is_empty_string() -> None:
+    empty_report = DryRunReport(outcomes=[], requested_limit=0, cohort_filter=None)
+    assert dump_outcomes_jsonl(empty_report) == ""

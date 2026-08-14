@@ -1,0 +1,59 @@
+# Atom A — mechanical QI switching in single-molecule junctions
+# Support 1 of the merge. Grounded verbatim in Zhu et al., Angew. Chem. Int.
+# Ed. 62, e202302693 (2023) — prod ref 5937, evidence edge corroborates.
+# NOTE: prod carries TWO pdf_sha256 rows for ref 5937 (dup ingest) —
+# provenance must pin exactly one; first row used here.
+
+@prefix np:     <http://www.nanopub.org/nschema#> .
+@prefix npx:    <http://purl.org/nanopub/x/> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix precis: <https://precis.retostamm.com/vocab#> .
+@prefix agent:  <https://precis.retostamm.com/id/> .
+@prefix this:   <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_A> .
+@prefix sub:    <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_A#> .
+
+sub:Head {
+  this: a np:Nanopublication ;
+    np:hasAssertion       sub:assertion ;
+    np:hasProvenance      sub:provenance ;
+    np:hasPublicationInfo sub:pubinfo .
+}
+
+sub:assertion {
+  sub:claim a precis:AtomicClaim ;
+    rdfs:label "Mechanical tuning of a single-molecule junction can switch electron transport between constructive and destructive quantum-interference pathways, giving more than four orders of magnitude conductance variation over about 0.6 nm of electrode displacement."@en ;
+    precis:material "single-molecule junctions of molecules with multiple anchoring groups" ;
+    precis:method   "mechanically controlled break junction, electrode displacement" ;
+    precis:quantity "more than 4 orders of magnitude conductance variation; about 0.6 nm displacement" .
+}
+
+sub:provenance {
+  sub:assertion
+    prov:wasDerivedFrom <https://doi.org/10.1002/anie.202302693> ;
+    precis:evidenceRole precis:corroborates ;
+    precis:sourceQuote  """By designing molecules with multiple anchoring groups, we switched the electron transport between the constructive quantum interference (CQI) pathway and the destructive quantum interference (DQI) pathway, and more than four orders of magnitude conductance variation can be achieved by shifting the electrodes in a range of about 0.6 nm, which is the highest conductance range ever achieved using mechanical tuning."""@en ;
+    precis:searchSnip   "cqi dqi four orders magnitude mechanical tuning" ;
+    precis:sourcePdfSha256 "fd750f050898a67ad64a0f6e6c9eeba92732077e5f58fa9e177a029fe5338106" .
+
+  <https://doi.org/10.1002/anie.202302693>
+    dct:title "Switching Quantum Interference in Single-Molecule Junctions by Mechanical Tuning" .
+}
+
+sub:pubinfo {
+  this: dct:created "2026-08-14T12:00:00Z"^^xsd:dateTime ;
+    dct:creator agent:precis ;
+    dct:license <https://creativecommons.org/licenses/by/4.0/> ;
+    precis:mintedFromHub <https://precis.retostamm.com/ref/fi177584> .
+
+  agent:precis a prov:SoftwareAgent ;
+    rdfs:label "precis (non-attesting bot identity)" .
+
+  sub:sig npx:hasSignatureTarget this: ;
+    npx:hasAlgorithm "RSA" ;
+    npx:hasPublicKey "PLACEHOLDER-BOT-PUBKEY" ;
+    npx:hasSignature "PLACEHOLDER-SIGNATURE" ;
+    npx:signedBy agent:precis .
+}

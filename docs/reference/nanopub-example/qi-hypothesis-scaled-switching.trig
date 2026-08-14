@@ -1,0 +1,64 @@
+# Hypothesis — the cross-binding from the rejected merge, minted honestly.
+# The merge (qi-merge-scalable-switching.trig, defect ledger #1) failed the
+# commensurability gate: it asserted as FACT that switching (atom A) is
+# scalable (atom B's property, shown only for static signatures). The
+# transfer is unproven — but it is a well-motivated conjecture, and THIS
+# artifact type is where such a thing lives: typed Hypothesis, atoms as
+# MOTIVATION not evidence (no sourceQuote — a hypothesis has none, by
+# definition), an explicit discriminating experiment, and an OTS-anchored
+# date. A signed, timestamped hypothesis is a priority claim on an idea.
+# The sentence is declarative and unhedged: epistemic status lives in the
+# type, so a future confirming claim can carry the same sentence (same
+# AIDA URI) and the graph converges on one content address.
+
+@prefix np:     <http://www.nanopub.org/nschema#> .
+@prefix npx:    <http://purl.org/nanopub/x/> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix precis: <https://precis.retostamm.com/vocab#> .
+@prefix agent:  <https://precis.retostamm.com/id/> .
+@prefix npA:    <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_A> .
+@prefix npB:    <https://precis.retostamm.com/np/RAPLACEHOLDER_ATOM_B> .
+@prefix this:   <https://precis.retostamm.com/np/RAPLACEHOLDER_HYPOTHESIS> .
+@prefix sub:    <https://precis.retostamm.com/np/RAPLACEHOLDER_HYPOTHESIS#> .
+
+sub:Head {
+  this: a np:Nanopublication ;
+    np:hasAssertion       sub:assertion ;
+    np:hasProvenance      sub:provenance ;
+    np:hasPublicationInfo sub:pubinfo .
+}
+
+sub:assertion {
+  sub:claim a precis:Hypothesis ;
+    rdfs:label "Mechanical switching between constructive and destructive quantum-interference pathways, demonstrated in single-molecule junctions, persists when quantum-interference-active molecules are assembled into coordination cages and monolayer thin films."@en ;
+    precis:testableBy "conductance modulation under electrode displacement or mechanical strain in junctions of QI-active coordination cages and of their monolayer thin films"@en .
+}
+
+sub:provenance {
+  # Motivation, NOT evidence: no evidenceRole, no sourceQuote — a
+  # hypothesis has no supporting passage, by definition. The atoms are
+  # cited by trusty URI as the artifacts that motivate the conjecture.
+  sub:assertion
+    prov:wasDerivedFrom npA: , npB: ;
+    precis:motivatedBy npA: , npB: ;
+    precis:motivation "Both source systems attribute their conductance behavior to the same mechanism class (CQI/DQI pathway interference in pi-conjugated molecules). Atom A establishes that the interference pathway can be switched mechanically in single-molecule junctions; atom B establishes that static interference signatures survive assembly into cages and monolayer films. No demonstration of mechanical switching beyond single molecules exists; this conjecture is the untested transfer."@en .
+}
+
+sub:pubinfo {
+  this: dct:created "2026-08-14T12:00:00Z"^^xsd:dateTime ;
+    dct:creator agent:precis ;
+    dct:license <https://creativecommons.org/licenses/by/4.0/> ;
+    precis:mintedFromHub <https://precis.retostamm.com/ref/fi177584> .
+
+  agent:precis a prov:SoftwareAgent ;
+    rdfs:label "precis (non-attesting bot identity)" .
+
+  sub:sig npx:hasSignatureTarget this: ;
+    npx:hasAlgorithm "RSA" ;
+    npx:hasPublicKey "PLACEHOLDER-BOT-PUBKEY" ;
+    npx:hasSignature "PLACEHOLDER-SIGNATURE" ;
+    npx:signedBy agent:precis .
+}

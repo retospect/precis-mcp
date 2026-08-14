@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>precis nanopub viewer — fi177584 wargame</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #d0d0d0;
+    --card: #f6f6f4; --accent: #0b6e4f; --atom: #2b6cb0; --merge: #805ad5;
+    --paper: #b7791f; --anchor: #718096; --sel: #fffbe6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e6e6; --muted: #9a9a9a; --line: #3a3f47;
+      --card: #1d2026; --accent: #4fd1a5; --atom: #63b3ed; --merge: #b794f4;
+      --paper: #ecc94b; --anchor: #a0aec0; --sel: #2a2a1a;
+    }
+  }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { padding: 14px 22px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  main { display: flex; flex-wrap: wrap; gap: 0; }
+  #graphwrap { flex: 1 1 460px; min-width: 380px; padding: 10px; }
+  #detail { flex: 1 1 420px; min-width: 340px; border-left: 1px solid var(--line);
+            padding: 16px 22px; max-height: 78vh; overflow-y: auto; }
+  svg { width: 100%; height: auto; }
+  .node rect { fill: var(--card); stroke-width: 2px; cursor: pointer; rx: 8; }
+  .node text { font: 12.5px system-ui, sans-serif; fill: var(--fg); cursor: pointer; }
+  .node .sub { fill: var(--muted); font-size: 11px; }
+  .node.selected rect { fill: var(--sel); }
+  .node.paper rect { stroke: var(--paper); }
+  .node.atom rect { stroke: var(--atom); }
+  .node.merge rect { stroke: var(--merge); }
+  .node.anchor rect { stroke: var(--anchor); stroke-dasharray: 5 3; }
+  .edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .edge.merkle { stroke-dasharray: 4 4; opacity: .55; }
+  .edgelabel { font: 10.5px system-ui, sans-serif; fill: var(--muted); }
+  #detail h2 { font-size: 15px; margin: 0 0 4px; }
+  #detail .kind { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  #detail blockquote { margin: 10px 0; padding: 8px 14px; border-left: 3px solid var(--accent);
+                       background: var(--card); font-style: italic; font-size: 13.5px; }
+  #detail table { border-collapse: collapse; font-size: 13px; margin: 8px 0; }
+  #detail td { border: 1px solid var(--line); padding: 3px 9px; vertical-align: top; }
+  #detail td:first-child { color: var(--muted); white-space: nowrap; }
+  .btn { display: inline-block; margin: 6px 8px 0 0; padding: 5px 11px; border: 1px solid var(--accent);
+         border-radius: 6px; color: var(--accent); text-decoration: none; font-size: 13px; }
+  .btn.dis { border-color: var(--muted); color: var(--muted); pointer-events: none; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  details { margin-top: 12px; }
+  details pre { background: var(--card); padding: 10px; overflow-x: auto; font-size: 11.5px; border-radius: 6px; }
+  section.chain { border-top: 1px solid var(--line); padding: 18px 22px; }
+  section.chain h2 { font-size: 15px; }
+  section.chain ol li { margin-bottom: 7px; }
+  section.chain table { border-collapse: collapse; font-size: 13px; }
+  section.chain th, section.chain td { border: 1px solid var(--line); padding: 4px 10px; text-align: left; }
+  code { background: var(--card); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>precis nanopub viewer — hub fi177584 as a hash-locked claim DAG</h1>
+  <p>Two atoms, each corroborated by a different paper; one merge that only the conjunction supports.
+     Click any node. Sketch for the later precis_web viewer — data model and panes are the reusable parts.</p>
+</header>
+<main>
+  <div id="graphwrap">
+    <svg viewBox="0 0 700 480" role="img" aria-label="claim DAG">
+      <defs>
+        <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="currentColor" opacity=".6"/>
+        </marker>
+      </defs>
+      <!-- edges -->
+      <path class="edge" d="M170,108 L170,178" marker-end="url(#arr)"/>
+      <text class="edgelabel" x="178" y="148">corroborates</text>
+      <path class="edge" d="M530,108 L530,178" marker-end="url(#arr)"/>
+      <text class="edgelabel" x="437" y="148">corroborates</text>
+      <path class="edge" d="M220,258 C280,290 300,300 322,312" marker-end="url(#arr)"/>
+      <text class="edgelabel" x="212" y="290">conjunct-of</text>
+      <path class="edge" d="M480,258 C420,290 400,300 378,312" marker-end="url(#arr)"/>
+      <text class="edgelabel" x="412" y="290">conjunct-of</text>
+      <path class="edge merkle" d="M120,258 C90,360 160,415 300,428" marker-end="url(#arr)"/>
+      <path class="edge merkle" d="M580,258 C610,360 540,415 400,428" marker-end="url(#arr)"/>
+      <path class="edge merkle" d="M350,372 L350,410" marker-end="url(#arr)"/>
+      <text class="edgelabel" x="252" y="418">merkle leaves → daily root</text>
+      <!-- nodes -->
+      <g class="node paper" data-id="paperA" transform="translate(60,48)">
+        <rect width="220" height="60"/>
+        <text x="12" y="24">Zhu et al. 2023 (Angew)</text>
+        <text x="12" y="44" class="sub">Mechanical QI switching · pc5937</text>
+      </g>
+      <g class="node paper" data-id="paperB" transform="translate(420,48)">
+        <rect width="220" height="60"/>
+        <text x="12" y="24">Yang et al. 2022 (PNAS)</text>
+        <text x="12" y="44" class="sub">QI scaling to monolayers · pc42109</text>
+      </g>
+      <g class="node atom" data-id="atomA" transform="translate(40,198)">
+        <rect width="260" height="60"/>
+        <text x="12" y="24">Atom A — mechanical switching</text>
+        <text x="12" y="44" class="sub">&gt;10⁴ conductance range over ~0.6 nm</text>
+      </g>
+      <g class="node atom" data-id="atomB" transform="translate(400,198)">
+        <rect width="260" height="60"/>
+        <text x="12" y="24">Atom B — scale persistence</text>
+        <text x="12" y="44" class="sub">ligand → cage → monolayer film</text>
+      </g>
+      <g class="node merge" data-id="merge" transform="translate(215,312)">
+        <rect width="270" height="60"/>
+        <text x="12" y="24">Merge — established, tunable, scalable</text>
+        <text x="12" y="44" class="sub">cross-paper synthesis · trust = worst-of-atoms</text>
+      </g>
+      <g class="node anchor" data-id="ots" transform="translate(230,412)">
+        <rect width="240" height="52"/>
+        <text x="12" y="22">OTS anchor — 2026-08-14 batch</text>
+        <text x="12" y="40" class="sub">one Bitcoin timestamp per day</text>
+      </g>
+    </svg>
+  </div>
+  <div id="detail"><p class="note">Select a node.</p></div>
+</main>
+
+<section class="chain">
+  <h2>The wargame: build sealed now, release unaltered later</h2>
+  <ol>
+    <li><b>Mint atom A.</b> Canonicalize the four graphs (RDF dataset normalization, URI placeholder in place of the artifact code) → <b>sign</b> with the bot key → <b>hash</b> the signed content (trusty algorithm) → substitute the artifact code into the URI. From this instant the bytes are frozen; the name <i>is</i> the hash.</li>
+    <li><b>Mint atom B.</b> Same.</li>
+    <li><b>Mint the merge.</b> Its assertion and provenance cite the atoms <i>by their finished trusty URIs</i>, so the merge's own artifact code transitively commits to both atoms' full content — a Merkle-DAG exists before any batch tree.</li>
+    <li><b>Daily sweep.</b> Leaves = artifact codes of everything minted today → Merkle tree → root → <b>one</b> OpenTimestamps anchor. The proof file is <b>detached</b> — stored beside the nanopubs at a URL derivable from the artifact code, never inside the hashed content (that would be circular).</li>
+    <li><b>Embargo holds.</b> The public anchor reveals a 32-byte root and nothing else. Claims can sit unreleased for months.</li>
+    <li><b>Publish = release, not mutation.</b> Serving the exact bytes is the whole publish step. Any verifier: recompute hash → matches URI ✓ · check RSA signature ✓ · Merkle path to root ✓ · OTS proof → block time ✓. Priority is proven to the mint date without having disclosed anything early.</li>
+    <li><b>Everything later is a new artifact pointing at the frozen one:</b> human attestation (a nanopub signed by Reto's key from the review surface, asserting <code>attests → np:…</code>), retraction (<code>npx:retracts</code>), supersession (<code>npx:supersedes</code>). The original is never touched.</li>
+  </ol>
+  <h2>What breaks if you cheat</h2>
+  <table>
+    <tr><th>Attempted change after mint</th><th>Outcome</th></tr>
+    <tr><td>Edit any byte before release</td><td>Hash no longer matches the URI — self-invalidating, and the Merkle leaf no longer proves it</td></tr>
+    <tr><td>Re-sign with a different key</td><td>New hash → new URI → it is a <i>different</i> nanopub with no anchor history</td></tr>
+    <tr><td>Slip an attestation into pubinfo at publish time</td><td>Impossible by construction — that's why attestation is its own signed artifact</td></tr>
+    <tr><td>Swap a quote or scope value "quietly"</td><td>Detectable by anyone holding the URI; the old anchor proves what was actually minted</td></tr>
+    <tr><td>Ambiguous source pin (ref 5937 has two pdf_sha256 rows in prod)</td><td>Mint must pin exactly one; the dup is an upstream hygiene bug the mint gate should flag</td></tr>
+  </table>
+</section>
+
+<script>
+const NODES = {
+  paperA: {
+    kind: "paper", title: "Switching Quantum Interference in Single-Molecule Junctions by Mechanical Tuning",
+    fields: [["authors","Zhu, Zhou, Ren, … Gao, Hong"],["venue","Angew. Chem. Int. Ed. 62, e202302693 (2023)"],
+             ["doi","10.1002/anie.202302693"],["precis ref","pc5937"],
+             ["pdf sha256","fd750f05…5338106  ⚠ second row 563dd4ec…00be88f — dup ingest, mint pins the first"]],
+    links: [["DOI","https://doi.org/10.1002/anie.202302693"]]
+  },
+  paperB: {
+    kind: "paper", title: "Scaling of Quantum Interference from Single Molecules to Molecular Cages and Their Monolayers",
+    fields: [["venue","PNAS 119, e2211786119 (2022)"],["doi","10.1073/pnas.2211786119"],["precis ref","pc42109"],
+             ["pdf sha256","— none registered (hygiene gap: chunks exist, identifier row missing)"]],
+    links: [["DOI","https://doi.org/10.1073/pnas.2211786119"]]
+  },
+  atomA: {
+    kind: "atomic claim · RAPLACEHOLDER_ATOM_A",
+    title: "Mechanical tuning of a single-molecule junction can switch electron transport between constructive and destructive quantum-interference pathways, giving more than four orders of magnitude conductance variation over about 0.6 nm of electrode displacement.",
+    fields: [["material","single-molecule junctions, multiple anchoring groups"],
+             ["method","mechanically controlled break junction"],
+             ["quantity","> 4 orders of magnitude; ~0.6 nm"],
+             ["evidence","corroborates ← Zhu et al. 2023"],
+             ["minted from","fi177584 (private back-pointer)"]],
+    quote: "By designing molecules with multiple anchoring groups, we switched the electron transport between the constructive quantum interference (CQI) pathway and the destructive quantum interference (DQI) pathway, and more than four orders of magnitude conductance variation can be achieved by shifting the electrodes in a range of about 0.6 nm, which is the highest conductance range ever achieved using mechanical tuning.",
+    pdf: "https://precis.retostamm.com/pdf/fd750f050898a67ad64a0f6e6c9eeba92732077e5f58fa9e177a029fe5338106?search=" + encodeURIComponent("cqi dqi four orders magnitude mechanical tuning"),
+    pdfNote: "contract: /pdf/<sha256>?search=<searchSnip> — viewer opens the PDF and jumps to the first text hit; page anchor from the chunk's marker page map narrows it",
+    doi: "https://doi.org/10.1002/anie.202302693",
+    trigFile: "qi-atom-a-mechanical-tuning.trig"
+  },
+  atomB: {
+    kind: "atomic claim · RAPLACEHOLDER_ATOM_B",
+    title: "Constructive and destructive quantum-interference signatures observed in single organic ligands persist in their coordination cages and in monolayer thin films of those cages.",
+    fields: [["material","DPB/DPF ligands, Pd coordination cages, monolayer films"],
+             ["method","break-junction + EGaIn large-area junctions"],
+             ["quantity","DPF cage ~42× DPB cage; DPF ligand ~9× DPB ligand"],
+             ["evidence","corroborates ← Yang et al. 2022"],
+             ["minted from","fi177584 (private back-pointer)"]],
+    quote: "These results showed that the conductance of monolayer thin films evaluated by EGaIn agreed well with the trends observed in single-ligand/cage junctions. This suggests that the quantum interference effects in DPB and DPF ligands, either constructive or destructive, can further transfer to their monolayer thin films in a larger length scale.",
+    pdf: "https://precis.retostamm.com/paper/pc42109?chunk=23&search=" + encodeURIComponent("quantum interference transfer monolayer thin films"),
+    pdfNote: "no pdf sha registered for pc42109 — fallback contract: /paper/<handle>?chunk=<ord>&search=<snip>",
+    doi: "https://doi.org/10.1073/pnas.2211786119",
+    trigFile: "qi-atom-b-scaling.trig"
+  },
+  merge: {
+    kind: "compound claim · RAPLACEHOLDER_MERGE",
+    title: "Quantum-interference conductance switching is an experimentally established, scalable transport mechanism: interference pathways can be switched mechanically in single-molecule junctions, and interference signatures persist from single ligands through molecular cages to monolayer thin films.",
+    fields: [["conjuncts","Atom A (mechanical switching) · Atom B (scale persistence)"],
+             ["derived from","the two atom nanopubs by trusty URI — no direct paper citation"],
+             ["trust","derived worst-of-atoms — never serialized"],
+             ["why valid","neither paper asserts the conjunction; every clause maps to exactly one atom (coverage gate satisfiable, nothing unearned)"],
+             ["published form of","fi177584"]],
+    quote: null,
+    trigFile: "qi-merge-scalable-switching.trig"
+  },
+  ots: {
+    kind: "timestamp anchor",
+    title: "Daily OpenTimestamps anchor, 2026-08-14 batch",
+    fields: [["leaves","trusty artifact codes of every nanopub minted today"],
+             ["tree","Merkle; root → one OTS attestation → Bitcoin block"],
+             ["proof","detached file beside the nanopubs — never inside the hashed content"],
+             ["embargo","anchor reveals only the 32-byte root; release can happen months later, bytes unaltered"]]
+  }
+};
+
+const detail = document.getElementById("detail");
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+function show(id){
+  document.querySelectorAll(".node").forEach(n => n.classList.toggle("selected", n.dataset.id === id));
+  const d = NODES[id];
+  let h = `<div class="kind">${esc(d.kind)}</div><h2>${esc(d.title)}</h2>`;
+  h += "<table>" + d.fields.map(([k,v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("") + "</table>";
+  if (d.quote) h += `<blockquote>“${esc(d.quote)}”</blockquote><div class="note">verbatim from the ingested source (prod chunk)</div>`;
+  if (d.pdf) h += `<a class="btn" href="${d.pdf}">Open PDF at passage</a>` +
+                  (d.doi ? `<a class="btn" href="${d.doi}">DOI</a>` : "") +
+                  `<div class="note">${esc(d.pdfNote)} (stub URL today)</div>`;
+  else if (d.links) h += d.links.map(([t,u]) => `<a class="btn" href="${u}">${esc(t)}</a>`).join("");
+  if (d.trigFile) h += `<details><summary>TriG source — ${esc(d.trigFile)}</summary><pre>see file in nanopub-example/</pre></details>`;
+  detail.innerHTML = h;
+}
+document.querySelectorAll(".node").forEach(n => n.addEventListener("click", () => show(n.dataset.id)));
+show("merge");
+</script>
+</body>
+</html>
