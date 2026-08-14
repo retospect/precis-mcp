@@ -92,12 +92,14 @@ restore.
 
 ## Open questions / decisions log
 
-1. **Reto:** human-review depth for phase 3 — triaged-only as proposed, or
-   full review of the likely-compound cohort? (The 12× population revision
-   is why this needs re-deciding.)
-2. **Reto:** evidence re-point method — LLM per-atom verify as proposed,
-   or human decision per hub?
-3. **Reto:** window scheduling for phase 2.
+1. **DECIDED (Reto, 2026-08-14):** phase-3 review is triaged-only as
+   proposed (needs_review + low-confidence + ~5% QA sample).
+2. **DECIDED (Reto, 2026-08-14):** evidence re-point = LLM per-atom verify
+   as proposed. Human sign-off stays available on top ("I can always also
+   sign") — the interactive review surface remains the place a human
+   attests, it is not a migration gate.
+3. **DECIDED (Reto, 2026-08-14):** run now — deploy, then phases 0/1
+   immediately, phase 2 in the next quiet window (avoid 02:00–03:30 UTC).
 4. Whether `chase.py::_taproot_bridge` should decompose post-migration, or
    chase-minted hubs just queue for a standing version of this pass
    (phase 0 scoring re-run monthly would catch them).
