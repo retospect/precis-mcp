@@ -1,9 +1,83 @@
 ---
-status: idea
+status: in-progress
 title: LLM tier ladder — SMALL to cloud, MEDIUM/BIG/FRONTIER onto sonnet/opus/fable
 ---
 
 # LLM tier ladder — SMALL to cloud, capability tiers onto Claude models
+
+## APPLIED 2026-08-15 — with a revised ladder
+
+Reto revised the ladder before applying (one rung cheaper across the board,
+and no Fable — resolving the "Fable at FRONTIER?" open question below in
+favour of Opus): **SMALL = `z-ai/glm-4.7-flash` cloud-only (openai_compat);
+MEDIUM = `claude-haiku-4-5-20251001`; BIG = `claude-sonnet-5`; FRONTIER =
+`claude-opus-5`** — the three Claude tiers each `[claude_p, claude_agent]`
+with the tool-less rung FIRST (see "Rung order is load-bearing" below).
+Chemistry (NO→NH₃ quest) runs BIG=sonnet first, escalates to FRONTIER=opus
+only if it underperforms.
+
+All four `app_settings` rows written to prod (Reto-authorized) and verified
+landed. Pre-write values captured for rollback (session scratchpad,
+`llm-chain-rollback-2026-08-15.sql`; note `frontier` had no pre-existing row —
+rollback deletes it).
+
+**Smoke, same day:** SMALL cloud confirmed green — 1,620 post-cutover
+`z-ai/glm-4.7-flash` `placement=cloud` calls, 0 errors. No MEDIUM/BIG/FRONTIER
+traffic observed yet: the claude lane on the worker host was dark because the
+live daemons ran a stale launchd env ("claude binary not found" — plists on
+disk are correct; `kickstart -k` does not reload env, full bootout+bootstrap
+required). Daemon bounce + claude CLI update + OAuth-token validity probe
+dispatched 2026-08-15.
+
+**Remaining (this doc stays open until done):**
+
+1. ~~Claude-tier smoke after the daemon bounce~~ — DONE 2026-08-15: worker
+   bounced (SIGTERM-trap limbo en route — see the launchctl memory note),
+   claude CLI 2.1.212→2.1.233, OAuth token probed valid, and `quest_tick`
+   (the previously failing source) landed a successful `claude-sonnet-5`
+   `claude_p` call minutes later. No MEDIUM=haiku traffic yet (no demand
+   until `taproot:extract-medium` ships); `claude_agent` idle since
+   2026-08-07 (no demand, no regression). NOTE: caspar/castor/pollux/spark
+   have NO claude CLI installed — any future claude_p-rung worker there is
+   a dark lane until an install lands in the deploy.
+2. Ship-order step 2 — CODE DONE 2026-08-15: drain concurrency defaults
+   6→16 (`derived_drain`/`materialize`, docstring truth pass — no local
+   slot exists to size against), summarize gained a
+   `PRECIS_SUMMARIZE_MAX_CONCURRENCY` clamp (default 32) mirroring
+   classify's, and `--only job_inproc` is now a valid worker CLI choice
+   (was missing from argparse `choices` — gripe 208523). REMAINING (ops):
+   actually start dedicated `precis worker --only job_inproc` lane
+   process(es) on the drain host — manually per the classify-burst
+   precedent, or via a playbook mirroring 43-precis-worker-compute.yml
+   (not yet written; 43 is systemd, the drain host is launchd, so the
+   mirror needs a plist variant).
+3. Finding 5 — DONE 2026-08-15: dynamic prio nudge `_rebalance_stuck_band`
+   in `materialize.py`, hooked on the existing band-full-but-nothing-
+   running detection; a starved band's queued rows drop to `_STARVED_PRIO`
+   (6) and revert to `_MINT_PRIO` (8) once it drains. Self-correcting,
+   scoped to one job_type+pass. Watch classify_drain actually run
+   post-deploy.
+4. Finding 4: re-check whether the 85–93% in-job stall vanished on cloud
+   SMALL; if it persists, it was never slot starvation.
+5. ~~Router-bypass retirement: `extract_claim_strict_haiku`
+   (`taproot/canon.py`, function-local `call_claude_p` import) →
+   `dispatch(Tier.MEDIUM)`~~ — DONE: renamed to
+   `extract_claim_strict_medium`, dispatches at `Tier.MEDIUM`, logs
+   `llm_call_log` like every other routed call; `EXCLUDED_OPERATIONS`
+   entry dropped, `taproot:extract-medium` registered as a steerable op.
+   `fix_gripe`'s `call_claude_agent` bypass is a separate, still-open
+   lane — out of scope here.
+6. Token-shaped accounting: `llm_call_log` has no token columns (chars +
+   `cost_usd` only) — per-model token rollup needs a migration. Reto wants
+   inspection in tokens per model, not USD, with an hourly runaway check.
+7. Breaker never gates SMALL (`_TIER_BANDS[SMALL]=FREE`) — materially more
+   urgent now that SMALL is all-cloud.
+8. Raise `PRECIS_CLAUDE_MAX_USD` / `PRECIS_CLAUDE_TIMEOUT_S` on worker hosts
+   (defaults $0.10 / 120 s) before routing FRONTIER=opus traffic.
+
+The proposal below is kept as written for the findings and mechanism notes;
+where it names sonnet/opus/fable as the ladder, the applied values above
+supersede it.
 
 Reto's ask (2026-08-15), verbatim: *"move the small tier to the cloud that works
 for now. And lets make the next tier up sonnet, then opus, then for frontier put

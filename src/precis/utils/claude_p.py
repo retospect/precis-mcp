@@ -88,10 +88,13 @@ class ClaudePUnparseableError(ClaudePError):
     block anywhere — the *model* broke the output contract (prose reply,
     empty reply), not the infrastructure. Split out from
     :class:`ClaudePError` so a caller can retry a format flake without
-    also retrying timeouts / non-zero exits / a missing binary
-    (:func:`precis.taproot.canon.extract_claim_strict_haiku`'s
-    format-flake guard is the motivating consumer). Catching plain
-    :class:`ClaudePError` keeps working — this is a subclass.
+    also retrying timeouts / non-zero exits / a missing binary. Catching
+    plain :class:`ClaudePError` keeps working — this is a subclass. Routed
+    callers (:mod:`precis.utils.llm.router`'s ``ClaudePProvider``) catch
+    the parent :class:`ClaudeProcessError` and surface it as
+    ``LlmResult.error`` rather than letting it propagate — see
+    :func:`precis.taproot.canon.extract_claim_strict_medium` for a
+    dispatch-level format-flake guard built on that.
     """
 
 

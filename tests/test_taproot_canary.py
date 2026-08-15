@@ -22,7 +22,7 @@ from precis.taproot.canon import (
     ClaimExtraction,
     extract_claim_strict,
     extract_claim_strict_big,
-    extract_claim_strict_haiku,
+    extract_claim_strict_medium,
 )
 from precis.taproot.eval_canon import (
     EXTRACTION_PASSAGES_FIXTURE,
@@ -95,7 +95,7 @@ def test_canary_fails_on_no_claim_mismatch_in_either_direction() -> None:
 
 
 def test_resolve_extract_fn_maps_tiers_to_strict_variants() -> None:
-    assert _resolve_extract_fn("haiku") is extract_claim_strict_haiku
+    assert _resolve_extract_fn("haiku") is extract_claim_strict_medium
     assert _resolve_extract_fn("big") is extract_claim_strict_big
     assert _resolve_extract_fn("small") is extract_claim_strict
 

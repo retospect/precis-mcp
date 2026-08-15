@@ -74,6 +74,21 @@ class TestParser:
         assert args.only == "job_ssh_node"
         assert args.once is True
 
+    def test_only_accepts_job_inproc(self, monkeypatch):
+        """``job_inproc`` must be a valid ``--only`` choice. It is
+        registered unconditionally via ``_register("job_inproc")``, and a
+        dedicated drain lane (the 43-compute-lane pattern, run manually or
+        from a playbook as ``precis worker --only job_inproc``) is the
+        supported scale-out for the serial job rotation — argparse
+        rejecting the value makes such a unit exit 2 on every start, the
+        same silent crash-loop shape as the job_ssh_node drift above.
+        Regression for the gap found 2026-08-15 (gripe 208523)."""
+        monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--only", "job_inproc", "--once"])
+        assert args.only == "job_inproc"
+        assert args.once is True
+
     def test_worker_embedder_reads_env(self, monkeypatch):
         monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
         parser = _build_parser()

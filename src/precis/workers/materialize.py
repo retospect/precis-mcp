@@ -67,6 +67,12 @@ _FAILED_COOLDOWN_MINUTES = 15
 
 _MINT_PRIO = 8  # background under 0014 ASC (lower = more urgent)
 
+#: Promoted prio for a STUCK band's queued rows (Finding 5,
+#: docs/backlog/llm-tier-ladder-cloud-cutover.md): below the background mint
+#: prio (8), still above real work (prio <= 5) — see
+#: :func:`_rebalance_stuck_band`.
+_STARVED_PRIO = _MINT_PRIO - 2
+
 #: Backlog-WARNING multiplier over PRECIS_EMBED_BACKLOG_HIGH — a
 #: poor-man's liveness signal (until §D's real one): a queue piling up to
 #: 4x the mint threshold despite (presumably) already-minted jobs means
@@ -99,7 +105,11 @@ _SMALL_TARGET_NODE_ENV = "PRECIS_SMALL_DRAIN_TARGET_NODE"
 _DEFAULT_BAND_LOW = 20
 _DEFAULT_BAND_HIGH = 50
 _DEFAULT_SMALL_DRAIN_LIMIT = 500  # params.limit per derived_drain job
-_DEFAULT_SMALL_DRAIN_CONCURRENCY = 6  # == the router's cap-6 local SMALL slot
+#: A thread-pool width for I/O fan-out against the (now cloud-only)
+#: llm.chain.small endpoint — NOT a router local-serving slot cap (there is
+#: no local slot to cap post the 2026-08-15 cloud cutover; see
+#: workers/job_types/derived_drain.py's module docstring).
+_DEFAULT_SMALL_DRAIN_CONCURRENCY = 16
 _DEFAULT_SMALL_TARGET_NODE = "melchior"
 
 
@@ -447,6 +457,59 @@ def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
     return minted
 
 
+def _rebalance_stuck_band(store: Store, src: _BacklogSource, *, stuck: bool) -> None:
+    """Dynamic prio nudge for Finding 5
+    (``docs/backlog/llm-tier-ladder-cloud-cutover.md``): ``claim_executor_jobs``
+    (``workers/executors/_common.py``) orders ``COALESCE(prio,5) ASC, ref_id
+    ASC``, and both SMALL derived-drain bands mint at the SAME ``_MINT_PRIO``
+    — so a source that keeps re-minting (summarize) always beats a source
+    whose band is full-but-stuck (classify) on the ``ref_id`` tiebreak,
+    starving it forever rather than just until its own band drains. This
+    UPDATEs the QUEUED rows of exactly ONE band (this ``src``'s ``job_type`` +
+    ``params_pass``) to :data:`_STARVED_PRIO` while stuck, promoting it ahead
+    of the still-minting sibling; ``stuck=False`` reverts to :data:`_MINT_PRIO`.
+    The ``prio IS DISTINCT FROM`` guard makes a repeat call a no-op UPDATE
+    (matches zero rows) rather than a needless write every cadence tick.
+
+    Self-correcting: this only ever promotes THIS band's own queued rows, and
+    :func:`_materialize_band` calls ``stuck=False`` the moment the band is no
+    longer full-but-idle (band draining, or not full) — so the promotion
+    reverts on its own once the stuck condition clears, no separate cleanup
+    pass needed. Scoped to one ``job_type`` + ``params_pass``: the sibling
+    SMALL band and any other ``job_type`` (e.g. ``embed_batch``) are untouched
+    by the ``WHERE`` clause below. Accepted side effect: while promoted, this
+    band's rows also outrank ``embed_batch``'s prio-8 rows on the shared
+    ``job_inproc`` claim lane — small and self-limiting (only as many rows as
+    the band width, only for as long as the stuck condition holds).
+    """
+    target = _STARVED_PRIO if stuck else _MINT_PRIO
+    pass_clause = ""
+    args: list[Any] = [target, src.job_type]
+    if src.params_pass is not None:
+        pass_clause = "AND r.meta->'params'->>'pass' = %s"
+        args.append(src.params_pass)
+    args.append(target)
+    with store.pool.connection() as conn:
+        conn.execute(
+            f"""
+            UPDATE refs r
+               SET prio = %s
+             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+               AND r.meta->>'job_type' = %s
+               {pass_clause}
+               AND r.prio IS DISTINCT FROM %s
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'STATUS'
+                        AND t.value = 'queued'
+                   )
+            """,
+            tuple(args),
+        )
+        conn.commit()
+
+
 def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
     """Job-queue BAND policy (SMALL derived-drain sources): keep ``[low, high]``
     live jobs for THIS source while its backlog remains. When live drops below
@@ -478,7 +541,14 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
                 low,
                 high,
             )
+            # Finding 5 fairness fix: promote this band's queued rows ahead of
+            # a continuously-re-minted sibling band on the shared job_inproc
+            # claim tiebreak — see _rebalance_stuck_band's docstring.
+            _rebalance_stuck_band(store, src, stuck=True)
+        else:
+            _rebalance_stuck_band(store, src, stuck=False)
         return 0  # hysteresis: full enough, don't re-mint
+    _rebalance_stuck_band(store, src, stuck=False)
     if _in_failed_cooldown(store, src.job_type, params_pass=src.params_pass):
         return 0
     # Top up toward HIGH, but never mint more jobs than the backlog can feed

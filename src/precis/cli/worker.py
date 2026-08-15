@@ -369,6 +369,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "stub_rank",
             "tag_embeddings",
             "job_claude_inproc",
+            "job_inproc",
             "job_ssh_node",
             "dream_agent",
             "auto_check",

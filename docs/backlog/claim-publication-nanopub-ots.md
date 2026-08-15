@@ -895,3 +895,163 @@ anchor, immutable proof store, two-phase publish) untouched:
    literally signed off.
 7. ~~Trusty URI as cite handle~~ **Accepted 2026-08-13** — no; addable
    later if desired.
+
+## Gate checklist — enumerated (2026-08-15)
+
+Every gate below is prose already in this doc, indexed. Layer split follows
+§Mint pipeline in practice; publish-time gates are a fourth group, distinct
+from mint-time.
+
+### Layer A — mechanical validators (pure code, mint path, no LLM)
+
+1. **Contradicts-edge gate.** Hub carrying a live unresolved `contradicts`
+   edge is unmintable until adjudicated (source retracted, or a primary
+   corrects/re-mints the claim); worst-of applies to compounds/hypotheses.
+   SQL-cheap `links` existence check, runs first, before any LLM-layer
+   gate. Fail → hub stays internal raw material. (§Mint gates)
+2. **Eligibility check.** Which claims/hubs are candidates for mint. Fail →
+   not mintable. (§Mint pipeline in practice)
+3. **Quote verbatim-containment.** `sourceQuote` must be verbatim from the
+   cited chunk text. Fail → hygiene gripe or back to decomposition.
+   (§Mint pipeline in practice)
+4. **Snip uniqueness.** Normalized `searchSnip` (casefold, collapse
+   whitespace, strip soft hyphens/ligatures) must match a unique location
+   in the paper's stored chunk text at mint time. No unique match → mint
+   fails. (§Open, resolved 2026-08-13 provenance-content item)
+5. **Structured-field quote containment.** Every `precis:material`/
+   `method`/`quantity` value must be contained in the same atom's
+   `sourceQuote` (catches the fi176435/qi-atom-B overclaim class). Fail →
+   mint fails. (§Hypothesis nanopubs; §Mint pipeline in practice)
+6. **Schema lint.** Hypothesis-with-quote and claim-without-quote are hard
+   errors (`evidenceRole`/`sourceQuote` presence gated by artifact type).
+   (§Hypothesis nanopubs; §Mint pipeline in practice)
+7. **RDF/vocab checks.** Predicate and structure validity. Fail → mint
+   fails. (§Mint pipeline in practice)
+8. **Ingested-chunk / `pdf_sha256` gate.** No ingested chunks, or no
+   unique `pdf_sha256` row for the source → not mintable; routes to the
+   ingest-hygiene gripe instead. (§Mint gates, "No ingested chunks" bullet)
+9. **AIDA URI encoding canonicalization.** Normalize `%20`/`+` before
+   minting or matching, so identical sentences converge on one URI.
+   (§Vocabulary)
+10. **License-triple scoping.** The nanopub's CC-BY must scope to the
+    assertion graph (or carry a note triple) — never asserted over
+    `sourceQuote` bytes. (§Mint gates, "License honesty" bullet)
+11. **Comment-stripping.** `#` comments are unsigned syntax, discarded at
+    parse; strip at mint — nothing load-bearing may live only in a
+    comment. (§Composition model, "Comments are outside the integrity
+    envelope" bullet)
+12. **Timestamp provenance.** `dct:created` is written by the mint step
+    only, never hand-authored into a draft. (§Mint gates, "Timestamps"
+    bullet)
+13. **Publish-row cardinality.** At most one non-terminal publish row per
+    hub. (§Pre-mint identity and reference integrity)
+14. **Drift check.** Recompute `claim_sha` from `finding.title`, compare
+    to the publish row's stored `claim_sha`. Mismatch = hub drifted from
+    what was approved → pre-publication re-review, post-publication
+    supersede trigger. (§Pre-mint identity and reference integrity)
+15. **Mint-order / topo constraint.** Text frozen before any edge naming
+    it is minted; a compound mints only after its atoms. (§Pre-mint
+    identity and reference integrity; §Lifecycle, "WIP vs release" bullet)
+16. **Rejection memo gate** [built]. Canonicalizer must not resurface a
+    claim carrying `meta.taproot_rejected`. (§Other pathways)
+17. **Published-hub merge hard-stop.** A canonicalizer `same` verdict
+    against a published hub hard-stops to `needs_review` regardless of
+    confidence — no LLM `merge_confirm` escalation, since a merge there is
+    a public supersede. (§Rules)
+18. **AIDA-not-trusty edge reference.** Evidence edges cite claims by AIDA
+    URI (converges across agents), never by trusty URI (provenance-pinned
+    to one artifact). (§Lifecycle, mint order, and irreversibility)
+
+### Layer B — targeted LLM verification (derived-queue jobs, BIG tier, prompted to refute)
+
+1. **`qualify_claim` one-way fit.** Per atom: one-way fit + verbatim quote
+   check (`taproot/directed.py`). ~1 call/atom. Fail → hub decomposes
+   further or stays internal. (§Composition model; §Mint pipeline in
+   practice)
+2. **Commensurability / cross-binding prompt.** Per compound: the
+   conjunction must range over an entity/mechanism the atoms share by
+   their own content; a cross-binding (a property from one system applied
+   to a phenomenon from another) fails unless independently evidenced or
+   bridged. Verifier LLM is explicitly prompted for cross-binding. Fail →
+   re-mint as a hypothesis instead, or block. (§Mint gates)
+3. **Motivation-plausibility pass.** Per hypothesis, lighter than the
+   atom/compound checks. (§Mint pipeline in practice)
+
+### Layer C — human attestation (once, batched)
+
+1. **Batched review queue.** Shows only survivors of Layer A + Layer B —
+   the human is the judgment layer for novel failure modes, not a
+   re-check of what code/LLM already cleared. (§Mint pipeline in practice)
+2. **The ratchet.** Every human catch that reveals a *class* of defect is
+   promoted down into a Layer B prompt or Layer A validator (cross-binding
+   is the precedent) — the human never checks the same thing twice.
+   (§Mint pipeline in practice)
+3. **Freeze-at-review.** Pre-review the hub is mutable and the
+   canonicalizer merges freely; at review a specific claim string is
+   approved and the trusty URI is later minted over exactly that string;
+   post-review, new evidence attaches as a new nanopub and a changed claim
+   is a new nanopub plus a supersede, never an edit. (§Rules)
+4. **Cross-binding backstop.** Human attestation is the fallback catch for
+   a cross-binding the Layer B prompt misses. (§Mint gates)
+5. **Attestation semantics.** What is signed is "this claim was extracted
+   from this passage, and the passage was verified to support it" — not
+   claim-truth; the attestation artifact must express exactly this
+   (PROV-O plus an explicit attestation predicate). (§Rules)
+6. **Attesting-key invocation guard.** The human (attesting) key is
+   invocable only from the interactive review/sign surface (the sign
+   button, or a CLI a person runs); no worker, job, or scheduled pass may
+   touch it — the mechanism that makes "signed" mean "a human checked."
+   (§Key custody)
+
+### Publish-time gates (distinct from mint-time)
+
+1. **Withheld-edge preflight.** Enumerates every withheld (unverified)
+   edge on a to-be-published claim; only verified-by-refine or
+   human-attested edges publish. No mute button — unverified evidence can
+   neither slip out nor be silently ignored. (§Migration from taproot
+   claims to nanopubs, "Edges: withhold unverified" bullet)
+2. **Allowlist/key trust check.** Only signatures from the explicit
+   `(ORCID, fingerprint set)` allowlist are trusted at publication time.
+   Pin keys, not bare ORCIDs (a new key on an allowlisted ORCID is not
+   auto-trusted); flat, zero transitivity (`approvesOf` never
+   auto-admits); reject malformed identifiers (non-ORCID `signedBy`, the
+   shared `0000-0000-0000-0000` placeholder). (§Publication-time trust
+   gate)
+3. **Allowlist-as-published-artifact** [unbuilt, deferred]. The allowlist
+   itself is versioned, signed, OTS-anchored; each published claim
+   records the allowlist version that gated it. (§Publication-time trust
+   gate; §Proposed simplifications #4)
+4. **Key validity-window check** [unbuilt, deferred]. An allowlist entry
+   is `(identity, fingerprint, valid_from, valid_until)`, checked against
+   the window in force when the signature was made — needs a trustworthy
+   time source (the OTS anchor). (§Key custody; §Proposed simplifications
+   #4)
+5. **Inbound key-strength/DER/SPKI gauntlet** [unbuilt, deferred]. Parse
+   the DER, require valid SPKI, check modulus size, reject unknown
+   algorithms, against external keys. Kept now: our own keys sign at 2048
+   minimum, 4096 preferred. (§Key custody; §Proposed simplifications #4)
+6. **No-unresolved-contradicts blocks publish.** Same gate as Layer A #1,
+   enforced again at the UI/state layer: a disputed hub's publish-state
+   colour is *blocked* — no forward transition is offered while the edge
+   stands. (§Web view — the review-and-sign surface)
+7. **Canonicalizer-settled.** Publish only after the canonicalizer has
+   settled a hub, not during — publishing mid-reground would convert
+   routine local merges into public supersedes. (§Migration from taproot
+   claims to nanopubs)
+8. **State-machine transition legality.** `candidate` → `reviewed` →
+   `signed` → `anchored` → `published` → `superseded`/`retracted`;
+   `rejected` branches off `reviewed` only. (§Lifecycle, mint order, and
+   irreversibility)
+9. **Topo-ordered re-mint on drift.** A dependency's artifact code
+   changing flips downstream publish rows `signed` → `reviewed`; the mint
+   pass regenerates the closure atoms → compounds → citers before any
+   (re-)publish. (§Lifecycle, "WIP vs release" bullet)
+10. **Two-phase publish.** Mint, sign and anchor privately at submission
+    (the OTS anchor carries the priority date, discloses nothing publicly);
+    POST to the public registry — the actual irreversible step — only at
+    acceptance, re-minting whatever peer review changed. (§Lifecycle, mint
+    order, and irreversibility)
+11. **Base-URI-fixed-at-mint.** The w3id base URI is inside the hashed
+    content from the first mint; it cannot be swapped for a "final" URI at
+    publish time without re-signing (and re-anchoring) everything.
+    (§No nanopub server)

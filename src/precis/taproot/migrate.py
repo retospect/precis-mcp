@@ -83,7 +83,7 @@ from precis.taproot.canon import (
     TAPROOT_NAMESPACE,
     CanonicalClaim,
     ClaimExtraction,
-    extract_claim_strict_haiku,
+    extract_claim_strict_medium,
 )
 
 if TYPE_CHECKING:
@@ -854,7 +854,7 @@ def dry_run(
     cohort: Cohort | None = None,
     controls: int = 0,
     control_seed: int = 0,
-    extract_fn: ExtractFn = extract_claim_strict_haiku,
+    extract_fn: ExtractFn = extract_claim_strict_medium,
     escalate_fn: ExtractFn | None = None,
 ) -> DryRunReport:
     """Phase 1: run ``extract_fn`` over the top ``limit`` scored hubs
@@ -869,7 +869,7 @@ def dry_run(
     controls toward non-claims — a uniform draw doesn't share that bias.
     **Zero writes through ``store`` itself** — no ref/link/meta/chunk
     mutation. The default ``extract_fn`` is the real
-    :func:`~precis.taproot.canon.extract_claim_strict_haiku` (round 2 +
+    :func:`~precis.taproot.canon.extract_claim_strict_medium` (round 2 +
     the 4-hub raw-response probe): SMALL collapses multi-clause sentences
     to single truncated atoms, and the BIG chain's OSS models
     intermittently break the JSON contract into silent NO-CLAIMs — both

@@ -144,6 +144,28 @@ EMPTY_RETRY_BACKOFF_S = 1.0
 #: adversarial input) is finally retired. Real errors keep the tight cap of 3.
 MAX_SUMMARIZE_EMPTY_ATTEMPTS = 12
 
+#: Env var hard-capping the effective in-pass concurrency (``run_llm_summarize_pass``'s
+#: ``concurrency=``) regardless of what a ``derived_drain``/``service_config``
+#: caller asks for — mirrors ``classify.py``'s ``MAX_CONCURRENCY_ENV`` (same
+#: rationale: guards a fat-fingered knob, or a wide ``derived_drain`` in-pass
+#: ``concurrency``, from stampeding the cloud endpoint / tripping the budget
+#: breaker post the 2026-08-15 SMALL-tier cloud cutover). Clamped inside
+#: :func:`run_llm_summarize_pass` itself, not just whatever sets the knob.
+MAX_CONCURRENCY_ENV = "PRECIS_SUMMARIZE_MAX_CONCURRENCY"
+_DEFAULT_MAX_CONCURRENCY = 32
+
+
+def _max_concurrency() -> int:
+    raw = os.environ.get(MAX_CONCURRENCY_ENV)
+    if not raw:
+        return _DEFAULT_MAX_CONCURRENCY
+    try:
+        val = int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_CONCURRENCY
+    return val if val >= 1 else _DEFAULT_MAX_CONCURRENCY
+
+
 #: A ``chunk_claims`` row older than this many minutes is treated as abandoned
 #: (the worker crashed or stalled) and re-claimed oldest-first; it is also the
 #: retry backoff for failures (which keep their claim). A *live* worker
@@ -1147,6 +1169,10 @@ def run_llm_summarize_pass(
        A crashed worker between phases simply leaves leases that the cooldown
        re-claims.
     """
+    # Clamp before anything else — mirrors classify.py's run_classify_pass
+    # (see MAX_CONCURRENCY_ENV above).
+    concurrency = max(1, min(concurrency, _max_concurrency()))
+
     # Phase 1 — claim + prefetch cards in one short transaction, then commit.
     card_cache: dict[int, str] = {}
     with store.pool.connection() as conn:

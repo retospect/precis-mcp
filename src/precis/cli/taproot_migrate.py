@@ -16,9 +16,10 @@ re-run showed the SMALL tier collapsing multi-clause sentences to single
 truncated atoms, and the BIG chain's OSS models intermittently breaking
 the JSON contract (prose / invented schemas / empty responses — silent
 NO-CLAIMs), while claude-haiku held the contract 12/12 on the same
-prompts (:func:`precis.taproot.canon.extract_claim_strict_haiku`, a
-documented router-bypass). ``--tier small`` / ``--tier big`` remain as
-explicit opt-ins for A/B work.
+prompts (:func:`precis.taproot.canon.extract_claim_strict_medium`, MEDIUM
+tier + a format-flake guard — routed through :mod:`precis.utils.llm.router`
+since the 2026-08-15 ``llm.chain.medium`` cutover made MEDIUM haiku).
+``--tier small`` / ``--tier big`` remain as explicit opt-ins for A/B work.
 
 Run ``canary`` (11 hand-authored passages through the chosen tier + the
 migration gates, exit 1 on failure) before any bulk ``dry-run`` — it
@@ -252,11 +253,11 @@ def _resolve_extract_fn(tier: str) -> Any:
     from precis.taproot.canon import (
         extract_claim_strict,
         extract_claim_strict_big,
-        extract_claim_strict_haiku,
+        extract_claim_strict_medium,
     )
 
     if tier == "haiku":
-        return extract_claim_strict_haiku
+        return extract_claim_strict_medium
     return extract_claim_strict_big if tier == "big" else extract_claim_strict
 
 

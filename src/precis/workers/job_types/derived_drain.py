@@ -12,21 +12,27 @@ machinery), this job **wraps** the existing ``run_llm_summarize_pass`` /
 ``run_classify_pass`` and drives it in a bounded, lease-renewing loop
 (``params.limit`` chunks, or until the derived queue is empty).
 
-Placement + cap (Reto's "only melchior, up to 6 at a time, never cloud"):
+Placement + cap (post the 2026-08-15 SMALL-tier cloud cutover — see
+``docs/backlog/llm-tier-ladder-cloud-cutover.md``; ``llm.chain.small`` is
+now cloud-only, openai_compat, no local slot):
 
-* ``params.target_node`` **hard-pins** the job to melchior — the only host
-  serving the local SMALL model — via ``job_inproc``'s claim-gate node pin
-  (``struct_relax`` uses the same field for GPU pinning), NOT the soft 10-min
-  ``LLM_AFFINITY_GRACE_MIN`` affinity.
-* Concurrency is capped by the ROUTER's local-serving slot (cap 6 on
-  ``llm:qwen3.5-9b-q4_k_m``): each ``run_X_pass`` fans out ``params.concurrency``
-  concurrent ``Tier.SMALL`` calls; the router admits 6 and ``paused``-backs the
-  rest (the pass records-for-retry). So this job **reserves NO executor slot**
-  (``REQUIRES = frozenset()``) — reserving the ``llm:`` slot at claim time would
-  double-count against those same 6 and starve itself.
-* ``Tier.SMALL`` is local-only by construction (the router never routes SMALL to
-  a cloud backend); with a cloud-rung-free ``llm.chain.small`` a saturated slot
-  is pure backpressure, never spill.
+* ``params.target_node`` optionally pins the job to a specific host — via
+  ``job_inproc``'s claim-gate node pin (``struct_relax`` uses the same field
+  for GPU pinning), NOT the soft 10-min ``LLM_AFFINITY_GRACE_MIN`` affinity —
+  but is no longer load-bearing for SMALL placement now that ``Tier.SMALL``
+  is cloud-only: any host can dispatch it. The materializer still defaults
+  ``target_node`` to melchior (``_DEFAULT_SMALL_TARGET_NODE`` in
+  ``materialize.py``) for historical reasons; that default is free to drop
+  once nothing else depends on it.
+* Concurrency is NOT capped by a router local-serving slot anymore — a
+  cloud rung has none to cap. ``_DEFAULT_CONCURRENCY`` is a plain
+  thread-pool width for I/O fan-out against the cloud endpoint, gated by
+  the provider's own breaker/rate-limit behavior (``paused``-back on
+  admission refusal), not a fixed local-serving admission count.
+* ``Tier.SMALL`` used to be local-only by construction (the router never
+  routed SMALL to a cloud backend); that invariant is gone post-cutover —
+  SMALL is cloud-only now, so a saturated slot means provider backpressure
+  (rate limit / breaker), not a local queue depth.
 
 Runs under ``job_inproc`` only (a bounded in-proc drain — minutes, not hours).
 Minted by the ``materialize`` cadence's SMALL bands (``workers/materialize.py``)
@@ -76,14 +82,17 @@ PARAMS_SCHEMA: dict[str, Any] = {
 #: job_inproc only — a bounded in-proc drain, same lane as embed_batch.
 COMPATIBLE_EXECUTORS = frozenset({"job_inproc"})
 
-#: Reserve NOTHING at the executor level — the router's local-serving slot caps
-#: concurrency per-call (see the module docstring's "reserves NO executor slot").
+#: Reserve NOTHING at the executor level — post-cutover there is no router
+#: local-serving slot to double-count against (see the module docstring's
+#: "Placement + cap" section); a cloud-only SMALL rung has nothing this could
+#: strand a reservation on either, so staying at the empty set is still right.
 REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION = (
     "Bounded work order draining a SMALL-tier derived LLM queue "
-    "(summarize/classify) — up to params.limit chunks; melchior-pinned, "
-    "router-capped at 6, never cloud. Minted by the materialize SMALL bands."
+    "(summarize/classify) — up to params.limit chunks; cloud-only "
+    "(llm.chain.small, no local slot post 2026-08-15 cutover). "
+    "Minted by the materialize SMALL bands."
 )
 
 #: params.limit default — one job drains this many chunks then finalizes, so the
@@ -95,9 +104,11 @@ _DEFAULT_LIMIT = 500
 #: pass's own ``batch_size`` (both default 16).
 _DEFAULT_BATCH = 16
 
-#: In-pass thread-pool width == the router's cap-6 local slot. A value above the
-#: slot cap just eats ``paused`` backoff (harmless, wasteful threads).
-_DEFAULT_CONCURRENCY = 6
+#: In-pass thread-pool width for I/O fan-out against the (now cloud-only)
+#: SMALL endpoint — NOT a local-serving slot cap (there isn't one post the
+#: 2026-08-15 cutover). Breaker/rate-limit-gated, not slot-gated: a value
+#: too high just eats more ``paused`` backoff from the provider side.
+_DEFAULT_CONCURRENCY = 16
 
 #: Consecutive fully-unproductive batches (claimed &gt; 0 but ok == 0 — a saturated
 #: slot or a model that keeps missing) before the drain bails early instead of

@@ -159,6 +159,25 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "control deliberately outranks a per-todo preference."
         ),
     ),
+    "taproot:extract-medium": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Taproot strict extraction (MEDIUM)",
+        description=(
+            "The migration runner's strict claim extractor "
+            "(`extract_claim_strict_medium`), with an in-function "
+            "format-flake retry guard on top of the MEDIUM dispatch."
+        ),
+        note=(
+            "Was a deliberate `call_claude_p` router bypass pinned to haiku "
+            "(the 2026-08-14 4-hub probe found the then-current "
+            "`llm.chain.medium` rung's OSS model intermittently broke the "
+            "JSON contract). The 2026-08-15 chain cutover made "
+            "`llm.chain.medium` haiku-via-`claude_p` — the same model the "
+            "bypass pinned to — so it now dispatches through the router "
+            "and logs to `llm_call_log` like every other op."
+        ),
+    ),
 }
 
 #: Observed operations deliberately NOT steerable, with why. The override layer
@@ -172,12 +191,6 @@ EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
     ),
     "classify_topics": ExcludedOp(
         "model pinned in code for correctness (local-serving `summarizer` alias)"
-    ),
-    "taproot:extract-haiku": ExcludedOp(
-        "bypasses the router — one-shot `call_claude_p` pinned to haiku for "
-        "JSON-contract reliability (the BIG chain's OSS models intermittently "
-        "return prose/invented schemas that read as silent NO-CLAIMs, and an "
-        "operator `llm.chain.<tier>` rung would beat any in-dispatch pin)"
     ),
 }
 

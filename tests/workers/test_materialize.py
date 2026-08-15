@@ -19,6 +19,7 @@ covered by the "default-ON, '0' is the opt-out" section.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -107,7 +108,7 @@ def _queued_derived(store: Store, pass_name: str) -> int:
 
 
 def _seed_derived(
-    store: Store, pass_name: str, n: int, *, status: str = "queued"
+    store: Store, pass_name: str, n: int, *, status: str = "queued", prio: int = 8
 ) -> None:
     """Insert ``n`` derived_drain jobs for ``pass_name`` at ``status`` directly
     (no idem_key, so they don't interfere with a same-tick mint)."""
@@ -122,7 +123,7 @@ def _seed_derived(
                     "executor": "job_inproc",
                     "params": {"pass": pass_name, "limit": 500},
                 },
-                prio=8,
+                prio=prio,
                 conn=conn,
             )
             store.add_tag(
@@ -148,6 +149,36 @@ def _job_prios(store: Store, job_type: str) -> list[int | None]:
             "SELECT prio FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
             "AND meta->>'job_type' = %s ORDER BY ref_id",
             (job_type,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _derived_prios(
+    store: Store, pass_name: str, *, status: str | None = None
+) -> list[int | None]:
+    """``derived_drain`` job prios for one ``params.pass``, optionally narrowed
+    to one STATUS — the Finding-5 rebalance assertions need per-band, per-
+    status visibility that :func:`_job_prios` (whole ``job_type``) doesn't
+    give."""
+    status_join = ""
+    args: list[Any] = [pass_name]
+    if status is not None:
+        status_join = (
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' AND t.value = %s)"
+        )
+        args.append(status)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT prio FROM refs r
+             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+               AND r.meta->>'job_type' = 'derived_drain'
+               AND r.meta->'params'->>'pass' = %s
+               {status_join}
+             ORDER BY r.ref_id
+            """,
+            tuple(args),
         ).fetchall()
     return [r[0] for r in rows]
 
@@ -556,6 +587,77 @@ def test_band_full_and_running_is_silent(
         m.run_materialize_pass(store)
 
     assert not any("nothing is draining" in r.message for r in caplog.records)
+
+
+# ── Finding 5 — dynamic prio nudge for a stuck band ──────────────────────
+
+
+def test_stuck_band_queued_rows_promoted_to_starved_prio(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """Band full of QUEUED jobs, 0 running (the stuck signature) → the
+    band's queued rows are promoted to ``_STARVED_PRIO`` so they win the
+    ``claim_executor_jobs`` ``ref_id ASC`` tiebreak over a continuously
+    re-minted sibling band (Finding 5)."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 5, status="queued")  # band full, 0 running
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 0  # still no mint — this is purely a prio nudge
+    assert _derived_prios(store, "classify") == [m._STARVED_PRIO] * 5
+
+
+def test_stuck_band_prio_reverts_once_running(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """A band previously promoted (simulating a prior stuck tick) reverts its
+    QUEUED rows to ``_MINT_PRIO`` the moment something is actually running —
+    the self-correcting half of Finding 5's fix."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 4, status="queued", prio=m._STARVED_PRIO)
+    _seed_derived(store, "classify", 1, status="running")  # something IS draining
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    m.run_materialize_pass(store)
+
+    assert _derived_prios(store, "classify", status="queued") == [m._MINT_PRIO] * 4
+
+
+def test_stuck_band_rebalance_scoped_to_one_band(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """The prio nudge for a stuck classify band leaves the sibling summarize
+    band (same job_type, different params.pass) and an unrelated job_type
+    (embed_batch) untouched."""
+    backlog = {"n": 999_999}
+    _seed_derived(store, "classify", 5, status="queued")  # stuck
+    _seed_derived(store, "llm_summarize", 5, status="queued")  # sibling band
+    with store.pool.connection() as conn:
+        embed_ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="embed seed",
+            meta={"job_type": "embed_batch", "executor": "job_inproc", "params": {}},
+            prio=m._MINT_PRIO,
+            conn=conn,
+        )
+        store.add_tag(
+            embed_ref.id,
+            Tag.closed("STATUS", "queued"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        conn.commit()
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    m.run_materialize_pass(store)
+
+    assert _derived_prios(store, "classify") == [m._STARVED_PRIO] * 5
+    assert _derived_prios(store, "llm_summarize") == [m._MINT_PRIO] * 5
+    assert _job_prios(store, "embed_batch") == [m._MINT_PRIO]
 
 
 def test_drain_limit_env_scales_mint_capacity(
