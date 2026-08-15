@@ -1053,6 +1053,44 @@ def test_export_docx_unchecked_does_not_block(
     assert r.status_code == 200
 
 
+def test_export_docx_override_records_trace_in_sources_appendix(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """``?sources=1&ignore_retractions=1`` forwards the overridden
+    ``CitedPaper``(s) into ``build_sources_zip`` — the artifact-level trace
+    ``docs/backlog/retraction-override-appendix-trace.md`` shipped for
+    (without ``?sources=1`` there's no appendix to record it in — see the
+    plain-override test above, which asserts only the log line fires)."""
+    import precis.export.docx as docx_mod
+    import precis.export.sources as src_mod
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
+        )
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=["smith2024"])
+
+    captured: dict[str, Any] = {}
+
+    def fake_zip(store, ref, out_path, **kw):
+        import zipfile
+
+        captured.update(kw)
+        with zipfile.ZipFile(out_path, "w") as zf:
+            zf.writestr("manifest.txt", "x")
+        return src_mod.ZipResult(path=out_path, bundle=src_mod.SourceBundle())
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    monkeypatch.setattr(src_mod, "build_sources_zip", fake_zip)
+    r = draft_client.get("/drafts/nt/export.docx?sources=1&ignore_retractions=1")
+    assert r.status_code == 200
+    assert [p.slug for p in captured["retraction_override"]] == ["smith2024"]
+
+
 def test_export_pdf_blocked_when_cite_retracted(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
@@ -1092,6 +1130,27 @@ def test_export_pdf_override_dispatches_job(
     assert r.status_code == 303
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["job_type"] == "draft_export"
+    # the job carries the override flag so it can re-derive the report and
+    # record the trace in the sources appendix (see draft_export.py::_dispatch)
+    assert args["params"]["ignore_retractions"] is True
+
+
+def test_export_pdf_no_override_omits_ignore_retractions_param(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """A clean export (nothing retracted) never sets ``ignore_retractions``
+    in the job params — the job's re-derived report would find nothing
+    overridden anyway, but the param shouldn't even be there."""
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(papers=[])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.post("/drafts/nt/export.pdf", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "draft_export"
+    assert "ignore_retractions" not in args["params"]
 
 
 def test_retraction_status_route_reads_only_no_network(

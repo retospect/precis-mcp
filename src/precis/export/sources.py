@@ -231,9 +231,22 @@ _REASON_LABEL = {
 }
 
 
-def write_manifest(ref: Any, bundle: SourceBundle) -> str:
+def write_manifest(
+    ref: Any,
+    bundle: SourceBundle,
+    *,
+    retraction_override: list[Any] | None = None,
+) -> str:
     """A plaintext ``manifest.txt`` — a numbered bibliography of the bundled
-    sources plus a "not bundled" section explaining every gap."""
+    sources plus a "not bundled" section explaining every gap.
+
+    ``retraction_override`` — the ``CitedPaper``s (``precis.export.retraction``)
+    the export gate let through via ``ignore_retractions=1`` — adds an
+    "== Retraction override ==" section naming each one. This is the trace
+    the override is supposed to leave *in the artifact*: the gate itself only
+    logs server-side, which is gone by the time anyone reads the export.
+    Empty/``None`` (the common case — no override happened) leaves the
+    manifest unchanged."""
     title = str(getattr(ref, "title", None) or getattr(ref, "slug", None) or "draft")
     lines: list[str] = [
         f"Referenced sources for: {title}",
@@ -260,6 +273,17 @@ def write_manifest(ref: Any, bundle: SourceBundle) -> str:
             lines.append(f"- {e.kind or 'source'}:{e.slug} — {e.title}")
             lines.append(f"    {why}")
         lines.append("")
+    if retraction_override:
+        lines.append("== Retraction override ==")
+        lines.append(
+            "This export was produced with a retraction block overridden "
+            "(ignore_retractions=1). The following cited paper(s) are "
+            "retracted:"
+        )
+        for p in retraction_override:
+            status = getattr(p, "label", "") or getattr(p, "status", "") or "retracted"
+            lines.append(f"- {p.slug} — {p.title} ({status})")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -282,6 +306,7 @@ def build_sources_zip(
     cited_slugs: list[str] | None = None,
     report_path: Path | None = None,
     corpus_dirs: tuple[Path, ...] | None = None,
+    retraction_override: list[Any] | None = None,
 ) -> ZipResult:
     """Write ``out_path`` — a zip of the draft's cited source PDFs (named
     ``<cite_key>.pdf``, deduped by sha) plus a ``manifest.txt``.
@@ -289,6 +314,9 @@ def build_sources_zip(
     When ``report_path`` is given (a compiled ``.pdf`` / ``.docx``), the
     report is added at the zip root and the sources go under ``sources/`` —
     a self-contained "report + its sources" bundle.
+
+    ``retraction_override`` is forwarded to :func:`write_manifest` — see
+    there for what it records.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -300,7 +328,8 @@ def build_sources_zip(
         if report_path is not None:
             rp = Path(report_path)
             zf.write(rp, arcname=rp.name)
-        zf.writestr(f"{src_prefix}manifest.txt", write_manifest(ref, bundle))
+        manifest = write_manifest(ref, bundle, retraction_override=retraction_override)
+        zf.writestr(f"{src_prefix}manifest.txt", manifest)
         written: set[str] = set()
         for e in bundle.present:
             assert e.local_path is not None

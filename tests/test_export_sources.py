@@ -215,6 +215,43 @@ def test_build_source_appendix_empty_when_nothing_present() -> None:
     assert latex.build_source_appendix(bundle, []) == ""
 
 
+def test_build_source_appendix_records_retraction_override() -> None:
+    """A retraction override is named in the compiled PDF even when the
+    overridden paper itself has no local PDF — the trace must not be
+    silently dropped alongside an otherwise-empty source list."""
+    from precis.export.retraction import CitedPaper
+
+    bundle = sources.SourceBundle(entries=[])
+    override = [
+        CitedPaper(ref_id=1, slug="smith2024", title="Bad Paper", status="retracted")
+    ]
+    tex = latex.build_source_appendix(bundle, [], retraction_override=override)
+    assert tex  # not skipped, unlike the no-override empty case
+    assert r"\appendix" in tex
+    assert "Retraction override" in tex
+    assert "smith2024" in tex and "Bad Paper" in tex and "RETRACTED" in tex
+
+
+def test_build_source_appendix_no_override_key_unchanged() -> None:
+    """``retraction_override=None`` (the default, i.e. every call site that
+    doesn't pass it) must not perturb existing output."""
+    bundle = sources.SourceBundle(
+        entries=[
+            sources.SourceEntry(
+                slug="smith2020",
+                kind="paper",
+                title="A Study",
+                authors="A. Smith",
+                year=2020,
+                pdf_sha256="a" * 64,
+                local_path=Path("/tmp/smith2020.pdf"),
+            )
+        ]
+    )
+    tex = latex.build_source_appendix(bundle, [])
+    assert "Retraction override" not in tex
+
+
 def test_preamble_template_carries_pdfpages() -> None:
     """The appendix's ``\\includepdf`` needs the ``pdfpages`` package in the
     checked-in preamble."""
@@ -285,3 +322,46 @@ def test_zip_arcname_and_manifest_use_sanitized_filename(tmp_path: Path) -> None
         manifest = zf.read("manifest.txt").decode()
     assert f"{fname}.pdf" in names
     assert f"{fname}.pdf" in manifest
+
+
+# ── retraction override trace (docs/backlog/retraction-override-appendix-
+# trace.md) ─────────────────────────────────────────────────────────────
+# The export gate (precis_web/routes/drafts.py) hands its
+# DraftRetractionReport.retracted list through as ``retraction_override`` —
+# stubbed here with the real CitedPaper dataclass rather than a fake, since
+# write_manifest/build_source_appendix duck-type on it.
+
+
+def test_write_manifest_records_retraction_override() -> None:
+    from precis.export.retraction import CitedPaper
+
+    bundle = sources.SourceBundle(entries=[])
+    override = [
+        CitedPaper(ref_id=1, slug="smith2024", title="Bad Paper", status="retracted")
+    ]
+    manifest = sources.write_manifest(_draft(), bundle, retraction_override=override)
+    assert "== Retraction override ==" in manifest
+    assert (
+        "smith2024" in manifest and "Bad Paper" in manifest and "RETRACTED" in manifest
+    )
+
+
+def test_write_manifest_omits_retraction_section_when_no_override() -> None:
+    manifest = sources.write_manifest(_draft(), sources.SourceBundle(entries=[]))
+    assert "Retraction override" not in manifest
+
+
+def test_build_sources_zip_forwards_retraction_override(tmp_path: Path) -> None:
+    from precis.export.retraction import CitedPaper
+
+    store = _FakeStore(refs={})
+    out = tmp_path / "papers.zip"
+    override = [
+        CitedPaper(ref_id=1, slug="smith2024", title="Bad Paper", status="retracted")
+    ]
+    sources.build_sources_zip(
+        store, _draft(), out, cited_slugs=[], retraction_override=override
+    )
+    with zipfile.ZipFile(out) as zf:
+        manifest = zf.read("manifest.txt").decode()
+    assert "smith2024" in manifest and "Retraction override" in manifest

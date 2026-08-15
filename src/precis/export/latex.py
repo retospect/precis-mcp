@@ -1126,16 +1126,35 @@ def build_author_block(authors_raw: Any, *, fallback: str) -> str:
     return "\n".join(lines)
 
 
-def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
+def build_source_appendix(
+    bundle: Any,
+    warnings: list[str],
+    *,
+    retraction_override: list[Any] | None = None,
+) -> str:
     """A ``pdfpages`` appendix that inlines every cited source PDF the host
-    holds, one bookmarked entry each. Empty string when nothing is present.
+    holds, one bookmarked entry each. Empty string when nothing is present
+    and no override was taken.
 
     Each present source is preceded by an ``\\addcontentsline`` so it gets a
     TOC / PDF-bookmark entry, then ``\\includepdf[pages=-]`` pulls in all its
     pages. Missing sources become a ``% not bundled`` comment + a warning, so
     the .tex records the gap without breaking the build.
+
+    ``retraction_override`` — the ``CitedPaper``s (``precis.export.retraction``)
+    the export gate let through via ``ignore_retractions=1`` — adds a
+    "Retraction override" subsection naming each one, the trace the override
+    is supposed to leave in the compiled PDF. It forces the appendix to
+    render even when no PDFs are present, so the override is never silently
+    dropped alongside an empty source list.
     """
     present = bundle.present
+    override = list(retraction_override or [])
+    if not present and not override:
+        # No PDFs to inline and no override to record — a bare
+        # "\appendix \section" with only comments would still typeset an
+        # empty section; skip the appendix entirely.
+        return ""
     lines = ["\\clearpage", "\\appendix", "\\section{Referenced Sources}"]
     from precis.export.sources import safe_source_filename
 
@@ -1150,10 +1169,22 @@ def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
     for e in bundle.missing:
         warnings.append(f"source {e.slug!r} not bundled: {e.reason or 'unknown'}")
         lines.append(f"% not bundled: {e.kind or 'source'}:{e.slug} — {e.reason}")
-    if not present:
-        # No PDFs to inline — a bare "\appendix \section" with only comments
-        # would still typeset an empty section; skip the appendix entirely.
-        return ""
+    if override:
+        lines += [
+            "\\subsection*{Retraction override}",
+            (
+                "This export was produced with a retraction block "
+                "overridden (\\texttt{ignore\\_retractions=1}). The "
+                "following cited paper(s) are retracted:"
+            ),
+            "\\begin{itemize}",
+        ]
+        for p in override:
+            status = _tex(
+                getattr(p, "label", "") or getattr(p, "status", "") or "retracted"
+            )
+            lines.append(f"\\item {_tex(p.title)} ({_tex(p.slug)}) --- {status}")
+        lines.append("\\end{itemize}")
     return "\n".join(lines)
 
 
@@ -1247,6 +1278,7 @@ def export_draft(
     include_sources: bool = False,
     doc_type: str | None = None,
     remarkable: bool = False,
+    retraction_override: list[Any] | None = None,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -1256,7 +1288,11 @@ def export_draft(
     host holds into ``target_dir/sources/`` and appends them as a
     ``pdfpages`` appendix, so the compiled PDF is self-contained (report +
     its referenced papers / datasheets). Sources the host can't locate are
-    listed in ``ExportResult.warnings`` and ``source_bundle.missing``."""
+    listed in ``ExportResult.warnings`` and ``source_bundle.missing``.
+
+    ``retraction_override`` (only meaningful with ``include_sources=True``)
+    is forwarded to :func:`build_source_appendix` — see there for what it
+    records."""
     from precis.export import guard_exportable
 
     guard_exportable(ref)
@@ -1301,7 +1337,9 @@ def export_draft(
                 shutil.copyfile(
                     e.local_path, src_dir / f"{safe_source_filename(e.slug)}.pdf"
                 )
-        appendix_tex = build_source_appendix(source_bundle, rendered.warnings)
+        appendix_tex = build_source_appendix(
+            source_bundle, rendered.warnings, retraction_override=retraction_override
+        )
 
     unverified_tex = build_unverified_claims_section(rendered.trust)
     main_tex = assemble_document(

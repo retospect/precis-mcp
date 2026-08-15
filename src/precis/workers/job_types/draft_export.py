@@ -36,6 +36,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # Bundle cited paper/datasheet PDFs into a pdfpages appendix so the
         # compiled PDF is self-contained (report + its sources).
         "include_sources": {"type": "boolean"},
+        # Set by the export route when the retraction gate was bypassed via
+        # ?ignore_retractions=1 — the sources appendix records which cited
+        # papers were overridden (see precis.export.retraction).
+        "ignore_retractions": {"type": "boolean"},
     },
     "required": ["draft"],
     "additionalProperties": False,
@@ -142,6 +146,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     include_sources = bool(params.get("include_sources"))
+    # The route already decided (and blocked, if not overridden) — recompute
+    # the same no-network read here so the appendix records exactly which
+    # cites were retracted, without threading paper details through the job
+    # params. Only meaningful alongside a sources appendix to record it in.
+    retraction_override: list[Any] = []
+    if include_sources and params.get("ignore_retractions"):
+        from precis.export.retraction import draft_retraction_report
+
+        retraction_override = draft_retraction_report(ctx.store, ref).retracted
     try:
         out_dir, in_workspace = _resolve_out_dir(ctx, slug)
     except ValueError as exc:
@@ -158,6 +171,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             target_dir=out_dir,
             include_sources=include_sources,
             doc_type=_resolve_doc_type(ctx),
+            retraction_override=retraction_override,
         )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)
@@ -176,6 +190,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "job_event",
             f"bundled {len(b.present)}/{len(b.entries)} cited source PDF(s) "
             "as a pdfpages appendix",
+        )
+    if retraction_override:
+        ctx.append_chunk(
+            "job_event",
+            f"retraction override recorded for {len(retraction_override)} "
+            "cite(s) in the sources appendix",
         )
 
     if not have_latexmk():

@@ -1230,7 +1230,11 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     deliberate live re-check is the watch button
     (``retraction_check_route``) the user presses and waits on on
     purpose. See ``precis.export.retraction``'s module docstring for the
-    read/check split this mirrors."""
+    read/check split this mirrors. Taking the override — combined with
+    ``?sources=1`` — records which cite(s) were overridden in the sources
+    appendix's ``manifest.txt`` (``precis.export.sources.write_manifest``);
+    without ``?sources=1`` there's no appendix to record it in, so only the
+    server log line applies."""
     from precis.export.docx import export_docx
 
     store = get_store(request)
@@ -1244,14 +1248,16 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         "yes",
     )
     report = _safe_retraction_report(store, ref)
+    retraction_override: list[Any] = []
     if report is not None and report.blocks_export:
         if not ignore_retractions:
             return _retraction_blocked_response(request, report)
         # The override is deliberate and meant to be rare — leave a trace.
-        # This ideally lands in the export's sources appendix
-        # (precis.export.sources), which is outside this route's file
-        # ownership; a server log line is the interim trace — see
-        # docs/backlog/retraction-override-appendix-trace.md.
+        # A server log line alone isn't enough (gone by the time anyone
+        # reads the export), so it's also recorded in the sources appendix
+        # below (``?sources=1`` only — see build_sources_zip's
+        # retraction_override).
+        retraction_override = report.retracted
         log.warning(
             "drafts: export override — draft=%s (%s) retracted cites=%s",
             ref.id,
@@ -1282,6 +1288,7 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         zip_path,
         cited_slugs=docx_result.cited_slugs,
         report_path=out,
+        retraction_override=retraction_override,
     )
     return FileResponse(
         zip_path, filename=f"{name}-bundle.zip", media_type="application/zip"
@@ -1323,7 +1330,12 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     A ``ignore_retractions=1`` form field overrides a retraction block —
     see ``_retraction_blocked_response``. The gate here is the same
     stored-state-only read (``check=False``, no network) as the docx
-    route: enqueuing a job must not itself wait on Crossref."""
+    route: enqueuing a job must not itself wait on Crossref. Taking the
+    override — combined with ``sources=1`` — is passed to the job so the
+    compiled PDF's sources appendix records which cite(s) were overridden
+    (``precis.export.latex.build_source_appendix``); the job re-derives the
+    same no-network report rather than threading paper details through job
+    params."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -1338,9 +1350,11 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     )
 
     report = _safe_retraction_report(store, ref)
+    retraction_override_used = False
     if report is not None and report.blocks_export:
         if not ignore_retractions:
             return _retraction_blocked_response(request, report)
+        retraction_override_used = True
         log.warning(
             "drafts: export override — draft=%s (%s) retracted cites=%s",
             ref.id,
@@ -1354,6 +1368,8 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     if with_sources:
         params["include_sources"] = True
         idem = f"draft_export:{slug}:sources"
+    if retraction_override_used:
+        params["ignore_retractions"] = True
     return await redirect_or_error(
         request,
         "put",

@@ -899,6 +899,42 @@ def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatc
     assert result.source_bundle is bundle
 
 
+def test_export_draft_records_retraction_override_in_appendix(
+    hub, tmp_path, monkeypatch
+):
+    """``retraction_override`` reaches the compiled PDF's sources appendix —
+    the trace ``docs/backlog/retraction-override-appendix-trace.md`` shipped
+    for (a ``ignore_retractions=1`` override otherwise leaves no mark on the
+    artifact itself)."""
+    from precis.export import sources as src
+    from precis.export.retraction import CitedPaper
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="rep", title="Report", project=proj)
+    ref = store.get_ref(kind="draft", id="rep")
+
+    monkeypatch.setattr(
+        src, "collect_cited_sources", lambda *a, **k: src.SourceBundle(entries=[])
+    )
+    out = tmp_path / "out"
+    override = [
+        CitedPaper(ref_id=1, slug="smith2024", title="Bad Paper", status="retracted")
+    ]
+    result = latex.export_draft(
+        store,
+        ref,
+        target_dir=out,
+        include_sources=True,
+        retraction_override=override,
+    )
+    main = result.main_tex.read_text()
+    assert "Retraction override" in main
+    assert "smith2024" in main
+
+
 # ── compile (stub latexmk) ────────────────────────────────────────────
 
 

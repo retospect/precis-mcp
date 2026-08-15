@@ -105,6 +105,60 @@ def test_dispatch_exports_and_skips_pdf_without_latexmk(
     assert "export_dir" in ctx.meta_set
 
 
+def test_dispatch_records_retraction_override_when_flagged(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """``params.ignore_retractions`` (set by the route once the user has
+    already bypassed the export-gate block) makes the job re-derive the
+    same no-network retraction report and thread its ``retracted`` list into
+    the sources appendix — ``docs/backlog/retraction-override-appendix-
+    trace.md``'s trace. No sources-appendix param → nothing to record it
+    in, so it's a no-op without ``include_sources``."""
+    import precis.export.retraction as retraction_mod
+    from precis.export.retraction import CitedPaper, DraftRetractionReport
+
+    _pid, slug = _make_project_and_draft(hub)
+    DraftHandler(hub=hub).put(
+        id=slug, chunk_kind="paragraph", text="Some prose.", at={"last": True}
+    )
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[
+                CitedPaper(
+                    ref_id=1, slug="smith2024", title="Bad Paper", status="retracted"
+                )
+            ]
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+
+    spec = get_job_type("draft_export")
+    assert spec is not None and spec.dispatch is not None
+
+    ctx = _FakeCtx(
+        store=hub.store,
+        meta={"params": {"draft": slug, "include_sources": True}},
+    )
+    spec.dispatch(ctx, spec)
+    assert not ctx.failures, ctx.failures
+
+    ctx_override = _FakeCtx(
+        store=hub.store,
+        meta={
+            "params": {
+                "draft": slug,
+                "include_sources": True,
+                "ignore_retractions": True,
+            }
+        },
+    )
+    spec.dispatch(ctx_override, spec)
+    assert not ctx_override.failures, ctx_override.failures
+    assert not any("retraction override" in t for _k, t in ctx.events)
+    assert any("retraction override" in t for _k, t in ctx_override.events)
+
+
 def test_dispatch_fails_on_uncleared_figure(hub: Hub) -> None:
     """The clearance gate: a third-party figure without a
     granted permission must not ship — the export fails before render."""
