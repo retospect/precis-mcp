@@ -79,11 +79,22 @@
       # `precis serve` asa_bot spawns in this venv can fetch the data-source
       # kinds (youtube/web/wolfram/news); mirrors roles/asa_bot's install.
       # --refresh-package forces uv to re-resolve the ref so a moving `main` (or
-      # the same-branch re-push) actually updates.
-      when: asa_venv.stat.exists
+      # the same-branch re-push) actually updates — dropped when _asa_ref is
+      # already a frozen 40-char sha (every redeploy-precis.yml import), where
+      # uv's cached checkout/build of the immutable sha is exactly right.
+      # Skipped entirely when this play's own pre-flight above read the venv as
+      # already ON the target (asa_deploy_changed false) — the same gate the
+      # daemon bounce below uses; `-e precis_force_install=true` overrides.
+      when:
+        - asa_venv.stat.exists
+        - >-
+          (asa_deploy_changed | default(true) | bool)
+          or (precis_force_install | default(false) | bool)
+      vars:
+        _asa_ref_is_sha: "{{ _asa_ref is match('^[0-9a-f]{40}$') }}"
       ansible.builtin.shell: |
         /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
-          --refresh-package precis-mcp \
+          {{ '' if _asa_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
           --constraints /opt/precis/constraints.txt \
           'precis-mcp[asa,asa-slack,external] @ git+https://github.com/retospect/precis-mcp@{{ _asa_ref }}'
       register: asa_pip

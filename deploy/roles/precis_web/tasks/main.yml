@@ -11,7 +11,20 @@
     uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
 - name: Install precis-mcp[web,pcb,external] into shared MCP venv
-  when: os_family == "darwin"
+  # Gated on the redeploy pre-flight (`precis_deploy_changed`, step 0b) so a
+  # same-sha redeploy skips the uv resolve; undefined → install (fail-safe for
+  # a standalone 38/14 run). `-e precis_force_install=true` overrides.
+  # `--refresh-package precis-mcp` is dropped when the ref is a frozen 40-char
+  # sha (redeploy step 0 pins every deploy) — uv's cached checkout/build of an
+  # immutable sha is exactly right; the flag only earns its cost on a moving
+  # branch ref (see precis_worker/tasks/provision.yml for the full rationale).
+  when:
+    - os_family == "darwin"
+    - >-
+      (precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
+  vars:
+    _precis_web_ref_is_sha: "{{ (precis_web_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
   # NOTE: docx (python-docx + latex2mathml), mermaid (mermaidx) and calc
   # (sympy + pint) are core deps now, not extras — the shared venv gets the
   # .docx OMML-math export route, /mermaid render/validate, and local
@@ -33,7 +46,7 @@
   # not installed" (gr48611). The worker venv already carries it.
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
-      --refresh-package precis-mcp \
+      {{ '' if _precis_web_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
       'precis-mcp[web,pcb,external] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true

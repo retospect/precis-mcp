@@ -27,9 +27,14 @@
 #      already-installed sha to a NEWER HEAD and false-fail. See step 0 play.
 #   0b. Pre-flight: per host, decides whether this deploy will move ANY managed
 #      venv (installed sha vs the pinned sha). Sets `precis_deploy_changed` to
-#      gate the restart in step 2 — a redundant same-sha redeploy skips the
+#      gate BOTH the venv installs in step 1 AND the restart in step 2 — a
+#      redundant same-sha redeploy skips the per-venv uv resolves and the
 #      bounce entirely (gr51351: stops the worker-restart storm from a burst
-#      of /go deploys, and coalesces overlapping runs).
+#      of /go deploys, and coalesces overlapping runs). Fail-safe: hosts the
+#      pre-flight doesn't cover (serving) and standalone role runs see the
+#      fact undefined and install as before; `-e precis_force_install=true`
+#      forces every install regardless (e.g. an extras/topology change with
+#      no new sha — the pre-flight only compares shas).
 #   0c. Export the local checkout's uv.lock as a `--constraints` file and copy
 #      it to every host, BEFORE any install runs. Every `precis-mcp … @ git+…`
 #      install (below and in every venv role) is a fresh dependency resolve —
@@ -37,7 +42,11 @@
 #      version than what the ship gate locked (2026-07-30: `mcp 2.0.0` broke
 #      `precis serve` cluster-wide on an all-green gate week). See
 #      playbooks/03-precis-constraints.yml for the full rationale.
-#   1. Re-runs those three install plays → the PINNED commit lands in every venv.
+#   1. Re-runs those three install plays → the PINNED commit lands in every
+#      venv. Each install task is gated on 0b (skipped when the host's venvs
+#      are already on the pinned sha), and drops `--refresh-package` when the
+#      ref is a frozen sha — uv's cached checkout/build of an immutable sha is
+#      correct by construction, so only moving-branch installs pay a re-fetch.
 #   2. Restarts every com.precis.* LaunchDaemon (macOS) and the precis-*
 #      units (Linux/the GPU node) — including daemons that share a venv and saw no
 #      install change of their own — so nothing keeps running stale in-memory
@@ -195,7 +204,9 @@
 # Fix: snapshot each managed venv's INSTALLED sha *before* the reinstall and
 # compare it to the ref HEAD we're about to deploy. Per host, set a
 # `precis_deploy_changed` fact — true iff some managed venv will actually move.
-# Step 2's restart actions are gated on it, so:
+# The venv install tasks (precis_worker/precis_embedder/precis_web roles, the
+# asa refresh via its own asa_deploy_changed twin) AND step 2's restart actions
+# are gated on it, so:
 #   * a redundant same-sha deploy is a true no-op (no restart, no storm), and
 #   * an overlapping second /go that finds every venv already on the target sha
 #     does not re-bounce — the "skip if venv already on target sha" coalescing

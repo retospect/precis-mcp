@@ -64,7 +64,22 @@
   # ``--refresh-package precis-mcp`` forces uv to ignore its cached
   # resolution of ``main`` and re-fetch the current HEAD. Without it,
   # uv pins the first SHA it ever resolved for the branch and a fresh
-  # push doesn't deploy until someone manually clears the cache.
+  # push doesn't deploy until someone manually clears the cache. Only
+  # needed for a MOVING ref: redeploy-precis.yml step 0 pins every ref
+  # to a frozen 40-char sha, an immutable target where uv's cached
+  # checkout/build is exactly right — so the flag is dropped there and
+  # kept only for a branch-name install (standalone role run, explicit
+  # -e branch deploy), where the stale-pin problem actually exists.
+  #
+  # Skipped when this host's pre-flight (redeploy-precis.yml step 0b)
+  # proved no managed venv moves this deploy (`precis_deploy_changed`
+  # false) — a redundant same-sha redeploy stops paying a full uv
+  # resolve per venv. Fail-safe direction: an undefined fact (standalone
+  # run, serving hosts, site.yml) defaults to installing. Escape hatch:
+  # `-e precis_force_install=true` installs regardless (e.g. after an
+  # out-of-band venv edit, or an extras/topology change with no new sha
+  # — the preflight only compares shas, so extras added to a host group
+  # land on the next code deploy unless forced).
   #
   # NOTE: mermaid (mermaidx, pure wheels) is a core dep now — the
   # diagram_propose tick's render/validate (ADR 0057) works on every worker
@@ -75,9 +90,14 @@
   # autocatpath engine so PathwayHandler imports — the plist sets
   # PRECIS_AUTOCATPATH_ENABLED, but without the module the handler
   # InitErrors on every pathway dispatch (seen on the agent worker 2026-08-09).
+  vars:
+    _precis_worker_ref_is_sha: "{{ (precis_worker_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
+  when: >-
+    (precis_deploy_changed | default(true) | bool)
+    or (precis_force_install | default(false) | bool)
   ansible.builtin.shell: |
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
-      --refresh-package precis-mcp \
+      {{ '' if _precis_worker_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
       'precis-mcp[paper,patent,external{% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true

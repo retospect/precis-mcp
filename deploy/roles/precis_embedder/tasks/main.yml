@@ -62,10 +62,25 @@
   #
   # ``--refresh-package precis-mcp`` forces uv to ignore its cached
   # resolution of the branch — without it, a fresh push wouldn't
-  # actually pull the new SHA until someone cleared the uv cache.
+  # actually pull the new SHA until someone cleared the uv cache. Only
+  # needed for a MOVING ref: dropped when the ref is already a frozen
+  # 40-char sha (redeploy-precis.yml step 0 pins every deploy), where
+  # uv's cache is exactly right (see precis_worker/tasks/provision.yml).
+  #
+  # Skipped when the step-0b pre-flight proved nothing moves on this
+  # host (`precis_deploy_changed` false); undefined → install
+  # (fail-safe). `-e precis_force_install=true` overrides, and
+  # `precis_embedder_trace` also forces it — the gr172390 trace tasks
+  # below report this task's rc/stdout, which a skip wouldn't have.
+  vars:
+    _precis_embedder_ref_is_sha: "{{ (precis_embedder_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
+  when: >-
+    (precis_deploy_changed | default(true) | bool)
+    or (precis_force_install | default(false) | bool)
+    or (precis_embedder_trace | default(false) | bool)
   ansible.builtin.shell: |
     {{ precis_embedder_uv_bin }} pip install {{ '-v' if (precis_embedder_trace | default(false) | bool) else '' }} --python {{ precis_embedder_venv }}/bin/python --upgrade \
-      --refresh-package precis-mcp \
+      {{ '' if _precis_embedder_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
       'precis-mcp[embed] @ git+https://github.com/retospect/precis-mcp@{{ precis_embedder_git_ref }}'
   become: true
