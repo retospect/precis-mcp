@@ -60,6 +60,10 @@
 # spec, gr194012 — "bind mount verified" acceptance criterion). The export's
 # -network clause already admits the server's own lan_ip since it's inside
 # lan_subnet, so no separate exports entry is needed.
+- name: Provision /mnt namespace root (macOS sealed root)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
+  when: os_family == "darwin" and shared_mount is match('^/mnt(/|$)')
+
 - name: Ensure shared_mount exists for server-side parity
   ansible.builtin.file:
     path: "{{ shared_mount }}"
@@ -91,3 +95,6 @@
   vars:
     legacy_path: /opt/shared
     canonical_path: "{{ shared_mount }}"
+  # legacy != canonical: with a stale overlay (shared_mount still the legacy
+  # path) the transition task would unmount the live share and self-symlink.
+  when: legacy_path != canonical_path

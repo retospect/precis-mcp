@@ -10,6 +10,10 @@
 # symlink. A non-empty real directory is left alone and the play fails
 # loudly so an operator inspects it instead of this silently discarding
 # data.
+#
+# Include sites MUST guard with `when: legacy_path != canonical_path` —
+# with a stale overlay (canonical still the legacy value) this file would
+# unmount the live share and then self-symlink the path.
 
 - name: "Unmount legacy path {{ legacy_path }} if still mounted there"
   ansible.posix.mount:

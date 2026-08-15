@@ -1,0 +1,55 @@
+---
+# Provision the /mnt namespace root on macOS (cluster-mount-namespace spec).
+# The sealed system volume makes / read-only, so /mnt cannot be mkdir'd —
+# and a bare `mnt` synthetic.conf entry would only create a READ-ONLY empty
+# directory (no mkdir inside it either). The working idiom is a synthetic
+# SYMLINK: /mnt -> /System/Volumes/Data/mnt, where the target is a real,
+# writable directory on the Data volume. synthetic.conf(5): fields are
+# TAB-separated and the link target is written WITHOUT its leading slash.
+#
+# Activation: `apfs.util -B` applies synthetic.conf without a reboot. If
+# /mnt still doesn't resolve afterwards, fail loudly telling the operator
+# to reboot — never fall through to mounts that would land on the sealed
+# root (that is exactly how the 2026-08-15 cutover attempt died).
+
+- name: Ensure real /mnt backing dir on the Data volume (macOS)
+  ansible.builtin.file:
+    path: /System/Volumes/Data/mnt
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Declare /mnt synthetic symlink in /etc/synthetic.conf (macOS)
+  ansible.builtin.lineinfile:
+    path: /etc/synthetic.conf
+    line: "mnt\tSystem/Volumes/Data/mnt"
+    regexp: '^mnt(\s|$)'
+    create: true
+    owner: root
+    group: wheel
+    mode: "0644"
+  become: true
+  register: synthetic_conf
+
+- name: Activate synthetic.conf without reboot (macOS)
+  ansible.builtin.command: /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B
+  become: true
+  when: synthetic_conf is changed
+  changed_when: true
+  # Exit status is unreliable across macOS releases; the stat below is the
+  # authoritative check.
+  failed_when: false
+
+- name: Stat /mnt after synthetic provisioning (macOS)
+  ansible.builtin.stat:
+    path: /mnt
+    follow: true
+  register: synthetic_mnt_stat
+
+- name: Fail if /mnt did not materialize (macOS)
+  ansible.builtin.fail:
+    msg: >-
+      /mnt is not present after writing /etc/synthetic.conf and running
+      apfs.util -B — this host needs a reboot to activate the synthetic
+      symlink before the /mnt mount cutover can proceed.
+  when: not synthetic_mnt_stat.stat.exists

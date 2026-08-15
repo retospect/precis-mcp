@@ -5,6 +5,10 @@
 #         fstab + -static uses the same path that /opt/shared already works on.)
 # Linux: NFSv4 via indirect /etc/auto.nas map
 
+- name: Provision /mnt namespace root (macOS sealed root)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
+  when: os_family == "darwin" and nas_mount_base is match('^/mnt(/|$)')
+
 - name: Ensure mount point parent exists
   ansible.builtin.file:
     path: "{{ nas_mount_base }}"
@@ -137,11 +141,13 @@
   vars:
     legacy_path: /opt/nas
     canonical_path: "{{ nas_mount_base }}"
-  when: os_family == "darwin"
+  # legacy != canonical: with a stale overlay (nas_mount_base still the legacy
+  # path) the transition task would unmount the live share and self-symlink.
+  when: os_family == "darwin" and legacy_path != canonical_path
 
 - name: Symlink legacy nas_mount_base path (Linux)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
   vars:
     legacy_path: /nas
     canonical_path: "{{ nas_mount_base }}"
-  when: os_family == "linux"
+  when: os_family == "linux" and legacy_path != canonical_path

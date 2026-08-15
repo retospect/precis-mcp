@@ -9,6 +9,10 @@
 #   noatime — hot share, skip access-time updates
 #   _netdev (Linux) — wait for network before mounting at boot
 
+- name: Provision /mnt namespace root (macOS sealed root)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
+  when: os_family == "darwin" and shared_mount is match('^/mnt(/|$)')
+
 - name: Ensure mount point exists
   ansible.builtin.file:
     path: "{{ shared_mount }}"
@@ -51,11 +55,13 @@
   vars:
     legacy_path: /opt/shared
     canonical_path: "{{ shared_mount }}"
-  when: os_family == "darwin"
+  # legacy != canonical: with a stale overlay (shared_mount still the legacy
+  # path) the transition task would unmount the live share and self-symlink.
+  when: os_family == "darwin" and legacy_path != canonical_path
 
 - name: Symlink legacy shared_mount path (Linux)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
   vars:
     legacy_path: /shared
     canonical_path: "{{ shared_mount }}"
-  when: os_family == "linux"
+  when: os_family == "linux" and legacy_path != canonical_path
