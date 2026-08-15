@@ -50,7 +50,18 @@ pins the inverse. Test-double recipe held (12 class fakes shimmed
 renamed).
 
 REMAINING (one domain per ship):
-- Refs design pass (see measurement above), then tags/links/cache/…
+- **Refs full pass — LESSER PRIORITY (Reto, 2026-08-15).** Design pass
+  first (carve vs bless the flat names permanently — see measurement
+  above; the design pass is cheap, ~150–400k tokens). If "carve": the
+  full migration is the biggest carve yet, est. ~10–15M tokens across
+  3–4 ship cycles — sed handles the bulk renames, but the cost tail is
+  the hand-rolled fakes/monkeypatches around the hottest methods
+  (`get_ref`/`insert_ref`/`add_tag`, 20 inbound packages). If "bless":
+  near-zero — a paragraph here + a guard test. Optional ~50k scouting
+  pass (count distinct fake classes + monkeypatch sites touching refs
+  methods in tests) pins the tail before deciding. Do not start ahead
+  of higher-priority work.
+- Then tags/links/cache/… (withheld — not yet approved).
 - Endgame (per carve, as done for drafts): delete the delegation
   block once call sites migrate; `Store` ends as core + sub-store
   properties + the small cross-cutting ops it already owns.
