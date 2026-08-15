@@ -74,6 +74,12 @@
 # macOS mount(8) does not consult /etc/fstab (ansible.posix.mount's
 # state=mounted fails on darwin) — static mounts go through autofs's
 # `/-  -static` map: fstab entry + `automount -c`. See nfs_client.
+# On the server itself automountd detects the self-hosted entry (its own
+# lan_ip) and plants a SYMLINK shared_mount -> {{ nfs_export_path }}/shared
+# instead of a loopback NFS mount. That's fine — exact path parity with
+# local semantics, re-created by automountd on every map reload/boot — so
+# don't "fix" the symlink back into a directory; the canary below is the
+# acceptance check either way.
 - name: Add loopback NFS entry to /etc/fstab
   ansible.builtin.lineinfile:
     path: /etc/fstab
