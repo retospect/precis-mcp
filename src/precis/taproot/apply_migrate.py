@@ -29,12 +29,39 @@ hubs concurrently.
   :func:`precis.taproot.hub.apply_extraction`'s compound-side
   no-evidence mint — evidence is a separate, verified re-point, never a
   placement-time blanket copy), and is linked
-  ``atom --conjunct-of--> original hub``. Every existing evidence edge on
-  the original hub is then re-pointed via the **add-first invariant**
-  (``docs/backlog/taproot-reground-add-first-invariant.md``, in
-  deterministic code, not a prompt): verify each atom against the
-  edge's grounding passage, add-and-read-back-confirm before ever
-  pruning, and never prune an edge with zero confirmed replacement adds.
+  ``atom --conjunct-of--> original hub``.
+
+  A hub's paper provenance can be carried in two shapes, and the split
+  path treats them differently by design:
+
+  * **Inbound evidence** (``paper --{establishes,corroborates,
+    contradicts}--> hub``, :data:`~precis.taproot.hub.HUB_ROLES`) —
+    every live edge on the original hub is re-pointed via the
+    **add-first invariant**
+    (``docs/backlog/taproot-reground-add-first-invariant.md``, in
+    deterministic code, not a prompt): verify each atom against the
+    edge's grounding passage, add-and-read-back-confirm before ever
+    pruning, and never prune an edge with zero confirmed replacement
+    adds. This is a *verified*, per-atom re-point — never a
+    placement-time blanket copy.
+  * **Outbound lineage** (``hub --derived-from--> paper``) — every live
+    lineage link on the original hub is copied to *every* placed atom,
+    unconditionally. This IS a blanket copy, deliberately: ``derived-
+    from`` asserts derivation lineage ("this hub's text descends from
+    that paper"), not evidential support for a specific sentence, so
+    there is nothing per-atom to verify against — an atom split out of
+    a hub is just as much a descendant of that hub's source paper as
+    the hub itself was. The original hub keeps its own ``derived-from``
+    links too (it stays alive as the compound). Counted in
+    :attr:`ApplyReport.lineage_copied`.
+
+  A hub can carry either shape, both, or neither; when a hub carries
+  provenance (either shape) but a given atom ends the transaction with
+  no direct paper reference of its own (possible when every evidence
+  edge failed verification for that atom and the hub had no lineage
+  link to fall back on), that atom is counted in
+  :attr:`ApplyReport.atoms_unreferenced` — a visible gap, not a fatal
+  one.
 * ``verdict == "no-claim"`` — never stamped (still needs a human look):
   filed ``needs_review`` if the hub carries evidence (a real edge that
   would otherwise go unaccounted for), else just counted
@@ -178,6 +205,17 @@ class ApplyReport:
     atoms_needs_review: int = 0
     edges_repointed: int = 0
     edges_kept_needs_review: int = 0
+    #: Total atom -> paper ``derived-from`` links written across every
+    #: split hub — the blanket lineage copy (module docstring), one
+    #: write per (lineage link, placed atom) pair.
+    lineage_copied: int = 0
+    #: Placed atoms whose hub carried paper provenance (either shape)
+    #: but which ended their hub's transaction with zero direct paper
+    #: links of their own — the silent gap the evidence re-point's
+    #: verified-only semantics can leave when a hub had no
+    #: ``derived-from`` lineage to fall back on. Visible, not fatal:
+    #: never aborts the hub, never blocks the stamp.
+    atoms_unreferenced: int = 0
     skipped_already_stamped: int = 0
     skipped_verdict: int = 0
     no_claim_needs_review: int = 0
@@ -346,6 +384,89 @@ def _passage_text(store: Store, edge: _EvidenceEdge) -> str | None:
             (edge.paper_ref_id, candidate),
         ).fetchone()
     return str(row[0]) if row is not None else None
+
+
+@dataclass(frozen=True)
+class _LineageLink:
+    """One raw ``hub -> paper`` outbound ``derived-from`` lineage link —
+    the shape (b) provenance :func:`_fetch_evidence_edges` never reads
+    (module docstring). Unlike :class:`_EvidenceEdge` this is never
+    re-pointed/pruned; it is copied blanket onto every placed atom, so
+    there is no ``relation`` field to carry (always ``'derived-from'``)
+    and no verification-relevant fields either."""
+
+    paper_ref_id: int
+    dst_chunk_id: int | None
+    dst_ord: int | None
+
+
+def _fetch_lineage_links(store: Store, hub_ref_id: int) -> list[_LineageLink]:
+    """Every live outbound ``derived-from`` lineage link from
+    ``hub_ref_id`` to a paper-shaped ref — the src/dst-flipped mirror of
+    :func:`_fetch_evidence_edges`'s query shape: there the paper is the
+    edge's source and the hub the destination (evidence flows paper ->
+    hub); here the hub is the source and the paper the destination
+    (lineage flows hub -> paper). Projects the destination chunk's
+    ``ord`` (needed to call :func:`~precis.store.Store.add_link` with
+    ``dst_pos``, not a raw ``chunk_id``) the same way
+    :func:`_fetch_evidence_edges` projects the source chunk's.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.dst_ref_id, l.dst_chunk_id, dc.ord
+              FROM links l
+              JOIN refs p ON p.ref_id = l.dst_ref_id
+              LEFT JOIN chunks dc ON dc.chunk_id = l.dst_chunk_id
+             WHERE l.src_ref_id = %(hub)s
+               AND l.relation = 'derived-from'
+               AND p.kind = ANY(%(kinds)s)
+               AND p.deleted_at IS NULL
+            """,
+            {"hub": hub_ref_id, "kinds": list(EVIDENCE_SRC_KINDS)},
+        ).fetchall()
+    return [
+        _LineageLink(
+            paper_ref_id=int(r[0]),
+            dst_chunk_id=int(r[1]) if r[1] is not None else None,
+            dst_ord=int(r[2]) if r[2] is not None else None,
+        )
+        for r in rows
+    ]
+
+
+def _atom_paper_ref_count(conn: Any, atom_hub_id: int) -> int:
+    """How many direct paper references ``atom_hub_id`` carries right
+    now, on the same (possibly not-yet-committed) ``conn`` an in-flight
+    split transaction is using — the sum of its live inbound evidence
+    edges (:data:`HUB_ROLES`) and its live outbound ``derived-from``
+    lineage links. Feeds :attr:`ApplyReport.atoms_unreferenced`: zero
+    here, on a hub that had provenance to begin with, is the silent gap
+    a verified-only evidence re-point can leave when there was no
+    lineage link to fall back on."""
+    row = conn.execute(
+        """
+        SELECT
+            (SELECT count(*)
+               FROM links l JOIN refs p ON p.ref_id = l.src_ref_id
+              WHERE l.dst_ref_id = %(id)s
+                AND l.relation = ANY(%(roles)s)
+                AND p.kind = ANY(%(kinds)s)
+                AND p.deleted_at IS NULL)
+          + (SELECT count(*)
+               FROM links l JOIN refs p ON p.ref_id = l.dst_ref_id
+              WHERE l.src_ref_id = %(id)s
+                AND l.relation = 'derived-from'
+                AND p.kind = ANY(%(kinds)s)
+                AND p.deleted_at IS NULL)
+        """,
+        {
+            "id": atom_hub_id,
+            "roles": list(HUB_ROLES),
+            "kinds": list(EVIDENCE_SRC_KINDS),
+        },
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def _live_evidence_count(store: Store, conn: Any, hub_ref_ids: list[int]) -> int:
@@ -558,6 +679,8 @@ def apply_dry_run(
     atoms_needs_review = 0
     edges_repointed = 0
     edges_kept_needs_review = 0
+    lineage_copied = 0
+    atoms_unreferenced = 0
     skipped_already_stamped = 0
     skipped_verdict = 0
     no_claim_needs_review = 0
@@ -627,6 +750,7 @@ def apply_dry_run(
 
         # verdict == "split"
         edges = _fetch_evidence_edges(store, hub_ref_id)
+        lineage_links = _fetch_lineage_links(store, hub_ref_id)
         atoms = _parse_atoms(row.get("extraction"))
         if len(atoms) < 2:
             log.warning(
@@ -672,6 +796,8 @@ def apply_dry_run(
         hub_atoms_review = 0
         hub_edges_repointed = 0
         hub_edges_review = 0
+        hub_lineage_copied = 0
+        hub_atoms_unreferenced = 0
         aborted = False
         pending_checks: list[int] = []
         # needs_review filings are collected here, never fired immediately —
@@ -716,6 +842,26 @@ def apply_dry_run(
                         set_by=set_by,
                         conn=c,
                     )
+
+                # Outbound lineage — blanket copy onto every placed atom
+                # (module docstring: 'derived-from' asserts derivation, not
+                # evidential support, so there is nothing per-atom to
+                # verify). `store.add_link` is idempotent on the unique
+                # endpoint tuple, so this is safe to re-derive if this hub's
+                # transaction is ever retried from scratch.
+                for lineage in lineage_links:
+                    for atom_hub_id in atom_hub_ids:
+                        if atom_hub_id is None:
+                            continue
+                        store.add_link(
+                            src_ref_id=atom_hub_id,
+                            dst_ref_id=lineage.paper_ref_id,
+                            relation="derived-from",
+                            dst_pos=lineage.dst_ord,
+                            set_by=set_by,
+                            conn=c,
+                        )
+                        hub_lineage_copied += 1
 
                 for e_idx, edge in enumerate(edges):
                     candidate_hub_ids: list[int] = [
@@ -812,6 +958,19 @@ def apply_dry_run(
                     )
                     hub_edges_repointed += 1
 
+                # The silent gap the owner cares about: a hub that HAD paper
+                # provenance (either shape) but a placed atom that ended
+                # this transaction with no direct paper reference of its
+                # own — every evidence edge failed verification for it and
+                # there was no lineage link to fall back on. Visible, never
+                # fatal: doesn't abort the hub or block the stamp.
+                if edges or lineage_links:
+                    for atom_hub_id in atom_hub_ids:
+                        if atom_hub_id is None:
+                            continue
+                        if _atom_paper_ref_count(c, atom_hub_id) == 0:
+                            hub_atoms_unreferenced += 1
+
                 # Add-first invariant's post-write backstop (step 3): total
                 # live evidence across (original hub + every atom hub) must
                 # never land at zero when this hub started with evidence.
@@ -860,6 +1019,8 @@ def apply_dry_run(
         atoms_needs_review += hub_atoms_review
         edges_repointed += hub_edges_repointed
         edges_kept_needs_review += hub_edges_review
+        lineage_copied += hub_lineage_copied
+        atoms_unreferenced += hub_atoms_unreferenced
         partial_failures += hub_partial_failures
         hub_rows.append(
             HubApplyOutcome(
@@ -869,7 +1030,9 @@ def apply_dry_run(
                     f"atoms_placed={hub_atoms_placed} "
                     f"atoms_needs_review={hub_atoms_review} "
                     f"edges_repointed={hub_edges_repointed} "
-                    f"edges_kept_needs_review={hub_edges_review}"
+                    f"edges_kept_needs_review={hub_edges_review} "
+                    f"lineage_copied={hub_lineage_copied} "
+                    f"atoms_unreferenced={hub_atoms_unreferenced}"
                 ),
             )
         )
@@ -881,6 +1044,8 @@ def apply_dry_run(
         atoms_needs_review=atoms_needs_review,
         edges_repointed=edges_repointed,
         edges_kept_needs_review=edges_kept_needs_review,
+        lineage_copied=lineage_copied,
+        atoms_unreferenced=atoms_unreferenced,
         skipped_already_stamped=skipped_already_stamped,
         skipped_verdict=skipped_verdict,
         no_claim_needs_review=no_claim_needs_review,

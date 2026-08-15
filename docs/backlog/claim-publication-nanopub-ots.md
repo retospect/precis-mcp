@@ -896,6 +896,31 @@ a paper edge but no block anchor, 2/49 hang with no paper at all, and
 fi34867 is a live hearsay case (grounded in a *references-list* chunk of
 a 2012 paper while the claim describes Han et al., PRL 2007).
 
+Review feedback 2026-08-15 (Reto, on the dry-run-49 dossier) — binding on
+the mint/extraction contract:
+
+1. **No source, no atom.** An atom may only be minted from text actually
+   present in a grounding block of the doer-paper. Atoms are currently
+   extracted from the fi *sentence*; before mint, each atom must be
+   **re-grounded against the paper text** with its own precise quote+snip
+   (the existing unique-match-at-mint gate is the enforcement point). An
+   atom whose content cannot be located in any block is not minted —
+   "can't just make stuff up" (observed: fi34985's ~0.1 eV benchmark
+   claim absent from available source; fi176551's "4 binding domains"
+   not in the shown block).
+2. **Quantity claims carry bound semantics.** Scope must type each
+   number: exact / upper bound / lower bound / approximate-range (fi176551:
+   "is 4 exact, upper, or lower?"). Extraction schema + gate addition.
+3. **Keep the causal qualifier.** An atom must not strip the mechanism
+   that scopes it — "blocked for digital logic *because of zero bandgap*"
+   is the claim; the blanket version is wrong because the cause may be
+   engineered away (fi34850).
+4. **Open design call: attribution placement.** "Han et al. (PRL 2007)
+   demonstrated X" — does the author/venue live in the assertion text or
+   in the nanopub's provenance/pubinfo graphs? (Nanopub convention says
+   assertion = world-claim, attribution = provenance; needs an explicit
+   decision because fi sentences often embed attribution.)
+
 Plus two policy opens named inline: revocation (trust-gate section) and
 correction-vs-retraction-vs-invalidation (other pathways).
 

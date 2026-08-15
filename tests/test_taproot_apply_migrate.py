@@ -642,6 +642,246 @@ def test_split_aborts_and_rolls_back_when_a_write_fails_mid_hub(store: Any) -> N
     assert todo.calls == []
 
 
+def _lineage_paper(store: Any, atom_hub_id: int, paper_ref_id: int) -> bool:
+    return _edge_exists(store, atom_hub_id, paper_ref_id, "derived-from")
+
+
+def _link_count(store: Any, src: int, dst: int, relation: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = %s",
+            (src, dst, relation),
+        ).fetchone()
+    return int(row[0])
+
+
+def test_split_copies_outbound_lineage_to_every_atom(store: Any) -> None:
+    """Outbound `derived-from` lineage on the original hub is a blanket
+    copy onto every placed atom -- unlike the evidence re-point, no
+    per-atom verification gates it."""
+    compound = mint_hub(
+        store, _claim("X shows high strength and X shows high conductivity.")
+    )
+    paper = seed_ref(store, kind="paper")
+    store.add_link(src_ref_id=compound, dst_ref_id=paper, relation="derived-from")
+    atom_a = "X shows high strength."
+    atom_b = "X shows high conductivity."
+
+    report = apply_dry_run(
+        store,
+        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,  # no evidence edges — never reached
+    )
+
+    assert report.split_applied == 1
+    assert report.lineage_copied == 2  # 1 lineage link x 2 atoms
+    assert report.atoms_unreferenced == 0
+    # The original hub keeps its own lineage link too (it stays alive as
+    # the compound).
+    assert _edge_exists(store, compound, paper, "derived-from")
+
+    with store.pool.connection() as conn:
+        atom_hub_ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+                "AND relation = 'conjunct-of'",
+                (compound,),
+            ).fetchall()
+        ]
+    assert len(atom_hub_ids) == 2
+    for atom_hub_id in atom_hub_ids:
+        assert _lineage_paper(store, atom_hub_id, paper)
+
+
+def test_split_lineage_copy_idempotent_on_rerun(store: Any) -> None:
+    """A hub reprocessed from scratch (stamp manually cleared, same
+    deterministic atom content -> mint_hub reconverges onto the SAME atom
+    ref_ids) must not create duplicate `derived-from` rows -- add_link's
+    idempotent-on-the-unique-tuple insert (module docstring)."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    store.add_link(src_ref_id=compound, dst_ref_id=paper, relation="derived-from")
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+
+    report1 = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+    assert report1.split_applied == 1
+    assert report1.lineage_copied == 2
+
+    with store.pool.connection() as conn:
+        atom_hub_ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+                "AND relation = 'conjunct-of'",
+                (compound,),
+            ).fetchall()
+        ]
+    assert len(atom_hub_ids) == 2
+
+    # Clear the stamp so the split path re-runs from scratch.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'taproot_decomposed_at' WHERE ref_id = %s",
+            (compound,),
+        )
+        conn.commit()
+
+    report2 = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+    assert report2.split_applied == 1
+    # mint_hub reconverges deterministically on identical claim content --
+    # same atom ref_ids, so the lineage copy is re-derived, not duplicated.
+    with store.pool.connection() as conn:
+        atom_hub_ids_2 = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+                "AND relation = 'conjunct-of'",
+                (compound,),
+            ).fetchall()
+        ]
+    assert set(atom_hub_ids_2) == set(atom_hub_ids)
+    for atom_hub_id in atom_hub_ids:
+        assert _link_count(store, atom_hub_id, paper, "derived-from") == 1
+
+
+def test_split_with_both_evidence_and_lineage_verifies_and_copies_both(
+    store: Any,
+) -> None:
+    """A hub carrying both provenance shapes: evidence is still
+    verified-re-pointed to the verifying atom only, while lineage is
+    copied blanket to both atoms."""
+    compound = mint_hub(
+        store, _claim("X shows high strength and X shows high conductivity.")
+    )
+    evidence_paper = seed_ref(store, kind="paper")
+    lineage_paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=evidence_paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    store.add_link(
+        src_ref_id=compound, dst_ref_id=lineage_paper, relation="derived-from"
+    )
+    atom_a = "X shows high strength."
+    atom_b = "X shows high conductivity."
+
+    report = apply_dry_run(
+        store,
+        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map({atom_a}),  # only atom_a verifies
+    )
+
+    assert report.split_applied == 1
+    assert report.edges_repointed == 1
+    assert report.lineage_copied == 2
+    assert report.atoms_unreferenced == 0
+
+    with store.pool.connection() as conn:
+        atom_hubs = {
+            str(
+                conn.execute(
+                    "SELECT title FROM refs WHERE ref_id = %s", (r[0],)
+                ).fetchone()[0]
+            ): int(r[0])
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+                "AND relation = 'conjunct-of'",
+                (compound,),
+            ).fetchall()
+        }
+    # Evidence: only the verifying atom gets it.
+    assert _edge_exists(store, evidence_paper, atom_hubs[atom_a], "corroborates")
+    assert not _edge_exists(store, evidence_paper, atom_hubs[atom_b], "corroborates")
+    # Lineage: both atoms get it, unconditionally.
+    assert _lineage_paper(store, atom_hubs[atom_a], lineage_paper)
+    assert _lineage_paper(store, atom_hubs[atom_b], lineage_paper)
+
+
+def test_split_counts_atoms_unreferenced_when_evidence_unverified_and_no_lineage(
+    store: Any,
+) -> None:
+    """A hub with evidence but no lineage, where NO atom verifies against
+    any edge: the edge is kept+needs_review on the original hub (existing
+    behaviour) and every placed atom is counted unreferenced (new)."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+
+    report = apply_dry_run(
+        store,
+        [_row(compound, "split", atoms=["X shows A.", "X shows B."])],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map(set()),  # nothing verifies
+    )
+
+    assert report.split_applied == 1
+    assert report.edges_repointed == 0
+    assert report.lineage_copied == 0
+    assert report.atoms_unreferenced == 2
+    assert report.atoms_placed == 2
+
+
+def test_split_with_neither_provenance_shape_leaves_new_counters_at_zero(
+    store: Any,
+) -> None:
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+
+    report = apply_dry_run(
+        store,
+        [_row(compound, "split", atoms=["X shows A.", "X shows B."])],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+
+    assert report.split_applied == 1
+    assert report.lineage_copied == 0
+    assert report.atoms_unreferenced == 0
+    assert report.partial_failures == 0
+
+
 def test_split_aborts_via_add_first_backstop_and_discards_pending_reviews(
     store: Any, monkeypatch: Any
 ) -> None:
