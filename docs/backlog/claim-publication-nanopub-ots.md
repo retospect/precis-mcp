@@ -921,6 +921,11 @@ the mint/extraction contract:
    assertion = world-claim, attribution = provenance; needs an explicit
    decision because fi sentences often embed attribution.)
 
+Apply-side implementation of 1–3 (the pass that *produces* the grounding
+records this spec's Layer-A gate validates):
+`taproot-atom-regrounding.md` — owned by the taproot session; coordinate
+on where quote/snip records are stored before either side picks a spot.
+
 Plus two policy opens named inline: revocation (trust-gate section) and
 correction-vs-retraction-vs-invalidation (other pathways).
 

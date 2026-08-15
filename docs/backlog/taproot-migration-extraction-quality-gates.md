@@ -106,7 +106,9 @@ writes zero prod rows):** canary local (GREEN 2026-08-14, 0 rejections /
 **Reto authorized production writes 2026-08-14**; phase-2 apply mode is
 BUILT + reviewed (`apply_migrate.py`, `taproot-migrate apply`) — it
 treats `no-claim` on an evidenced hub as `needs_review`, never a
-skip-stamp. Consider re-labelling fi176365 (`pass-through` → `split`).
+skip-stamp. **New apply prerequisite (2026-08-15 review feedback): the
+per-atom re-grounding pass — `taproot-atom-regrounding.md` — must run
+between verdict and placement; no source, no atom.** Consider re-labelling fi176365 (`pass-through` → `split`).
 
 **100-hub run (top-scored = hardest cohort, haiku, 2026-08-15) + gate
 round 4.** Raw verdicts: 26 split / 1 pass-through / 6 no-claim / 46
