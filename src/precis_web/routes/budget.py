@@ -10,8 +10,10 @@ can't import from here without one, since this module used to import
 ``_budget_tote`` from ``status.py``). Only the
 ``POST /budget/{set,reset,resume,resume/clear}`` write endpoints stay in
 this module, at their original paths; their redirect target is now the
-Budget sub-tab. A set cap persists to
-``app_settings`` (migration 0067) and overrides the ``PRECIS_BUDGET_*`` env
+Budget sub-tab. A set cap writes through :mod:`precis.settings` (all four
+keys — hourly/daily/quota-ceiling/resume-until — are registered there),
+persisting to ``app_settings`` (migration 0067) with ``updated_by``
+recorded (migration 0125) and overriding the ``PRECIS_BUDGET_*`` env
 default without a redeploy; "reset" reverts to the env default. Mirrors the
 /secrets editor precedent in shape.
 
@@ -30,6 +32,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from starlette.responses import Response
 
+from precis import settings as psettings
 from precis.budget import meter
 from precis.budget import settings as budget_settings
 from precis.workers import dream_throttle
@@ -61,8 +64,8 @@ async def resume_now(request: Request, hours: str = Form("")) -> Response:
         span = float(_RESUME_HOURS)
     span = max(0.25, min(span, 168.0))
     until = datetime.now(UTC) + timedelta(hours=span)
-    budget_settings.set_setting(
-        store, budget_settings.RESUME_UNTIL_KEY, until.isoformat()
+    psettings.set_setting(
+        budget_settings.RESUME_UNTIL_KEY, until.isoformat(), store=store
     )
     meter.bind_store(store)
     return RedirectResponse("/status?tab=budget", status_code=303)
@@ -72,7 +75,7 @@ async def resume_now(request: Request, hours: str = Form("")) -> Response:
 async def resume_clear(request: Request) -> Response:
     """Cancel an active resume override (re-arm the breaker immediately)."""
     store = get_store(request)
-    budget_settings.clear_setting(store, budget_settings.RESUME_UNTIL_KEY)
+    psettings.clear_setting(budget_settings.RESUME_UNTIL_KEY, store=store)
     meter.bind_store(store)
     return RedirectResponse("/status?tab=budget", status_code=303)
 
@@ -83,7 +86,9 @@ async def set_caps(
     hourly_usd: str = Form(""),
     daily_usd: str = Form(""),
 ) -> Response:
-    """Set/replace either cap. A blank or non-positive field is a no-op."""
+    """Set/replace either cap. A blank or non-positive field is a no-op.
+    Written through :mod:`precis.settings` (both keys are registered there)
+    so the edit records ``updated_by``, same as the CLI/`/settings` page."""
     store = get_store(request)
     for raw, key in (
         (hourly_usd, budget_settings.HOURLY_KEY),
@@ -93,9 +98,12 @@ async def set_caps(
         if not raw:
             continue
         try:
-            budget_settings.set_float(store, key, float(raw))
+            value = float(raw)
         except ValueError:
             continue
+        if value <= 0:
+            continue
+        psettings.set_setting(key, value, store=store)
     meter.bind_store(store)  # drop the cached status so the new cap is live
     return RedirectResponse("/status?tab=budget", status_code=303)
 
@@ -105,7 +113,7 @@ async def reset_cap(request: Request, key: str = Form(...)) -> Response:
     """Clear one cap override, reverting to the env / compiled default."""
     store = get_store(request)
     if key in (budget_settings.HOURLY_KEY, budget_settings.DAILY_KEY):
-        budget_settings.clear_setting(store, key)
+        psettings.clear_setting(key, store=store)
     meter.bind_store(store)
     return RedirectResponse("/status?tab=budget", status_code=303)
 

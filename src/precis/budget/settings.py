@@ -14,8 +14,11 @@ each status recompute (cached ~15s), so there's no hot-path cost.
 settings.md``, Slice 1): the four keys below (:data:`HOURLY_KEY` /
 :data:`DAILY_KEY` / :data:`QUOTA_CEILING_KEY` / :data:`RESUME_UNTIL_KEY`) are
 also declared in that module's typed, TTL-cached registry — ``precis.budget
-.meter`` reads the caps through it now rather than hand-rolling the DB → env →
-default precedence here. This module remains the generic, *unregistered*
+.meter``/``.quota`` read the caps through it now rather than hand-rolling the
+DB → env → default precedence here, and ``/budget``'s cap/resume web writes
+go through ``precis.settings.set_setting``/``clear_setting`` too (records
+``updated_by``, migration 0125) rather than this module's setters. This
+module remains the generic, *unregistered*
 ``app_settings`` KV surface for every other caller (live_config chain
 overrides, dream_throttle's cadence, health_digest's last-push timestamp, the
 factory operator/cloud-enabled flags, …) — arbitrary/parametrised keys that

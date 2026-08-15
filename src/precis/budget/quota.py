@@ -21,7 +21,6 @@ pause (mirrors the dollar meter). The gate never raises.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -67,19 +66,15 @@ class QuotaPause:
 
 
 def _ceiling_pct(store: Store | None) -> float:
-    """Ceiling resolution: DB override (web-set) → env → compiled default."""
-    from precis.budget import settings as _s
+    """Ceiling resolution via the registered settings layer: DB row
+    (web-set) → ``PRECIS_QUOTA_CEILING_PCT`` → compiled default."""
+    from precis import settings as _psettings
+    from precis.budget.settings import QUOTA_CEILING_KEY
 
-    override = _s.get_float(store, _s.QUOTA_CEILING_KEY)
-    if override is not None:
-        return override
-    raw = os.environ.get("PRECIS_QUOTA_CEILING_PCT")
-    if raw:
-        try:
-            return float(raw)
-        except ValueError:
-            pass
-    return DEFAULT_CEILING_PCT
+    value = _psettings.get_float(
+        QUOTA_CEILING_KEY, store=store, default=DEFAULT_CEILING_PCT
+    )
+    return value if value is not None else DEFAULT_CEILING_PCT
 
 
 def _fmt_reset(iso: object) -> str:

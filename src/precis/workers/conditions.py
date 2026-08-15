@@ -40,6 +40,11 @@ was invisible for 4 days):
 * ``dead-generation-claims`` — claims whose holder generation is
   provably replaced are persisting past the claim reaper's window: the
   reclaim lane itself is broken (the watcher's watcher).
+* ``settings-env-shadowed`` — info-only (db-resident-settings.md slice 4):
+  a host still has a registered setting's env var set locally (self-
+  reported via ``host_heartbeat.meta.settings_env_present``) after a DB
+  row has taken over resolution — cleanup visibility for the ansible-diet
+  pass, not a failure.
 
 Heal arm: ``pass-dead-on-host`` / ``pass-wedged`` findings on the
 ``precis-worker`` process request **restart-once** — ssh + a sudoers
@@ -423,12 +428,57 @@ def _probe_dead_generation_claims(store: Store) -> list[ConditionFinding]:
     ]
 
 
+_SETTINGS_ENV_SHADOWED_SQL = """
+SELECT host, meta->'settings_env_present' AS keys
+  FROM host_heartbeat
+ WHERE ts > now() - make_interval(mins => %(fresh_min)s)
+   AND meta ? 'settings_env_present'
+"""
+
+
+def _probe_settings_env_shadowed(store: Store) -> list[ConditionFinding]:
+    """Visibility row, not a fault (db-resident-settings.md slice 4): a host
+    still advertises (via ``host_heartbeat.meta.settings_env_present``,
+    :func:`precis.settings.advertised_env_presence`) that a registered
+    setting's env var is set locally, while the key now resolves from a DB
+    row on this same host — the ansible template still sets the var, but it
+    no longer does anything, and is safe to drop. Deliberately excludes
+    unregistered/never-DB keys (``resolve`` only reports ``"db"`` for a
+    registry hit with a live row)."""
+    from precis.settings import REGISTRY, resolve
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            _SETTINGS_ENV_SHADOWED_SQL, {"fresh_min": _HOST_FRESH_MIN}
+        ).fetchall()
+    out: list[ConditionFinding] = []
+    for host, keys in rows:
+        for key in keys or []:
+            if key not in REGISTRY:
+                continue
+            _value, layer = resolve(key, store=store)
+            if layer != "db":
+                continue
+            out.append(
+                ConditionFinding(
+                    key=f"settings-env-shadowed:{host}/{key}",
+                    detail=(
+                        f"{host} still has the env var for setting {key!r} "
+                        "set locally, but a DB row now wins fleet-wide — "
+                        "safe to drop from the ansible template"
+                    ),
+                )
+            )
+    return out
+
+
 CONDITIONS: tuple[Condition, ...] = (
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
     Condition("pass-wedged", "warn", _probe_pass_wedged),
     Condition("llm-degraded", "warn", _probe_llm_degraded),
     Condition("dead-generation-claims", "warn", _probe_dead_generation_claims),
+    Condition("settings-env-shadowed", "info", _probe_settings_env_shadowed),
 )
 
 

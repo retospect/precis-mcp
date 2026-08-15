@@ -6,6 +6,7 @@ in-process timestamp, honoring ``PRECIS_HEARTBEAT_INTERVAL_SECONDS``.
 
 from __future__ import annotations
 
+from precis import settings as psettings
 from precis.workers import activity
 from precis.workers import heartbeat as hb
 
@@ -233,3 +234,33 @@ def test_activity_merges_across_two_processes_on_one_host(store, monkeypatch) ->
     published = rows["test-host-activity-3"].meta["activity"]
     assert published["precis-worker"]["pass"] == "chase"
     assert published["precis-worker-agent"]["pass"] == "job_claude_inproc"
+
+
+def test_settings_env_present_advertised_when_set(store, monkeypatch) -> None:
+    """db-resident-settings.md slice 4: a registered setting's env var set
+    locally is self-reported into meta, so the condition registry can spot
+    a host still carrying one after a DB row takes over."""
+    _reset_throttle(monkeypatch)
+    monkeypatch.setenv("PRECIS_UNPAYWALL_EMAIL", "ops@example.org")
+
+    hb.run_heartbeat_pass(store, host="test-host-settings-1")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    assert (
+        "contact.polite_email"
+        in rows["test-host-settings-1"].meta["settings_env_present"]
+    )
+
+
+def test_settings_env_present_omitted_when_nothing_set(store, monkeypatch) -> None:
+    """Mirrors the ``activity`` key: nothing to report → no key at all, not
+    an empty list — avoids writing noise."""
+    _reset_throttle(monkeypatch)
+    for spec in psettings.REGISTRY.values():
+        if spec.env_var:
+            monkeypatch.delenv(spec.env_var, raising=False)
+
+    hb.run_heartbeat_pass(store, host="test-host-settings-2")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    assert "settings_env_present" not in rows["test-host-settings-2"].meta

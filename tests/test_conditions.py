@@ -31,6 +31,7 @@ from precis.workers.conditions import (
     _probe_pass_dead,
     _probe_pass_wedged,
     _probe_rescue_cadence,
+    _probe_settings_env_shadowed,
     run_condition_checks,
     run_condition_heals,
 )
@@ -396,6 +397,53 @@ def test_dead_generation_claims_fires_on_stale_epoch_dead_hold(
     with store.pool.connection() as conn:
         conn.execute("DELETE FROM resource_slot_holds WHERE resource = %s", (res,))
         conn.commit()
+
+
+# ── settings-env-shadowed (db-resident-settings.md slice 4 visibility) ───
+
+
+def test_settings_env_shadowed_fires_when_db_row_now_wins(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import settings as psettings
+
+    key = "contact.polite_email"
+    monkeypatch.delenv("PRECIS_UNPAYWALL_EMAIL", raising=False)
+    psettings.invalidate(key)
+    psettings.set_setting(key, "ops@example.org", store=store)
+    try:
+        _seed_heartbeat(store, meta={"settings_env_present": [key]})
+        found = [
+            f
+            for f in _probe_settings_env_shadowed(store)
+            if f.key == f"settings-env-shadowed:{_HOST}/{key}"
+        ]
+        assert len(found) == 1
+        assert "safe to drop" in found[0].detail
+    finally:
+        psettings.clear_setting(key, store=store)
+
+
+def test_settings_env_shadowed_quiet_when_no_db_row(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import settings as psettings
+
+    key = "contact.polite_email"
+    monkeypatch.delenv("PRECIS_UNPAYWALL_EMAIL", raising=False)
+    psettings.clear_setting(key, store=store)  # ensure no DB row lingers
+    _seed_heartbeat(store, meta={"settings_env_present": [key]})
+    found = [
+        f
+        for f in _probe_settings_env_shadowed(store)
+        if f.key == f"settings-env-shadowed:{_HOST}/{key}"
+    ]
+    assert found == []
+
+
+def test_settings_env_shadowed_ignores_unregistered_keys(store: Store) -> None:
+    _seed_heartbeat(store, meta={"settings_env_present": ["not.a.real.key"]})
+    assert _probe_settings_env_shadowed(store) == []
 
 
 # ── run_condition_checks mapping ─────────────────────────────────────────

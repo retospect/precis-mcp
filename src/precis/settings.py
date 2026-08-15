@@ -415,6 +415,19 @@ def is_available(key: str, *, store: Store | None = None) -> bool:
     return True
 
 
+def advertised_env_presence() -> list[str]:
+    """Registered keys whose env var is set in *this process's* environment
+    — self-reported into ``host_heartbeat.meta`` (``settings_env_present``)
+    so the condition registry can flag a host still carrying a value now
+    shadowed by a DB row (db-resident-settings.md slice 4 visibility).
+    Presence only, never the value."""
+    return sorted(
+        key
+        for key, spec in REGISTRY.items()
+        if spec.env_var and os.environ.get(spec.env_var)
+    )
+
+
 def list_settings(*, store: Store | None = None) -> list[dict[str, object]]:
     """The registered inventory: ``[{key, value, layer, type, doc, env_var,
     updated_at, updated_by}]`` — one row per :data:`REGISTRY` entry, sorted by
@@ -515,6 +528,7 @@ def clear_setting(key: str, *, store: Store) -> None:
 __all__ = [
     "REGISTRY",
     "SettingSpec",
+    "advertised_env_presence",
     "bind_store",
     "clear_setting",
     "get",

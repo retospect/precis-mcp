@@ -566,6 +566,15 @@ def _collect_and_upsert(
     if activity_snapshot and process:
         meta["activity"] = {process: activity_snapshot}
 
+    # db-resident-settings.md slice 4: self-report which registered env vars
+    # are still set locally, so the condition registry can flag a host still
+    # carrying a value now shadowed by a DB row (ansible-diet visibility).
+    from precis.settings import advertised_env_presence
+
+    env_present = advertised_env_presence()
+    if env_present:
+        meta["settings_env_present"] = env_present
+
     store.record_heartbeat(
         host,
         temp_c=temp_c,

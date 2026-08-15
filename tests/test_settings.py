@@ -301,3 +301,25 @@ def test_get_bool_coercion() -> None:
 def test_get_int_coercion() -> None:
     assert psettings._coerce_int("7", "k") == 7
     assert psettings._coerce_int("not-an-int", "k") is None
+
+
+# ── advertised_env_presence (heartbeat self-report, slice 4) ─────────────
+
+
+def test_advertised_env_presence_lists_locally_set_registered_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for spec in psettings.REGISTRY.values():
+        if spec.env_var:
+            monkeypatch.delenv(spec.env_var, raising=False)
+    monkeypatch.setenv("PRECIS_UNPAYWALL_EMAIL", "ops@example.org")
+    assert psettings.advertised_env_presence() == ["contact.polite_email"]
+
+
+def test_advertised_env_presence_empty_when_nothing_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for spec in psettings.REGISTRY.values():
+        if spec.env_var:
+            monkeypatch.delenv(spec.env_var, raising=False)
+    assert psettings.advertised_env_presence() == []
