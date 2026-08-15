@@ -867,11 +867,14 @@ integrity work, the UI only surfaces the state machine.
    (`precis nanopub publish fi<id> --live`); deliberately no web button.
    The first real POST is Reto's call. Introduction nanopub: not built.
 
-Independent of 1–5: **registry mirror sync** — pull-all plus periodic
-delta via `safe_fetch`, retracted/superseded flagging at index time, raw
-TriG + extracted index. No coupling to the publish path; can land anytime.
-Detailed plan (endpoints probed, table/worker design, slices):
-`docs/backlog/nanopub-registry-mirror.md` (2026-08-15).
+Independent of 1–5: ~~registry mirror sync~~ **Built 2026-08-15,
+NOTHING PULLED** — `precis/nanopub/mirror.py` + migration 0130
+(`nanopub_mirror` + `nanopub_mirror_edges`) + the daily
+`nanopub_mirror` cadence; dark behind `PRECIS_MIRROR_ENABLED`. The
+initial ~87k pull is Reto's call:
+`precis nanopub mirror sync --live --all` (read-only GETs; probed
+2026-08-15 — `/nanopubs.json` returns ALL codes in one flat array, no
+paging). Present state: the `precis.nanopub` package docstring.
 
 ## Open
 

@@ -146,6 +146,32 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Required to POST: the artifact propagates across registry "
         "mirrors forever. Without it: dry run.",
     )
+
+    p_mir = s.add_parser(
+        "mirror", help="Read-only registry mirror (pull external nanopubs)."
+    )
+    mir_sub = p_mir.add_subparsers(dest="mirror_cmd", required=True)
+    p_ms = mir_sub.add_parser(
+        "sync", help="Fetch/verify/index codes missing from the mirror."
+    )
+    p_ms.add_argument(
+        "--live",
+        action="store_true",
+        help="Required to touch the network (read-only GETs). Without "
+        "it: local stats only.",
+    )
+    p_ms.add_argument(
+        "--limit",
+        type=int,
+        default=1000,
+        help="Max codes fetched this run (default 1000).",
+    )
+    p_ms.add_argument(
+        "--all",
+        action="store_true",
+        help="Loop passes until no codes are missing (the initial pull).",
+    )
+    mir_sub.add_parser("status", help="Mirror row counts + flag totals.")
     return parser
 
 
@@ -195,6 +221,8 @@ def run(args: argparse.Namespace) -> None:
             _allow(args, store)
         elif cmd == "publish":
             _publish(args, store)
+        elif cmd == "mirror":
+            _mirror(args, store)
     finally:
         store.close()
 
@@ -415,6 +443,46 @@ def _allow(args: argparse.Namespace, store) -> None:
         else:
             print(f"entry {args.entry_id} not found or already closed")
             sys.exit(1)
+
+
+def _mirror(args: argparse.Namespace, store) -> None:
+    from precis.nanopub import mirror
+
+    def _stats() -> None:
+        s = store.mirror_stats()
+        print(
+            f"mirror: {s['total']} rows ({s['verified']} verified, "
+            f"{s['with_aida']} with AIDA, {s['retracted']} retracted, "
+            f"{s['superseded']} superseded)"
+        )
+
+    if args.mirror_cmd == "status":
+        _stats()
+        return
+    # sync — this CLI subcommand is the manual door for the initial
+    # pull; --live is the explicit network acknowledgement (read-only
+    # GETs, but the dark-by-default posture applies to all of it).
+    if not args.live:
+        _stats()
+        print(
+            "dry run — nothing fetched; re-run with --live to pull "
+            "missing codes from the registry (read-only GETs)"
+        )
+        return
+    while True:
+        result = mirror.sync(store, limit=args.limit)
+        print(
+            f"listed {result.listed}, had {result.already}, fetched "
+            f"{result.fetched} ({result.verified} verified, "
+            f"{result.failed} failed), {result.remaining} remaining"
+        )
+        if not args.all or result.remaining == 0:
+            break
+    flagged = store.mirror_apply_flags()
+    alerts = mirror.concurrence_scan(store)
+    if flagged or alerts:
+        print(f"flags: {flagged} newly derived; concurrence alerts: {alerts}")
+    _stats()
 
 
 def _publish(args: argparse.Namespace, store) -> None:

@@ -78,6 +78,7 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._material_ops import MaterialMixin
+from precis.store._nanopub_mirror_ops import NanopubMirrorMixin
 from precis.store._nanopub_ops import NanopubMixin
 from precis.store._pcb_ops import PcbMixin
 from precis.store._pdf_ops import PdfMixin
@@ -103,6 +104,7 @@ class Store(
     PcbMixin,
     MaterialMixin,
     NanopubMixin,
+    NanopubMirrorMixin,
     ComponentMixin,
     TagsMixin,
     LinksMixin,

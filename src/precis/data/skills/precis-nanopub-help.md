@@ -82,3 +82,15 @@ on the `/nanopub/fi<id>` review page:
   are trusted, and publishing requires the *attesting* (human) entry.
 - **Order** — atoms publish before the compounds citing them; hanging
   claims never publish; a drifted or disputed hub is blocked.
+
+## Registry mirror (read-only sidecar)
+
+A local cache of *other people's* published nanopubs — dark behind
+`PRECIS_MIRROR_ENABLED`; external nanopubs never enter taproot as
+evidence. `precis nanopub mirror status` shows counts;
+`sync --live [--all]` pulls missing codes (read-only GETs). External
+artifacts are frozen by construction (the code IS the content hash);
+`verified` means the trusty recompute over the fetched bytes matched.
+Retraction/supersede are *flags derived from edges* (only a same-signer,
+verified retraction counts), never exclusions. Concurrence — an external
+nanopub asserting one of our AIDA sentences — raises an `alert`.

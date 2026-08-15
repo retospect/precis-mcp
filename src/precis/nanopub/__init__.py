@@ -90,6 +90,26 @@ Built (slices 4–5, publish path — POST gated, nothing published):
   rendering, one action per state, sign button that signs for real),
   ``/np/<code>`` serving exact frozen bytes during embargo.
 
+Built (registry mirror — dark, nothing pulled):
+
+- :mod:`.mirror` — read-only sidecar caching *other people's* published
+  nanopubs (``nanopub_mirror`` + ``nanopub_mirror_edges``, 0130; no
+  append-only trigger — not our proof store). Parse leniently, validate
+  strictly: trusty recompute over the fetched bytes plus the
+  requested-code check sets ``verified``; a verified row is never
+  overwritten. np→np references land in the edge table (``to_code``
+  deliberately not an FK — open-world arrival order, multiple
+  retraction claimants); ``retracted_by``/``superseded_by`` are
+  *derived* flags under the authoritative-retraction rule (flagging
+  signer == target signer). Sync is a PK diff against the registry's
+  full code list (one flat array, no paging — probed 2026-08-15),
+  bounded per pass, resumable by construction; fetches via
+  ``safe_fetch`` with mirror-host fallback. Daily ``nanopub_mirror``
+  cadence for the delta + concurrence alerts (external nanopub
+  asserting one of our AIDA sentences, both wild encodings matched);
+  the initial ~87k pull is the manual door
+  ``precis nanopub mirror sync --live --all``.
+
 Read surface: ``get(kind='finding', view='nanopub')``
 (``handlers/_finding_nanopub.py``) — unsigned draft TriG for a hub
 pre-mint (placeholder URI, draft comments allowed: comments are lexical
@@ -97,11 +117,12 @@ syntax outside the integrity envelope and are stripped at mint), the
 exact frozen artifact bytes once signed.
 
 NOT built / not run: no artifact has been POSTed anywhere (publishing a
-first claim is Reto's call, via the CLI door); the registry mirror is
-planned in ``docs/backlog/nanopub-registry-mirror.md``; the OTS
-calendar round-trip ships dark (``PRECIS_OTS_ENABLED``); keys are not
-yet generated (``precis nanopub keygen``), and the allowlist starts
-empty — an empty allowlist means nothing is publishable.
+first claim is Reto's call, via the CLI door); the OTS calendar
+round-trip and the registry mirror both ship dark
+(``PRECIS_OTS_ENABLED`` / ``PRECIS_MIRROR_ENABLED`` — the initial
+mirror pull hasn't run); keys are not yet generated
+(``precis nanopub keygen``), and the allowlist starts empty — an empty
+allowlist means nothing is publishable.
 """
 
 from __future__ import annotations

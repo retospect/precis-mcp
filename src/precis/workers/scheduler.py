@@ -233,6 +233,23 @@ def _run_ots_sweep(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_nanopub_mirror(store: Store, batch_size: int) -> None:
+    """One registry-mirror pass (delta sync → flag scan → concurrence
+    alerts), fired from the daily host-agnostic ``nanopub_mirror``
+    cadence. ``batch_size`` is unused — the pass caps its own fetches
+    (PRECIS_MIRROR_PASS_LIMIT). See workers/nanopub_mirror.py; all
+    network + writes are gated by PRECIS_MIRROR_ENABLED."""
+    from precis.workers.nanopub_mirror import run_mirror_pass
+
+    result = run_mirror_pass(store)
+    log.info(
+        "scheduler: nanopub_mirror inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_structural(
     # test_scheduler_pass.py's wrapper-only unit test calls this directly
     # with a bare sentinel object() (the downstream pass is monkeypatched
@@ -486,6 +503,16 @@ CADENCES: tuple[Cadence, ...] = (
         name="ots_sweep",
         interval_s=24 * 3600 + 11 * 60,
         run=_run_ots_sweep,
+    ),
+    # Same posture as ots_sweep: no `eligible` env gate — the pass
+    # itself no-ops unless PRECIS_MIRROR_ENABLED, so the cadence lease
+    # advances harmlessly while dark. Offset from ots_sweep's +11m so
+    # the two daily nanopub fires don't land together. spends=False:
+    # no LLM anywhere in the sync.
+    Cadence(
+        name="nanopub_mirror",
+        interval_s=24 * 3600 + 23 * 60,
+        run=_run_nanopub_mirror,
     ),
 )
 
