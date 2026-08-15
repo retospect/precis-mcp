@@ -13,6 +13,7 @@ from precis.structure.importers import (
     get_adapter,
     register_adapter,
 )
+from precis.structure.scene import Scene
 
 
 def test_external_id_is_the_dataset_config_id_pair() -> None:
@@ -51,9 +52,11 @@ def test_external_run_allows_none_force_and_geometry() -> None:
 
 
 def test_register_and_get_adapter_round_trip() -> None:
-    def _fake_adapter(raw: object) -> tuple[object, ExternalRun, ExternalId]:
+    def _fake_adapter(raw: object) -> tuple[Scene, ExternalRun, ExternalId]:
+        # A fake stand-in for the registry round-trip — deliberately not a
+        # real Scene, just checking the raw record passes through untouched.
         return (
-            raw,
+            cast(Scene, raw),
             ExternalRun(energy=0.0, max_force=None, final_geometry=None, method={}),
             ExternalId(dataset="fake-source", config_id=str(raw)),
         )

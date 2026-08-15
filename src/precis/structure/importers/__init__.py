@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from .scene import Scene
+    from ..scene import Scene
 
 
 @dataclass(frozen=True)

@@ -433,6 +433,11 @@ dev = [
     # image. Needs a dev-image rebuild to activate the grimp verbs in-container;
     # until then their tests `importorskip("grimp")`.
     "grimp>=3",
+    "types-pyyaml>=6.0.12.20260724",
+    "lxml-stubs>=0.5.1",
+    "types-tqdm>=4.70.0.20260805",
+    "types-xmltodict>=1.0.1.20260518",
+    "types-networkx>=3.6.1.20260728",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -525,13 +530,56 @@ ignore = [
 python_version = "3.12"
 warn_unused_configs = true
 check_untyped_defs = true
-ignore_missing_imports = true
 warn_unused_ignores = true
 # Burn-down complete 2026-08-02: every once-disabled error code
 # (no-any-return, valid-type, dict-item, method-assign, var-annotated,
 # union-attr, type-var, assignment, operator, index) is now enforced.
 # Don't reintroduce a disable_error_code list — fix or narrowly ignore
 # at the site instead.
+
+# The genuinely-untyped (or genuinely-optional-and-uninstalled) third-party
+# surface: no upstream py.typed marker and no widely-used types-* stub
+# package worth the dev-dep weight for what's usually a single call site
+# (contrast with yaml/lxml/tqdm/xmltodict/networkx above, which got real
+# stub packages instead — see the dev dependency group). Some of these
+# (anki, chgnet, pdf2doi, acatome_store, acatome_extract) aren't even
+# installed in the container image — they're optional runtime deps behind
+# try/except ImportError guards, never resolvable regardless of extras.
+# Replaces the old blanket ``ignore_missing_imports = true``: first-party
+# modules now get real import-resolution checking, so a broken/first-party
+# import path surfaces as an error instead of silently becoming ``Any``.
+[[tool.mypy.overrides]]
+module = [
+    "acatome_extract.*",
+    "acatome_store.*",
+    "anki",
+    "anki.*",
+    "autocatpath",
+    "autocatpath.*",
+    "chgnet.*",
+    "easyeda2kicad",
+    "epo_ops",
+    "epo_ops.*",
+    "fitz",
+    "habanero",
+    "manifold3d",
+    "marker.*",
+    "mermaidx",
+    "num2words",
+    "OCP",
+    "OCP.*",
+    "pdf2doi",
+    "pylatexenc.*",
+    "pysbd",
+    "semanticscholar",
+    "sklearn.*",
+    "soundfile",
+    "surya.*",
+    "sympy",
+    "sympy.*",
+    "wolframalpha",
+]
+ignore_missing_imports = true
 
 # These modules touch heavy optional deps (kokoro-onnx, torch/transformers,
 # ase, slack SDK, starlette task plumbing) whose types only resolve where

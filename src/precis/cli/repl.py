@@ -249,7 +249,7 @@ def _silence_tqdm() -> None:
         kw["disable"] = True
         return orig_init(self, *a, **kw)
 
-    tqdm.tqdm.__init__ = quiet_init
+    tqdm.tqdm.__init__ = quiet_init  # type: ignore[method-assign]
 
 
 def _build_payload(verb: str, tokens: list[str]) -> dict[str, Any]:
