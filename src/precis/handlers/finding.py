@@ -73,7 +73,12 @@ from typing import Any, ClassVar
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers import _finding_acquire, _finding_edit, _finding_evidence
+from precis.handlers import (
+    _finding_acquire,
+    _finding_edit,
+    _finding_evidence,
+    _finding_nanopub,
+)
 from precis.handlers._finding_common import fetch_ref_any_kind
 from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._link_target import LinkTarget, parse_link_target
@@ -665,10 +670,14 @@ class FindingHandler(NumericRefHandler):
     ) -> Response:
         """``view='evidence'`` renders a claim hub's evidence, split by
         derived seniority (originators/corroborators/contradicts — see
-        :func:`precis.taproot.seniority.derive_evidence`). Every other
-        view (bare get, ``links``/``log``/``raw``) falls through to the
-        base :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
-        Deliberately kept off ``_BASE_VIEWS`` — it's finding-specific,
+        :func:`precis.taproot.seniority.derive_evidence`).
+        ``view='nanopub'`` renders the hub as TriG — the exact frozen
+        artifact bytes once signed, an unsigned draft otherwise
+        (:mod:`precis.handlers._finding_nanopub`, nanopub slice 1).
+        Every other view (bare get, ``links``/``log``/``raw``) falls
+        through to the base
+        :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
+        Both deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
         id = self._resolve_pub_id_slug(id)
@@ -676,6 +685,10 @@ class FindingHandler(NumericRefHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_evidence.render_evidence_view(self.store, ref)
+        if view == "nanopub":
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_nanopub.render_nanopub_view(self.store, ref)
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:

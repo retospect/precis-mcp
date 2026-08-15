@@ -215,6 +215,24 @@ def _run_materialize(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_ots_sweep(store: Store, batch_size: int) -> None:
+    """One nanopub OTS sweep (stamp waiting artifacts → upgrade pending
+    proofs → recompute audit), fired from the daily host-agnostic
+    ``ots_sweep`` cadence. ``batch_size`` is unused — the pass batches
+    everything waiting into one Merkle root by design (one calendar
+    request per fire). See workers/ots_sweep.py; calendar traffic is
+    gated by PRECIS_OTS_ENABLED, the audit runs regardless."""
+    from precis.workers.ots_sweep import run_ots_sweep_pass
+
+    result = run_ots_sweep_pass(store)
+    log.info(
+        "scheduler: ots_sweep inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_structural(
     # test_scheduler_pass.py's wrapper-only unit test calls this directly
     # with a bare sentinel object() (the downstream pass is monkeypatched
@@ -455,6 +473,19 @@ CADENCES: tuple[Cadence, ...] = (
         name="draft_refresh_scan",
         interval_s=4 * 3600 + 7 * 60,
         run=_run_draft_refresh_scan,
+    ),
+    # Nanopub slice 3: the daily anchor sweep (spec: one cron, decided
+    # 2026-08-13). Host-agnostic — the lease is the fleet-singleton
+    # throttle. Off the exact day boundary (24h11m) like
+    # draft_refresh_scan's off-hour convention. No `eligible` env gate:
+    # the pass itself gates calendar traffic on PRECIS_OTS_ENABLED and
+    # still runs its (local, free) recompute audit when dark — the proof
+    # store's integrity check shouldn't wait on a network flag.
+    # spends=False: no LLM anywhere in the sweep.
+    Cadence(
+        name="ots_sweep",
+        interval_s=24 * 3600 + 11 * 60,
+        run=_run_ots_sweep,
     ),
 )
 

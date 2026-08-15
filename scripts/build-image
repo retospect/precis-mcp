@@ -53,6 +53,12 @@ BUILD_USER="${USER:-unknown}"
 AUTOCATPATH_REV="$(git ls-remote https://github.com/retospect/catpath main 2>/dev/null | cut -f1)"
 AUTOCATPATH_REV="${AUTOCATPATH_REV:-main}"
 
+# The catpath repo is private: the in-build `git fetch` needs a token the
+# host's keychain can't supply. Threaded as a BuildKit secret (see the
+# autocatpath layer in docker/Dockerfile) — an empty value is harmless when
+# anonymous access works. A caller-set GH_TOKEN wins over `gh auth token`.
+export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
+
 exec docker compose -f "${INFRA_COMPOSE}" build \
     --build-arg "AUTOCATPATH_REV=${AUTOCATPATH_REV}" \
     --build-arg "PRECIS_GIT_LAST_TAG=${GIT_LAST_TAG}" \

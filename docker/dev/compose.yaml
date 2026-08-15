@@ -74,4 +74,15 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile
       target: dev
+      # GitHub token for the autocatpath layer — the catpath repo is
+      # private, so an unauthenticated `git fetch` inside the build fails.
+      # scripts/build-image exports GH_TOKEN (from `gh auth token`); a
+      # BuildKit secret never lands in an image layer. Empty is fine when
+      # the repo is reachable anonymously.
+      secrets:
+        - gh_token
     working_dir: /app
+
+secrets:
+  gh_token:
+    environment: GH_TOKEN

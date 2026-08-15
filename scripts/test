@@ -91,11 +91,18 @@ for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
 # map), and persist the map per-worktree at /app/.testmondata (the bind-mount,
 # so it survives on the host between runs). UV_WITH is expanded unquoted inside
 # the container so an empty value adds nothing in normal mode.
-UV_WITH=""
+#
+# A caller-set UV_WITH passes through — the escape hatch for a worktree that
+# ADDS a core dependency the baked image doesn't have yet:
+#   UV_WITH="--with newdep" scripts/test tests/test_newdep.py
+# (the ship gate itself runs `uv run` WITH sync, so it resolves new deps from
+# uv.lock without an image rebuild; this passthrough gives the fast loop the
+# same reach).
+UV_WITH="${UV_WITH:-}"
 TESTMON_ARGS=()
 TESTMON_ENV=()
 if [[ "$IMPACTED" == "1" ]]; then
-    UV_WITH="--with pytest-testmon"
+    UV_WITH="${UV_WITH:+${UV_WITH} }--with pytest-testmon"
     TESTMON_ARGS=(--testmon)
     TESTMON_ENV=(-e "TESTMON_DATAFILE=/app/.testmondata")
     NPROC=(-n0)

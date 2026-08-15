@@ -825,14 +825,21 @@ integrity work, the UI only surfaces the state machine.
 
 ## Slices
 
-1. `get(kind='finding', view='nanopub')` — unsigned TriG for a reviewed
-   hub and its stored edges. Pure read, no keys, no network; doubles as a
-   draft-export format.
-2. Local mint + sign: keypair, canonicalised AIDA URI, trusty-URI hashing,
-   publish-state rows. Still no network.
-3. OTS: Merkle batching, stamp, pending→upgrade sweep with stuck-pending
-   alert, append-only proof store (raw bytes + leaf table + construction
-   rule) with a periodic recompute audit. All greenfield.
+1. ~~`get(kind='finding', view='nanopub')`~~ **Built 2026-08-15** —
+   unsigned draft TriG pre-mint, exact frozen artifact bytes post-sign
+   (`handlers/_finding_nanopub.py`).
+2. ~~Local mint + sign~~ **Built 2026-08-15** — the `precis.nanopub`
+   package (its docstring is now the present-state home): AIDA
+   canonicalization, Layer-A gates (incl. the primary-source
+   `section_path` gate, quantity-bound, hanging claims, bimodal evidence
+   read), freeze-at-review publish rows (migration 0128), sign via the
+   `nanopub` reference library (w3id trusty URIs), vault keys with the
+   attesting-key interactive-door guard, `precis nanopub` CLI.
+3. ~~OTS~~ **Built 2026-08-15** — Merkle batching + stamp + upgrade
+   sweep + stuck-pending alert + append-only proof store (DB-trigger
+   enforced) + recompute audit (`precis/nanopub/ots.py`, daily
+   `ots_sweep` cadence; calendar traffic dark behind
+   `PRECIS_OTS_ENABLED` — no stamp has been sent anywhere).
 4. Review-and-sign web surface (per-hub mermaid + publish-row side panel +
    queue table) + publish preflight (complains per withheld edge until
    verified or signed off) + serve TriG from `precis_web`.
@@ -845,6 +852,19 @@ TriG + extracted index. No coupling to the publish path; can land anytime.
 ## Open
 
 1. Patent grounding: the ecosystem is DOI-centric; likely a local scheme.
+
+2. **Attribution placement (2026-08-15, awaiting Reto's call —
+   implemented per the recommendation, cheap to change pre-publish).**
+   "Han et al. (PRL 2007) demonstrated X": author/venue in the assertion
+   text vs the provenance/pubinfo graphs. Recommendation, and what the
+   assembler now does: **assertion = world-claim only, attribution in
+   provenance** (source DOI node carries `dct:title`; signer/software in
+   pubinfo). Two reasons beyond nanopub convention: AIDA convergence —
+   the same fact from two papers must land on one content address, which
+   attribution-in-sentence breaks; and the fi34867 hearsay case —
+   baking "Han et al. demonstrated" into claim text invites grounding
+   the *mention* instead of the work. A reader-facing "Han et al. showed
+   X" stays a prose-layer rendering (cite.py), never claim identity.
 
 Resolved 2026-08-13 — **bot key identity = a precis identity URI on our
 domain, no ORCID.** ORCID does not issue to software, and reusing the

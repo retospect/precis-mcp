@@ -175,6 +175,18 @@ dependencies = [
     # [import]. The MLIP rung ([dft-ml], torch) stays optional.
     "ase>=3.22",
     "spglib>=2.1",
+    # Nanopub publication (docs/backlog/claim-publication-nanopub-ots.md).
+    # `nanopub` is the ecosystem's reference Python implementation: rdflib
+    # TriG serialization, trusty-URI hashing (spec: never hand-rolled), and
+    # RSA signing — all offline. Core, not an extra: the `view='nanopub'`
+    # read path runs in the serve venv and the mint path in worker venvs,
+    # so an extra would recreate the deploy-extras gap. Pure Python
+    # (rdflib + pycryptodome + pyshacl), torch-free.
+    "nanopub>=2.1",
+    # OpenTimestamps anchoring (slice 3): Merkle tree build, .ots
+    # (de)serialization, calendar submission. Pure Python; the calendar
+    # round-trip only runs from the OTS sweep, which ships dark.
+    "opentimestamps>=0.4.5",
 ]
 
 [project.urls]
@@ -568,6 +580,7 @@ module = [
     "num2words",
     "OCP",
     "OCP.*",
+    "opentimestamps.*",
     "pdf2doi",
     "pylatexenc.*",
     "pysbd",

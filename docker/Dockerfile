@@ -379,7 +379,18 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # manual bump. A bare `docker build` with no arg falls back to `main`. Mirror of
 # cluster `roles/autocatpath` (installs `autocatpath[precis,mace]` on spark).
 ARG AUTOCATPATH_REV=main
+# The catpath repo is private (2026-08-15): the fetch needs a GitHub token,
+# threaded in as a BuildKit secret (scripts/build-image exports GH_TOKEN
+# from `gh auth token`; docker/dev/compose.yaml wires the secret). Exposed
+# as a git credential helper — never embedded in the URL — so the token
+# reaches neither an image layer nor the venv's direct_url.json.
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    --mount=type=secret,id=gh_token,required=false \
+    if [ -s /run/secrets/gh_token ]; then \
+        export GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
+            GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/gh_token)"; }; f'; \
+    fi; \
     uv pip install --python /opt/venv --no-deps --refresh-package autocatpath \
         "autocatpath @ git+https://github.com/retospect/catpath@${AUTOCATPATH_REV}"
 

@@ -61,6 +61,9 @@ Start at `docs/codebase.md`'s package map, then the owning package's
   (opus). → `precis-nursery-help`.
 - **Workers** — derived-queue passes, `system`/`agent` profiles. → the
   `precis.workers` package docstring.
+- **Nanopub publication** — reviewed claims minted as signed,
+  OTS-anchored artifacts (`view='nanopub'`, `precis nanopub` CLI). → the
+  `precis.nanopub` package docstring; `precis-nanopub-help`.
 - **Discovery layer (F20)** — per-chunk KeyBERT (`chunks.keywords`),
   `view='toc'`. → `docs/conventions/discovery-layer-policy.md`.
 - **Chunk-tag classifier** — cascade regex → `role3`, default-OFF. →

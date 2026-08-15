@@ -45,6 +45,7 @@ from precis.cli import (
     maintenance,
     migrate,
     migrate_refs,
+    nanopub,
     patent,
     perplexity,
     podcast,
@@ -262,6 +263,10 @@ def main() -> None:
         taproot.run(args)
         return
 
+    if args.cmd == "nanopub":
+        nanopub.run(args)
+        return
+
     if args.cmd == "taproot-migrate":
         taproot_migrate.run(args)
         return
@@ -324,6 +329,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_parser(sub)
     schema_doc.add_parser(sub)
     secret.add_parser(sub)
+    nanopub.add_parser(sub)
     settings.add_parser(sub)
     db.add_parser(sub)
     maintenance.add_parser(sub)

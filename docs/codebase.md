@@ -81,6 +81,7 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Discovery / search** | search verbs, F20 layer | keywords, `toc`, hybrid retrieval |
 | **Task tree / factory** | `todo` handler, planner, jobs | intent vs compute lanes, dispatch |
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
+| **Nanopub publication** | `src/precis/nanopub/`, `nanopub_*` tables (0128) | reviewed claims → signed, OTS-anchored artifacts; append-only proof store |
 
 Surfaces on top: the **MCP server** (`precis serve`, the 7 verbs — the
 product), the **CLI** (`precis …`), the **web UI** (`src/precis_web/`), the
