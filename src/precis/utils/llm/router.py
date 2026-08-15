@@ -1021,6 +1021,10 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
         model=model,
         tier=tier,
         data=res.data,
+        input_tokens=res.input_tokens,
+        output_tokens=res.output_tokens,
+        cache_read_tokens=res.cache_read_tokens,
+        cache_creation_tokens=res.cache_creation_tokens,
     )
 
 

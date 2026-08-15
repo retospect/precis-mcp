@@ -270,13 +270,21 @@ def _cmd_tote(store: Store, model: str) -> None:
     from precis.llm_catalog import llm_tote, llm_tote_by_source
 
     tote = llm_tote(store, model)
-    print(f"tote — {model} (last 30d): {tote.calls} calls, ${tote.cost_usd:.4f}")
+    print(
+        f"tote — {model} (last 30d): {tote.calls} calls, "
+        f"{_fmt_int(tote.input_tokens)}/{_fmt_int(tote.output_tokens)} tok(in/out), "
+        f"${tote.cost_usd:.4f}"
+    )
     if tote.error_rate is not None:
         print(f"  error rate: {tote.error_rate:.1%}")
     if tote.p50_duration_ms is not None:
         print(f"  p50 duration: {tote.p50_duration_ms:.0f} ms")
     for src, r in llm_tote_by_source(store, model):
-        print(f"  {src}: {r.calls} calls, ${r.cost_usd:.4f}")
+        print(
+            f"  {src}: {r.calls} calls, "
+            f"{_fmt_int(r.input_tokens)}/{_fmt_int(r.output_tokens)} tok(in/out), "
+            f"${r.cost_usd:.4f}"
+        )
 
 
 def _cmd_observe(store: Store, model: str) -> None:
@@ -357,27 +365,34 @@ def _cmd_cost(store: Store, args: argparse.Namespace) -> None:
     if not rows:
         print("  (no rows — the route-log started ~2026-07-14; widen --days or wait)")
         return
-    # Natural units kept separate — real-$ is only the lanes that bill; chars are a
-    # ~token volume proxy (÷4); wall is compute time (the local lane's real cost).
+    # Token-shaped accounting is the headline (owner principle: accounting is
+    # per-model TOKEN volume, not USD) — real-$ trails as a reference column.
+    # chars stays as the ~token volume proxy for lanes with no token telemetry
+    # (÷4); wall is compute time (the local lane's real cost).
     print(
-        f"  {'key':<22} {'calls':>7} {'real $':>9} {'chars(in/out)':>15} "
-        f"{'wall':>8} {'err':>5}"
+        f"  {'key':<22} {'calls':>7} {'tok(in/out)':>17} {'chars(in/out)':>15} "
+        f"{'wall':>8} {'err':>5} {'real $':>9}"
     )
     tot_calls = tot_wall = 0
+    tot_in_tok = tot_out_tok = 0
     tot_usd = 0.0
     for r in rows:
         wall_h = r.wall_ms / 3_600_000
         chars = f"{_fmt_int(r.req_chars)}/{_fmt_int(r.resp_chars)}"
+        tok = f"{_fmt_int(r.input_tokens)}/{_fmt_int(r.output_tokens)}"
         print(
-            f"  {r.key[:22]:<22} {r.calls:>7} {r.real_usd:>9.4f} {chars:>15} "
-            f"{wall_h:>7.1f}h {r.errors:>5}"
+            f"  {r.key[:22]:<22} {r.calls:>7} {tok:>17} {chars:>15} "
+            f"{wall_h:>7.1f}h {r.errors:>5} {r.real_usd:>9.4f}"
         )
         tot_calls += r.calls
         tot_usd += r.real_usd
         tot_wall += r.wall_ms
+        tot_in_tok += r.input_tokens
+        tot_out_tok += r.output_tokens
+    tot_tok = f"{_fmt_int(tot_in_tok)}/{_fmt_int(tot_out_tok)}"
     print(
-        f"  {'TOTAL':<22} {tot_calls:>7} {tot_usd:>9.4f} {'':>15} "
-        f"{tot_wall / 3_600_000:>7.1f}h"
+        f"  {'TOTAL':<22} {tot_calls:>7} {tot_tok:>17} {'':>15} "
+        f"{tot_wall / 3_600_000:>7.1f}h {'':>5} {tot_usd:>9.4f}"
     )
     print(
         "  note: covers all LLM lanes through dispatch — agentic/judge (full "

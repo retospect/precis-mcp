@@ -84,6 +84,90 @@ def test_claude_p_unwraps_envelope_cost_and_payload(monkeypatch: Any) -> None:
     assert res.data == {"verdict": "yes"}
 
 
+def test_claude_p_unwraps_envelope_usage_tokens(monkeypatch: Any) -> None:
+    """The envelope's ``usage`` object round-trips into the four token fields.
+
+    Same key mapping as the agentic lane's ``_stream_usage``:
+    ``usage.input_tokens``/``output_tokens``/``cache_read_input_tokens``/
+    ``cache_creation_input_tokens``.
+    """
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = (
+        '{"type":"result","total_cost_usd":0.0412,'
+        '"result":"{\\"verdict\\": \\"yes\\"}",'
+        '"usage":{"input_tokens":123,"output_tokens":45,'
+        '"cache_read_input_tokens":6,"cache_creation_input_tokens":7}}'
+    )
+    monkeypatch.setattr(
+        claude_p, "run_claude", _stub_run({}, stdout=envelope, stderr="")
+    )
+
+    res = claude_p.call_claude_p("judge this. reply JSON {}")
+
+    assert res.input_tokens == 123
+    assert res.output_tokens == 45
+    assert res.cache_read_tokens == 6
+    assert res.cache_creation_tokens == 7
+
+
+def test_claude_p_missing_usage_leaves_token_fields_none(monkeypatch: Any) -> None:
+    """No ``usage`` block (legacy CLI / test stub) → all-``None``, never a false 0."""
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = '{"type":"result","total_cost_usd":0.01,"result":"{\\"ok\\": true}"}'
+    monkeypatch.setattr(
+        claude_p, "run_claude", _stub_run({}, stdout=envelope, stderr="")
+    )
+
+    res = claude_p.call_claude_p("judge this. reply JSON {}")
+
+    assert res.input_tokens is None
+    assert res.output_tokens is None
+    assert res.cache_read_tokens is None
+    assert res.cache_creation_tokens is None
+
+
+def test_claude_p_malformed_usage_leaves_token_fields_none(monkeypatch: Any) -> None:
+    """A ``usage`` block that isn't a dict (or has non-numeric fields) never raises."""
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = (
+        '{"type":"result","total_cost_usd":0.01,"result":"{\\"ok\\": true}",'
+        '"usage":"not-a-dict"}'
+    )
+    monkeypatch.setattr(
+        claude_p, "run_claude", _stub_run({}, stdout=envelope, stderr="")
+    )
+
+    res = claude_p.call_claude_p("judge this. reply JSON {}")
+
+    assert res.input_tokens is None
+    assert res.output_tokens is None
+    assert res.cache_read_tokens is None
+    assert res.cache_creation_tokens is None
+
+
+def test_result_from_claude_p_threads_token_fields() -> None:
+    """``result_from_claude_p`` copies the token fields onto ``LlmResult``."""
+    from precis.utils.claude_p import ClaudePResult
+    from precis.utils.llm.router import result_from_claude_p
+
+    pres = ClaudePResult(
+        data={"ok": True},
+        raw_stdout="{}",
+        cost_usd=0.01,
+        text='{"ok": true}',
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_tokens=1,
+        cache_creation_tokens=2,
+    )
+    out = result_from_claude_p(pres, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+
+    assert out.input_tokens == 10
+    assert out.output_tokens == 20
+    assert out.cache_read_tokens == 1
+    assert out.cache_creation_tokens == 2
+
+
 def test_claude_p_result_text_is_the_answer_not_the_envelope(
     monkeypatch: Any,
 ) -> None:

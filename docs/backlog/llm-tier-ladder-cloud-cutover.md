@@ -45,12 +45,13 @@ dispatched 2026-08-15.
    slot exists to size against), summarize gained a
    `PRECIS_SUMMARIZE_MAX_CONCURRENCY` clamp (default 32) mirroring
    classify's, and `--only job_inproc` is now a valid worker CLI choice
-   (was missing from argparse `choices` — gripe 208523). REMAINING (ops):
-   actually start dedicated `precis worker --only job_inproc` lane
-   process(es) on the drain host — manually per the classify-burst
-   precedent, or via a playbook mirroring 43-precis-worker-compute.yml
-   (not yet written; 43 is systemd, the drain host is launchd, so the
-   mirror needs a plist variant).
+   (was missing from argparse `choices` — gripe 208523). Playbook written
+   2026-08-15: `deploy/playbooks/20d-precis-worker-drain.yml` (launchd via
+   the `service_unit` role, `com.precis.worker-drain-<N>` per lane, lane
+   count `precis_worker_drain_lanes` default 2, standalone — not in the
+   main redeploy). REMAINING (ops): run 20d against the gateway group
+   (operator action; Reto's call), after a deploy puts the new worker code
+   there.
 3. Finding 5 — DONE 2026-08-15: dynamic prio nudge `_rebalance_stuck_band`
    in `materialize.py`, hooked on the existing band-full-but-nothing-
    running detection; a starved band's queued rows drop to `_STARVED_PRIO`
@@ -67,13 +68,26 @@ dispatched 2026-08-15.
    entry dropped, `taproot:extract-medium` registered as a steerable op.
    `fix_gripe`'s `call_claude_agent` bypass is a separate, still-open
    lane — out of scope here.
-6. Token-shaped accounting: `llm_call_log` has no token columns (chars +
-   `cost_usd` only) — per-model token rollup needs a migration. Reto wants
-   inspection in tokens per model, not USD, with an hourly runaway check.
+6. Token-shaped accounting — CODE DONE 2026-08-15 (premise was stale: the
+   0122 migration had already added the four token columns; the real gaps
+   were narrower). Closed: `claude_p` now parses the envelope's `usage`
+   block into `ClaudePResult` → `LlmResult` (was the last rung dropping
+   tokens — openai_compat and claude_agent already captured theirs), and
+   the rollups are token-first: `spend_rollup`/`SpendRow`,
+   `llm_tote`/`ToteRow`, and `precis llm cost`/`tote` all sum
+   input/output (+cache) tokens per model, USD demoted to a trailing
+   column. REMAINING: the *hourly runaway check* itself (an alert-board /
+   scheduled inspection consuming these rollups — nothing schedules it
+   yet), and `src/precis_web/routes/status.py` rollups still char/USD-
+   shaped (deliberately out of scope this pass).
 7. Breaker never gates SMALL (`_TIER_BANDS[SMALL]=FREE`) — materially more
    urgent now that SMALL is all-cloud.
 8. Raise `PRECIS_CLAUDE_MAX_USD` / `PRECIS_CLAUDE_TIMEOUT_S` on worker hosts
-   (defaults $0.10 / 120 s) before routing FRONTIER=opus traffic.
+   (defaults $0.10 / 120 s, `utils/claude_p.py`) before routing
+   FRONTIER=opus traffic. Scope note: these gate only the `claude_p`
+   one-shot rung; `claude_agent` has its own budget/timeout knobs. Env-
+   template change — can ride the same deploy that activates the drain
+   fixes.
 
 The proposal below is kept as written for the findings and mechanism notes;
 where it names sonnet/opus/fable as the ladder, the applied values above

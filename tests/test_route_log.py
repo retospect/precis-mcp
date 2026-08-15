@@ -162,6 +162,47 @@ def test_spend_rollup_groups_and_keeps_units_separate(store: Any) -> None:
     assert rows["claude_agent"].errors == 1
 
 
+def test_spend_rollup_sums_token_counts(store: Any) -> None:
+    # Token sums (migration 0122) roll up per group the same way real_usd does:
+    # COALESCE(sum, 0) over the nullable columns — a null-telemetry row (claude_p
+    # pre-envelope-usage) contributes 0, not a gap in the group.
+    tag = uuid4().hex[:8]
+    src = f"toktoll-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            transport="claude_agent",
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_tokens=5,
+            cache_creation_tokens=3,
+        ),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(
+            source=src,
+            transport="claude_agent",
+            input_tokens=50,
+            output_tokens=10,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+        ),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(source=src, transport="claude_p"),  # no token telemetry at all
+        store=store,
+    )
+    rows = {r.key: r for r in route_log.spend_rollup(store, days=1, source=src)}
+    assert rows["claude_agent"].input_tokens == 150
+    assert rows["claude_agent"].output_tokens == 30
+    assert rows["claude_agent"].cache_read_tokens == 5
+    assert rows["claude_agent"].cache_creation_tokens == 3
+    assert rows["claude_p"].input_tokens == 0
+    assert rows["claude_p"].output_tokens == 0
+
+
 def test_lite_row_skips_blob_but_keeps_metadata(store: Any) -> None:
     # A lite row (store_blobs=False) records the mineable metadata — char counts,
     # cost, duration — but leaves the hashes NULL and stores NO replay blob.

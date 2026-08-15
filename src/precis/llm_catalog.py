@@ -415,18 +415,28 @@ def list_reviews(store: Store, ref_id: int) -> list[Block]:
 
 @dataclass(frozen=True, slots=True)
 class ToteRow:
-    """A rollup of realized calls for a model (the quest-tote analogue)."""
+    """A rollup of realized calls for a model (the quest-tote analogue).
+
+    ``input_tokens``/``output_tokens`` (migration 0122) are ``COALESCE(sum,
+    0)`` over the nullable per-call columns — a model with no reported token
+    telemetry (a claude_p call made before the envelope carried ``usage``, or
+    a transport that never reports it) contributes 0, same discipline as
+    ``cost_usd``.
+    """
 
     calls: int
     cost_usd: float
     error_rate: float | None
     p50_duration_ms: float | None
     avg_turns: float | None
+    input_tokens: int
+    output_tokens: int
 
 
 _TOTE_COLS = (
     "count(*), COALESCE(sum(cost_usd), 0), AVG((errored)::int), "
-    "percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms), AVG(turns_used)"
+    "percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms), AVG(turns_used), "
+    "COALESCE(sum(input_tokens), 0), COALESCE(sum(output_tokens), 0)"
 )
 
 
@@ -437,6 +447,8 @@ def _tote_row(row: tuple[Any, ...]) -> ToteRow:
         error_rate=(float(row[2]) if row[2] is not None else None),
         p50_duration_ms=(float(row[3]) if row[3] is not None else None),
         avg_turns=(float(row[4]) if row[4] is not None else None),
+        input_tokens=int(row[5] or 0),
+        output_tokens=int(row[6] or 0),
     )
 
 
@@ -452,7 +464,12 @@ def llm_tote(store: Store, model_id: str, *, window_days: int = 30) -> ToteRow:
     )
     with store.pool.connection() as conn:
         row = conn.execute(sql, (model_id, window_days)).fetchone()
-    return _tote_row(row) if row is not None else _tote_row((0,))
+    # The aggregate query (no GROUP BY) always returns exactly one row even
+    # over zero matches — this branch is defensive, never exercised — but
+    # pad to _TOTE_COLS' width so it can't IndexError if it ever is.
+    return (
+        _tote_row(row) if row is not None else _tote_row((0, 0, None, None, None, 0, 0))
+    )
 
 
 def llm_tote_by_source(

@@ -247,6 +247,14 @@ class SpendRow:
     resp_chars: int
     wall_ms: int
     errors: int
+    #: Token telemetry (migration 0122) — COALESCE(sum(...), 0) over the
+    #: nullable columns, mirroring ``real_usd``'s "only what's reported"
+    #: discipline: a lane with no token telemetry (claude_p pre-envelope-usage,
+    #: local/OSS transports) contributes 0 here, not a gap in the group.
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
 
 
 #: The columns ``group_by`` may bucket on (allow-listed — never interpolate raw).
@@ -267,7 +275,7 @@ def spend_rollup(
     limit: int = 40,
 ) -> list[SpendRow]:
     """Mine ``llm_call_log`` for the last ``days`` — grouped by lane / pass / ref /
-    model — into per-group volume + real-$ + wall-clock. Read-only.
+    model — into per-group volume + real-$ + wall-clock + token sums. Read-only.
 
     Covers every LLM lane that goes through ``dispatch``: the agentic / judge
     calls (full rows) **and** the corpus batch passes (``llm_summarize`` /
@@ -287,7 +295,11 @@ def spend_rollup(
                    COALESCE(sum(request_chars), 0)::bigint AS req_chars,
                    COALESCE(sum(response_chars), 0)::bigint AS resp_chars,
                    COALESCE(sum(duration_ms), 0)::bigint AS wall_ms,
-                   count(*) FILTER (WHERE errored)::int AS errors
+                   count(*) FILTER (WHERE errored)::int AS errors,
+                   COALESCE(sum(input_tokens), 0)::bigint AS input_tokens,
+                   COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
+                   COALESCE(sum(cache_read_tokens), 0)::bigint AS cache_read_tokens,
+                   COALESCE(sum(cache_creation_tokens), 0)::bigint AS cache_creation_tokens
             FROM llm_call_log
             WHERE ts > now() - (%s || ' days')::interval
               AND (%s::text IS NULL OR source = %s)
@@ -304,6 +316,10 @@ def spend_rollup(
                 resp_chars=int(r[4]),
                 wall_ms=int(r[5]),
                 errors=r[6],
+                input_tokens=int(r[7]),
+                output_tokens=int(r[8]),
+                cache_read_tokens=int(r[9]),
+                cache_creation_tokens=int(r[10]),
             )
             for r in cur.fetchall()
         ]

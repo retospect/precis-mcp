@@ -30,14 +30,26 @@ def _log_call(
     duration: int = 1000,
     turns: int = 2,
     source: str = "test",
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
 ) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO llm_call_log "
             "(source, tier, transport, model, tools_needed, cost_usd, "
-            " turns_used, duration_ms, errored) "
-            "VALUES (%s, 'frontier', 'claude_agent', %s, false, %s, %s, %s, %s)",
-            (source, model, cost, turns, duration, errored),
+            " turns_used, duration_ms, errored, input_tokens, output_tokens) "
+            "VALUES (%s, 'frontier', 'claude_agent', %s, false, %s, %s, %s, %s, "
+            " %s, %s)",
+            (
+                source,
+                model,
+                cost,
+                turns,
+                duration,
+                errored,
+                input_tokens,
+                output_tokens,
+            ),
         )
 
 
@@ -123,6 +135,20 @@ class TestTote:
         from precis.llm_catalog import llm_tote
 
         assert llm_tote(store, "never-called-model").calls == 0
+
+    def test_rollup_sums_tokens(self, store: Any) -> None:
+        # Migration 0122: token sums roll up the same way cost_usd does —
+        # COALESCE(sum, 0) over the nullable columns, no false gap.
+        from precis.llm_catalog import llm_tote
+
+        m = "tote-model-tokens"
+        _log_call(store, m, input_tokens=100, output_tokens=10)
+        _log_call(store, m, input_tokens=50, output_tokens=5)
+        _log_call(store, m)  # no token telemetry at all
+        tote = llm_tote(store, m)
+        assert tote.calls == 3
+        assert tote.input_tokens == 150
+        assert tote.output_tokens == 15
 
 
 class TestObservedAxes:

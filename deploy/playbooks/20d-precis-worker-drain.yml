@@ -1,0 +1,162 @@
+---
+# 20d-precis-worker-drain.yml — dedicated SMALL-derived-drain lane(s) on the
+# gateway (docs/backlog/small-drain-throughput-starvation.md).
+#
+# WHY THIS EXISTS. The collapsed `precis worker --profile all` unit (20b) runs
+# a SINGLE-THREADED serial round-robin over its handlers (workers/runner.py
+# `run_loop`). `job_inproc` claims exactly ONE job per tick (limit=1,
+# hardcoded — see cli/worker.py's `_job_inproc_pass`) and a claimed
+# `derived_drain` job (summarize/classify SMALL queues) can chew ~30 minutes
+# of that one turn, so the lane only gets a turn every couple of hours instead
+# of continuously — ~12 jobs/day against a six-figure chunk backlog
+# (gr204385's diagnosis).
+#
+# WHAT THIS IS. N tiny worker units on the gateway, each running ONLY
+# `--only job_inproc`, polling every few seconds — the same "second
+# scheduling lane" pattern 43-precis-worker-compute.yml uses for
+# `job_ssh_node` on the GPU node. Every lane shares nothing but the postgres
+# queue: `FOR UPDATE SKIP LOCKED` arbitrates claims (zero double-claim), so
+# running more than one lane is pure additional throughput, not a new crash
+# risk — job_inproc's own module docstring already requires every job_type on
+# this lane to self-limit its own work and support concurrent claims.
+#
+# SCOPE / DEPENDENCIES. `gateway` group only — the host `derived_drain`'s
+# `params.target_node` pins to today (materialize.py's
+# `PRECIS_SMALL_DRAIN_TARGET_NODE`, code default the SMALL-model host). This
+# playbook does NOT provision — it deliberately rides 20b's work and MUST run
+# after it: the worker venv and the `deploy` user/HOME are created + kept
+# current by 20b; running this standalone against an unprovisioned host
+# crash-loops the units until 20b runs. Not importing roles/precis_worker is
+# deliberate (mirrors 43-precis-worker-compute.yml's header): doing so would
+# re-run its full provisioning a second time on the gateway every deploy —
+# 20b already did it — and fire that role's install handler, which is
+# hardwired to bounce `precis-worker`, not these lane units. Consequence:
+# roles/precis_worker/defaults/main.yml is NOT in scope here (role defaults
+# only load when the role itself is invoked) — `_drain_*` below are local
+# constants kept in sync with it instead, the same workaround 43 uses for its
+# own `_compute_venv`/`_compute_dsn`.
+#
+# ENV. Mirrors what the gateway's own worker unit exports today (the same
+# base set 20b's collapsed unit / roles/precis_worker/templates/
+# precis-worker.plist.j2 carry — precis_shared_env + identity + DB/embedder/
+# cost-ceiling/summarize-tuning + the taproot-chase / fetch-markup / local-
+# serve-config overrides, all `is defined`/flag-gated exactly like those two
+# templates), so a `derived_drain` job dispatched here behaves identically to
+# one dispatched on the main worker. PRECIS_PROCESS/PRECIS_SOURCE are
+# per-lane-distinct (`precis-worker-drain-<N>`) so each lane's worker_logs
+# rows are separately observable, mirroring the compute lane's rationale.
+# `precis_worker_drain_small_concurrency` is an explicit opt-in override for
+# PRECIS_SMALL_DRAIN_CONCURRENCY (materialize.py's thread-pool width for the
+# cloud llm.chain.small fan-out, code default 16) — left UNSET unless the
+# caller passes it, so the code default keeps deciding absent an operator
+# call.
+#
+# NOT wired into site.yml or redeploy-precis.yml (like 44-autocatpath.yml) —
+# standing up (or resizing) the drain lane is a deliberate operator action:
+#
+#   ansible-playbook playbooks/20d-precis-worker-drain.yml
+#   # 3 lanes instead of the default 2:
+#   ansible-playbook playbooks/20d-precis-worker-drain.yml -e precis_worker_drain_lanes=3
+#   # opt into the SMALL fan-out override:
+#   ansible-playbook playbooks/20d-precis-worker-drain.yml -e precis_worker_drain_small_concurrency=32
+#
+# CAVEAT: service_unit's launchd reload only fires when the rendered plist
+# changes (env/exec diff) — a re-run after a pure 20b venv/code refresh with
+# no var changes here will NOT bounce these lanes. Re-run 20b (or bounce
+# `com.precis.worker-drain-*` by hand) after a code deploy if the drain lanes
+# need the new build; this mirrors 43-precis-worker-compute.yml's own
+# staleness caveat (there solved with an explicit systemd bounce task — no
+# launchd equivalent is added here since this playbook is a manual,
+# infrequent operator action, not part of the redeploy path).
+
+- name: Deploy the dedicated SMALL derived-drain lane(s) (job_inproc only)
+  hosts: gateway
+  become: true
+  vars:
+    # Lane count — the throughput knob. Each lane is its own
+    # `com.precis.worker-drain-<N>` LaunchDaemon.
+    precis_worker_drain_lanes: 2
+    # Local constants — role defaults aren't in scope (see header's SCOPE /
+    # DEPENDENCIES). Cluster-stable, same values roles/precis_worker/defaults/
+    # main.yml sets and every precis-* worker template builds from.
+    _drain_venv: /opt/precis/venv
+    _drain_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    _drain_hf_home: /var/lib/precis/hf-cache
+    _drain_embedder: remote
+    _drain_embedder_url: "http://127.0.0.1:{{ embedder_port | default(8181) }}"
+    # Base env shared by every lane; PRECIS_PROCESS/PRECIS_SOURCE are added
+    # per-lane in the loop below (see header). Kept in sync with
+    # roles/precis_worker/templates/precis-worker.plist.j2 / 20b's
+    # `_l_b_base_env` — the exact env the gateway's own main worker unit
+    # exports today, minus the review/container/dream/anki/gateway-extras
+    # blocks (job_inproc's job_types — embed_batch, derived_drain — never
+    # touch the claude-agent / MCP / container path those gate).
+    _drain_base_env: >-
+      {{ precis_shared_env
+         | combine(precis_identity_env | default({}))
+         | combine({
+             'HOME': '/Users/deploy',
+             'PATH': _drain_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+             'PRECIS_DATABASE_URL': _drain_dsn,
+             'HF_HOME': _drain_hf_home,
+             'PRECIS_STRUCTURE_PREFLIGHT': '1',
+             'PRECIS_EMBEDDER': _drain_embedder,
+             'PRECIS_EMBEDDER_URL': _drain_embedder_url,
+             'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,
+             'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+             'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
+             'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+             'PRECIS_JOB_CPU_SHARES': precis_job_cpu_shares | default(''),
+             'PRECIS_SUMMARIZE_CONCURRENCY': (precis_worker_summarize_concurrency | default(3)) | string,
+             'PRECIS_SUMMARIZE_TIMEOUT': (precis_worker_summarize_timeout | default(120)) | string,
+           })
+         | combine({'PRECIS_TAPROOT_CHASE_ENABLED': '1', 'PRECIS_CHASE_LLM': '1'} if (precis_worker_taproot_chase | default(false)) else {})
+         | combine({'PRECIS_FETCH_MARKUP': '1'} if (precis_worker_fetch_markup | default(false)) else {})
+         | combine({'PRECIS_LOCAL_SERVE_CONFIG': precis_local_serve_config} if precis_local_serve_config is defined else {})
+         | combine({'PRECIS_SUMMARIZE_MODEL': precis_local_llm_model_override} if precis_local_llm_model_override is defined else {})
+         | combine({'PRECIS_SMALL_DRAIN_CONCURRENCY': precis_worker_drain_small_concurrency | string} if precis_worker_drain_small_concurrency is defined else {}) }}
+  tasks:
+    # `include_role` (dynamic), not `import_role` — the lane loop needs one
+    # render+reload pass per iteration with per-lane vars, and `import_role`
+    # (static) doesn't support `loop`.
+    - name: render + load each drain lane's worker unit
+      ansible.builtin.include_role:
+        name: service_unit
+      loop: "{{ range(1, (precis_worker_drain_lanes | int) + 1) | list }}"
+      loop_control:
+        loop_var: lane
+        label: "worker-drain-{{ lane }}"
+      vars:
+        service_unit_name: "worker-drain-{{ lane }}"
+        service_unit_run_as: deploy
+        # /tmp avoids the getcwd() EPERM trap on an NFS-mounted cwd — same
+        # reasoning as 20b/precis-worker.plist.j2.
+        service_unit_working_dir: /tmp
+        service_unit_schedule:
+          mode: keepalive
+        # Jetsam protection — mirrors precis-worker.plist.j2: the gateway is
+        # the RAM-pressured host (co-hosts local llama.cpp inference).
+        service_unit_process_type: Interactive
+        # 60s drain before SIGKILL, same as 20b/43 — SIGTERM aborts a
+        # streamed LLM call between SSE chunks, finalizes the partial,
+        # releases holds.
+        service_unit_timeout_stop_sec: 60
+        # --only job_inproc: this lane runs exactly the one generic in-proc
+        # executor pass (embed_batch / derived_drain / …, whichever job_type
+        # a claimed row carries). --batch-size 1: job_inproc's own claim is
+        # hardcoded limit=1 regardless (cli/worker.py), so this just
+        # documents that; a short idle re-polls the queue within seconds of
+        # a claim finishing instead of once per collapsed-worker rotation —
+        # the whole point of the lane (mirrors 43's job_ssh_node lane).
+        service_unit_exec: >-
+          {{ _drain_venv }}/bin/precis worker --only job_inproc
+          --batch-size 1
+          --idle-seconds {{ precis_worker_drain_idle_seconds | default(5) }}
+        service_unit_env: >-
+          {{ _drain_base_env | combine({
+               'PRECIS_PROCESS': 'precis-worker-drain-' ~ lane,
+               'PRECIS_SOURCE': 'precis-worker-drain-' ~ lane,
+             }) }}
+  # `precis` family tag so `--tags precis` fans this out with the other
+  # precis-* plays; `precis-worker-drain` for a targeted refresh.
+  tags: [precis-worker-drain, precis]

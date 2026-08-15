@@ -116,12 +116,22 @@ class ClaudePResult:
     fallback) must read ``text`` or it will get the metadata envelope
     instead of the answer. Defaults to ``""`` for the legacy 3-field
     construction; readers should fall back to ``raw_stdout``.
+
+    The four token fields mirror the envelope's ``usage`` object — the same
+    keys :func:`precis.utils.claude_agent._stream_usage` reads off the
+    agentic lane's stream-json ``result`` event. ``None`` (never a false
+    ``0``) when the envelope carries no ``usage`` block: a legacy CLI, a
+    test stub, or the bare-text fallback path.
     """
 
     data: dict[str, Any]
     raw_stdout: str
     cost_usd: float | None
     text: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
 
 
 def call_claude_p(
@@ -224,7 +234,7 @@ def call_claude_p(
         env=proc_env,
     )
 
-    payload, cost = _unwrap_envelope(res.stdout or "")
+    payload, cost, usage = _unwrap_envelope(res.stdout or "")
     data = _parse_last_json_block(payload)
     if data is None:
         raise ClaudePUnparseableError(
@@ -238,41 +248,89 @@ def call_claude_p(
         # ``--output-format json`` and printed bare text. Fall back to the
         # stderr accounting line rather than losing the call entirely.
         cost = extract_cost_usd(res.stderr or "")
-    return ClaudePResult(data=data, raw_stdout=res.stdout, cost_usd=cost, text=payload)
+    return ClaudePResult(
+        data=data,
+        raw_stdout=res.stdout,
+        cost_usd=cost,
+        text=payload,
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+        cache_read_tokens=usage["cache_read_tokens"],
+        cache_creation_tokens=usage["cache_creation_tokens"],
+    )
 
 
-def _unwrap_envelope(stdout: str) -> tuple[str, float | None]:
-    """Split ``--output-format json`` stdout into (assistant text, cost).
+#: All-``None`` usage — the "no telemetry available" shape, never a false ``0``.
+_EMPTY_USAGE: dict[str, int | None] = {
+    "input_tokens": None,
+    "output_tokens": None,
+    "cache_read_tokens": None,
+    "cache_creation_tokens": None,
+}
+
+
+def _unwrap_envelope(
+    stdout: str,
+) -> tuple[str, float | None, dict[str, int | None]]:
+    """Split ``--output-format json`` stdout into (assistant text, cost, usage).
 
     ``claude -p --output-format json`` wraps the answer in a metadata envelope
-    whose ``result`` field holds the assistant text and whose
-    ``total_cost_usd`` is the only place the real dollar figure appears.
+    whose ``result`` field holds the assistant text, whose ``total_cost_usd``
+    is the only place the real dollar figure appears, and whose ``usage``
+    object carries the token telemetry (see :func:`_extract_usage`).
 
     Tolerant by design: test stubs (``PRECIS_CLAUDE_BIN``) and any CLI that
     ignores the flag emit the model's JSON directly, so anything that isn't a
-    recognizable envelope is handed back unchanged with no cost — the caller
-    then falls back to the stderr regex. That keeps the parse contract ("last
-    balanced ``{ … }`` block") identical on both shapes.
+    recognizable envelope is handed back unchanged with no cost/usage — the
+    caller then falls back to the stderr regex for cost. That keeps the parse
+    contract ("last balanced ``{ … }`` block") identical on both shapes.
     """
     text = stdout.strip()
     if not text.startswith("{"):
-        return stdout, None
+        return stdout, None, dict(_EMPTY_USAGE)
     try:
         env = json.loads(text)
     except json.JSONDecodeError:
-        return stdout, None
+        return stdout, None, dict(_EMPTY_USAGE)
     # Discriminate on ``type == "result"`` *and* a string ``result`` — the CLI
     # envelope's own self-identification. A string ``result`` alone is too
     # weak: no judge prompt in the tree currently defines a top-level string
     # field named ``result``, but one plausibly could, and the misread would
     # surface as "no parseable JSON block" pointing nowhere near the cause.
     if not isinstance(env, dict):
-        return stdout, None
+        return stdout, None, dict(_EMPTY_USAGE)
     if env.get("type") != "result" or not isinstance(env.get("result"), str):
-        return stdout, None
+        return stdout, None, dict(_EMPTY_USAGE)
     raw_cost = env.get("total_cost_usd")
     cost = float(raw_cost) if isinstance(raw_cost, int | float) else None
-    return env["result"], cost
+    return env["result"], cost, _extract_usage(env)
+
+
+def _extract_usage(env: dict[str, Any]) -> dict[str, int | None]:
+    """Token telemetry from the envelope's ``usage`` object.
+
+    Same shape, same keys as the agentic lane's trailing stream-json
+    ``result`` event — mirrors
+    :func:`precis.utils.claude_agent._stream_usage`'s mapping:
+    ``usage.input_tokens`` / ``usage.output_tokens`` /
+    ``usage.cache_read_input_tokens`` / ``usage.cache_creation_input_tokens``.
+    Tolerant: an absent or malformed ``usage`` block (or a non-numeric field
+    within it) returns/leaves ``None`` — never a false ``0`` — matching the
+    agent path's "never a false zero" discipline.
+    """
+    usage = env.get("usage")
+    if not isinstance(usage, dict):
+        return dict(_EMPTY_USAGE)
+
+    def _int_or_none(v: Any) -> int | None:
+        return int(v) if isinstance(v, int | float) else None
+
+    return {
+        "input_tokens": _int_or_none(usage.get("input_tokens")),
+        "output_tokens": _int_or_none(usage.get("output_tokens")),
+        "cache_read_tokens": _int_or_none(usage.get("cache_read_input_tokens")),
+        "cache_creation_tokens": _int_or_none(usage.get("cache_creation_input_tokens")),
+    }
 
 
 def _parse_last_json_block(text: str) -> dict[str, Any] | None:
