@@ -31,10 +31,14 @@ stays authoritative; the nanopub is the frozen published form.
 
 ## What an agent must NOT do
 
-- **Minting, signing and anchoring are not agent verbs.** `precis
-  nanopub approve/sign/anchor` is run by a person; the attesting key is
-  invocable only from that interactive surface. A bot signature alone
-  never publishes anything.
+- **Minting, signing, anchoring, sign-off and publishing are not agent
+  verbs.** `precis nanopub approve/sign/signoff/anchor/publish` is run
+  by a person (the `/nanopub` web surface is the same interactive
+  door); the attesting key is invocable only from those surfaces. A bot
+  signature alone never publishes anything: publication requires an
+  **attesting** entry in the trust allowlist, and the registry POST
+  (`publish --live`) is the one irreversible step — CLI-only, never
+  automated.
 - Never edit a hub that shows `reviewed` or later state to "fix" its
   wording — the approved string is frozen; an edit flips the row back
   for re-review (pre-publication) or forces a public supersede
@@ -64,3 +68,17 @@ failures an extraction agent can avoid up front:
   own evidence or mints as a `precis:Hypothesis` (declarative sentence,
   type carries the epistemic status, `testableBy` names the
   discriminating experiment).
+
+## Publish-time gates (past mint — why a signed claim may not publish)
+
+Distinct from mint gates; enumerated by `precis nanopub preflight` and
+on the `/nanopub/fi<id>` review page:
+
+- **Withheld evidence edges** — an evidence edge neither
+  verified-by-refine nor human-signed-off blocks publication; there is
+  no mute button. Verification (the refine chase) is the agent-side
+  remedy; the literal sign-off is human-only.
+- **Trust allowlist** — only pinned (identity, key-fingerprint) pairs
+  are trusted, and publishing requires the *attesting* (human) entry.
+- **Order** — atoms publish before the compounds citing them; hanging
+  claims never publish; a drifted or disputed hub is blocked.

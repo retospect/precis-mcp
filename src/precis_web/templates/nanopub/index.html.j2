@@ -1,0 +1,127 @@
+{% extends "base.html.j2" %}
+{% block title %}Nanopubs{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto px-4 py-6 space-y-8">
+  <div>
+    <h1 class="text-xl font-semibold">Nanopub review queue</h1>
+    <p class="text-sm text-slate-400 mt-1">
+      Every claim hub by publish state — derived from publish rows + the
+      drift recompute. Unpublished is a good terminal state, not a
+      backlog to burn down.
+    </p>
+  </div>
+
+  {% if stuck %}
+  <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+    ⚠ {{ stuck|length }} OTS batch{{ 'es' if stuck|length != 1 }} pending past
+    threshold:
+    {% for b in stuck %}
+    <span class="font-mono">batch {{ b.id }} ({{ b.created_at.strftime('%Y-%m-%d') }})</span>{{ ", " if not loop.last }}
+    {% endfor %}
+    — calendar may have lost the commitment; re-stamp via
+    <code>precis nanopub anchor --live</code>.
+  </div>
+  {% endif %}
+
+  {% macro hub_table(rows, empty_note) %}
+  {% if rows %}
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-700">
+          <th class="py-2 pr-4">Hub</th>
+          <th class="py-2 pr-4">Claim</th>
+          <th class="py-2 pr-4">State</th>
+          <th class="py-2 pr-4">Frozen</th>
+          <th class="py-2 pr-4">Flags</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="border-b border-slate-800 hover:bg-slate-800/40">
+          <td class="py-2 pr-4 font-mono whitespace-nowrap">
+            <a class="text-emerald-400 hover:underline" href="/nanopub/fi{{ r.ref_id }}">fi{{ r.ref_id }}</a>
+          </td>
+          <td class="py-2 pr-4 max-w-xl truncate" title="{{ r.title }}">{{ r.title }}</td>
+          <td class="py-2 pr-4 whitespace-nowrap">
+            <span class="font-mono text-xs px-1.5 py-0.5 rounded
+              {% if r.disputed %}bg-rose-900/60 text-rose-200
+              {% elif r.state == 'published' %}bg-emerald-900/60 text-emerald-200
+              {% elif r.state %}bg-slate-700 text-slate-200
+              {% else %}text-slate-500{% endif %}">
+              {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
+            </span>
+          </td>
+          <td class="py-2 pr-4 text-xs text-slate-400 whitespace-nowrap">{{ r.frozen or '—' }}</td>
+          <td class="py-2 pr-4 text-xs whitespace-nowrap">
+            {% if r.drifted %}<span class="text-amber-400" title="live title no longer matches the frozen claim_sha">drifted</span>{% endif %}
+            {% if r.withheld_count %}<span class="text-slate-400 ml-2" title="evidence edges neither verified nor signed off">{{ r.withheld_count }} withheld</span>{% endif %}
+            {% if r.disputed_since %}<span class="text-rose-400 ml-2" title="oldest live contradicts edge">disputed since {{ r.disputed_since.strftime('%Y-%m-%d') }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-500">{{ empty_note }}</p>
+  {% endif %}
+  {% endmacro %}
+
+  <section>
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-rose-300 mb-2">
+      ◆ Disputed — adjudicate first (oldest on top)
+    </h2>
+    {{ hub_table(disputed, "No live contradicts edges — nothing disputed.") }}
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-300 mb-2">
+      In the pipeline
+    </h2>
+    {{ hub_table(live, "No publish rows yet — approve a hub from its review page.") }}
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
+      Unminted hubs
+    </h2>
+    {{ hub_table(unminted, "Every claim hub has a publish row.") }}
+  </section>
+
+  <section>
+    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
+      OTS batches
+    </h2>
+    {% if batches %}
+    <table class="text-sm">
+      <thead>
+        <tr class="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-700">
+          <th class="py-2 pr-6">Batch</th><th class="py-2 pr-6">Created</th>
+          <th class="py-2 pr-6">Leaves</th><th class="py-2 pr-6">Proof</th>
+          <th class="py-2 pr-6">Merkle root</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in batches %}
+        <tr class="border-b border-slate-800">
+          <td class="py-1.5 pr-6 font-mono">{{ b.id }}</td>
+          <td class="py-1.5 pr-6">{{ b.created_at.strftime('%Y-%m-%d') }}</td>
+          <td class="py-1.5 pr-6">{{ b.leaf_count }}</td>
+          <td class="py-1.5 pr-6">
+            <span class="{% if b.proof_state == 'upgraded' %}text-emerald-400{% elif b.proof_state == 'pending' %}text-amber-400{% else %}text-rose-400{% endif %}">
+              {{ b.proof_state or 'MISSING' }}
+            </span>
+          </td>
+          <td class="py-1.5 pr-6 font-mono text-xs text-slate-400">{{ b.merkle_root[:24] }}…</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-sm text-slate-500">No batches — the OTS sweep is dark
+      (<code>PRECIS_OTS_ENABLED</code>) or nothing signed yet.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

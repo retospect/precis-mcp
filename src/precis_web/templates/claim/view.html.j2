@@ -12,6 +12,11 @@
 <p class="mt-1 text-xs text-slate-400">
   <span class="font-mono">{{ head }}</span>
   {% if status %}· status <span class="font-mono">{{ status }}</span>{% endif %}
+  {% if publish_state %}· nanopub
+  <a class="font-mono text-emerald-600 hover:underline" href="/nanopub/fi{{ hub_ref_id }}"
+     title="publish state — review-and-sign surface">{{ publish_state }}</a>
+  {% else %}· <a class="text-slate-400 hover:underline" href="/nanopub/fi{{ hub_ref_id }}">nanopub review</a>
+  {% endif %}
 </p>
 
 {% if inflight %}

@@ -840,14 +840,27 @@ integrity work, the UI only surfaces the state machine.
    enforced) + recompute audit (`precis/nanopub/ots.py`, daily
    `ots_sweep` cadence; calendar traffic dark behind
    `PRECIS_OTS_ENABLED` — no stamp has been sent anywhere).
-4. Review-and-sign web surface (per-hub mermaid + publish-row side panel +
-   queue table) + publish preflight (complains per withheld edge until
-   verified or signed off) + serve TriG from `precis_web`.
-5. POST to the public registry; optionally an introduction nanopub.
+4. ~~Review-and-sign web surface + publish preflight + serve TriG~~
+   **Built 2026-08-15** — `precis_web/routes/nanopub.py` (`/nanopub`
+   queue table with the disputed bucket, `/nanopub/fi<id>` review page:
+   clickable SVG DAG per the viewer.html prototype, publish-row side
+   panel, symmetric dispute quotes, per-state action, real sign button;
+   `/np/<code>` serves exact frozen bytes); `precis/nanopub/preflight.py`
+   (withheld-edge enumeration + `signoff_edge` interactive door, trust
+   allowlist gate — migration 0129 `nanopub_trust_allowlist` — drift,
+   dependency order, hanging-unpublishable); `precis/nanopub/overview.py`
+   (the all-hubs table + frozen-ness ladder).
+5. ~~Registry POST~~ **Built 2026-08-15, NOTHING PUBLISHED** —
+   `precis/nanopub/registry.py`: triple-gated (interactive + `--live` +
+   clean preflight), POSTs exact stored bytes, CLI-only
+   (`precis nanopub publish fi<id> --live`); deliberately no web button.
+   The first real POST is Reto's call. Introduction nanopub: not built.
 
 Independent of 1–5: **registry mirror sync** — pull-all plus periodic
 delta via `safe_fetch`, retracted/superseded flagging at index time, raw
 TriG + extracted index. No coupling to the publish path; can land anytime.
+Detailed plan (endpoints probed, table/worker design, slices):
+`docs/backlog/nanopub-registry-mirror.md` (2026-08-15).
 
 ## Open
 

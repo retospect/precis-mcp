@@ -103,6 +103,7 @@ def create_app(
         items,
         llm,
         mermaid,
+        nanopub,
         needs_you,
         papers,
         papers_needed,
@@ -143,6 +144,7 @@ def create_app(
     app.include_router(categorizers.router)
     app.include_router(figure.router)
     app.include_router(mermaid.router)
+    app.include_router(nanopub.router)
     app.include_router(alerts.router)
     app.include_router(gripes.router)
     app.include_router(agentlogs.router)

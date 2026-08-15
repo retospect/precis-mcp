@@ -50,12 +50,18 @@ async def claim_view(request: Request, head: str) -> HTMLResponse:
         #   • discussions — the "Ask & think" follow-up threads, the same
         #               affordance the generic finding detail carried before
         #               /refs/finding/<hub> started redirecting here.
+        # getattr: reader tests drive this route with FakeStores that
+        # predate the nanopub mixin — degrade the chip, not the page.
+        _publish_row_fn = getattr(store, "nanopub_publish_row", None)
+        publish_row = _publish_row_fn(hub_ref_id) if _publish_row_fn else None
         ctx = {
             **data,
             "missing": False,
             "citers": claim_citers(store, hub_ref_id),
             "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
             "discussions": _followup_discussions(store, hub_ref_id),
+            # The review-and-sign surface's chip (slice 4) — state or None.
+            "publish_state": publish_row.state if publish_row else None,
         }
     return templates.TemplateResponse(request, "claim/view.html.j2", ctx)
 

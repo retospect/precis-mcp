@@ -25,6 +25,15 @@ Subcommands:
   ``--live`` is required because it talks to the calendar.
 * ``audit``             — the proof-store recompute audit, findings to
   stdout.
+* ``preflight FI``      — every publish-time gate, advisory (no writes).
+* ``signoff LINK_ID``   — human sign-off of one unverified evidence
+  edge (``--note`` required; the literal attestation that makes a
+  withheld edge publishable).
+* ``allow …``           — the publication-time trust allowlist
+  (``list`` / ``add`` / ``end``); keys pinned by fingerprint, the
+  ``--attesting`` entry is the human key.
+* ``publish FI --live`` — the registry POST, **the point of no
+  return**; without ``--live`` a dry run printing what would be POSTed.
 """
 
 from __future__ import annotations
@@ -104,6 +113,39 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
 
     s.add_parser("audit", help="Proof-store recompute audit.")
+
+    p_pf = s.add_parser("preflight", help="Publish-time gates, advisory.")
+    p_pf.add_argument("hub")
+
+    p_so = s.add_parser(
+        "signoff", help="Human sign-off of one unverified evidence edge."
+    )
+    p_so.add_argument("link_id", type=int)
+    p_so.add_argument("--note", required=True)
+
+    p_allow = s.add_parser("allow", help="Publication-time trust allowlist.")
+    allow_sub = p_allow.add_subparsers(dest="allow_cmd", required=True)
+    allow_sub.add_parser("list", help="Every entry, open and closed windows.")
+    p_aa = allow_sub.add_parser("add", help="Pin one (identity, fingerprint).")
+    p_aa.add_argument("identity_uri")
+    p_aa.add_argument("fingerprint")
+    p_aa.add_argument(
+        "--attesting",
+        action="store_true",
+        help="Mark the human key (its signature = 'a human checked').",
+    )
+    p_aa.add_argument("--note", default="")
+    p_ae = allow_sub.add_parser("end", help="Close an entry's validity window.")
+    p_ae.add_argument("entry_id", type=int)
+
+    p_pub = s.add_parser("publish", help="Registry POST — THE point of no return.")
+    p_pub.add_argument("hub")
+    p_pub.add_argument(
+        "--live",
+        action="store_true",
+        help="Required to POST: the artifact propagates across registry "
+        "mirrors forever. Without it: dry run.",
+    )
     return parser
 
 
@@ -145,6 +187,14 @@ def run(args: argparse.Namespace) -> None:
             _anchor(args, store)
         elif cmd == "audit":
             _audit(store)
+        elif cmd == "preflight":
+            _preflight(args, store)
+        elif cmd == "signoff":
+            _signoff(args, store)
+        elif cmd == "allow":
+            _allow(args, store)
+        elif cmd == "publish":
+            _publish(args, store)
     finally:
         store.close()
 
@@ -302,3 +352,90 @@ def _audit(store) -> None:
     for f in findings:
         print(f"[{f.kind}] {f.subject}: {f.message}")
     sys.exit(1)
+
+
+def _preflight(args: argparse.Namespace, store) -> None:
+    from precis.nanopub.preflight import publish_preflight
+
+    issues = publish_preflight(store, _hub_id(args.hub))
+    if not issues:
+        print("clear to publish (every publish-time gate passes)")
+        return
+    blocking = False
+    for i in issues:
+        marker = "✖" if i.blocking else "·"
+        blocking = blocking or i.blocking
+        print(f"{marker} [{i.check}] {i.message}")
+    if blocking:
+        sys.exit(1)
+
+
+def _signoff(args: argparse.Namespace, store) -> None:
+    import getpass
+
+    from precis.nanopub.preflight import signoff_edge
+
+    # This CLI subcommand IS the interactive surface — a person runs it.
+    ok = signoff_edge(
+        store, args.link_id, by=getpass.getuser(), note=args.note, interactive=True
+    )
+    if ok:
+        print(f"signed off evidence edge {args.link_id}")
+    else:
+        print(f"no evidence edge with link id {args.link_id}")
+        sys.exit(1)
+
+
+def _allow(args: argparse.Namespace, store) -> None:
+    if args.allow_cmd == "list":
+        entries = store.nanopub_allowlist()
+        if not entries:
+            print("allowlist empty — nothing is publishable")
+            return
+        for e in entries:
+            window = (
+                "open" if e.valid_until is None else f"closed {e.valid_until:%Y-%m-%d}"
+            )
+            role = "ATTESTING" if e.attesting else "bot"
+            print(
+                f"{e.id:4d}  {role:>9}  {e.identity_uri}  "
+                f"{e.key_fingerprint[:16]}…  {window}  {e.note}"
+            )
+    elif args.allow_cmd == "add":
+        entry_id = store.nanopub_allowlist_add(
+            identity_uri=args.identity_uri,
+            key_fingerprint=args.fingerprint,
+            attesting=args.attesting,
+            note=args.note,
+        )
+        print(f"pinned entry {entry_id} ({'attesting' if args.attesting else 'bot'})")
+    elif args.allow_cmd == "end":
+        if store.nanopub_allowlist_end(args.entry_id):
+            print(f"closed validity window of entry {args.entry_id}")
+        else:
+            print(f"entry {args.entry_id} not found or already closed")
+            sys.exit(1)
+
+
+def _publish(args: argparse.Namespace, store) -> None:
+    from precis.nanopub import registry
+
+    # This CLI subcommand IS the interactive surface — a person runs it,
+    # and --live is the explicit point-of-no-return acknowledgement.
+    result = registry.publish(
+        store, _hub_id(args.hub), live=args.live, interactive=True
+    )
+    for note in result.notes:
+        print(f"· [{note.check}] {note.message}")
+    if result.live:
+        print(
+            f"PUBLISHED fi{result.hub_ref_id}: {result.trusty_uri}\n"
+            f"→ {result.registry_url} ({result.byte_count} bytes) — "
+            "propagating across mirrors; from here, change = supersede"
+        )
+    else:
+        print(
+            f"dry run — would POST {result.byte_count} bytes of "
+            f"{result.trusty_uri}\nto {result.registry_url}; re-run with "
+            "--live to publish (irreversible)"
+        )

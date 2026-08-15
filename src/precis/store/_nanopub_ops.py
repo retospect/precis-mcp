@@ -48,6 +48,9 @@ class PublishRow:
     state: str
     created_at: datetime
     updated_at: datetime
+    #: Set once by the registry POST (slice 5) — the point of no return.
+    published_at: datetime | None = None
+    registry_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,21 @@ class ArtifactRow:
     key_fingerprint: str
     dois: list[str]
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AllowlistEntry:
+    """One ``nanopub_trust_allowlist`` row (migration 0129): an explicit
+    (identity, key-fingerprint) pair trusted at publication time. Keys
+    pinned, never bare identities; ``attesting`` marks the human key."""
+
+    id: int
+    identity_uri: str
+    key_fingerprint: str
+    attesting: bool
+    valid_from: datetime
+    valid_until: datetime | None
+    note: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +119,7 @@ class OtsLeafRow:
 _PUBLISH_COLS = (
     "id, claim_ref_id, artifact_type, approved_title, claim_sha, aida_uri, "
     "grounding, dependency_codes, trusty_uri, artifact_id, batch_id, state, "
-    "created_at, updated_at"
+    "created_at, updated_at, published_at, registry_url"
 )
 
 _ARTIFACT_COLS = (
@@ -127,6 +145,8 @@ def _row_to_publish(row: tuple[Any, ...]) -> PublishRow:
         state=str(row[11]),
         created_at=row[12],
         updated_at=row[13],
+        published_at=row[14],
+        registry_url=row[15],
     )
 
 
@@ -280,7 +300,99 @@ class NanopubMixin:
             )
             return cur.rowcount == 1
 
+    def nanopub_record_published(self, row_id: int, *, registry_url: str) -> bool:
+        """Flip ``anchored`` → ``published``, stamping when and where. CAS.
+        The registry POST itself (the one true point of no return) happens
+        in :mod:`precis.nanopub.registry` BEFORE this bookkeeping — a
+        ``False`` here after a successful POST means the row moved
+        mid-publish and must be reconciled by hand, loudly."""
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE nanopub_publish SET state = 'published', "
+                "published_at = now(), registry_url = %s, updated_at = now() "
+                "WHERE id = %s AND state = 'anchored'",
+                (registry_url, row_id),
+            )
+            return cur.rowcount == 1
+
+    # ── trust allowlist (publication-time gate) ──────────────────────
+
+    def nanopub_allowlist(self) -> list[AllowlistEntry]:
+        """Every allowlist row, open and closed windows alike — window
+        checks are the caller's (deferred until OTS supplies signature
+        time; the preflight requires an entry with an open window NOW)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id, identity_uri, key_fingerprint, attesting, "
+                "valid_from, valid_until, note FROM nanopub_trust_allowlist "
+                "ORDER BY id ASC",
+            ).fetchall()
+        return [
+            AllowlistEntry(
+                id=int(r[0]),
+                identity_uri=str(r[1]),
+                key_fingerprint=str(r[2]),
+                attesting=bool(r[3]),
+                valid_from=r[4],
+                valid_until=r[5],
+                note=str(r[6] or ""),
+            )
+            for r in rows
+        ]
+
+    def nanopub_allowlist_add(
+        self,
+        *,
+        identity_uri: str,
+        key_fingerprint: str,
+        attesting: bool = False,
+        note: str = "",
+    ) -> int:
+        """Add (or re-open/amend) one pinned (identity, fingerprint) pair.
+        Upsert on the pair: adding an existing pair updates ``attesting``/
+        ``note`` and clears a closed window — entries are hand-curated
+        (``approvesOf`` may inform this, never drive it)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO nanopub_trust_allowlist (identity_uri, "
+                "key_fingerprint, attesting, note) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (identity_uri, key_fingerprint) DO UPDATE SET "
+                "attesting = EXCLUDED.attesting, note = EXCLUDED.note, "
+                "valid_until = NULL RETURNING id",
+                (identity_uri, key_fingerprint, attesting, note),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def nanopub_allowlist_end(self, entry_id: int) -> bool:
+        """Close an entry's validity window (never DELETE — rotation does
+        not invalidate old signatures, and the history is the audit)."""
+        with self.pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE nanopub_trust_allowlist SET valid_until = now() "
+                "WHERE id = %s AND valid_until IS NULL",
+                (entry_id,),
+            )
+            return cur.rowcount == 1
+
     # ── artifacts (append-only) ──────────────────────────────────────
+
+    def nanopub_artifact_by_trusty(self, code_or_uri: str) -> ArtifactRow | None:
+        """Artifact lookup by full trusty URI or bare ``RA…`` artifact
+        code — the review surface serves by artifact code locally while
+        the w3id name resolves nowhere (embargo). Exact matches only —
+        the code reaches here from an unauthenticated URL path, so no
+        LIKE (`%`/`_` in the input must never widen the match; the w3id
+        base is fixed at mint, spec: base-URI-fixed-at-mint)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_ARTIFACT_COLS} FROM nanopub_artifacts "
+                "WHERE trusty_uri = %s "
+                "   OR trusty_uri = 'https://w3id.org/np/' || %s "
+                "LIMIT 1",
+                (code_or_uri, code_or_uri),
+            ).fetchone()
+        return _row_to_artifact(row) if row else None
 
     def nanopub_insert_artifact(
         self,
