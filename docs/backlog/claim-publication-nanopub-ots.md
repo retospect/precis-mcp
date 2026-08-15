@@ -331,6 +331,17 @@ request and one proof file. Cadence — decided 2026-08-13
 24h, which is enough when the anchor's primary job is key-rotation
 scoping rather than fine-grained priority.
 
+**Batch-root chaining — considered and rejected 2026-08-15 (Reto).**
+Including each batch's predecessor root as a leaf (transparency-log
+style) would make later anchors commit to all history. Rejected:
+Bitcoin already totally orders every root we stamp, so the chain adds
+no ordering; independent anchors have no shared fate (a lost batch
+loses only its own proofs, while a chain adds a continuity claim that
+is only as strong as our own retention); and the completeness property
+it would buy — detecting silent deletion by *us* — is already covered
+by the append-only triggers pre-publication and by public registry
+copies post-publication.
+
 **Single calendar — accepted, risk named.** Multiple calendars buy
 *availability*, not trust: a calendar cannot forge an anchor, since
 verification runs against Bitcoin block headers. The exposure is the

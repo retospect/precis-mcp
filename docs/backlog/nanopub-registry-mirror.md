@@ -48,12 +48,19 @@ in our domain, so this buys infrastructure, not evidence.
   never indexed as valid. No append-only trigger: this is a cache of
   *other people's* frozen artifacts, not our proof store; re-fetch may
   overwrite an unverified row.
-- **Flags, not exclusions** (spec): `retracted_by TEXT`,
-  `superseded_by TEXT` — set at index time by scanning incoming
-  `npx:retracts` / `npx:supersedes` triples across the mirror (a
-  retraction can arrive *after* its target, so flagging is a second
-  pass over new arrivals, not an import filter). Surface non-retracted
-  by default.
+- **Edges, not single-column flags** (decided 2026-08-15, Reto): a
+  second table `nanopub_mirror_edges(from_code, to_code, relation)`
+  populated at index time from the bytes (`retracts`, `supersedes`,
+  later citation/concurrence relations) — rebuildable like the other
+  index columns. `to_code` is deliberately **not** an FK: a retraction
+  can arrive before its target is fetched (open-world arrival order),
+  and anyone can publish an `npx:retracts` at someone else's nanopub,
+  so there may be several claimants per target. `retracted_by` /
+  `superseded_by` on `nanopub_mirror` become *derived* flags — set only
+  when an edge's `from_code` signer matches the target's signer (the
+  authoritative-retraction rule) — not primary storage. Flags, not
+  exclusions (spec): surface non-retracted by default; the flag scan is
+  a second pass over new arrivals, never an import filter.
 
 **Sync worker** (`workers/nanopub_mirror.py`, scheduler cadence like
 `ots_sweep`):
@@ -82,4 +89,5 @@ mirrored agents (allowlist stays flat and hand-curated).
    network in tests, injectable fetch like `ots.stamp_batch`).
 2. Paged pull-all + delta worker + cadence + `precis nanopub mirror
    sync --live` manual door (probe the paging parameters here).
-3. Flag scan (retracts/supersedes) + concurrence alert.
+3. Edge extraction (`nanopub_mirror_edges`) + derived retract/supersede
+   flags + concurrence alert.
