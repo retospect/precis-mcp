@@ -1,6 +1,6 @@
 # codereview: DB row mapping — positional-mapper residuals
 
-The three worst flows are DONE (shipped): draft review surface returns
+The three worst flows are shipped: draft review surface returns
 frozen dataclasses (`_draft_ops.py::ReviewableChunk`/`ChunkReviewEntry`/
 `DraftReviewRow`, consumed via attributes through `quest/review_fanout`
 → `handlers/_review_view` → `precis_web/routes/drafts`); component +
