@@ -880,13 +880,13 @@ paging). Present state: the `precis.nanopub` package docstring.
 
 1. Patent grounding: the ecosystem is DOI-centric; likely a local scheme.
 
-2. **Attribution placement (2026-08-15, awaiting Reto's call —
-   implemented per the recommendation, cheap to change pre-publish).**
-   "Han et al. (PRL 2007) demonstrated X": author/venue in the assertion
-   text vs the provenance/pubinfo graphs. Recommendation, and what the
-   assembler now does: **assertion = world-claim only, attribution in
-   provenance** (source DOI node carries `dct:title`; signer/software in
-   pubinfo). Two reasons beyond nanopub convention: AIDA convergence —
+2. **Attribution placement — RESOLVED 2026-08-15 (Reto: "approved as
+   written").** "Han et al. (PRL 2007) demonstrated X": author/venue in
+   the assertion text vs the provenance/pubinfo graphs. The approved
+   design, which the assembler already implements: **assertion =
+   world-claim only, attribution in provenance** (source DOI node carries
+   `dct:title`; signer/software in pubinfo). Two reasons beyond nanopub
+   convention: AIDA convergence —
    the same fact from two papers must land on one content address, which
    attribution-in-sentence breaks; and the fi34867 hearsay case —
    baking "Han et al. demonstrated" into claim text invites grounding
@@ -962,11 +962,9 @@ the mint/extraction contract:
    that scopes it — "blocked for digital logic *because of zero bandgap*"
    is the claim; the blanket version is wrong because the cause may be
    engineered away (fi34850).
-4. **Open design call: attribution placement.** "Han et al. (PRL 2007)
-   demonstrated X" — does the author/venue live in the assertion text or
-   in the nanopub's provenance/pubinfo graphs? (Nanopub convention says
-   assertion = world-claim, attribution = provenance; needs an explicit
-   decision because fi sentences often embed attribution.)
+4. **Attribution placement — RESOLVED 2026-08-15**, see §Open item 2:
+   assertion = world-claim only, attribution in provenance (Reto approved
+   the recommendation as written).
 
 Apply-side implementation of 1–3 (the pass that *produces* the grounding
 records this spec's Layer-A gate validates):
