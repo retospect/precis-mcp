@@ -8,8 +8,8 @@ embedded QuickJS running the real mermaid.js + resvg — no Node, no Chromium,
 no container). ``MERMAID_LANG`` is the :class:`~precis.diagram.lang.DiagramLang`
 instance; ``mermaidx`` is lazy-imported so nothing loads it unless a mermaid
 turn actually validates/renders. The kind is first-class (registered like
-``figure``); the ``[mermaid]`` extra installs the engine, and a build without
-it degrades validation/render gracefully rather than hiding the kind.
+``figure``); ``mermaidx`` is a core dependency, so validation/render work
+out of the box.
 """
 
 from precis.mermaid.mermaid import MERMAID_LANG, MermaidLang, render_svg

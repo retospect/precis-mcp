@@ -4,8 +4,8 @@
 always available** — a pure geometric repair that pushes sub-covalent / overlapping
 atoms apart toward their equilibrium bond length ("fix the stupid bonds", the
 "put bonds in, relax, it fixes itself" of §8.1). ``emt`` (rung 1) is
-also **ours** — a torch-free ASE-EMT relax gated only behind the light
-``[dft]`` extra (numpy + ASE, no MLIP), whose closed element coverage happens
+also **ours** — a torch-free ASE-EMT relax, always available (ASE is a core
+dependency, no MLIP needed), whose closed element coverage happens
 to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. Every rung
 above that is a **rented backend** (``ff``/``xtb``/``ml``/``dft-fast``/
 ``dft-tight``) gated behind the ``[dft-ml]`` / ``[dft-gpaw]``
@@ -28,8 +28,8 @@ from .scene import Scene
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
 #: (ASE + an MLIP, the ``[dft-ml]`` extra); ``ff``/``xtb``/``dft-*`` stay gated.
-#: ``emt`` (rung 1) is deliberately *not* here — it's ours, like ``clean``, just
-#: gated behind the light ``[dft]`` extra instead of always-on.
+#: ``emt`` (rung 1) is deliberately *not* here — it's ours, like ``clean``,
+#: always-on (ASE is a core dependency).
 _RENTED_RUNGS = {"ff", "xtb", "ml", "dft-fast", "dft-tight"}
 
 #: EMT's built-in interatomic-potential coverage (ASE's ``emt.py`` parameter

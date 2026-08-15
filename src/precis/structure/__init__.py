@@ -4,13 +4,14 @@ A periodic cell filled with atoms and an explicit bond graph that the LLM reads
 as *structure* (graph + numeric feedback), never pixels — the materials sibling
 of ``cad`` (0041) / ``pcb`` (0042). This package is the **pure, numpy-only IR
 core** (§1/§20): cell + scene + ops + probes + validator gate. The relaxer/DFT
-(ASE/MLIP/GPAW) and the file I/O are extras-gated backends added on top; the
-store + handler (the DB layer) wrap this core.
+(ASE/MLIP/GPAW) and the file I/O are backends added on top — ASE is a core
+dependency, MLIP/GPAW rungs remain extras-gated; the store + handler (the DB
+layer) wrap this core.
 
 Compute-adjacent seams, each with its own module docstring:
 
-- `relax` — the rented fidelity ladder (``clean``/``emt`` ours; higher rungs
-  extras-gated, GPU-dispatched via the compute job lane).
+- `relax` — the rented fidelity ladder (``clean``/``emt`` ours, always-on;
+  higher rungs extras-gated, GPU-dispatched via the compute job lane).
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
   faults, never physical verdicts.
