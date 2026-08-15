@@ -53,6 +53,16 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-08-15** — sampled 6 largest 08-08–08-15 sessions (6–15 MB). New
+  pattern (the 07-29/08-07 hook fixes are holding — cluster-ops delegation and
+  coderef-nudge both confirmed working): `sed -n '<range>p' <local-file>`
+  instead of the Read tool, and `echo "=== label ==="` narration wrapping
+  compound Bash probes — both explicitly named in CLAUDE.md but outside
+  `bash-reflex-nudge.py`'s Rule A–C coverage and outside rtk's rewrite list
+  (`sed` isn't a known command). Concentrated in primary-checkout orchestration
+  sessions: worst session had `echo "==="` on 308/420 Bash calls (73%) + 36
+  `sed -n` calls; another had 63 `sed -n` calls ≈43K tokens of tool_result.
+  Folded into the existing `token-review-hook-gaps` backlog item as Rule D.
 - **2026-08-07** — sampled the 6 largest 07-30–08-05 sessions (7–18 MB;
   transcripts live under `~/.claude/projects/-Users-reto-precis-mcp*/` —
   the stale path in "The pass" above corrected this pass). Verdict: the 07-29

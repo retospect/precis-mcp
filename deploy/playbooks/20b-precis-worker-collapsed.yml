@@ -116,10 +116,16 @@
     # below — export both or the embedder resource_slots row never
     # advertises (mirrors precis-worker.plist.j2 / precis-worker.service.j2).
     #
-    # PGPASSFILE (§L, gr171431 §1): this unit's Linux HOME diverges from the
-    # pgpass role's deploy home (/home/deploy) — point PGPASSFILE at the
-    # pgpass role's actual file directly instead of changing HOME (mirrors
-    # precis-worker.service.j2 / precis-worker-agent.service.j2).
+    # PGPASSFILE (§L, gr171431 §1; darwin too since gr208726): pin libpq's
+    # password file explicitly on BOTH OSes. Linux because this unit's HOME
+    # diverges from the pgpass role's deploy home (/home/deploy); darwin
+    # because relying on ~-resolution is fragile for the short-lived `precis`
+    # CLI subprocesses a plan_tick session's Bash tool spawns — libpq's
+    # home-dir lookup (getpwuid via the directory service) can transiently
+    # fail under deploy/memory load on the gateway, surfacing as
+    # `fe_sendauth: no password supplied` bursts (gr208726, 2026-08-15).
+    # Mirrors precis-worker(-agent).service.j2 and claude_mcp.json.j2's
+    # explicit pin.
     #
     # PATH's /Library/TeX/texbin (darwin only): mactex-no-gui's latexmk +
     # biber, needed by the compile guard job_claude_inproc's planner can
@@ -185,7 +191,7 @@
            })
          | combine({'PRECIS_JOB_CPUSET': precis_job_cpuset | default('')} if os_family == 'linux' else {})
          | combine({'PRECIS_EMBEDDER': precis_worker_embedder, 'PRECIS_EMBEDDER_URL': precis_worker_embedder_url})
-         | combine({'PGPASSFILE': '/home/deploy/.pgpass'} if os_family == 'linux' else {})
+         | combine({'PGPASSFILE': ('/home/deploy/.pgpass' if os_family == 'linux' else '/Users/deploy/.pgpass')})
          | combine({
              'PRECIS_SUMMARIZE_CONCURRENCY': (precis_worker_summarize_concurrency | default(3)) | string,
              'PRECIS_SUMMARIZE_TIMEOUT': (precis_worker_summarize_timeout | default(120)) | string,

@@ -98,6 +98,7 @@
              'HOME': '/Users/deploy',
              'PATH': _drain_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
              'PRECIS_DATABASE_URL': _drain_dsn,
+             'PGPASSFILE': '/Users/deploy/.pgpass',
              'HF_HOME': _drain_hf_home,
              'PRECIS_STRUCTURE_PREFLIGHT': '1',
              'PRECIS_EMBEDDER': _drain_embedder,

@@ -39,6 +39,11 @@
   <dict>
     <key>HOME</key>
     <string>/Users/deploy</string>
+    {# gr208726: pin libpq's password file — don't rely on ~-resolution
+       (getpwuid via the directory service can transiently fail under load,
+       surfacing as fe_sendauth in short-lived CLI subprocess spawns). #}
+    <key>PGPASSFILE</key>
+    <string>/Users/deploy/.pgpass</string>
     <key>PATH</key>
     <string>{{ precis_worker_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>PRECIS_DATABASE_URL</key>

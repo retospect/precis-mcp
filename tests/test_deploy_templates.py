@@ -91,3 +91,99 @@ def test_rendered_pgpassfile_is_not_blank() -> None:
     parsed = json.loads(_render())
     env = parsed["mcpServers"]["precis"]["env"]
     assert env.get("PGPASSFILE", "").strip() != ""
+
+
+# ── gr208726: every worker launch unit must pin PGPASSFILE on BOTH OSes ──
+#
+# The collapsed worker's darwin env used to rely on libpq resolving
+# ``~/.pgpass`` from the home directory — but the short-lived ``precis`` CLI
+# subprocesses a plan_tick session's Bash tool spawns hit transient
+# home-directory-lookup failures under deploy/memory load (getpwuid via the
+# directory service), surfacing as ``fe_sendauth: no password supplied``
+# bursts. The env pin removes that resolution path entirely; these tests keep
+# a future edit from quietly re-narrowing the pin to one OS.
+
+_WORKER_UNIT_SOURCES = [
+    _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml",
+    _REPO_ROOT / "deploy" / "playbooks" / "20c-precis-heartbeat-serving.yml",
+    _REPO_ROOT / "deploy" / "playbooks" / "20d-precis-worker-drain.yml",
+    _REPO_ROOT
+    / "deploy"
+    / "roles"
+    / "precis_worker"
+    / "templates"
+    / "precis-worker.plist.j2",
+    _REPO_ROOT
+    / "deploy"
+    / "roles"
+    / "precis_worker"
+    / "templates"
+    / "precis-worker.service.j2",
+    _REPO_ROOT
+    / "deploy"
+    / "roles"
+    / "precis_worker_agent"
+    / "templates"
+    / "precis-worker-agent.plist.j2",
+    _REPO_ROOT
+    / "deploy"
+    / "roles"
+    / "precis_worker_agent"
+    / "templates"
+    / "precis-worker-agent.service.j2",
+]
+
+
+def test_every_worker_unit_pins_pgpassfile() -> None:
+    """Each worker launch-unit source (live collapsed/heartbeat/drain
+    playbooks + the split-unit rollback templates, both OSes) must mention a
+    ``PGPASSFILE`` pin somewhere in its env definition."""
+    for src in _WORKER_UNIT_SOURCES:
+        assert "PGPASSFILE" in src.read_text(encoding="utf-8"), (
+            f"{src.relative_to(_REPO_ROOT)} defines a worker launch unit with "
+            "no PGPASSFILE pin — its passwordless agent_rw DSN then depends on "
+            "libpq's home-directory resolution, the gr208726 failure mode."
+        )
+
+
+def _render_collapsed_worker_base_env(os_family: str) -> dict[str, str]:
+    """Render 20b's ``_l_b_base_env`` jinja expression for one OS family,
+    with ansible's ``combine`` filter stubbed and every interpolated var
+    given a placeholder."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    expr = plays[0]["vars"]["_l_b_base_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+
+    def _combine(base: dict, extra: dict) -> dict:
+        return {**base, **extra}
+
+    env.filters["combine"] = _combine
+    rendered = env.from_string(expr).render(
+        os_family=os_family,
+        precis_shared_env={},
+        precis_identity_env={},
+        precis_worker_venv="/opt/precis/venv",
+        precis_worker_dsn="postgresql://agent_rw@203.0.113.10:6432/precis_prod",
+        precis_worker_hf_home="/var/lib/precis/hf-cache",
+        precis_worker_embedder="remote",
+        precis_worker_embedder_url="http://127.0.0.1:8181",
+    )
+    assert isinstance(rendered, dict), f"_l_b_base_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_collapsed_worker_env_pins_pgpassfile_on_both_oses() -> None:
+    """The rendered collapsed-worker env must carry the per-OS ``PGPASSFILE``
+    path — the darwin branch is the gr208726 regression (it used to be
+    linux-only)."""
+    darwin = _render_collapsed_worker_base_env("darwin")
+    assert darwin.get("PGPASSFILE") == "/Users/deploy/.pgpass"
+    linux = _render_collapsed_worker_base_env("linux")
+    assert linux.get("PGPASSFILE") == "/home/deploy/.pgpass"
