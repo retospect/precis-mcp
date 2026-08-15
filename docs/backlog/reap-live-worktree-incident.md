@@ -53,6 +53,18 @@ recovery lock with reason "live session 22516 …" (no `pid` keyword).
   `pid <N>` as `needs_judgment`, never `safe_remove` — unknown-format
   locks were placed deliberately by someone; reap must not guess.
 
+## Collateral: the session's stdio precis MCP wedged
+
+Hours after the deletions, the same session's `precis serve` stdio MCP
+stopped responding entirely — two `link` calls and then a trivial
+`get(kind='skill')` all sat silent past the 1800s idle timeout, while
+direct psql to the same prod DSN worked fine. The serve process was
+started before the worktree was deleted/recreated twice under it, so a
+stale-cwd/stale-inode import or a crashed in-process worker thread
+holding the request loop are the suspects. Recovery: reconnect the MCP
+server (session restart or `/mcp` reconnect); diagnose with
+`uvx py-spy dump` on the serve pid if it recurs.
+
 ## Interim mitigations (in use by the affected session)
 
 - Re-lock with the exact parseable reason `pid <N>` (live#-classified,

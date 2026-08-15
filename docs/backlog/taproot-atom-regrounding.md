@@ -52,6 +52,19 @@ The 2026-08-15 regrounded artifact
 is review-grade only — do NOT feed it to `apply`; re-run after the
 fixes.
 
+**Attempt 4 (same day, WITH the three fixes): still not apply-grade.**
+33/166 grounded (20%, vs 19% run 1); verify-rejected 101,
+quote-validation-failed 17 (now visible), no-passage 8, hanging 7; hubs
+2 all-grounded / 13 partial / 31 all-rejected / 2 hanging / 1 error row.
+The flake guard fired 27× and its retries rescued nothing — all-reject
+batches are *persistent within a run window* (the isolated repro flips
+the same batch to 3/3 supported), i.e. the rung is degraded for the
+whole bulk run, not per-call flaky. Gate on lane health before the next
+attempt: T0b/T0d deployed 2026-08-15 — use the T0d hourly rollups to
+confirm the MEDIUM lane is serving cleanly, then re-run. The
+embedding-similarity ranker (large papers, 0% grounded >150 chunks)
+remains the other blocking fix.
+
 Binding review feedback (Reto 2026-08-15, on the dry-run-49 dossier;
 canonical list: `claim-publication-nanopub-ots.md` §"Review feedback
 2026-08-15"). Atoms are currently extracted from the hub's claim sentence
