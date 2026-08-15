@@ -476,7 +476,18 @@ class QuestHandler(NumericRefHandler):
             star = " ★ needs-experiment" if graduated else ""
             return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}"
 
-        if not (fr.frontier or fr.dominated or fr.unevaluated):
+        def _fmt_provisional(pc: frontier_mod.ProvisionalCandidate) -> str:
+            c = pc.candidate
+            bits = []
+            for k, v in sorted(pc.measures.items()):
+                mark = " ⚠untrusted" if k in pc.untrusted_keys else ""
+                bits.append(f"{k}={v:g}{mark}")
+            ms = " ".join(bits) or "(no measures)"
+            star = " ★ provisional-frontier" if pc.on_frontier else ""
+            reasons = f" [{'; '.join(pc.reasons)}]" if pc.reasons else ""
+            return f"  {c.handle} {c.name} — {ms}{star}{reasons}"
+
+        if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
             lines.append("no candidate structures serve this quest yet.")
             return "\n".join(lines)
         lines.append(f"── Pareto frontier ({len(fr.frontier)}) — current best ──")
@@ -484,6 +495,12 @@ class QuestHandler(NumericRefHandler):
         if fr.dominated:
             lines += ["", f"── dominated ({len(fr.dominated)}) — explored + beaten ──"]
             lines += [_fmt(c) for c in fr.dominated]
+        if fr.provisional:
+            lines += [
+                "",
+                f"── provisional (measured, unconfirmed) ({len(fr.provisional)}) ──",
+            ]
+            lines += [_fmt_provisional(pc) for pc in fr.provisional]
         if fr.unevaluated:
             lines += ["", f"── awaiting a sim ({len(fr.unevaluated)}) ──"]
             lines += [f"  {c.handle} {c.name}" for c in fr.unevaluated]
@@ -504,7 +521,7 @@ class QuestHandler(NumericRefHandler):
         fr = frontier_mod.quest_frontier(self.store, ref.id)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
-        if not (fr.frontier or fr.dominated or fr.unevaluated):
+        if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
             return (
                 f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n\n"
                 "no candidate structures serve this quest yet."

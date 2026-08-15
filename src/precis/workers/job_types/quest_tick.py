@@ -78,6 +78,33 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def _build_search_embedder(store: Any) -> Any | None:
+    """Best-effort real embedder for a tick's HyDE corpus leg
+    (:mod:`precis.quest.search`, dossier-hygiene design) — reuses
+    :mod:`precis.workers.job_types.taproot_backfill`'s ``_build_embedder``
+    (this job also dispatches in-worker, off its own hub, not the server's).
+
+    Unlike that job's ANN-convergence use (where a missing embedder is a
+    real failure), HyDE is an enhancement: any failure here — a
+    misconfigured embedder backend, a ``store`` stub without
+    ``embedding_dim`` (unit tests) — degrades to ``None`` rather than
+    failing the tick. :func:`precis.quest.search._hyde_corpus_hits` already
+    tolerates ``embedder=None`` (fused-lexical-only, no semantic leg).
+    """
+    try:
+        from precis.workers.job_types.taproot_backfill import _build_embedder
+
+        return _build_embedder(store)
+    except Exception:
+        log.debug(
+            "quest_tick: search embedder unavailable; HyDE leg will degrade "
+            "to lexical-only",
+            exc_info=True,
+        )
+        return None
+
+
 #: Sim job_types this quest's compute lane mints (barrier + stability). Their
 #: non-terminal count is the loop's wait set + backpressure signal.
 #:
@@ -772,6 +799,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         tier=tier,
         search_fn=search_fn,
         job_ref_id=ctx.ref_id,
+        embedder=_build_search_embedder(ctx.store),
     )
     status = getattr(outcome, "status", "?")
     note = getattr(outcome, "note", "") or ""

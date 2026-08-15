@@ -3,6 +3,7 @@
     precis quest tick 7              # run one research tick against quest 7
     precis quest tick 7 --dry-run    # assemble + print the tick context, no LLM
     precis quest dossier 7           # print quest 7's living dossier
+    precis quest dossier-dedup 7 --dry-run  # preview near-dup ledger merges
     precis quest gaps 7              # print quest 7's gaps + health
     precis quest status 7            # ops roll-up: logbook, candidates, sim
                                       # jobs, coordinator trail, LLM spend
@@ -118,6 +119,21 @@ def add_parser(subparsers: Any) -> None:
     d = qsub.add_parser("dossier", help="Print a quest's dossier.")
     d.add_argument("id", type=int, help="Quest ref id.")
     d.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    dd = qsub.add_parser(
+        "dossier-dedup",
+        help="One-off cleanup: merge near-duplicate pinned-ledger attempt "
+        "nodes a quest accumulated before the add_attempt upsert discipline "
+        "landed. Keeps the oldest node per cluster at its most-advanced "
+        "status, re-parents absorbed nodes' children onto it.",
+    )
+    dd.add_argument("id", type=int, help="Quest ref id.")
+    dd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the planned merges without changing anything.",
+    )
+    dd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     g = qsub.add_parser("gaps", help="Print a quest's gaps + health.")
     g.add_argument("id", type=int, help="Quest ref id.")
@@ -412,6 +428,28 @@ def _cmd_dossier(store: Store, args: argparse.Namespace) -> None:
     print(text or "(dossier is empty)")
 
 
+def _cmd_dossier_dedup(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.dossier import dedup_ledger
+
+    merges = dedup_ledger(store, args.id, dry_run=args.dry_run)
+    if not merges:
+        print(f"quest {args.id}: no near-duplicate ledger nodes found")
+        return
+    removed = 0
+    for m in merges:
+        status_note = (
+            f" [{m.prior_status} -> {m.new_status}]"
+            if m.new_status != m.prior_status
+            else f" [{m.prior_status}]"
+        )
+        print(f"survivor: {m.survivor_text}{status_note}")
+        for text, status in m.absorbed:
+            print(f"  <- absorbed [{status}]: {text}")
+        removed += len(m.absorbed)
+    verb = "would merge" if args.dry_run else "merged"
+    print(f"\n{verb} {len(merges)} cluster(s), {removed} node(s) removed")
+
+
 def _cmd_gaps(store: Store, args: argparse.Namespace) -> None:
     from precis.dispatch import Hub
     from precis.handlers.quest import QuestHandler
@@ -462,6 +500,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_review_all(store, args)
     elif args.quest_cmd == "dossier":
         _cmd_dossier(store, args)
+    elif args.quest_cmd == "dossier-dedup":
+        _cmd_dossier_dedup(store, args)
     elif args.quest_cmd == "gaps":
         _cmd_gaps(store, args)
     elif args.quest_cmd == "frontier":

@@ -126,6 +126,35 @@ def _stub_queued(monkeypatch: pytest.MonkeyPatch, n: int) -> None:
     monkeypatch.setattr(qt, "_queued_sim_count", lambda store: n)
 
 
+class TestBuildSearchEmbedder:
+    """``_build_search_embedder`` — the HyDE corpus leg's best-effort real
+    embedder (dossier-hygiene design). Unlike
+    ``taproot_backfill._build_embedder`` (a real failure for its ANN-
+    convergence use), any failure here degrades to ``None`` rather than
+    raising — HyDE is an enhancement, not a correctness requirement."""
+
+    def test_degrades_to_none_on_any_failure(self) -> None:
+        # A bare SimpleNamespace has no `embedding_dim` — the underlying
+        # builder raises AttributeError; this must swallow it.
+        assert qt._build_search_embedder(SimpleNamespace()) is None
+
+    def test_reuses_taproot_backfills_builder_on_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[Any] = []
+
+        def _fake_build(store: Any) -> Any:
+            calls.append(store)
+            return "an-embedder"
+
+        monkeypatch.setattr(
+            "precis.workers.job_types.taproot_backfill._build_embedder", _fake_build
+        )
+        store = object()
+        assert qt._build_search_embedder(store) == "an-embedder"
+        assert calls == [store]
+
+
 class TestPhaseTick:
     def test_first_tick_dispatches_then_yields_await(
         self, monkeypatch: pytest.MonkeyPatch
@@ -142,6 +171,10 @@ class TestPhaseTick:
         assert "ts" in out.wake_when.payload
         assert len(calls) == 1 and calls[0]["compute"] is True
         assert calls[0]["tier"] == "big"
+        # HyDE's embedder is threaded through (dossier-hygiene design);
+        # FakeCtx's store has no `embedding_dim`, so it degrades to None
+        # rather than raising (:func:`_build_search_embedder`).
+        assert calls[0]["embedder"] is None
 
     def test_empty_punt_backs_off_and_retries(
         self, monkeypatch: pytest.MonkeyPatch

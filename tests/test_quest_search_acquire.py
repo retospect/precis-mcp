@@ -239,3 +239,125 @@ class TestMakeAcquiringSearch:
 
         assert out == []
         assert calls == []
+
+
+# ── HyDE searches payload (dossier-hygiene design) ──────────────────────
+
+
+class TestParseSearchEntry:
+    """:func:`precis.quest.search._parse_search_entry` — accepts either the
+    legacy plain query string, or ``{"query": ..., "hypothetical": ...}``."""
+
+    def test_plain_string_shape(self) -> None:
+        entry = qsearch._parse_search_entry("  photocatalytic nitrate reduction  ")
+        assert entry == qsearch.SearchQuery(
+            query="photocatalytic nitrate reduction", hypothetical=None
+        )
+
+    def test_dict_shape_with_hypothetical(self) -> None:
+        entry = qsearch._parse_search_entry(
+            {
+                "query": "rate limiting step",
+                "hypothetical": "The rate-limiting step is proton transfer.",
+            }
+        )
+        assert entry == qsearch.SearchQuery(
+            query="rate limiting step",
+            hypothetical="The rate-limiting step is proton transfer.",
+        )
+
+    def test_dict_shape_without_hypothetical(self) -> None:
+        entry = qsearch._parse_search_entry({"query": "a query"})
+        assert entry == qsearch.SearchQuery(query="a query", hypothetical=None)
+
+    def test_blank_query_in_dict_is_none(self) -> None:
+        assert qsearch._parse_search_entry({"query": "   "}) is None
+        assert qsearch._parse_search_entry({"hypothetical": "no query given"}) is None
+
+    def test_blank_string_is_none(self) -> None:
+        assert qsearch._parse_search_entry("   ") is None
+        assert qsearch._parse_search_entry(None) is None
+
+    def test_blank_hypothetical_normalizes_to_none(self) -> None:
+        entry = qsearch._parse_search_entry({"query": "q", "hypothetical": "   "})
+        assert entry is not None
+        assert entry.hypothetical is None
+
+
+class TestHydeCorpusHits:
+    """:func:`precis.quest.search._hyde_corpus_hits` — the corpus leg that
+    fuses ``query``/``hypothetical`` via
+    :class:`precis.handlers._paper_search.FusedBlockSearch` instead of
+    plain lexical (dossier-hygiene design). The fusion call itself is
+    mocked — this is a routing test, not an integration test of broad
+    retrieval."""
+
+    def test_routes_query_and_hypothetical_as_queries_and_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.handlers._paper_search import FusedBlockSearch
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_run(self: Any, **kw: Any) -> Any:
+            calls.append(kw)
+            return SimpleNamespace(
+                hits=[
+                    (None, SimpleNamespace(id=42), 1.0),
+                    (None, SimpleNamespace(id=7), 0.5),
+                ]
+            )
+
+        monkeypatch.setattr(FusedBlockSearch, "run", _fake_run)
+
+        store: Any = object()
+        out = qsearch._hyde_corpus_hits(
+            store,
+            None,
+            1,
+            "rate limiting step",
+            "The rate-limiting step is proton transfer to the surface oxygen.",
+            [],
+        )
+
+        assert out == [42, 7]
+        assert len(calls) == 1
+        assert calls[0]["queries"] == ["rate limiting step"]
+        assert calls[0]["answers"] == [
+            "The rate-limiting step is proton transfer to the surface oxygen."
+        ]
+        assert calls[0]["q"] == "rate limiting step"
+
+    def test_excludes_and_dedups(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from precis.handlers._paper_search import FusedBlockSearch
+
+        def _fake_run(self: Any, **kw: Any) -> Any:
+            return SimpleNamespace(
+                hits=[
+                    (None, SimpleNamespace(id=1), 1.0),
+                    (None, SimpleNamespace(id=2), 0.9),
+                    (None, SimpleNamespace(id=1), 0.8),  # dup ref, e.g. 2 blocks
+                ]
+            )
+
+        monkeypatch.setattr(FusedBlockSearch, "run", _fake_run)
+
+        store: Any = object()
+        out = qsearch._hyde_corpus_hits(
+            store, None, 1, "q", "a hypothetical passage", [2]
+        )
+        assert out == [1]  # 2 excluded, 1 deduped to a single entry
+
+    def test_degrades_to_empty_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.handlers._paper_search import FusedBlockSearch
+
+        def _boom(self: Any, **kw: Any) -> Any:
+            raise RuntimeError("fusion blew up")
+
+        monkeypatch.setattr(FusedBlockSearch, "run", _boom)
+
+        store: Any = object()
+        out = qsearch._hyde_corpus_hits(store, None, 1, "q", "a hypothetical", [])
+        assert out == []

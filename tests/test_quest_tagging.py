@@ -8,6 +8,7 @@ Runs against real PG (the ``store`` fixture) so the ``serves`` walk +
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -101,3 +102,90 @@ class TestTagOnJoin:
         assert step.papers_linked == 1
         tag = Tag.open(f"quest:{qid}")
         assert tag in store.tags_for(paper)
+
+
+class TestHydeSearchLeg:
+    """``run_search_step``'s HyDE corpus leg (dossier-hygiene design): a
+    ``searches`` entry carrying ``hypothetical`` routes its corpus lookup
+    through the broad-retrieval fusion facility (mocked here) instead of
+    ``search_fn``'s plain corpus/acquire composite — the S2+acquire leg
+    (``search_fn``) is still driven by the plain keyword ``query``,
+    unchanged."""
+
+    def test_hyde_leg_links_a_paper_the_search_fn_never_saw(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.handlers._paper_search import FusedBlockSearch
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A quest grounded via HyDE"))
+        paper = seed_ref(store, title="Proton-Coupled Electron Transfer Study")
+
+        monkeypatch.setattr(
+            FusedBlockSearch,
+            "run",
+            lambda self, **kw: SimpleNamespace(
+                hits=[(None, SimpleNamespace(id=paper), 1.0)]
+            ),
+        )
+
+        # search_fn (the S2+acquire leg) contributes nothing — the link
+        # must come from the HyDE corpus leg alone.
+        step = run_search_step(
+            store,
+            qid,
+            [
+                {
+                    "query": "PCET mechanism",
+                    "hypothetical": (
+                        "Proton-coupled electron transfer governs the "
+                        "rate-limiting step at the catalyst surface."
+                    ),
+                }
+            ],
+            search_fn=lambda *a, **kw: [],
+        )
+
+        assert step.queries_run == 1
+        assert step.papers_linked == 1
+        tag = Tag.open(f"quest:{qid}")
+        assert tag in store.tags_for(paper)
+
+    def test_mixed_plain_and_hyde_entries_both_run(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.handlers._paper_search import FusedBlockSearch
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A quest with a mixed search batch"))
+        held = seed_ref(store, title="Photocatalytic Nitrate Reduction Study")
+        hyde_paper = seed_ref(store, title="Proton-Coupled Electron Transfer Study")
+
+        monkeypatch.setattr(
+            FusedBlockSearch,
+            "run",
+            lambda self, **kw: SimpleNamespace(
+                hits=[(None, SimpleNamespace(id=hyde_paper), 1.0)]
+            ),
+        )
+
+        step = run_search_step(
+            store,
+            qid,
+            [
+                "photocatalytic nitrate reduction",
+                {
+                    "query": "PCET mechanism",
+                    "hypothetical": (
+                        "Proton-coupled electron transfer governs the "
+                        "rate-limiting step at the catalyst surface."
+                    ),
+                },
+            ],
+        )
+
+        assert step.queries_run == 2
+        assert step.papers_linked == 2
+        tag = Tag.open(f"quest:{qid}")
+        assert tag in store.tags_for(held)
+        assert tag in store.tags_for(hyde_paper)

@@ -324,14 +324,109 @@ class TestAttemptTree:
         )
         assert read_ledger(store, qid).count("Fe–N4 single-atom sites") == 1
 
+    def test_add_attempt_near_dup_same_status_is_a_noop(self, store: Any) -> None:
+        # dossier-hygiene design's dedup-before-insert: a rephrased repeat
+        # (not byte-identical) of an already-pinned direction merges into
+        # it instead of piling up as a fresh sibling — the prod defect this
+        # closes (~8 near-copies of one "identify rate-limiting step /
+        # side product / poison" direction).
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "identify the rate-limiting step") is True
+        assert (
+            add_attempt(store, qid, "identify the rate limiting step in the pathway")
+            is False
+        )
+        ledger = read_ledger(store, qid)
+        assert ledger.count("- [open]") == 1
+        assert "identify the rate-limiting step" in ledger
+        assert "in the pathway" not in ledger  # the rephrasing itself was dropped
+
+    def test_add_attempt_near_dup_advances_status(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert (
+            add_attempt(store, qid, "identify the rate-limiting step", status="open")
+            is True
+        )
+        assert (
+            add_attempt(
+                store,
+                qid,
+                "identify the rate limiting step in the pathway",
+                status="tried",
+            )
+            is False
+        )
+        ledger = read_ledger(store, qid)
+        # the ORIGINAL node's text is kept — only its status advances
+        assert "- [tried] identify the rate-limiting step" in ledger
+        assert ledger.count("identify") == 1  # merged, not duplicated
+
+    def test_add_attempt_near_dup_never_regresses_status(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert (
+            add_attempt(
+                store, qid, "identify the rate-limiting step", status="ruled-out"
+            )
+            is True
+        )
+        assert (
+            add_attempt(
+                store,
+                qid,
+                "identify the rate limiting step in the pathway",
+                status="open",
+            )
+            is False
+        )
+        ledger = read_ledger(store, qid)
+        assert "- [ruled-out] identify the rate-limiting step" in ledger
+        assert "[open] identify" not in ledger
+
+    def test_add_attempt_near_dup_scans_whole_ledger_not_just_siblings(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        add_attempt(store, qid, "explore route alpha")
+        add_attempt(store, qid, "explore route beta")
+        assert (
+            add_attempt(
+                store,
+                qid,
+                "identify the rate-limiting step",
+                parent="explore route alpha",
+            )
+            is True
+        )
+        # a near-dup add under a DIFFERENT parent still merges into the
+        # existing node (wherever it lives) rather than duplicating under
+        # the newly-requested parent — the global (not sibling-scoped) scan.
+        assert (
+            add_attempt(
+                store,
+                qid,
+                "identify the rate limiting step in the pathway",
+                parent="explore route beta",
+                status="tried",
+            )
+            is False
+        )
+        ledger = read_ledger(store, qid)
+        alpha_block, beta_block = ledger.split("- [open] explore route beta")
+        assert "- [tried] identify the rate-limiting step" in alpha_block
+        assert "identify" not in beta_block
+
     def test_mark_attempt_ambiguous_node_without_parent_is_a_noop(
         self, store: Any
     ) -> None:
         qid = _mk_quest(store, "A striving")
-        add_attempt(store, qid, "path 1")
-        add_attempt(store, qid, "path 2")
-        add_attempt(store, qid, "c", parent="path 1")
-        add_attempt(store, qid, "c", parent="path 2")
+        # Deliberately low token overlap (below the near-dup Jaccard floor,
+        # dossier-hygiene design) so the two roots stay distinct rather than
+        # upsert-merging into one — this test is about "c" being ambiguous
+        # across branches, not about the new dedup-before-insert path.
+        add_attempt(store, qid, "explore route alpha")
+        add_attempt(store, qid, "explore route beta")
+        add_attempt(store, qid, "c", parent="explore route alpha")
+        add_attempt(store, qid, "c", parent="explore route beta")
         before = read_ledger(store, qid)
         # "c" appears under two different parents — no disambiguator given
         assert mark_attempt(store, qid, "c", "ruled-out") is False
@@ -339,16 +434,19 @@ class TestAttemptTree:
 
     def test_mark_attempt_parent_disambiguates_ambiguous_node(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
-        add_attempt(store, qid, "path 1")
-        add_attempt(store, qid, "path 2")
-        add_attempt(store, qid, "c", parent="path 1")
-        add_attempt(store, qid, "c", parent="path 2")
-        assert mark_attempt(store, qid, "c", "ruled-out", parent="path 1") is True
+        add_attempt(store, qid, "explore route alpha")
+        add_attempt(store, qid, "explore route beta")
+        add_attempt(store, qid, "c", parent="explore route alpha")
+        add_attempt(store, qid, "c", parent="explore route beta")
+        assert (
+            mark_attempt(store, qid, "c", "ruled-out", parent="explore route alpha")
+            is True
+        )
         ledger = read_ledger(store, qid)
-        # only path 1's "c" is marked ruled-out; path 2's "c" stays open
-        p1_block, p2_block = ledger.split("- [open] path 2")
-        assert "[ruled-out] c" in p1_block
-        assert "[open] c" in p2_block
+        # only route alpha's "c" is marked ruled-out; route beta's "c" stays open
+        alpha_block, beta_block = ledger.split("- [open] explore route beta")
+        assert "[ruled-out] c" in alpha_block
+        assert "[open] c" in beta_block
 
     def test_mark_attempt_unknown_status_is_a_noop(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -451,23 +549,35 @@ class TestAttemptTree:
         from precis.quest.dossier import ledger_do_not_repropose
 
         qid = _mk_quest(store, "A striving")
+        # Deliberately low token overlap between the two variants (below the
+        # near-dup Jaccard floor, dossier-hygiene design) — this test is
+        # about the dead-subtree collapse, not the new dedup-before-insert
+        # merge path.
         add_attempt(store, qid, "dead direction d", status="ruled-out")
         add_attempt(
-            store, qid, "d variant 1", parent="dead direction d", status="tried"
+            store,
+            qid,
+            "swap the doping cation",
+            parent="dead direction d",
+            status="tried",
         )
         add_attempt(
-            store, qid, "d variant 2", parent="dead direction d", status="ruled-out"
+            store,
+            qid,
+            "swap the doping anion",
+            parent="dead direction d",
+            status="ruled-out",
         )
         ledger = read_ledger(store, qid)
         # full per-node detail still lives in the raw pinned chunk
-        assert "d variant 1" in ledger and "d variant 2" in ledger
+        assert "swap the doping cation" in ledger and "swap the doping anion" in ledger
 
         text = ledger_do_not_repropose(ledger)
         assert "dead direction d" in text
         assert "(3 variants, all ruled out)" in text
         # the collapsed summary does NOT repeat the individual variants
-        assert "d variant 1" not in text
-        assert "d variant 2" not in text
+        assert "swap the doping cation" not in text
+        assert "swap the doping anion" not in text
 
     def test_ledger_do_not_repropose_excludes_open_directions_with_no_dead_ancestor(
         self, store: Any
@@ -495,10 +605,18 @@ class TestAttemptTree:
         qid = _mk_quest(store, "A striving")
         add_attempt(store, qid, "dead direction d", status="ruled-out")
         add_attempt(
-            store, qid, "d variant 1", parent="dead direction d", status="tried"
+            store,
+            qid,
+            "swap the doping cation",
+            parent="dead direction d",
+            status="tried",
         )
         add_attempt(
-            store, qid, "d variant 2", parent="dead direction d", status="ruled-out"
+            store,
+            qid,
+            "swap the doping anion",
+            parent="dead direction d",
+            status="ruled-out",
         )
         add_attempt(store, qid, "an untried lead", status="open")
         did = dossier_ref_id(store, qid)
@@ -999,6 +1117,33 @@ class TestQuestTick:
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         assert out.status == "succeeded"
         assert out.ledger_added == 0
+
+    def test_ledger_ops_near_dup_add_is_a_merge_not_counted_as_an_add(
+        self, store: Any
+    ) -> None:
+        # dossier-hygiene design: a rephrased `add` that near-dup-matches an
+        # already-pinned node upserts (status-advances) rather than
+        # appending — `ledger_added` must stay honest (a merge is not an
+        # add), same coordinator engagement signal `ledger_added` already
+        # protects for dedup-skipped `ledger_add` entries above.
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "ledger_ops": [
+                {"op": "add", "text": "identify the rate-limiting step"},
+                {
+                    "op": "add",
+                    "text": "identify the rate limiting step in the pathway",
+                    "status": "tried",
+                },
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert out.ledger_added == 1
+        ledger = read_ledger(store, qid)
+        assert ledger.count("- [") == 1
+        assert "- [tried] identify the rate-limiting step" in ledger
 
 
 class TestNarrativeGrowthGate:
@@ -1538,8 +1683,14 @@ class TestPromptAndView:
         assert "Ruled-out ledger (do NOT re-propose these directions)" in prompt
         assert "Pd(111) bare — beaten on barrier" in prompt
         assert "Fe-N4 single atom sites" in prompt
-        # the Open section is a to-do list, not a "do not re-propose" constraint
-        assert "Does co-adsorbed H help?" not in prompt
+        # the ruled-out/tried CONSTRAINT section specifically excludes the
+        # open entry — it surfaces instead in the separate "Open ledger
+        # directions" section (the upsert-discipline aid, dossier-hygiene
+        # design), not as a "do not re-propose" line.
+        ruled_out_section = prompt.split("## Open ledger directions")[0]
+        assert "Does co-adsorbed H help?" not in ruled_out_section
+        assert "## Open ledger directions" in prompt
+        assert "Does co-adsorbed H help?" in prompt
 
 
 def test_dossier_relation_registered() -> None:
@@ -2437,3 +2588,70 @@ class TestWipCap:
         assert len(calls) == 3  # 2 dry primary passes + 1 ladder dispatch
         assert len(calls[-1]) == 1  # capped even though the model proposed 3
         assert out.sims_dispatched == 1
+
+
+class TestFrontierSummaryProvisional:
+    """_frontier_summary renders the provisional band between beaten and
+    awaiting: values marked ≈ when untrusted, reason in brackets, frontier-
+    leaders-if-trusted starred and sorted first, tail capped at 10."""
+
+    @staticmethod
+    def _fr(provisional: list[Any], **kw: Any) -> Any:
+        from precis.quest.frontier import FrontierResult
+
+        return FrontierResult(
+            objectives=[("barrier", "min"), ("energy", "min")],
+            frontier=kw.get("frontier", []),
+            dominated=kw.get("dominated", []),
+            unevaluated=kw.get("unevaluated", []),
+            provisional=provisional,
+        )
+
+    @staticmethod
+    def _pc(
+        ref_id: int, barrier: float, *, on_frontier: bool = False, reason: str = "x"
+    ) -> Any:
+        from precis.quest.frontier import Candidate, ProvisionalCandidate
+
+        return ProvisionalCandidate(
+            candidate=Candidate(
+                ref_id,
+                f"st{ref_id}",
+                f"C{ref_id}",
+                {},
+                True,
+                flags={"barrier_trusted": False},
+            ),
+            measures={"barrier": barrier, "energy": -10.0},
+            untrusted_keys=frozenset({"barrier"}),
+            reasons=[reason],
+            on_frontier=on_frontier,
+        )
+
+    def _summary(self, fr: Any) -> str:
+        store = SimpleNamespace(tags_for=lambda _rid: [])
+        return tick_mod._frontier_summary(store, 1, fr=fr)  # type: ignore[arg-type]
+
+    def test_provisional_row_marked_with_reason_and_untrusted_values(self) -> None:
+        text = self._summary(
+            self._fr([self._pc(2, 0.5, on_frontier=True, reason="adsorbate detached")])
+        )
+        assert "provisional st2 C2" in text
+        assert "barrier≈0.5" in text  # untrusted key marked
+        assert "energy=-10" in text  # trusted key unmarked
+        assert "★provisional-frontier" in text
+        assert "[adsorbate detached]" in text
+
+    def test_provisional_alone_is_not_an_empty_table(self) -> None:
+        assert "no candidate materials" not in self._summary(
+            self._fr([self._pc(2, 0.5)])
+        )
+
+    def test_frontier_leaders_sort_first_and_tail_is_capped(self) -> None:
+        pcs = [self._pc(i, 0.1 * i) for i in range(3, 15)]  # 12 plain...
+        pcs.insert(0, self._pc(99, 9.9, on_frontier=True))  # ...leader listed last
+        text = self._summary(self._fr(pcs))
+        lines = [ln for ln in text.splitlines() if ln.startswith("- provisional")]
+        assert len(lines) == 10
+        assert "st99" in lines[0]  # on_frontier sorts first despite worst value
+        assert "(+3 more provisional)" in text

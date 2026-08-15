@@ -176,17 +176,30 @@
           text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ frontier_scatter.x_label }}</text>
     {% for p in frontier_scatter.points %}
     {% if p.open_url %}<a href="{{ p.open_url }}">{% endif %}
+    {% if p.band == "provisional" %}
+    <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
+            class="fill-white"
+            stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2">
+      <title>{{ p.name }} ({{ p.handle }}) — {{ frontier_scatter.x_label }}={{ '%g' | format(p.x) }}, {{ frontier_scatter.y_label }}={{ '%g' | format(p.y) }} — provisional{% if p.untrusted %}, untrusted{% endif %}{% if p.on_frontier %}, provisional frontier{% endif %}{% if p.reasons %} — {{ p.reasons | join('; ') }}{% endif %}</title>
+    </circle>
+    {% if p.on_frontier %}
+    <text x="{{ p.cx }}" y="{{ p.cy - 8 }}" text-anchor="middle" class="fill-orange-700" style="font-size: 9px;">★</text>
+    {% endif %}
+    {% else %}
     <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
             class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
             stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
             stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}">
       <title>{{ p.name }} ({{ p.handle }}) — {{ frontier_scatter.x_label }}={{ '%g' | format(p.x) }}, {{ frontier_scatter.y_label }}={{ '%g' | format(p.y) }} — {{ 'converged' if p.converged else 'awaiting sim' }}</title>
     </circle>
+    {% endif %}
     {% if p.open_url %}</a>{% endif %}
     {% endfor %}
   </svg>
   <p class="text-xs text-slate-400 mb-3">
-    filled = converged · hollow/dashed = awaiting sim · hover a point for details
+    filled blue = converged · hollow/dashed grey = awaiting sim ·
+    hollow/dashed orange = provisional (measured, unconfirmed) ·
+    ★ = provisional frontier · hover a point for details
   </p>
   {% endif %}
   {% if not frontier_scatter and frontier_has_candidates %}

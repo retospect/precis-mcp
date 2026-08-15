@@ -464,7 +464,8 @@ def _ruled_out_handles(
 
         fr = quest_frontier(store, quest_id)
     out = []
-    for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+    provisional = (p.candidate for p in fr.provisional)
+    for c in (*fr.frontier, *fr.dominated, *provisional, *fr.unevaluated):
         if any(str(t).startswith("ruled-out:") for t in store.tags_for(c.ref_id)):
             out.append(c.handle)
     return out
@@ -487,7 +488,7 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         from precis.quest.frontier import quest_frontier
 
         fr = quest_frontier(store, quest_id)
-    if not (fr.frontier or fr.dominated or fr.unevaluated):
+    if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
         return "(no candidate materials simulated yet)"
     lines = [f"objective: {' · '.join(f'{k} ({s})' for k, s in fr.objectives)}"]
     for c in fr.frontier:
@@ -496,6 +497,21 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
     for c in fr.dominated[:5]:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
         lines.append(f"- beaten   {c.handle} {c.name} — {ms}")
+    # Provisional rows: measured but unconfirmed (untrusted values marked ≈,
+    # exclusion reason in brackets). Frontier-leaders-if-trusted first, then
+    # capped — a long provisional tail is re-sim queue, not reasoning input.
+    provisional = sorted(fr.provisional, key=lambda p: not p.on_frontier)
+    for p in provisional[:10]:
+        c = p.candidate
+        ms = " ".join(
+            (f"{k}≈{v:g}" if k in p.untrusted_keys else f"{k}={v:g}")
+            for k, v in sorted(p.measures.items())
+        )
+        star = " ★provisional-frontier" if p.on_frontier else ""
+        why = f" [{'; '.join(p.reasons)}]" if p.reasons else ""
+        lines.append(f"- provisional {c.handle} {c.name} — {ms}{star}{why}")
+    if len(provisional) > 10:
+        lines.append(f"  (+{len(provisional) - 10} more provisional)")
     if fr.unevaluated:
         named = ", ".join(f"{c.handle} {c.name}" for c in fr.unevaluated[:5])
         rest = f" (+{len(fr.unevaluated) - 5} more)" if len(fr.unevaluated) > 5 else ""
@@ -519,6 +535,22 @@ def _ledger_constraints(ledger_text: str) -> str:
     parsing + inheritance + collapse.
     """
     return dossier_mod.ledger_do_not_repropose(ledger_text)
+
+
+def _ledger_open_summary(ledger_text: str) -> str:
+    """Bullet lines for the pinned attempt tree's ``open``/``active``
+    directions — the upsert counterpart to :func:`_ledger_constraints`'s
+    tried/ruled-out list.
+
+    Without this, the proposer only ever saw what's dead, never what's
+    already pinned as a still-open direction — so "when in doubt, add" (the
+    old prompt guidance) meant re-adding a rephrasing of something it had
+    already proposed. :func:`precis.quest.dossier.add_attempt`'s near-dup
+    merge is the correctness backstop for when the model does that anyway;
+    this list is the prompt-quality fix that makes it less likely to in the
+    first place. See :func:`precis.quest.dossier.ledger_open_nodes`.
+    """
+    return dossier_mod.ledger_open_nodes(ledger_text)
 
 
 def _champion(
@@ -845,6 +877,7 @@ def build_tick_prompt(
         ),
         dossier=dossier_text or "(no dossier yet)",
         ledger_constraints=_ledger_constraints(ledger_text),
+        ledger_open=_ledger_open_summary(ledger_text),
         gaps="\n".join(gap_lines),
         logbook="\n".join(tail),
         servers="\n".join(servers),
@@ -875,6 +908,9 @@ no evidence for.
 ## Ruled-out ledger (do NOT re-propose these directions)
 {ledger_constraints}
 
+## Open ledger directions (already pinned — transition/refine these, don't re-add them)
+{ledger_open}
+
 ## Gaps (the exploration queue — what is thin or unanswered)
 {gaps}
 
@@ -889,12 +925,17 @@ no evidence for.
 (This table is computed fresh at tick time — treat it as ground truth. If it \
 conflicts with a claim in the dossier above, trust this table and correct the \
 dossier. The frontier table is the ONLY authoritative source of measured \
-barriers. A candidate shown as "awaiting a sim" has an UNKNOWN barrier — you \
-may NOT cite, claim, or rank on a barrier for it. NEVER restate a barrier \
-value from the dossier or logbook; if a dossier claim conflicts with this \
-table, the table wins and you must correct the dossier. You do not emit \
-`result`/`milestone` entries — the system stamps those from simulations; you \
-close a lead with a `dead-end` when the table shows it beaten.)
+barriers. A "provisional" row is a real measurement that failed a trust check \
+(the reason is shown; ≈ marks each unconfirmed value): you MAY reason with it, \
+compare against it, and prioritise re-simulating it — but every claim built on \
+one must carry the word "provisional", and it never counts as a confirmed \
+barrier or a frontier member. A candidate shown as "awaiting a sim" has an \
+UNKNOWN barrier — you may NOT cite, claim, or rank on a barrier for it. NEVER \
+restate a barrier value from the dossier or logbook; if a dossier claim \
+conflicts with this table, the table wins and you must correct the dossier. \
+You do not emit `result`/`milestone` entries — the system stamps those from \
+simulations; you close a lead with a `dead-end` when the table shows it \
+beaten.)
 {literature}{reaction_context}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
@@ -907,7 +948,11 @@ hypotheses above, your job is to *close* them — resolve one with evidence \
 hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
-`searches` to go get it instead of hypothesising in a vacuum.
+`searches` to go get it instead of hypothesising in a vacuum. A plain keyword \
+`query` works, but add a `hypothetical` (see the `searches` field below) when \
+a question-phrased query keeps missing — phrase it as one or two sentences \
+that could appear verbatim in the abstract of the paper you wish existed, NOT \
+as a question: retrieval matches documents, not questions (this is HyDE).
 
 When you rule out or complete a *direction* that must never be revisited, pin \
 it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
@@ -925,8 +970,16 @@ the existing node this refines/varies>", "status": "<optional, default open>"}}`
 parent, only needed when that node's text is ambiguous>"}}`
 Address a node by quoting its EXISTING text exactly (case doesn't matter) — \
 there are no ids. An op that can't resolve its node (not found, or the same \
-text in two branches with no disambiguating `parent`) is silently dropped, \
-so when in doubt add a new node rather than guess at one. Ruling out a \
+text in two branches with no disambiguating `parent`) is silently dropped. \
+**Upsert discipline**: check the open/active list above FIRST. If an existing \
+node already covers the thought you're about to add, `mark` it instead — \
+transition its status, or refine it with a CHILD `add` under its exact text \
+— rather than `add`-ing a rephrased restatement of it as a new unrelated \
+node. (The system also merges an obvious near-duplicate `add` into the \
+existing node rather than duplicating it, but that's a backstop, not \
+license to skip checking — a merge advances/no-ops silently and teaches the \
+ledger nothing a `mark` wouldn't have said more precisely.) Only `add` a \
+node that is a genuinely new direction. Ruling out a \
 direction implicitly rules out its still-open children in what you're shown \
 next tick — you do not need to mark each child individually.
 
@@ -948,8 +1001,12 @@ Respond with EXACTLY ONE JSON object and nothing else:
   "logbook": [
     {{"entry_type": "<one of: {entry_types}>", "text": "<one concise entry>"}}
   ],
-  "searches": ["<0–3 literature queries to ground this quest — papers found are \
-linked as servers and feed the next step>"],
+  "searches": ["<0–3 literature searches to ground this quest — papers found \
+are linked as servers and feed the next step. Either a plain keyword string, \
+or {{\"query\": \"<short keyword phrasing, for the external engine>\", \
+\"hypothetical\": \"<optional — one or two sentences that could appear \
+verbatim in the abstract of the paper you wish existed, not a question \
+(HyDE)>\"}}>"],
   "dossier_text": "<the FULL rewritten dossier: current understanding, best \
 leads so far, what's ruled out, open questions — plain prose per the format \
 above>",
@@ -1046,31 +1103,14 @@ def _payload_from_result(res: Any) -> dict[str, Any] | None:
     return _extract_json(getattr(res, "text", "") or "")
 
 
-#: Jaccard overlap of significant tokens above which two hypotheses are "the
-#: same question restated" and the new one is dropped (the spin was ~10
-#: rephrasings of one hypothesis).
-_HYP_DUP_JACCARD = 0.6
-
-
-def _sig_tokens(text: str) -> set[str]:
-    """Lowercased word tokens ≥4 chars — a cheap topical fingerprint."""
-    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 4}
-
-
-def _is_near_dup(text: str, existing: list[str]) -> bool:
-    """True when ``text`` restates any of ``existing`` (token Jaccard ≥ floor)."""
-    toks = _sig_tokens(text)
-    if not toks:
-        return False
-    for other in existing:
-        ot = _sig_tokens(other)
-        if not ot:
-            continue
-        inter = len(toks & ot)
-        union = len(toks | ot)
-        if union and inter / union >= _HYP_DUP_JACCARD:
-            return True
-    return False
+#: The hypothesis-dedup Jaccard floor + its token-overlap primitives now
+#: live in :mod:`precis.quest.dossier` (shared with :func:`add_attempt`'s
+#: near-dup ledger merge, dossier-hygiene design) — re-exported here under
+#: their original names so this module's one call site
+#: (:func:`run_quest_tick`'s hypothesis dedup, below) needed no change.
+_HYP_DUP_JACCARD = dossier_mod._HYP_DUP_JACCARD
+_sig_tokens = dossier_mod._sig_tokens
+_is_near_dup = dossier_mod._is_near_dup
 
 
 #: Entry types the MODEL may author. `result`, `milestone`, `cost` are
@@ -1432,6 +1472,7 @@ def run_quest_tick(
     review: bool | None = None,
     search_fn: Any = None,
     job_ref_id: int | None = None,
+    embedder: Any | None = None,
 ) -> QuestTickOutcome:
     """Run one structured research step against ``quest_id``.
 
@@ -1444,6 +1485,10 @@ def run_quest_tick(
     tier; ``True``/``False`` overrides it. An explicit ``tier`` wins over both.
     ``job_ref_id`` is the owning ``quest_tick`` coordinator job's ref id, when
     known (threaded onto the run-attribution ``agentlog`` — see below).
+    ``embedder`` (optional) powers a HyDE `searches` entry's corpus leg
+    (:func:`precis.quest.search.run_search_step` — dossier-hygiene design);
+    ``None`` degrades that leg to fused-lexical-only, same as the broad
+    `search()` verb with no embedder configured.
     """
     from precis.quest import cascade as cascade_mod
     from precis.utils.llm.router import Tier
@@ -1742,12 +1787,20 @@ def run_quest_tick(
     if compute:
         from precis.quest.search import run_search_step
 
-        queries = [
-            str(q).strip() for q in (payload.get("searches") or []) if str(q).strip()
-        ]
-        if queries:
+        # Each entry is either the legacy plain query string, or
+        # `{"query": "...", "hypothetical": "..."}` (HyDE — dossier-hygiene
+        # design) — passed through RAW; `run_search_step` does its own
+        # per-entry parsing/blank-filtering (a plain `str(q)` coercion here
+        # would mangle a dict entry into its Python repr).
+        raw_searches = payload.get("searches")
+        if isinstance(raw_searches, list) and raw_searches:
             sstep = run_search_step(
-                store, quest_id, queries, by=by, search_fn=search_fn
+                store,
+                quest_id,
+                raw_searches,
+                by=by,
+                search_fn=search_fn,
+                embedder=embedder,
             )
             searches_run = sstep.queries_run
             papers_linked = sstep.papers_linked

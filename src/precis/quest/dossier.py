@@ -18,14 +18,23 @@ research cycle**. The dossier doubles as the autonomous loop's *rolling
 context*: each tick reads the compact dossier rather than replaying the whole
 logbook, so context stays bounded.
 
-Dossier-owned-by-process splits the dossier body into a **narrative**
-paragraph (the whole-rewritten prose synthesis, ``edit_text``'d in place each
-tick, stable handle, ``prev_text`` history for free, and — since the
+Dossier-owned-by-process splits the dossier body into a **narrative** — the
+whole-rewritten prose synthesis — and a **pinned ledger**. The narrative is
+stored as **many small paragraph-level chunks, one thought each** (the
+narrative-chunking decision: "otherwise it's semantic mush", keep it
+unpinned and dynamic — see what emerges), not one big blob: every rewrite
+(:func:`rewrite_dossier`) retires the WHOLE existing unpinned set and
+inserts a fresh chunk per paragraph — delete + re-insert, never an
+in-place ``edit_text``, so the per-chunk embedding/summary cascade re-runs
+on each thought individually rather than once over the whole prose. There is
+no longer one stable narrative handle across ticks (:func:`read_narrative`
+joins whatever unpinned chunks currently exist, in reading order, back into
+one document for a reader/prompt). The narrative is also — since the
 attempt-tree ledger (dossier-hygiene design — quest package docstring) — held to a
 code-enforced growth ratchet, not a fixed cap: a rewrite may only outgrow the
 previous narrative by more than ~15%+50 words when the tick shows visible
 progress, see :mod:`precis.quest.narrative_budget` and ``tick.py``'s
-``_apply_narrative_gate``) plus a **pinned ledger** — the *strategic* attempt
+``_apply_narrative_gate``. The **pinned ledger** is the *strategic* attempt
 tree, one node per tried/abandoned/open *direction* (a whole direction, not a
 single ruled-out structure — that per-candidate ledger already lives on
 ``structure`` tags, see ``tick.py``'s ``_ruled_out_handles``), children as
@@ -123,6 +132,13 @@ _STATUSES: tuple[str, ...] = ("open", "active", "tried", "ruled-out")
 #: Statuses that mean "don't re-propose this direction" — both an own status
 #: and (rendering-level, see :func:`ledger_do_not_repropose`) an inherited one.
 _DEAD_STATUSES = frozenset({"tried", "ruled-out"})
+#: The precedence order a near-duplicate merge advances ALONG (never
+#: backwards) — :data:`_STATUSES`' own order, ``open < active < tried <
+#: ruled-out``. Used by :func:`add_attempt`'s upsert path: merging a
+#: near-dup ``add`` whose status is further along than the matched node's
+#: own advances it there; a status earlier in this order never regresses
+#: the matched node (see :func:`_merge_near_dup_status`).
+_STATUS_RANK: dict[str, int] = {s: i for i, s in enumerate(_STATUSES)}
 
 #: The single heading for the nested attempt tree, replacing the old
 #: three-section ledger (still parsed for backward compatibility, below).
@@ -321,6 +337,80 @@ def _match_nodes(
     return [n for n, _p in matches]
 
 
+#: Jaccard overlap of significant tokens above which two ledger-node texts
+#: (or two hypotheses, :mod:`precis.quest.tick`'s own use of this same
+#: pair) count as "the same thought restated" — shared with
+#: :mod:`precis.quest.tick`'s hypothesis-dedup (``tick.py`` imports
+#: :func:`_sig_tokens`/:func:`_is_near_dup`/this constant from here rather
+#: than keeping its own copy — a prod dossier had ~8 near-copies of the
+#: same "identify rate-limiting step / side product / poison" ledger
+#: entries, the same spin the hypothesis-dedup constant was already tuned
+#: for). ``0.6`` on purpose ties BOTH call sites to one knob.
+_HYP_DUP_JACCARD = 0.6
+
+
+def _sig_tokens(text: str) -> set[str]:
+    """Lowercased word tokens ≥4 chars — a cheap topical fingerprint.
+
+    The length floor is what lets a short label (``"c"``, ``"path 1"``) —
+    common in tests and in a model's terse sibling-variant names — carry
+    NO significant tokens at all, so :func:`_is_near_dup` never merges two
+    such labels just because they share a short common word. It's also why
+    two same-named nodes in different branches (the documented
+    ``parent=``-disambiguated case) stay distinct under the global
+    near-dup scan in :func:`add_attempt`.
+    """
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 4}
+
+
+def _is_near_dup(text: str, existing: list[str]) -> bool:
+    """True when ``text`` restates any of ``existing`` (token Jaccard ≥
+    :data:`_HYP_DUP_JACCARD`). A ``text`` with no significant tokens
+    (:func:`_sig_tokens`) never matches anything — see that function's
+    docstring."""
+    toks = _sig_tokens(text)
+    if not toks:
+        return False
+    for other in existing:
+        ot = _sig_tokens(other)
+        if not ot:
+            continue
+        inter = len(toks & ot)
+        union = len(toks | ot)
+        if union and inter / union >= _HYP_DUP_JACCARD:
+            return True
+    return False
+
+
+def _find_near_dup_node(roots: list[AttemptNode], text: str) -> AttemptNode | None:
+    """The ledger-wide (not sibling-scoped) node whose text is the closest
+    near-duplicate of ``text``, or ``None`` when nothing crosses
+    :data:`_HYP_DUP_JACCARD`. Unlike :func:`_match_nodes` (exact-text
+    addressing, used for `parent`/`node` lookups), this scans EVERY node in
+    the forest regardless of branch — :func:`add_attempt`'s upsert path
+    (dossier dedup-before-insert): a rephrased repeat of an already-pinned
+    direction, wherever it lives, should merge into it rather than mint a
+    sibling. Ties broken by highest overlap ratio; a node with no
+    significant tokens (:func:`_sig_tokens`) is never a candidate on
+    either side of the comparison, so two short same-named siblings in
+    different branches (the ``parent=``-disambiguated case) are untouched.
+    """
+    toks = _sig_tokens(text)
+    if not toks:
+        return None
+    best: tuple[float, AttemptNode] | None = None
+    for n, _parent in _flatten_with_parent(roots):
+        ntoks = _sig_tokens(n.text)
+        if not ntoks:
+            continue
+        inter = len(toks & ntoks)
+        union = len(toks | ntoks)
+        ratio = inter / union if union else 0.0
+        if ratio >= _HYP_DUP_JACCARD and (best is None or ratio > best[0]):
+            best = (ratio, n)
+    return best[1] if best is not None else None
+
+
 def _subtree_all_dead(node: AttemptNode) -> bool:
     """True when ``node`` and every descendant is ``tried``/``ruled-out`` —
     the dead-subtree collapse trigger."""
@@ -389,6 +479,45 @@ def ledger_do_not_repropose(ledger: list[AttemptNode] | str) -> str:
     roots = _parse_ledger(ledger) if isinstance(ledger, str) else ledger
     lines = _do_not_repropose_lines(roots)
     return "\n".join(lines) if lines else "(nothing pinned yet)"
+
+
+#: Truncation length for one node's text in :func:`ledger_open_nodes` — the
+#: prompt block is a compact "what's already open" reminder, not a full
+#: ledger re-render (that's :func:`read_ledger`'s job).
+_OPEN_NODE_TRUNCATE = 140
+
+
+def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
+    """The pinned ledger's ``open``/``active`` directions — a compact
+    status+text bullet per node, each truncated to
+    :data:`_OPEN_NODE_TRUNCATE` chars — the upsert counterpart to
+    :func:`ledger_do_not_repropose`'s tried/ruled-out list.
+
+    Model-facing purpose: the proposer only ever saw the tried/ruled-out
+    constraint, so an already-pinned OPEN direction was invisible to it —
+    "when in doubt, add" then meant a rephrased repeat of something already
+    on the ledger (dossier-hygiene design's motivating prod defect: ~8
+    near-copies of the same "identify rate-limiting step / side
+    product / poison" entries). Showing the open queue lets the model
+    `mark`/refine an existing node via `ledger_ops` instead of re-adding
+    it — :func:`add_attempt`'s near-dup merge (see its docstring) already
+    catches the case where the model adds one anyway, so this is a
+    prompt-quality aid, not the correctness backstop.
+
+    Takes the forest directly or the legacy markdown text, mirroring
+    :func:`ledger_do_not_repropose`. ``"(none yet)"`` when nothing
+    qualifies.
+    """
+    roots = _parse_ledger(ledger) if isinstance(ledger, str) else ledger
+    lines: list[str] = []
+    for n, _parent in _flatten_with_parent(roots):
+        if n.status not in ("open", "active"):
+            continue
+        text = n.text
+        if len(text) > _OPEN_NODE_TRUNCATE:
+            text = text[: _OPEN_NODE_TRUNCATE - 1].rstrip() + "…"
+        lines.append(f"- [{n.status}] {text}")
+    return "\n".join(lines) if lines else "(none yet)"
 
 
 #: The second pinned chunk (Slice 4c-4): the candidate lineage tree. Unlike
@@ -838,7 +967,8 @@ def read_dossier(store: Store, owner_id: int) -> tuple[int | None, str | None, s
 
 
 def read_narrative(store: Store, owner_id: int) -> str:
-    """The model-rewritten narrative only (no pinned chunk, no heading).
+    """The model-rewritten narrative, reassembled into one document (no
+    pinned chunk, no heading).
 
     Feeds the tick prompt's ``{dossier}`` slot — the ledger is surfaced
     separately (:func:`read_ledger`) as an explicit constraint, and the
@@ -846,22 +976,20 @@ def read_narrative(store: Store, owner_id: int) -> str:
     rewritable prose. Excludes ANY pinned chunk (``meta.pinned`` truthy —
     ``"ledger"`` or ``"frontier-tree"``), not just the ledger, so a future
     pinned chunk needs no code change here. Returns ``""`` when the owner
-    has no dossier.
+    has no dossier, or has no narrative chunks yet.
 
     **Symmetric with :func:`rewrite_dossier` by contract**: the write side
-    only ever touches ``body[0]``, so the read side returns only ``body[0]``.
-    This used to join every unpinned body chunk, which is identical under the
-    invariant "a dossier has exactly one narrative chunk" — and silently
-    catastrophic once that invariant breaks. It broke in prod (quest 202469 /
-    dossier 202546, Aug 2026): a generic draft-hygiene todo refragmented the
-    narrative into 13 chunks, after which ``rewrite_dossier`` kept updating
-    only the first while this function fed the model all 13 — 8 of them frozen
-    at their pre-refactor state — under the prompt banner "the living
-    synthesis". The model had no signal that most of its "current"
-    understanding was weeks stale. Taking ``body[0]`` restores the contract;
-    the ``len(body) > 1`` warning makes a future divergence visible instead of
-    silent, since the read side degrading quietly is what let this run for 16
-    ticks unnoticed.
+    now replaces the WHOLE unpinned set every rewrite (retire-all +
+    insert-fresh, the narrative-chunking design — module docstring), so the
+    read side joining every live unpinned chunk, in reading order, is always
+    exactly what the last rewrite wrote — never a mix of fresh and stranded
+    chunks. (An earlier version of this function took only ``body[0]``,
+    guarding against a single-narrative-chunk invariant that a generic
+    draft-hygiene todo once broke in prod, quest 202469 / dossier 202546, Aug
+    2026, by refragmenting the one blob into 13 chunks that
+    ``rewrite_dossier`` only half-updated. Retiring the whole set on every
+    rewrite removes that failure mode by construction: any externally
+    introduced chunk is gone by the next tick regardless.)
     """
     did = dossier_ref_id(store, owner_id)
     if did is None:
@@ -872,18 +1000,7 @@ def read_narrative(store: Store, owner_id: int) -> str:
         for c in chunks
         if c.chunk_kind != "heading" and not (c.meta or {}).get("pinned")
     ]
-    if not body:
-        return ""
-    if len(body) > 1:
-        log.warning(
-            "dossier %s (owner %s) has %d unpinned body chunks; expected 1. "
-            "Reading body[0] only — the extras are stranded (never rewritten) "
-            "and are NOT fed to the tick prompt.",
-            did,
-            owner_id,
-            len(body),
-        )
-    return str(body[0].text)
+    return "\n\n".join(c.text for c in body)
 
 
 def read_ledger(store: Store, owner_id: int) -> str:
@@ -920,6 +1037,24 @@ def _ledger_roots(store: Store, owner_id: int) -> tuple[str, int, list[AttemptNo
     return handle, did, _load_ledger_nodes(store, did)
 
 
+def _set_node_status(
+    store: Store, dossier_id: int, node: AttemptNode, status: str
+) -> None:
+    """Replace ``node``'s own ``ATTEMPT:`` chunk tag with ``status`` —
+    the storage primitive behind :func:`mark_attempt` (text-addressed) and
+    :func:`add_attempt`'s near-dup status-advance merge (chunk-addressed,
+    so it can update the exact matched node without re-running
+    :func:`_match_nodes` — a global near-dup match is resolved by chunk
+    identity, not by re-parsing its text, which could re-hit an ambiguous
+    same-text-in-two-branches collision the first lookup already resolved).
+    """
+    assert node.handle is not None  # every loaded node carries a handle
+    ord_ = _chunk_ord(store, dossier_id, node.handle)
+    store.add_tag(
+        dossier_id, Tag.closed("ATTEMPT", status), pos=ord_, replace_prefix=True
+    )
+
+
 def add_attempt(
     store: Store,
     owner_id: int,
@@ -927,30 +1062,66 @@ def add_attempt(
     parent: str | None = None,
     status: str = "open",
 ) -> bool:
-    """Add one node to the pinned attempt tree; return ``True`` iff added.
+    """Add one node to the pinned attempt tree; return ``True`` iff a NEW
+    node chunk was created.
 
     A blank ``text`` is a no-op. ``status`` is clamped to ``"open"`` when it
-    isn't one of :data:`_STATUSES`. ``parent`` (optional) is the exact text of
-    an existing node the new one becomes a child of — matched trimmed +
-    case-insensitive (:func:`_match_nodes`); zero or >1 matches is a no-op
+    isn't one of :data:`_STATUSES`.
+
+    **Dedup-before-insert (dossier-hygiene design).** Before minting a node,
+    the WHOLE ledger (every branch, not just ``parent``'s siblings) is
+    scanned for a near-duplicate of ``text`` (:func:`_find_near_dup_node` —
+    token-Jaccard, the same measure :mod:`precis.quest.tick` uses to dedup
+    hypotheses; a prod dossier had ~8 near-copies of one direction, rephrased
+    each tick because the old dedup only looked at byte-identical siblings).
+    A hit UPSERTS instead of appending — no new chunk either way:
+
+    * same status as the match → pure no-op, nothing changes.
+    * a different status → the match's status ADVANCES to the incoming one
+      when it's further along :data:`_STATUS_RANK` (``open < active < tried
+      < ruled-out``), applied via :func:`_set_node_status` (the same
+      tag-replace :func:`mark_attempt` uses). A status BEHIND the match's
+      own is never applied — this never regresses a direction the ledger
+      already has further along.
+
+    A near-dup match ignores the requested ``parent`` — the match is
+    reused wherever it already lives in the tree, never re-parented. A
+    node with no significant tokens (:func:`_sig_tokens` — e.g. a short
+    label like ``"c"``) never near-dup-matches anything, so two same-named
+    leaves in different branches (the ``parent=``-disambiguated case,
+    :func:`_match_nodes`) stay distinct exactly as before.
+
+    Only once no near-dup is found does the OLD narrower guard still apply
+    — an exact byte-identical text+status repeat among ``parent``'s
+    siblings specifically is a no-op too (a safety net for a short label
+    with no significant tokens, which the near-dup scan above would never
+    catch): ``parent`` (optional) is the exact text of an existing node the
+    new one becomes a child of — matched trimmed + case-insensitive
+    (:func:`_match_nodes`); zero or >1 matches is a no-op
     (ambiguous/unmatched, never a guess). ``parent=None`` adds a new root
-    (depth-0) node, as a child of the ledger CONTAINER chunk. Idempotent: a
-    node with byte-identical text AND status already among the target's
-    children is skipped, not duplicated — the tree generalization of
-    :func:`append_ledger_entry`'s existing dedup. ``text`` is whitespace-
-    normalized (:func:`_normalize_node_text`) before storage — an embedded
-    newline (raw, untrusted model JSON via the tick's ``ledger_ops``) would
-    otherwise render, in the tick-prompt markdown view, as an extra physical
-    bullet line a model could mistake for a fabricated sibling. Creates one
-    new chunk (:func:`_write_node_chunk`) — no whole-ledger rewrite, unlike
-    the pre-real-chunks design. Heals a pre-A dossier lacking a ledger chunk
-    on the way in.
+    (depth-0) node, as a child of the ledger CONTAINER chunk.
+
+    ``text`` is whitespace-normalized (:func:`_normalize_node_text`) before
+    storage or comparison — an embedded newline (raw, untrusted model JSON
+    via the tick's ``ledger_ops``) would otherwise render, in the
+    tick-prompt markdown view, as an extra physical bullet line a model
+    could mistake for a fabricated sibling. Creates at most one new chunk
+    (:func:`_write_node_chunk`) — no whole-ledger rewrite, unlike the
+    pre-real-chunks design. Heals a pre-A dossier lacking a ledger chunk on
+    the way in.
     """
     stripped_text = _normalize_node_text(text)
     if not stripped_text:
         return False
     st = status if status in _STATUSES else "open"
     container_handle, did, roots = _ledger_roots(store, owner_id)
+
+    near_dup = _find_near_dup_node(roots, stripped_text)
+    if near_dup is not None:
+        if st != near_dup.status and _STATUS_RANK[st] > _STATUS_RANK[near_dup.status]:
+            _set_node_status(store, did, near_dup, st)
+        return False
+
     if parent is not None:
         matches = _match_nodes(roots, parent)
         if len(matches) != 1:
@@ -985,10 +1156,10 @@ def mark_attempt(
     guess. Only the matched node's own stored status changes; a descendant's
     status is untouched (an inherited-ruled-out shadow, and a dead-subtree
     collapse, are both rendering-level — see :func:`ledger_do_not_repropose`).
-    Applied by REPLACING the node chunk's ``ATTEMPT:`` tag
-    (``add_tag(..., replace_prefix=True)`` — the v1 "at most one value per
-    closed prefix on a target" invariant), not a whole-ledger rewrite. Heals
-    a pre-A dossier lacking a ledger chunk on the way in.
+    Applied via :func:`_set_node_status` (``add_tag(...,
+    replace_prefix=True)`` — the v1 "at most one value per closed prefix on
+    a target" invariant), not a whole-ledger rewrite. Heals a pre-A dossier
+    lacking a ledger chunk on the way in.
     """
     if status not in _STATUSES:
         return False
@@ -999,11 +1170,122 @@ def mark_attempt(
     matches = _match_nodes(roots, node_text, parent)
     if len(matches) != 1:
         return False
-    target = matches[0]
-    assert target.handle is not None  # every loaded node carries a handle
-    ord_ = _chunk_ord(store, did, target.handle)
-    store.add_tag(did, Tag.closed("ATTEMPT", status), pos=ord_, replace_prefix=True)
+    _set_node_status(store, did, matches[0], status)
     return True
+
+
+@dataclass
+class DedupMerge:
+    """One near-duplicate cluster collapsed by :func:`dedup_ledger` — its
+    dry-run/real-run report unit. ``prior_status``/``new_status`` differ
+    only when a cluster member's status was further along
+    :data:`_STATUS_RANK` than the survivor's own."""
+
+    survivor_text: str
+    survivor_handle: str
+    prior_status: str
+    new_status: str
+    #: ``(text, status)`` of every node the survivor absorbed.
+    absorbed: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _cluster_ledger_nodes(
+    nodes: list[tuple[AttemptNode, int]],
+) -> list[list[tuple[AttemptNode, int]]]:
+    """Group ``(node, chunk_ord)`` pairs into near-duplicate clusters
+    (:func:`_is_near_dup` — not reimplemented here), oldest node
+    (lowest ``ord``, an insertion-serial — :func:`_chunk_ord`) first.
+
+    Greedy single pass: the oldest not-yet-clustered node anchors a new
+    cluster, and every remaining node whose text near-dups the ANCHOR's
+    (not each other — one-vs-anchor, mirroring :func:`_find_near_dup_node`'s
+    own one-vs-forest comparison rather than requiring full pairwise
+    transitivity) joins it. Only clusters with more than one member are
+    returned — a lone node is not a merge."""
+    ordered = sorted(nodes, key=lambda pair: pair[1])
+    clusters: list[list[tuple[AttemptNode, int]]] = []
+    used: set[int] = set()
+    for i, (anchor, anchor_ord) in enumerate(ordered):
+        if anchor_ord in used:
+            continue
+        cluster = [(anchor, anchor_ord)]
+        used.add(anchor_ord)
+        for node, ord_ in ordered[i + 1 :]:
+            if ord_ in used:
+                continue
+            if _is_near_dup(node.text, [anchor.text]):
+                cluster.append((node, ord_))
+                used.add(ord_)
+        if len(cluster) > 1:
+            clusters.append(cluster)
+    return clusters
+
+
+def dedup_ledger(
+    store: Store, owner_id: int, *, dry_run: bool = False
+) -> list[DedupMerge]:
+    """One-off cleanup of an existing ledger that accumulated near-duplicate
+    attempt nodes before :func:`add_attempt`'s upsert discipline
+    (dossier-hygiene design) landed.
+
+    Groups every ledger node into near-duplicate clusters
+    (:func:`_cluster_ledger_nodes`, token-Jaccard via :func:`_is_near_dup` —
+    the same measure :func:`add_attempt`'s upsert path and
+    :func:`_find_near_dup_node` use, not reimplemented here). Per cluster:
+    the OLDEST node (lowest chunk ``ord``) survives; its status advances to
+    the most-advanced status found anywhere in the cluster
+    (:data:`_STATUS_RANK`, never regresses — :func:`_set_node_status`, same
+    primitive :func:`mark_attempt` uses); every other cluster member's live
+    children are re-parented onto the survivor (``move_chunk(...,
+    {"into": survivor_handle})``) before the member itself is retired
+    (``retire_chunk`` — delete, never an in-place update, matching every
+    other ledger mutator in this module).
+
+    ``dry_run=True`` computes and returns the same report without writing
+    anything. Returns one :class:`DedupMerge` per cluster with more than one
+    member, in no particular order; a ledger with no near-duplicates
+    returns ``[]``. Idempotent: re-running after a real (non-dry) merge
+    finds no more clusters, since only one survivor per cluster remains.
+    """
+    _container_handle, did, roots = _ledger_roots(store, owner_id)
+    nodes_with_ord: list[tuple[AttemptNode, int]] = []
+    for node, _parent in _flatten_with_parent(roots):
+        assert node.handle is not None  # every loaded node carries a handle
+        nodes_with_ord.append((node, _chunk_ord(store, did, node.handle)))
+    merges: list[DedupMerge] = []
+    for cluster in _cluster_ledger_nodes(nodes_with_ord):
+        (survivor, _survivor_ord), *absorbed = cluster
+        assert survivor.handle is not None
+        best_status = survivor.status
+        for node, _ord in absorbed:
+            if _STATUS_RANK[node.status] > _STATUS_RANK[best_status]:
+                best_status = node.status
+        merges.append(
+            DedupMerge(
+                survivor_text=survivor.text,
+                survivor_handle=survivor.handle,
+                prior_status=survivor.status,
+                new_status=best_status,
+                absorbed=[(node.text, node.status) for node, _ord in absorbed],
+            )
+        )
+        if dry_run:
+            continue
+        for node, _ord in absorbed:
+            assert node.handle is not None
+            for child in node.children:
+                assert child.handle is not None
+                store.drafts.move_chunk(
+                    child.handle,
+                    {"into": survivor.handle},
+                    source={"reason": "quest-dossier-dedup"},
+                )
+            store.drafts.retire_chunk(
+                node.handle, source={"reason": "quest-dossier-dedup"}
+            )
+        if best_status != survivor.status:
+            _set_node_status(store, did, survivor, best_status)
+    return merges
 
 
 #: `append_ledger_entry`'s legacy ``section`` vocabulary → the attempt-tree
@@ -1034,43 +1316,97 @@ def append_ledger_entry(store: Store, owner_id: int, section: str, text: str) ->
     )
 
 
+#: A lone markdown heading line (``## Best leads`` etc.) — used by
+#: :func:`_split_narrative_paragraphs` to fold a heading into its following
+#: paragraph rather than mint it its own chunk (a heading alone carries no
+#: topical content of its own to embed/search on).
+_HEADING_LINE_RE = re.compile(r"^#{1,6}\s")
+
+
+def _split_narrative_paragraphs(markdown: str) -> list[str]:
+    """Split a narrative rewrite into paragraph-level chunk texts — one
+    thought each (the narrative-chunking design, module docstring:
+    "otherwise it's semantic mush").
+
+    Splits on blank-line paragraph boundaries (the same rule
+    :func:`precis.store._draft_ops._split_blocks` uses for a generic
+    ``put``, duplicated here rather than imported — a private helper of a
+    different module, and this one additionally folds headings, below). A
+    block that is *only* a single markdown heading line is merged into the
+    paragraph that follows it, when there is one, rather than kept as its
+    own chunk. Blank/whitespace-only blocks are dropped — never an empty
+    chunk. An entirely blank ``markdown`` returns ``[]``.
+    """
+    text = markdown.replace("\r\n", "\n").replace("\r", "\n")
+    raw = [p.strip() for p in text.split("\n\n")]
+    raw = [p for p in raw if p]
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        block = raw[i]
+        if _HEADING_LINE_RE.match(block) and "\n" not in block and i + 1 < len(raw):
+            out.append(block + "\n\n" + raw[i + 1])
+            i += 2
+        else:
+            out.append(block)
+            i += 1
+    return out
+
+
 def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
     """Whole-rewrite the owner's dossier NARRATIVE to ``markdown``; return its
     ref id.
 
-    Ensures the dossier exists, then edits the narrative body chunk in place
-    (``edit_text`` logs ``prev_text``) — ANY pinned chunk (``meta.pinned``
-    truthy: the ledger, and the code-regenerated frontier tree — Slice 4c-4)
-    is explicitly excluded, so each survives every rewrite byte-identical. If somehow there is no narrative chunk yet, one is added.
+    Splits ``markdown`` into paragraph-level chunks
+    (:func:`_split_narrative_paragraphs`) and replaces the WHOLE existing
+    unpinned narrative set with them: every prior narrative chunk is
+    RETIRED (soft-deleted) and every new paragraph inserted fresh — never
+    an in-place ``edit_text`` — so the per-chunk embedding/summary cascade
+    re-runs per paragraph, and because the paragraph count varies tick to
+    tick there is no stable 1:1 chunk to edit onto anyway. ANY pinned chunk
+    (``meta.pinned`` truthy: the ledger, and the code-regenerated frontier
+    tree — Slice 4c-4) is untouched, same exclusion as before each survives
+    every rewrite byte-identical. New chunks land immediately before the
+    ledger container (:func:`ensure_ledger_chunk`), preserving the
+    narrative-before-ledger reading order every other reader assumes.
+
+    A blank/whitespace-only ``markdown`` retires the old narrative chunks
+    and leaves none in their place — :func:`read_narrative` then degrades to
+    ``""``, same as a fresh, not-yet-ticked dossier.
     """
     did = ensure_dossier(store, owner_id)
     chunks = store.drafts.reading_order(did)
-    body = [
+    old_body = [
         c
         for c in chunks
         if c.chunk_kind != "heading" and not (c.meta or {}).get("pinned")
     ]
-    if body:
-        # edit_text keys on the legacy ``.handle`` (the ``¶`` anchor), not the
-        # universal ``.dc`` display handle — mirror the draft handler.
-        store.drafts.edit_text(
-            body[0].handle, markdown, source={"reason": "quest-tick"}
-        )
-    else:  # pragma: no cover - ensure_dossier always seeds a narrative body
+    ledger_handle = _ensure_ledger_chunk_for_ref(store, did)
+    paragraphs = _split_narrative_paragraphs(markdown)
+    for c in old_body:
+        store.drafts.retire_chunk(c.handle, source={"reason": "quest-tick"})
+    for p in paragraphs:
         store.drafts.add_chunks(
-            ref_id=did, chunk_kind="paragraph", text=markdown, split=False
+            ref_id=did,
+            chunk_kind="paragraph",
+            text=p,
+            at={"before": ledger_handle},
+            split=False,
         )
     return did
 
 
 __all__ = [
     "AttemptNode",
+    "DedupMerge",
     "add_attempt",
     "append_ledger_entry",
+    "dedup_ledger",
     "dossier_ref_id",
     "ensure_dossier",
     "ensure_ledger_chunk",
     "ledger_do_not_repropose",
+    "ledger_open_nodes",
     "mark_attempt",
     "paper_ref_id",
     "read_dossier",

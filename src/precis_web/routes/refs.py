@@ -621,9 +621,12 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_scatter = None
     try:
         fr = frontier_mod.quest_frontier(store, qid)
-        frontier_has_candidates = bool(fr.frontier or fr.dominated or fr.unevaluated)
+        frontier_has_candidates = bool(
+            fr.frontier or fr.dominated or fr.provisional or fr.unevaluated
+        )
         frontier_scatter = frontier_mod.build_frontier_scatter(
             fr.frontier + fr.dominated,
+            provisional=fr.provisional,
             open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
         )
     except Exception:

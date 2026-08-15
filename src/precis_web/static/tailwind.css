@@ -2095,6 +2095,10 @@ video {
   background-color: rgb(255 255 255 / 0.7);
 }
 
+.fill-orange-700 {
+  fill: #c2410c;
+}
+
 .fill-sky-600 {
   fill: #0284c7;
 }

@@ -205,8 +205,9 @@ get(kind="quest", id=7, view="dossier")  # read the synthesis
 
 ### The dossier is draft chunks — read it, don't edit it
 
-A dossier is a real `draft`: a heading, **one** narrative body chunk, and
-a set of pinned chunks the writer never overwrites. It is not markdown in
+A dossier is a real `draft`: a heading, a run of short narrative chunks
+(one thought each, rewritten wholesale every tick), and pinned ledger
+chunks the writer never overwrites. It is not markdown in
 a text field, and block markdown (`##` headings, `-` bullets, fences,
 tables) has **no renderer** — it shows up as literal characters. Only the
 inline subset renders: `**bold**`, `*italic*`, backticks, `<sub>`/`<sup>`,
@@ -235,6 +236,15 @@ narrative rewrite. That is what stops a tick from re-proposing something
 already ruled out. Older dossiers still holding a single markdown ledger
 blob convert on first read, so nothing needs a migration pass.
 
+The writer **upserts**: a new attempt is near-dup-matched against the
+whole ledger first — a rephrasing of an existing node transitions or
+refines that node instead of appending a twin. When you search the
+ledger (or the literature) for prior art, phrase the query as the thing
+you expect to find, not as a question — *"subsurface H co-doping on
+Pd(111) lowers NO dissociation barrier"*, not *"does H help?"*. Search
+matches statements; [[precis-search-help]]'s `answers=` legs are the
+same move for papers.
+
 A **research tick** is one bounded step of the (future) autonomous loop:
 it reads the quest's rolling context (statement + dossier + gaps +
 momentum + logbook tail), does one increment of reasoning, appends 1–4
@@ -262,7 +272,12 @@ objective vector (override via `meta.rubric_objectives`; the catalyst
 default ranks barrier min · energy min · `selectivity_margin` max
 (side-product selectivity) · `poison_margin` max (site-competition
 resistance — needs `reaction_config.poisons`, e.g. `["CO"]`)), shown by
-`view='frontier'`. The loop dispatches **one proposal per tick**
+`view='frontier'`. The view splits three ways: the **confirmed frontier**
+(trusted, converged measurements — the only citable barriers),
+**provisional** candidates (measured but unconfirmed — an untrusted
+barrier or a missing relax; values shown with their exclusion reason and
+Pareto-ranked separately), and **awaiting a sim** (no measurement at
+all). The loop dispatches **one proposal per tick**
 (`PRECIS_QUEST_MAX_PROPOSALS`, default 1) and waits for its sims before
 the next.
 

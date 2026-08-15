@@ -43,6 +43,20 @@ def _mk_candidate(store: Any, qid: int, name: str, element: str) -> int:
     return sid
 
 
+def _confirm(store: Any, sid: int) -> None:
+    """A converged relax run — without one, a stamped measure is merely
+    *provisional* (rendered ≈, never BEST) rather than confirmed."""
+    store.structure_record_run(
+        sid,
+        fidelity="ml",
+        on_version=1,
+        converged=True,
+        n_steps=5,
+        max_disp=0.0,
+        energy=-12.0,
+    )
+
+
 class TestTriedSetSummary:
     def test_empty_when_no_candidates(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -55,13 +69,34 @@ class TestTriedSetSummary:
         )
         cu = _mk_candidate(store, qid, "Cu adatom", "Cu")
         store.stamp_ref_meta(cu, {"barrier": 0.96})
+        _confirm(store, cu)
         ag = _mk_candidate(store, qid, "Ag adatom", "Ag")
         store.stamp_ref_meta(ag, {"barrier": 0.74})
+        _confirm(store, ag)
 
         summary = explore_mod.tried_set_summary(store, qid)
         assert summary.startswith("Tried:")
         # best (lowest barrier) sorts first and carries the BEST marker
         assert summary.index("Ag adatom 0.74 (BEST)") < summary.index("Cu adatom 0.96")
+
+    def test_provisional_value_marked_and_never_best(self, store: Any) -> None:
+        # A provisional value (no converged relax) sorts into the same list
+        # but renders ≈ and cannot take (BEST) — that label belongs to the
+        # best CONFIRMED measurement, even when a provisional value beats it.
+        qid = _mk_quest(store, "A Pd catalyst striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        cu = _mk_candidate(store, qid, "Cu adatom", "Cu")
+        store.stamp_ref_meta(cu, {"barrier": 0.96})
+        _confirm(store, cu)
+        ag = _mk_candidate(store, qid, "Ag adatom", "Ag")
+        store.stamp_ref_meta(ag, {"barrier": 0.74})  # better, but unconfirmed
+
+        summary = explore_mod.tried_set_summary(store, qid)
+        assert "Ag adatom ≈0.74" in summary
+        assert "Ag adatom ≈0.74 (BEST)" not in summary
+        assert "Cu adatom 0.96 (BEST)" in summary
 
     def test_lists_ruled_out_separately(self, store: Any) -> None:
         qid = _mk_quest(store, "A Pd catalyst striving")

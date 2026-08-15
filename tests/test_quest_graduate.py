@@ -156,7 +156,10 @@ class TestBarrierQualityGate:
         fr = quest_frontier(store, qid)
         assert sid not in [c.ref_id for c in fr.frontier]
         assert sid not in [c.ref_id for c in fr.dominated]
-        assert sid in [c.ref_id for c in fr.unevaluated]
+        # Not silently "never tried" either — it's visible+marked as
+        # provisional (measured, unconfirmed), just never confirmed/ranked.
+        assert sid not in [c.ref_id for c in fr.unevaluated]
+        assert sid in [pc.candidate.ref_id for pc in fr.provisional]
 
     def test_defensive_gate_fires_if_frontier_ever_yields_an_untrusted_candidate(
         self, store: Any, monkeypatch: Any

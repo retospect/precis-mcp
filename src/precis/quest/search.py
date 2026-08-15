@@ -20,6 +20,23 @@ mint + ``fetch_oa`` pickup), so a query that misses the held corpus doesn't just
 log an "acquisition needed" observation, it actually requests the paper. Tests
 and other callers may still pass a narrower search (e.g. lexical-only, or a
 semantic reranker) through the same ``search_fn`` seam.
+
+**HyDE for the corpus leg (dossier-hygiene design).** A tick's ``searches``
+entry may carry an optional ``hypothetical`` alongside its keyword ``query``
+(:class:`SearchQuery`, :func:`_parse_search_entry`) — a one-two sentence
+passage phrased the way it might appear verbatim in the abstract of the paper
+the model wishes existed. The model's question-phrased ``query`` alone kept
+missing the held corpus (7 misses across 3 prod ticks: retrieval matches
+DOCUMENTS, not questions). When present, :func:`_hyde_corpus_hits` routes the
+corpus leg through :mod:`precis.handlers._paper_search`'s broad-retrieval
+fusion (the same ``queries=``/``answers=`` facility ``search(kind='paper',
+…)`` exposes) instead of :func:`_default_paper_search`'s plain lexical
+lookup — run by :func:`run_search_step` itself, independent of ``search_fn``,
+so the ``search_fn`` seam (the Semantic Scholar + acquire leg, still driven by
+the plain keyword ``query``) keeps its exact 3-argument shape unchanged.
+Degrades to a fused-LEXICAL-only result when no embedder is wired (never
+raises) — same contract as the broad ``search()`` verb with no embedder
+configured.
 """
 
 from __future__ import annotations
@@ -88,6 +105,95 @@ def _default_paper_search(
     return [r.id for (r, _rank) in rows if r.id not in ex]
 
 
+@dataclass(frozen=True)
+class SearchQuery:
+    """One parsed ``searches`` payload entry (dossier-hygiene design).
+
+    ``query`` is the short keyword phrasing — unchanged role, still what
+    drives the Semantic Scholar + acquire leg (:func:`make_acquiring_search`)
+    and the logbook entry's own text. ``hypothetical`` is optional: a HyDE
+    passage that, when present, routes the CORPUS leg through
+    :func:`_hyde_corpus_hits` instead of :func:`_default_paper_search`'s
+    plain lexical lookup — see the module docstring.
+    """
+
+    query: str
+    hypothetical: str | None = None
+
+
+def _parse_search_entry(raw: Any) -> SearchQuery | None:
+    """Parse one ``payload["searches"]`` entry — either the legacy plain
+    string, or ``{"query": "...", "hypothetical": "..."}``. ``None`` when
+    the entry has no usable ``query`` (a blank string, an empty/malformed
+    dict, or anything else) — the caller's cue to skip it, mirroring the
+    old blank-string skip."""
+    if isinstance(raw, dict):
+        query = str(raw.get("query") or "").strip()
+        hypothetical = str(raw.get("hypothetical") or "").strip() or None
+    else:
+        query = str(raw or "").strip()
+        hypothetical = None
+    return SearchQuery(query=query, hypothetical=hypothetical) if query else None
+
+
+def _hyde_corpus_hits(
+    store: Store,
+    embedder: Any | None,
+    quest_id: int,
+    query: str,
+    hypothetical: str,
+    exclude_ref_ids: list[int],
+    *,
+    limit: int = 10,
+) -> list[int]:
+    """The HyDE-fused corpus leg: ``query`` + ``hypothetical`` run through
+    :class:`precis.handlers._paper_search.FusedBlockSearch` (``queries=
+    [query], answers=[hypothetical]``) — the same broad-retrieval fusion the
+    ``search(kind='paper', queries=…, answers=…)`` verb exposes — in place of
+    :func:`_default_paper_search`'s plain lexical lookup. Ranked paper
+    ref_ids, best first, deduped, ``exclude_ref_ids`` dropped.
+
+    Degrades to ``[]`` on any failure (an embedder-less store, a store stub
+    missing a method this pulls in, a flaky embed call) — one search entry's
+    HyDE leg must never sink the whole lit-search step; the caller still has
+    ``search_fn``'s ordinary corpus+acquire leg to fall back on.
+    """
+    from precis.handlers._paper_search import FusedBlockSearch
+
+    try:
+        result = FusedBlockSearch(store=store, embedder=embedder, kind="paper").run(
+            q=query,
+            scope=None,
+            tags=None,
+            page_size=limit,
+            page=1,
+            exclude=None,
+            mode=None,
+            after=None,
+            before=None,
+            queries=[query],
+            answers=[hypothetical],
+            per_paper=None,
+        )
+    except Exception:
+        log.debug(
+            "quest %s: HyDE corpus search failed for %r",
+            quest_id,
+            query[:80],
+            exc_info=True,
+        )
+        return []
+    ex = set(exclude_ref_ids)
+    seen: set[int] = set()
+    out: list[int] = []
+    for _block, ref, _score in result.hits:
+        if ref.id in ex or ref.id in seen:
+            continue
+        seen.add(ref.id)
+        out.append(ref.id)
+    return out
+
+
 def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
     """Build a ``search_fn`` that acquires, not just looks up.
 
@@ -154,17 +260,30 @@ def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
 def run_search_step(
     store: Store,
     quest_id: int,
-    queries: list[str],
+    searches: list[Any],
     *,
     by: str = "agent",
     search_fn: SearchFn | None = None,
+    embedder: Any | None = None,
 ) -> SearchStep:
-    """Run each query, link the top held papers as ``serves`` servers.
+    """Run each search, link the top held papers as ``serves`` servers.
 
-    Every query lands a logbook entry: a ``result`` when papers were linked
+    ``searches`` entries are parsed by :func:`_parse_search_entry` — either
+    the legacy plain query string, or ``{"query": ..., "hypothetical":
+    ...}`` (HyDE, dossier-hygiene design). An entry with a ``hypothetical``
+    runs its corpus leg through :func:`_hyde_corpus_hits` (fused
+    ``queries=``/``answers=`` retrieval — the model's ``query`` phrasing
+    alone kept missing the held corpus) IN ADDITION to ``search_fn`` (still
+    driven by the plain ``query`` — the Semantic Scholar + acquire leg is
+    unchanged); the two hit lists are merged (HyDE first) and deduped before
+    the per-query link cap. ``embedder`` (optional) powers the HyDE leg's
+    semantic reformulation — see :func:`_hyde_corpus_hits`.
+
+    Every search lands a logbook entry: a ``result`` when papers were linked
     (external progress → the cascade stall clock resets), or an ``observation``
     when nothing held matched (the un-held / acquisition-needed case, made
-    visible rather than silent).
+    visible rather than silent). The entry's own text always quotes the
+    short ``query`` (not the ``hypothetical`` passage).
 
     Every freshly-linked paper also picks up the ``quest:<public_id>`` OPEN
     tag (see :mod:`precis.quest.tagging`) — the same tag the Drive-scoped
@@ -178,12 +297,31 @@ def run_search_step(
     linked_total = 0
     notes: list[str] = []
 
-    for raw in queries[:MAX_QUERIES]:
-        query = (raw or "").strip()
-        if not query:
+    for raw in searches[:MAX_QUERIES]:
+        entry = _parse_search_entry(raw)
+        if entry is None:
             continue
+        query = entry.query
         queries_run += 1
-        hits = search(store, query, list(existing))[:MAX_LINK_PER_QUERY]
+        merged: list[int] = []
+        if entry.hypothetical:
+            merged.extend(
+                _hyde_corpus_hits(
+                    store,
+                    embedder,
+                    quest_id,
+                    query,
+                    entry.hypothetical,
+                    list(existing),
+                )
+            )
+        seen = set(merged)
+        for rid in search(store, query, list(existing)):
+            if rid in seen:
+                continue
+            seen.add(rid)
+            merged.append(rid)
+        hits = merged[:MAX_LINK_PER_QUERY]
         linked: list[int] = []
         for rid in hits:
             if rid in existing:
@@ -228,6 +366,7 @@ __all__ = [
     "MAX_LINK_PER_QUERY",
     "MAX_QUERIES",
     "SearchFn",
+    "SearchQuery",
     "SearchStep",
     "make_acquiring_search",
     "run_search_step",

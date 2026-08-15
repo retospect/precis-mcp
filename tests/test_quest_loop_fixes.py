@@ -211,3 +211,53 @@ class TestTickGrounding:
             for ln in store.links_for(qid, direction="in", relation="serves")
         }
         assert stand_in in served
+
+    def test_search_action_accepts_hyde_dict_shape(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # A `searches` entry may be a {"query": ..., "hypothetical": ...}
+        # object (HyDE — dossier-hygiene design), not just the legacy plain
+        # string — `run_quest_tick` must pass it through to
+        # `run_search_step` raw, not `str()`-coerce it into gibberish.
+        from precis.handlers._paper_search import FusedBlockSearch
+
+        qid = _mk_quest(store, "A quest that needs HyDE grounding")
+        hyde_hit = _mk_quest(store, "A stand-in for a HyDE-matched paper")
+
+        monkeypatch.setattr(
+            FusedBlockSearch,
+            "run",
+            lambda self, **kw: SimpleNamespace(
+                hits=[(None, SimpleNamespace(id=hyde_hit), 1.0)]
+            ),
+        )
+
+        payload = {
+            "logbook": [],
+            "searches": [
+                {
+                    "query": "rate limiting step",
+                    "hypothetical": (
+                        "The rate-limiting step is proton transfer to the "
+                        "adsorbed oxygen."
+                    ),
+                }
+            ],
+            "dossier_markdown": "",
+            "proposals": [],
+        }
+
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(payload),
+            compute=True,
+            search_fn=lambda *a, **kw: [],  # the S2+acquire leg finds nothing
+        )
+        assert out.searches_run == 1
+        assert out.papers_linked == 1
+        served = {
+            ln.src_ref_id
+            for ln in store.links_for(qid, direction="in", relation="serves")
+        }
+        assert hyde_hit in served

@@ -6,7 +6,10 @@ Slice 4b of the quest layer (``quest-layer`` (git-only) §Materials are
 better" = push the **Pareto frontier** of those measures against the quest's
 objective vector (its rubric). This module is the read-time computation of that
 frontier: the non-dominated set is *the current best*, the dominated set is
-*explored-and-beaten*, and the un-evaluated set is *awaiting a sim*.
+*explored-and-beaten*, the **provisional** set is *measured-but-unconfirmed*
+(an untrusted barrier, or a barrier with no converged relax yet — see
+:class:`ProvisionalCandidate`), and the un-evaluated set is *awaiting a sim*
+(never measured at all).
 
 The objective vector (which measures, minimise or maximise) is the machine
 reading of the quest's prose rubric — an open question (docs, slice-4 Q3). For
@@ -24,7 +27,7 @@ composite's ``key`` like any other measure.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -62,10 +65,52 @@ class Candidate:
 
 
 @dataclass(frozen=True)
+class ProvisionalCandidate:
+    """A candidate with at least one measured-but-unconfirmed objective value.
+
+    Product decision (prod audit of quest 164903 — 26 "awaiting a sim"
+    candidates that had actually been measured): an untrusted barrier, or a
+    barrier harvested with no converged relax, must not render
+    indistinguishable from "never tried" — it becomes visible here, clearly
+    marked, without touching the strict trust semantics
+    :mod:`precis.quest.graduate` gates on (still reads
+    ``candidate.flags['barrier_trusted'] is True`` unchanged).
+
+    Wraps the underlying :class:`Candidate` **unmodified** — ``candidate.
+    measures``/``candidate.flags`` are exactly what :func:`pareto_split` saw
+    (an untrusted barrier is still absent from ``candidate.measures``, still
+    excluded from any real ranking). ``measures`` here is a *separate* merged
+    view built only for provisional display/ranking: trusted values where
+    present, backfilled with the untrusted values :func:`_candidate_from_structure`
+    stashed onto ``flags[f"{key}_untrusted_value"]`` — ``untrusted_keys`` names
+    which of those came from that backfill rather than a trusted source.
+    ``reasons`` is a short human-readable list of why the candidate isn't
+    confirmed (derived from the same flags/warnings, no new trust logic).
+    ``on_frontier`` marks membership in the *provisional* Pareto frontier
+    (:func:`_provisional_split`) — a separate, non-authoritative split
+    computed over confirmed + provisional candidates on the same objectives;
+    the confirmed ``FrontierResult.frontier`` is unaffected either way.
+    """
+
+    candidate: Candidate
+    measures: dict[str, float]
+    untrusted_keys: frozenset[str]
+    reasons: list[str]
+    on_frontier: bool = False
+
+
+@dataclass(frozen=True)
 class FrontierResult:
     objectives: list[tuple[str, str]]
     frontier: list[Candidate] = field(default_factory=list)  # non-dominated
     dominated: list[Candidate] = field(default_factory=list)  # explored + beaten
+    #: Measured-but-unconfirmed (untrusted value, or no converged relax) —
+    #: additive field (§Cycle — untrusted-barrier visibility): pulled OUT of
+    #: ``unevaluated`` so "awaiting a sim" means genuinely never measured.
+    #: Every existing caller that only reads ``objectives``/``frontier``/
+    #: ``dominated``/``unevaluated`` keeps working unchanged; a caller that
+    #: wants the newly-surfaced candidates reads this list too.
+    provisional: list[ProvisionalCandidate] = field(default_factory=list)
     unevaluated: list[Candidate] = field(default_factory=list)  # no measures yet
 
 
@@ -130,6 +175,7 @@ class FrontierScatter:
 def build_frontier_scatter(
     candidates: Sequence[Candidate],
     *,
+    provisional: Sequence[ProvisionalCandidate] = (),
     x_measure: str = PARETO_X_MEASURE,
     y_measure: str = PARETO_Y_MEASURE,
     x_label: str = PARETO_X_LABEL,
@@ -145,10 +191,19 @@ def build_frontier_scatter(
     *both* axis measures are present (``_dominates``'s own "missing a measure
     ⇒ not comparable" rule, mirrored here as "not comparable ⇒ not
     plottable"); fewer than :data:`_SCATTER_MIN_POINTS` plottable candidates
-    returns ``None`` so the caller falls back to the text-only frontier.
-    An all-equal axis (every point shares one x or y) would otherwise divide
-    by zero scaling to the viewBox — guarded by substituting a span of
-    ``1.0`` so the points simply plot along a flat line instead.
+    (confirmed + provisional combined) returns ``None`` so the caller falls
+    back to the text-only frontier. An all-equal axis (every point shares one
+    x or y) would otherwise divide by zero scaling to the viewBox — guarded
+    by substituting a span of ``1.0`` so the points simply plot along a flat
+    line instead.
+
+    ``provisional`` (default empty — every pre-existing caller unaffected)
+    plots :class:`ProvisionalCandidate`'s merged (trusted + recovered-
+    untrusted) values alongside the confirmed points on the SAME shared axis
+    range, each stamped ``band='provisional'`` (vs. ``'confirmed'`` for the
+    rest) plus ``untrusted``/``on_frontier`` so the template can render them
+    visually distinct (hollow/dashed, a frontier star) without a second
+    geometry pass.
     """
     plottable = [
         c
@@ -156,11 +211,21 @@ def build_frontier_scatter(
         if c.measures.get(x_measure) is not None
         and c.measures.get(y_measure) is not None
     ]
-    if len(plottable) < _SCATTER_MIN_POINTS:
+    plottable_provisional = [
+        pc
+        for pc in provisional
+        if pc.measures.get(x_measure) is not None
+        and pc.measures.get(y_measure) is not None
+    ]
+    if len(plottable) + len(plottable_provisional) < _SCATTER_MIN_POINTS:
         return None
 
-    xs = [c.measures[x_measure] for c in plottable]
-    ys = [c.measures[y_measure] for c in plottable]
+    xs = [c.measures[x_measure] for c in plottable] + [
+        pc.measures[x_measure] for pc in plottable_provisional
+    ]
+    ys = [c.measures[y_measure] for c in plottable] + [
+        pc.measures[y_measure] for pc in plottable_provisional
+    ]
     x_min, x_max = min(xs), max(xs)
     y_min, y_max = min(ys), max(ys)
 
@@ -194,12 +259,36 @@ def build_frontier_scatter(
             "x": x,
             "y": y,
             "converged": c.converged,
+            "band": "confirmed",
             "cx": round(_cx(x), 2),
             "cy": round(_cy(y), 2),
         }
         if open_url_for is not None:
             point["open_url"] = open_url_for(c)
         points.append(point)
+
+    for pc in plottable_provisional:
+        c = pc.candidate
+        x = pc.measures[x_measure]
+        y = pc.measures[y_measure]
+        ppoint: dict[str, Any] = {
+            "ref_id": c.ref_id,
+            "handle": c.handle,
+            "name": c.name,
+            "x": x,
+            "y": y,
+            "converged": c.converged,
+            "band": "provisional",
+            "untrusted": x_measure in pc.untrusted_keys
+            or y_measure in pc.untrusted_keys,
+            "on_frontier": pc.on_frontier,
+            "reasons": list(pc.reasons),
+            "cx": round(_cx(x), 2),
+            "cy": round(_cy(y), 2),
+        }
+        if open_url_for is not None:
+            ppoint["open_url"] = open_url_for(c)
+        points.append(ppoint)
 
     return FrontierScatter(
         points=points,
@@ -214,17 +303,22 @@ def build_frontier_scatter(
     )
 
 
-def _dominates(a: Candidate, b: Candidate, objectives: list[tuple[str, str]]) -> bool:
-    """True when ``a`` Pareto-dominates ``b`` over ``objectives``.
+def _dominates_measures(
+    a: dict[str, float], b: dict[str, float], objectives: list[tuple[str, str]]
+) -> bool:
+    """True when measures dict ``a`` Pareto-dominates ``b`` over ``objectives``.
 
     ``a`` dominates ``b`` iff it is no worse on every objective and strictly
     better on at least one. Missing a measure on either side → not comparable
-    (returns False), so a partially-measured candidate never dominates.
+    (returns False), so a partially-measured point never dominates. Shared by
+    :func:`_dominates` (real ``Candidate.measures``) and
+    :func:`_provisional_split` (a provisional candidate's merged trusted +
+    recovered-untrusted view) — same rule, two measure sources.
     """
     strictly_better = False
     for key, sense in objectives:
-        av = a.measures.get(key)
-        bv = b.measures.get(key)
+        av = a.get(key)
+        bv = b.get(key)
         if av is None or bv is None:
             return False
         if sense == "min":
@@ -238,6 +332,12 @@ def _dominates(a: Candidate, b: Candidate, objectives: list[tuple[str, str]]) ->
             if av > bv:
                 strictly_better = True
     return strictly_better
+
+
+def _dominates(a: Candidate, b: Candidate, objectives: list[tuple[str, str]]) -> bool:
+    """True when ``a`` Pareto-dominates ``b`` over ``objectives`` (see
+    :func:`_dominates_measures` for the rule)."""
+    return _dominates_measures(a.measures, b.measures, objectives)
 
 
 def pareto_split(
@@ -523,6 +623,129 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     )
 
 
+#: Suffix :func:`_candidate_from_structure` stamps onto ``flags`` for every
+#: measure it popped out of ``measures`` on an untrusted pathway (e.g.
+#: ``flags['barrier_untrusted_value']``) — the raw value survives there
+#: purely for display. :func:`_merge_provisional_measures` reads the same
+#: suffix back off to build the provisional bucket's merged view.
+_UNTRUSTED_VALUE_SUFFIX = "_untrusted_value"
+
+
+def _merge_provisional_measures(
+    c: Candidate,
+) -> tuple[dict[str, float], frozenset[str]]:
+    """A candidate's trusted measures, backfilled with any untrusted values
+    :func:`_candidate_from_structure` stashed onto ``flags``.
+
+    Returns ``(merged, untrusted_keys)`` — ``merged`` never overrides a
+    trusted value (a key present in ``c.measures`` always wins), and
+    ``untrusted_keys`` names exactly the keys that came from the backfill,
+    so a caller (:func:`_provisional_split`, :func:`build_frontier_scatter`)
+    can mark them "⚠untrusted" instead of presenting them as confirmed.
+    """
+    merged = dict(c.measures)
+    untrusted_keys: set[str] = set()
+    for flag_key, value in c.flags.items():
+        if not isinstance(flag_key, str) or not flag_key.endswith(
+            _UNTRUSTED_VALUE_SUFFIX
+        ):
+            continue
+        base = flag_key[: -len(_UNTRUSTED_VALUE_SUFFIX)]
+        if base in merged:
+            continue  # a trusted value always wins
+        fv = _numeric(value)
+        if fv is None:
+            continue
+        merged[base] = fv
+        untrusted_keys.add(base)
+    return merged, frozenset(untrusted_keys)
+
+
+def _provisional_reasons(
+    c: Candidate, objective_keys: Sequence[str], merged: dict[str, float]
+) -> list[str]:
+    """Human-readable reasons a candidate isn't confirmed, derived from the
+    SAME flags/warnings :func:`_candidate_from_structure` already stamped —
+    no new trust logic, just prose over the existing verdict."""
+    reasons: list[str] = []
+    if c.flags.get("barrier_trusted") is False:
+        n_neb = c.flags.get("barrier_neb_failed") or 0
+        n_desorbed = c.flags.get("barrier_desorbed") or 0
+        n_wrong_site = c.flags.get("barrier_wrong_site") or 0
+        if n_neb:
+            reasons.append("barrier untrusted: NEB not converged")
+        if n_desorbed:
+            reasons.append("barrier untrusted: adsorbate detached")
+        if n_wrong_site:
+            reasons.append("barrier untrusted: wrong binding site")
+        if not reasons:
+            reasons.append("barrier untrusted")
+    if not c.converged:
+        reasons.append("no converged relax")
+    missing = [k for k in objective_keys if k not in merged]
+    if missing:
+        reasons.append(f"missing {', '.join(missing)}")
+    return reasons
+
+
+def _provisional_split(
+    confirmed: Sequence[Candidate],
+    unevaluated: Sequence[Candidate],
+    objectives: list[tuple[str, str]],
+) -> tuple[list[ProvisionalCandidate], list[Candidate]]:
+    """Split ``unevaluated`` into the provisional bucket + the truly-
+    unevaluated remainder, then mark which provisional candidates sit on the
+    provisional Pareto frontier.
+
+    A candidate qualifies as provisional when its merged view (trusted
+    measures + untrusted values recovered from ``flags`` —
+    :func:`_merge_provisional_measures`) carries a value for at least one
+    declared objective; everything else (never measured at all, on this
+    objective vector) stays truly unevaluated. The provisional frontier is
+    then computed by re-running the SAME domination rule
+    (:func:`_dominates_measures`) over ``confirmed`` (the real
+    frontier+dominated candidates, unchanged) union the provisional
+    candidates' merged views — so a confirmed, trustworthy measurement can
+    still knock out a provisional one, and provisional candidates compete
+    among themselves too. ``confirmed`` itself is never mutated or reordered;
+    this is a second, non-authoritative split layered on top.
+    """
+    obj_keys = [k for k, _ in objectives]
+    provisional: list[ProvisionalCandidate] = []
+    still_unevaluated: list[Candidate] = []
+    for c in unevaluated:
+        merged, untrusted_keys = _merge_provisional_measures(c)
+        if not any(k in merged for k in obj_keys):
+            still_unevaluated.append(c)
+            continue
+        provisional.append(
+            ProvisionalCandidate(
+                candidate=c,
+                measures=merged,
+                untrusted_keys=untrusted_keys,
+                reasons=_provisional_reasons(c, obj_keys, merged),
+            )
+        )
+
+    pool: list[tuple[int, dict[str, float]]] = [
+        (c.ref_id, c.measures) for c in confirmed
+    ]
+    pool += [(pc.candidate.ref_id, pc.measures) for pc in provisional]
+
+    def _is_dominated(ref_id: int, measures: dict[str, float]) -> bool:
+        return any(
+            other_id != ref_id
+            and _dominates_measures(other_measures, measures, objectives)
+            for other_id, other_measures in pool
+        )
+
+    final: list[ProvisionalCandidate] = [
+        replace(pc, on_frontier=not _is_dominated(pc.candidate.ref_id, pc.measures))
+        for pc in provisional
+    ]
+    return final, still_unevaluated
+
+
 #: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
 #: read off ``Candidate.flags['tier']`` (the candidate's OWN highest-attained
 #: tier, not ``barrier_tier``). A candidate with no tier stamp at all (a
@@ -540,12 +763,16 @@ def leaderboard(
     """Rows + TOON schema for the **by-total** design leaderboard (§7.3).
 
     One row per candidate design: identity, the objective vector, its Pareto
-    ``band`` (``frontier`` / ``dominated`` / ``awaiting``), and a graduation
-    flag. Ordered frontier → dominated → awaiting, and within each band sorted
-    by the primary objective (best first). Pure over a :class:`FrontierResult`
-    so it is trivially testable; the handler renders it via ``toon.dump``. This
-    is the striving's authoritative leaderboard — autocatpath's own ``compare`` view
-    is a compute-side diagnostic over sibling pathways, not this.
+    ``band`` (``frontier`` / ``dominated`` / ``provisional`` / ``awaiting``),
+    and a graduation flag. Ordered frontier → dominated → provisional →
+    awaiting, and within each band sorted by the primary objective (best
+    first). A provisional row shows its merged measures with ``≈`` on each
+    unconfirmed value and its exclusion reasons in ``quality`` — measured but
+    not confirmed, never ranked against the confirmed bands. Pure over a
+    :class:`FrontierResult` so it is trivially testable; the handler renders
+    it via ``toon.dump``. This is the striving's authoritative leaderboard —
+    autocatpath's own ``compare`` view is a compute-side diagnostic over
+    sibling pathways, not this.
     """
     obj_keys = [k for k, _ in fr.objectives]
     primary = fr.objectives[0] if fr.objectives else None
@@ -568,16 +795,9 @@ def leaderboard(
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": band,
             }
-            untrusted_value = c.flags.get("barrier_untrusted_value")
             for key in obj_keys:
                 v = c.measures.get(key)
-                if v is None and key == "barrier" and untrusted_value is not None:
-                    # Excluded from ranking (noise), but still shown — a
-                    # reader should see "we measured this, it just doesn't
-                    # count", not a bare unexplained "—".
-                    row[key] = f"{untrusted_value:g} (excluded)"
-                else:
-                    row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
+                row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
             quality = (
                 "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
@@ -591,9 +811,45 @@ def leaderboard(
             out.append(row)
         return out
 
+    def _prov_sort_key(pc: ProvisionalCandidate) -> float:
+        if primary is None:
+            return 0.0
+        key, sense = primary
+        v = pc.measures.get(key)
+        if v is None:
+            return float("inf")
+        return v if sense == "min" else -v
+
+    def _prov_rows(provs: Sequence[ProvisionalCandidate]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for pc in sorted(provs, key=_prov_sort_key):
+            c = pc.candidate
+            row: dict[str, Any] = {
+                "design": c.handle,
+                "name": c.name,
+                "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
+                "band": "provisional",
+            }
+            for key in obj_keys:
+                v = pc.measures.get(key)
+                if not isinstance(v, (int, float)):
+                    row[key] = "—"
+                elif key in pc.untrusted_keys:
+                    row[key] = f"≈{v:g}"
+                else:
+                    row[key] = f"{v:g}"
+            row["graduated"] = ""  # a provisional row can never graduate
+            quality = "; ".join(pc.reasons) or "unconfirmed"
+            if pc.on_frontier:
+                quality = f"★ would lead — {quality}"
+            row["quality"] = f"⚠ {quality}"
+            out.append(row)
+        return out
+
     rows = (
         _rows(fr.frontier, "frontier")
         + _rows(fr.dominated, "dominated")
+        + _prov_rows(fr.provisional)
         + _rows(fr.unevaluated, "awaiting")
     )
     schema = ["design", "name", "tier", *obj_keys, "band", "graduated", "quality"]
@@ -741,7 +997,18 @@ def quest_frontier(
     *,
     objectives: list[tuple[str, str]] | None = None,
 ) -> FrontierResult:
-    """The Pareto frontier over the quest's candidate `structure` servers."""
+    """The Pareto frontier over the quest's candidate `structure` servers.
+
+    ``pareto_split`` itself is untouched (still the strict confirmed split —
+    :mod:`precis.quest.graduate`'s belt-and-suspenders gate and the generic
+    (non-quest) reuse in :mod:`precis.utils.llm.policy` both read exactly
+    that). This function additionally lifts any measured-but-unconfirmed
+    candidate out of ``pareto_split``'s ``unevaluated`` into
+    ``FrontierResult.provisional`` (:func:`_provisional_split`) — quest-
+    specific (it reads the ``barrier_trusted``/``*_untrusted_value`` flags
+    :func:`_candidate_from_structure` stamps), so it lives here rather than
+    in the generic splitter.
+    """
     from precis.quest.gaps import _live_servers
 
     objs = objectives or _objectives_for(store, quest_id)
@@ -749,7 +1016,11 @@ def quest_frontier(
     candidates = [_candidate_from_structure(store, s) for s in structures]
     _flag_geom_duplicates(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
-    return pareto_split(candidates, objs)
+    result = pareto_split(candidates, objs)
+    provisional, still_unevaluated = _provisional_split(
+        [*result.frontier, *result.dominated], result.unevaluated, objs
+    )
+    return replace(result, provisional=provisional, unevaluated=still_unevaluated)
 
 
 __all__ = [
@@ -762,6 +1033,7 @@ __all__ = [
     "Candidate",
     "FrontierResult",
     "FrontierScatter",
+    "ProvisionalCandidate",
     "build_frontier_scatter",
     "leaderboard",
     "pareto_split",

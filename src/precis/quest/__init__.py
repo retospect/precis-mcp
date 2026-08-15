@@ -19,13 +19,22 @@ Package-level invariants (each enforced where named):
 - **Infra failure is never a physical verdict.** A failed relax or
   autocatpath job retries once then gripes — it is never ``ruled-out:``
   (``compute``; dossier-owned-by-process).
-- **Untrusted barriers don't rank.** A pathway with NEB-not-converged /
-  adsorbate-detached warnings is excluded from the frontier and can never
-  graduate (``compute._pathway_quality`` → ``frontier`` → ``graduate``).
+- **Untrusted barriers don't rank — but they stay visible.** A pathway with
+  NEB-not-converged / adsorbate-detached warnings is excluded from the
+  confirmed frontier and can never graduate (``compute._pathway_quality`` →
+  ``frontier`` → ``graduate``), but its measured values surface as a
+  **provisional** band (``frontier.ProvisionalCandidate`` — merged measures,
+  untrusted keys + reasons named, own Pareto rank) in the tick prompt, text
+  view, and web scatter, so the loop is never blind to its own measurements.
 - **The dossier can't bloat or lose its trail.** The pinned ledger is a
   nested attempt tree mutated only via explicit ops
   (``dossier.add_attempt``/``mark_attempt`` — exact-text addressed,
-  whitespace-normalized against node forgery); the narrative rewrite passes
+  whitespace-normalized against node forgery); ``add_attempt`` **upserts**
+  (whole-ledger near-dup Jaccard match advances the existing node's status,
+  never appends a twin or regresses; ``dedup_ledger`` / ``precis quest
+  dossier-dedup`` retrofits old ledgers). The narrative is stored one
+  paragraph per unpinned chunk (retire + re-insert wholesale each rewrite,
+  so per-thought embeddings recompute), and the rewrite passes
   ``narrative_budget.narrative_growth_gate`` (growth beyond 15%+50 words
   needs same-tick progress evidence; ~2500-word ceiling tripwire; one
   compress-retry then keep-previous + logbook entry). Word counts land in

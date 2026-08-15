@@ -22,6 +22,7 @@ from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
 from precis.quest.frontier import (
     Candidate,
+    ProvisionalCandidate,
     _apply_rubric_composite,
     _candidate_from_structure,
     _rubric_composite_for,
@@ -156,6 +157,32 @@ class TestFrontierScatter:
         assert scatter is not None
         conv = {p["ref_id"]: p["converged"] for p in scatter.points}
         assert conv == {1: True, 2: False}
+
+    def test_provisional_points_plot_alongside_confirmed_marked_distinctly(
+        self,
+    ) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        untrusted_cand = Candidate(
+            2, "st2", "B", {}, True, flags={"barrier_trusted": False}
+        )
+        pc = ProvisionalCandidate(
+            candidate=untrusted_cand,
+            measures={"barrier": 0.5, "energy": -12.0},
+            untrusted_keys=frozenset({"barrier"}),
+            reasons=["barrier untrusted: adsorbate detached"],
+            on_frontier=True,
+        )
+        scatter = build_frontier_scatter([a], provisional=[pc])
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["band"] == "confirmed"
+        assert by_id[2]["band"] == "provisional"
+        assert by_id[2]["untrusted"] is True
+        assert by_id[2]["on_frontier"] is True
+        assert by_id[2]["reasons"] == ["barrier untrusted: adsorbate detached"]
+        # the shared axis range spans BOTH confirmed and provisional points
+        assert scatter.x_max == 0.5
+        assert scatter.y_min == -20.0
 
 
 # ── candidate creation ────────────────────────────────────────────────
@@ -1391,7 +1418,9 @@ class TestGeneralizedFrontier:
         # ids[1]'s raw barrier (0.1) is far better than ids[0]'s (0.5) — if it
         # ranked, it would dominate. But its pathway didn't converge, so it must
         # be excluded from ranking entirely (Reto: "noise should be excluded
-        # from ranking") — it lands in unevaluated, NOT dominated, NOT frontier.
+        # from ranking") — NOT dominated, NOT frontier. It IS visible+marked
+        # in `provisional` (untrusted-barrier visibility), just never in
+        # `unevaluated` (which means genuinely never measured).
         qid, ids = self._two_candidates(store)
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
@@ -1413,11 +1442,15 @@ class TestGeneralizedFrontier:
         fr = quest_frontier(store, qid)
         assert [c.ref_id for c in fr.frontier] == [ids[0]]
         assert not fr.dominated
-        assert [c.ref_id for c in fr.unevaluated] == [ids[1]]
-        untrusted = next(c for c in fr.unevaluated if c.ref_id == ids[1])
-        assert "barrier" not in untrusted.measures
-        assert untrusted.flags["barrier_untrusted_value"] == 0.1
-        assert untrusted.flags["barrier_trusted"] is False
+        assert fr.unevaluated == []
+        assert [pc.candidate.ref_id for pc in fr.provisional] == [ids[1]]
+        untrusted = fr.provisional[0]
+        assert "barrier" not in untrusted.candidate.measures
+        assert untrusted.candidate.flags["barrier_untrusted_value"] == 0.1
+        assert untrusted.measures["barrier"] == 0.1
+        assert "barrier" in untrusted.untrusted_keys
+        assert any("untrusted" in r for r in untrusted.reasons)
+        assert untrusted.candidate.flags["barrier_trusted"] is False
 
     def test_untrusted_barrier_also_excludes_selectivity_scalars_from_ranking(
         self, store: Any
@@ -1497,6 +1530,10 @@ class TestGeneralizedFrontier:
             assert k not in c.measures
 
     def test_all_untrusted_leaves_frontier_empty(self, store: Any) -> None:
+        # Neither candidate's barrier is trustworthy → the CONFIRMED frontier
+        # stays empty (unchanged behaviour). Both are now visible as
+        # `provisional` (measured, unconfirmed) rather than `unevaluated`, and
+        # the lower (better, "min") raw barrier wins the provisional frontier.
         qid, ids = self._two_candidates(store)
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
@@ -1515,7 +1552,162 @@ class TestGeneralizedFrontier:
         fr = quest_frontier(store, qid)
         assert fr.frontier == []
         assert fr.dominated == []
-        assert {c.ref_id for c in fr.unevaluated} == set(ids)
+        assert fr.unevaluated == []
+        assert {pc.candidate.ref_id for pc in fr.provisional} == set(ids)
+        on_frontier = {pc.candidate.ref_id: pc.on_frontier for pc in fr.provisional}
+        assert on_frontier[ids[0]] is True  # barrier=0.5, the lower (better)
+        assert on_frontier[ids[1]] is False  # barrier=0.9, dominated by ids[0]
+
+
+# ── provisional bucket — measured-but-unconfirmed candidates ──────────
+
+
+class TestProvisionalFrontier:
+    """A candidate with SOME objective value measured — an untrusted barrier,
+    or a barrier with no converged relax yet — must be visible+marked
+    (`provisional`), not silently indistinguishable from "never tried"
+    (`unevaluated`); see :class:`precis.quest.frontier.ProvisionalCandidate`.
+    """
+
+    def test_barrier_without_converged_relax_is_provisional(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        store.stamp_ref_meta(sid, {"barrier": 0.4})  # no relax run at all
+
+        fr = quest_frontier(store, qid)
+        assert fr.frontier == []
+        assert fr.dominated == []
+        assert fr.unevaluated == []
+        assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
+        pc = fr.provisional[0]
+        assert pc.candidate.converged is False
+        assert pc.measures["barrier"] == 0.4
+        assert "barrier" not in pc.untrusted_keys  # a trusted value, just no relax yet
+        assert pc.reasons == ["no converged relax"]
+
+    def test_view_leaderboard_shows_provisional_row_through_real_pipeline(
+        self, store: Any
+    ) -> None:
+        # End-to-end through quest_frontier: a measured-but-unconfirmed
+        # candidate must appear in view='leaderboard' as a provisional row —
+        # the regression mode was these rows silently vanishing (and a
+        # provisional-only quest claiming "no candidate structures").
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        store.stamp_ref_meta(sid, {"barrier": 0.4})  # no relax run at all
+
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="leaderboard").body
+        assert "no candidate structures" not in body
+        assert "provisional" in body
+        assert "0.4" in body
+
+    def test_truly_unmeasured_candidate_stays_unevaluated(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+
+        fr = quest_frontier(store, qid)
+        assert fr.frontier == []
+        assert fr.dominated == []
+        assert fr.provisional == []
+        assert [c.ref_id for c in fr.unevaluated] == [sid]
+
+    def test_confirmed_split_unchanged_alongside_a_provisional_and_an_unmeasured_candidate(
+        self, store: Any
+    ) -> None:
+        # A three-candidate quest: c0 trusted+converged (best barrier, wins
+        # the CONFIRMED frontier), c1 trusted+converged but worse (CONFIRMED
+        # dominated), c2 never measured at all (stays unevaluated). None of
+        # this involves an untrusted value — the confirmed split must be
+        # byte-for-byte what it was before the provisional bucket existed.
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        ids = []
+        for i, elem in enumerate(("Fe", "Co", "Ni")):
+            sid = compute_mod.ensure_candidate(
+                store,
+                qid,
+                {
+                    "name": f"c{i}",
+                    "structure": {
+                        "cell": {"a": 8.4, "b": 8.4, "c": 24.0},
+                        "ops": [
+                            {"op": "add_atom", "element": elem, "frac": [0.0, 0.0, 0.5]}
+                        ],
+                    },
+                },
+            )
+            assert sid is not None
+            ids.append(sid)
+        for sid in ids[:2]:
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=10,
+                max_disp=0.0,
+                energy=-10.0,
+            )
+        store.stamp_ref_meta(ids[0], {"barrier": 0.3, "barrier_trusted": True})
+        store.stamp_ref_meta(ids[1], {"barrier": 0.7, "barrier_trusted": True})
+
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [ids[0]]
+        assert [c.ref_id for c in fr.dominated] == [ids[1]]
+        assert fr.provisional == []
+        assert [c.ref_id for c in fr.unevaluated] == [ids[2]]
+
+    def test_render_frontier_shows_provisional_section_with_reason_and_marker(
+        self, store: Any
+    ) -> None:
+        # `view='frontier'` renders a dedicated provisional section between
+        # confirmed + awaiting, marking the untrusted value + a star for the
+        # provisional-frontier winner — and the untrusted candidate must NOT
+        # show up under "awaiting a sim" any more.
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        store.stamp_ref_meta(
+            sid, {"barrier": 0.42, "barrier_trusted": False, "barrier_desorbed": 1}
+        )
+
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert "provisional (measured, unconfirmed) (1)" in body
+        assert "0.42" in body and "⚠untrusted" in body
+        assert "★ provisional-frontier" in body
+        assert "barrier untrusted: adsorbate detached" in body
+        assert "── awaiting a sim" not in body
 
 
 # ── by-total leaderboard view (§7.3) ──────────────────────────────────
@@ -1578,11 +1770,18 @@ class TestLeaderboard:
         rows, _schema = leaderboard(fr)
         assert rows[0]["quality"] == "⚠ non-converged"
 
-    def test_untrusted_barrier_shows_excluded_value_not_a_bare_dash(self) -> None:
+    def test_untrusted_barrier_shows_provisional_value_not_a_bare_dash(self) -> None:
         # An untrusted candidate has NO "barrier" in measures (excluded from
-        # ranking at build time) but its flags carry the raw value — the
-        # leaderboard should surface "0.648 (excluded)", not a bare "—".
-        from precis.quest.frontier import FrontierResult, leaderboard
+        # ranking at build time) — quest_frontier reclassifies it into the
+        # provisional band, where the leaderboard surfaces its recovered
+        # value as "≈0.648" with the reason, not a bare "—" (and never a
+        # silent drop: the pre-provisional regression was these rows
+        # vanishing from view='leaderboard' entirely).
+        from precis.quest.frontier import (
+            FrontierResult,
+            ProvisionalCandidate,
+            leaderboard,
+        )
 
         f1 = Candidate(
             1,
@@ -1592,12 +1791,58 @@ class TestLeaderboard:
             True,
             flags={"barrier_trusted": False, "barrier_untrusted_value": 0.648},
         )
+        pc = ProvisionalCandidate(
+            candidate=f1,
+            measures={"barrier": 0.648},
+            untrusted_keys=frozenset({"barrier"}),
+            reasons=["barrier untrusted: adsorbate detached"],
+            on_frontier=True,
+        )
         fr = FrontierResult(
-            objectives=[("barrier", "min")], frontier=[], dominated=[], unevaluated=[f1]
+            objectives=[("barrier", "min")],
+            frontier=[],
+            dominated=[],
+            unevaluated=[],
+            provisional=[pc],
         )
         rows, _schema = leaderboard(fr)
-        assert rows[0]["barrier"] == "0.648 (excluded)"
-        assert rows[0]["quality"] == "⚠ non-converged"
+        assert rows[0]["band"] == "provisional"
+        assert rows[0]["barrier"] == "≈0.648"
+        assert rows[0]["graduated"] == ""
+        assert rows[0]["quality"] == (
+            "⚠ ★ would lead — barrier untrusted: adsorbate detached"
+        )
+
+    def test_leaderboard_orders_provisional_between_dominated_and_awaiting(
+        self,
+    ) -> None:
+        from precis.quest.frontier import (
+            FrontierResult,
+            ProvisionalCandidate,
+            leaderboard,
+        )
+
+        front = Candidate(1, "st1", "A", {"barrier": 0.3}, True)
+        prov_cand = Candidate(2, "st2", "B", {}, True, flags={"barrier_trusted": False})
+        pc = ProvisionalCandidate(
+            candidate=prov_cand,
+            measures={"barrier": 0.2},
+            untrusted_keys=frozenset({"barrier"}),
+            reasons=["x"],
+            on_frontier=True,
+        )
+        awaiting = Candidate(3, "st3", "C", {}, False)
+        fr = FrontierResult(
+            objectives=[("barrier", "min")],
+            frontier=[front],
+            dominated=[],
+            unevaluated=[awaiting],
+            provisional=[pc],
+        )
+        rows, _schema = leaderboard(fr)
+        assert [r["band"] for r in rows] == ["frontier", "provisional", "awaiting"]
+        # a provisional 0.2 does NOT displace the confirmed 0.3 from the top
+        assert rows[0]["design"] == "st1"
 
     def test_tier_glyph_column_reads_candidate_flag(self) -> None:
         """Tier-ladder UX item 4: the glyph column is ``TIER_GLYPH[flags['tier']]``

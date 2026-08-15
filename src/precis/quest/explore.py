@@ -14,6 +14,7 @@ explorer's-creed prompt block and the commit re-prompt
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -54,25 +55,44 @@ ruled out: PdCuNi alloy 2.84
     :func:`precis.quest.tick._frontier_summary` / ``_champion`` already built
     for this tick) instead of a second live-candidate scan — each candidate's
     measures come from ``structure.meta`` regardless of which Pareto band
-    (``frontier``/``dominated``/``unevaluated``) it landed in, so reusing
-    ``fr``'s full candidate set (its three bands, concatenated) is exactly
-    equivalent to a fresh scan, just without repeating the
+    (``frontier``/``dominated``/``provisional``/``unevaluated``) it landed
+    in, so reusing ``fr``'s full candidate set (its four bands, concatenated)
+    is exactly equivalent to a fresh scan, just without repeating the
     per-candidate ``struct_runs`` read (an N+1) a second/third/... time in
     the same tick. ``None`` (default, and every unit test) computes it fresh
     — unit-testable standalone.
+
+    A ``provisional`` candidate (measured but unconfirmed — an untrusted
+    barrier, or a barrier with no converged relax yet) still counts as
+    "tried": its :class:`precis.quest.frontier.ProvisionalCandidate.measures`
+    (the merged trusted + recovered-untrusted view) is read via
+    ``dataclasses.replace`` onto a throwaway :class:`Candidate` copy, so it
+    sorts into the same list below — but its value renders with a ``≈`` and
+    it can never take the ``(BEST)`` label, which belongs to confirmed
+    measurements only (the prompt's authority rule: a provisional value never
+    counts as a confirmed barrier).
     """
     if fr is None:
         from precis.quest.frontier import quest_frontier
 
         fr = quest_frontier(store, quest_id)
 
-    candidates = [*fr.frontier, *fr.dominated, *fr.unevaluated]
+    provisional_as_candidates = [
+        dataclasses.replace(pc.candidate, measures=pc.measures) for pc in fr.provisional
+    ]
+    candidates = [
+        *fr.frontier,
+        *fr.dominated,
+        *provisional_as_candidates,
+        *fr.unevaluated,
+    ]
     if not candidates:
         return ""
 
     key, sense = fr.objectives[0] if fr.objectives else ("energy", "min")
 
-    measured: list[tuple[float, str]] = []
+    provisional_ids = {pc.candidate.ref_id for pc in fr.provisional}
+    measured: list[tuple[float, str, bool]] = []
     unmeasured: list[str] = []
     ruled_out: list[str] = []
     for cand in candidates:
@@ -85,15 +105,21 @@ ruled out: PdCuNi alloy 2.84
                 f"{cand.name} {value:g}" if value is not None else cand.name
             )
         elif value is not None:
-            measured.append((value, cand.name))
+            measured.append((value, cand.name, cand.ref_id in provisional_ids))
         else:
             unmeasured.append(f"{cand.name} (awaiting)")
 
     measured.sort(key=lambda t: t[0] if sense == "min" else -t[0])
+    # (BEST) marks the best CONFIRMED value only — a provisional value renders
+    # with ≈ and never takes the label, per the tick prompt's authority rule.
+    best_confirmed = next(
+        (i for i, (_, _, prov) in enumerate(measured[:limit]) if not prov), None
+    )
     bits: list[str] = []
-    for i, (value, name) in enumerate(measured[:limit]):
-        best = " (BEST)" if i == 0 else ""
-        bits.append(f"{name} {value:g}{best}")
+    for i, (value, name, prov) in enumerate(measured[:limit]):
+        best = " (BEST)" if i == best_confirmed else ""
+        mark = "≈" if prov else ""
+        bits.append(f"{name} {mark}{value:g}{best}")
     bits.extend(unmeasured[: max(0, limit - len(bits))])
 
     if not bits and not ruled_out:
