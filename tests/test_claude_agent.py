@@ -590,6 +590,50 @@ def test_container_reinjects_scrubbed_dsn(monkeypatch, stub_bin: Path) -> None:
     assert env["PRECIS_DATABASE_URL"] == "postgresql://ro@h:6432/db"
 
 
+def test_container_dsn_password_completed_from_pgpass(
+    monkeypatch, stub_bin: Path, tmp_path: Path
+) -> None:
+    """Regression (plan_tick zombie loop, 2026-08-15). The adopted DSN is
+    password-free by design — libpq resolves the password from the host's
+    PGPASSFILE at connect time. Inside the container there is no pgpass, so
+    handing the bare DSN across meant every in-container ``precis serve``/CLI
+    call died ``fe_sendauth: no password supplied`` while the tick itself
+    exited "completed". The container branch must complete the password from
+    the host pgpass before the DSN crosses the boundary — into the env docker
+    inherits the by-key var from, never into argv."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+    from precis import secrets as _secrets
+    from precis.workers.executors import agent_container as ac
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)
+    monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
+    monkeypatch.setattr(_secrets, "_ADOPTED_DSN", "postgresql://rw@h:6432/db")
+    pgpass = tmp_path / "pgpass"
+    pgpass.write_text("h:6432:db:rw:hostpw\n")
+    monkeypatch.setenv("PGPASSFILE", str(pgpass))
+
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured["argv"] = argv
+        captured["env"] = k.get("env")
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    call_claude_agent("the prompt", model="opus")
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["PRECIS_DATABASE_URL"] == "postgresql://rw:hostpw@h:6432/db"
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert not any("hostpw" in str(a) for a in argv)  # secret never in argv
+
+
 def test_model_override(stub_bin: Path) -> None:
     stub_bin.write_text(
         textwrap.dedent(

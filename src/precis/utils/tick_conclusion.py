@@ -24,10 +24,13 @@ Parser semantics:
 * Fields are case-insensitive on the key; values are stripped.
 * ``summary:`` may span multiple lines until the next ``key:`` or
   the ``=== END ===`` sentinel.
-* The runner does NOT translate verdict to tags — the LLM still
-  calls ``tag(id=N, add=['STATUS:done'])`` directly. The block is
-  for richer summarisation in the audit chunk, not for state
-  transitions.
+* The runner does NOT translate verdicts to tags in general — the LLM
+  still calls ``tag(id=N, add=['STATUS:done'])`` directly; the block is
+  for richer summarisation in the audit chunk. **One exception**
+  (2026-08-15 zombie-loop outage): ``verdict: halt`` IS honored
+  runner-side (``halt:agent-declared`` on the parent) — an agent that
+  halts *because its tools are broken* cannot write the tag itself,
+  and an unhonored halt re-minted the tick forever.
 """
 
 from __future__ import annotations

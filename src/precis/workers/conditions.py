@@ -390,6 +390,51 @@ def _probe_llm_degraded(store: Store) -> list[ConditionFinding]:
     ]
 
 
+#: Agentic ticks that ran to completion without a single *successful* precis
+#: tool call — the 2026-08-15 zombie-loop signature: claude-tier spend with
+#: zero store writes (broken tick-env DB credential; the MCP registered but
+#: every verb died ``fe_sendauth``). The runner marks such ticks with a
+#: ``no-precis-tools`` job_event; a burst of them means the tick environment
+#: is dead, not that the tasks are hard. Detected here so the outage costs
+#: minutes, not a silent $13/day.
+#:
+#: The leading-wildcard LIKE can't use an index — it row-filters the
+#: ``chunk_kind = 'job_event'`` index subset, which the sweeper GCs by age,
+#: so the scan stays bounded. If it ever surfaces in pg_stat, switch the
+#: predicate to the existing ``tsv`` GIN index.
+_TOOLLESS_TICKS_SQL = """
+SELECT count(*) AS n, count(DISTINCT r.parent_id) AS parents
+  FROM chunks c
+  JOIN refs r ON r.ref_id = c.ref_id
+ WHERE c.chunk_kind = 'job_event'
+   AND c.created_at > now() - make_interval(secs => %(window_s)s)
+   AND c.text LIKE '%%no-precis-tools%%'
+"""
+
+
+def _probe_toolless_agent_spend(store: Store) -> list[ConditionFinding]:
+    window_s = _env_f("PRECIS_COND_TOOLLESS_WINDOW_S", 2 * 3600.0)
+    min_ticks = int(_env_f("PRECIS_COND_TOOLLESS_MIN_TICKS", 3))
+    with store.pool.connection() as conn:
+        row = conn.execute(_TOOLLESS_TICKS_SQL, {"window_s": window_s}).fetchone()
+    n = int(row[0] or 0) if row else 0
+    if n < min_ticks:
+        return []
+    parents = int(row[1] or 0) if row else 0
+    return [
+        ConditionFinding(
+            key="agent-ticks-toolless",
+            detail=(
+                f"{n} agentic tick(s) across {parents} parent todo(s) made "
+                f"zero successful precis tool calls in the last "
+                f"{window_s / 3600:.0f}h — claude-tier spend with no store "
+                "writes. Check the tick env's DB credential / MCP "
+                "registration (the 2026-08-15 fe_sendauth outage signature)."
+            ),
+        )
+    ]
+
+
 #: Claims (slot holds / zombie agentlogs) whose holder generation is
 #: provably replaced but that are OLDER than the reaper's age floor plus a
 #: full sweeper cycle — the epoch arm should have reclaimed them, so their
@@ -477,6 +522,7 @@ CONDITIONS: tuple[Condition, ...] = (
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
     Condition("pass-wedged", "warn", _probe_pass_wedged),
     Condition("llm-degraded", "warn", _probe_llm_degraded),
+    Condition("agent-ticks-toolless", "warn", _probe_toolless_agent_spend),
     Condition("dead-generation-claims", "warn", _probe_dead_generation_claims),
     Condition("settings-env-shadowed", "info", _probe_settings_env_shadowed),
 )

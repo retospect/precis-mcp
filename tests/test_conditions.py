@@ -611,3 +611,49 @@ def test_heal_arm_ignores_unwhitelisted_process(
     )
     assert run_condition_heals(store, [f], runner=_runner) == 0
     assert ran == []
+
+
+# ── agent-ticks-toolless (the 2026-08-15 zombie-loop signature) ───────────
+
+
+def _seed_toolless_event(store: Store, *, age_s: float = 60.0) -> None:
+    parent = store.insert_ref(kind="todo", slug=None, title=_uniq("toolless-parent"))
+    job = store.insert_ref(
+        kind="job", slug=None, title="plan_tick", parent_id=parent.id
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, created_at) "
+            "VALUES (%s, 'system', 0, 'job_event', %s, "
+            "        now() - make_interval(secs => %s))",
+            (
+                job.id,
+                "runner: tick hit no-precis-tools (resumable, streak 1/3); "
+                "not bubbling — a fresh tick will continue next dispatch sweep.",
+                age_s,
+            ),
+        )
+        conn.commit()
+
+
+def test_toolless_ticks_fire_at_threshold(store: Store, monkeypatch) -> None:
+    from precis.workers.conditions import _probe_toolless_agent_spend
+
+    monkeypatch.setenv("PRECIS_COND_TOOLLESS_MIN_TICKS", "3")
+    for _ in range(3):
+        _seed_toolless_event(store)
+    findings = _probe_toolless_agent_spend(store)
+    assert [f.key for f in findings] == ["agent-ticks-toolless"]
+    assert "zero successful precis tool calls" in findings[0].detail
+
+
+def test_toolless_ticks_quiet_below_threshold(store: Store, monkeypatch) -> None:
+    # The probe counts globally over a shared table, so the quiet case is
+    # asserted via an unreachable threshold rather than a tight window (a
+    # sibling test's fresh rows would leak into any window).
+    from precis.workers.conditions import _probe_toolless_agent_spend
+
+    monkeypatch.setenv("PRECIS_COND_TOOLLESS_MIN_TICKS", "100000")
+    _seed_toolless_event(store)
+    findings = _probe_toolless_agent_spend(store)
+    assert findings == []

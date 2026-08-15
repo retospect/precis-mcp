@@ -41,9 +41,14 @@ class _FakeWorkspace:
 #: the default everywhere a "clean run" is modelled; the tests about the tools
 #: *missing* pass their own ``raw_text``. Must be a genuine event line: the
 #: check parses the stream rather than grepping it.
+#: An invocation alone is no longer enough (the 2026-08-15 outage: every call
+#: errored fe_sendauth yet counted) — success needs the non-error tool_result
+#: coming back for the same id.
 _USED_TOOLS = (
     '{"type":"assistant","message":{"content":'
-    '[{"type":"tool_use","id":"t1","name":"mcp__precis__put"}]}}'
+    '[{"type":"tool_use","id":"t1","name":"mcp__precis__put"}]}}\n'
+    '{"type":"user","message":{"content":'
+    '[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
 )
 
 _CLEAN_STREAM = f"<stream-json>\n{_USED_TOOLS}"
@@ -420,6 +425,57 @@ def test_claude_exit_non_precis_tool_use_is_not_enough() -> None:
 def test_claude_exit_real_tool_use_passes() -> None:
     """Control: a genuine precis ``tool_use`` block is recognised."""
     assert pt._claude_exit(_res(terminal_reason="completed")) == (0, None)
+
+
+def test_claude_exit_all_tool_calls_errored_is_not_success() -> None:
+    """The 2026-08-15 zombie loop: the MCP registered, every verb errored.
+
+    Invocation-counting saw calls > 0 and marked 18 no-op ticks succeeded —
+    each burned a full claude-tier run against a DB it couldn't authenticate
+    to (``fe_sendauth``), then was re-minted on cooldown expiry. An errored
+    ``tool_result`` must not count as precis work.
+    """
+    all_errored = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","id":"t1","name":"mcp__precis__put"}]}}\n'
+        '{"type":"user","message":{"content":'
+        '[{"type":"tool_result","tool_use_id":"t1","is_error":true,'
+        '"content":"fe_sendauth: no password supplied"}]}}'
+    )
+    assert pt._claude_exit(_res(terminal_reason="completed", raw_text=all_errored)) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_invocation_without_result_is_not_success() -> None:
+    """A ``tool_use`` whose result never arrives (server hung/died mid-call)
+    proves nothing was recorded either."""
+    no_result = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","id":"t1","name":"mcp__precis__put"}]}}'
+    )
+    assert pt._claude_exit(_res(terminal_reason="completed", raw_text=no_result)) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_one_success_among_errors_passes() -> None:
+    """A single non-error precis result is positive evidence of store work,
+    however many sibling calls errored."""
+    mixed = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","id":"t1","name":"mcp__precis__put"},'
+        '{"type":"tool_use","id":"t2","name":"mcp__precis__tag"}]}}\n'
+        '{"type":"user","message":{"content":'
+        '[{"type":"tool_result","tool_use_id":"t1","is_error":true},'
+        '{"type":"tool_result","tool_use_id":"t2","content":"tagged"}]}}'
+    )
+    assert pt._claude_exit(_res(terminal_reason="completed", raw_text=mixed)) == (
+        0,
+        None,
+    )
 
 
 # ── the same check on the OSS `openai_tools` wire ──────────────────────

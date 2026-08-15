@@ -649,13 +649,16 @@ def _precis_tools_used(result: Any) -> bool:
     differently and only one of them speaks stream-json:
 
     * ``claude_agent`` — parse ``raw_text`` properly
-      (``count_tool_use_events``) rather than grepping the blob: only a
-      ``tool_use`` block inside an ``assistant`` event counts, narrowed to
-      the ``mcp__precis__`` prefix so the tick's ``Bash``/``Read`` calls
-      don't pass for precis work. A substring search would also match the
-      init event's available-tools list and the agent's own prose — and the
-      prose written when the tools are *missing* names the missing verbs, so
-      the blob test would read a failure report as proof of success.
+      (``count_successful_tool_results``) rather than grepping the blob: only
+      a ``tool_use`` block inside an ``assistant`` event whose id comes back
+      in a non-error ``tool_result`` counts, narrowed to the
+      ``mcp__precis__`` prefix so the tick's ``Bash``/``Read`` calls don't
+      pass for precis work. Counting *invocations* isn't enough: when the
+      MCP server registers but every verb errors (the 2026-08-15 broken
+      container-DSN outage), invocation-counting marked 18 no-op ticks
+      succeeded and the loop re-minted them forever. A substring search
+      would be worse still — it also matches the init event's
+      available-tools list and the agent's own prose.
     * ``openai_tools`` — the in-process loop drives the precis verbs
       directly, so there is no stream-json and no ``mcp__`` prefix to find
       (``raw_text`` is ``None`` for every non-agent transport). Its
@@ -668,9 +671,11 @@ def _precis_tools_used(result: Any) -> bool:
     """
     raw_text = getattr(result, "raw_text", None)
     if raw_text:
-        from precis.utils.claude_agent import count_tool_use_events
+        from precis.utils.claude_agent import count_successful_tool_results
 
-        return count_tool_use_events(raw_text, name_prefix=_PRECIS_TOOL_PREFIX) > 0
+        return (
+            count_successful_tool_results(raw_text, name_prefix=_PRECIS_TOOL_PREFIX) > 0
+        )
     calls = getattr(result, "tool_calls", None)
     return calls is not None and calls > 0
 

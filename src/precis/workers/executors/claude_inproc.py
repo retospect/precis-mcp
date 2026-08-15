@@ -559,6 +559,31 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             resume=(resume_reason, streak, cap) if resume_reason else None,
         )
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
+        # Runner-side honoring of a declared ``verdict: halt`` (2026-08-15
+        # zombie-loop outage): the agent decided to halt but couldn't write
+        # the tag — tagging needs the very MCP tools whose failure prompted
+        # the halt — so the verdict sat unread in job_summary while dispatch
+        # re-minted the tick forever. The runner has direct store access;
+        # honor the declared verdict here. Idempotent when the agent's own
+        # tag also landed.
+        if conclusion is not None and conclusion.verdict == "halt":
+            from precis.store.types import Tag
+
+            store.add_tag(
+                parent_id,
+                Tag.open("halt:agent-declared"),
+                set_by="system",
+                conn=conn,
+            )
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                "runner: tick declared `verdict: halt` — tagged the parent "
+                "halt:agent-declared runner-side (the tick may not have been "
+                "able to write tags itself).",
+                conn=conn,
+            )
         if outcome.stderr:
             _append_chunk(
                 store,
@@ -602,8 +627,14 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             # bubbles immediately, same as before; a *repeat*
             # streak-exhaustion after the decompose attempt also bubbles
             # (the guardrail is one attempt per parent, not a loop).
-            if resume_reason is not None and not _decompose_already_attempted(
-                conn, parent_id
+            # ``no-precis-tools`` is an environment outage, not task width:
+            # a decompose tick would burn the same broken env (the 2026-08-15
+            # container-DSN outage ran 18 zombie ticks this way). Skip the
+            # decompose attempt and park explicitly below instead.
+            if (
+                resume_reason is not None
+                and resume_reason != "no-precis-tools"
+                and not _decompose_already_attempted(conn, parent_id)
             ):
                 child_id = _mint_auto_decompose(
                     store,
@@ -628,7 +659,32 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 _set_status(store, ref_id, _FAILED, conn=conn)
                 conn.commit()
                 return
-            if resume_reason is not None:
+            if resume_reason == "no-precis-tools":
+                # N consecutive ticks that made zero successful precis calls:
+                # the planner is stuck on tooling, not on the task. Park the
+                # parent durably (dispatch excludes ``halt``/``halt:*``) so
+                # it stops re-minting claude-tier spend into a dead env; the
+                # operator un-halts after fixing the outage.
+                from precis.store.types import Tag
+
+                store.add_tag(
+                    parent_id,
+                    Tag.open("halt:planner-stuck"),
+                    set_by="system",
+                    conn=conn,
+                )
+                _append_chunk(
+                    store,
+                    ref_id,
+                    _JOB_EVENT_KIND,
+                    f"runner: {streak} consecutive no-precis-tools ticks "
+                    f"(cap {cap}) — zero successful precis tool calls; an "
+                    f"environment/tooling outage, not task width. Parked the "
+                    f"parent halt:planner-stuck; remove the tag once the tick "
+                    f"env authenticates again.",
+                    conn=conn,
+                )
+            elif resume_reason is not None:
                 _append_chunk(
                     store,
                     ref_id,

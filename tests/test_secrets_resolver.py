@@ -111,3 +111,105 @@ def test_reveal_error_falls_through(
 
     store = type("S", (), {"pool": _Boom()})()
     assert vault.get_secret("BOOM", store=store, default="d") == "d"
+
+
+# ── complete_dsn_password: pgpass completion for cross-boundary DSNs ──────
+#
+# The worker DSN is password-free by design (§L): libpq fills the password
+# from PGPASSFILE at connect time. A DSN handed across an isolation boundary
+# (the §13 agent container) lands where no pgpass exists — the 2026-08-15
+# plan_tick zombie loop, every in-container call dying fe_sendauth. The
+# helper completes the password on the host before the DSN crosses.
+
+
+@pytest.fixture()
+def pgpass(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+    path = tmp_path / "pgpass"
+    monkeypatch.setenv("PGPASSFILE", str(path))
+    return path
+
+
+def test_complete_dsn_fills_password_from_pgpass(pgpass: Any) -> None:
+    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:s3cret\n")
+    dsn = "postgresql://agent_rw@db.example.com:6432/precis_prod"
+    out = vault.complete_dsn_password(dsn)
+    assert out == "postgresql://agent_rw:s3cret@db.example.com:6432/precis_prod"
+
+
+def test_complete_dsn_wildcard_entry_matches(pgpass: Any) -> None:
+    pgpass.write_text(
+        "# comment\n"
+        "\n"
+        "other:5432:*:someone:nope\n"
+        "db.example.com:6432:*:agent_rw:wildpw\n"
+    )
+    out = vault.complete_dsn_password(
+        "postgresql://agent_rw@db.example.com:6432/precis_prod"
+    )
+    assert ":wildpw@" in out
+
+
+def test_complete_dsn_existing_password_unchanged(pgpass: Any) -> None:
+    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:other\n")
+    dsn = "postgresql://agent_rw:mine@db.example.com:6432/precis_prod"
+    assert vault.complete_dsn_password(dsn) == dsn
+
+
+def test_complete_dsn_no_entry_unchanged(pgpass: Any) -> None:
+    pgpass.write_text("elsewhere:5432:db:user:pw\n")
+    dsn = "postgresql://agent_rw@db.example.com:6432/precis_prod"
+    assert vault.complete_dsn_password(dsn) == dsn
+
+
+def test_complete_dsn_missing_pgpass_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("PGPASSFILE", str(tmp_path / "absent"))
+    dsn = "postgresql://agent_rw@db.example.com:6432/precis_prod"
+    assert vault.complete_dsn_password(dsn) == dsn
+
+
+def test_complete_dsn_password_is_url_quoted(pgpass: Any) -> None:
+    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:p@ss/w:rd\n")
+    out = vault.complete_dsn_password(
+        "postgresql://agent_rw@db.example.com:6432/precis_prod"
+    )
+    assert ":p%40ss%2Fw%3Ard@" in out
+    # And the round-trip parse must recover the raw password.
+    from psycopg.conninfo import conninfo_to_dict
+
+    assert conninfo_to_dict(out)["password"] == "p@ss/w:rd"
+
+
+def test_complete_dsn_pgpass_escaped_colon(pgpass: Any) -> None:
+    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:a\\:b\\\\c\n")
+    out = vault.complete_dsn_password(
+        "postgresql://agent_rw@db.example.com:6432/precis_prod"
+    )
+    from psycopg.conninfo import conninfo_to_dict
+
+    assert conninfo_to_dict(out)["password"] == "a:b\\c"
+
+
+def test_complete_dsn_keyword_conninfo(pgpass: Any) -> None:
+    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:kwpw\n")
+    out = vault.complete_dsn_password(
+        "host=db.example.com port=6432 dbname=precis_prod user=agent_rw"
+    )
+    from psycopg.conninfo import conninfo_to_dict
+
+    assert conninfo_to_dict(out)["password"] == "kwpw"
+
+
+def test_complete_dsn_garbage_unchanged(pgpass: Any) -> None:
+    assert vault.complete_dsn_password("not a dsn at all ===") == "not a dsn at all ==="
+
+
+def test_complete_dsn_empty_password_userinfo_completed_cleanly(pgpass: Any) -> None:
+    """``user:@host`` (explicit empty password) parses as password="" and must
+    complete without doubling the ``:`` separator (``user::pw@host``)."""
+    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:filled\n")
+    out = vault.complete_dsn_password(
+        "postgresql://agent_rw:@db.example.com:6432/precis_prod"
+    )
+    assert out == "postgresql://agent_rw:filled@db.example.com:6432/precis_prod"

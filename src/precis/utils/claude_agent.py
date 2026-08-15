@@ -377,6 +377,12 @@ def call_claude_agent(
         if _dsn is None and env_base is None:
             _dsn = _secrets.get_adopted_dsn()
         if _dsn:
+            # The worker DSN is password-free by design (§L — libpq fills the
+            # password from the host's PGPASSFILE), but no pgpass exists inside
+            # the container: complete the password on the host before the DSN
+            # crosses the boundary, or every in-container ``precis serve``/CLI
+            # call dies ``fe_sendauth`` (the 2026-08-15 plan_tick zombie loop).
+            _dsn = _secrets.complete_dsn_password(_dsn)
             proc_env["PRECIS_DATABASE_URL"] = _dsn
         from precis.workers import envelope as _envelope
 
@@ -1250,6 +1256,64 @@ def count_tool_use_events(stdout: str, *, name_prefix: str | None = None) -> int
 
 #: Back-compat alias — the name was private before it gained a second caller.
 _count_tool_use_events = count_tool_use_events
+
+
+def count_successful_tool_results(
+    stdout: str, *, name_prefix: str | None = None
+) -> int:
+    """Count tool calls that returned a NON-error result in a stream.
+
+    :func:`count_tool_use_events` counts *invocations* — which reads a run
+    whose every call errored as tool use. That hole let the 2026-08-15
+    plan_tick zombie loop mark 18 ticks "succeeded": the precis MCP server
+    registered, every verb died ``fe_sendauth`` (broken container DSN), and
+    invocation-counting saw calls > 0. Success needs the other half of the
+    wire: each ``tool_use`` block's id must come back in a ``tool_result``
+    block (inside a ``user`` event) whose ``is_error`` is not true.
+
+    ``name_prefix`` narrows to tools whose name starts with it, matching the
+    invocation counter's contract. Only meaningful on the stream-json path.
+    """
+    import json as _json
+
+    matching_ids: set[str] = set()
+    ok = 0
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        msg = ev.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else ev.get("content")
+        if not isinstance(content, list):
+            continue
+        if ev.get("type") == "assistant":
+            for b in content:
+                if (
+                    isinstance(b, dict)
+                    and b.get("type") == "tool_use"
+                    and (
+                        name_prefix is None
+                        or str(b.get("name") or "").startswith(name_prefix)
+                    )
+                    and b.get("id")
+                ):
+                    matching_ids.add(str(b["id"]))
+        elif ev.get("type") == "user":
+            for b in content:
+                if (
+                    isinstance(b, dict)
+                    and b.get("type") == "tool_result"
+                    and str(b.get("tool_use_id") or "") in matching_ids
+                    and b.get("is_error") is not True
+                ):
+                    ok += 1
+    return ok
 
 
 def _last_result_event(stdout: str) -> dict[str, Any] | None:

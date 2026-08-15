@@ -112,6 +112,101 @@ def get_adopted_dsn() -> str | None:
     return _ADOPTED_DSN
 
 
+def _split_pgpass_line(line: str) -> list[str]:
+    """Split one pgpass line on unescaped ``:`` (``\\:`` and ``\\\\`` escape).
+
+    Only the first four separators split (libpq semantics): the fifth field —
+    the password — is the raw remainder of the line, so an unescaped colon in
+    the password survives (escapes are still processed throughout)."""
+    fields: list[str] = []
+    cur: list[str] = []
+    it = iter(line)
+    for ch in it:
+        if ch == "\\":
+            nxt = next(it, "")
+            cur.append(nxt)
+        elif ch == ":" and len(fields) < 4:
+            fields.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    fields.append("".join(cur))
+    return fields
+
+
+def _pgpass_lookup(*, host: str, port: str, dbname: str, user: str) -> str | None:
+    """Password for (host, port, dbname, user) from the pgpass file
+    (``PGPASSFILE`` or ``~/.pgpass``), honoring ``*`` wildcards and
+    first-match-wins, per libpq's own rules. ``None`` when absent."""
+    path = Path(os.environ.get("PGPASSFILE") or (Path.home() / ".pgpass"))
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = _split_pgpass_line(line)
+        if len(fields) < 5:
+            continue
+        if all(
+            f == "*" or f == v for f, v in zip(fields[:4], (host, port, dbname, user))
+        ):
+            return fields[4]
+    return None
+
+
+def complete_dsn_password(dsn: str) -> str:
+    """Return ``dsn`` with its password filled in from the host's pgpass file.
+
+    The worker's DSN is password-free by design (§L, gr171431): libpq resolves
+    the password from ``PGPASSFILE`` at connect time. That works for any
+    process on this host — but a DSN handed *across an isolation boundary*
+    (the §13 agent container) lands where no pgpass exists, and every
+    connection dies ``fe_sendauth: no password supplied`` (the 2026-08-15
+    plan_tick zombie-loop outage). Complete the password here, on the host,
+    before the DSN crosses. A DSN that already carries a password, or whose
+    pgpass entry can't be found, is returned unchanged (the latter fails at
+    connect time exactly as before — no new failure mode).
+    """
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        params = conninfo_to_dict(dsn)
+    except Exception:
+        return dsn
+    if params.get("password"):
+        return dsn
+    user = str(params.get("user") or "")
+    pw = _pgpass_lookup(
+        host=str(params.get("host") or "localhost"),
+        port=str(params.get("port") or "5432"),
+        dbname=str(params.get("dbname") or ""),
+        user=user,
+    )
+    if pw is None:
+        return dsn
+    from urllib.parse import quote, urlsplit, urlunsplit
+
+    parts = urlsplit(dsn)
+    if parts.scheme in ("postgresql", "postgres") and "@" in parts.netloc:
+        userinfo, _, hostpart = parts.netloc.rpartition("@")
+        # ``user:@host`` (explicit empty password) parses as password="" —
+        # falsy, so the guard above falls through; strip the trailing ``:``
+        # or the rebuild would emit ``user::pw@host``.
+        netloc = f"{userinfo.rstrip(':')}:{quote(pw, safe='')}@{hostpart}"
+        return urlunsplit(parts._replace(netloc=netloc))
+    # Keyword conninfo (or a URL without userinfo): merge via psycopg, which
+    # normalizes to keyword form — equally valid to libpq and psycopg.
+    try:
+        from psycopg.conninfo import make_conninfo
+
+        return make_conninfo(dsn, password=pw)
+    except Exception:
+        return dsn
+
+
 def invalidate(name: str | None = None) -> None:
     """Drop cached plaintext — one name, or all. Call after a rotation."""
     with _cache_lock:
@@ -328,6 +423,7 @@ __all__ = [
     "adopt_process_store",
     "bind_store",
     "client_identity",
+    "complete_dsn_password",
     "delete_secret",
     "get_secret",
     "invalidate",

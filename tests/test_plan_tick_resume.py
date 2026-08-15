@@ -354,3 +354,81 @@ def test_clean_tick_succeeds_and_resets_streak(store: Store) -> None:
         ).fetchone()
     assert present_row is not None
     assert present_row[0] is False
+
+
+# ── runner-side halt honoring + no-precis-tools parking (2026-08-15) ─────
+
+
+_HALT_CONCLUSION = (
+    "I cannot reach the precis store; halting.\n"
+    "=== TICK CONCLUSION ===\n"
+    "verdict: halt\n"
+    "summary: MCP verbs unavailable; nothing recorded.\n"
+    "=== END ===\n"
+)
+
+
+def _run_with_reason(store: Store, job_id: int, reason: str) -> None:
+    spec = _FakeSpec(
+        PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr="",
+            duration_s=3.0,
+            resume_reason=reason,
+        )
+    )
+    ci._run_plan_tick(store, job_id, spec)
+
+
+def test_halt_verdict_is_honored_runner_side(store: Store) -> None:
+    """The 2026-08-15 zombie loop: the agent decided ``verdict: halt`` but
+    couldn't write the tag — tagging needs the very MCP tools whose failure
+    prompted the halt — so dispatch re-minted the tick forever. The runner
+    has store access; a declared halt must land as a parent tag."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+    _run(store, job_id, _HALT_CONCLUSION, exit_code=0)
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert "halt:agent-declared" in parent_tags
+
+
+def test_non_halt_verdicts_are_not_translated(store: Store) -> None:
+    """Only ``halt`` is honored runner-side — done/continue/yield stay the
+    LLM's own tag calls (the original contract)."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+    done = _HALT_CONCLUSION.replace("verdict: halt", "verdict: done")
+    _run(store, job_id, done, exit_code=0)
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("halt") for t in parent_tags)
+
+
+def test_no_precis_tools_streak_parks_planner_stuck(store: Store, monkeypatch) -> None:
+    """Past the cap, ``no-precis-tools`` skips the auto-decompose (splitting
+    a task can't fix a dead tool env — the decompose tick would burn the
+    same broken env) and parks the parent ``halt:planner-stuck``."""
+    monkeypatch.setenv("PRECIS_PLAN_TICK_RESUME_CAP", "1")
+    parent_id = _mk_parent(store)
+
+    # tick 1: streak 1 <= cap 1 → resume, no park yet.
+    _run_with_reason(store, _mk_job(store, parent_id), "no-precis-tools")
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("halt") for t in parent_tags)
+
+    # tick 2: streak 2 > cap 1 → park, NOT decompose.
+    job2 = _mk_job(store, parent_id)
+    _run_with_reason(store, job2, "no-precis-tools")
+    job_tags = {str(t) for t in store.tags_for(job2)}
+    assert "STATUS:failed" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert "halt:planner-stuck" in parent_tags
+
+    # No decompose tick was minted for a tooling outage.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s AND kind = 'job'",
+            (parent_id,),
+        ).fetchall()
+    decompose_jobs = [r for r in rows if (r[0].get("params") or {}).get("decompose")]
+    assert decompose_jobs == []
