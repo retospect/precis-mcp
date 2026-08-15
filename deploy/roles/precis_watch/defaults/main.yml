@@ -18,8 +18,8 @@ precis_watch_venv: /opt/precis/venv
 precis_watch_dsn: "{{ precis_worker_dsn | default('postgresql://agent_rw@' + hostvars[postgres_host]['ansible_host'] + ':' + (pgbouncer_port | string) + '/precis_prod') }}"
 
 # Watch knobs
-precis_watch_dir: "{{ papers_inbox_path }}"     # /opt/nas/botshome/papers/inbox
-precis_watch_corpus: "{{ papers_corpus_path }}" # /opt/nas/botshome/papers/corpus
+precis_watch_dir: "{{ papers_inbox_path }}"     # nas_root/papers/inbox — same path every node
+precis_watch_corpus: "{{ papers_corpus_path }}" # nas_root/papers/corpus
 precis_watch_debounce: 3
 precis_watch_user: auto-watch
 

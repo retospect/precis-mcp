@@ -40,9 +40,17 @@ groups:
           summary: "PostgreSQL is down on the data node"
 
       - alert: NFSMountMissing
-        expr: node_filesystem_avail_bytes{mountpoint="/shared"} == 0
+        expr: node_filesystem_avail_bytes{mountpoint="/mnt/cluster"} == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "{% raw %}NFS mount /shared missing on {{ $labels.instance }}{% endraw %}"
+          summary: "{% raw %}NFS mount /mnt/cluster missing on {{ $labels.instance }}{% endraw %}"
+
+      - alert: NASMountMissing
+        expr: node_filesystem_avail_bytes{mountpoint="/mnt/archive/botshome"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}NAS mount /mnt/archive/botshome missing on {{ $labels.instance }}{% endraw %}"

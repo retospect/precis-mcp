@@ -1,8 +1,12 @@
 ---
-# NFS client mount on all non-server nodes
+# NFS client mount on all non-server nodes, at the uniform /mnt/cluster
+# role-named path (shared_mount — cluster-mount-namespace spec, gr194012).
 # Mount options:
-#   hard   — retry indefinitely if server goes down (default, but explicit)
-#   intr   — allow interrupt on hung operations
+#   hard    — retry indefinitely if server goes down (default, but explicit)
+#   intr    — allow interrupt on hung operations
+#   nosuid  — ignore setuid/setgid bits from remote content
+#   nodev   — ignore device files from remote content
+#   noatime — hot share, skip access-time updates
 #   _netdev (Linux) — wait for network before mounting at boot
 
 - name: Ensure mount point exists
@@ -18,7 +22,7 @@
     path: "{{ shared_mount }}"
     src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
     fstype: nfs
-    opts: hard,intr
+    opts: hard,intr,nosuid,nodev,noatime
     state: mounted
   become: true
 
@@ -28,7 +32,7 @@
     path: "{{ shared_mount }}"
     src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
     fstype: nfs
-    opts: hard,intr,_netdev
+    opts: hard,intr,nosuid,nodev,noatime,_netdev
     state: mounted
   become: true
 
@@ -41,3 +45,17 @@
   ansible.builtin.fail:
     msg: "NFS canary file not found at {{ shared_mount }}/.nfs-canary — NFS mount may have failed"
   when: not nfs_canary.stat.exists
+
+- name: Symlink legacy shared_mount path (macOS)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
+  vars:
+    legacy_path: /opt/shared
+    canonical_path: "{{ shared_mount }}"
+  when: os_family == "darwin"
+
+- name: Symlink legacy shared_mount path (Linux)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
+  vars:
+    legacy_path: /shared
+    canonical_path: "{{ shared_mount }}"
+  when: os_family == "linux"

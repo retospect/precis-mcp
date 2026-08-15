@@ -53,3 +53,41 @@
     mode: "0644"
   become: true
   changed_when: false
+
+# macOS has no kernel bind-mount (no `mount -o bind`); loop the export back
+# to itself over NFS via the server's own lan_ip so shared_mount resolves to
+# the same content on the server as on every client (cluster-mount-namespace
+# spec, gr194012 — "bind mount verified" acceptance criterion). The export's
+# -network clause already admits the server's own lan_ip since it's inside
+# lan_subnet, so no separate exports entry is needed.
+- name: Ensure shared_mount exists for server-side parity
+  ansible.builtin.file:
+    path: "{{ shared_mount }}"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Loop back own NFS export onto shared_mount
+  ansible.posix.mount:
+    path: "{{ shared_mount }}"
+    src: "{{ lan_ip }}:{{ nfs_export_path }}/shared"
+    fstype: nfs
+    opts: hard,intr,nosuid,nodev,noatime
+    state: mounted
+  become: true
+
+- name: Verify server-side NFS canary
+  ansible.builtin.stat:
+    path: "{{ shared_mount }}/.nfs-canary"
+  register: nfs_server_canary
+
+- name: Fail if server-side loopback mount not working
+  ansible.builtin.fail:
+    msg: "NFS canary file not found at {{ shared_mount }}/.nfs-canary — loopback mount may have failed"
+  when: not nfs_server_canary.stat.exists
+
+- name: Symlink legacy shared_mount path (nfs_server host)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
+  vars:
+    legacy_path: /opt/shared
+    canonical_path: "{{ shared_mount }}"

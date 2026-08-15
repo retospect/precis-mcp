@@ -1,0 +1,52 @@
+---
+# Shared old-path → new-path transition symlink for the /mnt role-named
+# mount namespace cutover (cluster-mount-namespace spec, gr194012). Caller
+# passes:
+#   legacy_path:    the deprecated absolute path (e.g. /opt/shared)
+#   canonical_path: the role-named path it now redirects to (e.g. /mnt/cluster)
+#
+# Safe/idempotent: unmounts legacy_path if a stale mount is still sitting
+# there, then only replaces it with a symlink once it's empty or already a
+# symlink. A non-empty real directory is left alone and the play fails
+# loudly so an operator inspects it instead of this silently discarding
+# data.
+
+- name: "Unmount legacy path {{ legacy_path }} if still mounted there"
+  ansible.posix.mount:
+    path: "{{ legacy_path }}"
+    state: absent
+  become: true
+
+- name: "Stat legacy path {{ legacy_path }}"
+  ansible.builtin.stat:
+    path: "{{ legacy_path }}"
+  register: legacy_stat
+
+- name: "List legacy directory contents {{ legacy_path }}"
+  ansible.builtin.command: "find {{ legacy_path }} -mindepth 1 -maxdepth 1"
+  register: legacy_contents
+  changed_when: false
+  when: legacy_stat.stat.isdir | default(false) and not (legacy_stat.stat.islnk | default(false))
+
+- name: "Fail loudly if {{ legacy_path }} still holds real content"
+  ansible.builtin.fail:
+    msg: >-
+      {{ legacy_path }} is a non-empty directory, not a symlink — leaving it
+      alone rather than deleting data. Move its contents onto
+      {{ canonical_path }} and re-run to complete the {{ legacy_path }} ->
+      {{ canonical_path }} transition symlink.
+  when: legacy_contents.stdout is defined and legacy_contents.stdout | trim != ""
+
+- name: "Remove empty legacy directory {{ legacy_path }}"
+  ansible.builtin.file:
+    path: "{{ legacy_path }}"
+    state: absent
+  become: true
+  when: legacy_stat.stat.isdir | default(false) and not (legacy_stat.stat.islnk | default(false))
+
+- name: "Link legacy path {{ legacy_path }} -> {{ canonical_path }}"
+  ansible.builtin.file:
+    src: "{{ canonical_path }}"
+    dest: "{{ legacy_path }}"
+    state: link
+  become: true

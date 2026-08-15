@@ -21,7 +21,11 @@ all:
     tailscale_tailnet: "your-tailnet"
     nfs_server: node-data
     nfs_export_path: "/opt/nfs"
-    # shared_mount set per-OS group: /opt/shared (macOS), /shared (Linux)
+    # Uniform role-named mount namespace under /mnt (ADR: cluster-mount-
+    # namespace) — same absolute path on EVERY node, including the server
+    # (node-data bind-mounts its own export onto shared_mount; see
+    # roles/nfs_server). Defined ONCE here — no per-OS or per-host override.
+    shared_mount: "/mnt/cluster"    # nfs_server's SSD-backed hot share (nfs_client/nfs_server)
     pgbouncer_port: 6432
     postgres_port: 5432
     # The single Postgres host. precis_* roles build their DSN from this
@@ -36,11 +40,16 @@ all:
     # 127.0.0.1 (unauthenticated), so only the port is a knob.
     embedder_port: 8181
     # Shared NAS (autofs_client). nas_host is the NFS server hostname;
-    # nas_mount_base is overridden per-OS in host_vars where needed.
+    # nas_mount_base is the same /mnt/archive role path on every node — no
+    # per-OS or per-host override.
     nas_host: "fileserver.local"
-    nas_mount_base: "/opt/nas"
+    nas_mount_base: "/mnt/archive"  # cold-storage NAS, backup-backed
     nas_nfs_export: "/Volume1/botshome"
     nas_mount_name: "botshome"
+    # NAS-rooted canonical path. Roles reference this (and the papers_*/
+    # work_path/projects_path vars derived from it) directly — never
+    # prepend shared_mount, that's the other role (/mnt/cluster).
+    nas_root: "{{ nas_mount_base }}/{{ nas_mount_name }}"
 
   children:
     macos:
@@ -61,7 +70,6 @@ all:
         ansible_become_method: sudo
         ansible_shell_executable: /bin/zsh
         os_family: darwin
-        shared_mount: "/opt/shared"
 
     linux:
       hosts:
@@ -71,7 +79,6 @@ all:
           node_role: compute
       vars:
         os_family: linux
-        shared_mount: "/shared"
 
     # LLM-serving-only nodes (playbook 20c): they run a heartbeat-only
     # `precis worker --only heartbeat` unit — visible on the web /status tab

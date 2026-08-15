@@ -13,7 +13,7 @@
 # precis(kind='markdown'|'plaintext'|'tex') surface is asa's ONLY
 # write path now that Bash/Edit/Write/NotebookEdit are hard-blocked on
 # the Claude session itself (see claude_settings.json.j2 / config.yaml.j2).
-precis_root: "/opt/nas/botshome/precis_root"
+precis_root: "{{ nas_root }}/precis_root"
 
 # Python repos exposed to the `python` kind. Format:
 #   alias1:/abs/path1,alias2:/abs/path2

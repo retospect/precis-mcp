@@ -49,7 +49,7 @@
   ansible.builtin.lineinfile:
     path: /etc/fstab
     regexp: "^{{ nas_host }}:{{ nas_nfs_export }} "
-    line: "{{ nas_host }}:{{ nas_nfs_export }} {{ nas_mount_base }}/{{ nas_mount_name }} nfs resvport,nolocks,soft,intr,bg,nosuid 0 0"
+    line: "{{ nas_host }}:{{ nas_nfs_export }} {{ nas_mount_base }}/{{ nas_mount_name }} nfs resvport,nolocks,soft,intr,bg,nosuid,nodev 0 0"
     state: present
     create: true
     mode: "0644"
@@ -84,7 +84,10 @@
   ansible.builtin.lineinfile:
     path: /etc/auto.master
     line: "{{ nas_mount_base }}\t/etc/auto.nas"
-    regexp: "^{{ nas_mount_base }}\t"
+    # Keyed on the map file, not the mount path: a stale entry from an
+    # earlier nas_mount_base value (pre-uniform-namespace /nas) must be
+    # found and rewritten, not left behind as a second, dead autofs trigger.
+    regexp: "\t/etc/auto\\.nas$"
     state: present
   become: true
   when: os_family == "linux"
@@ -128,3 +131,17 @@
   when:
     - os_family == "linux"
     - not nas_canary_linux.stat.exists | default(false)
+
+- name: Symlink legacy nas_mount_base path (macOS)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
+  vars:
+    legacy_path: /opt/nas
+    canonical_path: "{{ nas_mount_base }}"
+  when: os_family == "darwin"
+
+- name: Symlink legacy nas_mount_base path (Linux)
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
+  vars:
+    legacy_path: /nas
+    canonical_path: "{{ nas_mount_base }}"
+  when: os_family == "linux"

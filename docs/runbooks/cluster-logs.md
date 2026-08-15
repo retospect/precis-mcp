@@ -36,7 +36,7 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 instead): `precis-cron-tick.log`, `precis-watch-poll.log`, `precis-dream.log`,
 `precis-anki-sync.log`, `precis-reconcile.log`.
 | asa-bot: `/Users/hermes/.asa/asa-bot.log` (needs `sudo`) | melchior | Discord bridge. Also relays nursery Discord alerts. |
-| Shared crons: `/opt/shared/logs/` (macOS) / `/shared/logs/` (linux) | caspar hosts them | `backup-pg.log`, `backup-b2.log`, `backup-usb.log`, `backup-tests.log`, `daily_briefing/*.log`, `api-credits.log`, `pip-audit/audit.log`, `nginx-*.log`. |
+| Shared crons: `/mnt/cluster/logs/` (`/opt/shared`/`/shared` are transition symlinks to it) | caspar hosts them | `backup-pg.log`, `backup-b2.log`, `backup-usb.log`, `backup-tests.log`, `daily_briefing/*.log`, `api-credits.log`, `pip-audit/audit.log`, `nginx-*.log`. |
 
 Line format on the python logs: `YYYY-MM-DD HH:MM:SS,mmm LEVEL logger msg`.
 Filter last 24h with e.g.:
