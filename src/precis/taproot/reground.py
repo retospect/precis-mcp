@@ -42,20 +42,27 @@ atom stays ungrounded.
    tests never touch the network.
 
 **Post-validation happens in code, not the prompt.** Every quote the model
-returns is re-checked here: after whitespace-collapse + the same unicode/
-notation folding :func:`~precis.taproot.migrate._normalize_number_text`
-applies, the quote must (a) appear as a substring of the *claimed* chunk's
-text and (b) be unique across every non-hearsay body chunk of that paper.
-Either failure rejects that one support claim (:func:`_validate_quote`) —
-the atom may still be grounded by another passage or another paper; only
-when *nothing* survives does it end up ungrounded.
+returns is re-checked here: after markup-stripping (:func:`_strip_markup` —
+``**bold**``, ``<sup>/<sub>``, markdown links) + whitespace-collapse + the
+same unicode/notation folding
+:func:`~precis.taproot.migrate._normalize_number_text` applies
+(:func:`_fold_quote_text`), the quote must (a) appear as a substring of the
+*claimed* chunk's text and (b) be unique across every non-hearsay body
+chunk of that paper. Either failure rejects that one support claim
+(:func:`_validate_quote`) — the atom may still be grounded by another
+passage or another paper; only when *nothing* survives does it end up
+ungrounded.
 
-**Three ungrounded reasons**, distinguished so a human (or the doer-paper
+**Four ungrounded reasons**, distinguished so a human (or the doer-paper
 hunt) knows what to do next: ``"no-passage"`` (no candidate source paper
 had anything, hearsay or not), ``"hearsay-only"`` (the paper's only
 matching material sat in an excluded section — re-point candidate for the
 doer-paper hunt), ``"verify-rejected"`` (candidate passages existed and the
-LLM/quote-validation step ran, but nothing actually supported the atom).
+LLM verified nothing actually supported the atom), ``"quote-validation-
+failed"`` (the model *did* claim support, but its quote never survived
+:func:`_validate_quote` — a flake/hallucination signal distinct from a
+clean rejection, per the dry-run-49 calibration findings,
+``docs/backlog/taproot-atom-regrounding.md`` §"Calibration findings").
 
 **Quote/snip storage is deliberately out of scope here** (open design call
 with the nanopub-mint session, ``claim-publication-nanopub-ots.md``) — a
@@ -114,6 +121,21 @@ _HEARSAY_SECTION_RE = re.compile(
 
 _WS_RE = re.compile(r"\s+")
 
+#: Simple markup :func:`_fold_quote_text` strips before whitespace/notation
+#: folding — applied to *both* sides of a quote match (a model's quote and
+#: the chunk's stored text), so symmetric stripping is safe: a chunk's
+#: ``**2350**`` and a model's plain ``2350`` fold to the same thing.
+#: Conservative on purpose (calibration findings,
+#: ``docs/backlog/taproot-atom-regrounding.md``) — only the three markup
+#: shapes actually seen in stored chunk text:
+#: ``<sup>X</sup>``/``<sub>X</sub>`` -> ``X`` (superscript/subscript HTML,
+#: e.g. exponents/isotope labels the ingest pipeline sometimes preserves),
+#: ``[text](url-or-#anchor)`` -> ``text`` (markdown links — footnote/anchor
+#: targets, never the visible content), and bare ``**``/``*`` emphasis
+#: markers dropped outright.
+_SUP_SUB_RE = re.compile(r"(?is)<(sup|sub)>(.*?)</\1>")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
 
 def is_hearsay_section(section_path: str | None) -> bool:
     """True iff ``section_path`` (already ``' > '``-joined, see
@@ -122,13 +144,24 @@ def is_hearsay_section(section_path: str | None) -> bool:
     return bool(section_path and _HEARSAY_SECTION_RE.search(section_path))
 
 
+def _strip_markup(text: str) -> str:
+    """Conservative markup stripping — see :data:`_SUP_SUB_RE`/
+    :data:`_MD_LINK_RE` for the exact shapes. Never touches a bare
+    ``[...]`` that isn't followed by ``(...)`` (e.g. ``"[Fe] complex"``),
+    so ordinary bracketed text is left alone."""
+    text = _SUP_SUB_RE.sub(lambda m: m.group(2), text)
+    text = _MD_LINK_RE.sub(lambda m: m.group(1), text)
+    return text.replace("**", "").replace("*", "")
+
+
 def _fold_quote_text(text: str) -> str:
-    """Whitespace-collapse + the same unicode/notation folding
-    :mod:`precis.taproot.migrate`'s gates use
+    """Markup-stripping (:func:`_strip_markup`) + whitespace-collapse + the
+    same unicode/notation folding :mod:`precis.taproot.migrate`'s gates use
     (:func:`~precis.taproot.migrate._normalize_number_text`) — the
     normalization both sides of a quote match go through, so ``10^4`` in a
-    model's quote matches ``10⁴`` in the chunk's stored text."""
-    return _WS_RE.sub(" ", _normalize_number_text(text)).strip()
+    model's quote matches ``10⁴`` in the chunk's stored text, and
+    ``**2350**`` in a chunk matches a model's plain ``2350``."""
+    return _WS_RE.sub(" ", _normalize_number_text(_strip_markup(text))).strip()
 
 
 # ── PaperChunk — the DB-independent shape candidate_passages/verify_atoms
@@ -302,8 +335,10 @@ atom's content.
 - chunk_ord: the ord of that single best supporting passage (null if \
 unsupported).
 - quote: the MINIMAL verbatim span copied EXACTLY from that passage that \
-supports the atom -- no paraphrase, no ellipsis-joining non-adjacent text. \
-null if unsupported.
+supports the atom. It MUST be ONE CONTIGUOUS span -- a single unbroken run \
+of characters exactly as printed in that one passage. NEVER stitch two \
+separate spans together (with an ellipsis, a joining word, or anything \
+else), and never paraphrase. null if unsupported.
 - bound: only when the atom names a numeric quantity -- does the quote's \
 value read as an exact measurement, an explicit upper bound, an explicit \
 lower bound, or an approximation ("~", "about", "up to", "on the order \
@@ -546,9 +581,10 @@ class GroundedRecord:
 class AtomGrounding:
     """One atom's :func:`verify_atoms` outcome: grounded (one or more
     :class:`GroundedRecord`\\ s) or ungrounded with a named ``reason`` --
-    ``"no-passage"`` / ``"hearsay-only"`` / ``"verify-rejected"`` (module
-    docstring), or ``None`` when the atom's hub carried no candidate papers
-    at all (verify never ran -- see :attr:`HubGroundingResult.paper_ref_ids`)."""
+    ``"no-passage"`` / ``"hearsay-only"`` / ``"verify-rejected"`` /
+    ``"quote-validation-failed"`` (module docstring), or ``None`` when the
+    atom's hub carried no candidate papers at all (verify never ran -- see
+    :attr:`HubGroundingResult.paper_ref_ids`)."""
 
     atom: CanonicalClaim
     records: tuple[GroundedRecord, ...] = ()
@@ -596,7 +632,13 @@ def verify_atoms(
        against them, and if the union of any atom's candidates is non-empty,
        one batched :func:`verify_atoms_batch` (``verify_batch_fn``) call
        verifies every atom against that paper's union of candidate
-       passages.
+       passages. **Reply-level flake guard**: if that call comes back with
+       every atom unsupported despite non-empty candidate passages, it is
+       retried once (same atoms/passages) and the retry's results are used
+       instead -- a degraded reply wholesale-rejecting a hub's whole batch
+       (calibration findings, ``docs/backlog/taproot-atom-regrounding.md``)
+       is a flake, not a verdict; a consistent all-reject on the retry
+       stands.
     3. Every returned ``supported`` verdict is post-validated
        (:func:`_validate_quote`) before becoming a :class:`GroundedRecord`
        -- a quote that doesn't check out is simply not added; verification
@@ -605,9 +647,13 @@ def verify_atoms(
     4. An atom with zero :class:`GroundedRecord`\\ s across every paper gets
        a reason: ``"no-passage"`` (no paper had anything, hearsay or not),
        ``"hearsay-only"`` (some paper's only matching material sat in an
-       excluded section -- :func:`_hearsay_only_signal`), or
-       ``"verify-rejected"`` (candidate passages existed and were verified,
-       but nothing survived).
+       excluded section -- :func:`_hearsay_only_signal`),
+       ``"quote-validation-failed"`` (some ``supported=True`` verdict's
+       quote failed :func:`_validate_quote` or named an unknown
+       ``chunk_ord`` -- the model claimed support but its locator/quote
+       didn't check out), or ``"verify-rejected"`` (candidate passages
+       existed and were verified, but nothing survived and no
+       validation failure was seen either).
 
     Raises whatever ``verify_batch_fn`` raises (by default
     :class:`RegroundingUnavailable` on a dead/persistently-malformed
@@ -631,6 +677,7 @@ def verify_atoms(
     records: list[list[GroundedRecord]] = [[] for _ in range(n)]
     had_any_candidate = [False] * n
     had_hearsay_signal = [False] * n
+    had_validation_failure = [False] * n
 
     for paper_id in paper_ids:
         chunks = fetch_body_chunks_fn(store, paper_id)
@@ -657,16 +704,32 @@ def verify_atoms(
 
         passages = sorted(union_by_ord.values(), key=lambda c: c.chunk_ord)
         results = verify_batch_fn(atoms, passages)
+        if not any(r.supported for r in results):
+            # Reply-level flake guard (calibration findings, docs/backlog/
+            # taproot-atom-regrounding.md): a degraded LLM reply
+            # wholesale-rejects every atom of a batch that DID have
+            # candidate passages. One retry recovers the flake; a
+            # consistent all-reject stands on the second call.
+            log.info(
+                "taproot-reground: hub %s paper %s -- every atom came back "
+                "unsupported against %d candidate passage(s), retrying once "
+                "(reply-level flake guard)",
+                hub_ref_id,
+                paper_id,
+                len(passages),
+            )
+            results = verify_batch_fn(atoms, passages)
         by_ord = {c.chunk_ord: c for c in passages}
         for r in results:
-            if not r.supported or r.chunk_ord is None or not r.quote:
+            if not r.supported or not r.quote:
                 continue
             if not (0 <= r.atom_index < n):
                 continue
-            claimed = by_ord.get(r.chunk_ord)
-            if claimed is None:
-                continue
-            if not _validate_quote(r.quote, claimed, non_hearsay_chunks):
+            claimed = by_ord.get(r.chunk_ord) if r.chunk_ord is not None else None
+            if claimed is None or not _validate_quote(
+                r.quote, claimed, non_hearsay_chunks
+            ):
+                had_validation_failure[r.atom_index] = True
                 continue
             records[r.atom_index].append(
                 GroundedRecord(
@@ -686,6 +749,10 @@ def verify_atoms(
         elif not had_any_candidate[i]:
             reason = "hearsay-only" if had_hearsay_signal[i] else "no-passage"
             atom_groundings.append(AtomGrounding(atom=atom, reason=reason))
+        elif had_validation_failure[i]:
+            atom_groundings.append(
+                AtomGrounding(atom=atom, reason="quote-validation-failed")
+            )
         else:
             atom_groundings.append(AtomGrounding(atom=atom, reason="verify-rejected"))
 

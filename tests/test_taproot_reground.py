@@ -254,7 +254,9 @@ def test_verify_atoms_folded_notation_quote_matches_unicode_chunk_text() -> None
 
 def test_verify_atoms_rejects_hallucinated_quote_not_in_passage() -> None:
     """The model claims 'supported' but the quote never appears in the
-    claimed chunk's text — rejected, never a silently-grounded atom."""
+    claimed chunk's text — rejected, never a silently-grounded atom. The
+    model DID claim support, so this is the validation-failure reason, not
+    the plain "the model said unsupported" one."""
     atoms = [_claim("X shows high conductivity.")]
     chunks = [_pc(1, 0, "X shows high strength in this material.")]
     verify_fn = _verify_map({atoms[0].sentence: (0, "X shows high conductivity", None)})
@@ -268,12 +270,14 @@ def test_verify_atoms_rejects_hallucinated_quote_not_in_passage() -> None:
     )
     ag = result.atoms[0]
     assert not ag.grounded
-    assert ag.reason == "verify-rejected"
+    assert ag.reason == "quote-validation-failed"
 
 
 def test_verify_atoms_rejects_quote_not_unique_across_paper() -> None:
     """The quote appears verbatim in TWO non-hearsay chunks of the same
-    paper — uniqueness fails even though the claimed chunk itself matches."""
+    paper — uniqueness fails even though the claimed chunk itself matches.
+    That's a validation failure on a supported=True verdict, not a plain
+    "model said unsupported"."""
     atoms = [_claim("X shows the marker property.")]
     chunks = [
         _pc(1, 0, "X shows the marker property in sample A."),
@@ -292,7 +296,7 @@ def test_verify_atoms_rejects_quote_not_unique_across_paper() -> None:
     )
     ag = result.atoms[0]
     assert not ag.grounded
-    assert ag.reason == "verify-rejected"
+    assert ag.reason == "quote-validation-failed"
 
 
 def test_verify_atoms_ignores_a_hearsay_chunk_for_uniqueness() -> None:
@@ -319,7 +323,9 @@ def test_verify_atoms_ignores_a_hearsay_chunk_for_uniqueness() -> None:
 
 def test_verify_atoms_grounded_via_second_paper_when_first_paper_rejects() -> None:
     """An atom rejected against paper A's passage may still ground via
-    paper B — records aggregate, ungrounded is only the final state."""
+    paper B — records aggregate, ungrounded is only the final state.
+    Paper A's reject is consistent across both the original call AND the
+    reply-level flake retry, so it still stands as a genuine reject."""
     sentence = "X shows a peak at 400 nm."
     atoms = [_claim(sentence, quantity="400 nm")]
     chunks_by_paper = {
@@ -330,9 +336,9 @@ def test_verify_atoms_grounded_via_second_paper_when_first_paper_rejects() -> No
 
     def verify_fn(atoms_: Any, passages: Any) -> list[AtomVerifyResult]:
         calls["n"] += 1
-        if calls["n"] == 1:
-            return [AtomVerifyResult(0, False, None, None, None)]
-        return [AtomVerifyResult(0, True, 0, "X shows a peak at 400 nm", "exact")]
+        if any(p.chunk_id == 2 for p in passages):
+            return [AtomVerifyResult(0, True, 0, "X shows a peak at 400 nm", "exact")]
+        return [AtomVerifyResult(0, False, None, None, None)]
 
     result = verify_atoms(
         store=_FAKE_STORE,
@@ -345,7 +351,9 @@ def test_verify_atoms_grounded_via_second_paper_when_first_paper_rejects() -> No
     ag = result.atoms[0]
     assert ag.grounded
     assert ag.records[0].paper_ref_id == 20
-    assert calls["n"] == 2
+    # paper 10's all-rejected reply triggers the retry guard (called twice),
+    # paper 20's supported reply does not (called once) -> 3 total.
+    assert calls["n"] == 3
 
 
 def test_verify_atoms_multiple_atoms_independent_grounding() -> None:
@@ -367,6 +375,145 @@ def test_verify_atoms_multiple_atoms_independent_grounding() -> None:
     # IS dispatched — but the fake verify_fn has no mapping for it, so it
     # comes back unsupported: verify-rejected, not silently grounded.
     assert result.atoms[1].reason == "verify-rejected"
+
+
+def test_verify_atoms_quote_validation_failed_vs_verify_rejected_same_hub() -> None:
+    """One hub, two atoms: the model claims support for one but its quote
+    never checks out (``quote-validation-failed``), while the other is
+    genuinely judged unsupported by the model (still ``verify-rejected``) —
+    the two reasons must not collapse into each other."""
+    atom_invalid = _claim("X shows high conductivity.")
+    atom_rejected = _claim("X shows an invented property nobody measured.")
+    chunks = [_pc(1, 0, "X shows high strength in this material.")]
+    verify_fn = _verify_map(
+        {atom_invalid.sentence: (0, "X shows high conductivity", None)}
+    )
+    result = verify_atoms(
+        store=_FAKE_STORE,
+        hub_ref_id=1,
+        atoms=[atom_invalid, atom_rejected],
+        collect_papers_fn=lambda s, h: [100],
+        fetch_body_chunks_fn=lambda s, pid: chunks,
+        verify_batch_fn=verify_fn,
+    )
+    assert result.atoms[0].reason == "quote-validation-failed"
+    assert result.atoms[1].reason == "verify-rejected"
+
+
+# ── verify_atoms — reply-level flake guard (all-rejected retry) ────────
+
+
+def test_verify_atoms_all_rejected_batch_retries_once_and_uses_recovered_reply() -> (
+    None
+):
+    """A reply that wholesale-rejects every atom of a batch that DID have
+    candidate passages is retried once, and the retry's (grounded)
+    results are what actually get used."""
+    atoms = [_claim("X shows a strength of 130 GPa.", quantity="130 GPa")]
+    chunks = [_pc(1, 0, "In this study, X shows a strength of 130 GPa under RT.")]
+    calls = {"n": 0}
+
+    def verify_fn(atoms_: Any, passages: Any) -> list[AtomVerifyResult]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [AtomVerifyResult(0, False, None, None, None)]
+        return [AtomVerifyResult(0, True, 0, "X shows a strength of 130 GPa", "exact")]
+
+    result = verify_atoms(
+        store=_FAKE_STORE,
+        hub_ref_id=1,
+        atoms=atoms,
+        collect_papers_fn=lambda s, h: [100],
+        fetch_body_chunks_fn=lambda s, pid: chunks,
+        verify_batch_fn=verify_fn,
+    )
+    assert calls["n"] == 2
+    assert result.atoms[0].grounded
+    assert result.atoms[0].records[0].bound == "exact"
+
+
+def test_verify_atoms_all_rejected_on_retry_too_stands_with_two_calls() -> None:
+    """A consistent all-reject (both the original call and the retry)
+    stands as a genuine rejection -- the guard is a single retry, not a
+    loop, and does not paper over a real rejection."""
+    atoms = [_claim("X shows a strength of 130 GPa.")]
+    chunks = [_pc(1, 0, "In this study, X shows a strength of 130 GPa under RT.")]
+    calls = {"n": 0}
+
+    def verify_fn(atoms_: Any, passages: Any) -> list[AtomVerifyResult]:
+        calls["n"] += 1
+        return [AtomVerifyResult(0, False, None, None, None)]
+
+    result = verify_atoms(
+        store=_FAKE_STORE,
+        hub_ref_id=1,
+        atoms=atoms,
+        collect_papers_fn=lambda s, h: [100],
+        fetch_body_chunks_fn=lambda s, pid: chunks,
+        verify_batch_fn=verify_fn,
+    )
+    assert calls["n"] == 2
+    assert not result.atoms[0].grounded
+    assert result.atoms[0].reason == "verify-rejected"
+
+
+def test_verify_atoms_no_retry_when_at_least_one_atom_is_supported() -> None:
+    """A reply with at least one supported verdict is not a flake by this
+    guard's definition -- no retry, exactly one dispatch call."""
+    atom_a = _claim("X shows high strength.")
+    atom_b = _claim("X shows an invented property nobody measured.")
+    chunks = [_pc(1, 0, "In this work, X shows high strength under RT conditions.")]
+    calls = {"n": 0}
+
+    def verify_fn(atoms_: Any, passages: Any) -> list[AtomVerifyResult]:
+        calls["n"] += 1
+        return [
+            AtomVerifyResult(0, True, 0, "X shows high strength", None),
+            AtomVerifyResult(1, False, None, None, None),
+        ]
+
+    result = verify_atoms(
+        store=_FAKE_STORE,
+        hub_ref_id=1,
+        atoms=[atom_a, atom_b],
+        collect_papers_fn=lambda s, h: [100],
+        fetch_body_chunks_fn=lambda s, pid: chunks,
+        verify_batch_fn=verify_fn,
+    )
+    assert calls["n"] == 1
+    assert result.atoms[0].grounded
+
+
+# ── _fold_quote_text / _strip_markup — markup-tolerant quote folding ───
+
+
+def test_fold_quote_text_strips_bold_emphasis_symmetrically() -> None:
+    """A chunk's ``**2350**`` and a model's plain ``2350`` must fold to the
+    same normalized text (both sides of a quote match go through the same
+    fold, so symmetric stripping is safe)."""
+    assert reground._fold_quote_text(
+        "capacity of 2350 mg/g"
+    ) == reground._fold_quote_text("capacity of **2350** mg/g")
+
+
+def test_fold_quote_text_still_folds_ascii_caret_against_unicode_superscript() -> None:
+    """The markup strip must not regress the pre-existing unicode/notation
+    folding this same function already did."""
+    assert reground._fold_quote_text("ratio of 10^4") == reground._fold_quote_text(
+        "ratio of 10⁴"
+    )
+
+
+def test_fold_quote_text_resolves_markdown_links_but_leaves_bare_brackets_alone() -> (
+    None
+):
+    """``[text](url-or-#anchor)`` folds to its visible text; an ordinary
+    ``[...]`` with no following ``(...)`` (not a markdown link at all) is
+    left untouched."""
+    assert reground._fold_quote_text("[Fe] complex") == "[Fe] complex"
+    assert reground._fold_quote_text(
+        "[Fe complex](#sec2)"
+    ) == reground._fold_quote_text("Fe complex")
 
 
 # ── collect_source_papers — real DB, both provenance shapes ────────────

@@ -18,6 +18,40 @@ model: opus
 > quote/snip DB storage (open call with nanopub session), bound
 > semantics beyond the verify output field.
 
+## Calibration findings — first run over the 49 (2026-08-15)
+
+Result: 158 atoms → 30 grounded (19%), 113 verify-rejected, 8
+no-passage, 7 hanging-hub passthrough; 33/46 hubs all-rejected vs 12
+cleanly partial + 1 all-grounded. Instrumented single-hub repro
+(hub 43653 / paper 43633, 8 chunks, every claimed number verbatim in
+the text) showed the same inputs flip between all-rejected (bulk run)
+and 3/3 supported with 2/3 quotes validating (repro) — the dominant
+failure is **verify-reply flakiness** (degraded rung replies wholesale-
+rejecting a hub's whole batch; the bulk run's `claude -p` rung was
+failing over repeatedly), not verifier strictness. Secondary, real:
+(a) large papers drown the lexical ranker — >150-chunk papers ground
+0/15 atoms (the vdW-DF review, 571 chunks, misses textbook-support
+atoms); embedding ranking is the fix. (b) non-contiguous model quotes
+("reached 2350 mg/g at pH = 6.00 ± 0.15" stitching two spans) die in
+`_validate_quote` and are then indistinguishable from model-said-
+unsupported. Genuine rejections do exist (fi34850's "on/off ~10" is in
+no source; all 7 dossier-flagged hearsay hubs correctly ground zero).
+
+Fixes queued (small, before any apply consumes the artifact):
+1. Distinct reason `quote-validation-failed` vs `verify-rejected` —
+   flakes become visible instead of folding into "unsupported".
+2. Reply-level flake guard: a reply rejecting EVERY atom of a batch
+   that had candidate passages retries once (mirrors the existing
+   no-parse retry); still-all-rejected then stands.
+3. Verify prompt: quote must be one contiguous verbatim span; fold
+   strips simple markup (`**`, `<sup>…</sup>`, `[t](#…)`→t) on both
+   sides.
+
+The 2026-08-15 regrounded artifact
+(`~/precis-experiments/taproot-dryrun100-2026-08-15/dryrun100.regrounded.jsonl`)
+is review-grade only — do NOT feed it to `apply`; re-run after the
+fixes.
+
 Binding review feedback (Reto 2026-08-15, on the dry-run-49 dossier;
 canonical list: `claim-publication-nanopub-ots.md` §"Review feedback
 2026-08-15"). Atoms are currently extracted from the hub's claim sentence
