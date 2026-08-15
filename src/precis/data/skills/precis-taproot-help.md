@@ -279,7 +279,9 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   primary as the supporter — seniority then derives it as originator
   automatically — and keep the citing passage as corroborator. If not
   held, it's a chase-finding candidate (`precis-finding-help`), not a
-  hub grounding.
+  hub grounding. Same discipline as citing generally, one level
+  stricter — see `precis-cite-paper-help`'s "cite the doer, not
+  hearsay."
 
 **Soft flags — mint, but expect review:**
 

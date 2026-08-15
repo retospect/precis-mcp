@@ -89,6 +89,13 @@ worth chasing to its origin, register a `kind='finding'` and cite it
 `[fi<id>]` meanwhile ([[precis-finding-help]]). Don't cite a passage
 that only "looks similar" — pull it and read it.
 
+**A fifth check: is this passage the source, or hearsay?** A hit in a
+review's summary, a related-work section, or an introduction citing
+someone else's result supports the point but isn't *the* source — walk
+back to the paper that actually did the work
+([[precis-cite-paper-help]]'s primary-source policy). A hanging claim
+beats a hearsay cite.
+
 ## I confirmed the passage supports the claim — now what?
 ## Cite the chunk inline
 

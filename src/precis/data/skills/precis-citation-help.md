@@ -153,6 +153,11 @@ decide whether to drill in. Fetch the full chunk with
 a chunk that only says "an improvement was noted" is a hallucination —
 cite a different chunk or chase a finding.
 
+**Cite the doer, not the mention.** A chunk that supports the claim but
+is itself quoting/citing another paper is hearsay, not the source —
+walk back to the paper that did the work. Full policy + rationale:
+[[precis-cite-paper-help]].
+
 ## What happens to a paper's OWN inline `[N]` markers (automatic)
 
 The `[pc<id>]` handles above are how *you* cite while drafting. Separately,

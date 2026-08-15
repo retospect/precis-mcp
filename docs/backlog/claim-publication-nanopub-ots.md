@@ -867,6 +867,35 @@ covered by freeze-at-review: shown beside the source at sign time, part
 of what the signature attests, so a garbled quote is a supersede; a wrong
 snip is only a locator inconvenience, never an integrity issue.
 
+Resolved 2026-08-15 (Reto) — **primary-source citations only: cite the
+doers, not hearsay.** A claim's provenance must point at the paper that
+actually did the work, never a secondhand mention — a review's summary, a
+references list, or a prior-art/related-work/background section is
+invalid grounding even when the quote checks out. Machine-checkable at
+mint: reject grounding whose chunk `section_path` matches a
+references/related-work/background pattern (Layer-A gate). Rationale:
+computer-aided papers are held to far higher standards than human ones
+(the self-driving-fatality asymmetry) — provenance must be airtight.
+Corollaries: (a) the review/publish surface shows the full chain
+*paper (DOI/title) → grounding block(s) → claim*, and a compound claim is
+expressed as its derivation (`nanoclaim-x ∧ nanoclaim-y → claim`, the
+stored `conjunct-of` edges), never as a flat sentence; (b) a claim may
+stay **hanging** — minted-but-unpublishable with unresolved provenance —
+while the original-paper hunt runs (semantic search shaped like the
+expected answer, prior-art sections excluded); publish preflight blocks
+hanging claims exactly like withheld edges. Implementation note: the
+mint-side section check is plain SQL on `chunks.section_path`, but a
+*query-time* section filter for the hunt does not exist yet —
+`section_path` is stored, shown in `view='toc'`, and never filterable in
+search (0118 even dropped its dead index); until built, the hunt
+discipline is TOC-based (skills already phrase it that way). Evidence this bites, from the
+2026-08-15 dry-run-49 census: provenance is bimodal (10 hubs inbound
+`corroborates`, 37 outbound `derived-from` — the migration's evidence
+fetch reads only the inbound shape and must learn the other), 28/49 have
+a paper edge but no block anchor, 2/49 hang with no paper at all, and
+fi34867 is a live hearsay case (grounded in a *references-list* chunk of
+a 2012 paper while the claim describes Han et al., PRL 2007).
+
 Plus two policy opens named inline: revocation (trust-gate section) and
 correction-vs-retraction-vs-invalidation (other pathways).
 

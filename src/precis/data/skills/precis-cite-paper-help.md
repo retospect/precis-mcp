@@ -155,6 +155,20 @@ it — see [[precis-finding-help]].
 ## I read a number in a review — find who actually measured it
 ## Track a claim back to where it was first reported
 
+**Cite the paper that did the work, never the paper that mentions
+it.** A review's summary, a prior-art/related-work section, an
+introduction citing someone else's result — all hearsay, not a
+source. Standards here are stricter than for human-authored prose: a
+machine-made citation error is judged the way a self-driving-car
+fatality is judged against a human driver's, far more harshly — so
+provenance has to be airtight, chunk → paper → claim, no hop skipped.
+Shape the hunt accordingly: search with text phrased like the
+*answer*, not the question, and skim past any hit sitting in an
+introduction/background/related-work block (check the paper's
+`view='toc'`) — that's someone else's citation, not the source. **A
+hanging, uncited claim beats a hearsay one** — leave it unresolved
+rather than cite the secondhand mention.
+
 Reviews cite reviews; the value is the *primary* source. Register a
 finding, cite it inline as `[fi<id>]`, and let the worker walk the
 chain:

@@ -25,6 +25,15 @@ proper token accounting across all transports.
   `cache_creation_tokens`.
 - Backfill live rows if feasible; new rows post-fix will be complete.
 
+## Status (2026-08-15, 5da355c0)
+
+Main scope DONE: `claude_p.py`'s `_extract_usage`/`_unwrap_envelope` now parse
+the envelope's `usage` block into `ClaudePResult`, and
+`result_from_claude_p()` threads it into `LlmResult` — the claude_p rung no
+longer drops tokens. REMAINING: the `openai_tools` split below is untouched
+by this ship (no changes to `openai_tools.py`), so this item stays open for
+that half.
+
 ## Related gap: openai_tools split
 
 The `openai_tools` multi-turn loop has the same symptom for a different
