@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -553,6 +554,12 @@ def extract_claim_strict_big(chunk_text: str) -> ClaimExtraction:
 #: stalls (fi176812's timeout).
 _HAIKU_EXTRACT_TIMEOUT_S = 240.0
 
+#: Pause before retrying a fast non-zero ``claude -p`` exit. The fast exits
+#: correlate with host load (dense flakes exactly while a container gate
+#: saturated the cores, 2026-08-15) — an immediate retry lands in the same
+#: spike. Tests monkeypatch this to 0.
+_FLAKE_RETRY_BACKOFF_S = 5.0
+
 
 def extract_claim_strict_haiku(chunk_text: str) -> ClaimExtraction:
     """Like :func:`extract_claim_strict`, but on Claude haiku via the
@@ -630,11 +637,18 @@ def extract_claim_strict_haiku(chunk_text: str) -> ClaimExtraction:
         except ClaudeProcessError as exc:
             # returncode is None on timeout/spawn failure (raise now);
             # a real code means the CLI ran and exited fast — flake-retry.
+            # The fast exits track host load (a 100-hub local run flaked
+            # densely exactly while a full container gate saturated the
+            # cores, 2026-08-15), so an immediate retry lands in the same
+            # spike — back off briefly first.
             if attempt == 0 and getattr(exc, "returncode", None) is not None:
                 log.info(
-                    "taproot: claude -p exited %s — retrying once (format-flake guard)",
+                    "taproot: claude -p exited %s — retrying once in %.0fs "
+                    "(format-flake guard)",
                     exc.returncode,
+                    _FLAKE_RETRY_BACKOFF_S,
                 )
+                time.sleep(_FLAKE_RETRY_BACKOFF_S)
                 continue
             raise ExtractionUnavailable(str(exc)) from exc
         log.debug("taproot: haiku extraction cost_usd=%s", res.cost_usd)

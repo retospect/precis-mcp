@@ -193,7 +193,9 @@ def test_fast_nonzero_exit_retries_once_and_recovers(
 ) -> None:
     """The first-local-canary shape (2026-08-14): the CLI intermittently
     exits 1 with empty stderr. A real ``returncode`` means the process ran
-    and failed fast — retried once, second call good."""
+    and failed fast — retried once (after a load backoff, zeroed here),
+    second call good."""
+    monkeypatch.setattr("precis.taproot.canon._FLAKE_RETRY_BACKOFF_S", 0.0)
     flake = ClaudeProcessError("claude -p exited 1: ", returncode=1)
     calls = _patch_calls(monkeypatch, [flake, _GOOD_PAYLOAD])
     extraction = extract_claim_strict_haiku(_SENTENCE)
@@ -204,6 +206,7 @@ def test_fast_nonzero_exit_retries_once_and_recovers(
 def test_persistent_nonzero_exit_raises_after_one_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("precis.taproot.canon._FLAKE_RETRY_BACKOFF_S", 0.0)
     calls = _patch_calls(
         monkeypatch,
         [

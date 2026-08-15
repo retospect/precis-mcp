@@ -128,3 +128,96 @@ def test_fixture_has_every_verdict_shape_represented() -> None:
     assert len(rows) == 25
     verdicts: set[Verdict] = {row["expected_gated_verdict"] for row in rows}
     assert verdicts == {"pass-through", "split", "lossy", "nested", "no-claim"}
+
+
+# ── notation folding + citation stripping (100-hub prod run, 2026-08-15) ────
+#
+# claude-haiku normalizes notation and (correctly) drops bibliography; the
+# gates must compare measurements, not glyphs, and must never require
+# citation fragments as content. Loss direction only — the invention
+# direction keeps the full original as its allowlist.
+
+from precis.taproot.migrate import (
+    _number_bearing_tokens,
+    _strip_citation_tail,
+)
+
+
+def test_number_tokens_fold_unicode_superscripts_and_dashes() -> None:
+    assert _number_bearing_tokens("rates of 10^4-10^6 s^-1") == _number_bearing_tokens(
+        "rates of 10⁴–10⁶ s^-1"
+    )
+
+
+def test_number_tokens_split_digit_leading_hyphenates() -> None:
+    """ "13-residue" and the scope rephrasing "13 residues" must yield the
+    same measurement token (the SpyCatcher false-invented case)."""
+    assert _number_bearing_tokens("a 13-residue peptide") == ["13"]
+    assert _number_bearing_tokens("13 residues") == ["13"]
+
+
+def test_number_tokens_keep_catalog_names_excluded() -> None:
+    """Letter-leading tokens never split: MOF-5 stays a catalog name
+    (fi176435's exclusion), so its digit can't read as a measurement."""
+    assert _number_bearing_tokens("frameworks such as MOF-5 and ZIF-8") == []
+
+
+def test_number_tokens_fold_approximation_prefix() -> None:
+    """ "near 10 kHz" rendered as "~10 kHz" is the same measurement."""
+    assert _number_bearing_tokens("~10 kHz") == _number_bearing_tokens("10 kHz")
+
+
+def test_number_tokens_digit_substring_hole_stays_closed() -> None:
+    """The original P0-2 defense: a dropped "9" must not hide in "409"."""
+    assert "9" not in _number_bearing_tokens("a 409 nm shift")
+
+
+def test_citation_tail_stripped_only_past_first_third() -> None:
+    tail = "Claim text here that is long enough. Canonical references: X (2008)."
+    assert "2008" not in _strip_citation_tail(tail)
+    headed = "References: the full body follows " + "x " * 40
+    assert _strip_citation_tail(headed).startswith("References:")
+
+
+def test_inline_citation_spans_are_not_required_content() -> None:
+    """A split that drops "Phys. Rev. Lett. 57, 1761, 1986"-style inline
+    citations (comma form, vol(issue) form, parenthesized multi-cite) must
+    not gate lossy for the citation numbers."""
+    sentence = (
+        "Quantum interference produces conductance swings of 100x in single "
+        "molecules (Zhang 2009; Mak 2008), as shown in Phys. Rev. Lett. 57, "
+        "1761, 1986 and J. Phys. Chem. 123(24), 5035-5047."
+    )
+    atoms = (
+        CanonicalClaim(
+            sentence="Quantum interference produces conductance swings of 100x.",
+            scope={},
+        ),
+        CanonicalClaim(
+            sentence="The conductance swings occur in single molecules.",
+            scope={},
+        ),
+    )
+    compound = CanonicalClaim(sentence=sentence, scope={})
+    _verdict, meta = classify_extraction(
+        sentence, ClaimExtraction(atoms=atoms, compound=compound, not_claims=())
+    )
+    # Only the number gate is pinned: the citation *words* ("Phys. Rev.
+    # Lett.") still count toward content recall — a separate, accepted
+    # limitation (they're a tiny fraction of real hub bodies).
+    assert meta["missing_numbers"] == ()
+
+
+def test_kept_citation_numbers_are_not_invented() -> None:
+    """The invention direction allowlists the FULL sentence: an atom that
+    kept a citation year did not invent it."""
+    sentence = "The effect was first measured in 2008 (PRL 2008)."
+    atoms = (
+        CanonicalClaim(sentence="The effect was first measured in 2008.", scope={}),
+        CanonicalClaim(sentence="The measurement appeared in PRL.", scope={}),
+    )
+    compound = CanonicalClaim(sentence=sentence, scope={})
+    _verdict, meta = classify_extraction(
+        sentence, ClaimExtraction(atoms=atoms, compound=compound, not_claims=())
+    )
+    assert meta["invented_numbers"] == ()

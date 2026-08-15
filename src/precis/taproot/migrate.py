@@ -451,6 +451,80 @@ _EG_PAREN_RE = re.compile(r"\((?:e\.g\.|i\.e\.)[^)]*\)", re.IGNORECASE)
 _NUMBER_TOKEN_RE = re.compile(r"^[~±]?\d")
 _NUMBER_TOKEN_STRIP = ".,;:()[]{}\"'"
 
+#: Unicode notation folding for number comparison (100-hub prod run,
+#: 2026-08-15): claude-haiku normalizes "10^4-10^6" to "10⁴–10⁶" and
+#: rephrases "13-residue" as scope "13 residues" — exact-token membership
+#: then reads every such measurement as simultaneously missing AND
+#: invented (12 of 46 false-lossy rows). Folding is applied to BOTH sides
+#: before tokenizing, so it can't reopen the digit-substring hole the
+#: exact-token rule exists to close.
+_SUPERSCRIPT_RUN_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+")
+_SUPERSCRIPT_TRANS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻", "0123456789-")
+_UNICODE_DASH_TRANS = str.maketrans("–—−‒―", "-----")
+
+#: An explicit reference-block marker: everything after it is bibliography,
+#: not claim content. Hub bodies on prod frequently end in "Canonical
+#: references: Solomon ... (2008); Lambert, Chem. Soc. Rev. 44, 875
+#: (2015)" — an extraction that (correctly) drops the bibliography must
+#: not be scored lossy for it (23 of 46 false-lossy rows on the 100-hub
+#: run). Tight on purpose: only an explicit "<...> references:" / "refs:"
+#: label, never a bare year — and only stripped when it starts past the
+#: first third of the text, so a body that IS a reference list still gates
+#: on its full content.
+_CITATION_TAIL_RE = re.compile(
+    r"\b(?:canonical\s+references|key\s+references|references|refs?)\s*:",
+    re.IGNORECASE,
+)
+
+#: Inline citation spans — reference fragments embedded mid-sentence with
+#: no "References:" label (35 of the 40 residual false-lossy rows on the
+#: 100-hub run): journal "vol, page (year)" runs, "(PRL 2007)"-style
+#: parenthesized years, "5:487" vol:page shorthands, arXiv/DOI handles.
+#: Stripped from the LOSS-direction original only — a citation number is
+#: never *required* content, but one an atom kept is still allowed (the
+#: invention direction sees the full text). Errs permissive on
+#: parenthesized years ("(since 2020)" strips too) — acceptable: the
+#: pattern only excuses a *dropped* year, it never lets an invented one
+#: through.
+_CITATION_SPAN_RES = (
+    re.compile(r"[^.;()]{0,60}?\b\d{1,4},\s*\d{3,7}\s*\(\s*(?:19|20)\d\d\s*\)"),
+    # "vol, page, year" (no parens): "Phys. Rev. Lett. 57, 1761, 1986"
+    re.compile(r"\b\d{1,4},\s*\d{3,7},\s*(?:19|20)\d\d\b"),
+    # "vol(issue), page(-page)": "123(24), 5035-5047"
+    re.compile(r"\b\d{1,4}\(\d{1,3}\),?\s*\d{3,7}(?:\s*-\s*\d{3,7})?"),
+    # any short parenthetical ending in a year — "(PRL 2007)",
+    # "(Zhang 2009; Mak 2008)" — bounded so a full clause never strips
+    re.compile(r"\(\s*[^()]{0,60}?(?:19|20)\d\d\s*\)"),
+    re.compile(r"\b\d{1,3}:\d{2,6}\b"),
+    re.compile(r"\barxiv[:\s]\s*\S+", re.IGNORECASE),
+    re.compile(r"\bdoi[:\s]\s*\S+", re.IGNORECASE),
+)
+
+
+def _normalize_number_text(text: str) -> str:
+    """Fold unicode notation into the ASCII forms prod hub bodies use:
+    superscript runs -> ``^``-prefixed digits (``10⁴`` -> ``10^4``,
+    ``10⁻⁶`` -> ``10^-6``), unicode dashes/minus -> ``-``."""
+    text = text.translate(_UNICODE_DASH_TRANS)
+    return _SUPERSCRIPT_RUN_RE.sub(
+        lambda m: "^" + m.group(0).translate(_SUPERSCRIPT_TRANS), text
+    )
+
+
+def _strip_citation_tail(text: str) -> str:
+    """Cut an explicit trailing reference block (:data:`_CITATION_TAIL_RE`)
+    and blank inline citation spans (:data:`_CITATION_SPAN_RES`) for the
+    *loss*-direction coverage checks. The invention direction (precision,
+    invented numbers) deliberately keeps the full text — an atom that
+    copied a citation year didn't invent it."""
+    m = _CITATION_TAIL_RE.search(text)
+    if m is not None and m.start() > len(text) // 3:
+        text = text[: m.start()]
+    for span_re in _CITATION_SPAN_RES:
+        text = span_re.sub(" ", text)
+    return text
+
+
 #: Below this recall (fraction of the original's :func:`_content_words`
 #: found in the extraction union), a **pass-through**
 #: (single atom, no compound — extraction claims the sentence was already
@@ -525,12 +599,25 @@ def _number_bearing_tokens(text: str) -> list[str]:
     :data:`_NUMBER_TOKEN_RE`), casefolded, punctuation-stripped at the
     edges only (interior ``/``/``^``/``:``/``.`` — unit separators — are
     kept, since "409" and "μA/μm" are a single token but "10^9" and
-    "2.54" are not split by their internal punctuation either)."""
+    "2.54" are not split by their internal punctuation either).
+
+    Unicode notation is folded first (:func:`_normalize_number_text`), and
+    a **digit-leading** token is further split on ``-`` so "13-residue"
+    yields "13" and the range "10^4-10^6" yields both bounds — matching
+    what an extractor legitimately writes as "13 residues" or "10⁴–10⁶".
+    A letter-leading token is never split: "MOF-5" stays a catalog name,
+    not a measurement (fi176435's exclusion is preserved)."""
     tokens = []
-    for raw in text.split():
+    for raw in _normalize_number_text(text).split():
         core = raw.strip(_NUMBER_TOKEN_STRIP)
-        if core and _NUMBER_TOKEN_RE.match(core):
-            tokens.append(core.casefold())
+        if not core or not _NUMBER_TOKEN_RE.match(core):
+            continue
+        for part in core.split("-"):
+            part = part.strip(_NUMBER_TOKEN_STRIP)
+            if part and _NUMBER_TOKEN_RE.match(part):
+                # Fold the approximation prefix: "near 10 kHz" rendered as
+                # "~10 kHz" is the same measurement, not an invented one.
+                tokens.append(part.lstrip("~±").casefold())
     return tokens
 
 
@@ -655,13 +742,23 @@ def classify_extraction(
             return "nested", {"containment": containment}
 
     union_text = _extraction_union_text(extraction)
-    missing_numbers = _missing_number_tokens(sentence, union_text)
+    # Loss-direction checks score against the citation-stripped original
+    # (dropping a trailing bibliography is correct, not lossy); the
+    # invented-number allowlist keeps the full sentence — a copied
+    # citation year was never invented.
+    coverage_original = _strip_citation_tail(sentence)
+    missing_numbers = _missing_number_tokens(coverage_original, union_text)
     invented_numbers = _invented_number_tokens(sentence, union_text)
-    original_words = _content_words(sentence)
+    original_words = _content_words(coverage_original)
     union_words = _content_words(union_text)
     kept = original_words & union_words
     recall = len(kept) / len(original_words) if original_words else 1.0
-    precision = len(kept) / len(union_words) if union_words else 1.0
+    # Precision (the invention direction) allowlists the FULL original —
+    # like invented_numbers, a word the sentence said anywhere (citation
+    # tail included) was not invented; only recall scores the stripped
+    # text.
+    kept_full = _content_words(sentence) & union_words
+    precision = len(kept_full) / len(union_words) if union_words else 1.0
     gate_meta: dict[str, Any] = {
         "recall": round(recall, 3),
         "missing_numbers": missing_numbers,

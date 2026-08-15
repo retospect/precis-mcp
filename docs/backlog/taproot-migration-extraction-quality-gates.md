@@ -102,11 +102,37 @@ $0.044–0.069, comfortably under the $0.10 `max_usd` cap.
 **Remaining before the 1.3k (pivot 2026-08-14: run IN-SESSION on the
 Mac, no deploy needed — `claude -p` + OAuth are local and the dry-run
 writes zero prod rows):** canary local (GREEN 2026-08-14, 0 rejections /
-0 mismatches) → ~100 hubs local → full 1,346 dry-run. **Reto authorized
-production writes 2026-08-14**; phase-2 apply mode is in build — it must
-treat `no-claim` on an evidenced hub as `needs_review`, not a skip-stamp
-(cheap belt-and-braces even with the guard). Consider re-labelling
-fi176365 (`pass-through` → `split`).
+0 mismatches) → ~100 hubs local (DONE, below) → full 1,346 dry-run.
+**Reto authorized production writes 2026-08-14**; phase-2 apply mode is
+BUILT + reviewed (`apply_migrate.py`, `taproot-migrate apply`) — it
+treats `no-claim` on an evidenced hub as `needs_review`, never a
+skip-stamp. Consider re-labelling fi176365 (`pass-through` → `split`).
+
+**100-hub run (top-scored = hardest cohort, haiku, 2026-08-15) + gate
+round 4.** Raw verdicts: 26 split / 1 pass-through / 6 no-claim / 46
+lossy / 15 nested / 6 error. Inspection showed the lossy wall was mostly
+gate false positives against *prod* body idioms the labelled-25 fixture
+never had: (a) haiku normalizes notation — `10^4-10^6` → `10⁴–10⁶`,
+`13-residue` → scope `"13 residues"`, `near 10` → `~10` — breaking
+exact-token number membership in BOTH directions; (b) hub bodies embed
+citations ("Canonical references: …" tails and unmarked inline "Phys.
+Rev. Lett. 57, 1761, 1986" / "(Zhang 2009; Mak 2008)" / "123(24),
+5035-5047" spans) that a correct extraction drops but the gates demanded.
+Fixes (loss-direction only; the invention direction keeps the full
+original as allowlist): unicode superscript/dash/approximation folding +
+digit-leading hyphen splitting in `_number_bearing_tokens` (letter-leading
+tokens never split — MOF-5 stays excluded; 409/9 substring hole stays
+closed), citation tail + inline-span stripping via
+`_strip_citation_tail`. Re-gated the SAME 100 extractions offline
+(pure-function re-classify, zero LLM cost): **49 split / 1 pass-through /
+6 no-claim / 23 lossy / 15 nested / 6 error**. Labelled-25 fixture stays
+green with the same 4 documented xfails. Residual 23 lossy = citation
+exotica + genuinely messy meta-prose hubs — correctly left untouched.
+The 15 nested are real haiku granularity wobble (filler atoms contained
+in siblings) — correctly gated. The 6 errors are persistent local
+`claude -p` exit-1s (fast, empty stderr) that survive the 5 s-backoff
+retry even on a quiet machine — hubs simply stay pending; re-run later or
+investigate the CLI failure mode if the rate holds at 1.3k scale.
 
 # Taproot migration: score the claim sentence, gate lossy/nested extractions
 
