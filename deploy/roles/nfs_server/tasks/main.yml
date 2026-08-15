@@ -71,14 +71,23 @@
     mode: "0755"
   become: true
 
-- name: Loop back own NFS export onto shared_mount
-  ansible.posix.mount:
-    path: "{{ shared_mount }}"
-    src: "{{ lan_ip }}:{{ nfs_export_path }}/shared"
-    fstype: nfs
-    opts: hard,intr,nosuid,nodev,noatime
-    state: mounted
+# macOS mount(8) does not consult /etc/fstab (ansible.posix.mount's
+# state=mounted fails on darwin) — static mounts go through autofs's
+# `/-  -static` map: fstab entry + `automount -c`. See nfs_client.
+- name: Add loopback NFS entry to /etc/fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: "^{{ lan_ip }}:{{ nfs_export_path }}/shared "
+    line: "{{ lan_ip }}:{{ nfs_export_path }}/shared {{ shared_mount }} nfs hard,intr,nosuid,nodev,noatime 0 0"
+    state: present
+    create: true
+    mode: "0644"
   become: true
+
+- name: Apply autofs static map
+  ansible.builtin.command: /usr/sbin/automount -c
+  become: true
+  changed_when: false
 
 - name: Verify server-side NFS canary
   ansible.builtin.stat:

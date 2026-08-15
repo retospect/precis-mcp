@@ -20,15 +20,29 @@
     mode: "0755"
   become: true
 
-- name: Mount NFS share (macOS)
+# macOS mount(8) does not consult /etc/fstab, so ansible.posix.mount's
+# state=mounted fails there ("unknown special file or file system"). Static
+# NFS mounts on darwin go through autofs: an fstab entry picked up by the
+# default `/-  -static` auto_master map, applied with `automount -c` — the
+# same idiom autofs_client uses for the NAS, and how /opt/shared was always
+# actually mounted. Keyed on the src, so a shared_mount change rewrites the
+# old entry instead of leaving a second, stale static mount.
+- name: Add shared NFS entry to /etc/fstab (macOS)
   when: os_family == "darwin"
-  ansible.posix.mount:
-    path: "{{ shared_mount }}"
-    src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
-    fstype: nfs
-    opts: hard,intr,nosuid,nodev,noatime
-    state: mounted
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: "^{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared "
+    line: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared {{ shared_mount }} nfs hard,intr,nosuid,nodev,noatime 0 0"
+    state: present
+    create: true
+    mode: "0644"
   become: true
+
+- name: Apply autofs static map (macOS)
+  ansible.builtin.command: /usr/sbin/automount -c
+  become: true
+  when: os_family == "darwin"
+  changed_when: false
 
 - name: Mount NFS share (Linux)
   when: os_family == "linux"
