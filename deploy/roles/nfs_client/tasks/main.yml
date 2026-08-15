@@ -7,7 +7,14 @@
 #   nosuid  — ignore setuid/setgid bits from remote content
 #   nodev   — ignore device files from remote content
 #   noatime — hot share, skip access-time updates
-#   _netdev (Linux) — wait for network before mounting at boot
+#   _netdev (Linux) — network filesystem, order after network.target
+#   x-systemd.automount (Linux) — mount on first access, not at boot.
+#     _netdev alone races link-up: network.target can be reached before the
+#     LAN interface has an address, and a failed boot mount never retries
+#     ("mount.nfs: Network is unreachable" → mount unit failed, seen on a
+#     linux client in the 2026-08-15 reboot test). The automount unit defers the real mount to
+#     first access, when the network is long up — same lazy semantics the
+#     NAS gets from autofs.
 
 - name: Provision /mnt namespace root (macOS sealed root)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/darwin_synthetic_mnt.yml"
@@ -50,7 +57,7 @@
     path: "{{ shared_mount }}"
     src: "{{ hostvars[nfs_server]['lan_ip'] }}:{{ nfs_export_path }}/shared"
     fstype: nfs
-    opts: hard,intr,nosuid,nodev,noatime,_netdev
+    opts: hard,intr,nosuid,nodev,noatime,_netdev,x-systemd.automount,x-systemd.mount-timeout=30
     state: mounted
   become: true
 
