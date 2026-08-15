@@ -97,6 +97,50 @@ holding a pgbouncer'd transaction across a network round trip risks
 pool-exhaustion deadlock under load, the same reasoning
 :func:`~precis.taproot.hub.attach_evidence`'s docstring gives for its own
 retraction check.
+
+**Atom re-grounding (``docs/backlog/taproot-atom-regrounding.md``,
+"no source, no atom").** :mod:`precis.taproot.reground`'s CLI stage runs
+*before* apply and writes an optional ``row["grounding"]`` key onto a
+dry-run row: per-atom :class:`~precis.taproot.reground.GroundedRecord`\\ s
+or a named ungrounded reason. This module never imports
+:mod:`precis.taproot.reground` (one-directional — see :func:`_parse_grounding`);
+it only reads the plain dict back, so a row with no ``"grounding"`` key
+(a plain, un-regrounded dry-run row) behaves exactly as before this
+feature existed. When present:
+
+* An atom marked ungrounded (``"no-passage"``/``"hearsay-only"``/
+  ``"verify-rejected"``) on a hub that HAS candidate source papers
+  (``grounding["paper_ref_ids"]`` non-empty) is **withheld** —
+  :func:`_withheld_atoms` — never runs the placement cascade, mints no
+  hub, gets no ``conjunct-of`` link, and is counted in
+  :attr:`ApplyReport.atoms_withheld_ungrounded` (+ the reasons breakdown,
+  :attr:`ApplyReport.atoms_withheld_reasons`) rather than silently placed.
+* A hanging hub (``grounding["paper_ref_ids"]`` empty, or no ``"grounding"``
+  key at all) keeps today's behavior unchanged — atoms may place hanging
+  (lineage-only); re-grounding never ran, so there is nothing to withhold
+  against.
+* **``grounding["error"]`` is a distinct third shape from "present" and
+  "missing"** — the CLI stage's sentinel for a hub re-grounding itself
+  raised on (a dead dispatch, a malformed row). Missing key means "never
+  regrounded, place as before"; the error sentinel means "regrounding was
+  attempted and failed" and must never quietly fall back to that same
+  permissive default — :func:`_withheld_atoms` withholds **every** atom
+  on the row (reason ``"reground-error"``), regardless of
+  ``paper_ref_ids``.
+* **Every atom withheld (either shape above) is a partial failure, not a
+  zero-child split** — mirrors the ``len(atoms) < 2`` malformed-extraction
+  guard: no stamp, so ``skipped_already_stamped`` never locks the hub out
+  of a future retry, plus (unlike that guard) a needs_review filing, since
+  a hub re-grounding rejected outright deserves a human look.
+* A grounded atom places exactly as it always has, **plus** its evidence
+  edge's ``meta.source_handle`` is upgraded to the grounded record's own
+  chunk anchor when the edge being re-pointed shares that record's paper
+  (:func:`_grounded_chunk_anchors`) — never a blanket copy of the quote/
+  bound itself: **quote/snip storage in the DB is deliberately out of
+  scope** (an open design call with the nanopub-mint session,
+  ``claim-publication-nanopub-ots.md``) — a grounding record's quote lives
+  only in the CLI's regrounded JSONL run artifact, never a DB column this
+  module writes.
 """
 
 from __future__ import annotations
@@ -216,6 +260,21 @@ class ApplyReport:
     #: ``derived-from`` lineage to fall back on. Visible, not fatal:
     #: never aborts the hub, never blocks the stamp.
     atoms_unreferenced: int = 0
+    #: Atoms withheld from placement entirely because a *regrounded* row
+    #: (``row["grounding"]``, :mod:`precis.taproot.reground`) marked them
+    #: ungrounded on a hub that has candidate source papers — "no source,
+    #: no atom" (``docs/backlog/taproot-atom-regrounding.md``). Zero on any
+    #: row without a ``"grounding"`` key (plain, un-regrounded dry-run
+    #: input) or on a hanging hub (no candidate papers at all) — see
+    #: :func:`_withheld_atoms`. A withheld atom mints no hub, gets no
+    #: ``conjunct-of`` link, and files a needs_review the same way an
+    #: unrepointed evidence edge does.
+    atoms_withheld_ungrounded: int = 0
+    #: ``reason -> count`` breakdown of every :attr:`atoms_withheld_ungrounded`
+    #: atom (``"no-passage"``/``"hearsay-only"``/``"verify-rejected"``) —
+    #: the run-artifact-level detail :attr:`hubs`' per-hub strings also
+    #: carry, aggregated here for a batch-level summary.
+    atoms_withheld_reasons: dict[str, int] = field(default_factory=dict)
     skipped_already_stamped: int = 0
     skipped_verdict: int = 0
     no_claim_needs_review: int = 0
@@ -517,6 +576,97 @@ def _parse_atoms(extraction: dict[str, Any] | None) -> list[CanonicalClaim]:
     return [_parse_claim(a) for a in extraction.get("atoms") or []]
 
 
+def _parse_grounding(row: dict[str, Any]) -> dict[str, Any] | None:
+    """The optional ``"grounding"`` key a *regrounded* JSONL row carries —
+    :mod:`precis.taproot.reground`'s CLI stage writes
+    ``{"paper_ref_ids": [...], "atoms": [{"grounded": bool, "records": [...],
+    "reason": str|None}, ...]}`` alongside the original dry-run row, OR —
+    when re-grounding itself raised for this hub (a dead dispatch, a
+    malformed row) — the error-sentinel shape ``{"error": "<message>"}``
+    (see :func:`_withheld_atoms`, which treats it as "withhold everything,
+    never a pass-through"). Read back here as a plain dict — this module
+    never imports :mod:`precis.taproot.reground` itself (one-directional
+    dependency, see that module's docstring) — so a plain (un-regrounded)
+    dry-run row, which carries no ``"grounding"`` key at all, degrades to
+    exactly today's behavior: nothing withheld, no chunk-anchor upgrade.
+    **Missing key and the error sentinel are deliberately NOT the same
+    thing**: a row the CLI never touched (no key) is "never regrounded",
+    safe to place as before; a row the CLI DID touch but couldn't verify
+    (the sentinel) must never silently degrade to that same safe default —
+    that would place exactly the atoms the check failed on, fully ungated.
+    """
+    grounding = row.get("grounding")
+    return grounding if isinstance(grounding, dict) else None
+
+
+def _withheld_atoms(
+    atoms: list[CanonicalClaim], grounding: dict[str, Any] | None
+) -> dict[int, str]:
+    """``atom index -> withholding reason`` for every atom this hub's
+    ``grounding`` marks ungrounded, on a hub that HAS candidate source
+    papers (``docs/backlog/taproot-atom-regrounding.md``'s apply-
+    integration rule: no-passage/verify-rejected/hearsay-only on a
+    papered hub withholds; a hanging hub's atoms are never withheld).
+
+    A ``grounding["error"]`` sentinel (re-grounding raised for this hub —
+    :func:`_parse_grounding`) withholds **every** atom unconditionally,
+    reason ``"reground-error"`` — regardless of ``paper_ref_ids`` (we have
+    no idea whether this hub is papered or hanging; the check that would
+    tell us never completed), and regardless of anything an ``"atoms"``
+    key might still carry (an error sentinel never carries one, but this
+    is checked first defensively either way).
+
+    Otherwise empty when ``grounding`` is absent, or the hub is hanging
+    (``grounding["paper_ref_ids"]`` empty) — a hanging hub's atoms place
+    exactly as they did before re-grounding existed.
+    """
+    if not grounding:
+        return {}
+    error = grounding.get("error")
+    if isinstance(error, str) and error:
+        return {i: "reground-error" for i in range(len(atoms))}
+    if not (grounding.get("paper_ref_ids") or []):
+        return {}
+    withheld: dict[int, str] = {}
+    for i, entry in enumerate(grounding.get("atoms") or []):
+        if i >= len(atoms) or not isinstance(entry, dict) or entry.get("grounded"):
+            continue
+        reason = entry.get("reason")
+        withheld[i] = (
+            reason if isinstance(reason, str) and reason else "verify-rejected"
+        )
+    return withheld
+
+
+def _grounded_chunk_anchors(
+    atoms: list[CanonicalClaim], grounding: dict[str, Any] | None
+) -> dict[tuple[int, int], int]:
+    """``(atom_index, paper_ref_id) -> chunk_id`` out of a grounding row's
+    per-atom ``records`` — the grounded-chunk-anchor upgrade the evidence
+    re-point step below applies: when it repoints an existing edge from
+    paper P onto an atom that re-grounding also found a P-sourced
+    :class:`~precis.taproot.reground.GroundedRecord` for, the new edge's
+    ``meta.source_handle`` points at *that* record's chunk rather than
+    whatever the original edge's meta carried. An atom with no matching
+    entry here (no ``"grounding"`` key, a hanging hub, or simply no record
+    for that particular paper) falls back to the edge's own pre-existing
+    meta, exactly as before re-grounding existed."""
+    anchors: dict[tuple[int, int], int] = {}
+    if not grounding:
+        return anchors
+    for i, entry in enumerate(grounding.get("atoms") or []):
+        if i >= len(atoms) or not isinstance(entry, dict):
+            continue
+        for rec in entry.get("records") or []:
+            if not isinstance(rec, dict):
+                continue
+            paper_ref_id = rec.get("paper_ref_id")
+            chunk_id = rec.get("chunk_id")
+            if isinstance(paper_ref_id, int) and isinstance(chunk_id, int):
+                anchors[(i, paper_ref_id)] = chunk_id
+    return anchors
+
+
 # ── atom placement — structural only, no evidence edge ────────────────────
 
 
@@ -681,6 +831,8 @@ def apply_dry_run(
     edges_kept_needs_review = 0
     lineage_copied = 0
     atoms_unreferenced = 0
+    atoms_withheld_ungrounded = 0
+    atoms_withheld_reasons: dict[str, int] = {}
     skipped_already_stamped = 0
     skipped_verdict = 0
     no_claim_needs_review = 0
@@ -752,6 +904,9 @@ def apply_dry_run(
         edges = _fetch_evidence_edges(store, hub_ref_id)
         lineage_links = _fetch_lineage_links(store, hub_ref_id)
         atoms = _parse_atoms(row.get("extraction"))
+        grounding = _parse_grounding(row)
+        withheld_reasons_by_idx = _withheld_atoms(atoms, grounding)
+        grounded_chunk_anchors = _grounded_chunk_anchors(atoms, grounding)
         if len(atoms) < 2:
             log.warning(
                 "taproot-apply: hub_ref_id=%s verdict='split' but its "
@@ -767,9 +922,51 @@ def apply_dry_run(
             )
             continue
 
+        if len(withheld_reasons_by_idx) == len(atoms):
+            # Every atom withheld ungrounded (either every atom individually
+            # failed re-grounding on a papered hub, or the whole hub carries
+            # a re-grounding error sentinel — _withheld_atoms) -- a
+            # zero-child split. Mirrors the <2-atoms guard above: partial
+            # failure, no stamp, so a re-run (after the doer-paper hunt
+            # lands better evidence, or re-grounding is re-run) picks this
+            # hub back up rather than skipped_already_stamped locking it
+            # out forever. Unlike that guard, this DOES file a needs_review
+            # -- a hub that re-grounding entirely rejected (or couldn't
+            # check) is worth a human look, not just a silent retry.
+            reason_counts: dict[str, int] = {}
+            for reason in withheld_reasons_by_idx.values():
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            log.warning(
+                "taproot-apply: hub_ref_id=%s verdict='split' but every "
+                "atom was withheld ungrounded (%s) -- treating as a "
+                "partial failure, no stamp, rather than a zero-child split "
+                "(retryable on a re-run)",
+                hub_ref_id,
+                reason_counts,
+            )
+            partial_failures += 1
+            hub_rows.append(
+                HubApplyOutcome(
+                    hub_ref_id,
+                    "error",
+                    f"split verdict with every atom withheld ungrounded: {reason_counts}",
+                )
+            )
+            _needs_review(
+                hub_ref_id,
+                "every atom withheld ungrounded -- hub not stamped, retryable",
+                {"reasons": reason_counts},
+            )
+            continue
+
         # ── Phase A: network/read work, no open transaction ─────────────
-        placements = [
-            _run_cascade(
+        # A withheld (ungrounded, on a papered hub) atom never runs the
+        # placement cascade at all — cheaper (no wasted dedup_judge/
+        # merge_confirm dispatch) and correct (there is nothing to place).
+        placements: list[Placement | None] = [
+            None
+            if i in withheld_reasons_by_idx
+            else _run_cascade(
                 atom,
                 store,
                 embedder,
@@ -777,7 +974,7 @@ def apply_dry_run(
                 judge_fn=judge_fn,
                 merge_confirm_fn=merge_confirm_fn,
             )
-            for atom in atoms
+            for i, atom in enumerate(atoms)
         ]
         passages = [_passage_text(store, e) for e in edges]
         # edge index -> atom indices whose sentence the passage supports.
@@ -798,6 +995,8 @@ def apply_dry_run(
         hub_edges_review = 0
         hub_lineage_copied = 0
         hub_atoms_unreferenced = 0
+        hub_atoms_withheld = 0
+        hub_withheld_reasons: dict[str, int] = {}
         aborted = False
         pending_checks: list[int] = []
         # needs_review filings are collected here, never fired immediately —
@@ -820,7 +1019,28 @@ def apply_dry_run(
         try:
             with store.tx() as c:
                 atom_hub_ids: list[int | None] = []
-                for atom, placement in zip(atoms, placements, strict=True):
+                for i, (atom, placement) in enumerate(
+                    zip(atoms, placements, strict=True)
+                ):
+                    if placement is None:
+                        # Withheld: re-grounding found this atom ungrounded
+                        # on a hub that has candidate source papers — "no
+                        # source, no atom" (docs/backlog/
+                        # taproot-atom-regrounding.md). No hub minted, no
+                        # conjunct-of link, no cascade ever ran for it.
+                        atom_hub_ids.append(None)
+                        reason = withheld_reasons_by_idx[i]
+                        hub_atoms_withheld += 1
+                        hub_withheld_reasons[reason] = (
+                            hub_withheld_reasons.get(reason, 0) + 1
+                        )
+                        pending_reviews.append(
+                            (
+                                f"atom withheld — ungrounded ({reason})",
+                                {"atom": atom.sentence, "reason": reason},
+                            )
+                        )
+                        continue
                     hub_id = _place_atom(
                         store,
                         atom,
@@ -864,29 +1084,82 @@ def apply_dry_run(
                         hub_lineage_copied += 1
 
                 for e_idx, edge in enumerate(edges):
-                    candidate_hub_ids: list[int] = [
-                        hid
+                    # (atom_index, atom_hub_id) pairs, not bare hub ids —
+                    # the atom index is needed below to look up this
+                    # edge's paper in grounded_chunk_anchors (the
+                    # chunk-anchor upgrade re-grounding contributes).
+                    candidates: list[tuple[int, int]] = [
+                        (a, hid)
                         for a in verified_atoms[e_idx]
                         if (hid := atom_hub_ids[a]) is not None
                     ]
+                    candidate_hub_ids: list[int] = [hid for _a, hid in candidates]
                     if not candidate_hub_ids:
                         hub_edges_review += 1
-                        pending_reviews.append(
-                            (
-                                "no atom verified against an existing evidence "
-                                "edge — kept on the original hub",
-                                {
-                                    "paper_ref_id": edge.paper_ref_id,
-                                    "relation": edge.relation,
-                                },
-                            )
+                        # Distinguish WHY nothing landed: an atom that
+                        # verified against this passage but was WITHHELD
+                        # (re-grounding rejected it) reads very differently
+                        # in the review queue than "genuinely nothing
+                        # verified" — the former means "the extractor's
+                        # sentence matched this passage but the atom itself
+                        # didn't check out", the latter means "this edge's
+                        # passage doesn't support any atom at all".
+                        verified_idxs = verified_atoms[e_idx]
+                        withheld_only = bool(verified_idxs) and all(
+                            a in withheld_reasons_by_idx for a in verified_idxs
                         )
+                        if withheld_only:
+                            pending_reviews.append(
+                                (
+                                    "the only atom(s) that verified against "
+                                    "this evidence edge were withheld as "
+                                    "ungrounded — edge kept on the original "
+                                    "hub",
+                                    {
+                                        "paper_ref_id": edge.paper_ref_id,
+                                        "relation": edge.relation,
+                                        "withheld_reasons": [
+                                            withheld_reasons_by_idx[a]
+                                            for a in verified_idxs
+                                        ],
+                                    },
+                                )
+                            )
+                        else:
+                            pending_reviews.append(
+                                (
+                                    "no atom verified against an existing evidence "
+                                    "edge — kept on the original hub",
+                                    {
+                                        "paper_ref_id": edge.paper_ref_id,
+                                        "relation": edge.relation,
+                                    },
+                                )
+                            )
                         continue
 
                     # Add-first: attach to every verified atom, read back
                     # each add's commit before ever touching the original.
                     confirmed: list[int] = []
-                    for atom_hub_id in candidate_hub_ids:
+                    for atom_idx, atom_hub_id in candidates:
+                        # Grounded-chunk-anchor upgrade: when re-grounding
+                        # (precis.taproot.reground) also produced a
+                        # GroundedRecord for this exact (atom, paper) pair,
+                        # anchor the new edge at THAT chunk rather than
+                        # whatever the original edge's meta carried — the
+                        # module docstring's "grounded atoms place as
+                        # today PLUS their evidence edge uses the grounded
+                        # chunk anchor" rule. No matching record (no
+                        # grounding data, or none for this paper) falls
+                        # back to the edge's own meta unchanged.
+                        anchor_chunk_id = grounded_chunk_anchors.get(
+                            (atom_idx, edge.paper_ref_id)
+                        )
+                        atom_edge_meta = (
+                            {**edge.meta, "source_handle": f"pc{anchor_chunk_id}"}
+                            if anchor_chunk_id is not None
+                            else edge.meta
+                        )
                         try:
                             with c.transaction():  # savepoint — isolate one add
                                 attach_evidence(
@@ -894,7 +1167,7 @@ def apply_dry_run(
                                     hub_ref_id=atom_hub_id,
                                     paper_ref_id=edge.paper_ref_id,
                                     role=edge.relation,
-                                    meta=edge.meta,
+                                    meta=atom_edge_meta,
                                     set_by=set_by,
                                     conn=c,
                                     pending_checks=pending_checks,
@@ -1021,6 +1294,9 @@ def apply_dry_run(
         edges_kept_needs_review += hub_edges_review
         lineage_copied += hub_lineage_copied
         atoms_unreferenced += hub_atoms_unreferenced
+        atoms_withheld_ungrounded += hub_atoms_withheld
+        for reason, n in hub_withheld_reasons.items():
+            atoms_withheld_reasons[reason] = atoms_withheld_reasons.get(reason, 0) + n
         partial_failures += hub_partial_failures
         hub_rows.append(
             HubApplyOutcome(
@@ -1029,6 +1305,8 @@ def apply_dry_run(
                 detail=(
                     f"atoms_placed={hub_atoms_placed} "
                     f"atoms_needs_review={hub_atoms_review} "
+                    f"atoms_withheld_ungrounded={hub_atoms_withheld} "
+                    f"withheld_reasons={hub_withheld_reasons} "
                     f"edges_repointed={hub_edges_repointed} "
                     f"edges_kept_needs_review={hub_edges_review} "
                     f"lineage_copied={hub_lineage_copied} "
@@ -1046,6 +1324,8 @@ def apply_dry_run(
         edges_kept_needs_review=edges_kept_needs_review,
         lineage_copied=lineage_copied,
         atoms_unreferenced=atoms_unreferenced,
+        atoms_withheld_ungrounded=atoms_withheld_ungrounded,
+        atoms_withheld_reasons=atoms_withheld_reasons,
         skipped_already_stamped=skipped_already_stamped,
         skipped_verdict=skipped_verdict,
         no_claim_needs_review=no_claim_needs_review,

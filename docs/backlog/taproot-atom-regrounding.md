@@ -6,6 +6,18 @@ model: opus
 
 # Atom re-grounding pass — T1b prerequisite
 
+> **2026-08-15: core pass IMPLEMENTED** — `taproot/reground.py`
+> (paper collection both shapes, hearsay-excluded overlap-ranked
+> passages, batched injectable verify, quote fold+substring+uniqueness
+> validation), `taproot-migrate reground` CLI stage (error-sentinel
+> rows), apply withholding (`atoms_withheld_ungrounded` + reasons;
+> error-marked rows withhold ALL atoms; zero-surviving-atom hubs get
+> no decompose stamp — retryable). Reviewed pre-ship, 4 findings fixed.
+> Remaining open: embedding-similarity ranking (named hook only),
+> causal-qualifier extraction-prompt gate (needs canary re-run),
+> quote/snip DB storage (open call with nanopub session), bound
+> semantics beyond the verify output field.
+
 Binding review feedback (Reto 2026-08-15, on the dry-run-49 dossier;
 canonical list: `claim-publication-nanopub-ots.md` §"Review feedback
 2026-08-15"). Atoms are currently extracted from the hub's claim sentence

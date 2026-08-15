@@ -1,14 +1,27 @@
-"""``precis taproot-migrate {score,dry-run,canary,apply}`` — the migration
-runner for existing (pre-decomposition) claim hubs,
+"""``precis taproot-migrate {score,dry-run,canary,reground,apply}`` — the
+migration runner for existing (pre-decomposition) claim hubs,
 ``docs/backlog/taproot-atomic-claims.md``'s Strategy end to end.
-``score``/``dry-run``/``canary`` make zero claim-data writes (no refs/
-links/meta/chunks) — thin CLI skin over :mod:`precis.taproot.migrate` /
-:mod:`precis.taproot.eval_canon`. ``apply`` is Phase 2 — the one
-subcommand here that writes, over :mod:`precis.taproot.apply_migrate`.
-``dry-run``, ``canary``, and ``apply`` all bind their store to
+``score``/``dry-run``/``canary``/``reground`` make zero claim-data writes
+(no refs/links/meta/chunks) — thin CLI skin over
+:mod:`precis.taproot.migrate` / :mod:`precis.taproot.eval_canon` /
+:mod:`precis.taproot.reground`. ``apply`` is Phase 2 — the one subcommand
+here that writes, over :mod:`precis.taproot.apply_migrate`. ``dry-run``,
+``canary``, ``reground``, and ``apply`` all bind their store to
 :mod:`precis.budget.meter` so real LLM dispatch resolves the host's
 serving endpoint and is budget-metered (``llm_call_log`` telemetry, never
 claim data); ``score`` makes no LLM calls at all.
+
+``reground`` sits between ``dry-run`` and ``apply`` (``docs/backlog/
+taproot-atom-regrounding.md``, "no source, no atom"): it re-verifies each
+``split``-verdict hub's atoms against its candidate source papers' actual
+text and writes a *regrounded* JSONL artifact — the original dry-run row
+plus a ``"grounding"`` key ``apply`` reads to withhold any atom that
+turned out to be an extractor invention, never silently placing it. A hub
+``verify_atoms`` couldn't check at all (a dead dispatch, a malformed row)
+gets an error-sentinel ``"grounding": {"error": "..."}`` instead of being
+passed through with no ``"grounding"`` key — the latter reads as "never
+regrounded, place as before" to ``apply``, which would silently place
+exactly the atoms this check failed on.
 
 The extractor tier defaults to **haiku** (round 2 of ``docs/backlog/
 taproot-migration-extraction-quality-gates.md``): the labelled-25 A/B
@@ -34,8 +47,9 @@ of a burned bulk run.
     precis taproot-migrate dry-run --limit 50 --out /tmp/report.md
     precis taproot-migrate dry-run --limit 50 --json /tmp/report.jsonl \\
         --tier small --escalate
+    precis taproot-migrate reground --json /tmp/report.jsonl --out /tmp/regrounded.jsonl
     precis taproot-migrate apply --json /tmp/report.jsonl
-    precis taproot-migrate apply --json /tmp/report.jsonl --only-verdict split --limit 20
+    precis taproot-migrate apply --json /tmp/regrounded.jsonl --only-verdict split --limit 20
 
 **``apply`` is a quiet-window operation (an operator step, not a code
 gate).** Before running it, pause the derived-queue workers that touch
@@ -158,6 +172,36 @@ def add_parser(subparsers: Any) -> None:
         help="Seed for the uniform random control sample (default: 0, deterministic).",
     )
     d.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
+
+    rg = tsub.add_parser(
+        "reground",
+        help="Between dry-run and apply: re-verify each split-verdict hub's "
+        "atoms against its candidate source papers' actual text -- 'no "
+        "source, no atom' (docs/backlog/taproot-atom-regrounding.md). Zero "
+        "claim-data writes (read-only DB + budget-metered LLM verify "
+        "calls); writes a regrounded JSONL artifact for `apply` to consume.",
+    )
+    rg.add_argument(
+        "--json",
+        dest="json_path",
+        required=True,
+        help="The dry-run JSONL file (dump_outcomes_jsonl's output) to reground.",
+    )
+    rg.add_argument(
+        "--out",
+        required=True,
+        help="Write the regrounded JSONL artifact here (original rows, plus a "
+        "'grounding' key on every split-verdict row).",
+    )
+    rg.add_argument(
+        "--top-k",
+        type=int,
+        default=6,
+        help="Candidate passages per atom x paper (default: 6).",
+    )
+    rg.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
 
     a = tsub.add_parser(
         "apply",
@@ -335,6 +379,170 @@ def _run_dry_run(args: argparse.Namespace) -> None:
         print(f"wrote {len(report.outcomes)} outcome(s) as JSONL to {args.json}")
 
 
+def _grounded_record_to_dict(rec: Any) -> dict[str, Any]:
+    return {
+        "paper_ref_id": rec.paper_ref_id,
+        "chunk_id": rec.chunk_id,
+        "chunk_ord": rec.chunk_ord,
+        "quote": rec.quote,
+        "bound": rec.bound,
+    }
+
+
+def _atom_grounding_to_dict(ag: Any) -> dict[str, Any]:
+    return {
+        "sentence": ag.atom.sentence,
+        "grounded": ag.grounded,
+        "records": [_grounded_record_to_dict(r) for r in ag.records],
+        "reason": ag.reason,
+    }
+
+
+def _hub_grounding_to_dict(result: Any) -> dict[str, Any]:
+    """:class:`~precis.taproot.reground.HubGroundingResult` -> the plain
+    dict a regrounded JSONL row's ``"grounding"`` key carries -- original
+    row + per-atom grounding records/reasons + a per-hub summary
+    (``docs/backlog/taproot-atom-regrounding.md``'s CLI-stage contract)."""
+    atoms = result.atoms
+    reasons: dict[str, int] = {}
+    grounded_n = 0
+    for a in atoms:
+        if a.grounded:
+            grounded_n += 1
+        elif a.reason:
+            reasons[a.reason] = reasons.get(a.reason, 0) + 1
+    return {
+        "paper_ref_ids": list(result.paper_ref_ids),
+        "atoms": [_atom_grounding_to_dict(a) for a in atoms],
+        "summary": {
+            "total_atoms": len(atoms),
+            "grounded": grounded_n,
+            "withheld_reasons": reasons,
+        },
+    }
+
+
+#: ``reground_row(store, hub_ref_id, atoms, *, top_k=...) -> HubGroundingResult``.
+#: Injected so :func:`_reground_row` is unit-testable without a live DB/LLM
+#: (default :func:`precis.taproot.reground.verify_atoms`).
+RegroundRowFn = Any
+
+
+def _reground_row(
+    store: Any,
+    row: dict[str, Any],
+    *,
+    top_k: int,
+    verify_atoms_fn: RegroundRowFn | None = None,
+) -> dict[str, Any]:
+    """Re-ground ONE dry-run row — the per-row unit :func:`_run_reground`'s
+    loop calls, pulled out specifically so a malformed row (bad ``"hub"``,
+    bad ``"extraction"``) or a raising ``verify_atoms`` call degrades to
+    *this row's own* error sentinel and lets the caller's loop continue,
+    rather than aborting the whole run — the regrounded JSONL is only
+    written after every row has been processed, so an unhandled exception
+    here would silently discard every prior hub's already-computed
+    grounding result too.
+
+    A non-``"split"`` row passes through completely unchanged (nothing to
+    re-ground). A ``"split"`` row that re-grounds cleanly gets a
+    ``"grounding"`` key with the real per-atom result
+    (:func:`_hub_grounding_to_dict`); one that raises (from either the row
+    parsing or the ``verify_atoms_fn`` call itself) gets the error-sentinel
+    shape ``{"grounding": {"error": "<message>"}}`` instead — deliberately
+    NOT the same as no ``"grounding"`` key at all: a missing key reads (to
+    :mod:`precis.taproot.apply_migrate`) as "never regrounded, safe to
+    place as before"; silently reusing that shape here would place exactly
+    the atoms this check failed on, fully ungated.
+    """
+    if row.get("verdict") != "split":
+        return row
+
+    from precis.taproot.apply_migrate import _parse_atoms
+    from precis.taproot.reground import verify_atoms as _default_verify_atoms
+
+    verify_fn = (
+        verify_atoms_fn if verify_atoms_fn is not None else _default_verify_atoms
+    )
+    try:
+        hub_ref_id = int(row["hub"])
+        atoms = _parse_atoms(row.get("extraction"))
+        result = verify_fn(store, hub_ref_id, atoms, top_k=top_k)
+    except Exception as exc:
+        out_row = dict(row)
+        out_row["grounding"] = {"error": str(exc)}
+        return out_row
+
+    out_row = dict(row)
+    out_row["grounding"] = _hub_grounding_to_dict(result)
+    return out_row
+
+
+def _row_regrounding_failed(row: dict[str, Any]) -> str | None:
+    """The error message if ``row``'s ``"grounding"`` is the error-sentinel
+    shape :func:`_reground_row` writes, else ``None``."""
+    grounding = row.get("grounding")
+    if isinstance(grounding, dict):
+        error = grounding.get("error")
+        if isinstance(error, str) and error:
+            return error
+    return None
+
+
+def _run_reground(args: argparse.Namespace) -> None:
+    from precis.budget import meter
+    from precis.store import Store
+
+    with open(args.json_path, encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    # Same reasoning as dry-run's/apply's bind -- verify_atoms_batch's real
+    # dispatch (MEDIUM tier) resolves the host's serving endpoint through
+    # the budget meter and this run's spend is gated by the breaker.
+    # Writes telemetry only (llm_call_log), never claim data -- this
+    # subcommand makes zero refs/links/meta/chunk writes.
+    meter.bind_store(store)
+    n_split = 0
+    n_errors = 0
+    out_rows: list[dict[str, Any]] = []
+    try:
+        for row in rows:
+            if row.get("verdict") != "split":
+                out_rows.append(row)
+                continue
+            n_split += 1
+            out_row = _reground_row(store, row, top_k=args.top_k)
+            error = _row_regrounding_failed(out_row)
+            if error is not None:
+                n_errors += 1
+                print(
+                    f"taproot-migrate reground: hub {row.get('hub')!r} "
+                    f"failed: {error} -- wrote an error sentinel "
+                    "('grounding': {'error': ...}) rather than passing the "
+                    "row through unchanged: a plain missing 'grounding' key "
+                    "reads as 'never regrounded, safe to place as before' -- "
+                    "silently reusing that shape here would place exactly "
+                    "the atoms this check failed on, fully ungated",
+                    file=sys.stderr,
+                )
+            out_rows.append(out_row)
+    finally:
+        store.close()
+
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write("\n".join(json.dumps(r) for r in out_rows))
+    print(
+        f"taproot-migrate reground: {n_split} split hub(s) processed, "
+        f"{n_errors} error(s), wrote {len(out_rows)} row(s) to {args.out}"
+    )
+    if n_errors > 0:
+        # Mirrors _run_canary's/apply's exit(1) on failure -- an operator
+        # watching exit codes must see an errored batch, not a
+        # clean-looking summary print with silently pass-through rows.
+        sys.exit(1)
+
+
 def _file_review_todo(
     store: Any, hub_ref_id: int, reason: str, detail: dict[str, Any]
 ) -> None:
@@ -418,6 +626,7 @@ def _run_apply(args: argparse.Namespace) -> None:
         "atoms_needs_review",
         "edges_repointed",
         "edges_kept_needs_review",
+        "atoms_withheld_ungrounded",
         "skipped_already_stamped",
         "skipped_verdict",
         "no_claim_needs_review",
@@ -425,6 +634,8 @@ def _run_apply(args: argparse.Namespace) -> None:
         "partial_failures",
     ):
         print(f"  {field_name}: {getattr(report, field_name)}")
+    if report.atoms_withheld_reasons:
+        print(f"  atoms_withheld_reasons: {report.atoms_withheld_reasons}")
 
     if report.partial_failures > 0:
         # Mirrors _run_canary's exit(1) on failure -- an operator watching
@@ -441,6 +652,8 @@ def run(args: argparse.Namespace) -> None:
         _run_canary(args)
     elif args.taproot_migrate_cmd == "dry-run":
         _run_dry_run(args)
+    elif args.taproot_migrate_cmd == "reground":
+        _run_reground(args)
     elif args.taproot_migrate_cmd == "apply":
         _run_apply(args)
     else:

@@ -952,3 +952,470 @@ def test_split_aborts_via_add_first_backstop_and_discards_pending_reviews(
     # The MARKER2 edge's "no atom verified" review was queued before the
     # backstop fired -- it must be discarded, not filed.
     assert todo.calls == []
+
+
+# ── split — atom re-grounding integration (docs/backlog/
+# taproot-atom-regrounding.md) ───────────────────────────────────────────
+
+
+def _grounded_atom_entry(
+    sentence: str,
+    *,
+    paper_ref_id: int | None = None,
+    chunk_id: int | None = None,
+    chunk_ord: int = 0,
+    bound: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "sentence": sentence,
+        "grounded": True,
+        "records": [
+            {
+                "paper_ref_id": paper_ref_id,
+                "chunk_id": chunk_id,
+                "chunk_ord": chunk_ord,
+                "quote": "q",
+                "bound": bound,
+            }
+        ],
+        "reason": None,
+    }
+
+
+def _ungrounded_atom_entry(sentence: str, reason: str) -> dict[str, Any]:
+    return {"sentence": sentence, "grounded": False, "records": [], "reason": reason}
+
+
+def test_split_withholds_ungrounded_atom_on_papered_hub(store: Any) -> None:
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _grounded_atom_entry(atom_a, paper_ref_id=paper),
+            _ungrounded_atom_entry(atom_b, "verify-rejected"),
+        ],
+    }
+    todo = _TodoCollector()
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        todo_fn=todo,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map(set()),  # never reached for atom_b
+    )
+
+    assert report.split_applied == 1
+    assert report.atoms_placed == 1
+    assert report.atoms_withheld_ungrounded == 1
+    assert report.atoms_withheld_reasons == {"verify-rejected": 1}
+    assert any("withheld" in c[1] and "verify-rejected" in c[1] for c in todo.calls)
+
+    with store.pool.connection() as conn:
+        titles = [
+            str(
+                conn.execute(
+                    "SELECT title FROM refs WHERE ref_id = %s", (r[0],)
+                ).fetchone()[0]
+            )
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+                "AND relation = 'conjunct-of'",
+                (compound,),
+            ).fetchall()
+        ]
+    # Only the grounded atom minted a hub + conjunct-of link.
+    assert titles == [atom_a]
+    with store.pool.connection() as conn:
+        row_b = conn.execute(
+            "SELECT 1 FROM refs WHERE title = %s", (atom_b,)
+        ).fetchone()
+    assert row_b is None
+
+
+def test_split_hanging_hub_ignores_ungrounded_reasons(store: Any) -> None:
+    """A grounding row with paper_ref_ids=[] (nothing to re-ground
+    against) must never withhold -- atoms place hanging exactly as they
+    did before re-grounding existed."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [],
+        "atoms": [
+            _ungrounded_atom_entry(atom_a, "no-passage"),
+            _ungrounded_atom_entry(atom_b, "no-passage"),
+        ],
+    }
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+
+    assert report.split_applied == 1
+    assert report.atoms_placed == 2
+    assert report.atoms_withheld_ungrounded == 0
+
+
+def test_split_row_without_grounding_key_behaves_exactly_as_before(store: Any) -> None:
+    """No 'grounding' key at all (a plain, un-regrounded dry-run row) must
+    be indistinguishable from today's pre-regrounding behaviour."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+
+    report = apply_dry_run(
+        store,
+        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+
+    assert report.split_applied == 1
+    assert report.atoms_placed == 2
+    assert report.atoms_withheld_ungrounded == 0
+    assert report.atoms_withheld_reasons == {}
+
+
+def test_split_grounded_atom_evidence_edge_uses_chunk_anchor(store: Any) -> None:
+    """The grounded record's chunk anchor wins over the original edge's
+    own (ref-level) meta -- proves the chunk-anchor upgrade, not just that
+    the existing repoint still runs."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    grounded_chunk = seed_chunk(
+        store, ref_id=paper, text="X shows A with a specific marker.", ord=0
+    )
+    # Ref-level: no source_handle at all on the original edge.
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _grounded_atom_entry(
+                atom_a, paper_ref_id=paper, chunk_id=grounded_chunk, chunk_ord=0
+            ),
+            _ungrounded_atom_entry(atom_b, "verify-rejected"),
+        ],
+    }
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map({atom_a}),
+    )
+
+    assert report.split_applied == 1
+    assert report.edges_repointed == 1
+    assert report.atoms_withheld_ungrounded == 1
+
+    with store.pool.connection() as conn:
+        atom_a_hub = conn.execute(
+            "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (compound,),
+        ).fetchone()[0]
+        link_chunk = conn.execute(
+            "SELECT src_chunk_id FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = 'corroborates'",
+            (paper, atom_a_hub),
+        ).fetchone()
+    assert link_chunk is not None
+    assert int(link_chunk[0]) == grounded_chunk
+
+
+def test_split_grounded_atom_without_matching_paper_falls_back_to_edge_meta(
+    store: Any,
+) -> None:
+    """A grounding record for a DIFFERENT paper than the edge being
+    re-pointed must never override that edge's own meta."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    other_paper_id = 999_999_999  # arbitrary, never a real ref -- never dereferenced
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _grounded_atom_entry(
+                atom_a, paper_ref_id=other_paper_id, chunk_id=999_999, chunk_ord=0
+            ),
+            _ungrounded_atom_entry(atom_b, "verify-rejected"),
+        ],
+    }
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map({atom_a}),
+    )
+
+    assert report.split_applied == 1
+    assert report.edges_repointed == 1
+    with store.pool.connection() as conn:
+        atom_a_hub = conn.execute(
+            "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
+            "AND relation = 'conjunct-of'",
+            (compound,),
+        ).fetchone()[0]
+        link_chunk = conn.execute(
+            "SELECT src_chunk_id FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = 'corroborates'",
+            (paper, atom_a_hub),
+        ).fetchone()
+    # No chunk anchor applied -- the grounding record was for a different
+    # paper, so the edge repoints with its own (empty) meta, ref-level.
+    assert link_chunk is not None
+    assert link_chunk[0] is None
+
+
+# ── split — re-grounding error sentinel + all-atoms-withheld (pre-ship
+# review findings #1/#2) ─────────────────────────────────────────────────
+
+
+def test_split_error_sentinel_withholds_every_atom_and_files_needs_review(
+    store: Any,
+) -> None:
+    """A row whose 'grounding' is the CLI's error-sentinel shape
+    ({"error": "..."}) -- re-grounding itself raised for this hub -- must
+    withhold EVERY atom (never a silent pass-through), never mint a hub,
+    never stamp, and file a needs_review."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {"error": "dispatch unavailable"}
+    todo = _TodoCollector()
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        todo_fn=todo,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+
+    assert report.split_applied == 0
+    assert report.atoms_placed == 0
+    assert report.partial_failures == 1
+    assert report.hubs[0].action == "error"
+    assert "taproot_decomposed_at" not in _meta(store, compound)
+    with store.pool.connection() as conn:
+        row_a = conn.execute(
+            "SELECT 1 FROM refs WHERE title = %s", (atom_a,)
+        ).fetchone()
+        row_b = conn.execute(
+            "SELECT 1 FROM refs WHERE title = %s", (atom_b,)
+        ).fetchone()
+    assert row_a is None
+    assert row_b is None
+    assert any("every atom withheld" in c[1] for c in todo.calls)
+    # The original evidence edge is untouched -- nothing was ever
+    # re-pointed for a hub whose re-grounding check never completed.
+    assert _edge_exists(store, paper, compound, "corroborates")
+
+
+def test_split_error_sentinel_withholds_regardless_of_paper_presence(
+    store: Any,
+) -> None:
+    """Unlike a normal ungrounded reason (gated on paper_ref_ids), the
+    error sentinel withholds unconditionally -- we don't know whether this
+    hub is papered or hanging, the check that would tell us never ran."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {"error": "dispatch unavailable"}
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+
+    assert report.split_applied == 0
+    assert report.atoms_placed == 0
+    assert report.partial_failures == 1
+    assert "taproot_decomposed_at" not in _meta(store, compound)
+
+
+def test_split_all_atoms_withheld_no_stamp_and_retryable(store: Any) -> None:
+    """Every atom individually ungrounded (not the error-sentinel path) on
+    a papered hub must ALSO withhold+not-stamp -- a zero-child split is a
+    partial failure, never a silent no-op split_applied. A second apply
+    run over the SAME row (unchanged meta) must pick the hub back up."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _ungrounded_atom_entry(atom_a, "no-passage"),
+            _ungrounded_atom_entry(atom_b, "verify-rejected"),
+        ],
+    }
+
+    report1 = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_never_called,
+    )
+
+    assert report1.split_applied == 0
+    assert report1.atoms_placed == 0
+    assert report1.partial_failures == 1
+    assert "taproot_decomposed_at" not in _meta(store, compound)
+    # Critically: skipped_already_stamped is 0 -- nothing locked the hub
+    # out of a retry (the bug the review flagged).
+    assert report1.skipped_already_stamped == 0
+
+    # Re-grounding is re-run and this time atom_a grounds -- the retry
+    # must actually be able to succeed, proving the hub was never stamped.
+    row2 = _row(compound, "split", atoms=[atom_a, atom_b])
+    row2["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _grounded_atom_entry(atom_a, paper_ref_id=paper),
+            _ungrounded_atom_entry(atom_b, "verify-rejected"),
+        ],
+    }
+    report2 = apply_dry_run(
+        store,
+        [row2],
+        now_fn=_now_fn,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        extract_verify_fn=_verify_map(set()),
+    )
+    assert report2.split_applied == 1
+    assert report2.atoms_placed == 1
+    assert report2.atoms_withheld_ungrounded == 1
+    assert "taproot_decomposed_at" in _meta(store, compound)
+
+
+def test_split_edge_review_message_distinguishes_withheld_from_unverified(
+    store: Any,
+) -> None:
+    """The only atom extract_verify_fn says verifies against this edge was
+    WITHHELD (ungrounded) -- the review message must say so, not the
+    generic 'no atom verified' (pre-ship review finding #4)."""
+    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    paper = seed_ref(store, kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=compound,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    atom_a = "X shows A."
+    atom_b = "X shows B."
+    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row["grounding"] = {
+        "paper_ref_ids": [paper],
+        "atoms": [
+            _ungrounded_atom_entry(atom_a, "verify-rejected"),
+            _grounded_atom_entry(atom_b, paper_ref_id=paper),
+        ],
+    }
+    todo = _TodoCollector()
+
+    report = apply_dry_run(
+        store,
+        [row],
+        now_fn=_now_fn,
+        todo_fn=todo,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        # The WITHHELD atom (atom_a) is the only one that "verifies".
+        extract_verify_fn=_verify_map({atom_a}),
+    )
+
+    assert report.split_applied == 1
+    assert report.atoms_withheld_ungrounded == 1
+    assert report.edges_kept_needs_review == 1
+    assert report.edges_repointed == 0
+    assert any("withheld as ungrounded" in c[1] for c in todo.calls)
+    assert not any(
+        c[1] == "no atom verified against an existing evidence edge — kept "
+        "on the original hub"
+        for c in todo.calls
+    )
