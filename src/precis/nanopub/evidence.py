@@ -206,6 +206,18 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
         sources.append(src)
 
     grounding_chunks = _resolve_grounding(store, evidence.grounding)
+    # Outbound lineage anchors ground too: a ``derived-from`` edge pinning
+    # ``dst_chunk_id`` names the exact passage in the primary the claim was
+    # read from (fi19981's shape — the Moore paper's §IV chunk). Inbound
+    # edges carry theirs via ``seniority``'s GroundingRef handles; lineage
+    # edges have no GroundingRef, so fold their pins in here.
+    seen_chunk_ids = {c.chunk_id for c in grounding_chunks}
+    lineage_pins = [
+        link.dst_chunk_id
+        for link in outbound
+        if link.dst_chunk_id is not None and link.dst_chunk_id not in seen_chunk_ids
+    ]
+    grounding_chunks += fetch_chunks(store, lineage_pins)
 
     with store.pool.connection() as conn:
         body_row = conn.execute(

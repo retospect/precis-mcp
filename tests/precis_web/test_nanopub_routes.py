@@ -92,6 +92,46 @@ def test_approve_prefill_suggests_quote_and_unique_snip(
     assert "this anisotropy can reach a 400 1 ratio" in resp.text
 
 
+def test_prefill_covers_derived_from_lineage_anchor(
+    client: TestClient, runtime_with_store
+) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    store = _store(runtime_with_store)
+    paper, _chunk, _sha = _seed_paper(store)
+    hub = mint_hub(
+        store, CanonicalClaim(sentence="A lineage-grounded claim.", scope={})
+    )
+    # No inbound evidence edge — the ONLY grounding is the outbound
+    # lineage pin (dst_pos resolves to the chunk), fi19981's shape.
+    store.add_link(src_ref_id=hub, dst_ref_id=paper, relation="derived-from", dst_pos=0)
+    resp = client.get(f"/nanopub/fi{hub}")
+    assert resp.status_code == 200
+    assert "This anisotropy can reach a 400:1 ratio" in resp.text
+
+
+def test_prefill_skips_heading_residue_and_ranks_by_claim(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(
+        store,
+        chunk_text=(
+            "**1. Introduction**\n\nThe debate over such matters remains deeply "
+            "contentious among practitioners. The anisotropy ratio doubles "
+            "roughly every two years in layered crystals."
+        ),
+    )
+    hub = _seed_hub(store, "Anisotropy ratio doubles every two years.", paper, chunk)
+    resp = client.get(f"/nanopub/fi{hub}")
+    assert resp.status_code == 200
+    # The heading fragment is disqualified and the claim-relevant sentence
+    # beats the earlier meta-discourse one.
+    assert "The anisotropy ratio doubles roughly every two years" in resp.text
+    assert "Introduction**" not in resp.text
+
+
 def test_approve_sign_and_serve_trig(
     client: TestClient, runtime_with_store, monkeypatch: Any
 ) -> None:

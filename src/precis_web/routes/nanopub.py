@@ -300,26 +300,37 @@ def _frozen_rung(state: str | None) -> str:
     ).frozen
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def _suggest_quote_snip(store: Any, chunk: Any) -> tuple[str, str]:
-    """A gate-passing starting point from the grounding chunk: the first
-    citation-marker-free sentence as the quote candidate (the reviewer
-    trims it to the assertion — freeze-at-review still means a human
-    decides exactly what the signature covers), and a snip validated
-    unique-within-paper with the same helpers the mint gates run."""
+def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
+    """A gate-passing starting point from the grounding chunk: the
+    citation-marker-free sentence most lexically relevant to the claim as
+    the quote candidate (the reviewer trims it to the assertion —
+    freeze-at-review still means a human decides exactly what the
+    signature covers), and a snip validated unique-within-paper with the
+    same helpers the mint gates run. Newlines split too, and ``**`` spans
+    are disqualified outright — both keep markdown heading residue
+    ("Introduction**\\n\\nThe debate…") out of the candidate pool."""
     from precis.nanopub import evidence as ev
     from precis.nanopub import snip as sniplib
 
-    sentences = _SENTENCE_SPLIT.split(chunk.text or "")
-    quote = next(
-        (
-            s.strip()
-            for s in sentences
-            if len(sniplib.tokens(s)) >= 6 and not ev.citation_markers(s)
-        ),
-        (chunk.text or "").strip(),
+    claim_tokens = set(sniplib.tokens(claim))
+    candidates = [
+        s.strip()
+        for s in _SENTENCE_SPLIT.split(chunk.text or "")
+        if len(sniplib.tokens(s)) >= 6 and "**" not in s and not ev.citation_markers(s)
+    ]
+    quote = (
+        max(
+            candidates,
+            key=lambda s: (
+                len(claim_tokens & set(sniplib.tokens(s))),
+                len(sniplib.tokens(s)),
+            ),
+        )
+        if candidates
+        else (chunk.text or "").strip()
     )
     haystacks = [c.text for c in ev.paper_body_chunks(store, chunk.ref_id)]
     toks = sniplib.tokens(quote)
@@ -344,7 +355,9 @@ def _suggested_payload(store: Any, row: Any, bundle: Any) -> str:
         src = by_ref.get(chunk.ref_id)
         if src is None:
             continue
-        quote, snip = _suggest_quote_snip(store, chunk)
+        quote, snip = _suggest_quote_snip(
+            store, chunk, f"{bundle.sentence} {bundle.body}"
+        )
         passages.append(
             {
                 "doi": src.doi or "",
