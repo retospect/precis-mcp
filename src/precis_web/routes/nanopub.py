@@ -79,7 +79,8 @@ async def nanopub_tree(request: Request) -> HTMLResponse:
     """The claim forest: compounds nest their conjunct atoms, refined
     claims nest under what they refine, evidence sources hang as leaves.
     Same data family as the queue table — publish rows + links, no new
-    state."""
+    state. A ``detail`` dict (same shape as the hub page's graph pane)
+    backs the click-to-inspect side panel."""
     from precis.nanopub import overview
 
     store = get_store(request)
@@ -88,10 +89,66 @@ async def nanopub_tree(request: Request) -> HTMLResponse:
     def _count(nodes: list[Any]) -> int:
         return sum(1 + _count(n.children) for n in nodes)
 
+    detail: dict[str, Any] = {}
+
+    def _collect(n: Any) -> None:
+        r = n.row
+        hub_key = f"h{r.ref_id}"
+        if hub_key not in detail:
+            fields = [["state", r.state or "unminted"]]
+            if r.disputed:
+                fields.append(["disputed", "yes — blocked"])
+            if r.withheld_count:
+                fields.append(["withheld edges", str(r.withheld_count)])
+            if r.drifted:
+                fields.append(["drifted", "frozen string ≠ live title"])
+            if r.approved_title and r.approved_title != r.title:
+                fields.append(["approved", r.approved_title])
+            if r.trusty_uri:
+                fields.append(["trusty", r.trusty_uri])
+            if n.children:
+                fields.append(["nested claims", str(len(n.children))])
+            if n.evidence:
+                fields.append(["evidence", str(len(n.evidence))])
+            links = [["open claim page →", f"/nanopub/fi{r.ref_id}"]]
+            if r.trusty_uri:
+                links.append(["TriG bytes", f"/np/{r.trusty_uri.rsplit('/', 1)[-1]}"])
+            detail[hub_key] = {
+                "kind": "claim hub",
+                "title": r.title,
+                "fields": fields,
+                "links": links,
+            }
+        for e in n.evidence:
+            ev_key = f"e{e.kind}-{e.ref_id}-{e.relation}"
+            if ev_key not in detail:
+                if e.kind == "finding":
+                    url = f"/nanopub/fi{e.ref_id}"
+                elif e.kind == "paper":
+                    url = f"/papers/{e.ref_id}"
+                else:
+                    url = f"/refs/{e.kind}/{e.ref_id}"
+                detail[ev_key] = {
+                    "kind": e.kind,
+                    "title": e.title,
+                    "fields": [["relation", e.relation]],
+                    "links": [["open →", url]],
+                }
+        for c in n.children:
+            _collect(c)
+
+    for root in roots:
+        _collect(root)
+
     return templates.TemplateResponse(
         request,
         "nanopub/tree.html.j2",
-        {"active_tab": "nanopub", "roots": roots, "n_nodes": _count(roots)},
+        {
+            "active_tab": "nanopub",
+            "roots": roots,
+            "n_nodes": _count(roots),
+            "detail": detail,
+        },
     )
 
 

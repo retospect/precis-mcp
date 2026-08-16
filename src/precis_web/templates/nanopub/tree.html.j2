@@ -1,13 +1,14 @@
 {% extends "base.html.j2" %}
 {% block title %}Nanopub tree{% endblock %}
 {% block content %}
-<div class="max-w-5xl mx-auto px-4 py-6 space-y-6">
+<div class="max-w-7xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-baseline justify-between">
     <div>
       <h1 class="text-xl font-semibold">Nanopub claim tree</h1>
       <p class="text-sm text-slate-400 mt-1">
         Compounds nest their conjunct atoms, refined claims nest under what
-        they refine; evidence sources hang as leaves.
+        they refine; evidence sources hang as leaves. Click a row to inspect
+        it on the right.
         {{ n_nodes }} hub{{ 's' if n_nodes != 1 }} in the forest.
       </p>
     </div>
@@ -28,10 +29,10 @@
   {% macro node(n) %}
   <li class="mt-1">
     <details {% if n.children %}open{% endif %} class="group">
-      <summary class="flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-800/40
-                      {% if not n.children and not n.evidence %}pointer-events-none{% endif %}">
+      <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-800/40"
+               data-np="h{{ n.row.ref_id }}">
         {% if n.children or n.evidence %}
-        <span class="text-slate-500 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
+        <span class="tree-caret text-slate-500 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
         {% else %}
         <span class="w-3"></span>
         {% endif %}
@@ -51,7 +52,8 @@
       {% if n.evidence or n.children %}
       <ul class="ml-6 border-l border-slate-800 pl-3">
         {% for e in n.evidence %}
-        <li class="mt-0.5 flex items-center gap-2 px-2 py-0.5 text-xs text-slate-400">
+        <li class="tree-node mt-0.5 flex items-center gap-2 rounded px-2 py-0.5 text-xs text-slate-400 cursor-pointer hover:bg-slate-800/40"
+            data-np="e{{ e.kind }}-{{ e.ref_id }}-{{ e.relation }}">
           <span class="w-3"></span>
           <span class="font-mono px-1 rounded
             {% if e.relation == 'contradicts' %}bg-rose-900/40 text-rose-300
@@ -70,12 +72,47 @@
   </li>
   {% endmacro %}
 
-  {% if roots %}
-  <ul>
-    {% for n in roots %}{{ node(n) }}{% endfor %}
-  </ul>
-  {% else %}
-  <p class="text-sm text-slate-500">No claim hubs yet.</p>
-  {% endif %}
+  <div class="lg:grid lg:grid-cols-3 lg:gap-6">
+    <div class="lg:col-span-2 min-w-0">
+      {% if roots %}
+      <ul>
+        {% for n in roots %}{{ node(n) }}{% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-sm text-slate-500">No claim hubs yet.</p>
+      {% endif %}
+    </div>
+    <div class="mt-6 lg:mt-0">
+      <div id="np-detail"
+           class="lg:sticky lg:top-4 rounded-md border border-slate-700 bg-slate-800/40 p-4 text-sm">
+        <p class="text-slate-500 text-xs">Click a claim or evidence row to inspect it here.</p>
+      </div>
+    </div>
+  </div>
 </div>
+
+<style>.tree-node.selected { background: rgba(51, 65, 85, 0.5); }</style>
+<script>
+  const NP_DETAIL = {{ detail | tojson }};
+  const pane = document.getElementById("np-detail");
+  function npEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  document.querySelectorAll(".tree-node").forEach(n => n.addEventListener("click", ev => {
+    if (ev.target.closest("a")) return;                 // in-row links navigate
+    if (!ev.target.closest(".tree-caret")) ev.preventDefault();  // only the caret folds
+    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
+    n.classList.add("selected");
+    const d = NP_DETAIL[n.dataset.np];
+    if (!d) return;
+    pane.innerHTML =
+      `<div class="text-[11px] uppercase tracking-wide text-slate-400">${npEsc(d.kind)}</div>` +
+      `<h3 class="font-semibold mt-1">${npEsc(d.title)}</h3>` +
+      `<table class="text-xs mt-2">` +
+      d.fields.map(([k, v]) => `<tr><td class="text-slate-400 pr-3 py-0.5 align-top whitespace-nowrap">${npEsc(k)}</td><td class="break-all">${npEsc(v)}</td></tr>`).join("") +
+      `</table>` +
+      d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-emerald-400 hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
+  }));
+</script>
 {% endblock %}

@@ -166,6 +166,13 @@ def test_tree_nests_conjunct_atom_under_compound(
     # /refs/<id> shape (which 400s).
     assert f"/papers/{paper}" in resp.text
     assert f"/refs/{paper}" not in resp.text
+    # The click-detail side panel: every hub and evidence row carries a
+    # data-np key that resolves in the embedded NP_DETAIL dict.
+    assert "NP_DETAIL" in resp.text
+    assert f'data-np="h{compound}"' in resp.text
+    assert f'data-np="h{atom}"' in resp.text
+    assert f'"h{compound}"' in resp.text  # key present in the JSON blob
+    assert f'data-np="epaper-{paper}-corroborates"' in resp.text
 
 
 def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) -> None:
