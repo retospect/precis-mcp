@@ -156,7 +156,7 @@ def test_sync_fetches_only_the_pk_diff(store: Any) -> None:
     result = mirror.sync(store, limit=1, fetch=fake_fetch, delay_s=0)
     assert result.listed == 3 and result.already == 1
     assert result.fetched == 1 and result.remaining == 1
-    assert any(url.endswith(f"/np/{miss1}") for url in fetched_urls)
+    assert any(url.endswith(f"/np/{miss1}.trig") for url in fetched_urls)
     assert not any(have in url for url in fetched_urls if "/np/" in url)
 
     result = mirror.sync(store, limit=10, fetch=fake_fetch, delay_s=0)
@@ -201,6 +201,25 @@ def test_sync_survives_one_bad_artifact(store: Any) -> None:
     result = mirror.sync(store, limit=10, fetch=fake_fetch, delay_s=0)
     assert result.fetched == 1 and result.failed == 1
     assert store.mirror_row(good) is not None
+
+
+def test_sync_html_response_fails_without_storing(store: Any) -> None:
+    """A registry answering HTML instead of TriG (content-negotiation
+    slip) must count as a failed fetch and store NOTHING — a stored junk
+    row would be skipped by the PK diff on every later pass."""
+    import json
+
+    code = "RA" + "w" * 43
+
+    def fake_fetch(url: str) -> bytes:
+        if url.endswith("/nanopubs.json"):
+            return json.dumps([code]).encode()
+        return b"<!DOCTYPE HTML>\n<html><head><title>Nanopub</title>"
+
+    result = mirror.sync(store, limit=10, fetch=fake_fetch, delay_s=0)
+    assert result.fetched == 0 and result.failed == 1
+    assert store.mirror_row(code) is None
+    assert store.mirror_codes() == set()
 
 
 # ── flags: the authoritative-retraction rule ────────────────────────────

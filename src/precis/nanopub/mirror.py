@@ -131,7 +131,16 @@ def list_registry_codes(*, fetch: Fetch | None = None) -> tuple[list[str], str]:
 
 
 def fetch_code(code: str, *, host: str, fetch: Fetch | None = None) -> bytes:
-    return (fetch or _default_fetch)(f"{host}/np/{code}")
+    """One artifact's TriG bytes. The ``.trig`` suffix is load-bearing:
+    bare ``/np/{code}`` content-negotiates and hands a plain GET the HTML
+    landing page (probed live 2026-08-16, all three hosts the same
+    software). An HTML body raises rather than returns — sync counts it
+    failed and the code stays missing (retryable), instead of storing a
+    junk row the PK diff would then skip forever."""
+    body = (fetch or _default_fetch)(f"{host}/np/{code}.trig")
+    if body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
+        raise ValueError(f"{host} returned HTML, not TriG, for {code}")
+    return body
 
 
 def index_bytes(code: str, trig_bytes: bytes) -> MirrorIndex:
