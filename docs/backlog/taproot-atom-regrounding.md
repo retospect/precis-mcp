@@ -17,6 +17,13 @@ model: opus
 > causal-qualifier extraction-prompt gate (needs canary re-run),
 > quote/snip DB storage (open call with nanopub session), bound
 > semantics beyond the verify output field.
+>
+> Visible web symptom while this is unlanded: `/nanopub/fi<id>`'s
+> approve prefill (376e51a4) suggests a quote+snip only for hubs whose
+> grounding carries `pc<chunk_id>` handles; anchor-less hubs (most of
+> the pre-regrounding corpus) still show the empty skeleton. Lights up
+> automatically once this pass writes chunk anchors — no web change
+> needed.
 
 ## Calibration findings — first run over the 49 (2026-08-15)
 
