@@ -312,8 +312,7 @@ def pdf_sha_rows(store: Store, ref_id: int) -> list[str]:
     ``docs/backlog/pdf-sha256-identifier-hygiene.md``)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT pdf_sha256 FROM refs "
-            "WHERE ref_id = %s AND pdf_sha256 IS NOT NULL",
+            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND pdf_sha256 IS NOT NULL",
             (ref_id,),
         ).fetchall()
         if not rows:
