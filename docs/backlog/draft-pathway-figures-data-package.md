@@ -61,7 +61,11 @@ load-bearing (the 0.14.0 void-re-score incident): a figure without its
 draft export pipeline, `figure` kind ingestion of quest/pathway SVG-or-
 matplotlib output, new matplotlib pareto renderer (home: autocatpath or
 precis.quest — decide at spec time), provenance-link walk in the
-exporter.
+exporter. **Sibling appendix**: `nanopub-export-appendix.md` adds a
+different end-matter section (nanopub artifacts behind cited claims) to
+the same latex.py/docx.py paths via the `_trust_marks.py` accumulator
+pattern — whichever lands second must slot into the other's end-matter
+ordering, and this item should reuse that accumulator pattern.
 
 ## Open questions / decisions log
 - Reto to confirm the three-tier shape (appendix + sidecar always,
