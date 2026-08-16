@@ -501,13 +501,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /build/precis-mcp
 COPY pyproject.toml uv.lock /build/precis-mcp/
 # docx / tex / calc / plot are core deps now (deterministic, no-API,
-# torch-free — see pyproject's policy note), so the torch-free serve/worker
-# venv gets them automatically from the base sync; only external + patent
-# remain as extras here.
+# torch-free — see pyproject's policy note), and external + patent were
+# promoted into core too (2026-08-16, 15f2d6e0) — the base sync covers
+# everything this venv needs, no extras remain.
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv venv /opt/venv && \
-    uv sync --frozen --no-install-project \
-        --extra external --extra patent
+    uv sync --frozen --no-install-project
 
 # -----------------------------------------------------------------------------
 # Stage: builder-lite — install precis-mcp (base only, --no-deps) into the
