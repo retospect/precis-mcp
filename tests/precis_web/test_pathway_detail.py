@@ -1468,9 +1468,11 @@ def test_pathway_tier_chip_inferred_neb_default(client, runtime) -> None:
 
 def test_pathway_tier_toggle_and_delta_via_refines_link(client, runtime) -> None:
     """Item 2: a verify pathway's own outgoing ``refines`` edge names its
-    parked sibling — the toggle renders low->high fidelity ("screen" before
-    "verified"), the sibling side links out, and (both sides carrying a
-    barrier figure) a "verify − screen" delta line renders too."""
+    parked sibling — the toggle renders low->high fidelity ("neb" before
+    "verified", each tier under its own word so two non-verify rungs never
+    read as an identical "screen | screen"), the sibling side links out, and
+    (both sides carrying a barrier figure) a "verified − neb" delta line
+    renders too."""
     _seed_pathway(
         runtime.store,
         meta={"tier": "verify", "rate_Ea": 0.96},
@@ -1487,10 +1489,10 @@ def test_pathway_tier_toggle_and_delta_via_refines_link(client, runtime) -> None
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert '<span class="font-semibold text-slate-500">view:</span>' in resp.text
-    assert "screen" in resp.text
+    assert ">neb<" in resp.text
     assert "verified" in resp.text
     assert "/refs/pathway/171700" in resp.text
-    assert "verify − screen: +0.12 eV" in resp.text
+    assert "verified − neb: +0.12 eV" in resp.text
 
 
 def test_pathway_tier_toggle_absent_without_sibling(client, runtime) -> None:

@@ -464,6 +464,50 @@ def _lineage(store: Store, ref_id: int) -> dict[str, list[dict[str, str]]]:
     return {"parents": parents, "children": children}
 
 
+def _quest_context(store: Store, ref_id: int) -> dict[str, Any] | None:
+    """Quest-candidate context, or ``None`` for a design outside any quest.
+
+    ``quests`` — the quest(s) this design ``serves`` (the candidate→quest
+    link :func:`precis.quest.compute` mints), each a backlink to the quest
+    page. ``pathways`` — the design's autocatpath pathway runs (the barrier
+    compute pages), keyed on the pathway's own ``meta.candidate_ref`` stamp,
+    newest first, with tier + rate-limiting barrier when present.
+    """
+    quests: list[dict[str, Any]] = []
+    for lnk in store.links_for(ref_id, direction="out", relation="serves"):
+        other = store.fetch_refs_by_ids([lnk.dst_ref_id]).get(lnk.dst_ref_id)
+        if other is not None and other.kind == "quest":
+            quests.append(
+                {"ref_id": other.id, "title": other.title or f"quest {other.id}"}
+            )
+    pathways: list[dict[str, Any]] = []
+    try:
+        with store.pool.connection() as conn:
+            # barrier fallback chain mirrors refs._pathway_barrier_figure
+            # (top-level rate_Ea first, then the meta.results spellings)
+            rows = conn.execute(
+                "SELECT ref_id, meta->>'tier', "
+                "COALESCE(meta->>'rate_Ea', meta->'results'->>'barrier', "
+                "meta->'results'->>'rate_Ea', meta->'results'->>'rate_ea', "
+                "meta->'results'->>'ea') FROM refs "
+                "WHERE kind = 'pathway' AND deleted_at IS NULL "
+                "AND meta->>'candidate_ref' = %s ORDER BY ref_id DESC",
+                (str(ref_id),),
+            ).fetchall()
+    except Exception:
+        log.warning("structure %s: pathway-run query failed", ref_id, exc_info=True)
+        rows = []
+    for pid, tier, ea in rows:
+        try:
+            barrier = float(ea) if ea is not None else None
+        except (TypeError, ValueError):
+            barrier = None
+        pathways.append({"ref_id": int(pid), "tier": tier or "neb", "barrier": barrier})
+    if not quests and not pathways:
+        return None
+    return {"quests": quests, "pathways": pathways}
+
+
 def _latest_proposal(store: Store, ref_id: int) -> dict[str, Any] | None:
     """The newest ``structure_propose`` job for this design — its STATUS + the
     ``job_result`` proposal chunk. Keyed on ``params.structure_ref_id`` so the
@@ -552,6 +596,7 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "lineage": _lineage(store, ref.id),
             "provenance": paper_provenance_rows(store, ref.id),
             "proposal": _latest_proposal(store, ref.id),
+            "quest_context": _quest_context(store, ref.id),
         },
     )
 

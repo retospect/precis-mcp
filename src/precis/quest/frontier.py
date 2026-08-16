@@ -26,6 +26,7 @@ composite's ``key`` like any other measure.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -151,6 +152,38 @@ _SVG_PAD = 36.0
 #: so the extreme points never sit flush against the plot border.
 _RANGE_PAD_FRACTION = 0.1
 
+#: Tick count the nice-step search aims for on each axis — the actual count
+#: varies (round steps rarely divide the range evenly) but stays close.
+_AXIS_TICK_TARGET = 5
+
+
+def _nice_ticks(lo: float, hi: float, target: int = _AXIS_TICK_TARGET) -> list[float]:
+    """Round tick values inside ``[lo, hi]`` on a 1/2/5×10ᵏ step.
+
+    The classic nice-numbers walk: pick the smallest step from the
+    {1, 2, 5}·10ᵏ ladder that yields at most ``target`` intervals over the
+    span, then emit every multiple of it inside the range. A degenerate span
+    (``hi <= lo``) returns the single value — the flat-line case
+    :func:`build_frontier_scatter` already guards its scaling for.
+    """
+    span = hi - lo
+    if span <= 0:
+        return [lo]
+    raw = span / max(target - 1, 1)
+    mag = 10.0 ** math.floor(math.log10(raw))
+    step = 10.0 * mag
+    for mult in (1.0, 2.0, 5.0):
+        if mult * mag >= raw:
+            step = mult * mag
+            break
+    first = math.ceil(lo / step) * step
+    ticks: list[float] = []
+    v = first
+    while v <= hi + step * 1e-9:
+        ticks.append(round(v, 10))
+        v += step
+    return ticks
+
 
 @dataclass(frozen=True)
 class FrontierScatter:
@@ -159,6 +192,10 @@ class FrontierScatter:
     ``points`` are plain dicts (not a dataclass) since the caller may stamp
     an ``open_url`` onto each before handing them to Jinja; every point
     already carries pixel-space ``cx``/``cy`` so the template does no math.
+    ``x_ticks``/``y_ticks`` are likewise pre-projected axis ticks
+    (``{"value", "pos", "label"}`` with ``pos`` in pixel space — an x for
+    x-ticks, a y for y-ticks), and ``pad`` is the plot-area inset the
+    template draws the axis lines on.
     """
 
     points: list[dict[str, Any]]
@@ -170,6 +207,9 @@ class FrontierScatter:
     y_max: float
     width: float = _SVG_WIDTH
     height: float = _SVG_HEIGHT
+    pad: float = _SVG_PAD
+    x_ticks: list[dict[str, Any]] = field(default_factory=list)
+    y_ticks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def build_frontier_scatter(
@@ -181,6 +221,7 @@ def build_frontier_scatter(
     x_label: str = PARETO_X_LABEL,
     y_label: str = PARETO_Y_LABEL,
     open_url_for: Callable[[Candidate], str] | None = None,
+    frontier_ref_ids: frozenset[int] | set[int] | None = None,
     width: float = _SVG_WIDTH,
     height: float = _SVG_HEIGHT,
     pad: float = _SVG_PAD,
@@ -204,6 +245,11 @@ def build_frontier_scatter(
     rest) plus ``untrusted``/``on_frontier`` so the template can render them
     visually distinct (hollow/dashed, a frontier star) without a second
     geometry pass.
+
+    ``frontier_ref_ids`` (optional) stamps ``on_frontier`` on the *confirmed*
+    points too, so the template's marker grammar — shape = frontier
+    membership (star/circle), fill = trust, colour = band — covers both
+    bands with one vocabulary.
     """
     plottable = [
         c
@@ -260,6 +306,7 @@ def build_frontier_scatter(
             "y": y,
             "converged": c.converged,
             "band": "confirmed",
+            "on_frontier": bool(frontier_ref_ids and c.ref_id in frontier_ref_ids),
             "cx": round(_cx(x), 2),
             "cy": round(_cy(y), 2),
         }
@@ -290,6 +337,15 @@ def build_frontier_scatter(
             ppoint["open_url"] = open_url_for(c)
         points.append(ppoint)
 
+    x_ticks = [
+        {"value": v, "pos": round(_cx(v), 2), "label": f"{v:g}"}
+        for v in _nice_ticks(x_lo, x_hi)
+    ]
+    y_ticks = [
+        {"value": v, "pos": round(_cy(v), 2), "label": f"{v:g}"}
+        for v in _nice_ticks(y_lo, y_hi)
+    ]
+
     return FrontierScatter(
         points=points,
         x_label=x_label,
@@ -300,6 +356,9 @@ def build_frontier_scatter(
         y_max=y_max,
         width=width,
         height=height,
+        pad=pad,
+        x_ticks=x_ticks,
+        y_ticks=y_ticks,
     )
 
 

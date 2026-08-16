@@ -169,6 +169,10 @@
   {% endif %}
 
   {% if diagram %}
+  {# path legend — built by JS (buildPathLegend): one button per root->leaf
+     path, hover = emphasize, click = select+fade the rest, Esc = clear.
+     Mirrors the autocatpath HTML export's legend-as-buttons interaction. #}
+  <div id="pw-path-legend" class="flex flex-wrap items-center gap-1 mb-1"></div>
   <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-sky-200 bg-slate-50 p-1"></div>
   {% else %}
   <p class="text-sm text-slate-400 italic">no energetics graph recorded for this pathway yet.</p>
@@ -525,79 +529,62 @@
     return pts;
   }
 
-  // ── obstacle sampling (label-dodge input) — walks a drawn data segment in
-  // ~6px steps and records each point so dodgeLabels (below) can steer text
-  // clear of the geometry itself (hump curves, level bars, supply lines,
-  // barrier error-bar ticks), not just other labels. Pure pixel-space in,
-  // pixel-space points out — callers pass already-scaled x/y. ──
-  function sampleSeg(obstacles, x0, y0, x1, y1) {
-    const dx = x1 - x0, dy = y1 - y0;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const steps = Math.max(1, Math.round(len / 6));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      obstacles.push({ x: x0 + dx * t, y: y0 + dy * t });
+  // ── order-preserving label stack — JS port of autocatpath
+  // ``viz._stack_labels`` (pool-adjacent-violators / isotonic regression).
+  // ``anchors`` are the wanted box centres in pixel-y, TOP FIRST (ascending,
+  // y grows down), ``heights`` the matching box heights; returns the nearest
+  // set of centres, still top-first, with consecutive boxes >= ``pad``
+  // apart. Order preservation is the whole point: the top bar keeps the top
+  // label, so the label sequence always agrees with the bar sequence and
+  // leaders within a column can never cross. Least-squares displacement,
+  // one PAVA sweep — exact, no iteration, no tuning. ──
+  function stackLabels(anchors, heights, pad) {
+    const n = anchors.length;
+    if (n < 2) { return anchors.slice(); }
+    const cum = [0];
+    for (let k = 1; k < n; k++) { cum.push(cum[k - 1] + (heights[k - 1] + heights[k]) / 2 + pad); }
+    const means = [], weights = [];
+    for (let k = 0; k < n; k++) {
+      let m = anchors[k] - cum[k], w = 1;
+      while (means.length && means[means.length - 1] > m) {  // violates u[k] <= u[k+1]
+        const m1 = means.pop(), w1 = weights.pop();
+        m = (m1 * w1 + m * w) / (w1 + w); w += w1;
+      }
+      means.push(m); weights.push(w);
     }
+    const pooled = [];
+    means.forEach((m, i) => { for (let j = 0; j < weights[i]; j++) { pooled.push(m); } });
+    return pooled.map((u, k) => u + cum[k]);
   }
 
-  // ── label-dodge (item 1) — approximates text width as chars*fontSize*0.6
-  // (no DOM measurement available before the SVG is attached); sorts by x,
-  // then for each label in turn scores a fixed grid of (dx, dy) candidate
-  // offsets from its own base position — dy steps of 5px, up first then
-  // down, out to ±40px, crossed with dx escapes of 0/±16/±30px for
-  // same-column stacks — ordered cheapest-first (|dy| + 0.8*|dx|). Each
-  // label carries a bbox (halfW from the width heuristic, halfH =
-  // fontSize/2+1); the first candidate whose (+2px-padded) bbox collides
-  // with neither an already-placed label's bbox nor a sampled obstacle
-  // point wins. Obstacle points within 4px of the label's own anchor are
-  // ignored, so a state's own level bar doesn't disqualify every position
-  // near it. If no candidate is fully clear, falls back to the one with
-  // fewest total collisions (label overlaps + obstacle hits), ties broken
-  // toward the cheapest offset (candidates are scanned in cost order, so
-  // a strict-improvement check is enough). Mutates each label's ``x``/``y``
-  // in place. ──
-  function dodgeLabels(labels, obstacles) {
-    const dys = [0, -5, -10, -15, -20, -25, -30, -35, -40, 5, 10, 15, 20, 25, 30, 35, 40];
-    const dxs = [0, -16, 16, -30, 30];
-    const candidates = [];
-    dys.forEach((dy) => dxs.forEach((dx) => {
-      candidates.push({ dx, dy, cost: Math.abs(dy) + 0.8 * Math.abs(dx) });
-    }));
-    candidates.sort((a, b) => a.cost - b.cost);
-
-    const bboxHalf = (lab) => ({
-      halfW: (lab.width || lab.text.length * lab.fontSize * 0.6) / 2,
-      halfH: lab.fontSize / 2 + 1,
+  // ── label placement (item 1) — one stack per anchor x-column (state
+  // columns and gap midpoints form disjoint x sets, so level and Ea labels
+  // stack independently): sort top-first, spread with stackLabels, then
+  // slide a stack that leaked past a plot edge back inside — shifting,
+  // never squeezing, so the non-overlap and the ordering both survive
+  // (viz._place_level_labels' own recipe). Mutates ``lab.y`` in place;
+  // labels keep their x, and the white text halo (paint-order stroke,
+  // emitted below) keeps them readable over any geometry they cover. ──
+  function placeLabels(labels, plotTop, plotBot) {
+    const cols = {};
+    labels.forEach((lab) => {
+      const k = Math.round(lab.anchorX);
+      (cols[k] = cols[k] || []).push(lab);
     });
-
-    const placed = [];
-    labels.slice().sort((a, b) => a.x - b.x).forEach((lab) => {
-      const baseX = lab.x, baseY = lab.y;
-      const own = bboxHalf(lab);
-      const countCollisions = (cx, cy) => {
-        let n = 0;
-        placed.forEach((p) => {
-          const other = bboxHalf(p);
-          if (Math.abs(cx - p.x) < own.halfW + other.halfW + 2
-            && Math.abs(cy - p.y) < own.halfH + other.halfH + 2) { n += 1; }
-        });
-        obstacles.forEach((o) => {
-          if (Math.abs(o.x - lab.anchorX) < 4 && Math.abs(o.y - lab.anchorY) < 4) { return; }
-          if (Math.abs(o.x - cx) < own.halfW + 2 && Math.abs(o.y - cy) < own.halfH + 2) { n += 1; }
-        });
-        return n;
-      };
-      let best = null;
-      for (let i = 0; i < candidates.length; i++) {
-        const c = candidates[i];
-        const cx = baseX + c.dx, cy = baseY + c.dy;
-        const n = countCollisions(cx, cy);
-        if (n === 0) { best = { cx, cy }; break; }
-        if (!best || n < best.n) { best = { cx, cy, n }; }
+    Object.keys(cols).forEach((k) => {
+      const col = cols[k];
+      col.sort((a, b) => a.y - b.y);  // top first (pixel y grows down)
+      const hs = col.map((l) => l.fontSize + 5);
+      let placed = stackLabels(col.map((l) => l.y), hs, 3);
+      const top = placed[0] - hs[0] / 2;
+      const bot = placed[placed.length - 1] + hs[hs.length - 1] / 2;
+      if (bot - top <= plotBot - plotTop) {
+        let shift = 0;
+        if (top < plotTop) { shift = plotTop - top; }
+        else if (bot > plotBot) { shift = plotBot - bot; }
+        placed = placed.map((p) => p + shift);
       }
-      lab.x = best.cx;
-      lab.y = best.cy;
-      placed.push(lab);
+      col.forEach((l, i) => { l.y = placed[i]; });
     });
   }
 
@@ -761,15 +748,27 @@
     }
 
     // ── deferred label queue (item 1) — level labels and Ea labels are
-    // collected here instead of emitted immediately; a dodge pass
-    // (dodgeLabels, below, after both loops) nudges away collisions before
-    // anything actually becomes SVG text. ``obstacles`` collects sample
-    // points off the drawn data geometry (hump curves, level bars, supply
-    // lines, barrier ticks — see the matching ``sampleSeg`` calls below) so
-    // dodgeLabels can steer labels clear of the artwork too, not just each
-    // other. ──
+    // collected here instead of emitted immediately; placeLabels (above,
+    // run after both loops) spreads each column's stack order-preservingly
+    // before anything actually becomes SVG text. ──
     const labelQueue = [];
-    const obstacles = [];
+
+    // ── path membership — every drawn element records which root->leaf
+    // paths it lies on (data-paths="|0|2|"), the hook applyPathSelection
+    // fades against when the legend selects/hovers a path. A shared prefix
+    // belongs to every path through it, so it stays lit whichever of them
+    // is picked. ──
+    const nodePaths = {}, edgePaths = {};
+    paths.forEach((path, pi) => {
+      path.forEach((id, i) => {
+        (nodePaths[id] = nodePaths[id] || []).push(pi);
+        if (i < path.length - 1) {
+          const k = path[i] + '\u0001' + path[i + 1];
+          (edgePaths[k] = edgePaths[k] || []).push(pi);
+        }
+      });
+    });
+    const pAttr = (list) => ` data-paths="|${(list || []).join('|')}|"`;
 
     // edges — walked per path, in server order (target path first); an
     // edge already drawn by an earlier (higher-priority) path is skipped so
@@ -797,9 +796,8 @@
         // put humps/edges thousands of px off-canvas.
         const x0 = xScale(xOf[e.source]) + half, x1 = xScale(xOf[e.target]) - half;
         if (e.kind === 'supply') {
-          parts.push(`<line x1="${x0}" y1="${py(src.rel_energy)}" x2="${x1}" y2="${py(tgt.rel_energy)}" `
+          parts.push(`<line${pAttr(edgePaths[key])} x1="${x0}" y1="${py(src.rel_energy)}" x2="${x1}" y2="${py(tgt.rel_energy)}" `
             + `stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"/>`);
-          sampleSeg(obstacles, x0, py(src.rel_energy), x1, py(tgt.rel_energy));
           continue;
         }
         const peakY = src.rel_energy + Math.max(e.barrier || 0, 0);
@@ -810,17 +808,12 @@
         // can walk it segment-by-segment instead of re-parsing the string.
         const curvePts = humpPoints(x0, src.rel_energy, x1, tgt.rel_energy, peakY);
         const curve = curvePts.map(([x, y]) => `${x},${py(y)}`).join(' ');
-        parts.push(`<polyline points="${curve}" fill="none" stroke="${color}" stroke-width="2"/>`);
-        for (let ci = 0; ci < curvePts.length - 1; ci++) {
-          const [ax, ay] = curvePts[ci], [bx, by] = curvePts[ci + 1];
-          sampleSeg(obstacles, ax, py(ay), bx, py(by));
-        }
+        parts.push(`<polyline class="pw-seg"${pAttr(edgePaths[key])} points="${curve}" fill="none" stroke="${color}" stroke-width="2" style="cursor:pointer"/>`);
         if ((e.barrier || 0) > 1e-3) {
           const xm = (x0 + x1) / 2;
           const bsd = e.barrier_std || 0;
           if (bsd > 1e-6) {
-            parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
-            sampleSeg(obstacles, xm, py(peakY - bsd), xm, py(peakY + bsd));
+            parts.push(`<line${pAttr(edgePaths[key])} x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
           }
           let lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
           // Fork-probability annotation (slice 3 item 4) — only present
@@ -833,6 +826,7 @@
           labelQueue.push({
             x: xm, y: py(peakY + bsd) - 4, anchorX: xm, anchorY: py(peakY),
             text: lab, fontSize: 7.5, color, bold: false, title: null,
+            paths: edgePaths[key],
           });
         }
       }
@@ -857,9 +851,8 @@
       const ownerColor = PATH_COLORS[(ownerPath[id] || 0) % PATH_COLORS.length];
       if (nd.rel_energy == null) {
         const yFloor = padT + plotH - 4;
-        parts.push(`<line x1="${x0}" y1="${yFloor}" x2="${x1}" y2="${yFloor}" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 4"/>`);
-        sampleSeg(obstacles, x0, yFloor, x1, yFloor);
-        parts.push(`<text x="${(x0 + x1) / 2}" y="${yFloor - 8}" font-size="8" fill="#94a3b8" text-anchor="middle">${esc(nd.id)} (no energy yet)</text>`);
+        parts.push(`<line${pAttr(nodePaths[id])} x1="${x0}" y1="${yFloor}" x2="${x1}" y2="${yFloor}" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 4"/>`);
+        parts.push(`<text${pAttr(nodePaths[id])} x="${(x0 + x1) / 2}" y="${yFloor - 8}" font-size="8" fill="#94a3b8" text-anchor="middle">${esc(nd.id)} (no energy yet)</text>`);
         // click band (item 3) — a fixed-height band centered on THIS
         // state's own placeholder line, not the whole plot height (see the
         // matching comment below — two states sharing an x-column used to
@@ -876,11 +869,10 @@
       const color = (nd.low_confidence || badWarn) ? '#d9534f' : ownerColor;
       const sd = nd.energy_std || 0;
       if (sd > 1e-6) {
-        parts.push(`<rect x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
+        parts.push(`<rect class="pw-sdband"${pAttr(nodePaths[id])} x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
           + `fill="${color}" opacity="0.15"/>`);
       }
-      parts.push(`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`);
-      sampleSeg(obstacles, x0, y, x1, y);
+      parts.push(`<line${pAttr(nodePaths[id])} x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`);
       const warned = !!(nd.low_confidence || badWarn);
       const lab = sd > 1e-6 ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : `${nd.id}`;
       // Tooltip (item 2) — the same joined warning text the States-list
@@ -895,6 +887,7 @@
       labelQueue.push({
         x: (x0 + x1) / 2, y: y - 8, anchorX: (x0 + x1) / 2, anchorY: y,
         text: lab + (warned ? ' ⚠' : ''), fontSize: 8, color, bold: true, title,
+        paths: nodePaths[id],
       });
       // click band (item 3) — a fixed-height band centered on THIS state's
       // own energy level, not the whole plot-height column: two states
@@ -906,27 +899,21 @@
         + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
     });
 
-    // ── label dodge (item 1) — dodgeLabels (above) steers each label clear
-    // of both other labels and the drawn geometry sampled into ``obstacles``
-    // above; a label that ends up farther than 14px (Euclidean, not just
-    // vertical) from its own anchor draws a thin leader line back to it. ──
-    dodgeLabels(labelQueue, obstacles);
+    // ── label placement (item 1) — placeLabels (above) spreads each
+    // column's labels order-preservingly; a label displaced more than 14px
+    // from its own anchor draws a thin leader back to it (order
+    // preservation guarantees leaders within a column never cross). The
+    // white halo (paint-order stroke) keeps text readable over geometry. ──
+    placeLabels(labelQueue, padT + 6, padT + plotH);
     labelQueue.forEach((lab) => {
       const weightAttr = lab.bold ? ' font-weight="bold"' : '';
       const titleEl = lab.title ? `<title>${esc(lab.title)}</title>` : '';
-      parts.push(`<text x="${lab.x}" y="${lab.y}" font-size="${lab.fontSize}"${weightAttr} fill="${lab.color}" text-anchor="middle">${esc(lab.text)}${titleEl}</text>`);
       const dxLead = lab.x - lab.anchorX, dyLead = lab.y - lab.anchorY;
       if (Math.sqrt(dxLead * dxLead + dyLead * dyLead) > 14) {
         const ly = lab.y + (lab.y < lab.anchorY ? 3 : -3);
-        parts.push(`<line x1="${lab.x}" y1="${ly}" x2="${lab.anchorX}" y2="${lab.anchorY}" stroke="#94a3b8" stroke-width="0.5"/>`);
+        parts.push(`<line${pAttr(lab.paths)} x1="${lab.x}" y1="${ly}" x2="${lab.anchorX}" y2="${lab.anchorY}" stroke="#94a3b8" stroke-width="0.5"/>`);
       }
-    });
-
-    // legend — one line per path, top-right, in its colour: "-> <leaf id>".
-    paths.forEach((path, pi) => {
-      const leaf = path[path.length - 1];
-      const color = PATH_COLORS[pi % PATH_COLORS.length];
-      parts.push(`<text x="${W - padR}" y="${padT + 8 + pi * 10}" font-size="7.5" fill="${color}" text-anchor="end">&rarr; ${esc(leaf)}</text>`);
+      parts.push(`<text${pAttr(lab.paths)} x="${lab.x}" y="${lab.y}" font-size="${lab.fontSize}"${weightAttr} fill="${lab.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(lab.text)}${titleEl}</text>`);
     });
 
     // measure traces — a value/twin scale per measure, dashed when its
@@ -934,9 +921,10 @@
     // trace as trusted), solid when every anchor was a scene singleton.
     // x comes off the new per-path xOf map; iterated in state_ids order
     // (V.stateIds) — the states section's own reaction-ordered enumeration.
-    // Legend starts below the path legend so the two never overlap.
+    // (The path legend is the HTML button strip above the SVG now —
+    // buildPathLegend — so the top-right corner belongs to measures alone.)
     let colorIdx = 0;
-    const measureLegendY0 = padT + 8 + paths.length * 10;
+    const measureLegendY0 = padT + 8;
     (V.measures || []).forEach((m) => {
       if (!m.trace_ok) { return; }
       const vals = V.stateIds
@@ -972,6 +960,77 @@
 
     parts.push('</svg>');
     el.innerHTML = parts.join('');
+    buildPathLegend(paths);
+    applyPathSelection();
+    // clicking a hump segment picks its (first) path — same affordance as
+    // the export's drawing-click; level clicks keep selecting the STATE.
+    el.querySelectorAll('.pw-seg').forEach((seg) => {
+      seg.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const m = /\|(\d+)\|/.exec(seg.getAttribute('data-paths') || '');
+        if (m) { togglePathSelection(+m[1]); }
+      });
+    });
+  }
+
+  // ── path selection (legend-as-buttons, mirrors the autocatpath HTML
+  // export): hover a legend row to emphasize its path, click to select it
+  // and fade the rest, click again (or Esc) to clear. One state variable,
+  // one function that paints it — re-applied after every re-render (the U
+  // slider rebuilds the SVG). ──
+  let selectedPath = null;
+
+  function applyPathSelection(hoverPi) {
+    const active = hoverPi != null ? hoverPi : selectedPath;
+    document.querySelectorAll('#pw-diagram [data-paths]').forEach((elm) => {
+      const on = active == null
+        || elm.getAttribute('data-paths').indexOf('|' + active + '|') !== -1;
+      elm.style.opacity = on ? ''
+        : (elm.classList.contains('pw-sdband') ? '0.04' : '0.15');
+    });
+    document.querySelectorAll('.pw-path-btn').forEach((b) => {
+      const on = selectedPath != null && +b.dataset.path === selectedPath;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.classList.toggle('ring-1', on);
+      b.classList.toggle('ring-sky-400', on);
+      b.classList.toggle('bg-sky-50', on);
+    });
+  }
+
+  function togglePathSelection(pi) {
+    selectedPath = (selectedPath === pi) ? null : pi;
+    applyPathSelection();
+  }
+
+  function buildPathLegend(paths) {
+    const host = document.getElementById('pw-path-legend');
+    if (!host || host.childElementCount) { return; }
+    if (!paths || paths.length < 2) { return; }  // one path — nothing to pick
+    paths.forEach((path, pi) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'pw-path-btn flex items-center gap-1.5 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100';
+      b.dataset.path = String(pi);
+      b.setAttribute('aria-pressed', 'false');
+      const color = PATH_COLORS[pi % PATH_COLORS.length];
+      b.innerHTML = `<span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${color}"></span>&rarr; ${esc(path[path.length - 1])}`;
+      b.addEventListener('click', () => togglePathSelection(pi));
+      b.addEventListener('mouseenter', () => applyPathSelection(pi));
+      b.addEventListener('mouseleave', () => applyPathSelection());
+      b.addEventListener('focus', () => applyPathSelection(pi));
+      b.addEventListener('blur', () => applyPathSelection());
+      host.appendChild(b);
+    });
+    const hint = document.createElement('span');
+    hint.className = 'text-[10px] text-slate-400 ml-1';
+    hint.textContent = 'click to isolate a path · Esc to clear';
+    host.appendChild(hint);
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && selectedPath != null) {
+        selectedPath = null;
+        applyPathSelection();
+      }
+    });
   }
 
   // ── selection: a diagram node, a state-list row, or a stepper button all

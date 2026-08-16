@@ -252,10 +252,12 @@ def test_quest_hub_frontier_scatter_renders_points(
     client, runtime, monkeypatch
 ) -> None:
     """Two-or-more measured candidates ⇒ an inline SVG scatter with one
-    ``<circle>`` per plottable candidate, hover ``<title>``, and a clickable
-    ``open_url`` per point. `quest_frontier` is monkeypatched directly (the
-    fake store has no `structure_runs`) — mirrors how `_live_servers` is
-    stubbed in the panels-render test above."""
+    marker group per plottable candidate — a ``<use>`` star for frontier
+    members, a ``<circle>`` for the rest (marker grammar: shape = frontier
+    membership) — a fast-tooltip ``data-tip``, and a clickable ``open_url``
+    per point. `quest_frontier` is monkeypatched directly (the fake store
+    has no `structure_runs`) — mirrors how `_live_servers` is stubbed in
+    the panels-render test above."""
     from precis.quest.frontier import Candidate, FrontierResult
 
     frontier = FrontierResult(
@@ -276,8 +278,11 @@ def test_quest_hub_frontier_scatter_renders_points(
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
     # 3 plottable (frontier + dominated); the unevaluated candidate has no
-    # measures and is excluded.
-    assert resp.text.count("<circle") == 3
+    # measures and is excluded. The two frontier members render as stars,
+    # the dominated one as a circle.
+    assert resp.text.count('class="fs-pt"') == 3
+    assert resp.text.count('<use href="#fs-star"') == 2
+    assert 'data-tip="' in resp.text
     assert "/refs/structure/1" in resp.text
     assert "Fe-N4" in resp.text
     assert "converged" in resp.text

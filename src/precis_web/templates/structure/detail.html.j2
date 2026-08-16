@@ -186,6 +186,18 @@
   </div>
 </div>
 
+{# ── quest context — candidate's quest backlink + pathway compute runs ── #}
+{% if quest_context %}
+<div class="mt-4 text-xs text-slate-500 flex flex-wrap items-center gap-4">
+  {% for q in quest_context.quests %}<span>Candidate in quest:
+    <a class="text-emerald-700 hover:underline" href="/refs/quest/{{ q.ref_id }}">{{ q.title }}</a>
+  </span>{% endfor %}
+  {% if quest_context.pathways %}<span>Pathway runs:
+    {% for pw in quest_context.pathways %}<a class="text-emerald-700 hover:underline" href="/refs/pathway/{{ pw.ref_id }}">#{{ pw.ref_id }} ({{ pw.tier }}{% if pw.barrier is not none %}, {{ '%.2f'|format(pw.barrier) }} eV{% endif %})</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </span>{% endif %}
+</div>
+{% endif %}
+
 {# ── lineage ── #}
 {% if lineage.parents or lineage.children %}
 <div class="mt-4 text-xs text-slate-500 flex flex-wrap items-center gap-4">

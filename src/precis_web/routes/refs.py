@@ -628,6 +628,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             fr.frontier + fr.dominated,
             provisional=fr.provisional,
             open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
+            frontier_ref_ids={c.ref_id for c in fr.frontier},
         )
     except Exception:
         log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
@@ -1475,10 +1476,15 @@ _TIER_RANK: dict[str, int] = {"screening": 0, "neb": 1, "verify": 2}
 _TIER_DEFAULT = "neb"
 
 #: Toggle-control word per tier (item 2's own worked example, "view: screen |
-#: verified") — every non-verify rung reads as "screen" (both ``screening``
-#: and the parked ``neb`` pass are, informally, "the screen"; only ``verify``
-#: gets its own word).
-_TIER_TOGGLE_WORD: dict[str, str] = {"verify": "verified"}
+#: verified"). Every tier gets its OWN word — a screening pathway next to a
+#: neb sibling once rendered "screen | screen" (two identical, undistinguishable
+#: controls), so the parked ``neb`` rung reads as "neb" rather than sharing
+#: "screen" with the thermodynamics-only rung.
+_TIER_TOGGLE_WORD: dict[str, str] = {
+    "screening": "screen",
+    "neb": "neb",
+    "verify": "verified",
+}
 
 #: Preference order when the fallback (no ``refines`` link either way) has
 #: to pick ONE sibling out of possibly several other-tier pathways for the
@@ -1610,11 +1616,12 @@ def _pathway_tier_toggle(
     sibling: dict[str, Any] | None,
     this_meta: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Cross-tier toggle + delta context (item 2): a "view: screen |
-    verified"-style control (ordered low->high fidelity, ``_TIER_RANK`) with
-    the currently-viewed tier as plain text and the sibling as a link to its
-    page — plus, only when exactly one side is verify-tier and BOTH carry a
-    barrier figure, a one-line "verify − screen: +0.12 eV" delta.
+    """Cross-tier toggle + delta context (item 2): a "view: neb |
+    verified"-style control (ordered low->high fidelity, ``_TIER_RANK``,
+    each tier under its own ``_TIER_TOGGLE_WORD``) with the currently-viewed
+    tier as plain text and the sibling as a link to its page — plus, only
+    when exactly one side is verify-tier and BOTH carry a barrier figure, a
+    one-line "verified − neb: +0.12 eV" delta.
     ``None`` when there's no sibling at all (``_pathway_tier_sibling``)."""
     if sibling is None:
         return None
@@ -1627,7 +1634,7 @@ def _pathway_tier_toggle(
     )
     for e in entries:
         tier = str(e["tier"])
-        e["label"] = _TIER_TOGGLE_WORD.get(tier, "screen")
+        e["label"] = _TIER_TOGGLE_WORD.get(tier, tier)
         e["url"] = None if e["current"] else f"/refs/pathway/{e['ref_id']}"
 
     delta_text = None
@@ -1637,9 +1644,11 @@ def _pathway_tier_toggle(
         sib_barrier = _pathway_barrier_figure(sibling["meta"] or {})
         if this_barrier is not None and sib_barrier is not None:
             verify_barrier = this_barrier if this_tier == "verify" else sib_barrier
-            screen_barrier = sib_barrier if this_tier == "verify" else this_barrier
-            delta = verify_barrier - screen_barrier
-            delta_text = f"verify − screen: {delta:+.2f} eV"
+            lower_tier = sibling["tier"] if this_tier == "verify" else this_tier
+            lower_barrier = sib_barrier if this_tier == "verify" else this_barrier
+            lower_word = _TIER_TOGGLE_WORD.get(str(lower_tier), str(lower_tier))
+            delta = verify_barrier - lower_barrier
+            delta_text = f"verified − {lower_word}: {delta:+.2f} eV"
 
     return {"entries": entries, "delta_text": delta_text}
 
