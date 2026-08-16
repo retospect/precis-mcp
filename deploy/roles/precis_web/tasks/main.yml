@@ -77,10 +77,23 @@
 # the migrate task so the pure engine is present when the plugin migration
 # (shipped via precis-mcp's own precis.migrations entry-point) creates the kind.
 # The plist enables it + routes compute to the pinned node (see the template).
+#
+# Gated on the same step-0b preflight as the main install above: on a same-sha
+# redeploy `--refresh-package autocatpath` re-installs the (unchanged) engine
+# from cache, the changed_when fires on uv's "Installed" line, and the notify
+# needlessly bounces com.precis.web — the single biggest line of a no-op deploy
+# (10.9s + a live-service blip, measured 2026-08-16). Safe to gate: the
+# autocatpath pin lives in uv.lock → the constraints file, so a pin bump always
+# rides a new commit → new sha → preflight DIFF → this runs. Out-of-band engine
+# work targets the inference-node GPU venv (playbook 44), not this venv.
+# `-e precis_force_install=true` overrides.
 - name: Install precis-mcp[catalyst] into the MCP venv (pathway kind surface — pulls pure autocatpath)
   when:
     - os_family == "darwin"
     - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+    - >-
+      (precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
