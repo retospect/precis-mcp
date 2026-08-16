@@ -85,10 +85,20 @@ Built (slices 4–5, publish path — POST gated, nothing published):
   re-serialization. CLI-only door (``precis nanopub publish --live``) —
   deliberately no web button.
 - Review-and-sign web surface — ``precis_web/routes/nanopub.py``:
-  ``/nanopub`` queue table, ``/nanopub/fi<id>`` per-hub review page
-  (clickable SVG claim DAG, publish-row side panel, symmetric dispute
-  rendering, one action per state, sign button that signs for real),
-  ``/np/<code>`` serving exact frozen bytes during embargo.
+  ``/nanopub`` queue table, ``/nanopub/tree`` claim forest (compounds
+  nest conjunct atoms / refined claims nest under what they refine,
+  evidence sources as leaves; :func:`.overview.hub_tree`),
+  ``/nanopub/fi<id>`` per-hub review page (clickable SVG claim DAG,
+  publish-row side panel, symmetric dispute rendering, one action per
+  state, sign button that signs for real), ``/np/<code>`` serving exact
+  frozen bytes during embargo.
+- Export appendix — a draft citing a hub whose publish row is
+  signed/anchored/published gets a "Published claim artifacts"
+  end-matter section (frozen AIDA sentence + trusty URI + status) in
+  both exporters, zero draft edits; unminted hubs leave the export
+  byte-identical (``precis.export._nanopub_appendix``, entries fed by
+  the trust tracker's cited-set). First slice of the fi→np surface
+  migration (``docs/backlog/retire-fi-go-nanopub.md``).
 
 Built (registry mirror — dark, nothing pulled):
 
@@ -124,9 +134,10 @@ now sets both ON cluster-wide on the collapsed worker
 (``precis_worker_nanopub_{mirror,ots}`` kill switches — cluster-wide
 because the daily cadence lease is a fleet singleton with no
 eligibility check, so per-host enablement starves the pass). The
-initial ~87k mirror pull is still the manual door; keys are not yet
-generated (``precis nanopub keygen``), and the allowlist starts empty —
-an empty allowlist means nothing is publishable.
+initial ~87k mirror pull is still the manual door; signing keys exist
+(``precis nanopub keygen`` has run — attesting-fingerprint publication
+on ORCID is Reto's pending step), and publication requires an attesting
+allowlist entry — an empty allowlist means nothing is publishable.
 """
 
 from __future__ import annotations

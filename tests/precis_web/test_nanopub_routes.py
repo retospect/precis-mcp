@@ -131,3 +131,50 @@ def test_signoff_door_from_the_web(client: TestClient, runtime_with_store) -> No
     )
     assert resp.status_code == 303
     assert withheld_edges(store, hub) == []
+
+
+def test_tree_nests_conjunct_atom_under_compound(
+    client: TestClient, runtime_with_store
+) -> None:
+    from precis.nanopub.overview import hub_tree
+    from precis.taproot.hub import link_claims
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    compound = _seed_hub(store, "A compound tree claim.", paper, chunk)
+    paper2, chunk2, _sha2 = _seed_paper(store)
+    atom = _seed_hub(store, "An atomic tree claim.", paper2, chunk2)
+    assert link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+
+    roots = hub_tree(store)
+    root_ids = {n.row.ref_id for n in roots}
+    assert compound in root_ids and atom not in root_ids  # atom is nested
+    node = next(n for n in roots if n.row.ref_id == compound)
+    assert [c.row.ref_id for c in node.children] == [atom]
+    assert node.children[0].relation == "conjunct-of"
+    # Evidence papers hang as leaves on both nodes.
+    assert {e.relation for e in node.evidence} == {"corroborates"}
+    assert node.children[0].evidence
+
+    resp = client.get("/nanopub/tree")
+    assert resp.status_code == 200
+    assert f"fi{compound}" in resp.text and f"fi{atom}" in resp.text
+    assert "A compound tree claim." in resp.text
+
+
+def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) -> None:
+    from precis.taproot.hub import link_claims
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    a = _seed_hub(store, "Cycle claim A.", paper, chunk)
+    paper2, chunk2, _sha2 = _seed_paper(store)
+    b = _seed_hub(store, "Cycle claim B.", paper2, chunk2)
+    assert link_claims(store, from_hub_ref_id=a, to_hub_ref_id=b, relation="refines")
+    assert link_claims(store, from_hub_ref_id=b, to_hub_ref_id=a, relation="refines")
+
+    resp = client.get("/nanopub/tree")  # must terminate, not recurse forever
+    assert resp.status_code == 200
+    assert f"fi{a}" in resp.text and f"fi{b}" in resp.text

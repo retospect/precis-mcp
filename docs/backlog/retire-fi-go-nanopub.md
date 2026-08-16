@@ -1,7 +1,6 @@
 ---
 status: draft
 title: retire fi as the claim surface — nanopublications all the way
-blocked-by: nanopub-export-appendix
 ---
 
 # retire fi as the claim surface — nanopublications all the way
@@ -32,7 +31,8 @@ closer to gripes).
   across re-signs (trusty URI changes, row persists), exists pre-
   publication (embargoed claims citable). Export resolves it through
   the same primary-source crawl `[fi]` uses, plus the artifact for the
-  appendix (see `nanopub-export-appendix`, first slice).
+  appendix (first slice — SHIPPED: `precis.export._nanopub_appendix`,
+  "Published claim artifacts" end-matter in both exporters).
 - **Crispness as a mint gate**, not exhortation — extend Layer-A
   schema lint (`src/precis/nanopub/gates.py`): length cap (~200
   chars), no attribution in the assertion ("by X et al.", "The

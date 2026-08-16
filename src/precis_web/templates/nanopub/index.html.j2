@@ -2,13 +2,16 @@
 {% block title %}Nanopubs{% endblock %}
 {% block content %}
 <div class="max-w-6xl mx-auto px-4 py-6 space-y-8">
-  <div>
-    <h1 class="text-xl font-semibold">Nanopub review queue</h1>
-    <p class="text-sm text-slate-400 mt-1">
-      Every claim hub by publish state — derived from publish rows + the
-      drift recompute. Unpublished is a good terminal state, not a
-      backlog to burn down.
-    </p>
+  <div class="flex items-baseline justify-between">
+    <div>
+      <h1 class="text-xl font-semibold">Nanopub review queue</h1>
+      <p class="text-sm text-slate-400 mt-1">
+        Every claim hub by publish state — derived from publish rows + the
+        drift recompute. Unpublished is a good terminal state, not a
+        backlog to burn down.
+      </p>
+    </div>
+    <a class="text-sm text-emerald-400 hover:underline" href="/nanopub/tree">tree view →</a>
   </div>
 
   {% if stuck %}

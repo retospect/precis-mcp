@@ -74,6 +74,27 @@ async def nanopub_index(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/nanopub/tree", response_class=HTMLResponse)
+async def nanopub_tree(request: Request) -> HTMLResponse:
+    """The claim forest: compounds nest their conjunct atoms, refined
+    claims nest under what they refine, evidence sources hang as leaves.
+    Same data family as the queue table — publish rows + links, no new
+    state."""
+    from precis.nanopub import overview
+
+    store = get_store(request)
+    roots = overview.hub_tree(store)
+
+    def _count(nodes: list[Any]) -> int:
+        return sum(1 + _count(n.children) for n in nodes)
+
+    return templates.TemplateResponse(
+        request,
+        "nanopub/tree.html.j2",
+        {"active_tab": "nanopub", "roots": roots, "n_nodes": _count(roots)},
+    )
+
+
 @router.get("/nanopub/fi{hub_id}", response_class=HTMLResponse)
 async def nanopub_hub(request: Request, hub_id: int) -> HTMLResponse:
     store = get_store(request)

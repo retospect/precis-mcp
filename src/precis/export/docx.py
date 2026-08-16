@@ -26,6 +26,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.export._nanopub_appendix import (
+    SECTION_TITLE as _NANOPUB_SECTION_TITLE,
+)
+from precis.export._nanopub_appendix import (
+    published_claim_entries,
+)
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
@@ -332,6 +338,7 @@ def export_docx(
     # the bibliography/end — no-op when nothing was marked. Independent of
     # patent_mode: a finding cite renders (and can be marked) either way.
     _append_unverified_claims(doc, ctx)
+    _append_published_claims(doc, ctx)
     if not ctx.patent_mode:
         # A patent specification cites prior art in-text — no References list.
         _append_references(doc, ctx)
@@ -937,3 +944,20 @@ def _append_unverified_claims(doc: Any, ctx: _Ctx) -> None:
         p = doc.add_paragraph()
         p.add_run(f"{title} ").bold = True
         p.add_run(f"({tag}){detail}")
+
+
+def _append_published_claims(doc: Any, ctx: _Ctx) -> None:
+    """A "Published claim artifacts" section — one entry per cited claim
+    hub whose nanopub publish row is minted, mirroring
+    :func:`precis.export.latex.build_published_claims_section`. No-op when
+    nothing cited is minted. Entries (and the status wording) are shared
+    via :func:`precis.export._nanopub_appendix.published_claim_entries`."""
+    entries = published_claim_entries(ctx.store, ctx.trust)
+    if not entries:
+        return
+    doc.add_heading(_NANOPUB_SECTION_TITLE, level=1)
+    for e in entries:
+        p = doc.add_paragraph()
+        p.add_run(f"“{e.sentence}”").bold = True
+        p = doc.add_paragraph()
+        p.add_run(f"{e.trusty_uri} — {e.status_text}")

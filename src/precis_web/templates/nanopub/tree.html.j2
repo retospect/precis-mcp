@@ -1,0 +1,81 @@
+{% extends "base.html.j2" %}
+{% block title %}Nanopub tree{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-baseline justify-between">
+    <div>
+      <h1 class="text-xl font-semibold">Nanopub claim tree</h1>
+      <p class="text-sm text-slate-400 mt-1">
+        Compounds nest their conjunct atoms, refined claims nest under what
+        they refine; evidence sources hang as leaves.
+        {{ n_nodes }} hub{{ 's' if n_nodes != 1 }} in the forest.
+      </p>
+    </div>
+    <a class="text-sm text-emerald-400 hover:underline" href="/nanopub">queue table →</a>
+  </div>
+
+  {% macro state_badge(r) %}
+  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0
+    {% if r.disputed %}bg-rose-900/60 text-rose-200
+    {% elif r.state == 'published' %}bg-emerald-900/60 text-emerald-200
+    {% elif r.state in ('signed', 'anchored') %}bg-sky-900/60 text-sky-200
+    {% elif r.state %}bg-slate-700 text-slate-200
+    {% else %}bg-slate-800 text-slate-500{% endif %}">
+    {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
+  </span>
+  {% endmacro %}
+
+  {% macro node(n) %}
+  <li class="mt-1">
+    <details {% if n.children %}open{% endif %} class="group">
+      <summary class="flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-800/40
+                      {% if not n.children and not n.evidence %}pointer-events-none{% endif %}">
+        {% if n.children or n.evidence %}
+        <span class="text-slate-500 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
+        {% else %}
+        <span class="w-3"></span>
+        {% endif %}
+        {{ state_badge(n.row) }}
+        {% if n.relation %}
+        <span class="text-xs text-slate-500 shrink-0">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
+        {% endif %}
+        <a class="font-mono text-xs text-emerald-400 hover:underline shrink-0"
+           href="/nanopub/fi{{ n.row.ref_id }}">fi{{ n.row.ref_id }}</a>
+        <span class="text-sm truncate" title="{{ n.row.title }}">{{ n.row.title }}</span>
+        {% if n.row.trusty_uri %}
+        <span class="font-mono text-xs text-slate-500 shrink-0"
+              title="{{ n.row.trusty_uri }}">{{ n.row.trusty_uri.rsplit('/', 1)[-1][:14] }}…</span>
+        {% endif %}
+        {% if n.row.drifted %}<span class="text-xs text-amber-400 shrink-0">drifted</span>{% endif %}
+      </summary>
+      {% if n.evidence or n.children %}
+      <ul class="ml-6 border-l border-slate-800 pl-3">
+        {% for e in n.evidence %}
+        <li class="mt-0.5 flex items-center gap-2 px-2 py-0.5 text-xs text-slate-400">
+          <span class="w-3"></span>
+          <span class="font-mono px-1 rounded
+            {% if e.relation == 'contradicts' %}bg-rose-900/40 text-rose-300
+            {% elif e.relation == 'establishes' %}bg-emerald-900/40 text-emerald-300
+            {% else %}bg-slate-800 text-slate-400{% endif %}">{{ e.relation }}</span>
+          <a class="truncate hover:underline"
+             href="{% if e.kind == 'finding' %}/nanopub/fi{{ e.ref_id }}{% else %}/refs/{{ e.ref_id }}{% endif %}"
+             title="{{ e.title }}">{{ e.title }}</a>
+          <span class="text-slate-600 shrink-0">{{ e.kind }}</span>
+        </li>
+        {% endfor %}
+        {% for c in n.children %}{{ node(c) }}{% endfor %}
+      </ul>
+      {% endif %}
+    </details>
+  </li>
+  {% endmacro %}
+
+  {% if roots %}
+  <ul>
+    {% for n in roots %}{{ node(n) }}{% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-sm text-slate-500">No claim hubs yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

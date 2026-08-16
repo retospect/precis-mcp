@@ -70,6 +70,13 @@ class TrustTracker:
     #: export-record payload (§2).
     overridden: dict[int, dict[str, Any]] = field(default_factory=dict)
 
+    @property
+    def cited(self) -> list[int]:
+        """Every finding this export resolved a cite for, in
+        first-citation order — the cache keys double as the cited-set
+        (used by the nanopub appendix, :mod:`._nanopub_appendix`)."""
+        return list(self._cache)
+
     def resolve(self, finding_ref_id: int) -> TrustState:
         """The finding's :class:`TrustState`, resolved once and cached.
         Also records it into :attr:`marks` / :attr:`overridden` as

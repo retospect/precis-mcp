@@ -71,6 +71,141 @@ class HubOverviewRow:
         return ""
 
 
+@dataclass(frozen=True, slots=True)
+class TreeEvidence:
+    """One evidence leaf under a tree node: a grounding source ref and
+    the edge role (``establishes``/``corroborates``/``contradicts``
+    inbound, ``derived-from`` outbound — prod carries both shapes)."""
+
+    ref_id: int
+    title: str
+    kind: str
+    relation: str
+
+
+@dataclass(frozen=True, slots=True)
+class HubTreeNode:
+    """One claim hub in the browse tree: its overview row, the claim-link
+    relation to its parent (``''`` for a root), nested child hubs
+    (inbound ``conjunct-of``/``refines`` sources), and evidence leaves."""
+
+    row: HubOverviewRow
+    relation: str
+    children: list[HubTreeNode]
+    evidence: list[TreeEvidence]
+
+
+def hub_tree(store: Store) -> list[HubTreeNode]:
+    """Every live claim hub as a forest for the ``/nanopub/tree`` browse
+    view: a compound nests its conjunct atoms, a refined claim nests
+    under what it refines, and each node carries its evidence sources as
+    leaves. Roots = hubs that are nobody's atom/refinement; a hub linked
+    into several parents appears under each (the links form a DAG); a
+    cycle — advisory links, so possible — is cut rather than recursed.
+    Root order follows :func:`hub_rows` (disputed first)."""
+    rows = hub_rows(store)
+    by_id = {r.ref_id: r for r in rows}
+    ids = list(by_id)
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        claim_edges = conn.execute(
+            """
+            SELECT l.src_ref_id, l.dst_ref_id, l.relation
+              FROM links l
+             WHERE l.relation = ANY(%(rels)s)
+               AND l.src_ref_id = ANY(%(ids)s)
+               AND l.dst_ref_id = ANY(%(ids)s)
+            """,
+            {"rels": ["conjunct-of", "refines"], "ids": ids},
+        ).fetchall()
+        # Support edges come from sources (papers etc.), but a
+        # ``contradicts`` edge may come from another claim hub — the same
+        # shape the ``disputed`` flag counts — so finding-kind sources are
+        # kept for that relation only (the "◆ blocked" badge must never
+        # appear with its cause invisible).
+        inbound = conn.execute(
+            """
+            SELECT l.dst_ref_id, l.src_ref_id, l.relation, p.title, p.kind
+              FROM links l
+              JOIN refs p ON p.ref_id = l.src_ref_id
+                         AND p.deleted_at IS NULL
+                         AND (p.kind != 'finding' OR l.relation = 'contradicts')
+             WHERE l.dst_ref_id = ANY(%(ids)s)
+               AND l.relation IN ('establishes', 'corroborates', 'contradicts')
+            """,
+            {"ids": ids},
+        ).fetchall()
+        outbound = conn.execute(
+            """
+            SELECT l.src_ref_id, l.dst_ref_id, p.title, p.kind
+              FROM links l
+              JOIN refs p ON p.ref_id = l.dst_ref_id
+                         AND p.deleted_at IS NULL AND p.kind != 'finding'
+             WHERE l.src_ref_id = ANY(%(ids)s)
+               AND l.relation = 'derived-from'
+            """,
+            {"ids": ids},
+        ).fetchall()
+
+    evidence: dict[int, list[TreeEvidence]] = {}
+    seen_ev: set[tuple[int, int, str]] = set()
+
+    def _leaf(hub_id: int, ref_id: int, rel: str, title: str, kind: str) -> None:
+        key = (hub_id, ref_id, rel)
+        if key in seen_ev:
+            return
+        seen_ev.add(key)
+        evidence.setdefault(hub_id, []).append(
+            TreeEvidence(
+                ref_id=int(ref_id),
+                title=str(title or f"ref {ref_id}"),
+                kind=str(kind),
+                relation=rel,
+            )
+        )
+
+    for hub_id, ref_id, rel, title, kind in inbound:
+        _leaf(int(hub_id), ref_id, str(rel), title, kind)
+    for hub_id, ref_id, title, kind in outbound:
+        _leaf(int(hub_id), ref_id, "derived-from", title, kind)
+
+    kids: dict[int, list[tuple[str, int]]] = {}
+    child_ids: set[int] = set()
+    for src, dst, rel in claim_edges:
+        kids.setdefault(int(dst), []).append((str(rel), int(src)))
+        child_ids.add(int(src))
+
+    reached: set[int] = set()
+
+    def _build(hub_id: int, relation: str, path: frozenset[int]) -> HubTreeNode:
+        reached.add(hub_id)
+        children = [
+            _build(cid, rel, path | {cid})
+            for rel, cid in sorted(kids.get(hub_id, []))
+            if cid not in path
+        ]
+        return HubTreeNode(
+            row=by_id[hub_id],
+            relation=relation,
+            children=children,
+            evidence=evidence.get(hub_id, []),
+        )
+
+    roots = [
+        _build(r.ref_id, "", frozenset({r.ref_id}))
+        for r in rows
+        if r.ref_id not in child_ids
+    ]
+    # A pure cycle has no parentless member, so nothing above reaches it —
+    # promote one member per unreached cycle to a root rather than
+    # dropping the whole loop from the forest.
+    for r in rows:
+        if r.ref_id not in reached:
+            roots.append(_build(r.ref_id, "", frozenset({r.ref_id})))
+    return roots
+
+
 def hub_rows(store: Store) -> list[HubOverviewRow]:
     """Every live ``TAPROOT:claim`` hub with its publish posture, one
     query. Disputed first (oldest dispute on top), then by state age."""

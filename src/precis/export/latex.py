@@ -36,6 +36,12 @@ from typing import TYPE_CHECKING, Any
 
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
+from precis.export._nanopub_appendix import (
+    SECTION_TITLE as _NANOPUB_SECTION_TITLE,
+)
+from precis.export._nanopub_appendix import (
+    published_claim_entries,
+)
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
@@ -1205,6 +1211,26 @@ def build_unverified_claims_section(trust: Any) -> str:
     return "\n".join(lines)
 
 
+def build_published_claims_section(store: Any, trust: Any) -> str:
+    """An unnumbered "Published claim artifacts" end-matter section — one
+    entry per cited claim hub whose nanopub publish row is minted
+    (signed/anchored/published): the frozen AIDA sentence, the trusty
+    URI, and the shared status wording. Empty string when nothing cited
+    is minted, so nanopub-free drafts export byte-identically. Entries
+    come from :func:`precis.export._nanopub_appendix.published_claim_entries`,
+    shared with the docx exporter."""
+    entries = published_claim_entries(store, trust)
+    if not entries:
+        return ""
+    lines = [f"\\section*{{{_NANOPUB_SECTION_TITLE}}}", ""]
+    for e in entries:
+        lines.append(
+            f"\\par\\noindent ``{_tex(e.sentence)}''\\\\"
+            f"\\url{{{e.trusty_uri}}} --- {_tex(e.status_text)}"
+        )
+    return "\n".join(lines)
+
+
 def assemble_document(
     *,
     title: str,
@@ -1215,6 +1241,7 @@ def assemble_document(
     doc_type: str = "",
     remarkable: bool = False,
     unverified_section: str = "",
+    published_section: str = "",
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
@@ -1233,7 +1260,9 @@ def assemble_document(
     ``unverified_section`` (:func:`build_unverified_claims_section`) is an
     optional pre-rendered "Unverified claims" block placed BEFORE the
     bibliography — empty when the export marked nothing, so an all-clean
-    draft's output is unchanged (AC 6).
+    draft's output is unchanged (AC 6). ``published_section``
+    (:func:`build_published_claims_section`) sits right after it, same
+    empty-means-absent contract.
     """
     patent_mode = doc_type == _PATENT_DOC_TYPE
     parts = [
@@ -1262,6 +1291,8 @@ def assemble_document(
     ]
     if unverified_section:
         parts += ["", unverified_section]
+    if published_section:
+        parts += ["", published_section]
     if not patent_mode:
         parts.append("\\printbibliography")
     if appendix:
@@ -1342,6 +1373,7 @@ def export_draft(
         )
 
     unverified_tex = build_unverified_claims_section(rendered.trust)
+    published_tex = build_published_claims_section(store, rendered.trust)
     main_tex = assemble_document(
         title=title,
         author_block=author_block,
@@ -1351,6 +1383,7 @@ def export_draft(
         doc_type=doc_type,
         remarkable=remarkable,
         unverified_section=unverified_tex,
+        published_section=published_tex,
     )
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
@@ -1395,6 +1428,7 @@ __all__ = [
     "build_acronyms",
     "build_author_block",
     "build_bib",
+    "build_published_claims_section",
     "build_source_appendix",
     "build_unverified_claims_section",
     "export_draft",
