@@ -58,7 +58,7 @@
             {% elif e.relation == 'establishes' %}bg-emerald-900/40 text-emerald-300
             {% else %}bg-slate-800 text-slate-400{% endif %}">{{ e.relation }}</span>
           <a class="truncate hover:underline"
-             href="{% if e.kind == 'finding' %}/nanopub/fi{{ e.ref_id }}{% else %}/refs/{{ e.ref_id }}{% endif %}"
+             href="{% if e.kind == 'finding' %}/nanopub/fi{{ e.ref_id }}{% elif e.kind == 'paper' %}/papers/{{ e.ref_id }}{% else %}/refs/{{ e.kind }}/{{ e.ref_id }}{% endif %}"
              title="{{ e.title }}">{{ e.title }}</a>
           <span class="text-slate-600 shrink-0">{{ e.kind }}</span>
         </li>

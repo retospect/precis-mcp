@@ -405,7 +405,7 @@ def _graph(store: Any, bundle: Any, row: Any) -> dict[str, Any]:
                     "links": (
                         [["DOI", f"https://doi.org/{src.doi}"]] if src.doi else []
                     )
-                    + [["paper page", f"/refs/{src.ref_id}"]],
+                    + [["paper page", f"/papers/{src.ref_id}"]],
                 },
             }
         )

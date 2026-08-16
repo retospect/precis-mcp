@@ -162,6 +162,10 @@ def test_tree_nests_conjunct_atom_under_compound(
     assert resp.status_code == 200
     assert f"fi{compound}" in resp.text and f"fi{atom}" in resp.text
     assert "A compound tree claim." in resp.text
+    # Evidence leaves link to the paper reader, not the kindless
+    # /refs/<id> shape (which 400s).
+    assert f"/papers/{paper}" in resp.text
+    assert f"/refs/{paper}" not in resp.text
 
 
 def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) -> None:
