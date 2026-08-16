@@ -72,6 +72,14 @@ ordering, and this item should reuse that accumulator pattern.
   Zenodo optional) — discussion sent 2026-08-16, unanswered.
 - Pareto matplotlib twin lives in autocatpath (engine owns grammar) or
   precis.quest (frontier data lives here)?
-- PDF-embedded attachment (`\attachfile`) in addition to the sidecar,
-  or sidecar-only (viewer support for attachments is uneven)?
+- ~~PDF-embedded attachment vs sidecar-only~~ **DECIDED (Reto,
+  2026-08-16): embed the JSON in the PDF as an attached file
+  (PDF/A-3 associated-file style, LaTeX `embedfile`; extract via
+  `pdfdetach`) AND keep the `anc/` sidecar.** Rationale: embedding
+  survives self-distribution and arXiv (happens at compile time from
+  our own source); publisher re-typesetting strips attachments/XMP, so
+  the sidecar remains the canonical copy source. XMP rejected
+  (invisible, tool-only, most likely stream to be rewritten). Three
+  carriers, cheapest→most durable: printed appendix, embedded JSON,
+  sidecar + optional Zenodo DOI.
 - Appendix font size: 7 pt vs 8 pt (both above journal floors).
