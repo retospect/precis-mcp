@@ -106,6 +106,12 @@ def test_pdf_sha_alias_row_does_not_block_mint(store: Any) -> None:
     # refs.pdf_sha256 pins the held copy; alias rows only index dedup.
     paper, chunk, sha = _seed_paper(store)
     with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 1, %s) "
+            "ON CONFLICT DO NOTHING",
+            (sha, sha, f"/tmp/{sha}.pdf"),
+        )
         conn.execute("UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, paper))
         conn.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
