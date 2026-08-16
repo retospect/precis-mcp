@@ -31,8 +31,12 @@ if [ -d /secrets ]; then
     done
 fi
 
-# Validate required secrets
-if [ -z "$PRECIS_DATABASE_URL" ]; then
+# Validate required secrets — only for `precis …` invocations. Agent runs
+# (`claude -p …` in the precis-agent image, which shares this entrypoint) are
+# deliberately DB-less: diagnose_gripe/fix_gripe forward no DSN at all
+# (workers/executors/agent_container.py::container_env), so an unconditional
+# check here killed every such run before claude even started (job 210205).
+if [ "${1:-}" = "precis" ] && [ -z "$PRECIS_DATABASE_URL" ]; then
     echo "[entrypoint] ERROR: PRECIS_DATABASE_URL not set" >&2
     exit 1
 fi
