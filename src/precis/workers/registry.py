@@ -848,6 +848,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        name="paper_rank",
+        label="Paper reading-priority rank",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_PAPER_RANK",
+        cost_sources=("paper_rank",),
+        one_line="Deterministic five-signal reading-priority score "
+        "(feynman PaperRank port) written to refs.meta['paper_rank'].",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="classify_topics",
         label="Topic-dossier classifier cascade",
         category="discovery",

@@ -254,6 +254,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_classify_pass": PassBand.BACKGROUND,
     "_llm_reconcile_pass": PassBand.BACKGROUND,
     "_paper_glossary_pass": PassBand.BACKGROUND,
+    "_paper_rank_pass": PassBand.BACKGROUND,
     "_classify_topics_pass": PassBand.BACKGROUND,
     "_axis_pass": PassBand.BACKGROUND,
     "_mail_poll_pass": PassBand.BACKGROUND,
@@ -1405,6 +1406,34 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_paper_glossary_pass)
+
+        # paper_rank — deterministic five-signal reading-priority score per
+        # `kind='paper'` ref, written to `meta.paper_rank` (feynman PaperRank
+        # port; docs/backlog/feynman-paperrank-pass.md). Pure Python/SQL, no
+        # LLM/network/embedder. Global-batch shape (NOT a per-ref claim):
+        # each tick recomputes corpus-wide normalizers + a citation-graph
+        # PageRank pass, then (re)writes only papers whose stored version is
+        # stale, whose marker fingerprint (body-chunk-count:abstract-length)
+        # changed, or whose recomputed composite has drifted > 0.5 from the
+        # stored value. Default-OFF (`service prio` or --only paper_rank —
+        # §L retired PRECIS_PAPER_RANK as the live gate): a corpus-wide
+        # backfill is a deliberate, node-targeted batch, like bib_retag. See
+        # workers/paper_rank.py.
+        if _register("paper_rank"):
+            from precis.workers.runner import BatchResult as _PrBatchResult
+
+            def _paper_rank_pass(batch_size: int) -> _PrBatchResult:
+                from precis.workers.paper_rank import run_paper_rank_pass
+
+                r = run_paper_rank_pass(store, batch_size=batch_size)
+                return _PrBatchResult(
+                    handler="paper_rank",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_paper_rank_pass)
 
         # classify_topics — paper→topic-dossier cascade (per-topic
         # gating per-topic classify gating). Tier-0 free keyword screen, tier-1 cheap local
