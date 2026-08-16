@@ -60,6 +60,38 @@ async def nanopub_index(request: Request) -> HTMLResponse:
     batches = store.nanopub_batches()
     threshold = datetime.now(UTC) - timedelta(days=STUCK_PENDING_DAYS)
     stuck = [b for b in store.nanopub_pending_batches() if b.created_at < threshold]
+
+    # Same click-to-inspect detail shape as /nanopub/tree.
+    detail: dict[str, Any] = {}
+    for r in rows:
+        fields = [["state", r.state or "unminted"], ["frozen", r.frozen or "—"]]
+        if r.disputed_since:
+            fields.append(["disputed since", r.disputed_since.strftime("%Y-%m-%d")])
+        if r.withheld_count:
+            fields.append(["withheld edges", str(r.withheld_count)])
+        if r.drifted:
+            fields.append(["drifted", "frozen string ≠ live title"])
+        if r.approved_title and r.approved_title != r.title:
+            fields.append(["approved", r.approved_title])
+        if r.trusty_uri:
+            fields.append(["trusty", r.trusty_uri])
+        if r.batch_id:
+            fields.append(["batch", str(r.batch_id)])
+        if r.updated_at:
+            fields.append(["updated", r.updated_at.strftime("%Y-%m-%d")])
+        links = [
+            ["open claim page →", f"/nanopub/fi{r.ref_id}"],
+            ["tree view", "/nanopub/tree"],
+        ]
+        if r.trusty_uri:
+            links.append(["TriG bytes", f"/np/{r.trusty_uri.rsplit('/', 1)[-1]}"])
+        detail[f"h{r.ref_id}"] = {
+            "kind": "claim hub",
+            "title": r.title,
+            "fields": fields,
+            "links": links,
+        }
+
     return templates.TemplateResponse(
         request,
         "nanopub/index.html.j2",
@@ -70,6 +102,7 @@ async def nanopub_index(request: Request) -> HTMLResponse:
             "unminted": unminted,
             "batches": batches,
             "stuck": stuck,
+            "detail": detail,
         },
     )
 

@@ -40,6 +40,9 @@ def test_queue_table_buckets_and_flags(client: TestClient, runtime_with_store) -
     assert resp.status_code == 200
     assert f"fi{hub}" in resp.text
     assert "unminted" in resp.text
+    # Queue rows carry the click-detail panel wiring too.
+    assert "NP_DETAIL" in resp.text
+    assert f'data-np="h{hub}"' in resp.text
 
 
 def test_hub_page_shows_state_and_action(

@@ -153,6 +153,27 @@ def run_mint_gates(
             )
         )
 
+    # Acquisition-marker hearsay gate (2026-08-16 intro-gap fix): a hub
+    # whose own prose says the primary source was never ingested cannot
+    # be grounded in a *citing* paper's text — section-path matching
+    # alone misses intros. Hanging mints (no passages) stay allowed:
+    # that IS the designed path while the paper hunt runs.
+    if passages:
+        marked = ev.ACQUISITION_MARKER.search(
+            bundle.body
+        ) or ev.ACQUISITION_MARKER.search(bundle.sentence)
+        if marked:
+            violations.append(
+                GateViolation(
+                    "primary-source",
+                    f"hub carries a needs-acquisition marker "
+                    f"({marked.group(0)!r}) — its primary source is "
+                    "explicitly not in the corpus, so any grounding passage "
+                    "is secondhand; acquire the primary and re-ground, or "
+                    "mint explicitly hanging",
+                )
+            )
+
     # Per-passage gates (3, 4, 8, and the 2026-08-15 hearsay gate).
     for i, passage in enumerate(passages, start=1):
         violations += _check_passage(store, i, passage)
@@ -259,6 +280,23 @@ def _check_passage(
                 "secondhand grounding is invalid even when the quote checks "
                 "out; hunt the paper that DID the work (the claim may stay "
                 "hanging meanwhile)",
+            )
+        )
+
+    # Citation-marker hearsay gate (2026-08-16 intro-gap fix): a quote
+    # that itself carries a citation marker attributes its fact to
+    # another work — hearsay whatever section it sits in. If the fact is
+    # this paper's own result, trim the quote to the bare assertion.
+    markers = ev.citation_markers(quote)
+    if markers:
+        out.append(
+            GateViolation(
+                "primary-source",
+                f"{label}: quote carries citation marker(s) "
+                f"{', '.join(repr(m) for m in markers[:3])} — the quoted "
+                "sentence attributes its fact to another work; if it is "
+                "this paper's own result, trim the quote to the assertion "
+                "itself, otherwise hunt the cited primary",
             )
         )
 

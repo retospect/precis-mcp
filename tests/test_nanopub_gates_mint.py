@@ -111,6 +111,65 @@ def test_hearsay_section_grounding_is_rejected(store: Any) -> None:
         assert "primary-source" in _gate_slugs(store, hub2, _payload(chunk2))
 
 
+def test_quote_citation_marker_is_rejected(store: Any) -> None:
+    # The fi19981/fi19987 class: an intro chunk citing the primary work
+    # slips past the section-path gate ("intro" isn't hearsay-listed),
+    # but the quote's own citation marker gives the attribution away.
+    for quoted in (
+        "Moore observed that transistor counts double every year [12]",
+        "graphene shows very high carrier mobility (Novoselov et al. 2004)",
+    ):
+        paper, chunk, _sha = _seed_paper(
+            store,
+            chunk_text=f"Intro prose. {quoted}, as is well known.",
+            section=["I. Introduction"],
+        )
+        hub = _seed_hub(store, "A cited-marker claim.", paper, chunk)
+        payload = _payload(chunk, fields={})
+        payload["passages"][0]["quote"] = quoted
+        payload["passages"][0]["snip"] = "as is well known"
+        slugs = _gate_slugs(store, hub, payload)
+        assert "primary-source" in slugs
+        assert "quote-verbatim" not in slugs  # only the marker is at fault
+
+
+def test_miller_index_bracket_is_not_a_citation(store: Any) -> None:
+    quoted = "growth proceeds along the [100] direction with 3:1 anisotropy"
+    paper, chunk, _sha = _seed_paper(
+        store,
+        chunk_text=f"Our results. {quoted}, we find.",
+        section=["III. Results"],
+    )
+    hub = _seed_hub(store, "A crystallographic claim.", paper, chunk)
+    payload = _payload(chunk, fields={})
+    payload["passages"][0]["quote"] = quoted
+    payload["passages"][0]["snip"] = "we find"
+    assert "primary-source" not in _gate_slugs(store, hub, payload)
+
+
+def test_acquisition_marked_hub_rejects_grounded_mint(store: Any) -> None:
+    # Harvester wrote "Paper not in corpus — needs acquisition." into the
+    # finding body: grounding it in a *citing* paper is hearsay whatever
+    # section the chunk sits in; explicitly hanging stays allowed.
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A secondhand claim.", paper, chunk)
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'finding_body'",
+            (hub,),
+        ).rowcount
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+            "VALUES (%s, 'system', 0, 'finding_body', "
+            "'A secondhand claim. Paper not in corpus — needs acquisition.')",
+            (hub,),
+        )
+    assert n == 1  # the marker replaced the real body chunk, not thin air
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk))
+    hanging = {"passages": [], "hanging": True}
+    assert "primary-source" not in _gate_slugs(store, hub, hanging)
+
+
 def test_paraphrase_quote_fails_verbatim_gate(store: Any) -> None:
     paper, chunk, sha = _seed_paper(store)
     hub = _seed_hub(store, "MOFs are anisotropic.", paper, chunk)

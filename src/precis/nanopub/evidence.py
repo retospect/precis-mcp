@@ -42,6 +42,43 @@ HEARSAY_SECTION = re.compile(
     re.IGNORECASE,
 )
 
+#: Harvester prose marking a claim whose primary source was never
+#: ingested ("Paper not in corpus — needs acquisition."). Grounding such
+#: a claim in a *citing* paper's text is hearsay whatever section the
+#: chunk sits in — the intro-gap fix (fi19981/fi19987 precedent):
+#: section-path matching alone misses intros, where papers cite prior
+#: work most.
+ACQUISITION_MARKER = re.compile(
+    r"not (?:yet )?in (?:the )?corpus|needs? acquisition", re.IGNORECASE
+)
+
+#: In-quote citation markers — a quoted sentence that itself carries a
+#: ``[12]`` / ``(Moore, 1965)`` marker is attributing its fact to
+#: another work, so it cannot serve as primary grounding.
+_NUMERIC_CITE = re.compile(r"\[\d{1,3}(?:\s*[,;–—-]\s*\d{1,3})*\]")
+_AUTHOR_YEAR_CITE = re.compile(
+    r"\((?:e\.g\.,?\s*)?[A-Z][\w'’-]+"
+    r"(?:\s+(?:et al\.?|and\s+[A-Z][\w'’-]+|&\s*[A-Z][\w'’-]+))?"
+    r",?\s+(?:1[789]|20)\d{2}[a-z]?\)"
+)
+_MILLER_INDEX = re.compile(r"^\[[0-2]{3,4}\]$")
+
+
+def citation_markers(text: str) -> list[str]:
+    """Citation markers found in ``text``: numeric brackets (``[12]``,
+    ``[3,4]``, ``[1-5]``) and author–year parens (``(Moore, 1965)``,
+    ``(Xia et al. 2019)``). Crystallographic Miller-index lookalikes
+    (``[100]``, ``[111]``, ``[0001]`` — digits 0–2 only) are exempt:
+    in a nano corpus they are directions, not references, and the rare
+    citation number they shadow is an acceptable recall loss."""
+    hits = [
+        m.group(0)
+        for m in _NUMERIC_CITE.finditer(text)
+        if not _MILLER_INDEX.match(m.group(0))
+    ]
+    hits += [m.group(0) for m in _AUTHOR_YEAR_CITE.finditer(text)]
+    return hits
+
 
 @dataclass(frozen=True, slots=True)
 class ChunkInfo:
@@ -91,6 +128,10 @@ class HubBundle:
     conjunct_atoms: list[tuple[int, str]] = field(default_factory=list)
     #: Evidence sources whose stored relation is a live `contradicts`.
     contradicts: list[EvidenceSource] = field(default_factory=list)
+    #: The hub's ``finding_body`` chunk text ('' when absent) — the
+    #: acquisition-marker gate reads it (title alone misses the
+    #: harvester's "not in corpus" note).
+    body: str = ""
 
 
 def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
@@ -166,6 +207,14 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
 
     grounding_chunks = _resolve_grounding(store, evidence.grounding)
 
+    with store.pool.connection() as conn:
+        body_row = conn.execute(
+            "SELECT text FROM chunks "
+            "WHERE ref_id = %s AND chunk_kind = 'finding_body' "
+            "ORDER BY ord LIMIT 1",
+            (hub_ref_id,),
+        ).fetchone()
+
     return HubBundle(
         hub_ref_id=hub_ref_id,
         sentence=hub_ref.title,
@@ -174,6 +223,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
         grounding_chunks=grounding_chunks,
         conjunct_atoms=atoms,
         contradicts=contradicts,
+        body=str(body_row[0]) if body_row is not None else "",
     )
 
 

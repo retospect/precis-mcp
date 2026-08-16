@@ -41,7 +41,8 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr class="border-b border-slate-800 hover:bg-slate-800/40">
+        <tr class="tree-node border-b border-slate-800 hover:bg-slate-800/40 cursor-pointer"
+            data-np="h{{ r.ref_id }}">
           <td class="py-2 pr-4 font-mono whitespace-nowrap">
             <a class="text-emerald-400 hover:underline" href="/nanopub/fi{{ r.ref_id }}">fi{{ r.ref_id }}</a>
           </td>
@@ -71,26 +72,36 @@
   {% endif %}
   {% endmacro %}
 
-  <section>
-    <h2 class="text-sm font-semibold uppercase tracking-wide text-rose-300 mb-2">
-      ◆ Disputed — adjudicate first (oldest on top)
-    </h2>
-    {{ hub_table(disputed, "No live contradicts edges — nothing disputed.") }}
-  </section>
+  <div class="lg:grid lg:grid-cols-3 lg:gap-6">
+    <div class="lg:col-span-2 min-w-0 space-y-8">
+      <section>
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-rose-300 mb-2">
+          ◆ Disputed — adjudicate first (oldest on top)
+        </h2>
+        {{ hub_table(disputed, "No live contradicts edges — nothing disputed.") }}
+      </section>
 
-  <section>
-    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-300 mb-2">
-      In the pipeline
-    </h2>
-    {{ hub_table(live, "No publish rows yet — approve a hub from its review page.") }}
-  </section>
+      <section>
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-300 mb-2">
+          In the pipeline
+        </h2>
+        {{ hub_table(live, "No publish rows yet — approve a hub from its review page.") }}
+      </section>
 
-  <section>
-    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
-      Unminted hubs
-    </h2>
-    {{ hub_table(unminted, "Every claim hub has a publish row.") }}
-  </section>
+      <section>
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
+          Unminted hubs
+        </h2>
+        {{ hub_table(unminted, "Every claim hub has a publish row.") }}
+      </section>
+    </div>
+    <div class="mt-6 lg:mt-0">
+      <div id="np-detail"
+           class="lg:sticky lg:top-4 rounded-md border border-slate-700 bg-slate-800/40 p-4 text-sm">
+        <p class="text-slate-500 text-xs">Click a row to inspect it here.</p>
+      </div>
+    </div>
+  </div>
 
   <section>
     <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
@@ -127,4 +138,28 @@
     {% endif %}
   </section>
 </div>
+
+<style>.tree-node.selected { background: rgba(51, 65, 85, 0.5); }</style>
+<script>
+  const NP_DETAIL = {{ detail | tojson }};
+  const pane = document.getElementById("np-detail");
+  function npEsc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  document.querySelectorAll(".tree-node").forEach(n => n.addEventListener("click", ev => {
+    if (ev.target.closest("a")) return;  // in-row links navigate
+    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
+    n.classList.add("selected");
+    const d = NP_DETAIL[n.dataset.np];
+    if (!d) return;
+    pane.innerHTML =
+      `<div class="text-[11px] uppercase tracking-wide text-slate-400">${npEsc(d.kind)}</div>` +
+      `<h3 class="font-semibold mt-1">${npEsc(d.title)}</h3>` +
+      `<table class="text-xs mt-2">` +
+      d.fields.map(([k, v]) => `<tr><td class="text-slate-400 pr-3 py-0.5 align-top whitespace-nowrap">${npEsc(k)}</td><td class="break-all">${npEsc(v)}</td></tr>`).join("") +
+      `</table>` +
+      d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-emerald-400 hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
+  }));
+</script>
 {% endblock %}

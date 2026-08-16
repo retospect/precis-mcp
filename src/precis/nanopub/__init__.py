@@ -35,9 +35,13 @@ Built (slices 1–3, all local / reversible):
   Universal anchors only in provenance (DOI, sha, quote, snip) — chunk
   ids and ref ids never leave the internal publish row.
 - :mod:`.gates` — Layer-A mechanical mint validators (spec's gate
-  checklist): contradicts-edge, primary-source ``section_path``
-  (references/related-work/prior-art/background grounding is hearsay —
-  rejected), quote verbatim-containment, snip uniqueness,
+  checklist): contradicts-edge, primary-source hearsay (three
+  detectors: ``section_path`` — references/related-work/prior-art/
+  background; in-quote citation markers ``[12]``/``(Moore, 1965)`` —
+  catches intro-section hearsay, Miller-index ``[100]`` lookalikes
+  exempt; a needs-acquisition marker in the hub's body — primary
+  explicitly not in corpus, hanging mints stay allowed),
+  quote verbatim-containment, snip uniqueness,
   structured-field containment, schema lint (claim-without-quote /
   hypothesis-with-quote are hard errors), quantity-bound presence,
   ``pdf_sha256`` uniqueness, publish-row cardinality, drift
