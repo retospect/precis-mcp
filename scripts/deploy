@@ -24,6 +24,11 @@
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
 # the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
 #
+# Every run's full output (incl. the profile_tasks timing table) is tee'd to
+# the main checkout's .deploy-logs/<timestamp>-<ref>.log (gitignored, newest
+# 50 kept) for later analysis. PRECIS_DEPLOY_NO_LOG=1 opts out;
+# PRECIS_DEPLOY_LOG_DIR overrides the directory.
+#
 # PRECIS_DEPLOY_CANARY=<ansible-host-name> — opt-in canary staging (unset ⇒
 # byte-identical single-pass behavior, the default). When set: resolve the
 # target sha once (git ls-remote, the same resolution the playbook's step-0
@@ -84,6 +89,23 @@ _acquire_deploy_lock() {
     trap 'exit 130' INT TERM
 }
 _acquire_deploy_lock
+
+# ── deploy log: persist every run's full output — including the per-task
+# profile_tasks timing table (deploy/ansible.cfg) — so deploys can be compared
+# later instead of dying with the terminal scrollback. One timestamped file per
+# run, in the MAIN checkout's .deploy-logs/ (gitignored) so every worktree's
+# deploys land in one place. Deliberately NOT under deploy/: the logs name real
+# hosts and tests/test_deploy_tree_no_secrets.py walks that whole tree. Keep
+# the newest 50. PRECIS_DEPLOY_NO_LOG=1 opts out (e.g. for probe runs).
+if [[ -z "${PRECIS_DEPLOY_NO_LOG:-}" ]]; then
+    _main_root="$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)")"
+    DEPLOY_LOG_DIR="${PRECIS_DEPLOY_LOG_DIR:-${_main_root}/.deploy-logs}"
+    mkdir -p "$DEPLOY_LOG_DIR"
+    DEPLOY_LOG="${DEPLOY_LOG_DIR}/$(date +%Y%m%d-%H%M%S)-${REF//\//_}.log"
+    exec > >(tee -a "$DEPLOY_LOG") 2>&1
+    say "logging this deploy to ${DEPLOY_LOG}"
+    ls -1t "$DEPLOY_LOG_DIR"/*.log 2>/dev/null | tail -n +51 | xargs rm -f 2>/dev/null || true
+fi
 
 # ── freshness guard: ansible renders roles/templates from THIS checkout, while
 # the venvs install precis-mcp@<ref> from git — a local tree behind origin/<ref>

@@ -95,6 +95,11 @@ memory/
 # the cluster) — machine-local state scripts/ship reads to report deploy lag.
 .deploy-state
 
+# scripts/deploy per-run logs (full ansible output incl. the profile_tasks
+# timing table, for later analysis). Deliberately OUTSIDE deploy/ — the logs
+# name real hosts, and tests/test_deploy_tree_no_secrets.py walks that tree.
+.deploy-logs/
+
 # rtk: keep project filters, ignore runtime tee logs/cache
 .rtk/*
 !.rtk/filters.toml
