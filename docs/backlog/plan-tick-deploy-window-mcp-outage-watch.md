@@ -23,9 +23,11 @@ errors rather than `fe_sendauth`. Fix shape if confirmed: drain the
 claude_inproc lane during venv replacement, or point mcp.json's `serve` at
 the worker's own venv.
 
-Un-halt checklist after the fix deploys and a tick round-trips green:
-remove `halt:env-outage-20260815` from todos 201737, 204876, 200460, 200984
-(204878 was already soft-deleted).
+Un-halt: DONE 2026-08-16 — canary 204876 completed in one healthy tick
+(job 209241, verdict done, todo → STATUS:done); 201737/200460/200984
+unblocked (`halt:env-outage-20260815` AND the zombie-era `child-failed:*`/
+`child-failed-final` tags removed — un-halting alone doesn't re-enable
+dispatch). 204878 was already soft-deleted.
 
 test: a container-path DSN with a matching pgpass entry crosses the boundary
 with its password completed and never appears in argv
