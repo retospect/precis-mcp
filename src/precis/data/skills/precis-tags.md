@@ -150,6 +150,7 @@ the canonical list:
 | `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
 | `AUDIT:` | `missing-citation` / `empty-stub` / `unsupported-claim` / `citation-drift` / `missing-data` | content-QA audit (on the anchored change-request `todo`/`finding`) |
 | `ATTEMPT:` | `open` / `active` / `tried` / `ruled-out` / `idea` | quest tick (chunk-level — on a dossier's ledger-node chunks, not refs) |
+| `TAPROOT:` | `claim` / `review` | `axis:taproot` classifier — `finding`-ref hub discriminator; agent add/remove allowed (legacy rows grandfathered) |
 
 Any UPPERCASE prefix outside that table is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.
@@ -183,7 +184,7 @@ axes and suggests the lowercase rewrite.
 |---|---|
 | `todo` | `STATUS`, `PRIO`, `AUDIT` (content-QA category) — the dispatch tier is `meta.llm_tier`, not a closed axis (§M facet normalization) |
 | `gripe` | `STATUS`, `PRIO` |
-| `finding` | `STATUS` (lifecycle subsets — see table above); also `AUDIT` (content-QA category) |
+| `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator) |
 | `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |

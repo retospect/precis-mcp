@@ -1174,8 +1174,8 @@ def tag(
     `[error:BadInput] axis not allowed on kind 'K'`.
 
     Per-kind closed-prefix gating (summary):
-    todo: STATUS+PRIO+LLM+AUDIT. gripe: STATUS+PRIO.
-    finding: STATUS+AUDIT. job: STATUS (lifecycle subsets).
+    todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
+    finding: unrestricted (STATUS/AUDIT/TAPROOT). job: STATUS (lifecycle subsets).
     memory: DREAM (dreaming-worker provenance). anki/conv: none.
     paper/patent: SRC+CACHE.
     web/perplexity-research/perplexity-reasoning/websearch/youtube:
