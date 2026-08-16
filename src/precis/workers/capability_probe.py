@@ -261,6 +261,75 @@ def _probe_embedder() -> int | None:
     return _EMBEDDER_DEFAULT_SLOTS if _embedder_ready(endpoint) else None
 
 
+# ── ADR-0048 sandbox-lane capabilities ──────────────────────────────────
+# The four tokens the agent-fix lanes require (``diagnose_gripe``'s
+# ServiceSpec: ``claude_bin`` / ``git`` / ``clones_dir`` /
+# ``claude_config_mount``). Without probes these were permanently unknown
+# (``None``) — never advertised, so capability-routed jobs could stall
+# unroutable (docs/backlog was: capability-vocab-missing-probes). All are
+# presence probes (capacity 1): the claude lane is serial per host anyway,
+# so a counted slot of 1 matches how the work actually runs.
+
+
+def _probe_git() -> int:
+    """``git`` on PATH — 1/0, never unknown (``which`` can't error)."""
+    return 1 if shutil.which("git") else 0
+
+
+def _probe_claude_bin() -> int:
+    """The ``claude`` CLI the agent lanes exec — ``PRECIS_CLAUDE_BIN`` (a
+    name on PATH or an absolute path, the same override
+    ``utils/claude_agent`` honors; a launchd daemon's PATH often misses
+    it, so the full path is the escape hatch — mirrors
+    :func:`container_runtime`), else ``claude`` on PATH."""
+    configured = os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
+    if shutil.which(configured) or (
+        os.path.isabs(configured) and os.path.exists(configured)
+    ):
+        return 1
+    return 0
+
+
+def _probe_clones_dir() -> int:
+    """Clone scratch root for the fixer lanes — ``PRECIS_FIX_WORK_DIR``
+    set is presence (the runner ``mkdir -p``'s under it, so the dir need
+    not pre-exist); unset means this host was never configured for clone
+    work. The repo allowlist (``PRECIS_FIX_REPO_DIR``/``PRECIS_FIX_REPOS``)
+    stays a job-level config check, not a host capability."""
+    return 1 if os.environ.get("PRECIS_FIX_WORK_DIR") else 0
+
+
+def _stored_claude_auth() -> bool:
+    """The non-env auth arms a daemon-spawned ``claude -p`` can resolve:
+    the vaulted OAuth token (``ensure_oauth_token``'s env → ``vault.reveal``
+    → bootstrap-file order, via ``get_secret``) or an interactive
+    ``~/.claude`` login state. Extracted as the test seam (mirrors
+    :func:`_embedder_ready`). ``get_secret`` is best-effort and never
+    raises in practice; a raised import-time error degrades to the
+    login-dir check rather than failing the heartbeat."""
+    try:
+        from precis import secrets as _secrets
+        from precis.utils.claude_oauth import ENV_VAR as _oauth_var
+
+        if _secrets.get_secret(_oauth_var):
+            return True
+    except Exception:
+        log.warning("capability_probe: claude oauth vault lookup raised", exc_info=True)
+    return os.path.isdir(os.path.expanduser("~/.claude"))
+
+
+def _probe_claude_config() -> int:
+    """Auth/config state for ``claude -p`` — the ``claude_config_mount``
+    token: the ``CLAUDE_CODE_OAUTH_TOKEN`` env, the vault/bootstrap token,
+    or an interactive ``~/.claude`` login. Presence, not correctness: a
+    stale keychain still advertises (the run path surfaces the 401)."""
+    from precis.utils.claude_oauth import ENV_VAR
+
+    if os.environ.get(ENV_VAR):
+        return 1
+    return 1 if _stored_claude_auth() else 0
+
+
 #: Capability token → its presence probe. A probe returns a capacity
 #: (``> 0`` present, ``0`` absent) or ``None`` (unknown — leave the row).
 _PROBES: dict[str, Callable[[], int | None]] = {
@@ -268,7 +337,16 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "podman": _probe_podman,
     "tts": _probe_tts,
     "embedder": _probe_embedder,
+    "git": _probe_git,
+    "claude_bin": _probe_claude_bin,
+    "clones_dir": _probe_clones_dir,
+    "claude_config_mount": _probe_claude_config,
 }
+
+#: Vocabulary tokens already warned about as probe-less — the
+#: missing-probe warning fires once per process, not once per heartbeat
+#: cycle (it used to repeat forever on every host).
+_WARNED_MISSING_PROBES: set[str] = set()
 
 
 def probe_host_resources() -> dict[str, int | None]:
@@ -278,7 +356,9 @@ def probe_host_resources() -> dict[str, int | None]:
     positive capacity to advertise, ``0`` to retract, or ``None`` to leave
     the existing row alone (the probe couldn't tell). A vocabulary token
     with no registered probe is treated as unknown (``None``) and logged
-    once — it neither advertises nor retracts until someone adds a probe.
+    once per process — it neither advertises nor retracts until someone
+    adds a probe (and the full-coverage test in
+    ``tests/test_capability_probe.py`` reddens until they do).
     A probe that raises is caught and downgraded to unknown so a broken
     probe never breaks the (liveness-critical) heartbeat.
     """
@@ -286,7 +366,11 @@ def probe_host_resources() -> dict[str, int | None]:
     for token in sorted(capability_vocabulary()):
         probe = _PROBES.get(token)
         if probe is None:
-            log.warning("capability_probe: no probe for required capability %r", token)
+            if token not in _WARNED_MISSING_PROBES:
+                _WARNED_MISSING_PROBES.add(token)
+                log.warning(
+                    "capability_probe: no probe for required capability %r", token
+                )
             out[token] = None
             continue
         try:

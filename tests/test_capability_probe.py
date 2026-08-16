@@ -22,6 +22,9 @@ _OVERRIDE_ENVS = (
     "PRECIS_TTS_IMAGE",
     "PRECIS_EMBEDDER_SLOTS",
     "PRECIS_EMBEDDER_URL",
+    "PRECIS_CLAUDE_BIN",
+    "PRECIS_FIX_WORK_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
 )
 
 
@@ -45,6 +48,15 @@ def test_vocabulary_derives_from_registry() -> None:
     assert {"gpu", "podman", "tts", "embedder"} <= vocab
     # Every probe key is a real capability some service requires (no orphans).
     assert set(cap._PROBES) <= vocab
+
+
+def test_every_vocabulary_token_has_a_probe() -> None:
+    """A ``requires`` token with no probe is permanently unknown — never
+    advertised, so jobs gated on it can't be capability-routed anywhere.
+    Adding a ``requires={"new"}`` service means adding a ``_PROBES["new"]``
+    entry in the same change; this test is the forcing function."""
+    missing = set(cap.capability_vocabulary()) - set(cap._PROBES)
+    assert not missing, f"vocabulary tokens with no registered probe: {missing}"
 
 
 # ── container runtime (podman / docker / OrbStack) ──────────────────────
@@ -255,14 +267,19 @@ def test_probe_host_resources_covers_vocabulary(
 ) -> None:
     monkeypatch.setattr(cap.shutil, "which", _which(set()))
     monkeypatch.setattr(cap, "find_spec", lambda name: None)
+    monkeypatch.setattr(cap, "_stored_claude_auth", lambda: False)
     result = cap.probe_host_resources()
     assert set(result) == set(cap.capability_vocabulary())
-    # a bare host: no nvidia-smi, no podman, no tts, no embedder URL →
-    # all definitively absent
+    # a bare host: no nvidia-smi, no podman, no tts, no embedder URL, no
+    # git/claude/clone-work-dir/claude-auth → all definitively absent
     assert result["gpu"] == 0
     assert result["podman"] == 0
     assert result["tts"] == 0
     assert result["embedder"] == 0
+    assert result["git"] == 0
+    assert result["claude_bin"] == 0
+    assert result["clones_dir"] == 0
+    assert result["claude_config_mount"] == 0
 
 
 def test_probe_host_resources_unknown_for_missing_probe(
@@ -272,6 +289,73 @@ def test_probe_host_resources_unknown_for_missing_probe(
     monkeypatch.setattr(cap, "capability_vocabulary", lambda: frozenset({"mystery"}))
     result = cap.probe_host_resources()
     assert result == {"mystery": None}
+
+
+def test_missing_probe_warns_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The no-probe warning fires once per token per process, not once per
+    heartbeat cycle (the log-spam half of capability-vocab-missing-probes)."""
+    monkeypatch.setattr(cap, "capability_vocabulary", lambda: frozenset({"mystery2"}))
+    monkeypatch.setattr(cap, "_WARNED_MISSING_PROBES", set())
+    with caplog.at_level("WARNING", logger=cap.log.name):
+        cap.probe_host_resources()
+        cap.probe_host_resources()
+    warned = [r for r in caplog.records if "no probe for required" in r.message]
+    assert len(warned) == 1
+
+
+# ── ADR-0048 sandbox-lane capability probes ─────────────────────────────
+
+
+def test_probe_git_present_and_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which({"git"}))
+    assert cap._probe_git() == 1
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap._probe_git() == 0
+
+
+def test_probe_claude_bin_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which({"claude"}))
+    assert cap._probe_claude_bin() == 1
+
+
+def test_probe_claude_bin_env_abspath_off_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A daemon PATH often misses claude — an absolute PRECIS_CLAUDE_BIN
+    is found via existence, mirroring container_runtime."""
+    binp = tmp_path / "claude"
+    binp.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", str(binp))
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap._probe_claude_bin() == 1
+
+
+def test_probe_claude_bin_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", _which(set()))
+    assert cap._probe_claude_bin() == 0
+
+
+def test_probe_clones_dir_env_presence(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert cap._probe_clones_dir() == 0  # autouse fixture cleared the env
+    monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/fix-work")
+    assert cap._probe_clones_dir() == 1
+
+
+def test_probe_claude_config_env_token_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.setattr(
+        cap, "_stored_claude_auth", lambda: pytest.fail("must not consult the vault")
+    )
+    assert cap._probe_claude_config() == 1
+
+
+def test_probe_claude_config_stored_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap, "_stored_claude_auth", lambda: True)
+    assert cap._probe_claude_config() == 1
+    monkeypatch.setattr(cap, "_stored_claude_auth", lambda: False)
+    assert cap._probe_claude_config() == 0
 
 
 def test_probe_host_resources_swallows_probe_exception(

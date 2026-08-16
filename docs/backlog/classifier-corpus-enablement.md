@@ -1,9 +1,13 @@
 # Chunk-tag classifier (ADR 0047) — corpus enablement
 
-Cascade shipped + validated; the corpus-wide enablement steps remain.
+Cascade shipped + validated; the remaining steps are below.
 
-- Flip PRECIS_CLASSIFY_ENABLED=1 to drain ~1.29M chunks on the free
-  summarizer (watch load). Optional tier-2 escalation
+- ~~Flip PRECIS_CLASSIFY_ENABLED=1 for the role3 corpus drain~~ — happening
+  via the `derived_drain` classify band instead (materialize
+  `PRECIS_SMALL_BAND_CLASSIFY`, live in prod): as of 2026-08-16, 1.98M
+  chunks carry ROLE3 (own 795k / background 605k / furniture 586k), 163k
+  remain, draining ~40k+/day since the 2026-08-15 SMALL cloud cutover.
+  Still open from that bullet: optional tier-2 escalation
   (PRECIS_CLASSIFY_ESCALATE_MODEL=claude-haiku-4-5, ~$200–400) for own-claim
   precision past 91%.
 - The generic axis runner (`src/precis/workers/axis_pass.py`) has never been
