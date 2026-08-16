@@ -256,7 +256,11 @@
         venv="{{ item.key }}"; expected="{{ precis_target_sha }}"
         f=$(ls $venv/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
         installed=$([ -n "$f" ] && python3 -c "import json;print(json.load(open('$f'))['vcs_info']['commit_id'])" || echo MISSING)
-        [ -n "$expected" ] && [ "$installed" = "$expected" ] && echo SAME || echo DIFF
+        # Second field carries the INSTALLED sha (or MISSING) alongside the
+        # SAME/DIFF verdict — the scope classifier below (0b2) reuses it to
+        # `git diff` against the pinned target instead of re-probing every
+        # venv a second time.
+        [ -n "$expected" ] && [ "$installed" = "$expected" ] && echo "SAME $installed" || echo "DIFF $installed"
       args:
         executable: /bin/bash
       loop: "{{ _precis_venv_refs | dict2items }}"
@@ -271,13 +275,131 @@
         precis_deploy_changed: >-
           {{ precis_preflight.results
              | map(attribute='stdout') | map('trim')
-             | select('equalto', 'DIFF') | list | length > 0 }}
+             | select('match', '^DIFF') | list | length > 0 }}
 
     - name: Report the deploy-change decision
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: deploy_changed={{ precis_deploy_changed }}
           ({{ precis_preflight.results | map(attribute='stdout') | map('trim') | list }})
+
+# ── 0b2. Classify the bounce scope from the actual changed paths ──
+# gr51351 killed the restart STORM for a redundant same-sha deploy; this
+# closes the next-cheapest case — a real sha move whose diff never touches
+# runtime code (a docs/tests/scripts-only commit, or one scoped entirely to
+# the web venv) still paid the FULL drain-wait + every-daemon bounce above,
+# because 0b only asks "did the sha move", never "did anything RUNTIME move".
+# Runs on the controller (the local synced checkout — same delegate_to:
+# localhost + `{{ playbook_dir }}/..` idiom as 03-precis-constraints.yml's
+# uv.lock export) because that's the only place with git history for BOTH
+# the installed sha(s) 0b just read and the pinned target from step 0.
+#
+# Classification (path prefixes, relative to repo root):
+#   none — every changed path is under docs/, tests/, scripts/, .claude/,
+#          deploy/, or is a *.md file AT ROOT (README.md, CLAUDE.md, …).
+#   web  — every path left after stripping the "none" set is under
+#          src/precis_web/.
+#   full — anything else, INCLUDING any path this can't confidently place
+#          (src/precis/, src/precis_pathway/, src/precis_bio/, src/asa_bot/,
+#          pyproject.toml, uv.lock, src/precis/migrations/, unknown paths)
+#          and any failure to compute the diff at all (missing/MISSING
+#          installed sha, detached HEAD, a `git diff` error) — "full" is the
+#          fail-safe direction, same posture as 0b's own DIFF default above.
+# Kept as one shell task rather than inline Jinja set_fact chains — this is
+# exactly the kind of branchy logic that reads clean in bash and is a
+# nightmare to get right (and debug) as nested Jinja filters.
+    - name: Classify this deploy's bounce scope from the changed paths (gr51351 lineage)
+      when: precis_deploy_changed | default(true) | bool
+      delegate_to: localhost
+      become: false
+      # A real temp file (not a shell variable / heredoc) accumulates the
+      # changed-path list — YAML block-scalar indentation makes a
+      # multi-line-string-built-via-embedded-newlines approach a trap (stray
+      # leading whitespace silently breaks every `case "$p" in docs/*)` glob
+      # match below); `>> "$tmp"` + `while … done < "$tmp"` sidesteps that
+      # entirely. Three bare `echo` lines (not one packed string) so the
+      # Ansible side reads `stdout_lines[0..2]` instead of regex-parsing —
+      # simpler to get right than a Jinja regex_search on this output.
+      ansible.builtin.shell: |
+        set -uo pipefail
+        cd "{{ playbook_dir }}/.."
+        target="{{ precis_target_sha }}"
+        shas="{{ (precis_preflight.results | map(attribute='stdout') | map('trim')
+                   | map('regex_replace', '^(SAME|DIFF)\s+', '') | list | unique | join(' ')) }}"
+
+        tmp=$(mktemp)
+        trap 'rm -f "$tmp"' EXIT
+        ok=1
+        for sha in $shas; do
+          [ "$sha" = "$target" ] && continue
+          if [ -z "$sha" ] || [ "$sha" = "MISSING" ]; then
+            ok=0
+            break
+          fi
+          git diff --name-only "$sha" "$target" >>"$tmp" 2>/dev/null || { ok=0; break; }
+        done
+        sort -u -o "$tmp" "$tmp" 2>/dev/null || true
+
+        if [ "$ok" -ne 1 ]; then
+          scope=full
+        else
+          # Monotonic upgrade: none -> web (first runtime path, under
+          # src/precis_web/) -> full (any other runtime path). Never
+          # downgrades once at web/full.
+          scope=none
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            case "$p" in
+              docs/*|tests/*|scripts/*|.claude/*|deploy/*) continue ;;
+              *.md)
+                case "$p" in
+                  */*) ;;              # nested *.md — NOT the root-only exemption, fall through
+                  *) continue ;;        # bare *.md at repo root — non-runtime
+                esac
+                ;;
+            esac
+            case "$p" in
+              src/precis_web/*) [ "$scope" = none ] && scope=web ;;
+              *) scope=full ;;
+            esac
+          done <"$tmp"
+        fi
+
+        # Command-substitute (not bare pipelines) so each line prints even
+        # when empty — stdout_lines[0..2] on the Ansible side must always
+        # exist, including the tmp-file-empty case (every diff came back
+        # with zero paths).
+        count=$(wc -l <"$tmp" | tr -d ' ')
+        sample=$(head -5 "$tmp" | tr '\n' ',' | sed 's/,$//')
+        echo "$scope"
+        echo "$count"
+        echo "${sample:-none}"
+      args:
+        executable: /bin/bash
+      register: precis_bounce_scope_raw
+      changed_when: false
+      # The script degrades every internal error to scope=full itself, but a
+      # failure BEFORE that machinery (git/python3 missing, mktemp) must
+      # degrade the same way — not drop the host from the whole deploy.
+      failed_when: false
+
+    - name: Set the bounce-scope fact (defaults to 'full' — fail-safe if unset/uncomputed)
+      ansible.builtin.set_fact:
+        precis_bounce_scope: >-
+          {{ (precis_bounce_scope_raw.stdout_lines[0] | default('full') | trim)
+             if (precis_deploy_changed | default(true) | bool)
+                and precis_bounce_scope_raw is not skipped
+                and (precis_bounce_scope_raw.rc | default(1)) == 0
+             else ('none' if not (precis_deploy_changed | default(true) | bool) else 'full') }}
+
+    - name: Report the bounce-scope decision
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: bounce_scope={{ precis_bounce_scope | default('full') }}
+          {{ ('changed_paths=' ~ (precis_bounce_scope_raw.stdout_lines[1] | default('?'))
+              ~ ' sample=[' ~ (precis_bounce_scope_raw.stdout_lines[2] | default('')) ~ ']')
+             if (precis_deploy_changed | default(true) | bool) and precis_bounce_scope_raw is not skipped
+             else '(deploy_changed=false — scope forced none, everything short-circuits as before)' }}
 
 # ── 0c. Export uv.lock as a constraints file, land it on every host ──
 # Must run before ANY of the install plays below — every one of them passes
@@ -438,6 +560,17 @@
     # Bound on the drain wait below (30s * N) — ops can pass
     # `-e precis_drain_retries=<n>` to shorten it for an urgent deploy.
     precis_drain_retries: 60
+    # 0b2's scope classifier gates how much of this play runs:
+    #   full — everything below, unchanged from pre-scope behavior.
+    #   web  — skip drain (nothing worker-side is moving) and bounce ONLY
+    #          precis-web; embedder/worker untouched.
+    #   none — skip the whole play (report only); e.g. a docs/tests/scripts
+    #          -only commit that still bumped the pinned sha.
+    # Undefined precis_bounce_scope (a standalone role run, or a host the
+    # classifier didn't cover) defaults to 'full' — same fail-safe direction
+    # as precis_deploy_changed's own default above.
+    precis_full_bounce: "{{ (precis_deploy_changed | default(true) | bool) and (precis_bounce_scope | default('full') == 'full') }}"
+    precis_any_bounce: "{{ (precis_deploy_changed | default(true) | bool) and (precis_bounce_scope | default('full') != 'none') }}"
   tasks:
     # ── Drain before bounce ──
     # Touch the drain flag file BEFORE anything is restarted so the worker
@@ -446,11 +579,13 @@
     # coordinator slices, detached autocatpath seed children) used to get
     # SIGKILLed mid-run by the restarts below (systemd's TimeoutStopSec=60
     # / launchd's kickstart -k don't wait for application-level work to
-    # drain, only the process to exit). Gated the same as the restarts
-    # (nothing to drain for if nothing's about to bounce) and always
-    # removed at the end of this play, even on the no-change path.
+    # drain, only the process to exit). Gated on `precis_full_bounce` — a
+    # `web`-scope deploy never touches the worker/embedder (only precis-web
+    # bounces below), so there is nothing to drain for; `none` skips the
+    # whole play. Always removed at the end of this play regardless of
+    # scope, so a flag from an earlier full-bounce run can't strand claims.
     - name: Touch worker drain file (pause new claims before bounce)
-      when: precis_deploy_changed | default(true) | bool
+      when: precis_full_bounce | bool
       ansible.builtin.file:
         path: /opt/precis/worker.drain
         state: touch
@@ -463,8 +598,16 @@
     # job must never block a deploy forever; failed_when: false + the
     # debug task below make the timeout visible instead of silently
     # racing the restart.
+    #
+    # `lease_until` filter: a STATUS:running row whose lease expired more
+    # than 10 minutes ago (same orphan grace as the reconciler) is a corpse
+    # awaiting reap, not in-flight work — counting it here just burns the
+    # full 30-min retry budget waiting for a bounce that will never happen
+    # on its own. NULL lease_until is treated as NOT alive (excluded), same
+    # direction: an unleased "running" row isn't work this bounce needs to
+    # wait on either.
     - name: Wait for in-flight long jobs leased to this host to finish
-      when: precis_deploy_changed | default(true) | bool
+      when: precis_full_bounce | bool
       delegate_to: "{{ groups['data'][0] }}"
       become: true
       # Same os-split as roles/postgres's pg_user — resolved against the
@@ -481,7 +624,9 @@
             AND r.deleted_at IS NULL
             AND t.namespace = 'STATUS' AND t.value = 'running'
             AND r.meta->>'lease_host' = '{{ inventory_hostname | regex_replace('\\..*$', '') }}'
-            AND r.meta->>'job_type' IN ('quest_tick','autocatpath_seed','autocatpath_aggregate','struct_relax','taproot_backfill')"
+            AND r.meta->>'job_type' IN ('quest_tick','autocatpath_seed','autocatpath_aggregate','struct_relax','taproot_backfill')
+            AND r.meta->>'lease_until' IS NOT NULL
+            AND (r.meta->>'lease_until')::timestamptz > now() - interval '10 minutes'"
       register: precis_drain_wait
       changed_when: false
       failed_when: false
@@ -490,12 +635,20 @@
       delay: 30
 
     - name: Report drain outcome
-      when: precis_deploy_changed | default(true) | bool
+      when: precis_full_bounce | bool
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}: drain
           {{ 'complete' if (precis_drain_wait.stdout | default('') | trim) == '0' else 'timed out (proceeding anyway)' }}
-          — running long jobs leased here: {{ precis_drain_wait.stdout | default('?') | trim }}
+          — running long jobs (lease alive) leased here: {{ precis_drain_wait.stdout | default('?') | trim }}
+
+    - name: Report no-drain reason (scope narrower than 'full')
+      when: (precis_deploy_changed | default(true) | bool) and not (precis_full_bounce | bool)
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: skipping drain —
+          {{ 'no runtime change (bounce scope=none)' if (precis_bounce_scope | default('full')) == 'none'
+             else 'web-only change (bounce scope=web) — worker/embedder untouched' }}
 
     # ── Embedder FIRST, with a health gate ──
     # The system worker (and anything else that embeds at boot) crashes
@@ -515,7 +668,10 @@
     - name: Restart embedder (macOS)
       when:
         - os_family == "darwin"
-        - precis_deploy_changed | default(true) | bool
+        # scope=web bounces ONLY precis-web (its diff never touches the
+        # embedder venv), so this is `full`-only, not the broader
+        # `precis_any_bounce` the reload loop below uses.
+        - precis_full_bounce | bool
       ansible.builtin.command:
         cmd: launchctl kickstart -k system/com.precis.embedder
       changed_when: true
@@ -524,7 +680,7 @@
     - name: Wait for embedder /healthz before bouncing dependents (macOS)
       when:
         - os_family == "darwin"
-        - precis_deploy_changed | default(true) | bool
+        - precis_full_bounce | bool
       ansible.builtin.uri:
         url: >-
           http://{{ precis_embedder_host | default('127.0.0.1') }}:{{
@@ -588,10 +744,24 @@
     # periodic daemons, so it can't pid-assert the way that task does; it relies
     # on the poll plus the unconditional "Bootstrap … no-op if loaded" above /
     # next-deploy self-heal. Deeper per-daemon verification: audit gripe 176337.
+    #
+    # scope=web narrows the RELOAD (this task) to precis-web only — the
+    # `find`/`bootstrap-if-unloaded` self-heal above stays unconditional
+    # and unscoped on purpose (cheap idempotent recovery for every daemon,
+    # not a bounce; see its own comment), it's only the actual
+    # bootout+bootstrap below that a narrow-scope deploy skips for the rest.
+    - name: Restrict the actual bounce (reload) to this deploy's scope (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.set_fact:
+        precis_bounce_plists: >-
+          {{ (precis_plists.files | selectattr('path', 'search', 'com\.precis\.web\.plist$') | list)
+             if (precis_bounce_scope | default('full')) == 'web'
+             else precis_plists.files }}
+
     - name: Reload each remaining precis LaunchDaemon (macOS) — bootout+bootstrap so plist env changes take
       when:
         - os_family == "darwin"
-        - precis_deploy_changed | default(true) | bool
+        - precis_any_bounce | bool
       ansible.builtin.shell: |
         unit="{{ item.path | basename | regex_replace('\.plist$', '') }}"
         launchctl bootout "system/${unit}" 2>/dev/null || true
@@ -602,7 +772,7 @@
         done
         [ "$i" -ge 120 ] && echo "${unit}: still tearing down after 60s, bootstrapping anyway" >&2
         launchctl bootstrap system "{{ item.path }}"
-      loop: "{{ precis_plists.files }}"
+      loop: "{{ precis_bounce_plists | default(precis_plists.files) }}"
       loop_control:
         label: "{{ item.path | basename }}"
       changed_when: true
@@ -616,7 +786,11 @@
     - name: Restart embedder first (Linux/the GPU node)
       when:
         - os_family == "linux"
-        - precis_deploy_changed | default(true) | bool
+        # web-scope precis-web has no Linux presence at all (macOS-only
+        # role — see precis_web/tasks/main.yml's os_family=="darwin"
+        # gate); this branch never actually SEES scope=web in practice, but
+        # `full`-only keeps the invariant explicit rather than implicit.
+        - precis_full_bounce | bool
       ansible.builtin.systemd:
         name: precis-embedder
         state: restarted
@@ -625,7 +799,7 @@
     - name: Wait for embedder /healthz before bouncing dependents (Linux/the GPU node)
       when:
         - os_family == "linux"
-        - precis_deploy_changed | default(true) | bool
+        - precis_full_bounce | bool
       ansible.builtin.uri:
         url: >-
           http://{{ precis_embedder_host | default('127.0.0.1') }}:{{
@@ -649,10 +823,22 @@
       changed_when: false
       failed_when: false
 
+    # Same web-scope narrowing as the macOS reload loop above — kept for
+    # parity even though precis-web has no Linux presence today (see the
+    # embedder-restart comment above), so a future Linux web deploy
+    # doesn't silently fall back to full-bouncing everything.
+    - name: Restrict the systemd restart loop to this deploy's scope (Linux/the GPU node)
+      when: os_family == "linux"
+      ansible.builtin.set_fact:
+        precis_bounce_units: >-
+          {{ (precis_units.stdout_lines | select | select('equalto', 'precis-web.service') | list)
+             if (precis_bounce_scope | default('full')) == 'web'
+             else (precis_units.stdout_lines | select | list) }}
+
     - name: Restart each remaining precis systemd unit (Linux/the GPU node)
       when:
         - os_family == "linux"
-        - precis_deploy_changed | default(true) | bool
+        - precis_any_bounce | bool
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: restarted
@@ -661,7 +847,7 @@
         # handlers in precis_worker/precis_embedder/precis_web skip under
         # redeploy), so it must also refresh systemd's view of the unit.
         daemon_reload: true
-      loop: "{{ precis_units.stdout_lines | select | list }}"
+      loop: "{{ precis_bounce_units | default(precis_units.stdout_lines | select | list) }}"
       failed_when: false
 
     - name: Report bounced units (Linux/the GPU node)
@@ -669,22 +855,31 @@
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}:
-          {{ 'bounced' if (precis_deploy_changed | default(true) | bool)
-             else 'skipped bounce (no venv changed)' }}
-          {{ precis_units.stdout_lines | select | list }}
+          {{ ('bounced (' ~ precis_bounce_scope | default('full') ~ ')'
+              if (precis_bounce_units | default(precis_units.stdout_lines | select | list) | length > 0)
+              else 'scope=' ~ precis_bounce_scope | default('full') ~ ' — no matching daemons on this host, nothing restarted')
+             if (precis_any_bounce | bool)
+             else 'skipped bounce (' ~ ('no venv changed' if not (precis_deploy_changed | default(true) | bool)
+                                        else 'scope=none, no runtime change') ~ ')' }}
+          {{ precis_bounce_units | default(precis_units.stdout_lines | select | list) }}
 
     - name: Report bounced daemons (macOS)
       when: os_family == "darwin"
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }}:
-          {{ 'bounced' if (precis_deploy_changed | default(true) | bool)
-             else 'skipped bounce (no venv changed)' }}
-          {{ precis_plists.files | map(attribute='path') | map('basename') | list }}
+          {{ ('bounced (' ~ precis_bounce_scope | default('full') ~ ')'
+              if (precis_bounce_plists | default(precis_plists.files) | length > 0)
+              else 'scope=' ~ precis_bounce_scope | default('full') ~ ' — no matching daemons on this host, nothing restarted')
+             if (precis_any_bounce | bool)
+             else 'skipped bounce (' ~ ('no venv changed' if not (precis_deploy_changed | default(true) | bool)
+                                        else 'scope=none, no runtime change') ~ ')' }}
+          {{ precis_bounce_plists | default(precis_plists.files) | map(attribute='path') | map('basename') | list }}
 
-    # Unconditional (the touch above is gated on precis_deploy_changed, this
-    # isn't) — a no-change deploy still must not leave the flag file behind
-    # from an earlier run, or every claim on this host stays paused forever.
+    # Unconditional (the touch above is gated on precis_full_bounce, this
+    # isn't) — a no-change or scope-narrowed deploy still must not leave the
+    # flag file behind from an earlier run; the runner's 1h mtime TTL is the
+    # backstop, this is the prompt cleanup.
     - name: Remove worker drain file (resume claims)
       ansible.builtin.file:
         path: /opt/precis/worker.drain
