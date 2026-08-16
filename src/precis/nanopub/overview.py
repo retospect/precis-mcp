@@ -96,7 +96,7 @@ class HubTreeNode:
 
 
 def hub_tree(store: Store) -> list[HubTreeNode]:
-    """Every live claim hub as a forest for the ``/nanopub/tree`` browse
+    """Every live claim hub as a forest for the ``/nanopub`` browse
     view: a compound nests its conjunct atoms, a refined claim nests
     under what it refines, and each node carries its evidence sources as
     leaves. Roots = hubs that are nobody's atom/refinement; a hub linked

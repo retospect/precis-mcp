@@ -23,7 +23,14 @@
   <style>[x-cloak] { display: none !important; }</style>
 </head>
 <body class="h-full text-slate-800">
+  {# ``?embed=1`` = chrome-less pane mode: the page is being shown inside
+     another page's iframe (the /nanopub three-pane review surface), so
+     the site header is hidden and same-origin navigation keeps the flag
+     (script below) — the framed page stays frameless as you click
+     through it. #}
+  {% set embed = request.query_params.get('embed') == '1' %}
   <div class="min-h-full">
+    {% if not embed %}
     <header class="bg-slate-900 text-slate-100">
       <div class="mx-auto max-w-6xl px-4">
         {# Nav, by attention priority (the rationalized target information
@@ -140,6 +147,27 @@
         </nav>
       </div>
     </header>
+    {% endif %}
+    {% if embed %}
+    <script>
+      // Keep embed mode sticky across same-origin navigation inside the
+      // frame: stamp embed=1 onto link hrefs and form actions as they are
+      // used (capture phase, before the default navigation reads them).
+      document.addEventListener("click", e => {
+        const a = e.target.closest("a[href]");
+        if (!a || a.target || a.host !== location.host) return;
+        try { const u = new URL(a.href); u.searchParams.set("embed", "1"); a.href = u; } catch {}
+      }, true);
+      document.addEventListener("submit", e => {
+        try {
+          const u = new URL(e.target.action || location.href);
+          if (u.host !== location.host) return;
+          u.searchParams.set("embed", "1");
+          e.target.action = u;
+        } catch {}
+      }, true);
+    </script>
+    {% endif %}
     {# Most pages read best centred at a comfortable measure; the two-pane
        document reader (papers/pres detail) overrides ``main_class`` to go
        full-bleed so the PDF pane grows with the viewport (no max-width cap). #}

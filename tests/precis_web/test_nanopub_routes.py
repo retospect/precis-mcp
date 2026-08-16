@@ -32,7 +32,7 @@ def _store(runtime: Any) -> Any:
     return runtime.store
 
 
-def test_queue_table_buckets_and_flags(client: TestClient, runtime_with_store) -> None:
+def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) -> None:
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "A queue-table claim.", paper, chunk)
@@ -40,9 +40,26 @@ def test_queue_table_buckets_and_flags(client: TestClient, runtime_with_store) -
     assert resp.status_code == 200
     assert f"fi{hub}" in resp.text
     assert "unminted" in resp.text
-    # Queue rows carry the click-detail panel wiring too.
-    assert "NP_DETAIL" in resp.text
-    assert f'data-np="h{hub}"' in resp.text
+    # Hub rows load the review pane; the two iframes are the panes.
+    assert f'data-src="/nanopub/fi{hub}?embed=1"' in resp.text
+    assert 'name="np-review"' in resp.text
+    assert 'name="np-paper"' in resp.text
+    # The old tree URL redirects home.
+    tree = client.get("/nanopub/tree", follow_redirects=False)
+    assert tree.status_code == 307 and tree.headers["location"] == "/nanopub"
+
+
+def test_embed_mode_hides_the_site_chrome(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "An embedded claim.", paper, chunk)
+    full = client.get(f"/nanopub/fi{hub}")
+    framed = client.get(f"/nanopub/fi{hub}?embed=1")
+    assert "<header" in full.text
+    assert "<header" not in framed.text
+    assert "An embedded claim." in framed.text
 
 
 def test_hub_page_shows_state_and_action(
@@ -58,6 +75,21 @@ def test_hub_page_shows_state_and_action(
     # Non-hub → friendly 404, not a 500.
     other = _seed_paper(store)[0]
     assert client.get(f"/nanopub/fi{other}").status_code == 404
+
+
+def test_approve_prefill_suggests_quote_and_unique_snip(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A prefilled claim.", paper, chunk)
+    resp = client.get(f"/nanopub/fi{hub}")
+    assert resp.status_code == 200
+    # The candidate quote is the first citation-marker-free sentence of
+    # the grounding chunk ("Tensorial analysis." is too short), and the
+    # snip is a validated-unique token window — not empty placeholders.
+    assert "This anisotropy can reach a 400:1 ratio" in resp.text
+    assert "this anisotropy can reach a 400 1 ratio" in resp.text
 
 
 def test_approve_sign_and_serve_trig(
@@ -161,21 +193,17 @@ def test_tree_nests_conjunct_atom_under_compound(
     assert {e.relation for e in node.evidence} == {"corroborates"}
     assert node.children[0].evidence
 
-    resp = client.get("/nanopub/tree")
+    resp = client.get("/nanopub")
     assert resp.status_code == 200
     assert f"fi{compound}" in resp.text and f"fi{atom}" in resp.text
     assert "A compound tree claim." in resp.text
-    # Evidence leaves link to the paper reader, not the kindless
-    # /refs/<id> shape (which 400s).
-    assert f"/papers/{paper}" in resp.text
+    # Evidence leaves target the paper pane via the paper reader, not the
+    # kindless /refs/<id> shape (which 400s).
+    assert f'data-src="/papers/{paper}?embed=1"' in resp.text
     assert f"/refs/{paper}" not in resp.text
-    # The click-detail side panel: every hub and evidence row carries a
-    # data-np key that resolves in the embedded NP_DETAIL dict.
-    assert "NP_DETAIL" in resp.text
-    assert f'data-np="h{compound}"' in resp.text
-    assert f'data-np="h{atom}"' in resp.text
-    assert f'"h{compound}"' in resp.text  # key present in the JSON blob
-    assert f'data-np="epaper-{paper}-corroborates"' in resp.text
+    # Both hubs load the review pane.
+    assert f'data-src="/nanopub/fi{compound}?embed=1"' in resp.text
+    assert f'data-src="/nanopub/fi{atom}?embed=1"' in resp.text
 
 
 def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) -> None:
@@ -189,6 +217,6 @@ def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) 
     assert link_claims(store, from_hub_ref_id=a, to_hub_ref_id=b, relation="refines")
     assert link_claims(store, from_hub_ref_id=b, to_hub_ref_id=a, relation="refines")
 
-    resp = client.get("/nanopub/tree")  # must terminate, not recurse forever
+    resp = client.get("/nanopub")  # must terminate, not recurse forever
     assert resp.status_code == 200
     assert f"fi{a}" in resp.text and f"fi{b}" in resp.text

@@ -5,14 +5,20 @@ integrity is enforced in :mod:`precis.nanopub` (gates, freeze-at-review,
 append-only proof store), so every action here is a thin interactive
 door onto those functions with ``interactive=True`` (a person clicked).
 
-* ``GET /nanopub`` — "see all the things": every claim hub by publish
-  state; the **disputed** bucket first, sorted by dispute age (disputes
-  must not rot invisibly); drifted rows flagged; OTS batches pending
-  past threshold.
+* ``GET /nanopub`` — the one working surface: the claim forest
+  (compounds nest conjunct atoms, evidence as leaves) beside a review
+  pane (the per-hub page framed with ``?embed=1``) and a paper pane,
+  with draggable dividers. The **disputed** strip sits on top sorted by
+  dispute age (disputes must not rot invisibly); OTS batches + the
+  stuck-pending alert live under the tree. ``/nanopub/tree`` redirects
+  here.
 * ``GET /nanopub/fi<id>`` — per-hub review page: the claim DAG as
   clickable SVG (papers → atoms → hub → anchor; ``contradicts`` dashed,
   disputed hubs marked by shape+colour, never colour alone), the publish
-  row side panel, the publish preflight, and one action per state.
+  row side panel, the publish preflight, and one action per state. The
+  approve form prefills a gate-passing candidate per passage (first
+  citation-marker-free sentence as quote + a unique snip) for the
+  reviewer to trim and attest.
 * ``GET /np/<code>`` — the exact frozen artifact bytes as
   ``application/trig``, served by artifact code (during embargo the
   w3id name resolves nowhere public; this is the local mirror).
@@ -25,6 +31,7 @@ never sits behind a web button.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
@@ -46,143 +53,45 @@ def _error(request: Request, title: str, detail: str, status: int) -> HTMLRespon
 
 @router.get("/nanopub", response_class=HTMLResponse)
 async def nanopub_index(request: Request) -> HTMLResponse:
+    """The one nanopub working surface: the claim forest (compounds nest
+    conjunct atoms, refined claims nest under what they refine, evidence
+    as leaves) beside a review pane (the per-hub page, action box
+    included, framed) and a paper pane. The old queue table folded in as
+    the disputed-first strip + the OTS section under the tree."""
     from datetime import UTC, datetime, timedelta
 
     from precis.nanopub import overview
     from precis.nanopub.ots import STUCK_PENDING_DAYS
 
     store = get_store(request)
-    rows = overview.hub_rows(store)
-    disputed = [r for r in rows if r.disputed]
-    live = [r for r in rows if not r.disputed and r.state is not None]
-    unminted = [r for r in rows if not r.disputed and r.state is None]
+    roots = overview.hub_tree(store)
+    disputed = [r for r in overview.hub_rows(store) if r.disputed]
+
+    def _count(nodes: list[Any]) -> int:
+        return sum(1 + _count(n.children) for n in nodes)
 
     batches = store.nanopub_batches()
     threshold = datetime.now(UTC) - timedelta(days=STUCK_PENDING_DAYS)
     stuck = [b for b in store.nanopub_pending_batches() if b.created_at < threshold]
-
-    # Same click-to-inspect detail shape as /nanopub/tree.
-    detail: dict[str, Any] = {}
-    for r in rows:
-        fields = [["state", r.state or "unminted"], ["frozen", r.frozen or "—"]]
-        if r.disputed_since:
-            fields.append(["disputed since", r.disputed_since.strftime("%Y-%m-%d")])
-        if r.withheld_count:
-            fields.append(["withheld edges", str(r.withheld_count)])
-        if r.drifted:
-            fields.append(["drifted", "frozen string ≠ live title"])
-        if r.approved_title and r.approved_title != r.title:
-            fields.append(["approved", r.approved_title])
-        if r.trusty_uri:
-            fields.append(["trusty", r.trusty_uri])
-        if r.batch_id:
-            fields.append(["batch", str(r.batch_id)])
-        if r.updated_at:
-            fields.append(["updated", r.updated_at.strftime("%Y-%m-%d")])
-        links = [
-            ["open claim page →", f"/nanopub/fi{r.ref_id}"],
-            ["tree view", "/nanopub/tree"],
-        ]
-        if r.trusty_uri:
-            links.append(["TriG bytes", f"/np/{r.trusty_uri.rsplit('/', 1)[-1]}"])
-        detail[f"h{r.ref_id}"] = {
-            "kind": "claim hub",
-            "title": r.title,
-            "fields": fields,
-            "links": links,
-        }
 
     return templates.TemplateResponse(
         request,
         "nanopub/index.html.j2",
         {
             "active_tab": "nanopub",
-            "disputed": disputed,
-            "live": live,
-            "unminted": unminted,
-            "batches": batches,
-            "stuck": stuck,
-            "detail": detail,
-        },
-    )
-
-
-@router.get("/nanopub/tree", response_class=HTMLResponse)
-async def nanopub_tree(request: Request) -> HTMLResponse:
-    """The claim forest: compounds nest their conjunct atoms, refined
-    claims nest under what they refine, evidence sources hang as leaves.
-    Same data family as the queue table — publish rows + links, no new
-    state. A ``detail`` dict (same shape as the hub page's graph pane)
-    backs the click-to-inspect side panel."""
-    from precis.nanopub import overview
-
-    store = get_store(request)
-    roots = overview.hub_tree(store)
-
-    def _count(nodes: list[Any]) -> int:
-        return sum(1 + _count(n.children) for n in nodes)
-
-    detail: dict[str, Any] = {}
-
-    def _collect(n: Any) -> None:
-        r = n.row
-        hub_key = f"h{r.ref_id}"
-        if hub_key not in detail:
-            fields = [["state", r.state or "unminted"]]
-            if r.disputed:
-                fields.append(["disputed", "yes — blocked"])
-            if r.withheld_count:
-                fields.append(["withheld edges", str(r.withheld_count)])
-            if r.drifted:
-                fields.append(["drifted", "frozen string ≠ live title"])
-            if r.approved_title and r.approved_title != r.title:
-                fields.append(["approved", r.approved_title])
-            if r.trusty_uri:
-                fields.append(["trusty", r.trusty_uri])
-            if n.children:
-                fields.append(["nested claims", str(len(n.children))])
-            if n.evidence:
-                fields.append(["evidence", str(len(n.evidence))])
-            links = [["open claim page →", f"/nanopub/fi{r.ref_id}"]]
-            if r.trusty_uri:
-                links.append(["TriG bytes", f"/np/{r.trusty_uri.rsplit('/', 1)[-1]}"])
-            detail[hub_key] = {
-                "kind": "claim hub",
-                "title": r.title,
-                "fields": fields,
-                "links": links,
-            }
-        for e in n.evidence:
-            ev_key = f"e{e.kind}-{e.ref_id}-{e.relation}"
-            if ev_key not in detail:
-                if e.kind == "finding":
-                    url = f"/nanopub/fi{e.ref_id}"
-                elif e.kind == "paper":
-                    url = f"/papers/{e.ref_id}"
-                else:
-                    url = f"/refs/{e.kind}/{e.ref_id}"
-                detail[ev_key] = {
-                    "kind": e.kind,
-                    "title": e.title,
-                    "fields": [["relation", e.relation]],
-                    "links": [["open →", url]],
-                }
-        for c in n.children:
-            _collect(c)
-
-    for root in roots:
-        _collect(root)
-
-    return templates.TemplateResponse(
-        request,
-        "nanopub/tree.html.j2",
-        {
-            "active_tab": "nanopub",
             "roots": roots,
             "n_nodes": _count(roots),
-            "detail": detail,
+            "disputed": disputed,
+            "batches": batches,
+            "stuck": stuck,
         },
     )
+
+
+@router.get("/nanopub/tree", response_model=None)
+async def nanopub_tree() -> RedirectResponse:
+    """The tree IS the index now — kept as a redirect for old links."""
+    return RedirectResponse(url="/nanopub", status_code=307)
 
 
 @router.get("/nanopub/fi{hub_id}", response_class=HTMLResponse)
@@ -213,6 +122,13 @@ async def nanopub_trig(request: Request, code: str) -> Response:
 # ── interactive doors (a person clicked; integrity lives below) ──────
 
 
+def _back_to_hub(request: Request, hub_id: int) -> RedirectResponse:
+    """Post-action redirect, keeping ``?embed=1`` when the form was
+    submitted from inside the /nanopub review pane."""
+    suffix = "?embed=1" if request.query_params.get("embed") == "1" else ""
+    return RedirectResponse(url=f"/nanopub/fi{hub_id}{suffix}", status_code=303)
+
+
 @router.post("/nanopub/fi{hub_id}/approve", response_model=None)
 async def nanopub_approve(
     request: Request,
@@ -237,7 +153,7 @@ async def nanopub_approve(
         )
     except (BadInput, json.JSONDecodeError) as exc:
         return _error(request, "Approve refused", str(exc), 400)
-    return RedirectResponse(url=f"/nanopub/fi{hub_id}", status_code=303)
+    return _back_to_hub(request, hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/sign", response_model=None)
@@ -262,7 +178,7 @@ async def nanopub_sign(
         )
     except (BadInput, PermissionError) as exc:
         return _error(request, "Sign refused", str(exc), 400)
-    return RedirectResponse(url=f"/nanopub/fi{hub_id}", status_code=303)
+    return _back_to_hub(request, hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/reopen", response_model=None)
@@ -276,7 +192,7 @@ async def nanopub_reopen(request: Request, hub_id: int) -> Response:
             "only a reviewed/signed (pre-anchor) row reopens",
             400,
         )
-    return RedirectResponse(url=f"/nanopub/fi{hub_id}", status_code=303)
+    return _back_to_hub(request, hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/signoff/{link_id}", response_model=None)
@@ -299,7 +215,7 @@ async def nanopub_signoff(
         return _error(request, "Sign-off refused", str(exc), 400)
     if not ok:
         return _error(request, "Sign-off refused", f"no evidence edge {link_id}", 400)
-    return RedirectResponse(url=f"/nanopub/fi{hub_id}", status_code=303)
+    return _back_to_hub(request, hub_id)
 
 
 # ── page assembly ────────────────────────────────────────────────────
@@ -360,7 +276,7 @@ def _hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
-        "suggested_payload": _suggested_payload(row, bundle),
+        "suggested_payload": _suggested_payload(store, row, bundle),
         "graph": _graph(store, bundle, row),
     }
 
@@ -384,11 +300,42 @@ def _frozen_rung(state: str | None) -> str:
     ).frozen
 
 
-def _suggested_payload(row: Any, bundle: Any) -> str:
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _suggest_quote_snip(store: Any, chunk: Any) -> tuple[str, str]:
+    """A gate-passing starting point from the grounding chunk: the first
+    citation-marker-free sentence as the quote candidate (the reviewer
+    trims it to the assertion — freeze-at-review still means a human
+    decides exactly what the signature covers), and a snip validated
+    unique-within-paper with the same helpers the mint gates run."""
+    from precis.nanopub import evidence as ev
+    from precis.nanopub import snip as sniplib
+
+    sentences = _SENTENCE_SPLIT.split(chunk.text or "")
+    quote = next(
+        (
+            s.strip()
+            for s in sentences
+            if len(sniplib.tokens(s)) >= 6 and not ev.citation_markers(s)
+        ),
+        (chunk.text or "").strip(),
+    )
+    haystacks = [c.text for c in ev.paper_body_chunks(store, chunk.ref_id)]
+    toks = sniplib.tokens(quote)
+    snip = ""
+    for i in range(max(1, len(toks) - 7)):
+        candidate = " ".join(toks[i : i + 8])
+        if sniplib.count_matches(candidate, haystacks) == 1:
+            snip = candidate
+            break
+    return quote, snip
+
+
+def _suggested_payload(store: Any, row: Any, bundle: Any) -> str:
     """The approve form's prefill: the frozen payload when one exists,
-    else a passage skeleton derived from the bundle (quote/snip left for
-    the reviewer — freeze-at-review means a human fills exactly what the
-    signature will cover)."""
+    else per-passage candidates derived from the grounding chunks —
+    quote + unique snip suggested, for the reviewer to trim and attest."""
     if row is not None and row.grounding:
         return json.dumps(row.grounding, indent=2)
     by_ref = {s.ref_id: s for s in bundle.sources}
@@ -397,12 +344,13 @@ def _suggested_payload(row: Any, bundle: Any) -> str:
         src = by_ref.get(chunk.ref_id)
         if src is None:
             continue
+        quote, snip = _suggest_quote_snip(store, chunk)
         passages.append(
             {
                 "doi": src.doi or "",
                 "pdf_sha256": src.pdf_sha256 or "",
-                "quote": "",
-                "snip": "",
+                "quote": quote,
+                "snip": snip,
                 "chunk_id": chunk.chunk_id,
                 "role": src.role,
             }

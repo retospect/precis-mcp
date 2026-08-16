@@ -89,13 +89,15 @@ Built (slices 4–5, publish path — POST gated, nothing published):
   re-serialization. CLI-only door (``precis nanopub publish --live``) —
   deliberately no web button.
 - Review-and-sign web surface — ``precis_web/routes/nanopub.py``:
-  ``/nanopub`` queue table, ``/nanopub/tree`` claim forest (compounds
-  nest conjunct atoms / refined claims nest under what they refine,
-  evidence sources as leaves; :func:`.overview.hub_tree`),
+  ``/nanopub`` three-pane workbench (claim forest via
+  :func:`.overview.hub_tree` | per-hub review pane | paper pane, framed
+  with ``?embed=1`` chrome-less mode, draggable dividers; disputed strip
+  + OTS status folded in; ``/nanopub/tree`` redirects here),
   ``/nanopub/fi<id>`` per-hub review page (clickable SVG claim DAG,
   publish-row side panel, symmetric dispute rendering, one action per
-  state, sign button that signs for real), ``/np/<code>`` serving exact
-  frozen bytes during embargo.
+  state, sign button that signs for real, approve form prefilled with a
+  gate-passing quote+snip candidate per grounding chunk),
+  ``/np/<code>`` serving exact frozen bytes during embargo.
 - Export appendix — a draft citing a hub whose publish row is
   signed/anchored/published gets a "Published claim artifacts"
   end-matter section (frozen AIDA sentence + trusty URI + status) in

@@ -1,21 +1,20 @@
 {% extends "base.html.j2" %}
 {% block title %}Nanopubs{% endblock %}
+{# Full-bleed: the three panes should grow with the viewport. #}
+{% block main_class %}px-3 py-3{% endblock %}
 {% block content %}
-<div class="max-w-6xl mx-auto px-4 py-6 space-y-8">
-  <div class="flex items-baseline justify-between">
-    <div>
-      <h1 class="text-xl font-semibold">Nanopub review queue</h1>
-      <p class="text-sm text-slate-400 mt-1">
-        Every claim hub by publish state — derived from publish rows + the
-        drift recompute. Unpublished is a good terminal state, not a
-        backlog to burn down.
-      </p>
-    </div>
-    <a class="text-sm text-emerald-400 hover:underline" href="/nanopub/tree">tree view →</a>
+<div class="space-y-3">
+  <div class="flex items-baseline justify-between px-1">
+    <h1 class="text-lg font-semibold">Nanopub claims</h1>
+    <p class="text-xs text-slate-500">
+      {{ n_nodes }} hub{{ 's' if n_nodes != 1 }} — click a claim to review it
+      in the middle pane, a paper to read it on the right. Unpublished is a
+      good terminal state, not a backlog to burn down.
+    </p>
   </div>
 
   {% if stuck %}
-  <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+  <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800">
     ⚠ {{ stuck|length }} OTS batch{{ 'es' if stuck|length != 1 }} pending past
     threshold:
     {% for b in stuck %}
@@ -26,140 +25,194 @@
   </div>
   {% endif %}
 
-  {% macro hub_table(rows, empty_note) %}
-  {% if rows %}
-  <div class="overflow-x-auto">
-    <table class="min-w-full text-sm">
-      <thead>
-        <tr class="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-700">
-          <th class="py-2 pr-4">Hub</th>
-          <th class="py-2 pr-4">Claim</th>
-          <th class="py-2 pr-4">State</th>
-          <th class="py-2 pr-4">Frozen</th>
-          <th class="py-2 pr-4">Flags</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in rows %}
-        <tr class="tree-node border-b border-slate-800 hover:bg-slate-800/40 cursor-pointer"
-            data-np="h{{ r.ref_id }}">
-          <td class="py-2 pr-4 font-mono whitespace-nowrap">
-            <a class="text-emerald-400 hover:underline" href="/nanopub/fi{{ r.ref_id }}">fi{{ r.ref_id }}</a>
-          </td>
-          <td class="py-2 pr-4 max-w-xl truncate" title="{{ r.title }}">{{ r.title }}</td>
-          <td class="py-2 pr-4 whitespace-nowrap">
-            <span class="font-mono text-xs px-1.5 py-0.5 rounded
-              {% if r.disputed %}bg-rose-900/60 text-rose-200
-              {% elif r.state == 'published' %}bg-emerald-900/60 text-emerald-200
-              {% elif r.state %}bg-slate-700 text-slate-200
-              {% else %}text-slate-500{% endif %}">
-              {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
-            </span>
-          </td>
-          <td class="py-2 pr-4 text-xs text-slate-400 whitespace-nowrap">{{ r.frozen or '—' }}</td>
-          <td class="py-2 pr-4 text-xs whitespace-nowrap">
-            {% if r.drifted %}<span class="text-amber-400" title="live title no longer matches the frozen claim_sha">drifted</span>{% endif %}
-            {% if r.withheld_count %}<span class="text-slate-400 ml-2" title="evidence edges neither verified nor signed off">{{ r.withheld_count }} withheld</span>{% endif %}
-            {% if r.disputed_since %}<span class="text-rose-400 ml-2" title="oldest live contradicts edge">disputed since {{ r.disputed_since.strftime('%Y-%m-%d') }}</span>{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  {% if disputed %}
+  <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
+    <span class="font-semibold">◆ Disputed — adjudicate first (oldest on top):</span>
+    {% for r in disputed %}
+    <a class="inline-block ml-2 hover:underline" target="np-review"
+       href="/nanopub/fi{{ r.ref_id }}?embed=1"
+       title="{{ r.title }}">
+      <span class="font-mono">fi{{ r.ref_id }}</span>{% if r.disputed_since %}
+      <span class="text-rose-500">(since {{ r.disputed_since.strftime('%Y-%m-%d') }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
+    {% endfor %}
   </div>
-  {% else %}
-  <p class="text-sm text-slate-500">{{ empty_note }}</p>
   {% endif %}
+
+  {% macro state_badge(r) %}
+  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0
+    {% if r.disputed %}bg-rose-100 text-rose-700
+    {% elif r.state == 'published' %}bg-emerald-100 text-emerald-700
+    {% elif r.state in ('signed', 'anchored') %}bg-sky-100 text-sky-700
+    {% elif r.state %}bg-slate-200 text-slate-700
+    {% else %}bg-slate-100 text-slate-400{% endif %}">
+    {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
+  </span>
   {% endmacro %}
 
-  <div class="lg:grid lg:grid-cols-3 lg:gap-6">
-    <div class="lg:col-span-2 min-w-0 space-y-8">
-      <section>
-        <h2 class="text-sm font-semibold uppercase tracking-wide text-rose-300 mb-2">
-          ◆ Disputed — adjudicate first (oldest on top)
-        </h2>
-        {{ hub_table(disputed, "No live contradicts edges — nothing disputed.") }}
-      </section>
+  {% macro node(n) %}
+  <li class="mt-1">
+    <details {% if n.children %}open{% endif %} class="group">
+      <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-100"
+               data-pane="np-review" data-src="/nanopub/fi{{ n.row.ref_id }}?embed=1">
+        {% if n.children or n.evidence %}
+        <span class="tree-caret text-slate-400 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
+        {% else %}
+        <span class="w-3"></span>
+        {% endif %}
+        {{ state_badge(n.row) }}
+        {% if n.relation %}
+        <span class="text-xs text-slate-400 shrink-0">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
+        {% endif %}
+        <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
+           target="np-review" href="/nanopub/fi{{ n.row.ref_id }}?embed=1">fi{{ n.row.ref_id }}</a>
+        <span class="text-sm truncate" title="{{ n.row.title }}">{{ n.row.title }}</span>
+        {% if n.row.trusty_uri %}
+        <span class="font-mono text-xs text-slate-400 shrink-0"
+              title="{{ n.row.trusty_uri }}">{{ n.row.trusty_uri.rsplit('/', 1)[-1][:14] }}…</span>
+        {% endif %}
+        {% if n.row.drifted %}<span class="text-xs text-amber-600 shrink-0">drifted</span>{% endif %}
+      </summary>
+      {% if n.evidence or n.children %}
+      <ul class="ml-6 border-l border-slate-200 pl-3">
+        {% for e in n.evidence %}
+        <li class="tree-node mt-0.5 flex items-center gap-2 rounded px-2 py-0.5 text-xs text-slate-500 cursor-pointer hover:bg-slate-100"
+            {% if e.kind == 'finding' %}data-pane="np-review" data-src="/nanopub/fi{{ e.ref_id }}?embed=1"
+            {% elif e.kind == 'paper' %}data-pane="np-paper" data-src="/papers/{{ e.ref_id }}?embed=1"{% endif %}>
+          <span class="w-3"></span>
+          <span class="font-mono px-1 rounded
+            {% if e.relation == 'contradicts' %}bg-rose-50 text-rose-600
+            {% elif e.relation == 'establishes' %}bg-emerald-50 text-emerald-600
+            {% else %}bg-slate-100 text-slate-500{% endif %}">{{ e.relation }}</span>
+          {% if e.kind == 'finding' %}
+          <a class="truncate hover:underline" target="np-review"
+             href="/nanopub/fi{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>
+          {% elif e.kind == 'paper' %}
+          <a class="truncate hover:underline" target="np-paper"
+             href="/papers/{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>
+          {% else %}
+          <a class="truncate hover:underline" href="/refs/{{ e.kind }}/{{ e.ref_id }}"
+             title="{{ e.title }}">{{ e.title }}</a>
+          {% endif %}
+          <span class="text-slate-400 shrink-0">{{ e.kind }}</span>
+        </li>
+        {% endfor %}
+        {% for c in n.children %}{{ node(c) }}{% endfor %}
+      </ul>
+      {% endif %}
+    </details>
+  </li>
+  {% endmacro %}
 
-      <section>
-        <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-300 mb-2">
-          In the pipeline
-        </h2>
-        {{ hub_table(live, "No publish rows yet — approve a hub from its review page.") }}
-      </section>
+  <div id="np-panes" class="flex items-stretch" style="height: calc(100vh - 9rem); min-height: 480px;">
+    <div id="pane-tree" class="overflow-y-auto min-w-0 pr-1" style="width: 34%">
+      {% if roots %}
+      <ul>
+        {% for n in roots %}{{ node(n) }}{% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-sm text-slate-500">No claim hubs yet.</p>
+      {% endif %}
 
-      <section>
-        <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
-          Unminted hubs
-        </h2>
-        {{ hub_table(unminted, "Every claim hub has a publish row.") }}
-      </section>
+      <details class="mt-4 text-sm">
+        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">
+          OTS batches{% if batches %} ({{ batches|length }}){% endif %}
+        </summary>
+        {% if batches %}
+        <table class="text-xs mt-2">
+          <thead>
+            <tr class="text-left uppercase tracking-wide text-slate-400 border-b border-slate-200">
+              <th class="py-1.5 pr-4">Batch</th><th class="py-1.5 pr-4">Created</th>
+              <th class="py-1.5 pr-4">Leaves</th><th class="py-1.5 pr-4">Proof</th>
+              <th class="py-1.5 pr-4">Merkle root</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for b in batches %}
+            <tr class="border-b border-slate-100">
+              <td class="py-1 pr-4 font-mono">{{ b.id }}</td>
+              <td class="py-1 pr-4">{{ b.created_at.strftime('%Y-%m-%d') }}</td>
+              <td class="py-1 pr-4">{{ b.leaf_count }}</td>
+              <td class="py-1 pr-4">
+                <span class="{% if b.proof_state == 'upgraded' %}text-emerald-600{% elif b.proof_state == 'pending' %}text-amber-600{% else %}text-rose-600{% endif %}">
+                  {{ b.proof_state or 'MISSING' }}
+                </span>
+              </td>
+              <td class="py-1 pr-4 font-mono text-slate-400">{{ b.merkle_root[:24] }}…</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="text-xs text-slate-500 mt-2">No batches — the OTS sweep is dark
+          (<code>PRECIS_OTS_ENABLED</code>) or nothing signed yet.</p>
+        {% endif %}
+      </details>
     </div>
-    <div class="mt-6 lg:mt-0">
-      <div id="np-detail"
-           class="lg:sticky lg:top-4 rounded-md border border-slate-700 bg-slate-800/40 p-4 text-sm">
-        <p class="text-slate-500 text-xs">Click a row to inspect it here.</p>
-      </div>
+
+    <div class="np-divider" data-pane="pane-tree"></div>
+
+    <div id="pane-review" class="min-w-0" style="width: 36%">
+      <iframe name="np-review" id="np-review" title="claim review"
+              class="w-full h-full rounded-lg border border-slate-200 bg-white"
+              srcdoc="&lt;p style='font: 13px system-ui; color: #94a3b8; padding: 1.5rem'&gt;Click a claim on the left — its review page (state, evidence DAG, approve/sign action) loads here.&lt;/p&gt;"></iframe>
+    </div>
+
+    <div class="np-divider" data-pane="pane-review"></div>
+
+    <div id="pane-paper" class="min-w-0 flex-1">
+      <iframe name="np-paper" id="np-paper" title="paper reader"
+              class="w-full h-full rounded-lg border border-slate-200 bg-white"
+              srcdoc="&lt;p style='font: 13px system-ui; color: #94a3b8; padding: 1.5rem'&gt;Click an evidence paper — its reader loads here.&lt;/p&gt;"></iframe>
     </div>
   </div>
-
-  <section>
-    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400 mb-2">
-      OTS batches
-    </h2>
-    {% if batches %}
-    <table class="text-sm">
-      <thead>
-        <tr class="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-700">
-          <th class="py-2 pr-6">Batch</th><th class="py-2 pr-6">Created</th>
-          <th class="py-2 pr-6">Leaves</th><th class="py-2 pr-6">Proof</th>
-          <th class="py-2 pr-6">Merkle root</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for b in batches %}
-        <tr class="border-b border-slate-800">
-          <td class="py-1.5 pr-6 font-mono">{{ b.id }}</td>
-          <td class="py-1.5 pr-6">{{ b.created_at.strftime('%Y-%m-%d') }}</td>
-          <td class="py-1.5 pr-6">{{ b.leaf_count }}</td>
-          <td class="py-1.5 pr-6">
-            <span class="{% if b.proof_state == 'upgraded' %}text-emerald-400{% elif b.proof_state == 'pending' %}text-amber-400{% else %}text-rose-400{% endif %}">
-              {{ b.proof_state or 'MISSING' }}
-            </span>
-          </td>
-          <td class="py-1.5 pr-6 font-mono text-xs text-slate-400">{{ b.merkle_root[:24] }}…</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="text-sm text-slate-500">No batches — the OTS sweep is dark
-      (<code>PRECIS_OTS_ENABLED</code>) or nothing signed yet.</p>
-    {% endif %}
-  </section>
 </div>
 
-<style>.tree-node.selected { background: rgba(51, 65, 85, 0.5); }</style>
+<style>
+  .tree-node.selected { background: #ecfdf5; }
+  .np-divider { width: 7px; flex: none; cursor: col-resize; border-radius: 4px; margin: 0 1px; }
+  .np-divider:hover, .np-divider.dragging { background: #a7f3d0; }
+</style>
 <script>
-  const NP_DETAIL = {{ detail | tojson }};
-  const pane = document.getElementById("np-detail");
-  function npEsc(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
+  // Row click = load the row's target pane (bigger hit area than the
+  // links, which carry target= for middle-click/new-tab correctness).
   document.querySelectorAll(".tree-node").forEach(n => n.addEventListener("click", ev => {
-    if (ev.target.closest("a")) return;  // in-row links navigate
+    if (ev.target.closest("a")) return;                 // in-row links navigate
+    if (!ev.target.closest(".tree-caret")) ev.preventDefault();  // only the caret folds
+    if (!n.dataset.src) return;
     document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
     n.classList.add("selected");
-    const d = NP_DETAIL[n.dataset.np];
-    if (!d) return;
-    pane.innerHTML =
-      `<div class="text-[11px] uppercase tracking-wide text-slate-400">${npEsc(d.kind)}</div>` +
-      `<h3 class="font-semibold mt-1">${npEsc(d.title)}</h3>` +
-      `<table class="text-xs mt-2">` +
-      d.fields.map(([k, v]) => `<tr><td class="text-slate-400 pr-3 py-0.5 align-top whitespace-nowrap">${npEsc(k)}</td><td class="break-all">${npEsc(v)}</td></tr>`).join("") +
-      `</table>` +
-      d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-emerald-400 hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
+    const frame = document.getElementById(n.dataset.pane);
+    frame.removeAttribute("srcdoc");
+    frame.src = n.dataset.src;
   }));
+
+  // Draggable dividers: each resizes the pane on its left; the last pane
+  // flexes. Widths persist per pane in localStorage.
+  document.querySelectorAll("#np-panes > [id^='pane-']").forEach(p => {
+    const saved = localStorage.getItem("np-pane-" + p.id);
+    if (saved && p.style.width) p.style.width = saved;
+  });
+  document.querySelectorAll(".np-divider").forEach(d => {
+    d.addEventListener("pointerdown", ev => {
+      const pane = document.getElementById(d.dataset.pane);
+      const startX = ev.clientX, startW = pane.getBoundingClientRect().width;
+      d.classList.add("dragging");
+      d.setPointerCapture(ev.pointerId);
+      // Iframes swallow pointermove — disable their hit-testing mid-drag.
+      document.querySelectorAll("#np-panes iframe").forEach(f => f.style.pointerEvents = "none");
+      const move = e => {
+        const w = Math.max(160, startW + e.clientX - startX);
+        pane.style.width = w + "px";
+      };
+      const up = () => {
+        d.classList.remove("dragging");
+        d.removeEventListener("pointermove", move);
+        document.querySelectorAll("#np-panes iframe").forEach(f => f.style.pointerEvents = "");
+        localStorage.setItem("np-pane-" + pane.id, pane.style.width);
+      };
+      d.addEventListener("pointermove", move);
+      d.addEventListener("pointerup", up, { once: true });
+    });
+  });
 </script>
 {% endblock %}
