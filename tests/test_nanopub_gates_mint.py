@@ -100,6 +100,25 @@ def test_clean_payload_passes_all_gates(store: Any) -> None:
     assert _gate_slugs(store, hub, _payload(chunk)) == set()
 
 
+def test_pdf_sha_alias_row_does_not_block_mint(store: Any) -> None:
+    # The metadata write-back (_maybe_patch_pdf) leaves TWO identifier
+    # rows per patched PDF — post-patch canonical + as-downloaded alias.
+    # refs.pdf_sha256 pins the held copy; alias rows only index dedup.
+    paper, chunk, sha = _seed_paper(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, paper)
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('pdf_sha256', %s, %s, 'test')",
+            (f"a{paper:063x}", paper),
+        )
+    assert evidence.pdf_sha_rows(store, paper) == [sha]
+    hub = _seed_hub(store, "MOFs can be anisotropic up to 400:1.", paper, chunk)
+    assert _gate_slugs(store, hub, _payload(chunk)) == set()
+
+
 def test_hearsay_section_grounding_is_rejected(store: Any) -> None:
     # The fi34867 class: quote checks out but lives in a references list.
     paper, chunk, _sha = _seed_paper(store, section=["References"])

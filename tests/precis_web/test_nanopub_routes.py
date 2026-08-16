@@ -72,6 +72,9 @@ def test_hub_page_shows_state_and_action(
     assert resp.status_code == 200
     assert "A reviewable claim." in resp.text
     assert "Approve" in resp.text  # unminted → approve action
+    # Framed in the workbench, paper links retarget to the paper pane.
+    assert 'window.name === "np-review"' in resp.text
+    assert '"np-paper"' in resp.text
     # Non-hub → friendly 404, not a 500.
     other = _seed_paper(store)[0]
     assert client.get(f"/nanopub/fi{other}").status_code == 404
@@ -178,10 +181,16 @@ def test_approve_gate_failure_is_a_400_not_a_500(
     hub = _seed_hub(store, "A gate-failing claim.", paper, chunk)
     resp = client.post(
         f"/nanopub/fi{hub}/approve",
-        data={"title": "", "payload": '{"passages": []}'},
+        data={"title": "", "payload": '{"passages": [], "hand-trimmed-marker": 1}'},
         follow_redirects=False,
     )
     assert resp.status_code == 400  # no-source-no-atom gate fires
+    # The refusal re-renders the form with the reviewer's edits intact —
+    # a gate failure must not eat a hand-trimmed payload. (Quotes are
+    # autoescaped in the textarea, so assert on a quote-free marker.)
+    assert "hand-trimmed-marker" in resp.text
+    assert "✖" in resp.text  # the violation banner
+    assert f"/nanopub/fi{hub}/approve" in resp.text  # the form is back
 
 
 def test_signoff_door_from_the_web(client: TestClient, runtime_with_store) -> None:

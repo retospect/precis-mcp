@@ -152,7 +152,21 @@ async def nanopub_approve(
             interactive=True,  # the review surface IS the human act
         )
     except (BadInput, json.JSONDecodeError) as exc:
-        return _error(request, "Approve refused", str(exc), 400)
+        # Re-render the hub page with the reviewer's edits intact — a
+        # gate refusal is feedback on a draft, not a dead end that eats
+        # the hand-trimmed payload.
+        ctx = _hub_context(store, hub_id)
+        if ctx is None:
+            return _error(request, "Approve refused", str(exc), 400)
+        ctx.update(
+            active_tab="nanopub",
+            approve_error=str(exc),
+            submitted_title=title,
+            submitted_payload=payload,
+        )
+        return templates.TemplateResponse(
+            request, "nanopub/hub.html.j2", ctx, status_code=400
+        )
     return _back_to_hub(request, hub_id)
 
 

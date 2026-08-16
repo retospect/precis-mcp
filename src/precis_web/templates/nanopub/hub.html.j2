@@ -125,11 +125,14 @@
         <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Action</h2>
         {% if action == 'approve' %}
         <form method="post" action="/nanopub/fi{{ hub_id }}/approve" class="space-y-2">
+          {% if approve_error %}
+          <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ approve_error }}</div>
+          {% endif %}
           <label class="block text-xs text-slate-500">Exact string to freeze (the signature covers this):</label>
-          <textarea name="title" rows="3" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 text-sm">{{ bundle.sentence }}</textarea>
+          <textarea name="title" rows="3" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 text-sm">{{ submitted_title | default(bundle.sentence, true) }}</textarea>
           <label class="block text-xs text-slate-500">Grounding payload — quote + snip per passage, what you attest.
             Prefilled with a candidate from each grounding chunk; <b>trim the quote to the bare assertion</b> before approving:</label>
-          <textarea name="payload" rows="12" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 font-mono text-xs">{{ suggested_payload }}</textarea>
+          <textarea name="payload" rows="12" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 font-mono text-xs">{{ submitted_payload | default(suggested_payload, true) }}</textarea>
           <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ action_label }}</button>
           <p class="text-[11px] text-slate-500">Every Layer-A mint gate runs now — the queue only holds strings that can mint.</p>
         </form>
@@ -209,6 +212,25 @@
   function npEsc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  // Inside the workbench the review iframe is named np-review; paper
+  // links (DAG detail, dispute block) belong in the sibling paper pane,
+  // not this one. Delegated + capture so it also covers the detail links
+  // rendered below after a node click. Standalone pages (no frame name)
+  // keep default navigation; base.html.j2's embed stamper skips targeted
+  // links, so stamp embed=1 here too.
+  if (window.name === "np-review") {
+    document.addEventListener("click", e => {
+      const a = e.target.closest("a[href]");
+      if (!a || a.target || a.host !== location.host) return;
+      try {
+        const u = new URL(a.href);
+        if (!u.pathname.startsWith("/papers/")) return;
+        u.searchParams.set("embed", "1");
+        a.href = u;
+        a.target = "np-paper";
+      } catch {}
+    }, true);
   }
   document.querySelectorAll(".np-node").forEach(n => n.addEventListener("click", () => {
     const d = NP_DETAIL[n.dataset.id];

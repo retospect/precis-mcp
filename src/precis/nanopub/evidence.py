@@ -300,22 +300,26 @@ def paper_body_chunks(store: Store, ref_id: int) -> list[ChunkInfo]:
 
 
 def pdf_sha_rows(store: Store, ref_id: int) -> list[str]:
-    """The ``pdf_sha256`` identifier rows attached to one ref — the mint
-    gate requires exactly one (two = dup-ingest hygiene defect, e.g. prod
-    ref 5937; zero = nothing to pin the quoted copy to, e.g. ref 42109 —
-    ``docs/backlog/pdf-sha256-identifier-hygiene.md``). The
-    ``refs.pdf_sha256`` column is the held-file pointer and joins in as a
-    fallback when no identifier row exists."""
+    """The sha256 candidates that could pin the quoted copy — the mint
+    gate requires exactly one. ``refs.pdf_sha256`` (the held-file
+    pointer) is authoritative when set: the metadata write-back at
+    ingest (``_maybe_patch_pdf``) deliberately leaves TWO
+    ``ref_identifiers`` rows per patched PDF — post-patch canonical +
+    as-downloaded alias — so the dedup probe hits either byte sequence;
+    those alias rows index re-ingests, they don't make the held copy
+    ambiguous. Identifier rows are the fallback for shaless refs (zero
+    of either = nothing to pin, e.g. ref 42109 —
+    ``docs/backlog/pdf-sha256-identifier-hygiene.md``)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT id_value FROM ref_identifiers "
-            "WHERE ref_id = %s AND id_kind = 'pdf_sha256'",
+            "SELECT pdf_sha256 FROM refs "
+            "WHERE ref_id = %s AND pdf_sha256 IS NOT NULL",
             (ref_id,),
         ).fetchall()
         if not rows:
             rows = conn.execute(
-                "SELECT pdf_sha256 FROM refs "
-                "WHERE ref_id = %s AND pdf_sha256 IS NOT NULL",
+                "SELECT DISTINCT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'pdf_sha256'",
                 (ref_id,),
             ).fetchall()
     return [str(r[0]) for r in rows]
