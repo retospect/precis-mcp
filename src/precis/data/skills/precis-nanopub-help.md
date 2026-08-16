@@ -68,6 +68,31 @@ failures an extraction agent can avoid up front:
   own evidence or mints as a `precis:Hypothesis` (declarative sentence,
   type carries the epistemic status, `testableBy` names the
   discriminating experiment).
+- **One DOI per passage** — provenance content is DOI + quote + snip.
+  A DOI-less source (textbook/ISBN, patent) keeps its evidence *edge*
+  (visible internally) but its passage stays OUT of the payload until
+  non-DOI grounding lands (`docs/backlog/nanopub-book-isbn-grounding.md`).
+- **The sha pin is `refs.pdf_sha256`** (the held file). TWO
+  `pdf_sha256` identifier rows per ref is the metadata write-back's
+  normal shape (canonical + as-downloaded alias for dedup probing) and
+  does NOT block minting. Zero anywhere = unmintable until the PDF is
+  re-hashed or acquired.
+- **Quote mechanics** — the quote must be verbatim and contiguous
+  within ONE stored chunk (adjacent sentences in the same chunk may be
+  joined; never across chunks), trimmed to the bare assertion, free of
+  citation markers, and any structured `quantity` value must appear
+  inside some quote.
+
+Grounding reaches the prefill through **both** edge shapes: inbound
+evidence edges carry per-edge grounding-chunk pointers; outbound
+`derived-from` links ground through their `dst_chunk_id` pin. A hub
+whose approve form shows no passages is missing both — re-ground it,
+don't hand-type a payload.
+
+Style: a quantitative claim corroborates in the **measured quantity**
+(e.g. transistor counts for Moore's law), never in marketing labels
+("65 nm node" names no physical dimension) — a passage in the wrong
+currency imports a unit confusion into the artifact.
 
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
@@ -82,6 +107,28 @@ on the `/nanopub/fi<id>` review page:
   are trusted, and publishing requires the *attesting* (human) entry.
 - **Order** — atoms publish before the compounds citing them; hanging
   claims never publish; a drifted or disputed hub is blocked.
+
+## Triage lane (small-model-safe: classify and file, never fix)
+
+Gate refusals are machine-precise; classifying them needs no judgment.
+For an unminted hub, read the review page / preflight refusals and file
+per class — do not mutate the hub, its edges, or its sources:
+
+- `[grounding] no DOI` + the source HAS one (check the publisher) →
+  propose the `meta.doi` backfill to a human.
+- `[grounding] no DOI` + genuinely DOI-less (book, patent) → note the
+  edge-stays/passage-out policy on the hub; nothing to fix.
+- `[pdf-sha] 0 rows` → acquisition/backfill item
+  (`docs/backlog/pdf-sha256-identifier-hygiene.md` class).
+- `[pdf-sha] >1 rows` → only ambiguous when `refs.pdf_sha256` is NULL;
+  file that combination, otherwise it's the benign alias pair.
+- `[primary-source]` (hearsay section or in-quote citation marker) →
+  hunt-the-primary todo naming the cited work; the claim stays hanging.
+- `[quote-verbatim]` / `[snip]` → the payload needs a human re-trim;
+  point at the chunk, don't rewrite the quote yourself.
+
+Quote-trimming, claim restructuring (atom vs compound), and every
+approve/sign/signoff click stay above this lane.
 
 ## Registry mirror (read-only sidecar)
 
