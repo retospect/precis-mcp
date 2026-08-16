@@ -220,6 +220,64 @@ def test_pathway_detail_sparse_meta_no_500(client, runtime) -> None:
     assert "no body chunk recorded for this pathway" in resp.text
 
 
+# ── Orphaned-pathway-stub status banner (no graph -> clear state) ───────
+
+
+def test_pathway_detail_computing_no_graph_shows_in_flight_banner(
+    client, runtime
+) -> None:
+    """A still-``computing`` stub with no graph yet renders the "in
+    flight/queued" banner instead of a bare empty-diagram message — the
+    orphaned-pathway-stub sweep (``precis.quest.loop.
+    _reconcile_orphaned_pathways``) is what eventually resolves a dead one,
+    but a live one should read as "still running", not blank."""
+    _seed_pathway(
+        runtime.store,
+        meta={"status": "computing", "candidate_ref": 166700},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "STATUS:computing" in resp.text
+    assert "barrier computation in flight/queued" in resp.text
+    assert "no energetics graph recorded for this pathway yet" not in resp.text
+
+
+def test_pathway_detail_failed_no_graph_shows_reason_banner(client, runtime) -> None:
+    """A pathway the sweep stamped ``failed`` renders its
+    ``failed_reason`` instead of a blank diagram."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "status": "failed",
+            "failed_reason": "orphaned (no live compute)",
+            "candidate_ref": 166700,
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "STATUS:failed" in resp.text
+    assert "compute failed" in resp.text
+    assert "orphaned (no live compute)" in resp.text
+
+
+def test_pathway_detail_superseded_no_graph_links_the_successor(
+    client, runtime
+) -> None:
+    """A ``superseded`` pathway (a content-key change re-dispatch) links to
+    its successor rather than rendering blank."""
+    _seed_pathway(
+        runtime.store,
+        meta={"status": "superseded", "superseded_by": 171700},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "superseded by a fresher run" in resp.text
+    assert "/refs/pathway/171700" in resp.text
+
+
 # ── Interactive explorer (clickable diagram + 3D cell + measures) ───────
 
 

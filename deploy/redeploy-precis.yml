@@ -434,7 +434,69 @@
     - scheduler
     - inference
   become: true
+  vars:
+    # Bound on the drain wait below (30s * N) — ops can pass
+    # `-e precis_drain_retries=<n>` to shorten it for an urgent deploy.
+    precis_drain_retries: 60
   tasks:
+    # ── Drain before bounce ──
+    # Touch the drain flag file BEFORE anything is restarted so the worker
+    # (precis.workers.runner.run_loop) stops claiming new work, then wait
+    # for whatever it already claimed to finish — long jobs (quest_tick
+    # coordinator slices, detached autocatpath seed children) used to get
+    # SIGKILLed mid-run by the restarts below (systemd's TimeoutStopSec=60
+    # / launchd's kickstart -k don't wait for application-level work to
+    # drain, only the process to exit). Gated the same as the restarts
+    # (nothing to drain for if nothing's about to bounce) and always
+    # removed at the end of this play, even on the no-change path.
+    - name: Touch worker drain file (pause new claims before bounce)
+      when: precis_deploy_changed | default(true) | bool
+      ansible.builtin.file:
+        path: /opt/precis/worker.drain
+        state: touch
+        mode: "0644"
+
+    # Delegated to the DB node: refs kind='job' carry lease/state in meta
+    # + STATUS: tags (STATUS:running via ref_tags/tags), not a column —
+    # see precis.workers.executors._common's claim query for the same
+    # shape. Bounded wait (retries * delay, default 30 min) — a stuck
+    # job must never block a deploy forever; failed_when: false + the
+    # debug task below make the timeout visible instead of silently
+    # racing the restart.
+    - name: Wait for in-flight long jobs leased to this host to finish
+      when: precis_deploy_changed | default(true) | bool
+      delegate_to: "{{ groups['data'][0] }}"
+      become: true
+      # Same os-split as roles/postgres's pg_user — resolved against the
+      # DELEGATED host's vars (a bare os_family here would read this
+      # play's host, not the DB node).
+      become_user: >-
+        {{ 'deploy' if hostvars[groups['data'][0]]['os_family'] | default('linux') == 'darwin'
+           else 'postgres' }}
+      ansible.builtin.shell: >-
+        psql -d precis_prod -tAc "SELECT count(*) FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id
+          WHERE r.kind = 'job'
+            AND r.deleted_at IS NULL
+            AND t.namespace = 'STATUS' AND t.value = 'running'
+            AND r.meta->>'lease_host' = '{{ inventory_hostname | regex_replace('\\..*$', '') }}'
+            AND r.meta->>'job_type' IN ('quest_tick','autocatpath_seed','autocatpath_aggregate','struct_relax','taproot_backfill')"
+      register: precis_drain_wait
+      changed_when: false
+      failed_when: false
+      until: (precis_drain_wait.stdout | default('') | trim) == '0'
+      retries: "{{ precis_drain_retries }}"
+      delay: 30
+
+    - name: Report drain outcome
+      when: precis_deploy_changed | default(true) | bool
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: drain
+          {{ 'complete' if (precis_drain_wait.stdout | default('') | trim) == '0' else 'timed out (proceeding anyway)' }}
+          — running long jobs leased here: {{ precis_drain_wait.stdout | default('?') | trim }}
+
     # ── Embedder FIRST, with a health gate ──
     # The system worker (and anything else that embeds at boot) crashes
     # rather than retries if the embedder listener is refusing
@@ -619,6 +681,14 @@
           {{ 'bounced' if (precis_deploy_changed | default(true) | bool)
              else 'skipped bounce (no venv changed)' }}
           {{ precis_plists.files | map(attribute='path') | map('basename') | list }}
+
+    # Unconditional (the touch above is gated on precis_deploy_changed, this
+    # isn't) — a no-change deploy still must not leave the flag file behind
+    # from an earlier run, or every claim on this host stays paused forever.
+    - name: Remove worker drain file (resume claims)
+      ansible.builtin.file:
+        path: /opt/precis/worker.drain
+        state: absent
 
 # ── 2b. Refresh the asa bridges (shared /opt/asa venv + com.asa.* daemons) ──
 # asa_bot/asa_slack live outside the three precis venvs this playbook manages,

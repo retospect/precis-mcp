@@ -9,6 +9,7 @@ on the real embedder.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -16,6 +17,7 @@ import pytest
 from precis.workers.base import ChunkRow
 from precis.workers.embed import EmbedHandler
 from precis.workers.runner import (
+    DRAIN_FILE_ENV,
     BatchResult,
     run_handler_once,
     run_loop,
@@ -324,6 +326,104 @@ class TestRunLoop:
                 "SELECT count(*) FROM chunk_embeddings WHERE status = 'ok'"
             ).fetchone()
         assert n == (4,)
+
+
+# ---------------------------------------------------------------------------
+# run_loop — drain file pauses claims
+# ---------------------------------------------------------------------------
+
+
+class TestRunLoopDrain:
+    def test_drain_file_pauses_claims_until_stop(self, tmp_path, monkeypatch, store):
+        """While the drain file exists, no handler is called at all — the
+        loop just idle-sleeps each cycle until ``should_stop`` fires."""
+        _ref_id, chunk_ids = seed_chunks(store, ["alpha", "beta", "gamma"])
+        drain_file = tmp_path / "worker.drain"
+        drain_file.write_text("")
+        monkeypatch.setenv(DRAIN_FILE_ENV, str(drain_file))
+
+        h = EmbedHandler(make_mock_bge_m3())
+
+        calls = {"n": 0}
+
+        def stop_after_a_few() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 3
+
+        run_loop(
+            [h],
+            store,
+            once=False,
+            batch_size=10,
+            idle_seconds=0.01,
+            should_stop=stop_after_a_few,
+        )
+
+        # Loop exited via should_stop while draining; nothing was claimed.
+        with store.pool.connection() as conn:
+            n = conn.execute("SELECT count(*) FROM chunk_embeddings").fetchone()
+        assert n == (0,)
+        assert len(chunk_ids) == 3
+
+    def test_drain_file_with_once_returns_immediately(
+        self, tmp_path, monkeypatch, store
+    ):
+        """A draining ``once=True`` pass claims nothing and RETURNS — a
+        manual ``precis worker --once`` must never hang on a drain flag
+        (e.g. one stranded by a crashed bounce play)."""
+        seed_chunks(store, ["alpha"])
+        drain_file = tmp_path / "worker.drain"
+        drain_file.write_text("")
+        monkeypatch.setenv(DRAIN_FILE_ENV, str(drain_file))
+
+        h = EmbedHandler(make_mock_bge_m3())
+        run_loop([h], store, once=True, batch_size=10)  # returns, no hang
+
+        with store.pool.connection() as conn:
+            n = conn.execute("SELECT count(*) FROM chunk_embeddings").fetchone()
+        assert n == (0,)
+
+    def test_stale_drain_file_is_ignored(self, tmp_path, monkeypatch, store):
+        """A drain flag older than DRAIN_TTL_S (mtime) is treated as absent
+        — a bounce play that died between touch and removal must not pause
+        claims forever."""
+        import os as _os
+
+        from precis.workers import runner as runner_mod
+
+        seed_chunks(store, ["alpha", "beta"])
+        drain_file = tmp_path / "worker.drain"
+        drain_file.write_text("")
+        stale = time.time() - (runner_mod.DRAIN_TTL_S + 60)
+        _os.utime(drain_file, (stale, stale))
+        monkeypatch.setenv(DRAIN_FILE_ENV, str(drain_file))
+
+        h = EmbedHandler(make_mock_bge_m3())
+        run_loop([h], store, once=True, batch_size=10)
+
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM chunk_embeddings WHERE status = 'ok'"
+            ).fetchone()
+        assert n == (2,)
+
+    def test_drain_file_absence_resumes_normal_processing(
+        self, tmp_path, monkeypatch, store
+    ):
+        """No drain file (or one that doesn't exist) behaves exactly like
+        the undrained loop — a plain sanity check that the drain check
+        doesn't interfere when it's a no-op."""
+        seed_chunks(store, ["alpha", "beta"])
+        monkeypatch.setenv(DRAIN_FILE_ENV, str(tmp_path / "does-not-exist"))
+
+        h = EmbedHandler(make_mock_bge_m3())
+        run_loop([h], store, once=True, batch_size=10)
+
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM chunk_embeddings WHERE status = 'ok'"
+            ).fetchone()
+        assert n == (2,)
 
 
 # ---------------------------------------------------------------------------

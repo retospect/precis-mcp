@@ -95,6 +95,33 @@ Two fixes, both reading state ``quest_tick`` now stamps:
    instead lets the quest keep ticking at a low (~daily) cadence; an eventual
    tick that sees frontier improvement or a non-dry rest resets the counter
    through the existing reset paths, ending escalation naturally.
+
+**Orphaned pathway stubs.** A `pathway` ref is minted ``meta.status =
+"computing"`` at :func:`~precis.quest.compute.dispatch_autocatpath` dispatch
+and only ever moves forward from there — to ``"ready"`` (the aggregate job's
+write-back) or ``"superseded"`` (a content-key change re-dispatch). Nothing
+ever moves it to ``"failed"``, so a pathway whose whole job tree dies (the
+seed/aggregate jobs get swept/cancelled/infra-failed and nothing
+re-dispatches) sits at ``"computing"`` forever — a stub the frontier never
+ranks and the web pathway page renders blank (prod: 168 such stubs against 99
+``"ready"`` ones before this fix). Each reconcile pass now runs
+:func:`_reconcile_orphaned_pathways` per active quest — for every candidate
+whose ``pathway`` is still ``"computing"``, :func:`_pathway_job_tree_state`
+walks the ``dispatch_autocatpath`` todo/job tree (``T_agg`` + its per-seed
+children) and classifies it: any live job/todo leaves it alone; a genuine
+``STATUS:failed`` job with no infra-class open tag stamps the pathway
+``"failed"`` outright (no compute worth re-running); a tree that's ALL
+terminal via ``cancelled`` / an infra-tagged ``failed`` / a todo that never
+even got a job minted (all "wrongfully killed", not a real verdict) gets a
+bounded re-dispatch instead (idempotent, capped at
+:data:`_MAX_PATHWAY_REDISPATCH_PER_PASS` re-dispatches per quest per pass so
+a systemic outage can't re-mint the whole corpus in one pass). A separate,
+NOT quest-scoped catch-all (:func:`_reconcile_stale_computing_pathways`) ages
+out any ``"computing"`` pathway older than a week with no live job anywhere
+in its tree, regardless of whether its quest is even still active — the
+backstop that drains the historical backlog. Neither step ever re-dispatches
+without the quest's own ``reaction_config``; a config-less quest's orphans
+are simply left for the catch-all.
 """
 
 from __future__ import annotations
@@ -104,7 +131,14 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
+from precis.handlers._job_bubble import INFRA_FAILURE_TAGS
 from precis.quest.allocator import active_quest_ids, cool_stalled
+from precis.quest.compute import (
+    _TIER_NEB,
+    _candidate_struct_ids,
+    _quest_reaction_config,
+    dispatch_autocatpath,
+)
 from precis.quest.tick import quest_loop_enabled
 
 if TYPE_CHECKING:
@@ -166,6 +200,34 @@ _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 
 #: Parses ``id=N`` out of the ``JobHandler.put`` ack body.
 _ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
+
+#: Open tags on a ``STATUS:failed`` job that mark it infra-class — the
+#: compute never really ran, so the failure says nothing about the material —
+#: rather than a genuine content-class result. :data:`INFRA_FAILURE_TAGS`
+#: (``precis.handlers._job_bubble``) is the bounded-retry classification the
+#: rest of the codebase already uses; ``reaped:dead-node-orphan``
+#: (``workers.sweeper``'s ``ssh_node``-specific dead-node reap — exactly the
+#: executor `autocatpath_seed`/`autocatpath_aggregate` run under) is an
+#: equally wrongful-kill signal that constant doesn't (yet) carry — filed as
+#: a gripe rather than widened at the source from here.
+_PATHWAY_WRONGFUL_KILL_TAGS = INFRA_FAILURE_TAGS | frozenset(
+    {"reaped:dead-node-orphan"}
+)
+
+#: Bounded per-quest-per-pass re-dispatch budget for
+#: :func:`_reconcile_orphaned_pathways` — a systemic outage (a GPU node down
+#: for hours) must not re-mint every wrongfully-killed tree in the corpus in
+#: one worker pass; each active quest gets a small, renewable budget instead,
+#: with the remainder simply waiting for the next pass (or, eventually, the
+#: age-gated catch-all).
+_MAX_PATHWAY_REDISPATCH_PER_PASS = 3
+
+#: :func:`_reconcile_stale_computing_pathways` catch-all knobs — how stale a
+#: still-``computing`` pathway with no live compute must be before it's
+#: given up on, and how many it stamps per pass (draining a large historical
+#: backlog gradually rather than in one write burst).
+_PATHWAY_ORPHAN_MAX_AGE_DAYS = 7
+_PATHWAY_ORPHAN_CATCHALL_LIMIT = 50
 
 
 def _orphan_grace_s() -> int:
@@ -573,6 +635,310 @@ def _reap_orphaned_loop(store: Store, quest_id: int, *, grace_s: int) -> int | N
         return None
 
 
+def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | None]:
+    """Classify a ``computing`` `pathway`'s compute tree.
+
+    Walks the :func:`~precis.quest.compute.dispatch_autocatpath` todo tree
+    this pathway's mint ensures — ``T_agg`` (the ``kind='todo'`` ref whose
+    ``meta.params.pathway_ref_id`` names this pathway) plus its per-seed
+    child todos — and every ``kind='job'`` ref parented directly on each of
+    those todos (both ``autocatpath_seed`` and ``autocatpath_aggregate`` jobs
+    carry the same ``meta.params.pathway_ref_id`` provenance stamp, but the
+    todo-tree walk is what lets a todo with NO job at all — a dispatch that
+    crashed before ``jobs.put`` landed, see ``compute._seed_todo_handled`` —
+    read distinctly from one whose job(s) actually ran). Returns
+    ``(state, reason)`` where ``state`` is one of:
+
+    * ``"in_flight"`` — some job is still queued/running/waiting_*, or an
+      open SEED todo has no job yet, or ``T_agg`` itself has no seed
+      children at all (ambiguous: could be a crashed dispatch, or one that
+      started this same tick) — never touched here. A job-less ``T_agg``
+      that DOES have seed children is NOT this case: per
+      :func:`~precis.quest.compute.dispatch_autocatpath`'s own docstring, it
+      never gets a job of its own until every seed todo resolves and the
+      ordinary dispatch worker notices — an expected, not stuck, state — so
+      it's simply skipped rather than treated as evidence of anything.
+    * ``"failed"`` — at least one job terminalized ``STATUS:failed`` WITHOUT
+      an infra-class open tag (:data:`_PATHWAY_WRONGFUL_KILL_TAGS`) — a
+      genuine compute/content failure; ``reason`` is a short human string.
+    * ``"wrongful_kill"`` — every todo in the tree is resolved (closed, or
+      carries only ``cancelled``/infra-tagged-``failed`` jobs) and none
+      genuinely failed — re-dispatch-eligible.
+    * ``"unknown"`` — no ``T_agg`` todo found at all (a dispatch that died
+      before minting even the aggregate todo, or an ad-hoc pathway with no
+      compute tree) — left alone here; the module-level catch-all
+      (:func:`_reconcile_stale_computing_pathways`, todo-tree-agnostic) is
+      the backstop for a truly abandoned mint once it's stale enough.
+
+    Never raises — a read failure returns ``("unknown", None)``, i.e. fail
+    toward "leave it alone".
+    """
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH agg AS (
+                  SELECT ref_id FROM refs
+                   WHERE kind = 'todo' AND deleted_at IS NULL
+                     AND meta->'params'->>'pathway_ref_id' = %(pid)s
+                ),
+                tree AS (
+                  SELECT ref_id, TRUE AS is_root FROM agg
+                  UNION ALL
+                  SELECT t.ref_id, FALSE FROM refs t JOIN agg a ON t.parent_id = a.ref_id
+                   WHERE t.kind = 'todo' AND t.deleted_at IS NULL
+                )
+                SELECT
+                  tr.is_root,
+                  COALESCE(
+                    (SELECT tg.value FROM ref_tags rt JOIN tags tg
+                        ON tg.tag_id = rt.tag_id
+                      WHERE rt.ref_id = tr.ref_id AND tg.namespace = 'STATUS'
+                      LIMIT 1),
+                    'open'
+                  ) AS todo_status,
+                  j.ref_id AS job_id,
+                  (SELECT tg2.value FROM ref_tags rt2 JOIN tags tg2
+                      ON tg2.tag_id = rt2.tag_id
+                    WHERE rt2.ref_id = j.ref_id AND tg2.namespace = 'STATUS'
+                    LIMIT 1) AS job_status,
+                  EXISTS (
+                    SELECT 1 FROM ref_tags rt3 JOIN tags tg3
+                        ON tg3.tag_id = rt3.tag_id
+                     WHERE rt3.ref_id = j.ref_id AND tg3.namespace = 'OPEN'
+                       AND tg3.value = ANY(%(wrongful_tags)s)
+                  ) AS job_wrongful
+                  FROM tree tr
+                  LEFT JOIN refs j
+                    ON j.parent_id = tr.ref_id AND j.kind = 'job'
+                       AND j.deleted_at IS NULL
+                """,
+                {
+                    "pid": str(pathway_id),
+                    "wrongful_tags": sorted(_PATHWAY_WRONGFUL_KILL_TAGS),
+                },
+            ).fetchall()
+    except Exception:
+        log.exception(
+            "_pathway_job_tree_state: failed to read tree for pathway %s", pathway_id
+        )
+        return "unknown", None
+
+    if not rows:
+        return "unknown", None
+
+    # T_agg alone with no seed children at all is a DIFFERENT case from
+    # T_agg alone-and-jobless WITH seed children under it: the latter is the
+    # expected "every seed resolved, aggregate not minted yet" pause
+    # (skip); the former means dispatch died before minting even the first
+    # seed — as ambiguous as a jobless seed todo, so it reads the same way
+    # (in-flight, not "unknown" — this candidate never even started).
+    has_children = any(not is_root for is_root, *_rest in rows)
+
+    any_terminal_bad = False
+    for is_root, todo_status, job_id, job_status, job_wrongful in rows:
+        if todo_status in ("done", "won't-do"):
+            continue
+        if job_id is None:
+            if is_root and has_children:
+                # T_agg never gets a job of its own until every seed todo
+                # resolves (dispatch_autocatpath's docstring) — expected,
+                # not evidence either way; skip rather than short-circuit.
+                continue
+            # A seed todo with no job at all, OR a T_agg with no seed
+            # children ever minted — both ambiguous (crashed dispatch, or
+            # one that started this same tick) — read conservatively as
+            # in-flight; the age-gated catch-all is the backstop for a
+            # truly abandoned mint, not this walk.
+            return "in_flight", None
+        if job_status not in _TERMINAL_STATUSES:
+            return "in_flight", None
+        if job_status == "succeeded":
+            continue
+        if job_status == "failed" and not job_wrongful:
+            return "failed", "seed jobs failed"
+        any_terminal_bad = True
+    if any_terminal_bad:
+        return "wrongful_kill", None
+    return "unknown", None
+
+
+def _reconcile_orphaned_pathways(
+    store: Store, quest_id: int, *, hub: Any
+) -> tuple[int, int]:
+    """Resolve this quest's dead ``computing`` `pathway` stubs — stamp a
+    genuine failure, or re-dispatch a wrongfully-killed tree — rather than
+    leaving them stuck forever (see the module docstring's "Orphaned pathway
+    stubs" section).
+
+    For every candidate `structure` this quest serves
+    (:func:`~precis.quest.compute._candidate_struct_ids`), finds its still-
+    ``computing`` `pathway` refs (``meta.candidate_ref`` = the structure,
+    ``meta.status = 'computing'``) and classifies each one's job tree via
+    :func:`_pathway_job_tree_state`:
+
+    * ``"in_flight"``/``"unknown"`` — left alone.
+    * ``"failed"`` — stamped ``meta.status = 'failed'`` +
+      ``meta.failed_reason`` directly.
+    * ``"wrongful_kill"`` — re-dispatched via
+      :func:`~precis.quest.compute.dispatch_autocatpath` (idempotent — the
+      quest's own ``reaction_config`` at the pathway's own ``meta.tier``),
+      bounded to :data:`_MAX_PATHWAY_REDISPATCH_PER_PASS` per quest per pass.
+      Skipped entirely (no stamp, no re-dispatch) when the quest carries no
+      ``reaction_config`` — nothing to re-dispatch against; the catch-all
+      still eventually reclaims it.
+
+    Returns ``(failed, redispatched)`` counts for this quest. Never raises —
+    a single candidate's/pathway's failure is logged and skipped, never
+    aborts the reconcile pass.
+    """
+    reaction = _quest_reaction_config(store, quest_id)
+    failed = redispatched = 0
+    for sid in _candidate_struct_ids(store, quest_id):
+        try:
+            with store.pool.connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT ref_id, meta FROM refs
+                     WHERE kind = 'pathway' AND deleted_at IS NULL
+                       AND meta->>'candidate_ref' = %(sid)s
+                       AND meta->>'status' = 'computing'
+                    """,
+                    {"sid": str(sid)},
+                ).fetchall()
+        except Exception:
+            log.exception(
+                "_reconcile_orphaned_pathways: failed to list pathways for "
+                "candidate %s (quest %s)",
+                sid,
+                quest_id,
+            )
+            continue
+        for raw_id, raw_meta in rows:
+            pathway_id = int(raw_id)
+            pmeta = dict(raw_meta or {})
+            state, reason = _pathway_job_tree_state(store, pathway_id)
+            if state == "failed":
+                try:
+                    store.stamp_ref_meta(
+                        pathway_id,
+                        {
+                            "status": "failed",
+                            "failed_reason": reason or "seed jobs failed",
+                        },
+                    )
+                    failed += 1
+                    log.info(
+                        "reconcile_quest_loops: pathway %d (quest %s, "
+                        "candidate %s) stamped failed: %s",
+                        pathway_id,
+                        quest_id,
+                        sid,
+                        reason,
+                    )
+                except Exception:
+                    log.exception(
+                        "_reconcile_orphaned_pathways: failed to stamp "
+                        "pathway %d failed",
+                        pathway_id,
+                    )
+            elif state == "wrongful_kill":
+                if redispatched >= _MAX_PATHWAY_REDISPATCH_PER_PASS or reaction is None:
+                    continue
+                try:
+                    tier = pmeta.get("tier") or _TIER_NEB
+                    dispatch_autocatpath(store, sid, reaction, hub=hub, tier=tier)
+                    redispatched += 1
+                    log.info(
+                        "reconcile_quest_loops: pathway %d (quest %s, "
+                        "candidate %s) re-dispatched (wrongful kill)",
+                        pathway_id,
+                        quest_id,
+                        sid,
+                    )
+                except Exception:
+                    log.exception(
+                        "_reconcile_orphaned_pathways: re-dispatch failed for "
+                        "pathway %d (candidate %s)",
+                        pathway_id,
+                        sid,
+                    )
+    return failed, redispatched
+
+
+def _reconcile_stale_computing_pathways(store: Store) -> int:
+    """Module-level catch-all (NOT quest-scoped): age out a ``pathway`` ref
+    still ``status='computing'`` after :data:`_PATHWAY_ORPHAN_MAX_AGE_DAYS`
+    with no non-terminal job anywhere in its tree.
+
+    Complements :func:`_reconcile_orphaned_pathways`, which only ever sees a
+    pathway whose quest is still active — this backstop also reclaims stubs
+    whose quest has since gone dormant/abandoned (so it never reaches the
+    per-quest sweep again) and drains the historical backlog that predates
+    this reconciler, without re-running month-old reaction configs. Bounded
+    to :data:`_PATHWAY_ORPHAN_CATCHALL_LIMIT` per pass so a large backlog
+    drains gradually rather than in one write burst.
+
+    Deliberately job-only (not the todo-tree walk
+    :func:`_pathway_job_tree_state` does): "nothing is running" is knowable
+    from the job rows alone, regardless of whether the todo tree still
+    resolves at all.
+
+    Returns the number stamped ``failed``. Never raises.
+    """
+    try:
+        with store.tx() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.ref_id FROM refs p
+                 WHERE p.kind = 'pathway' AND p.deleted_at IS NULL
+                   AND p.meta->>'status' = 'computing'
+                   AND p.updated_at < now() - %(max_age)s::interval
+                   AND NOT EXISTS (
+                         SELECT 1 FROM refs j
+                          WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                            AND j.meta->'params'->>'pathway_ref_id' = p.ref_id::text
+                            AND EXISTS (
+                                  SELECT 1 FROM ref_tags rt JOIN tags t
+                                      ON t.tag_id = rt.tag_id
+                                   WHERE rt.ref_id = j.ref_id
+                                     AND t.namespace = 'STATUS'
+                                     AND t.value != ALL(%(terminal)s)
+                                )
+                       )
+                 ORDER BY p.ref_id
+                 LIMIT %(limit)s
+                   FOR UPDATE OF p SKIP LOCKED
+                """,
+                {
+                    "max_age": f"{_PATHWAY_ORPHAN_MAX_AGE_DAYS} days",
+                    "terminal": list(_TERMINAL_STATUSES),
+                    "limit": _PATHWAY_ORPHAN_CATCHALL_LIMIT,
+                },
+            ).fetchall()
+            n = 0
+            for (raw_id,) in rows:
+                store.stamp_ref_meta(
+                    int(raw_id),
+                    {
+                        "status": "failed",
+                        "failed_reason": "orphaned (no live compute)",
+                    },
+                    conn=conn,
+                )
+                n += 1
+        if n:
+            log.info(
+                "reconcile_quest_loops: catch-all stamped %d stale computing "
+                "pathway(s) failed",
+                n,
+            )
+        return n
+    except Exception:
+        log.exception("_reconcile_stale_computing_pathways: sweep failed")
+        return 0
+
+
 def reconcile_quest_loops(
     store: Store, *, enabled: bool | None = None, hub: Any = None
 ) -> dict[str, Any]:
@@ -603,10 +969,16 @@ def reconcile_quest_loops(
     re-mint was skipped this pass because a failed or dry rest is still
     cooling down), ``ensured`` (active quests confirmed to have a live loop,
     minted or pre-existing), ``minted`` (of those, how many were freshly
-    created).
+    created), ``pathways_failed`` (``computing`` `pathway` stubs stamped
+    ``failed`` this pass — genuine content failures plus the age-gated
+    catch-all, see the module docstring's "Orphaned pathway stubs" section),
+    ``pathways_redispatched`` (wrongfully-killed trees re-dispatched instead).
     """
     on = quest_loop_enabled() if enabled is None else enabled
     if not on:
+        # The age-gated stub catch-all still runs with the loop OFF — an
+        # ops-disabled loop is exactly when dead ``computing`` stubs pile
+        # up unnoticed, and terminalizing them mints no new work.
         return {
             "enabled": False,
             "cooled": 0,
@@ -615,6 +987,8 @@ def reconcile_quest_loops(
             "backoff": 0,
             "ensured": 0,
             "minted": 0,
+            "pathways_failed": _reconcile_stale_computing_pathways(store),
+            "pathways_redispatched": 0,
         }
 
     cooled = cool_stalled(store)
@@ -626,7 +1000,15 @@ def reconcile_quest_loops(
         _DRY_REST_ESCALATE_COOLDOWN_ENV, _DRY_REST_ESCALATED_COOLDOWN_S
     )
     escalated = reaped = backoff = ensured = minted = 0
+    pathways_failed = pathways_redispatched = 0
     for qid in active_quest_ids(store):
+        # Independent of the tick-loop reap/cooldown/mint state below — runs
+        # for every active quest regardless of where it lands in that state
+        # machine (see the module docstring's "Orphaned pathway stubs"
+        # section).
+        pf, pr = _reconcile_orphaned_pathways(store, qid, hub=hub)
+        pathways_failed += pf
+        pathways_redispatched += pr
         # gr170252: a quest stuck on missing input is held out of the mint —
         # no reap, no ordinary cooldown — while its escalated cooldown holds.
         # Checked before everything else so an orphan reap can't accidentally
@@ -654,6 +1036,9 @@ def reconcile_quest_loops(
             ensured += 1
             if created:
                 minted += 1
+    # Module-level, NOT quest-scoped — also reclaims a stub whose quest went
+    # dormant/abandoned before the per-quest sweep above ever caught it.
+    pathways_failed += _reconcile_stale_computing_pathways(store)
     return {
         "enabled": True,
         "cooled": len(cooled),
@@ -662,6 +1047,8 @@ def reconcile_quest_loops(
         "backoff": backoff,
         "ensured": ensured,
         "minted": minted,
+        "pathways_failed": pathways_failed,
+        "pathways_redispatched": pathways_redispatched,
     }
 
 

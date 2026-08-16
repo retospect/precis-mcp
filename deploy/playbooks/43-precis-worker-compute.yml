@@ -191,6 +191,14 @@
         # jobs are detached and survive a worker bounce; this just gives
         # the claim/batch loop time to exit cleanly on SIGTERM.
         service_unit_timeout_stop_sec: 60
+        # KillMode=process (not the systemd default control-group): detached
+        # autocatpath seed children (start_new_session, re-adopted via
+        # meta.compute_handle on the next claim) must survive this unit's
+        # restart. Under the cgroup default, a bounce SIGKILLed the whole
+        # cgroup and destroyed 10-15-min NEB runs on every deploy. Do NOT
+        # copy this onto the collapsed worker lane — its agent containers
+        # want group teardown.
+        service_unit_kill_mode: process
         # --only job_ssh_node: this lane runs exactly one pass, the submit/poll
         # executor. --batch-size 1: one NEW claim per tick (the gpu slot
         # capacity=1 caps concurrent compute regardless); the step-0 poll of

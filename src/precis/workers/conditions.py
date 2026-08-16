@@ -84,7 +84,7 @@ _HOST_FRESH_MIN = 10
 def _env_f(name: str, default: float) -> float:
     raw = os.environ.get(name)
     try:
-        return float(raw) if raw not in (None, "") else default
+        return float(raw) if raw else default
     except ValueError:
         return default
 

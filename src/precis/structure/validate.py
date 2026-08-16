@@ -73,12 +73,17 @@ def validate(scene: Scene) -> list[Finding]:
                     )
                 )
 
-    # 2. over-coordination (covalent valence exceeded)
+    # 2. over-coordination (covalent valence exceeded). Uses
+    # ``covalent_coordination``, not the raw ``coordination`` count: a metal
+    # neighbour doesn't consume covalent valence, so an adsorbate sitting in
+    # a hollow/bridge site — within bond cutoff of 3-4 slab metal atoms, the
+    # chemically preferred geometry — must not trip this. The rule still
+    # fires on genuine over-valence between covalent elements.
     for label, atom in scene.atoms.items():
         mv = elements.max_valence(atom.element)
         if mv is None:
             continue  # metals are not valence-bounded
-        cn = probe.coordination(scene, label)
+        cn = probe.covalent_coordination(scene, label)
         if cn > mv:
             findings.append(
                 Finding(

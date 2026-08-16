@@ -224,6 +224,42 @@ def test_validate_flags_over_valence() -> None:
     assert over and over[0].atoms == ["aC1"] and over[0].measured == 5
 
 
+def test_validate_over_valence_ignores_metal_surface_coordination() -> None:
+    # H adsorbate sitting in a Pd(111)-style hollow site — within the H-Pd
+    # bond cutoff (2.04 Å at tolerance 1.2) of three slab Pd atoms. Metal
+    # neighbours aren't covalent bonds, so this must NOT trip over_valence —
+    # hollow/bridge adsorption is the chemically preferred geometry.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.68, 0.5, 0.5]},  # 1.8 Å
+            {"op": "add_atom", "element": "Pd", "frac": [0.41, 0.6559, 0.5]},  # 1.8 Å
+            {"op": "add_atom", "element": "Pd", "frac": [0.41, 0.3441, 0.5]},  # 1.8 Å
+        ],
+    )
+    assert probe.coordination(scene, "aH1") == 3  # raw count still sees the metals
+    assert probe.covalent_coordination(scene, "aH1") == 0
+    assert validate(scene) == []
+
+
+def test_validate_over_valence_still_fires_between_covalent_elements() -> None:
+    # Same shape of crowding, but with covalent (non-metal) neighbours — the
+    # rule must still catch it.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "C", "frac": [0.62, 0.5, 0.5]},  # 1.2 Å
+            {"op": "add_atom", "element": "C", "frac": [0.38, 0.5, 0.5]},  # 1.2 Å
+        ],
+    )
+    over = [f for f in validate(scene) if f.rule == "over_valence"]
+    assert over and over[0].atoms == ["aH1"] and over[0].measured == 2
+
+
 def test_validate_bond_too_long_boundary() -> None:
     # O-H covalent sum 0.97 Å, ceiling = 1.3× = 1.261 Å.
     just_inside = Scene(cell=_cubic())

@@ -40,6 +40,28 @@ def coordination(scene: Scene, label: str, tolerance: float = 1.2) -> int:
     return n
 
 
+def covalent_coordination(scene: Scene, label: str, tolerance: float = 1.2) -> int:
+    """Covalent-only neighbour count within bond cutoff of ``label`` (MIC).
+
+    Like :func:`coordination`, but skips neighbours whose element is not
+    valence-bounded (metals — ``elements.max_valence`` is ``None``). Surface
+    coordination to a metal slab isn't covalent bonding, so it shouldn't
+    consume an adsorbate's covalent valence budget; this is what the
+    over-valence gate (validate.py rule 2) wants.
+    """
+    a = scene.atoms[label]
+    n = 0
+    for other in scene.atoms.values():
+        if other.label == label:
+            continue
+        if elements.max_valence(other.element) is None:
+            continue  # metal neighbour — not covalent bonding
+        dist, _ = scene.cell.mic(a.frac, other.frac)
+        if dist <= elements.bond_cutoff(a.element, other.element, tolerance):
+            n += 1
+    return n
+
+
 def neighborhood(scene: Scene, label: str, radius: float) -> list[NeighborHit]:
     """The coordination shell of ``label`` within ``radius`` Å, nearest first."""
     hits: list[NeighborHit] = []

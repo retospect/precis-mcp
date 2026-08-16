@@ -939,6 +939,36 @@ def _pathway_graph_payload(
     return {"nodes": nodes, "links": links, "paths": paths, "has_n_h": has_n_h}
 
 
+def _pathway_status_banner(
+    ref: Any, meta: dict[str, Any], candidate: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Context for the "no graph yet" banner rendered in place of the blank
+    diagram (the orphaned-pathway-stub sweep,
+    :func:`precis.quest.loop._reconcile_orphaned_pathways`, now moves a dead
+    ``"computing"`` stub to ``"failed"`` instead of leaving it blank forever
+    — the operator still needs to tell "still running" from "gave up" from
+    "superseded by a fresher run" at a glance).
+
+    Only meaningful for the three non-``"ready"`` statuses a pathway can
+    carry with no graph yet; returns ``None`` for anything else (a legacy
+    row predating ``meta.status``, or a ``"ready"`` pathway that happens to
+    have no graph for some other reason — an actual anomaly, not this
+    banner's job to explain)."""
+    status = meta.get("status")
+    if status not in ("computing", "failed", "superseded"):
+        return None
+    banner: dict[str, Any] = {"status": status, "candidate": candidate}
+    if status == "computing":
+        banner["created_at"] = getattr(ref, "created_at", None)
+    elif status == "failed":
+        banner["reason"] = meta.get("failed_reason") or "no reason recorded"
+    else:  # superseded
+        sid = meta.get("superseded_by")
+        banner["superseded_by"] = sid
+        banner["superseded_url"] = f"/refs/pathway/{sid}" if sid is not None else None
+    return banner
+
+
 def _pathway_measures(raw: Any) -> tuple[list[Measure], list[str]]:
     """Parse ``meta.measures`` into ad-hoc :class:`~precis.structure.Measure`
     objects for live per-state evaluation (``op`` -> ``kind``, ``atoms`` ->
@@ -1909,6 +1939,12 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     tier_toggle = _pathway_tier_toggle(ref.id, tier, tier_sibling, meta)
     ghost_series = _pathway_ghost_series(diagram, tier_sibling)
 
+    # No graph yet -> a status-aware banner (computing/failed/superseded)
+    # instead of just the bare empty-diagram message.
+    status_banner = (
+        _pathway_status_banner(ref, meta, candidate) if not diagram else None
+    )
+
     return templates.TemplateResponse(
         request,
         "refs/pathway_detail.html.j2",
@@ -1925,6 +1961,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
             "autocatpath_version": meta.get("autocatpath_version"),
             "config_snapshot_yaml": meta.get("config_snapshot_yaml"),
             "has_graph": bool(meta.get("graph")),
+            "status_banner": status_banner,
             "candidate": candidate,
             "structures": structures,
             "body_text": body_text,

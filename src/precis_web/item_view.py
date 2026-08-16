@@ -107,6 +107,17 @@ _LLM_LABEL_BADGE_CLS: dict[str, str] = {
     "off": "bg-slate-200 text-slate-500",
 }
 
+#: Badge color per `pathway` ``meta.status`` — the Drive row's own compute-
+#: status badge (mirrors the detail page's header chip,
+#: ``refs/pathway_detail.html.j2``). A status not in this map (legacy row
+#: predating ``meta.status``) gets no badge.
+_PATHWAY_STATUS_BADGE_CLS: dict[str, str] = {
+    "ready": "bg-emerald-100 text-emerald-700",
+    "computing": "bg-amber-100 text-amber-700",
+    "failed": "bg-rose-100 text-rose-700",
+    "superseded": "bg-slate-200 text-slate-500",
+}
+
 #: Namespaces hidden from the per-row tag chips — machine/control tags
 #: the operator doesn't browse by.
 _TAG_HIDE_NS: frozenset[str] = frozenset(
@@ -220,15 +231,29 @@ class ItemPresenter:
         ]
 
     def state(self, ref: Any, *, has_chunks: bool) -> list[dict[str, str]]:
-        """Pipeline-state badges for the row (paper-family kinds only).
+        """Pipeline-state badges for the row (paper-family kinds only, plus
+        `pathway`'s own compute-status badge).
 
         ``stub`` — a corpus doc still awaiting the fetcher (no PDF yet);
         ``chunks`` — ingested, has body chunks (searchable); a fourth
         badge (the ``stub_rank`` pass's Tier-2 LLM band label — see
         ``workers/stub_rank.py``) appears when ``ref.meta.llm_label`` is
         set, regardless of the stub/chunks state. Mirrors the Papers-tab
-        vocabulary. Non-pipeline kinds get no badges.
+        vocabulary. Non-pipeline, non-`pathway` kinds get no badges.
+
+        `pathway`'s badge reads straight off ``ref.meta.status`` — already
+        loaded for every Drive row (``routes/drive.py``'s ``_CHILD_COLS`` /
+        the search-hit ``ref``), so this is free: no extra per-row query.
+        Surfaces the same ``computing``/``failed``/``superseded`` states the
+        detail page's banner does (the orphaned-pathway-stub sweep,
+        :func:`precis.quest.loop._reconcile_orphaned_pathways`).
         """
+        if self.kind == "pathway":
+            status = (getattr(ref, "meta", None) or {}).get("status")
+            if not isinstance(status, str) or status not in _PATHWAY_STATUS_BADGE_CLS:
+                return []
+            cls = _PATHWAY_STATUS_BADGE_CLS[status]
+            return [{"label": status, "cls": cls, "title": f"pathway status: {status}"}]
         if self.kind not in _PIPELINE_KINDS:
             return []
         badges: list[dict[str, str]] = []

@@ -22,6 +22,7 @@ drift, disk full) where blind retry is more harm than good.
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from collections.abc import Callable
@@ -33,6 +34,48 @@ from precis.workers import activity
 from precis.workers.base import WorkerHandler
 
 log = logging.getLogger(__name__)
+
+#: Env var naming the drain-flag file. When present, ``run_loop`` pauses new
+#: claims (existing in-flight work outside the loop — e.g. a detached
+#: autocatpath seed child — is untouched) so a deploy's bounce play can wait
+#: for long jobs to finish before restarting the unit. See "drain before
+#: bounce" in ``deploy/redeploy-precis.yml``.
+DRAIN_FILE_ENV = "PRECIS_WORKER_DRAIN_FILE"
+DEFAULT_DRAIN_FILE = "/opt/precis/worker.drain"
+
+#: A drain file older than this (mtime) is ignored: the bounce play removes
+#: the file after its restarts, but a play that dies mid-bounce would
+#: otherwise strand the flag and pause the host's claims forever. Comfortably
+#: above the play's bounded drain wait (30 min) + restart time.
+DRAIN_TTL_S = 3600.0
+
+
+#: mtime of the last stale drain file already warned about (per process) —
+#: keeps the TTL warning to one line per stranded flag, not one per cycle.
+_stale_drain_warned_mtime: float | None = None
+
+
+def _drain_file_fresh(path: str) -> bool:
+    """True when the drain flag exists and is younger than :data:`DRAIN_TTL_S`.
+
+    Racing an unlink between exists and stat is fine — a vanished file is
+    just "not draining"."""
+    global _stale_drain_warned_mtime
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return False
+    if time.time() - mtime > DRAIN_TTL_S:
+        if _stale_drain_warned_mtime != mtime:
+            _stale_drain_warned_mtime = mtime
+            log.warning(
+                "worker: drain file %s is older than the %.0fs TTL — "
+                "ignoring stale flag (remove it to silence this)",
+                path,
+                DRAIN_TTL_S,
+            )
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -177,12 +220,51 @@ def run_loop(
       ``classify``). A closure with neither is never gated. Returning
       ``False`` skips the pass this cycle; ``None`` gate disables gating
       entirely.
+
+    **Drain.** Before each cycle, checks whether the drain-flag file
+    (``$PRECIS_WORKER_DRAIN_FILE``, default :data:`DEFAULT_DRAIN_FILE`)
+    exists. While it does, the cycle skips every handler and ref-pass
+    entirely (no new claims) and just idle-sleeps, still honouring
+    ``should_stop``. This lets a deploy pause claims ahead of a bounce
+    without killing in-flight batches already outside this loop. Two
+    guards keep a drain from wedging anything: ``once=True`` returns
+    immediately (a one-shot pass has nothing to pause — hanging a manual
+    ``precis worker --once`` would be worse), and a drain file older than
+    :data:`DRAIN_TTL_S` (mtime) is ignored — a bounce play that crashed
+    between touching and removing the file must not pause the host's
+    claims forever.
     """
     if not handlers and not ref_passes:
         log.warning("worker: no handlers and no ref_passes registered; nothing to do")
         return
 
+    drain_active = False
+
     while True:
+        drain_path = os.environ.get(DRAIN_FILE_ENV, DEFAULT_DRAIN_FILE)
+        draining = _drain_file_fresh(drain_path)
+        if draining != drain_active:
+            drain_active = draining
+            if draining:
+                log.info("worker: drain file present — pausing claims")
+            else:
+                log.info("worker: drain file removed — resuming claims")
+        if draining:
+            if once:
+                log.info("worker: drain file present — once-pass claims nothing")
+                return
+            if should_stop is not None and should_stop():
+                log.info("worker: stop signal received; exiting loop")
+                return
+            slept = 0.0
+            tick = min(0.25, idle_seconds) if idle_seconds > 0 else 0.0
+            while slept < idle_seconds:
+                if should_stop is not None and should_stop():
+                    return
+                time.sleep(tick)
+                slept += tick
+            continue
+
         any_work = False
         for handler in handlers:
             if should_stop is not None and should_stop():

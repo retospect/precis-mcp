@@ -9,15 +9,26 @@ fixture) since the guarantee rides ``JobHandler``'s real idem-dedup SQL.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
+from precis.quest import compute as compute_mod
 from precis.quest import loop as loop_mod
 from precis.store import Store
 from precis.store.types import Tag
+
+#: A minimal candidate structure spec — mirrors ``test_quest_compute.py``'s
+#: own ``_SPEC``, kept local so this file's fixtures don't cross-import a
+#: sibling test module.
+_SPEC = {
+    "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+}
 
 
 def _mk_quest(store: Store, text: str) -> int:
@@ -231,6 +242,8 @@ class TestReconcileQuestLoops:
             "backoff": 0,
             "ensured": 0,
             "minted": 0,
+            "pathways_failed": 0,
+            "pathways_redispatched": 0,
         }
 
     def test_enabled_ensures_each_active_quest_and_tallies(
@@ -263,6 +276,8 @@ class TestReconcileQuestLoops:
             "backoff": 0,
             "ensured": 3,
             "minted": 2,
+            "pathways_failed": 0,
+            "pathways_redispatched": 0,
         }
 
     def test_enabled_via_env_default(self, store: Store, monkeypatch: Any) -> None:
@@ -279,6 +294,8 @@ class TestReconcileQuestLoops:
             "backoff": 0,
             "ensured": 0,
             "minted": 0,
+            "pathways_failed": 0,
+            "pathways_redispatched": 0,
         }
 
     def test_a_failing_ensure_does_not_stop_the_rest(
@@ -306,6 +323,8 @@ class TestReconcileQuestLoops:
             "backoff": 0,
             "ensured": 1,
             "minted": 1,
+            "pathways_failed": 0,
+            "pathways_redispatched": 0,
         }
 
 
@@ -802,3 +821,469 @@ class TestDryRestCooldownAndEscalation:
         assert resumed["escalated"] == 0
         assert resumed["minted"] == 1
         assert len(_non_terminal_loop_ids(store, q)) == 1
+
+
+# ── Orphaned pathway stub sweep (PART A) ─────────────────────────────────
+
+
+def _pathway_meta(store: Store, pathway_id: int) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (pathway_id,)
+        ).fetchone()
+    assert row is not None
+    return dict(row[0] or {})
+
+
+class _PathwayTreeMixin:
+    """Shared fan-out-tree builders — candidate -> pathway + T_agg todo ->
+    seed todo(s) -> seed job(s) — mirroring
+    :func:`precis.quest.compute.dispatch_autocatpath`'s own tree shape
+    (``TestStuckSeedFailure`` in ``test_quest_compute.py`` is the sibling
+    fixture for the compute-side query over the same tree).
+
+    An autouse fixture applies the ``precis_pathway`` plugin's own
+    migration (idempotent) before every test in a subclass, so the
+    ``pathway`` kind exists in this test DB — mirrors ``test_pathway_
+    plugin.py``'s own ``pathway_store`` fixture; the plugin isn't installed
+    as a core dep, so its ``kinds`` row is otherwise absent here. Kept as a
+    fixture rather than a per-test call so every ``store``-typed test method
+    below is unchanged (just ``store: Store``, no extra fixture param).
+    """
+
+    _n = 0
+
+    @pytest.fixture(autouse=True)
+    def _seed_pathway_kind(self, store: Store) -> None:
+        import precis_pathway
+
+        migrations_dir = Path(precis_pathway.__file__).parent / "migrations"
+        with store.pool.connection() as conn:
+            for sql_file in sorted(migrations_dir.glob("*.sql")):
+                body = sql_file.read_text(encoding="utf-8")
+                body = body.replace("BEGIN;", "").replace("COMMIT;", "")
+                conn.execute(body)
+            conn.commit()
+
+    def _candidate(self, store: Store, qid: int) -> int:
+        # A distinct frac per call so content-addressed dedup
+        # (``ensure_candidate``) never collapses two calls in the same test
+        # onto one structure — each test wants its own independent tree.
+        _PathwayTreeMixin._n += 1
+        spec = {
+            **_SPEC,
+            "ops": [
+                {
+                    "op": "add_atom",
+                    "element": "Fe",
+                    "frac": [0.0, 0.0, 0.5 + self._n * 0.001],
+                }
+            ],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": spec}
+        )
+        assert sid is not None
+        return sid
+
+    def _pathway(
+        self, store: Store, sid: int, *, status: str = "computing", tier: str = "neb"
+    ) -> int:
+        ref = store.insert_ref(
+            kind="pathway",
+            slug=f"test-pw-{sid}-{status}",
+            title="test pathway",
+            meta={"status": status, "candidate_ref": sid, "tier": tier},
+        )
+        return int(ref.id)
+
+    def _agg_todo(self, store: Store, sid: int, pathway_id: int) -> int:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath aggregate",
+            meta={
+                "executor": "ssh_node",
+                "job_type": "autocatpath_aggregate",
+                "params": {"pathway_ref_id": pathway_id},
+            },
+            parent_id=sid,
+        )
+        return int(ref.id)
+
+    def _seed(
+        self,
+        store: Store,
+        agg_todo_id: int,
+        *,
+        pathway_id: int,
+        job_statuses: list[str],
+        job_open_tags: list[str | None] | None = None,
+        todo_status: str | None = None,
+    ) -> tuple[int, list[int]]:
+        seed_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath seed",
+            meta={"auto_check": {"type": "child_job_succeeded"}},
+            parent_id=agg_todo_id,
+        )
+        if todo_status:
+            store.add_tag(
+                seed_todo.id, Tag.closed("STATUS", todo_status), set_by="system"
+            )
+        open_tags = job_open_tags or [None] * len(job_statuses)
+        job_ids = []
+        for status, open_tag in zip(job_statuses, open_tags, strict=True):
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="autocatpath_seed",
+                meta={
+                    "job_type": "autocatpath_seed",
+                    # The provenance stamp real seed jobs carry (compute.
+                    # dispatch_autocatpath) — the module-level catch-all
+                    # (:func:`loop_mod._reconcile_stale_computing_pathways`)
+                    # keys its "any live job" check off this.
+                    "params": {"pathway_ref_id": pathway_id},
+                },
+                parent_id=seed_todo.id,
+            )
+            store.add_tag(job.id, Tag.closed("STATUS", status), set_by="system")
+            if open_tag:
+                store.add_tag(job.id, Tag.open(open_tag), set_by="system")
+            job_ids.append(int(job.id))
+        return int(seed_todo.id), job_ids
+
+
+class TestPathwayJobTreeState(_PathwayTreeMixin):
+    """Direct coverage of :func:`loop_mod._pathway_job_tree_state`."""
+
+    def test_no_tree_at_all_is_unknown(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        assert loop_mod._pathway_job_tree_state(store, pw) == ("unknown", None)
+
+    def test_todo_with_no_job_yet_is_in_flight(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        self._agg_todo(store, sid, pw)
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] == "in_flight"
+
+    def test_live_seed_job_is_in_flight(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["queued"])
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] == "in_flight"
+
+    def test_genuine_failure_without_infra_tag_is_failed(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+        state, reason = loop_mod._pathway_job_tree_state(store, pw)
+        assert state == "failed"
+        assert reason
+
+    def test_cancelled_only_is_wrongful_kill(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+        assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
+
+    def test_infra_tagged_failed_is_wrongful_kill(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["failed"],
+            job_open_tags=["infra:child-killed"],
+        )
+        assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
+
+    def test_dead_node_reaped_failed_is_wrongful_kill(self, store: Store) -> None:
+        """``reaped:dead-node-orphan`` isn't in ``_job_bubble.
+        INFRA_FAILURE_TAGS`` (a separate gap — see the gripe filed on it),
+        but this sweep's own wrongful-kill set includes it: an
+        ``ssh_node``-executor autocatpath seed job dying with its GPU node
+        is exactly as wrongful as a swept claim-orphan."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["failed"],
+            job_open_tags=["reaped:dead-node-orphan"],
+        )
+        assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
+
+    def test_genuine_failure_wins_over_a_sibling_wrongful_kill(
+        self, store: Store
+    ) -> None:
+        """A mixed tree (one seed genuinely failed, another cancelled) reads
+        as a real failure — safer than re-dispatching a candidate that
+        already produced a genuine content-class error."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] == "failed"
+
+    def test_done_todo_with_stale_failed_job_is_excluded(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store, agg, pathway_id=pw, job_statuses=["failed"], todo_status="done"
+        )
+        assert loop_mod._pathway_job_tree_state(store, pw) == ("unknown", None)
+
+    def test_succeeded_seeds_with_no_aggregate_job_yet_is_never_actioned(
+        self, store: Store
+    ) -> None:
+        """Every seed done, but the aggregate job hasn't been minted by the
+        dispatch worker yet (T_agg carries no job of its own until then,
+        per ``dispatch_autocatpath``'s docstring) — a normal transient, not
+        an orphan: neither ``failed`` nor ``wrongful_kill`` (the only two
+        states :func:`loop_mod._reconcile_orphaned_pathways` acts on). The
+        age-gated catch-all is the backstop if the aggregate never arrives."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store, agg, pathway_id=pw, job_statuses=["succeeded"], todo_status="done"
+        )
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] not in (
+            "failed",
+            "wrongful_kill",
+        )
+
+
+class TestReconcileOrphanedPathways(_PathwayTreeMixin):
+    """:func:`loop_mod._reconcile_orphaned_pathways` — the per-active-quest
+    step."""
+
+    def test_failed_tree_stamps_the_pathway_failed(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+
+        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+
+        assert (failed, redispatched) == (1, 0)
+        meta = _pathway_meta(store, pw)
+        assert meta["status"] == "failed"
+        assert meta.get("failed_reason")
+
+    def test_in_flight_tree_is_left_alone(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["running"])
+
+        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+
+        assert (failed, redispatched) == (0, 0)
+        assert _pathway_meta(store, pw)["status"] == "computing"
+
+    def test_wrongful_kill_redispatches_via_dispatch_autocatpath(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = _mk_quest(store, "A striving")
+        store.update_ref(q, meta_patch={"reaction_config": {"substrate": "NO"}})
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid, tier="verify")
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+
+        calls: list[tuple[int, dict[str, Any], str]] = []
+
+        def _fake_dispatch(
+            _store: Any, sid: int, reaction: dict[str, Any], *, hub: Any, tier: str
+        ) -> str:
+            calls.append((sid, reaction, tier))
+            return "autocatpath[fake] dispatched"
+
+        monkeypatch.setattr(loop_mod, "dispatch_autocatpath", _fake_dispatch)
+
+        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+
+        assert (failed, redispatched) == (0, 1)
+        assert calls == [(sid, {"substrate": "NO"}, "verify")]
+        # Not stamped by this sweep — a live re-dispatch (or the next
+        # harvest) owns moving it forward, not the orphan sweep itself.
+        assert _pathway_meta(store, pw)["status"] == "computing"
+
+    def test_wrongful_kill_skipped_without_reaction_config(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = _mk_quest(store, "A striving")  # no reaction_config stamped
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            loop_mod, "dispatch_autocatpath", lambda *a, **k: calls.append(1)
+        )
+
+        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+
+        assert (failed, redispatched) == (0, 0)
+        assert calls == []
+        assert _pathway_meta(store, pw)["status"] == "computing"
+
+    def test_redispatch_is_capped_per_pass(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        q = _mk_quest(store, "A striving")
+        store.update_ref(q, meta_patch={"reaction_config": {"substrate": "NO"}})
+        for _ in range(loop_mod._MAX_PATHWAY_REDISPATCH_PER_PASS + 2):
+            sid = self._candidate(store, q)
+            pw = self._pathway(store, sid)
+            agg = self._agg_todo(store, sid, pw)
+            self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+
+        calls: list[int] = []
+
+        def _fake_dispatch(_store: Any, sid: int, *_a: Any, **_k: Any) -> str:
+            calls.append(sid)
+            return "ok"
+
+        monkeypatch.setattr(loop_mod, "dispatch_autocatpath", _fake_dispatch)
+
+        _failed, redispatched = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
+
+        assert redispatched == loop_mod._MAX_PATHWAY_REDISPATCH_PER_PASS
+        assert len(calls) == loop_mod._MAX_PATHWAY_REDISPATCH_PER_PASS
+
+    def test_wired_into_reconcile_quest_loops_per_active_quest(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """Part A end-to-end: an active quest's dead pathway stub is
+        resolved by an ordinary ``reconcile_quest_loops`` pass, and the
+        counts surface on the summary dict."""
+        q = _mk_quest(store, "A striving")
+        _set_status(store, q, "active")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+        monkeypatch.setattr(loop_mod, "cool_stalled", lambda _s: [])
+        monkeypatch.setattr(loop_mod, "active_quest_ids", lambda _s: [q])
+
+        out = loop_mod.reconcile_quest_loops(store, enabled=True)
+
+        assert out["pathways_failed"] == 1
+        assert out["pathways_redispatched"] == 0
+        assert _pathway_meta(store, pw)["status"] == "failed"
+
+
+class TestReconcileStaleComputingPathways(_PathwayTreeMixin):
+    """:func:`loop_mod._reconcile_stale_computing_pathways` — the module-
+    level, NOT quest-scoped catch-all."""
+
+    def _age_pathway(self, store: Store, pathway_id: int, age_sql: str) -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - (%s)::interval WHERE ref_id = %s",
+                (age_sql, pathway_id),
+            )
+            conn.commit()
+
+    def test_stale_with_no_live_job_anywhere_is_stamped_failed(
+        self, store: Store
+    ) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+        self._age_pathway(store, pw, "8 days")
+
+        n = loop_mod._reconcile_stale_computing_pathways(store)
+
+        assert n == 1
+        meta = _pathway_meta(store, pw)
+        assert meta["status"] == "failed"
+        assert meta["failed_reason"] == "orphaned (no live compute)"
+
+    def test_stale_with_a_still_running_job_is_left_alone(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["running"])
+        self._age_pathway(store, pw, "8 days")
+
+        n = loop_mod._reconcile_stale_computing_pathways(store)
+
+        assert n == 0
+        assert _pathway_meta(store, pw)["status"] == "computing"
+
+    def test_not_yet_stale_is_left_alone(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+        self._age_pathway(store, pw, "1 day")
+
+        n = loop_mod._reconcile_stale_computing_pathways(store)
+
+        assert n == 0
+        assert _pathway_meta(store, pw)["status"] == "computing"
+
+    def test_ready_pathway_is_never_touched(self, store: Store) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid, status="ready")
+        self._age_pathway(store, pw, "30 days")
+
+        n = loop_mod._reconcile_stale_computing_pathways(store)
+
+        assert n == 0
+        assert _pathway_meta(store, pw)["status"] == "ready"
+
+    def test_reaches_a_pathway_whose_quest_is_no_longer_active(
+        self, store: Store
+    ) -> None:
+        """The per-quest sweep only ever sees an active quest's candidates
+        — this catch-all is what reclaims a stub whose quest has since gone
+        dormant/abandoned, independent of ``active_quest_ids``."""
+        q = _mk_quest(store, "A striving")
+        # deliberately no STATUS:active tag — this quest is not active.
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+        self._age_pathway(store, pw, "8 days")
+
+        n = loop_mod._reconcile_stale_computing_pathways(store)
+
+        assert n == 1
+        assert _pathway_meta(store, pw)["status"] == "failed"

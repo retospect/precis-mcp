@@ -116,3 +116,12 @@ service_unit_start_limit_burst: ""
 # then finalize partial + release holds); empty = platform default
 # (systemd 90s / launchd 20s), today's behaviour.
 service_unit_timeout_stop_sec: ""
+# KillMode override (Linux/systemd ONLY — launchd has no equivalent knob).
+# Renders KillMode=<value>; empty = systemd default (control-group — the
+# unit's whole cgroup dies with it, taking any detached grandchildren with
+# it). Set to "process" for a lane whose ExecStart legitimately spawns
+# detached, long-running children that must outlive a unit restart (e.g.
+# a compute-lane worker re-adopting a detached job child by handle on
+# the next claim) — see docs/runbooks or the including playbook for the
+# specific case.
+service_unit_kill_mode: ""

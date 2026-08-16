@@ -40,6 +40,9 @@ TimeoutStartSec={{ service_unit_timeout_start_sec }}
 {% if service_unit_timeout_stop_sec %}
 TimeoutStopSec={{ service_unit_timeout_stop_sec }}
 {% endif %}
+{% if service_unit_kill_mode %}
+KillMode={{ service_unit_kill_mode }}
+{% endif %}
 
 Restart=always
 RestartSec={{ service_unit_throttle_seconds }}
