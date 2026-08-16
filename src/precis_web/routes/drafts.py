@@ -96,6 +96,7 @@ from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES  # noqa: F401
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput, NotFound
+from precis.export._data_package import collect_entry
 from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
 from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sha
 
@@ -2913,6 +2914,85 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
         )
     store.drafts.link_figure_canvas(chunk.chunk_id, canvas.id)
     return RedirectResponse(url=f"/figure/{slug}", status_code=303)
+
+
+@router.post("/drafts/{ident}/figure/{handle}/refresh")
+async def refresh_figure_data_package(
+    request: Request, ident: str, handle: str
+) -> Response:
+    """Re-mint a data-package figure (``precis quest figure``) in place: re-
+    render it off its source ref (a quest's Pareto frontier / a pathway's
+    energy profile) and swap the blob + ``meta.figure.data_package``
+    snapshot atomically — same chunk, same position. Gated on
+    :func:`~precis.export._data_package.collect_entry` finding a schema-1
+    snapshot on the chunk — the single source of "is this a data-package
+    figure", shared with the export appendix that reads the same snapshot."""
+    back = f"/drafts/{ident}#c-{handle}"
+    store = get_store(request)
+
+    def _error(title: str, detail: str, status: int) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "active_tab": "drafts",
+                "title": title,
+                "status": status,
+                "detail": detail,
+            },
+            status_code=status,
+        )
+
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return _error("Draft not found", f"no draft {ident!r}", 404)
+    chunk = store.drafts.get_draft_chunk(handle)
+    if chunk is None or chunk.chunk_kind != "figure":
+        return _error(
+            "Figure not found", f"no figure chunk {handle!r} in this draft", 404
+        )
+    snapshot = collect_entry(chunk)
+    if snapshot is None:
+        return _error(
+            "Nothing to refresh",
+            f"¶{handle} carries no data-package snapshot to re-render from",
+            400,
+        )
+    src = snapshot.get("source") or {}
+    kind = src.get("kind")
+    # Explicit allowlist: dispatch (and the get_ref below) must never run
+    # off an unexpected kind — a corrupted/hand-edited snapshot could
+    # otherwise resolve an unrelated ref and hand it to the wrong renderer.
+    if kind not in ("quest", "pathway") or not str(src.get("ref_id", "")).isdigit():
+        return _error(
+            "Bad snapshot source",
+            f"¶{handle}'s data-package snapshot names no refreshable "
+            "quest/pathway source",
+            400,
+        )
+    target = store.get_ref(kind=kind, id=int(src["ref_id"]))
+    if target is None:
+        source_name = src.get("handle") or src.get("ref_id")
+        return _error(
+            "Source gone",
+            f"the {kind} {source_name} this figure was minted from no longer exists",
+            404,
+        )
+
+    # matplotlib is heavy — import lazily so it never loads at web start.
+    from precis.quest.figures import pathway_profile_figure, quest_pareto_figure
+
+    renderer = quest_pareto_figure if kind == "quest" else pathway_profile_figure
+    try:
+        # Rendering is CPU-heavy (matplotlib) — off the event loop.
+        png, new_snapshot = await asyncio.to_thread(renderer, store, target)
+    except ValueError as exc:
+        return _error("Refresh failed", str(exc), 409)
+
+    with store.tx() as conn:
+        store.drafts.upsert_chunk_blob(chunk.chunk_id, png, "image/png", conn=conn)
+        store.drafts.stamp_figure_data_package(chunk.chunk_id, new_snapshot, conn=conn)
+    return RedirectResponse(url=back, status_code=303)
 
 
 @router.get("/c/{handle}")

@@ -69,8 +69,32 @@ def test_blob_medium_original_cleared(store: Store) -> None:
     src = resolve_figure_source(store, fig)
     assert src.medium == "blob"
     assert src.render.mode == "image"
-    assert src.render.url == f"/drafts/blob/{fig.handle}"
+    # versioned with the blob's sha256 (cache-buster: a "refresh"-swapped
+    # blob keeps the same chunk handle, so the URL needs a fresh query
+    # param to bust the blob route's 5-minute Cache-Control).
+    assert src.render.url is not None
+    assert src.render.url.startswith(f"/drafts/blob/{fig.handle}?v=")
     assert src.cleared
+
+
+def test_blob_medium_url_versions_on_blob_swap(store: Store) -> None:
+    """Refresh (item 5, gripe/backlog: quest-figure-refresh-button):
+    re-rendering a figure's blob in place (same chunk, new bytes) changes
+    the cache-buster query param on its render URL."""
+    ref, title = _draft(store)
+    fig = store.drafts.add_figure(
+        ref_id=ref.id,
+        caption="Fig 1. A widget.",
+        origin="own_graph",
+        image=_PNG,
+        mime="image/png",
+        at={"after": title.handle},
+    )
+    url_before = resolve_figure_source(store, fig).render.url
+    store.drafts.upsert_chunk_blob(fig.chunk_id, _PNG + b"\x00", "image/png")
+    fig_after = store.drafts.get_draft_chunk(fig.handle)
+    url_after = resolve_figure_source(store, fig_after).render.url
+    assert url_before != url_after
 
 
 def test_blob_third_party_permission_gates_clearance(store: Store) -> None:

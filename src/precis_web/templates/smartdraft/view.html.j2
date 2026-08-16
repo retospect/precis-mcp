@@ -558,6 +558,9 @@
             {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
             <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</figcaption>
             {{ draft_figures.clearance_badge(ident, n.base58, n.figure_origin, n.figure_cleared, n.figure_permission) }}
+            {% if n.figure_has_data_package %}
+            {{ draft_figures.figure_refresh_form(ident, n.base58) }}
+            {% endif %}
           </figure>
         </div>
         {% elif m.mode == 'full' %}
@@ -767,6 +770,9 @@
              class="min-w-0 flex-1 truncate text-slate-600 hover:text-sky-700"
              title="{{ fn.summary }}">{{ fn.summary }}</a>
           {{ draft_figures.clearance_badge(ident, fn.base58, fn.figure_origin, fn.figure_cleared, fn.figure_permission) }}
+          {% if fn.figure_has_data_package %}
+          {{ draft_figures.figure_refresh_form(ident, fn.base58) }}
+          {% endif %}
         </div>
         {% endfor %}
         </div>
@@ -1443,19 +1449,20 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       swapFrom(url);
       return;
     }
-    // Figure add / clearance-edit forms (drafts/_figures.html.j2, gripe
-    // 56668) — the SAME endpoints the classic /drafts reader posts to
-    // (reused as-is), but their hardcoded redirect target is
-    // the classic reader (`/drafts/{ident}#c-{handle}`). Intercept just
-    // these two inside #sd-content and POST via fetch instead, then refresh
-    // the panel in place. The "draw" endpoint (mint + open an SVG canvas,
-    // `…/figure/{handle}/draw`) is deliberately NOT intercepted — like the
-    // classic reader, it's meant to navigate away into /figure.
+    // Figure add / clearance-edit / data-package refresh forms
+    // (drafts/_figures.html.j2, gripe 56668) — the SAME endpoints the
+    // classic /drafts reader posts to (reused as-is), but their hardcoded
+    // redirect target is the classic reader (`/drafts/{ident}#c-{handle}`).
+    // Intercept these inside #sd-content and POST via fetch instead, then
+    // refresh the panel in place. The "draw" endpoint (mint + open an SVG
+    // canvas, `…/figure/{handle}/draw`) is deliberately NOT intercepted —
+    // like the classic reader, it's meant to navigate away into /figure.
     const act = f.getAttribute('action') || '';
     const figBase = `/drafts/${IDENT}/figure`;
     const isFigAdd = act === figBase;
     const isFigPermission = act.startsWith(figBase + '/') && act.endsWith('/permission');
-    if (f.closest('#sd-content') && (isFigAdd || isFigPermission)) {
+    const isFigRefresh = act.startsWith(figBase + '/') && act.endsWith('/refresh');
+    if (f.closest('#sd-content') && (isFigAdd || isFigPermission || isFigRefresh)) {
       e.preventDefault();
       fetch(act, { method: 'POST', body: new FormData(f) })
         .then(() => window.__sdRefresh())

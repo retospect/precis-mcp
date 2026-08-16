@@ -181,10 +181,10 @@ class SmartDraftFakeStore(FakeStore):
             return (b"\x89PNG\r\n\x1a\n", "image/png")
         return None
 
-    def has_chunk_blob(self, chunk_id) -> bool:
+    def chunk_blob_version(self, chunk_id) -> str | None:
         # The fixture figure (chunk_id=5) is a real blob-backed image (the
         # medium resolver) — mirrors DraftFakeStore's FIGFIG.
-        return chunk_id == 5
+        return "fixturesha0005" if chunk_id == 5 else None
 
 
 @pytest.fixture
@@ -1231,8 +1231,10 @@ def test_smartdraft_reader_figure_focus_renders_image_and_clearance_badge(
     r = smartdraft_client.get(f"/smartdraft/sdt?focus={fig_dc}")
     assert r.status_code == 200
     body = r.text
-    # the actual <img> pointed at the blob route (not raw caption text as a <p>)
-    assert '<img src="/drafts/blob/H000005"' in body
+    # the actual <img> pointed at the blob route (not raw caption text as a
+    # <p>) — versioned with the blob's sha256 so a "refresh"-swapped blob
+    # busts the browser's 5-minute Cache-Control.
+    assert '<img src="/drafts/blob/H000005?v=fixturesha00"' in body
     # origin chip + clearance badge (cleared — an "original" blob-backed figure)
     assert ">original<" in body
     assert "✓ cleared" in body

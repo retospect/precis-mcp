@@ -141,6 +141,14 @@ class ChunkNode:
     #: ``meta.figure.permission`` — the third-party publisher paper-trail
     #: (publisher / permission_id / status / dates / …), else ``None``.
     figure_permission: dict[str, Any] | None = None
+    #: Whether this figure carries a ``meta.figure.data_package`` snapshot
+    #: (a ``precis quest figure`` mint — schema 1, source/columns/rows) it
+    #: can be re-rendered from — gates the "↻ refresh" button. A cheap
+    #: truthiness check kept consistent with (but not importing)
+    #: :func:`precis.export._data_package.collect_entry`, the export
+    #: appendix's single source of truth for the same question. ``False``
+    #: for a non-figure chunk.
+    figure_has_data_package: bool = False
     #: ``meta.short`` for a ``chunk_kind='term'`` leaf — the
     #: term's primary label (may itself be the long descriptive form, e.g.
     #: ``'stereolithography'``). ``None`` for a non-term chunk.
@@ -359,6 +367,13 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
             (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
         )
         fsrc = resolve_figure_source(store, c) if is_figure else None
+        dp = fig_meta.get("data_package") if is_figure else None
+        has_data_package = bool(
+            isinstance(dp, dict)
+            and dp.get("schema") == 1
+            and "columns" in dp
+            and "rows" in dp
+        )
         is_term = c.chunk_kind == "term"
         term_meta = (getattr(c, "meta", None) or {}) if is_term else {}
         is_paragraph = c.chunk_kind == "paragraph"
@@ -380,6 +395,7 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
                 figure_origin=fig_meta.get("origin") if is_figure else None,
                 figure_cleared=fsrc.cleared if fsrc else None,
                 figure_permission=fig_meta.get("permission") if is_figure else None,
+                figure_has_data_package=has_data_package,
                 term_short=term_meta.get("short") if is_term else None,
                 term_abbrev=term_meta.get("abbrev") if is_term else None,
                 term_surface_forms=list(term_meta.get("surface_forms") or [])

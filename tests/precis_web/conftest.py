@@ -582,8 +582,8 @@ class FakeStore(_FakeStoreBase):
 
     # Figure medium resolver — safe defaults; DraftFakeStore
     # overrides for its blob-backed figure fixtures.
-    def has_chunk_blob(self, chunk_id) -> bool:
-        return False
+    def chunk_blob_version(self, chunk_id) -> str | None:
+        return None
 
     def figure_canvas_ref(self, chunk_id):
         return None

@@ -183,12 +183,21 @@ def resolve_figure_source(store: Store, chunk: Any) -> FigureSource:
     # 2/3 — blob-backed (a raster/static-SVG image, or a rendered graph). A
     # graph figure (0035) carries a render recipe and still lands its pixels in
     # chunk_blobs, so it resolves here; the medium label distinguishes it.
-    if store.drafts.has_chunk_blob(chunk.chunk_id):
+    # ``chunk_blob_version`` doubles as the existence check (``None`` when
+    # there's no blob row) and a cache-busting discriminator: the blob route
+    # serves with a 5-minute ``Cache-Control``, so a "refresh"-swapped blob
+    # (same handle, new bytes) needs a new URL to bust the browser's cache —
+    # the sha256 already carried on the same one-row lookup is the cheapest
+    # available discriminator, no extra round-trip.
+    blob_sha = store.drafts.chunk_blob_version(chunk.chunk_id)
+    if blob_sha is not None:
         is_graph = origin == "own_graph" or bool(fig.get("render_pending"))
         ok, reason = figure_status(fig)
         return FigureSource(
             medium="graph" if is_graph else "blob",
-            render=RenderSpec(mode="image", url=f"/drafts/blob/{chunk.handle}"),
+            render=RenderSpec(
+                mode="image", url=f"/drafts/blob/{chunk.handle}?v={blob_sha[:12]}"
+            ),
             cleared=ok,
             reason=reason,
         )

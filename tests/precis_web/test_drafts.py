@@ -300,12 +300,13 @@ class DraftFakeStore(FakeStore):
             return (b"\x89PNG\r\n\x1a\n", "image/png")
         return None
 
-    def has_chunk_blob(self, chunk_id) -> bool:
+    def chunk_blob_version(self, chunk_id) -> str | None:
         # Both fixture figures are real blob-backed images (medium
         # resolver): FIGFIG (original) + FIGTPF (third-party granted).
-        return any(
+        found = any(
             c.chunk_id == chunk_id and c.chunk_kind == "figure" for c in self._chunks
         )
+        return f"fixturesha{chunk_id:04d}" if found else None
 
     def links_for(self, ref_id, *, direction="both", relation=None):
         out = [ln for ln in self._links if relation is None or ln.relation == relation]

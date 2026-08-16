@@ -18,6 +18,12 @@
        an image file + caption + origin, revealing the third-party permission
        paper-trail when needed. Saves through ``POST /drafts/{ident}/figure``
        (inserted after ``handle``).
+     - ``figure_refresh_form(ident, handle)`` — the "↻ refresh" button for a
+       data-package figure (``precis quest figure``, ``meta.figure.
+       data_package`` present — callers gate on ``figure_has_data_package``):
+       re-renders off the source quest/pathway ref and swaps the blob +
+       snapshot in place. Saves through
+       ``POST /drafts/{ident}/figure/{handle}/refresh``.
 
    Each macro is self-contained (owns its own Alpine ``x-data`` scope), so a
    caller can drop it anywhere — the classic reader wraps ``figure_media`` +
@@ -237,4 +243,15 @@
             title="upload the image as a figure after this block">add figure</button>
   </form>
 </div>
+{% endmacro %}
+
+{% macro figure_refresh_form(ident, handle) %}
+{# Re-mint a data-package figure (``precis quest figure``) in place — the
+   caller only renders this when ``figure_has_data_package`` is true, so
+   there's no client-side gating here. #}
+<form method="post" action="/drafts/{{ ident }}/figure/{{ handle }}/refresh" class="inline">
+  <button type="submit"
+          class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 text-xs"
+          title="Re-render from source and update the data snapshot">↻ refresh</button>
+</form>
 {% endmacro %}

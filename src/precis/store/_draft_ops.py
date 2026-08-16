@@ -2480,16 +2480,22 @@ class DraftStore(_AbbrevMixin):
             return None
         return bytes(row[0]), row[1]
 
-    def has_chunk_blob(self, chunk_id: int) -> bool:
-        """Cheap existence check for a chunk's blob — ``SELECT 1``, never
-        de-TOASTs the bytes. The figure-source resolver calls this
-        for every figure at reader render time, so it must not pull megabytes."""
+    def chunk_blob_version(self, chunk_id: int) -> str | None:
+        """Cheap existence check *and* cache-busting discriminator for a
+        chunk's blob — ``SELECT sha256`` only, never de-TOASTs ``bytes``.
+        ``None`` when there's no blob row (falsy, so a caller can still use
+        this as the old boolean ``has_chunk_blob`` did); otherwise the
+        blob's sha256, which the figure-source resolver appends
+        (truncated) to the reader's ``<img>`` URL so a "refresh"-swapped
+        blob busts the browser's 5-minute ``Cache-Control`` without a
+        second round-trip. The figure-source resolver calls this for every
+        figure at reader render time, so it must not pull megabytes."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT 1 FROM chunk_blobs WHERE chunk_id = %s",
+                "SELECT sha256 FROM chunk_blobs WHERE chunk_id = %s",
                 (chunk_id,),
             ).fetchone()
-        return row is not None
+        return str(row[0]) if row is not None else None
 
     def upsert_chunk_blob(
         self,
@@ -2572,6 +2578,51 @@ class DraftStore(_AbbrevMixin):
                 "WHERE chunk_id = %s",
                 (cached_key, figure_chunk_id),
             )
+
+    def stamp_figure_data_package(
+        self,
+        chunk_id: int,
+        snapshot: dict[str, Any],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Swap a figure chunk's ``meta.figure.data_package`` snapshot in
+        place — the "refresh" path re-renders off the source ref
+        (:func:`precis.quest.figures.quest_pareto_figure` /
+        ``pathway_profile_figure``) and stamps the fresh numbers here so the
+        export data-package appendix keeps matching the plotted pixels.
+        Caption / origin / permission are untouched. Accepts an optional
+        ``conn`` (like :meth:`upsert_chunk_blob`) so the route can swap the
+        blob and the snapshot in one transaction. Logs an ``edited``
+        chunk_event (mirrors :meth:`set_figure_provenance`)."""
+
+        def _do(c: psycopg.Connection) -> None:
+            row = c.execute(
+                "SELECT retired_at FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {chunk_id}")
+            if row[0] is not None:
+                raise Gone(
+                    f"chunk {chunk_id} is retired — refresh the current live "
+                    "chunk instead"
+                )
+            c.execute(
+                "UPDATE chunks SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), "
+                "'{figure,data_package}', %s::jsonb, true) WHERE chunk_id = %s",
+                (Jsonb(snapshot), chunk_id),
+            )
+            c.execute(
+                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+                "VALUES (%s, 'edited', %s)",
+                (chunk_id, Jsonb({"reason": "figure-data-package-refresh"})),
+            )
+
+        if conn is not None:
+            _do(conn)
+        else:
+            with self.tx() as c:
+                _do(c)
 
     def set_render_recipe(
         self,
