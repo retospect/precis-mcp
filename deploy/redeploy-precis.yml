@@ -312,6 +312,14 @@
       when: precis_deploy_changed | default(true) | bool
       delegate_to: localhost
       become: false
+      vars:
+        # ansible.cfg's remote_tmp (/tmp/.ansible/tmp) is the CLUSTER path,
+        # owned by the remote user — on the controller it can be owned by a
+        # different local user (a deploy-user ansible run mints it 700),
+        # which makes every later localhost-delegated task UNREACHABLE at
+        # tmpdir creation. Same override 03-precis-constraints.yml's
+        # localhost tasks carry.
+        ansible_remote_tmp: "~/.ansible/tmp"
       # A real temp file (not a shell variable / heredoc) accumulates the
       # changed-path list — YAML block-scalar indentation makes a
       # multi-line-string-built-via-embedded-newlines approach a trap (stray
