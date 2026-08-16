@@ -141,6 +141,11 @@
       enabled: "{{ precis_worker_classify | default(false) | bool }}"
     - service: llm_reconcile
       enabled: "{{ precis_worker_llm_reconcile | default(false) | bool }}"
+    # paper_rank post-dates the §L cutover (no retiring env flag to mirror) but
+    # uses the same INSERT-if-absent seed so a console prio override survives
+    # redeploys.
+    - service: paper_rank
+      enabled: "{{ precis_worker_paper_rank | default(false) | bool }}"
     - service: job_claude_docker
       enabled: >-
         {{ (inventory_hostname in (groups['agent_sandbox_hosts'] | default([]))) }}

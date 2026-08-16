@@ -54,6 +54,11 @@ precis_worker_summarize_timeout: 120
 # (the summarizer llama-server host) like llm_summarize.
 precis_worker_classify: false
 
+# paper_rank reading-priority score (workers/paper_rank.py). Default OFF;
+# pure Python/SQL (no LLM/GPU), enable on the system-worker host. Seeded
+# into service_config by the §L seed loop like classify.
+precis_worker_paper_rank: false
+
 # taproot chase forward-bridge (ADR 0073 / Phase-3 W1). Default OFF; enable on
 # the gateway (needs the LLM verifier verdict + remote embedder). Emits
 # PRECIS_TAPROOT_CHASE_ENABLED=1 + PRECIS_CHASE_LLM=1 on the system worker so an
