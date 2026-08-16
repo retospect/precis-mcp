@@ -145,6 +145,20 @@
     <key>PRECIS_FETCH_MARKUP</key>
     <string>1</string>
     {% endif %}
+    {# Nanopub network passes (daily host-agnostic cadences: nanopub_mirror
+       registry delta sync + ots_sweep calendar anchoring). Default ON
+       cluster-wide, unlike the per-host gates above: the cadence lease is
+       a fleet singleton with no eligibility check, so a dark host winning
+       the daily lease burns the fire as a no-op — per-host enablement
+       would starve the pass most days. The vars are the kill switches. #}
+    {% if precis_worker_nanopub_mirror | default(true) %}
+    <key>PRECIS_MIRROR_ENABLED</key>
+    <string>1</string>
+    {% endif %}
+    {% if precis_worker_nanopub_ots | default(true) %}
+    <key>PRECIS_OTS_ENABLED</key>
+    <string>1</string>
+    {% endif %}
     {# Shared API keys — Perplexity, EPO OPS, patent raw cache.
        See inventory/group_vars/all/precis_env.yml. Even though the
        system worker rotation today (embed/summarize/chunk_keywords/

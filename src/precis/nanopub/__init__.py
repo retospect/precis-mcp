@@ -117,12 +117,16 @@ syntax outside the integrity envelope and are stripped at mint), the
 exact frozen artifact bytes once signed.
 
 NOT built / not run: no artifact has been POSTed anywhere (publishing a
-first claim is Reto's call, via the CLI door); the OTS calendar
-round-trip and the registry mirror both ship dark
-(``PRECIS_OTS_ENABLED`` / ``PRECIS_MIRROR_ENABLED`` — the initial
-mirror pull hasn't run); keys are not yet generated
-(``precis nanopub keygen``), and the allowlist starts empty — an empty
-allowlist means nothing is publishable.
+first claim is Reto's call, via the CLI door). The OTS calendar
+round-trip and the registry mirror are env-gated
+(``PRECIS_OTS_ENABLED`` / ``PRECIS_MIRROR_ENABLED``); the deploy tree
+now sets both ON cluster-wide on the collapsed worker
+(``precis_worker_nanopub_{mirror,ots}`` kill switches — cluster-wide
+because the daily cadence lease is a fleet singleton with no
+eligibility check, so per-host enablement starves the pass). The
+initial ~87k mirror pull is still the manual door; keys are not yet
+generated (``precis nanopub keygen``), and the allowlist starts empty —
+an empty allowlist means nothing is publishable.
 """
 
 from __future__ import annotations

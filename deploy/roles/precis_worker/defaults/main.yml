@@ -64,6 +64,15 @@ precis_worker_taproot_chase: false
 # host (the gateway) so the flag only bites where the fetch pass runs.
 precis_worker_fetch_markup: false
 
+# Nanopub network passes (daily host-agnostic cadences: nanopub_mirror
+# registry delta sync + ots_sweep calendar anchoring). Default ON
+# cluster-wide, unlike the per-host gates above: the cadence lease is a
+# fleet singleton with no eligibility check, so a dark host winning the
+# daily lease burns the fire as a no-op — per-host enablement would
+# starve the pass most days. These are the kill switches.
+precis_worker_nanopub_mirror: true
+precis_worker_nanopub_ots: true
+
 # HF cache location — keep models off NFS to avoid first-load lock storms,
 # but also off NAS so workers don't drag bge-m3 over the network each load.
 # Local disk per node is the right place; ~/.cache/huggingface is fine.

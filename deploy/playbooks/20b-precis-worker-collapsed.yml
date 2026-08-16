@@ -148,6 +148,15 @@
     # service, so they stay plain env gates set via host_vars on whichever
     # darwin host needs them (the gateway, in practice) — same as today.
     #
+    # PRECIS_MIRROR_ENABLED / PRECIS_OTS_ENABLED (both OS families, default
+    # ON, mirrors the same block in precis-worker.plist.j2 /
+    # precis-worker.service.j2): the daily nanopub_mirror + ots_sweep
+    # cadences are host-agnostic fleet-singleton leases with no eligibility
+    # check — a dark host winning the lease burns the fire as a no-op — so
+    # unlike the per-host gates above these must be cluster-wide or the
+    # pass starves most days. precis_worker_nanopub_{mirror,ots} are the
+    # kill switches (role defaults, overridable in host_vars).
+    #
     # VLLM_GPU_MEMORY_UTILIZATION / SURYA_INFERENCE_PORT (linux only, mirrors
     # precis-worker.service.j2:63-64 — gripe 171249's GPU-memory insurance for
     # any marker/OCR path a job on the GPU node spawns): inert on non-GPU/
@@ -204,6 +213,8 @@
              {'PRECIS_FETCH_MARKUP': '1'}
              if (os_family == 'darwin' and (precis_worker_fetch_markup | default(false))) else {}
            )
+         | combine({'PRECIS_MIRROR_ENABLED': '1'} if (precis_worker_nanopub_mirror | default(true)) else {})
+         | combine({'PRECIS_OTS_ENABLED': '1'} if (precis_worker_nanopub_ots | default(true)) else {})
          | combine({
              'VLLM_GPU_MEMORY_UTILIZATION': surya_vllm_gpu_mem_util | default('0.25'),
              'SURYA_INFERENCE_PORT': surya_inference_port | default('8912'),
