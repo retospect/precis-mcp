@@ -187,3 +187,41 @@ def test_collapsed_worker_env_pins_pgpassfile_on_both_oses() -> None:
     assert darwin.get("PGPASSFILE") == "/Users/deploy/.pgpass"
     linux = _render_collapsed_worker_base_env("linux")
     assert linux.get("PGPASSFILE") == "/home/deploy/.pgpass"
+
+
+def _render_collapsed_worker_fix_env(*, gateway: bool, enabled: bool) -> dict[str, str]:
+    """Render 20b's ``_l_b_fix_env`` (dark-factory fix-lane env) for one
+    host/gate combination — same stub idiom as
+    :func:`_render_collapsed_worker_base_env`."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    expr = plays[0]["vars"]["_l_b_fix_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    rendered = env.from_string(expr).render(
+        inventory_hostname="host-a",
+        groups={"gateway": ["host-a"] if gateway else ["host-b"]},
+        precis_fix_lane_enabled=enabled,
+    )
+    assert isinstance(rendered, dict), f"_l_b_fix_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_collapsed_worker_fix_lane_env_is_gated() -> None:
+    """The fix-lane env (PRECIS_FIX_WORK_DIR / PRECIS_FIX_REPO_DIR) renders
+    ONLY on a gateway host with ``precis_fix_lane_enabled`` set — everywhere
+    else the block must be empty, so an unarmed host neither advertises the
+    ``clones_dir`` capability nor lets a soft-fallback-routed diagnose job
+    half-run (docs/backlog/dark-factory-arming.md, gripe 210007)."""
+    armed = _render_collapsed_worker_fix_env(gateway=True, enabled=True)
+    assert armed == {
+        "PRECIS_FIX_WORK_DIR": "/Users/deploy/precis-fix-work",
+        "PRECIS_FIX_REPO_DIR": "/Users/deploy/precis-fix-repo",
+    }
+    assert _render_collapsed_worker_fix_env(gateway=True, enabled=False) == {}
+    assert _render_collapsed_worker_fix_env(gateway=False, enabled=True) == {}

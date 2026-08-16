@@ -293,9 +293,28 @@
           if (precis_worker_agent_load_ceiling | default('')) else {}
         )
       ) if inventory_hostname in groups['gateway'] else {} }}
+    # ── dark-factory fix lane (diagnose_gripe / fix_gripe clone plumbing):
+    # gateway-only, gated on `precis_fix_lane_enabled` host_var (arming
+    # rung 2's env prerequisite — docs/backlog/dark-factory-arming.md).
+    # WORK_DIR is the clone scratch root (must live under the run-as user's
+    # home so the colima VM's default $HOME mount covers the container's
+    # ro bind of each clone); REPO_DIR is the host-local clone the jobs
+    # `git clone --local` from (provisioned by precis_worker_agent/tasks/
+    # provision.yml, same gate). Exporting WORK_DIR is also what makes the
+    # `clones_dir` capability probe advertise on this host, so the
+    # capability-routed diagnose/fix jobs become hard-routable instead of
+    # soft-falling back and dying on the missing env. ──
+    _l_b_fix_env: >-
+      {{ (
+        {
+          'PRECIS_FIX_WORK_DIR': precis_fix_work_dir | default('/Users/deploy/precis-fix-work'),
+          'PRECIS_FIX_REPO_DIR': precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'),
+        } if (precis_fix_lane_enabled | default(false)) else {}
+      ) if inventory_hostname in groups['gateway'] else {} }}
     _l_b_env: >-
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
-         | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env) }}
+         | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env)
+         | combine(_l_b_fix_env) }}
   # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
   # `tasks_from:` is not a selector, it silently becomes a role VAR and the
   # role runs its FULL main.yml. That exact bug re-rendered the split

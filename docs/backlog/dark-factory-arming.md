@@ -27,10 +27,16 @@ dials turn; sequence is bottom-up so each rung proves the one above:
 NB (2026-08-16, post-4dff45dd): `diagnose_gripe`/`fix_gripe` are
 capability-routed on `{claude_bin, git, clones_dir, claude_config_mount}`,
 and `clones_dir` only advertises where `PRECIS_FIX_WORK_DIR` is exported in
-the worker daemon env — today: **no host**. Whichever step-2/3 host gets the
-fix lane must also get `PRECIS_FIX_WORK_DIR` (+ `PRECIS_FIX_REPO_DIR` /
-`PRECIS_FIX_REPOS`) in its deploy template, or minted jobs sit unroutable
-(the env-config-vs-deploy-template gap pattern).
+the worker daemon env. Step 2 was armed on 2026-08-14 (service_config row,
+actor "arm dark-factory rung 2") WITHOUT that env, so every scan-minted
+diagnose job soft-fallback-routed and died at `load_config_from_env`
+(gripe 210007). Fixed 2026-08-16: 20b's `_l_b_fix_env` + the
+`precis_worker_agent` provision tasks now carry the fix-lane env + a
+deploy-refreshed repo clone, gated on `precis_fix_lane_enabled` (gateway
+host_vars — flipped for the gateway that day). Each gripe's diagnosis
+idem-key (`diagnose:<id>`) is burned by its failed job — soft-delete the
+failed `diagnose_gripe` jobs so the scan re-mints (done for the 08-14→16
+casualties in the same session).
 
 Follow-ons parked at build time (all small, none blocking arming):
 - Fixer lane write-back: append a timeline note / flip STATUS on the

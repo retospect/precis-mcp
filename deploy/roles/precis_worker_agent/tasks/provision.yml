@@ -218,6 +218,42 @@
 # worker pass's own gate already stopped reading it (cli/worker.py's
 # `_profile_default_on`), so this seed is what gives an operator a live,
 # no-redeploy switch for that one pass specifically.
+# Dark-factory fix lane (docs/backlog/dark-factory-arming.md): the
+# diagnose_gripe / fix_gripe jobs `git clone --local` from a host-local
+# repo checkout (PRECIS_FIX_REPO_DIR) into a scratch root
+# (PRECIS_FIX_WORK_DIR) — both exported by 20b's `_l_b_fix_env` behind the
+# same `precis_fix_lane_enabled` gate. Keep the clone fresh on every
+# deploy so a diagnosis reads current code, not the tree from whenever the
+# lane was first armed.
+- name: Ensure the fix-lane clone scratch root (deploy-owned)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+  ansible.builtin.file:
+    path: "{{ precis_fix_work_dir | default('/Users/deploy/precis-fix-work') }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Clone/refresh the fix-lane repo checkout (diagnose/fix clone source)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+  ansible.builtin.git:
+    repo: https://github.com/retospect/precis-mcp
+    dest: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}"
+    version: main
+    update: true
+    force: true
+  become: true
+  become_user: deploy
+  environment:
+    HOME: /Users/deploy
+
 - name: "§L seed: quest_loop_reconcile (mirrors PRECIS_QUEST_LOOP_ENABLED)"
   when: precis_quest_loop_enabled | default(false) | bool
   ansible.builtin.command: >-
