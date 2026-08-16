@@ -363,9 +363,142 @@ def _sig_tokens(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 4}
 
 
+#: Two-letter chemical symbols recognised by :func:`_element_signature`,
+#: minus the ones that collide with common English words as capitalised
+#: sentence-initial tokens (In, As, At, No, Be, He). One-letter symbols
+#: (H, N, O, C, …) are excluded wholesale — in NO→NH₃ prose they name
+#: reagent atoms, not the candidate's distinguishing dopant. Two texts
+#: whose element signatures are non-empty and UNEQUAL are never near-dups,
+#: however high their token Jaccard: :func:`_sig_tokens` drops all <4-char
+#: words, so without this guard "Rh substitutional SAA on Pd(111)" and
+#: "Ru substitutional SAA on Pd(111)" — distinct candidates — fingerprint
+#: identically (a real qu164903 dedup dry-run clustered Rh/Ru/Fe/Co into
+#: one node, and Au with Ag). Unequal-but-overlapping sets ({Ag,Cu,Zn} vs
+#: {Ag,Cu,Zn,Au}) also stay distinct — conservative on purpose: a missed
+#: merge is clutter, a wrong merge silently deletes a branch's identity.
+_ELEMENT_SYMBOLS = frozenset(
+    [
+        "Li",
+        "Ne",
+        "Na",
+        "Mg",
+        "Al",
+        "Si",
+        "Cl",
+        "Ar",
+        "Ca",
+        "Sc",
+        "Ti",
+        "Cr",
+        "Mn",
+        "Fe",
+        "Co",
+        "Ni",
+        "Cu",
+        "Zn",
+        "Ga",
+        "Ge",
+        "Se",
+        "Br",
+        "Kr",
+        "Rb",
+        "Sr",
+        "Zr",
+        "Nb",
+        "Mo",
+        "Tc",
+        "Ru",
+        "Rh",
+        "Pd",
+        "Ag",
+        "Cd",
+        "Sn",
+        "Sb",
+        "Te",
+        "Xe",
+        "Cs",
+        "Ba",
+        "La",
+        "Ce",
+        "Pr",
+        "Nd",
+        "Pm",
+        "Sm",
+        "Eu",
+        "Gd",
+        "Tb",
+        "Dy",
+        "Ho",
+        "Er",
+        "Tm",
+        "Yb",
+        "Lu",
+        "Hf",
+        "Ta",
+        "Re",
+        "Os",
+        "Ir",
+        "Pt",
+        "Au",
+        "Hg",
+        "Tl",
+        "Pb",
+        "Bi",
+        "Po",
+        "Rn",
+        "Fr",
+        "Ra",
+        "Ac",
+        "Th",
+        "Pa",
+        "Np",
+        "Pu",
+        "Am",
+        "Cm",
+        "Bk",
+        "Cf",
+        "Es",
+        "Fm",
+        "Md",
+        "Lr",
+        "Rf",
+        "Db",
+        "Sg",
+        "Bh",
+        "Hs",
+        "Mt",
+        "Ds",
+        "Rg",
+        "Cn",
+        "Nh",
+        "Fl",
+        "Mc",
+        "Lv",
+        "Ts",
+        "Og",
+    ]
+)
+
+
+def _element_signature(text: str) -> frozenset[str]:
+    """Case-sensitive two-letter element symbols appearing as standalone
+    word tokens in ``text`` (``"Rh-sub on Pd(111)"`` → ``{"Rh", "Pd"}``).
+    See :data:`_ELEMENT_SYMBOLS` for what's deliberately excluded."""
+    return frozenset(re.findall(r"\b[A-Z][a-z]\b", text or "")) & _ELEMENT_SYMBOLS
+
+
+def _elements_conflict(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` name different chemistry — both carry a
+    non-empty element signature and the signatures differ — which vetoes a
+    near-dup match regardless of token overlap."""
+    ea, eb = _element_signature(a), _element_signature(b)
+    return bool(ea) and bool(eb) and ea != eb
+
+
 def _is_near_dup(text: str, existing: list[str]) -> bool:
     """True when ``text`` restates any of ``existing`` (token Jaccard ≥
-    :data:`_HYP_DUP_JACCARD`). A ``text`` with no significant tokens
+    :data:`_HYP_DUP_JACCARD`, and no element-signature conflict —
+    :func:`_elements_conflict`). A ``text`` with no significant tokens
     (:func:`_sig_tokens`) never matches anything — see that function's
     docstring."""
     toks = _sig_tokens(text)
@@ -374,6 +507,8 @@ def _is_near_dup(text: str, existing: list[str]) -> bool:
     for other in existing:
         ot = _sig_tokens(other)
         if not ot:
+            continue
+        if _elements_conflict(text, other):
             continue
         inter = len(toks & ot)
         union = len(toks | ot)
@@ -394,6 +529,9 @@ def _find_near_dup_node(roots: list[AttemptNode], text: str) -> AttemptNode | No
     significant tokens (:func:`_sig_tokens`) is never a candidate on
     either side of the comparison, so two short same-named siblings in
     different branches (the ``parent=``-disambiguated case) are untouched.
+    A node whose element signature conflicts with ``text``'s
+    (:func:`_elements_conflict` — e.g. an Rh branch vs a Ru attempt) is
+    likewise never a candidate, however similar the surrounding prose.
     """
     toks = _sig_tokens(text)
     if not toks:
@@ -402,6 +540,8 @@ def _find_near_dup_node(roots: list[AttemptNode], text: str) -> AttemptNode | No
     for n, _parent in _flatten_with_parent(roots):
         ntoks = _sig_tokens(n.text)
         if not ntoks:
+            continue
+        if _elements_conflict(text, n.text):
             continue
         inter = len(toks & ntoks)
         union = len(toks | ntoks)

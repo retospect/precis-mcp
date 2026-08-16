@@ -31,8 +31,10 @@ Package-level invariants (each enforced where named):
   (``dossier.add_attempt``/``mark_attempt`` — exact-text addressed,
   whitespace-normalized against node forgery); ``add_attempt`` **upserts**
   (whole-ledger near-dup Jaccard match advances the existing node's status,
-  never appends a twin or regresses; ``dedup_ledger`` / ``precis quest
-  dossier-dedup`` retrofits old ledgers). The narrative is stored one
+  never appends a twin or regresses; a conflicting element signature —
+  ``dossier._elements_conflict``, Rh vs Ru — vetoes the match, since the
+  ≥4-char token floor makes two-letter dopant symbols invisible to Jaccard;
+  ``dedup_ledger`` / ``precis quest dossier-dedup`` retrofits old ledgers). The narrative is stored one
   paragraph per unpinned chunk (retire + re-insert wholesale each rewrite,
   so per-thought embeddings recompute), and the rewrite passes
   ``narrative_budget.narrative_growth_gate`` (growth beyond 15%+50 words

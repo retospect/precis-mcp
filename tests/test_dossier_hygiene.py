@@ -26,6 +26,8 @@ from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest.dossier import (
     DedupMerge,
+    _element_signature,
+    _is_near_dup,
     _ledger_roots,
     _write_node_chunk,
     add_attempt,
@@ -266,6 +268,61 @@ class TestDossierDedup:
         assert add_attempt(store, qid, "a totally unrelated direction") is True
         assert dedup_ledger(store, qid, dry_run=True) == []
         assert dedup_ledger(store, qid, dry_run=False) == []
+
+
+class TestElementGuard:
+    """Different chemistry never merges, however similar the prose — the
+    element-signature veto (:func:`_elements_conflict`). Found live on
+    qu164903: a dedup dry-run clustered Rh/Ru/Fe/Co SAA branches into one
+    node because :func:`precis.quest.dossier._sig_tokens` drops all <4-char
+    tokens, making the element symbol invisible to the Jaccard match."""
+
+    def test_element_signature_extraction(self) -> None:
+        sig = _element_signature("Rh-sub on Pd(111) weakens N–O for NO→NH3")
+        assert sig == {"Rh", "Pd"}  # one-letter N/O and NO/NH3 never count
+        # ambiguous English-word symbols are excluded even capitalised
+        assert _element_signature("In situ, As shown, No candidate At all") == set()
+
+    def test_different_elements_never_near_dup(self) -> None:
+        rh = "Rh substitutional SAA on Pd(111)"
+        assert _is_near_dup("Ru substitutional SAA on Pd(111)", [rh]) is False
+        assert (
+            _is_near_dup(
+                "Surface Ag substitution coverage series (1/2/3-atom SAA)",
+                ["Surface Au substitution coverage series (1/2/3-atom SAA)"],
+            )
+            is False
+        )
+
+    def test_same_element_rephrase_still_merges(self) -> None:
+        assert (
+            _is_near_dup(
+                "Rh substitutional single-atom alloy on Pd(111) surface",
+                ["Rh substitutional alloy on Pd(111) surface"],
+            )
+            is True
+        )
+
+    def test_upsert_keeps_element_branches_distinct(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "Rh substitutional SAA on Pd(111)") is True
+        # a different element mints a NEW node instead of upserting into Rh
+        assert add_attempt(store, qid, "Ru substitutional SAA on Pd(111)") is True
+        ledger = read_ledger(store, qid)
+        assert "Rh substitutional SAA" in ledger
+        assert "Ru substitutional SAA" in ledger
+
+    def test_dedup_ledger_never_clusters_across_elements(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        _seed_ledger_pair(
+            store,
+            qid,
+            "Rh substitutional SAA on Pd(111)",
+            "active",
+            "Ru substitutional SAA on Pd(111)",
+            "active",
+        )
+        assert dedup_ledger(store, qid, dry_run=True) == []
 
 
 def test_dossier_dedup_cli_subcommand_parses() -> None:
