@@ -72,12 +72,12 @@
       ansible.builtin.set_fact:
         asa_deploy_changed: "{{ (asa_preflight.stdout | default('DIFF') | trim) == 'DIFF' }}"
 
-    - name: Install precis-mcp[asa,asa-slack,external] into the shared asa venv (pinned sha)
+    - name: Install precis-mcp[asa,asa-slack] into the shared asa venv (pinned sha)
       # Both bridges ship in the one precis-mcp wheel (the `asa` and `asa-slack`
       # extras) into the SHARED /opt/asa venv — install both extras together so
-      # a host running either daemon gets its deps. `external` rides along so the
-      # `precis serve` asa_bot spawns in this venv can fetch the data-source
-      # kinds (youtube/web/wolfram/news); mirrors roles/asa_bot's install.
+      # a host running either daemon gets its deps. The data-source kinds
+      # (youtube/web/wolfram/news) are core deps since the 2026-08-16 extras
+      # promotion; mirrors roles/asa_bot's install.
       # --refresh-package forces uv to re-resolve the ref so a moving `main` (or
       # the same-branch re-push) actually updates — dropped when _asa_ref is
       # already a frozen 40-char sha (every redeploy-precis.yml import), where
@@ -96,7 +96,7 @@
         /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
           {{ '' if _asa_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
           --constraints /opt/precis/constraints.txt \
-          'precis-mcp[asa,asa-slack,external] @ git+https://github.com/retospect/precis-mcp@{{ _asa_ref }}'
+          'precis-mcp[asa,asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ _asa_ref }}'
       register: asa_pip
       # uv prints "Installed/Updated N package(s)" to STDERR — check both streams.
       changed_when: >-

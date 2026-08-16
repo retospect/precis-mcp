@@ -3271,7 +3271,9 @@ version = "8.30.2"
 source = { editable = "." }
 dependencies = [
     { name = "ase" },
+    { name = "feedparser" },
     { name = "ftfy" },
+    { name = "httpx" },
     { name = "latex2mathml" },
     { name = "lxml" },
     { name = "manifold3d" },
@@ -3292,33 +3294,30 @@ dependencies = [
     { name = "pylatexenc" },
     { name = "pysbd" },
     { name = "python-docx" },
+    { name = "python-epo-ops-client" },
     { name = "pyyaml" },
     { name = "resvg-py" },
     { name = "spglib" },
     { name = "sympy" },
     { name = "tenacity" },
+    { name = "trafilatura" },
     { name = "watchdog" },
+    { name = "wolframalpha" },
+    { name = "youtube-transcript-api" },
 ]
 
 [package.optional-dependencies]
 all = [
     { name = "fastapi" },
-    { name = "feedparser" },
     { name = "habanero" },
-    { name = "httpx" },
     { name = "jinja2" },
-    { name = "lxml" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
     { name = "pymupdf" },
-    { name = "python-epo-ops-client" },
     { name = "python-multipart" },
     { name = "rapidfuzz" },
     { name = "semanticscholar" },
     { name = "sentence-transformers" },
-    { name = "trafilatura" },
     { name = "uvicorn", extra = ["standard"] },
-    { name = "wolframalpha" },
-    { name = "youtube-transcript-api" },
 ]
 asa = [
     { name = "aiohttp" },
@@ -3345,22 +3344,8 @@ dft-ml = [
     { name = "ase" },
     { name = "mace-torch" },
 ]
-edgar = [
-    { name = "httpx" },
-]
 embed = [
     { name = "sentence-transformers" },
-]
-external = [
-    { name = "feedparser" },
-    { name = "httpx" },
-    { name = "trafilatura" },
-    { name = "wolframalpha" },
-    { name = "youtube-transcript-api" },
-]
-import = [
-    { name = "ase" },
-    { name = "httpx" },
 ]
 paper = [
     { name = "habanero" },
@@ -3368,10 +3353,6 @@ paper = [
     { name = "pymupdf" },
     { name = "rapidfuzz" },
     { name = "semanticscholar" },
-]
-patent = [
-    { name = "lxml" },
-    { name = "python-epo-ops-client" },
 ]
 pcb = [
     { name = "easyeda2kicad" },
@@ -3409,7 +3390,6 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'asa'", specifier = ">=3.9" },
     { name = "ase", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
-    { name = "ase", marker = "extra == 'import'", specifier = ">=3.22" },
     { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.13.0" },
     { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.13.0" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
@@ -3417,17 +3397,14 @@ requires-dist = [
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
     { name = "easyeda2kicad", marker = "extra == 'pcb'", specifier = ">=0.8" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
-    { name = "feedparser", marker = "extra == 'external'", specifier = ">=6.0" },
+    { name = "feedparser", specifier = ">=6.0" },
     { name = "ftfy", specifier = ">=6.3" },
     { name = "habanero", marker = "extra == 'paper'", specifier = ">=2.0" },
-    { name = "httpx", marker = "extra == 'edgar'", specifier = ">=0.27" },
-    { name = "httpx", marker = "extra == 'external'", specifier = ">=0.27" },
-    { name = "httpx", marker = "extra == 'import'", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
     { name = "latex2mathml", specifier = ">=3.77" },
     { name = "lxml", specifier = ">=5.0" },
-    { name = "lxml", marker = "extra == 'patent'", specifier = ">=5.0" },
     { name = "mace-torch", marker = "extra == 'dft-ml'", specifier = ">=0.3" },
     { name = "manifold3d", specifier = ">=2.5" },
     { name = "marker-pdf", marker = "sys_platform != 'win32' and extra == 'paper'", specifier = ">=1.0" },
@@ -3441,7 +3418,7 @@ requires-dist = [
     { name = "pgvector", specifier = ">=0.3.0" },
     { name = "pint", specifier = ">=0.23" },
     { name = "platformdirs", specifier = ">=4.0" },
-    { name = "precis-mcp", extras = ["embed", "paper", "external", "patent", "edgar", "web"], marker = "extra == 'all'" },
+    { name = "precis-mcp", extras = ["embed", "paper", "web"], marker = "extra == 'all'" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -3450,7 +3427,7 @@ requires-dist = [
     { name = "pymupdf", marker = "extra == 'paper'", specifier = ">=1.24.10" },
     { name = "pysbd", specifier = ">=0.3.4" },
     { name = "python-docx", specifier = ">=1.1" },
-    { name = "python-epo-ops-client", marker = "extra == 'patent'", specifier = ">=4.0" },
+    { name = "python-epo-ops-client", specifier = ">=4.0" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rapidfuzz", marker = "extra == 'paper'", specifier = ">=3.0" },
@@ -3464,13 +3441,13 @@ requires-dist = [
     { name = "spglib", specifier = ">=2.1" },
     { name = "sympy", specifier = ">=1.12" },
     { name = "tenacity", specifier = ">=8.0" },
-    { name = "trafilatura", marker = "extra == 'external'", specifier = ">=1.6" },
+    { name = "trafilatura", specifier = ">=1.6" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.29" },
     { name = "watchdog", specifier = ">=4.0" },
-    { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
-    { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
+    { name = "wolframalpha", specifier = ">=5.0" },
+    { name = "youtube-transcript-api", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "external", "patent", "web", "cad-step", "pcb", "edgar", "chem", "import", "all"]
+provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "web", "cad-step", "pcb", "chem", "all"]
 
 [package.metadata.requires-dev]
 dev = [

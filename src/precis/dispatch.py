@@ -931,8 +931,9 @@ def boot(
         # other handlers' boot path.
         #
         # Banner honesty (#40): the env-var gate alone wasn't enough —
-        # if the operator set the EPO env trio but never installed
-        # the ``[patent]`` extra, the cold-start banner said
+        # if the operator set the EPO env trio but the venv lacked the
+        # EPO client (a ``[patent]`` extra until the 2026-08-16
+        # promotion; core since), the cold-start banner said
         # "available" and the first call crashed with the lazy
         # ``import epo_ops`` failure. Probe for the package here so
         # the kind appears as deferred with an actionable reason
@@ -947,8 +948,9 @@ def boot(
                 kind="patent",
                 loaded=False,
                 reason=(
-                    "missing python-epo-ops-client; "
-                    "install with `pip install precis-mcp[patent]`"
+                    "missing python-epo-ops-client (core dep — broken "
+                    "venv?); reinstall with "
+                    "`pip install --force-reinstall precis-mcp`"
                 ),
             )
         else:

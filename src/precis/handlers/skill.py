@@ -1796,65 +1796,71 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
 #: (the exact ``importlib.import_module`` argument) and the install
 #: hint copy-pasteable.
 _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
+    # NOTE: most probed deps are CORE since the extras promotions
+    # (2026-08-12 pure-code tools, 2026-08-16 light network clients) —
+    # a miss means a broken venv, so their hint is a reinstall, not a
+    # named extra. Only ``sentence_transformers`` still lives in a real
+    # extra ([embed], ADR 0021). Never hint an extra that no longer
+    # exists in pyproject.
     (
         "sentence_transformers",
         "sentence-transformers",
         "paper / markdown / patent semantic search",
-        "pip install 'precis-mcp[paper]'",
+        "pip install 'precis-mcp[embed]'",
     ),
     (
         "sympy",
         "sympy",
         "calc",
-        "pip install 'precis-mcp[calc]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "wolframalpha",
         "wolframalpha",
         "math",
-        "pip install 'precis-mcp[external]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "youtube_transcript_api",
         "youtube-transcript-api",
         "youtube",
-        "pip install 'precis-mcp[external]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "httpx",
         "httpx",
         "web / perplexity (websearch / perplexity-reasoning / perplexity-research)",
-        "pip install 'precis-mcp[external]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "trafilatura",
         "trafilatura",
         "web (page → markdown extraction)",
-        "pip install 'precis-mcp[external]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "docx",
         "python-docx",
         "docx file kind",
-        "pip install 'precis-mcp[docx]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "lxml",
         "lxml",
         "tex / patent / docx XML parsing",
-        "pip install 'precis-mcp[tex]' or [docx] or [patent]",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "epo_ops",
         "python-epo-ops-client",
         "patent (EPO OPS biblio + claims)",
-        "pip install 'precis-mcp[patent]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
     (
         "matplotlib",
         "matplotlib",
         "plot kind (declarative renderer)",
-        "pip install 'precis-mcp[plot]'",
+        "pip install --force-reinstall 'precis-mcp'",
     ),
 )
 

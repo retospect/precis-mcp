@@ -43,15 +43,16 @@
 # asa-slack ships in the same precis-mcp wheel as asa-bot (the `asa-slack`
 # extra) — same venv, same install step target as asa_bot's, just with the
 # extra name swapped in.
-- name: Install precis-mcp[asa-slack,external] into the asa venv
-  # `external` keeps the SHARED /opt/asa venv consistent regardless of which
-  # role last touched it — the `precis serve` asa_bot spawns here needs the
-  # data-source kinds (youtube/web/wolfram/news) from that extra.
+- name: Install precis-mcp[asa-slack] into the asa venv
+  # The data-source kinds (youtube/web/wolfram/news) the shared /opt/asa
+  # venv serves are core deps since the 2026-08-16 extras promotion — the
+  # former `external` extra is gone, so the venv stays consistent
+  # regardless of which role last touched it.
   ansible.builtin.shell: |
     /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[asa-slack,external] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
+      'precis-mcp[asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
   become: true
   register: asa_slack_pip
   changed_when: >-

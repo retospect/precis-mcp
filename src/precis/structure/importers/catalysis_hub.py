@@ -295,7 +295,8 @@ def fetch_config(
         import httpx  # noqa: F401  availability probe (raise the domain error); used in the annotation below
     except ImportError as exc:
         raise CatalysisHubUnsupported(
-            "Catalysis-Hub fetch needs httpx — pip install 'precis-mcp[import]'"
+            "Catalysis-Hub fetch needs httpx (core dep — broken venv?): "
+            "pip install --force-reinstall 'precis-mcp'"
         ) from exc
 
     from ...utils.http import http_client

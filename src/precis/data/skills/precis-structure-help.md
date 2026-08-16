@@ -383,10 +383,10 @@ get(
   config_id)` (`ref_identifiers`); a repeat `config_id=` lookup never refetches.
   A broad `surface_composition=`/`facet=`/`q=` filter (no `config_id=`) always
   refetches — there's no way to know in advance whether new configs match.
-- **Only `catalysis-hub` has a fetch layer wired today** (the network client
-  needs `precis-mcp[import]`); an unregistered source raises `BadInput`
-  naming the known ones. A missing `[import]` extra returns `Unsupported`
-  with the install hint, never a crash.
+- **Only `catalysis-hub` has a fetch layer wired today** (its network
+  client, httpx, is a core dep); an unregistered source raises `BadInput`
+  naming the known ones. A broken venv missing httpx returns
+  `Unsupported` with a reinstall hint, never a crash.
 - **The `catalysis-hub` *live* fetch is dark** (verified 2026-07-24): SUNCAT
   gated all public access — the GraphQL API 401s without an `X-API-Key` and
   the old public Postgres password is rotated. The on-demand `source=` path is
@@ -397,8 +397,8 @@ get(
   store, path, surface_contains=['Pd','Cu','Ni'], facet='111',
   product_contains=['NO'])` imports each reaction's product adsorbate config as
   an ordinary `structure` (external run carries the adsorption energy + method
-  fingerprint), idempotent on `(dataset, config_id)`, needs only ASE
-  (`[import]`), no network. This is the "bulk-download-and-mine-local" path.
+  fingerprint), idempotent on `(dataset, config_id)`, needs only ASE (a core
+  dep), no network. This is the "bulk-download-and-mine-local" path.
 - **Imported designs are read-only.** They carry `provenance:external` on
   their `struct_runs` row; `edit` refuses ("derive a variant instead") —
   branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.

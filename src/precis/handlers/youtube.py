@@ -185,8 +185,8 @@ class YouTubeHandler(CacheBackedHandler):
         video_id, lang_part = key.split(":", 1)
         languages = lang_part.split("+") if lang_part else ["en"]
 
-        yt = require_optional("youtube_transcript_api", extra="external")
-        errs = require_optional("youtube_transcript_api._errors", extra="external")
+        yt = require_optional("youtube_transcript_api")
+        errs = require_optional("youtube_transcript_api._errors")
         TranscriptsDisabled = errs.TranscriptsDisabled
         NoTranscriptFound = errs.NoTranscriptFound
         VideoUnavailable = errs.VideoUnavailable
@@ -287,7 +287,7 @@ def _list_languages(video_id: str) -> Response:
     and changes if the uploader adds tracks. Each call hits the API
     directly.
     """
-    yt = require_optional("youtube_transcript_api", extra="external")
+    yt = require_optional("youtube_transcript_api")
     try:
         transcript_list = yt.YouTubeTranscriptApi().list(video_id)
     except Exception as exc:

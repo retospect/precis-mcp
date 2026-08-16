@@ -4,8 +4,8 @@ Every kind that reaches the network (``web``, ``news``, ``wikipedia``,
 ``semanticscholar``, ``math``/Wolfram, ``perplexity``, ``youtube``, the
 ORCID ingest client, …) previously open-coded the same three things:
 
-1. ``httpx = require_optional("httpx", extra="external")`` — the optional
-   dependency gate, with the extra name spelled out by hand each time.
+1. ``httpx = require_optional("httpx")`` — the lazy import gate, with
+   the install hint spelled out by hand each time.
 2. A ``User-Agent`` header (variously ``"precis-mcp/1.0"`` or absent).
 3. ``follow_redirects=`` — a *security-relevant* default. The SSRF guard
    in :mod:`precis.utils.safe_fetch` only works when the client does
@@ -14,14 +14,16 @@ ORCID ingest client, …) previously open-coded the same three things:
    ``follow_redirects=True`` would let an agent-supplied URL redirect
    into a private/loopback/metadata address.
 
-:func:`http_client` centralises all three so the extra name, the UA, and
-the safe redirect default live in exactly one place. Bespoke per-kind
-error messages and ``next=`` hints stay at the call site — they are
-deliberately tuned per kind (and asserted in tests), not duplication.
+:func:`http_client` centralises all three so the install hint, the UA,
+and the safe redirect default live in exactly one place. Bespoke
+per-kind error messages and ``next=`` hints stay at the call site —
+they are deliberately tuned per kind (and asserted in tests), not
+duplication.
 
-This module does **not** import ``httpx`` at module load — the dep is
-optional (``[external]`` extra). Import happens lazily inside the
-functions via :func:`require_httpx`, mirroring every existing caller.
+This module does **not** import ``httpx`` at module load — although the
+dep is core since the 2026-08-16 extras promotion, the lazy import via
+:func:`require_httpx` keeps module import cheap and degrades a broken
+venv into a typed, actionable error instead of an ImportError.
 """
 
 from __future__ import annotations
@@ -40,19 +42,16 @@ if TYPE_CHECKING:
 #: kind honours ``WEB_USER_AGENT``).
 DEFAULT_USER_AGENT = "precis-mcp/1.0"
 
-#: The optional-dependency extra that ships ``httpx``.
-HTTPX_EXTRA = "external"
-
 
 def require_httpx() -> Any:
-    """Return the ``httpx`` module or raise the standard optional-dep error.
+    """Return the ``httpx`` module or raise the standard install-hint error.
 
-    Thin wrapper around :func:`require_optional` so the ``[external]``
-    extra name is spelled in one place. Callers that need ``httpx`` for
+    Thin wrapper around :func:`require_optional` (``httpx`` is a core
+    dep; a miss means a broken venv). Callers that need ``httpx`` for
     an ``except httpx.HTTPError`` clause use this; callers that only need
     a client use :func:`http_client`.
     """
-    return require_optional("httpx", extra=HTTPX_EXTRA)
+    return require_optional("httpx")
 
 
 def http_client(
@@ -142,7 +141,6 @@ def external_retry(
 
 __all__ = [
     "DEFAULT_USER_AGENT",
-    "HTTPX_EXTRA",
     "external_retry",
     "http_client",
     "require_httpx",

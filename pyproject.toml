@@ -157,7 +157,7 @@ dependencies = [
     "pydantic>=2.0",
     # docx + tex file handlers — python-docx / latex2mathml (pure-Python)
     # over the shared lxml (compiled wheel) + resvg-py (Rust SVG raster,
-    # figure→PNG) pair. lxml is also (harmlessly) listed by [patent].
+    # figure→PNG) pair; lxml also backs the patent kind's EPO XML parsing.
     "python-docx>=1.1",
     "latex2mathml>=3.77",
     "lxml>=5.0",
@@ -171,8 +171,8 @@ dependencies = [
     # stays optional.
     "manifold3d>=2.5",
     # dft (light, torch-free) — ASE + spglib back CIF I/O, symmetry, the EMT
-    # relax rung and slab ops. ase is also (harmlessly) listed by [dft-ml] /
-    # [import]. The MLIP rung ([dft-ml], torch) stays optional.
+    # relax rung and slab ops. ase is also (harmlessly) listed by
+    # [dft-ml]. The MLIP rung ([dft-ml], torch) stays optional.
     "ase>=3.22",
     "spglib>=2.1",
     # Nanopub publication (docs/backlog/claim-publication-nanopub-ots.md).
@@ -187,6 +187,25 @@ dependencies = [
     # (de)serialization, calendar submission. Pure Python; the calendar
     # round-trip only runs from the OTS sweep, which ships dark.
     "opentimestamps>=0.4.5",
+    # ── Light network-client deps — promoted from the former [external] /
+    # [patent] / [edgar] / [import] extras (2026-08-16), extending the
+    # 2026-08-12 promotion above. Policy: an extra is justified by WEIGHT
+    # (torch, OCCT, rdkit, ~200 MB packs) or PROCESS SHAPE (daemon venvs,
+    # [asa]/[web], whose absence fails loudly at service start) — never by
+    # niche-ness. Everything below is light pure-Python; the real gate on
+    # the paid kinds is an API key, which fails loudly at call time,
+    # whereas a missing extra made the kind fail silently (the recurring
+    # extras-gap class: asa's /opt/asa venv lacking [external]).
+    #
+    # httpx above all: ``utils/safe_fetch`` — the MANDATED SSRF-guarded
+    # outbound-HTTP seam, imported from core paths — lazily imports it, so
+    # it was never safely optional (it shipped only via extras + dev).
+    "httpx>=0.27",
+    "wolframalpha>=5.0",           # wolfram kind (key-gated)
+    "youtube-transcript-api>=1.0", # youtube kind
+    "trafilatura>=1.6",            # web page → markdown extractor
+    "feedparser>=6.0",             # RSS/Atom for the news kind / news_poll
+    "python-epo-ops-client>=4.0",  # patent kind — EPO OPS (OAuth2 fair-use)
 ]
 
 [project.urls]
@@ -302,19 +321,9 @@ catalyst-gpu = [
     "autocatpath[mace]>=0.13.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
-# Paid web tools (perplexity / wolfram / youtube transcripts).
-external = [
-    "wolframalpha>=5.0",
-    "youtube-transcript-api>=1.0",
-    "httpx>=0.27",
-    "trafilatura>=1.6",  # web page → markdown extractor
-    "feedparser>=6.0",   # RSS/Atom parsing for the news kind / news_poll
-]
-# Patent kind — EPO Open Patent Services. Free fair-use, OAuth2.
-patent = [
-    "python-epo-ops-client>=4.0",
-    "lxml>=5.0",
-]
+# NOTE: [external] and [patent] were promoted into core (2026-08-16) —
+# light pure-Python network clients; see the promotion note in
+# ``dependencies``. The extras no longer exist.
 # Web surface — the precis_web FastAPI service (Tasks / Papers /
 # Console / Status tabs). Server-rendered (Jinja + HTMX from CDN), so
 # the only runtime deps are the framework + template + form parser.
@@ -343,10 +352,8 @@ cad-step = ["cadquery-ocp-novtk>=7.8"]
 # autorouter and kicad-cli (``precis.pcb.route`` / gerber export) are external
 # binaries, gated at call time — not Python deps, so not listed here.
 pcb = ["easyeda2kicad>=0.8"]
-# EDGAR kind — SEC filings. Free, key-free (descriptive User-Agent only).
-# Needs only httpx (the shared outbound-HTTP seam); the filing parser is
-# stdlib. No new top-level dependency.
-edgar = ["httpx>=0.27"]
+# NOTE: [edgar] deleted (2026-08-16) — it was only ``httpx``, which is
+# core now. The edgar kind ships with every install (key-free).
 # Chemistry / protein tool-pack (ADR 0056; docs/design/chem-tools-integration.md).
 # The `route` kind + `retrosynth` job ship in the in-repo `precis_chem` plugin
 # (registered via the entry points below) and are gate-testable with the pure
@@ -357,21 +364,14 @@ edgar = ["httpx>=0.27"]
 # (slice 2) — and lands here when that slice does. Kept out of `[all]` (heavy,
 # host-specific, and unused until a node actually runs an engine).
 chem = ["rdkit>=2023.9"]
-# External DFT catalyst library import (ADR 0053 §2). The ``structure/
-# importers/`` adapter registry stays dependency-free (a pure
-# ``raw -> (Scene, ExternalRun, ExternalId)`` function per source, testable
-# against a checked-in fixture with zero extras installed); only each
-# source's thin *fetch* layer needs deps, gated behind this extra. ``ase``
-# is now a core dep (a source that hands back a raw CIF/POSCAR/XYZ blob needs
-# it to decode) — kept listed here for intent; ``httpx`` is the shared SSRF-guarded
-# outbound-HTTP client (Catalysis-Hub's GraphQL endpoint). Future sources
-# (OC20 LMDB, NCCR/Zenodo tarballs) add their own deps here as they land —
-# kept out of ``[all]`` like the other network-bound / heavy extras
-# (cad/pcb/chem).
-import = ["ase>=3.22", "httpx>=0.27"]
+# NOTE: [import] deleted (2026-08-16) — both of its deps (``ase``,
+# ``httpx``) are core now, so it gated nothing. The ``structure/
+# importers/`` adapter registry stays dependency-free by design (ADR
+# 0053 §2); a future source with a genuinely heavy fetch dep gets its
+# own extra when it lands.
 # calc/tex/docx/plot/cad-export/dft/mermaid are core deps now, not extras —
 # see the "Deterministic, pure-code, no-API tool deps" note above.
-all = ["precis-mcp[embed,paper,external,patent,edgar,web]"]
+all = ["precis-mcp[embed,paper,web]"]
 
 [project.scripts]
 precis = "precis.cli:main"

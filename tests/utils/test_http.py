@@ -6,12 +6,11 @@ import pytest
 
 from precis.utils.http import (
     DEFAULT_USER_AGENT,
-    HTTPX_EXTRA,
     http_client,
     require_httpx,
 )
 
-httpx = pytest.importorskip("httpx", reason="needs the [external] extra")
+httpx = pytest.importorskip("httpx", reason="httpx missing (broken venv)")
 
 
 def test_http_client_sets_default_user_agent() -> None:
@@ -51,7 +50,3 @@ def test_http_client_can_opt_into_redirects() -> None:
 
 def test_require_httpx_returns_module() -> None:
     assert require_httpx() is httpx
-
-
-def test_httpx_extra_is_external() -> None:
-    assert HTTPX_EXTRA == "external"

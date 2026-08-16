@@ -27,12 +27,10 @@ ads) is stripped. Links preserved as `[text](url)`; images dropped.
 Footer carries source URL and fetch date for attribution. First call
 fetches and caches; subsequent calls hit the cache.
 
-Extraction needs the optional `[external]` extra (which ships
-`trafilatura`) on the server — the `web` kind is unavailable without
-it. If it's absent the call fails with an actionable
-`[error:Unsupported] trafilatura is not installed` whose `next:` line
-is `pip install 'precis-mcp[external]'` (contact the admin, or install
-that extra on the deployment).
+Extraction needs `trafilatura`, a core dependency — it ships with every
+install. If it's somehow missing (broken venv) the call fails with an
+actionable `[error:Unsupported] trafilatura is not installed` whose
+`next:` line is a reinstall command (contact the admin).
 
 If extraction yields nothing the body is a stub
 (`(no readable content extracted from URL — page may require JS,

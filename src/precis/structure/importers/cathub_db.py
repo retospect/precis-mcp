@@ -47,7 +47,8 @@ def _require_ase() -> Any:
         from ase.db import connect
     except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
         raise CathubDbUnsupported(
-            "reading a cathub .db needs ase — pip install 'precis-mcp[import]'"
+            "reading a cathub .db needs ase (core dep — broken venv?): "
+            "pip install --force-reinstall 'precis-mcp'"
         ) from exc
     return connect
 

@@ -911,7 +911,7 @@ class StructureHandler(Handler):
             raw_records = catalysis_hub.fetch_config(**filters)
         except catalysis_hub.CatalysisHubUnsupported as exc:
             raise Unsupported(
-                str(exc), next="pip install 'precis-mcp[import]'"
+                str(exc), next="pip install --force-reinstall 'precis-mcp'"
             ) from exc
 
         if not raw_records:

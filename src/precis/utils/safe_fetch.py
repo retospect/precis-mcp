@@ -228,14 +228,15 @@ def resolve_pinned_ip(url: str) -> str | None:
 def _pinning_backend_class() -> type[httpcore.SyncBackend]:
     """Return (cached) the httpcore backend that pins DNS at connect.
 
-    Defined lazily so ``httpcore`` (an ``[external]``-extra dep, pulled in
-    with ``httpx``) is imported only when a pinning client is actually
-    built. ``connect_tcp`` receives the **hostname** from the request URL
+    Defined lazily so ``httpcore`` (pulled in with the core ``httpx``
+    dep) is imported only when a pinning client is actually built.
+
+    ``connect_tcp`` receives the **hostname** from the request URL
     (the pool key is kept per-hostname), classifies-and-pins it once, and
     dials the validated IP — the single resolution that also validates, so
     there is no DNS-rebinding window.
     """
-    httpcore = require_optional("httpcore", extra="external")
+    httpcore = require_optional("httpcore")
 
     class _PinningBackend(httpcore.SyncBackend):  # type: ignore[name-defined]
         def connect_tcp(
@@ -269,7 +270,7 @@ def pinning_transport(**httptransport_kwargs: Any) -> httpx.HTTPTransport:
     ``server_hostname``). :func:`http_client` installs this by default; call
     it directly only to build a bespoke client that must still be guarded.
     """
-    httpx = require_optional("httpx", extra="external")
+    httpx = require_optional("httpx")
     transport = httpx.HTTPTransport(**httptransport_kwargs)
     # httpx.HTTPTransport builds an internal httpcore.ConnectionPool and
     # stores the backend as ``_pool._network_backend``; swap it before any

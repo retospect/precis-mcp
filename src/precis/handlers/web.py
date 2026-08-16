@@ -122,11 +122,9 @@ class WebHandler(CacheBackedHandler):
         # A missing ``trafilatura`` is a "feature unavailable on this
         # deployment" condition, not a network/upstream failure — raise
         # ``Unsupported`` (not ``Upstream``) so the rendered error is
-        # correctly typed while still carrying the actionable
-        # ``pip install 'precis-mcp[external]'`` hint. (gripe #39241.)
-        trafilatura = require_optional(
-            "trafilatura", extra="external", error_cls=Unsupported
-        )
+        # correctly typed while still carrying an actionable reinstall
+        # hint. (gripe #39241; core dep since the 2026-08-16 promotion.)
+        trafilatura = require_optional("trafilatura", error_cls=Unsupported)
 
         import os
 

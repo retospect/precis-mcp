@@ -10,7 +10,7 @@
   ansible.builtin.set_fact:
     uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
-- name: Install precis-mcp[web,pcb,external] into shared MCP venv
+- name: Install precis-mcp[web,pcb] into shared MCP venv
   # Gated on the redeploy pre-flight (`precis_deploy_changed`, step 0b) so a
   # same-sha redeploy skips the uv resolve; undefined → install (fail-safe for
   # a standalone 38/14 run). `-e precis_force_install=true` overrides.
@@ -36,19 +36,15 @@
   # agent worker that drive PCB export/route. The Freerouting jar it routes
   # with is installed separately by the precis_eda role.
   #
-  # The ``external`` extra (trafilatura + feedparser + wolframalpha +
-  # youtube-transcript-api + httpx — all lightweight, no marker/torch) backs
-  # get(kind='web') / news fetch. This shared venv also runs `precis worker
-  # --profile=agent`, which (since §A) fires the `dream_agent` scheduler
-  # cadence in-process — no longer a separate `dream-pass.sh` invocation,
-  # same venv either way; without `external`, trafilatura is absent and the
-  # dream cycle's web fetch fails with "[error:Unsupported] trafilatura is
-  # not installed" (gr48611). The worker venv already carries it.
+  # The web/news fetch deps (trafilatura + feedparser + wolframalpha +
+  # youtube-transcript-api + httpx) are core since the 2026-08-16 extras
+  # promotion — the former ``external`` extra (whose absence broke the
+  # dream cycle's web fetch, gr48611) is gone; every venv carries them.
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       {{ '' if _precis_web_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[web,pcb,external] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+      'precis-mcp[web,pcb] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so

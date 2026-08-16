@@ -142,8 +142,9 @@ class OpsClient:
             import epo_ops
         except ImportError as e:
             raise OpsError(
-                "python-epo-ops-client is not installed; "
-                "install with `pip install precis-mcp[patent]`"
+                "python-epo-ops-client is not installed (core dep — broken "
+                "venv?); reinstall with `pip install --force-reinstall "
+                "precis-mcp`"
             ) from e
 
         self._inner = epo_ops.Client(
@@ -209,7 +210,10 @@ class OpsClient:
         try:
             import epo_ops.models
         except ImportError as e:
-            raise OpsError("python-epo-ops-client missing") from e
+            raise OpsError(
+                "python-epo-ops-client missing (core dep — broken venv?); "
+                "reinstall with `pip install --force-reinstall precis-mcp`"
+            ) from e
 
         # Split lowercased docdb slug back into the parts OPS wants.
         # We import here rather than at module scope to keep the

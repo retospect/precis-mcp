@@ -111,7 +111,8 @@ def test_config_id_miss_does_not_substitute_an_unrelated_record(structure, stub_
 def test_missing_import_extra_is_a_clean_unsupported(structure, monkeypatch):
     def _raise_unsupported(**_kwargs):
         raise catalysis_hub.CatalysisHubUnsupported(
-            "Catalysis-Hub fetch needs httpx — pip install 'precis-mcp[import]'"
+            "Catalysis-Hub fetch needs httpx (core dep — broken venv?): "
+            "pip install --force-reinstall 'precis-mcp'"
         )
 
     monkeypatch.setattr(catalysis_hub, "fetch_config", _raise_unsupported)

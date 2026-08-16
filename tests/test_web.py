@@ -266,7 +266,7 @@ def test_missing_trafilatura_is_actionable_and_not_upstream(
     # Missing local optional dep is NOT an upstream/network failure.
     assert not isinstance(err, Upstream)
     assert "trafilatura" in err.cause
-    assert err.next == "pip install 'precis-mcp[external]'"
+    assert err.next == "pip install --force-reinstall 'precis-mcp'"
 
 
 # ── extraction edge cases ────────────────────────────────────────────

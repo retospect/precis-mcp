@@ -192,8 +192,8 @@ def _component_solids(spec: SceneSpec) -> list[tuple[str, Any]]:
     keeps its parts distinct for the formats that can carry them (3MF)."""
     if not manifold_available():
         raise ExportError(
-            "manifold3d not installed — mesh export needs it. "
-            "Install the extra:  pip install 'precis-mcp[cad-export]'"
+            "manifold3d not installed — mesh export needs it (core dep; "
+            "broken venv?):  pip install --force-reinstall 'precis-mcp'"
         )
     by_comp = _by_component(spec)
     out: list[tuple[str, Any]] = []

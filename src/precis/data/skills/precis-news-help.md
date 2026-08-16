@@ -41,8 +41,9 @@ A single article on demand by URL (fetches + extracts the live page):
 get(kind="news", id="https://www.bbc.com/news/articles/abc123")
 ```
 
-On-demand page fetch needs the `[external]` extra (trafilatura/httpx). The
-scheduled poller does **not** — it ingests straight from the feed.
+On-demand page fetch uses trafilatura/httpx (core deps, always present).
+The scheduled poller doesn't fetch pages — it ingests straight from the
+feed.
 
 ## Ingestion: the `news_poll` worker + `news_sources` registry
 

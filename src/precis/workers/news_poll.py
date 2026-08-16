@@ -19,7 +19,7 @@ along a curated feed list. Each pass:
    :meth:`Store.put_cache_entry`, stamped ``category:news`` +
    ``source:<slug>`` (+ the feed's ``default_tags`` and a
    ``published:<date>`` tag when the entry carries a date). Full-page
-   extraction is opt-in via the ``fetch`` arg (needs ``[external]``);
+   extraction is opt-in via the ``fetch`` arg;
 5. records ``last_polled_at`` / ``last_status`` on the source row.
 
 Embedding is deferred: blocks are written with ``embedding=None`` and
@@ -88,9 +88,9 @@ _FEED_USER_AGENT = (
 FeedParser = Callable[..., Any]
 #: Optional full-page fetcher (url -> FetchResult). When supplied, the
 #: poller fetches+extracts the article page instead of using the feed's
-#: own content — opt-in only, since it pulls in the trafilatura/httpx
-#: ``[external]`` stack. Default is feed-content ingestion (feedparser
-#: alone), so the poller needs no page-fetch dependency.
+#: own content — opt-in only (a page fetch per entry, not per feed).
+#: Default is feed-content ingestion (feedparser alone), so the poller
+#: makes no page fetches.
 ArticleFetcher = Callable[[str], Any]
 
 _BREAK_RE = re.compile(r"<br\s*/?>|</p\s*>|</li\s*>", re.IGNORECASE)
@@ -240,7 +240,7 @@ def run_news_pass(
 
     By default the article body comes straight from the feed entry
     (feedparser only — no page fetch, no trafilatura). Pass ``fetch`` to
-    enable full-page extraction instead (opt-in, needs ``[external]``).
+    enable full-page extraction instead (opt-in).
 
     ``parse_feed`` / ``fetch`` are injectable for tests.
     """
@@ -401,7 +401,7 @@ def _default_parse_feed(
     from precis.utils.optional_deps import require_optional
     from precis.utils.safe_fetch import safe_get
 
-    feedparser = require_optional("feedparser", extra="external")
+    feedparser = require_optional("feedparser")
 
     # Conditional GET: echo the validators feedparser would have sent so an
     # unchanged feed answers 304 (no body re-download).

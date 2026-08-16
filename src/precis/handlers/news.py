@@ -138,7 +138,7 @@ def fetch_article(url: str, *, embedder: Any = None) -> FetchResult:
     engine as the ``web`` kind — behind the SSRF-guarded fetcher.
     """
     httpx = require_httpx()
-    trafilatura = require_optional("trafilatura", extra="external")
+    trafilatura = require_optional("trafilatura")
 
     from precis.utils.safe_fetch import SsrfBlocked, safe_get
 
