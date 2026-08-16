@@ -5,7 +5,9 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
-``structure`` sims), `frontier` (Pareto rank), `graduate` (per-candidate
+``structure`` sims), `frontier` (Pareto rank), `figures` (static matplotlib
+pareto/profile renderers + frozen data snapshots for draft export; CLI
+``precis quest figure``), `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `narrative_budget` (the growth-ratchet gate,
 owner-agnostic — reusable by any rolling-context rewrite). The perpetual loop itself is the

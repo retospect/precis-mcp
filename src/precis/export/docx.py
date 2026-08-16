@@ -26,6 +26,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.export._data_package import (
+    SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
+)
+from precis.export._data_package import (
+    SIDECAR_NAME as _DATA_PACKAGE_SIDECAR_NAME,
+)
+from precis.export._data_package import (
+    DataPackageFigure,
+    collect_entry,
+    header_lines,
+    sidecar_json,
+    table_lines,
+)
 from precis.export._nanopub_appendix import (
     SECTION_TITLE as _NANOPUB_SECTION_TITLE,
 )
@@ -114,6 +127,11 @@ class DocxResult:
     path: Path
     cited_slugs: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Set only when the draft rendered ≥1 figure carrying a data-package
+    #: snapshot — the ``data-package.json`` sidecar written beside
+    #: ``target_path`` (draft-pathway-figures-data-package.md). ``None``
+    #: when no figure carried a snapshot.
+    data_package_path: Path | None = None
 
 
 @dataclass
@@ -135,6 +153,9 @@ class _Ctx:
     #: Trust-mark bookkeeping (the trust-surfaces export marking), mirrors
     #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
     trust: Any = None
+    #: figures whose ``meta["figure"]["data_package"]`` snapshot was present,
+    #: mirrors ``export/latex.py``'s ``_Ctx.data_package``.
+    data_package: list[DataPackageFigure] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -339,6 +360,7 @@ def export_docx(
     # patent_mode: a finding cite renders (and can be marked) either way.
     _append_unverified_claims(doc, ctx)
     _append_published_claims(doc, ctx)
+    _append_data_package(doc, ctx.data_package)
     if not ctx.patent_mode:
         # A patent specification cites prior art in-text — no References list.
         _append_references(doc, ctx)
@@ -356,8 +378,22 @@ def export_docx(
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))
+
+    # The JSON sidecar (data-package durability tier 3), written next to
+    # the .docx — the same natural output directory the file itself lands
+    # in. Only written when ≥1 figure carried a snapshot.
+    data_package_path: Path | None = None
+    if ctx.data_package:
+        data_package_path = target_path.with_name(
+            f"{target_path.stem}.{_DATA_PACKAGE_SIDECAR_NAME}"
+        )
+        data_package_path.write_text(sidecar_json(ctx.data_package), encoding="utf-8")
+
     return DocxResult(
-        path=target_path, cited_slugs=list(ctx.cited), warnings=ctx.warnings
+        path=target_path,
+        cited_slugs=list(ctx.cited),
+        warnings=ctx.warnings,
+        data_package_path=data_package_path,
     )
 
 
@@ -386,6 +422,13 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
             doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
         except Exception as exc:  # pragma: no cover — pillow/format edge
             ctx.warnings.append(f"figure {chunk.dc} could not embed: {exc}")
+        snapshot = collect_entry(chunk)
+        if snapshot is not None:
+            ctx.data_package.append(
+                DataPackageFigure(
+                    label=chunk.dc, caption=chunk.text or "", snapshot=snapshot
+                )
+            )
     cap = doc.add_paragraph()
     cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _render_inline(chunk.text or "", ctx, cap)
@@ -961,3 +1004,30 @@ def _append_published_claims(doc: Any, ctx: _Ctx) -> None:
         p.add_run(f"“{e.sentence}”").bold = True
         p = doc.add_paragraph()
         p.add_run(f"{e.trusty_uri} — {e.status_text}")
+
+
+def _append_data_package(doc: Any, entries: list[DataPackageFigure]) -> None:
+    """A "Data package" section — one small-print (Courier New 7 pt)
+    header + table per figure that carried a ``data_package`` snapshot,
+    mirroring :func:`precis.export.latex.build_data_package_section`.
+    No-op when no figure carried a snapshot. Header + table lines come
+    from :func:`precis.export._data_package.header_lines` /
+    :func:`~precis.export._data_package.table_lines`, shared with the
+    LaTeX exporter so the two never print different numbers. The
+    machine-readable JSON travels alongside as the ``data-package.json``
+    sidecar written next to the ``.docx`` (see :func:`export_docx`) — a
+    plain ``.docx`` has no attach-a-file mechanism the LaTeX ``embedfile``
+    equivalent, so there's no embedded copy here."""
+    from docx.shared import Pt
+
+    if not entries:
+        return
+    doc.add_heading(_DATA_PACKAGE_SECTION_TITLE, level=1)
+    for fig in entries:
+        cap = doc.add_paragraph()
+        cap.add_run(fig.caption).bold = True
+        for line in [*header_lines(fig), "", *table_lines(fig)]:
+            p = doc.add_paragraph()
+            run = p.add_run(line)
+            run.font.name = "Courier New"
+            run.font.size = Pt(7)

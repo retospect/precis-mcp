@@ -36,6 +36,19 @@ from typing import TYPE_CHECKING, Any
 
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
+from precis.export._data_package import (
+    SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
+)
+from precis.export._data_package import (
+    SIDECAR_NAME as _DATA_PACKAGE_SIDECAR_NAME,
+)
+from precis.export._data_package import (
+    DataPackageFigure,
+    collect_entry,
+    header_lines,
+    sidecar_json,
+    table_lines,
+)
 from precis.export._nanopub_appendix import (
     SECTION_TITLE as _NANOPUB_SECTION_TITLE,
 )
@@ -188,6 +201,10 @@ class RenderResult:
     #: (``None`` when the render had no store) — carries the accumulated
     #: end-matter marks + override record for :func:`export_draft`.
     trust: Any = None
+    #: figures whose ``meta["figure"]["data_package"]`` snapshot was present
+    #: (draft-pathway-figures-data-package.md) — collected in reading order,
+    #: one entry per such figure. Empty when the draft has none.
+    data_package: list[DataPackageFigure] = field(default_factory=list)
 
 
 @dataclass
@@ -205,6 +222,12 @@ class ExportResult:
     #: cited-source bundle whose present PDFs were copied into ``sources/``
     #: and appended as a ``pdfpages`` appendix. ``None`` otherwise.
     source_bundle: Any | None = None
+    #: Set only when the draft rendered ≥1 figure carrying a data-package
+    #: snapshot — the ``data-package.json`` sidecar written beside
+    #: ``main.tex`` (draft-pathway-figures-data-package.md). ``None`` when
+    #: no figure carried a snapshot, so a snapshot-free export is
+    #: byte-identical to before.
+    data_package_path: Path | None = None
 
 
 def _latex_escape(text: str) -> str:
@@ -384,6 +407,7 @@ class _Ctx:
     warnings: list[str] = field(default_factory=list)
     seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
     figures: list[tuple[str, bytes]] = field(default_factory=list)  # (relpath, bytes)
+    data_package: list[DataPackageFigure] = field(default_factory=list)
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text cites, no bib
     footnote_refs: bool = (
         False  # reMarkable mode: source cites → self-contained footnotes
@@ -923,6 +947,7 @@ def render_body(
         warnings=ctx.warnings,
         figures=ctx.figures,
         trust=ctx.trust,
+        data_package=ctx.data_package,
     )
 
 
@@ -947,6 +972,11 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
     data, ext = asset
     relpath = f"pics/{c.dc}.{ext}"
     ctx.figures.append((relpath, data))
+    snapshot = collect_entry(c)
+    if snapshot is not None:
+        ctx.data_package.append(
+            DataPackageFigure(label=c.dc, caption=c.text or "", snapshot=snapshot)
+        )
     return [
         "\\begin{figure}[htbp]",
         "\\centering",
@@ -1231,6 +1261,56 @@ def build_published_claims_section(store: Any, trust: Any) -> str:
     return "\n".join(lines)
 
 
+def _verbatim_safe(line: str) -> str:
+    """Neutralize a literal ``\\end{verbatim}`` inside a verbatim block —
+    quest/pathway titles are free agent-authored text, and the verbatim
+    scanner would treat the substring as the environment close, turning
+    everything after it into live LaTeX (structural injection / compile
+    break). Mangling the token (``(!)``) keeps the rest of the line intact."""
+    return line.replace("\\end{verbatim}", "\\end{verbatim(!)}")
+
+
+def build_data_package_section(entries: list[DataPackageFigure]) -> str:
+    """A "Data package" end-matter section — one small-print (7 pt
+    monospace) header + table per figure that carried a
+    ``data_package`` snapshot (draft-pathway-figures-data-package.md),
+    plus the ``\\embedfile`` attachment of the JSON sidecar. Empty string
+    when no figure carried a snapshot, so a snapshot-free draft's output is
+    byte-identical to before. Header + table lines come from
+    :func:`precis.export._data_package.header_lines` /
+    :func:`~precis.export._data_package.table_lines`, shared with the docx
+    exporter so the two never print different numbers."""
+    if not entries:
+        return ""
+    lines = [
+        "\\clearpage",
+        f"\\section*{{{_DATA_PACKAGE_SECTION_TITLE}}}",
+        "",
+        (
+            "A machine-readable copy of this data is embedded in this PDF as "
+            f"\\texttt{{{_DATA_PACKAGE_SIDECAR_NAME}}} (extract with "
+            "\\texttt{pdfdetach}) and shipped alongside this export."
+        ),
+        "",
+        (
+            f"\\embedfile[mimetype=application/json,"
+            f"desc={{Data package (JSON)}}]{{{_DATA_PACKAGE_SIDECAR_NAME}}}"
+        ),
+        "",
+    ]
+    for fig in entries:
+        lines.append(f"\\subsection*{{{_tex(fig.caption)}}}")
+        lines.append("{\\fontsize{7}{8.4}\\selectfont")
+        lines.append("\\begin{verbatim}")
+        lines.extend(_verbatim_safe(ln) for ln in header_lines(fig))
+        lines.append("")
+        lines.extend(_verbatim_safe(ln) for ln in table_lines(fig))
+        lines.append("\\end{verbatim}")
+        lines.append("}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def assemble_document(
     *,
     title: str,
@@ -1242,6 +1322,8 @@ def assemble_document(
     remarkable: bool = False,
     unverified_section: str = "",
     published_section: str = "",
+    data_package_section: str = "",
+    extra_preamble: str = "",
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
@@ -1262,13 +1344,22 @@ def assemble_document(
     bibliography — empty when the export marked nothing, so an all-clean
     draft's output is unchanged (AC 6). ``published_section``
     (:func:`build_published_claims_section`) sits right after it, same
-    empty-means-absent contract.
+    empty-means-absent contract. ``data_package_section``
+    (:func:`build_data_package_section`) sits right after ``published_section``
+    and before the bibliography, same empty-means-absent contract.
+
+    ``extra_preamble`` is injected right after the checked-in preamble (the
+    same slot the reMarkable geometry uses) — :func:`export_draft` passes
+    ``\\usepackage{embedfile}`` here when the data-package section is
+    non-empty, so a snapshot-free export never loads the package.
     """
     patent_mode = doc_type == _PATENT_DOC_TYPE
     parts = [
         _template_text("preamble.tex").rstrip(),
         "",
     ]
+    if extra_preamble:
+        parts += [extra_preamble, ""]
     if remarkable:
         parts += [_REMARKABLE_GEOMETRY, ""]
     if not patent_mode:
@@ -1293,6 +1384,8 @@ def assemble_document(
         parts += ["", unverified_section]
     if published_section:
         parts += ["", published_section]
+    if data_package_section:
+        parts += ["", data_package_section]
     if not patent_mode:
         parts.append("\\printbibliography")
     if appendix:
@@ -1374,6 +1467,7 @@ def export_draft(
 
     unverified_tex = build_unverified_claims_section(rendered.trust)
     published_tex = build_published_claims_section(store, rendered.trust)
+    data_package_tex = build_data_package_section(rendered.data_package)
     main_tex = assemble_document(
         title=title,
         author_block=author_block,
@@ -1384,6 +1478,8 @@ def export_draft(
         remarkable=remarkable,
         unverified_section=unverified_tex,
         published_section=published_tex,
+        data_package_section=data_package_tex,
+        extra_preamble="\\usepackage{embedfile}" if data_package_tex else "",
     )
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
@@ -1397,6 +1493,16 @@ def export_draft(
         pics_dir.mkdir(parents=True, exist_ok=True)
         for relpath, data in rendered.figures:
             (target_dir / relpath).write_bytes(data)
+
+    # The JSON sidecar (data-package durability tier 3) — canonical copy
+    # source, since a publisher's re-typesetting strips the embedded PDF
+    # attachment. Only written when ≥1 figure carried a snapshot.
+    data_package_path: Path | None = None
+    if rendered.data_package:
+        data_package_path = target_dir / _DATA_PACKAGE_SIDECAR_NAME
+        data_package_path.write_text(
+            sidecar_json(rendered.data_package), encoding="utf-8"
+        )
 
     main_path = target_dir / "main.tex"
     bib_path = target_dir / "refs.bib"
@@ -1418,6 +1524,7 @@ def export_draft(
         acronyms=rendered.acronyms,
         warnings=rendered.warnings,
         source_bundle=source_bundle,
+        data_package_path=data_package_path,
     )
 
 
@@ -1428,6 +1535,7 @@ __all__ = [
     "build_acronyms",
     "build_author_block",
     "build_bib",
+    "build_data_package_section",
     "build_published_claims_section",
     "build_source_appendix",
     "build_unverified_claims_section",

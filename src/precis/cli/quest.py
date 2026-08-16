@@ -143,6 +143,31 @@ def add_parser(subparsers: Any) -> None:
     f.add_argument("id", type=int, help="Quest ref id.")
     f.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    fg = qsub.add_parser(
+        "figure",
+        help="Render a quest Pareto frontier or pathway energy-profile "
+        "figure (matplotlib) and attach it to a draft, with a snapshot "
+        "data-package frozen alongside the pixels.",
+    )
+    fg.add_argument("target", help="Quest or pathway id / handle / slug.")
+    fg.add_argument(
+        "--draft",
+        required=True,
+        help="Draft id / handle / slug to attach the figure to.",
+    )
+    fg.add_argument(
+        "--caption",
+        default=None,
+        help="Figure caption (default: auto-generated from the target's title).",
+    )
+    fg.add_argument(
+        "--pos",
+        default=None,
+        help="Draft chunk handle to insert the figure after (default: append "
+        "at the end of the draft).",
+    )
+    fg.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     rd = qsub.add_parser(
         "redispatch",
         help="Re-dispatch a barrier eval for every candidate on the deployed "
@@ -458,6 +483,102 @@ def _cmd_gaps(store: Store, args: argparse.Namespace) -> None:
     print(h.get(id=args.id, view="gaps").body)
 
 
+def _resolve_target_ref(store: Store, token: str) -> Any:
+    """A quest or pathway ref for ``token`` — a decimal ``qu<id>`` handle,
+    a bare numeric id (tried as a quest ref_id, then a pathway ref_id), or
+    a pathway slug (pathway is a slug-addressed kind — see
+    ``precis_pathway.handler``). ``None`` when nothing resolves."""
+    from precis.utils import handle_registry
+
+    parsed = handle_registry.parse(token)
+    if parsed is not None:
+        kind, is_chunk, pk = parsed
+        if is_chunk or kind not in ("quest", "pathway"):
+            return None
+        return store.get_ref(kind=kind, id=pk)
+    if token.strip().lstrip("-").isdigit():
+        pk = int(token)
+        return store.get_ref(kind="quest", id=pk) or store.get_ref(
+            kind="pathway", id=pk
+        )
+    return store.get_ref(kind="pathway", id=token)
+
+
+def _resolve_draft_ref(store: Store, token: str) -> Any:
+    """A draft ref for ``token`` — a decimal ``dr<id>`` handle, a bare
+    numeric id, or a slug."""
+    from precis.utils import handle_registry
+
+    parsed = handle_registry.parse(token)
+    if parsed is not None:
+        kind, is_chunk, pk = parsed
+        if is_chunk or kind != "draft":
+            return None
+        return store.get_ref(kind="draft", id=pk)
+    key: int | str = int(token) if token.isdigit() else token
+    return store.get_ref(kind="draft", id=key)
+
+
+def _cmd_figure(store: Store, args: argparse.Namespace) -> None:
+    import sys
+
+    from precis.quest import figures as figures_mod
+    from precis.utils import handle_registry
+
+    target = _resolve_target_ref(store, args.target)
+    if target is None:
+        print(f"quest figure: no quest or pathway {args.target!r}", file=sys.stderr)
+        sys.exit(2)
+    draft = _resolve_draft_ref(store, args.draft)
+    if draft is None:
+        print(f"quest figure: no draft {args.draft!r}", file=sys.stderr)
+        sys.exit(2)
+
+    target_handle = handle_registry.try_format(target.kind, target.id) or (
+        f"{target.kind}:{target.id}"
+    )
+    try:
+        if target.kind == "quest":
+            png, snapshot = figures_mod.quest_pareto_figure(store, target)
+            default_caption = f"Pareto frontier for {target.title} ({target_handle})"
+        elif target.kind == "pathway":
+            png, snapshot = figures_mod.pathway_profile_figure(store, target)
+            default_caption = f"Energy profile for {target.title} ({target_handle})"
+        else:
+            print(
+                f"quest figure: target must be a quest or pathway "
+                f"(got {target.kind!r})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    except ValueError as exc:
+        # Renderers raise for underpopulated data (a <2-point frontier, a
+        # pathway with no plottable states) — a user error, not a crash.
+        print(f"quest figure: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    at = {"after": args.pos} if args.pos else None
+    chunk = store.drafts.add_figure(
+        ref_id=draft.id,
+        caption=args.caption or default_caption,
+        origin="own_graph",
+        image=png,
+        mime="image/png",
+        at=at,
+        figure_meta={"data_package": snapshot},
+    )
+    ord_map = store.drafts.chunk_ord_map(chunk.ref_id)
+    store.add_link(
+        src_ref_id=chunk.ref_id,
+        src_pos=ord_map.get(chunk.chunk_id),
+        dst_ref_id=target.id,
+        relation="derived-from",
+    )
+    print(
+        f"quest figure: added {chunk.dc} to draft {draft.id} (derived-from {target_handle})"
+    )
+
+
 def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
     from precis.dispatch import Hub
     from precis.quest.compute import redispatch_candidates
@@ -506,6 +627,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_gaps(store, args)
     elif args.quest_cmd == "frontier":
         _cmd_frontier(store, args)
+    elif args.quest_cmd == "figure":
+        _cmd_figure(store, args)
     elif args.quest_cmd == "redispatch":
         _cmd_redispatch(store, args)
     elif args.quest_cmd == "reset-compute":

@@ -1,4 +1,12 @@
-"""Document export engines (LaTeX → Tier-B). The draft editable-document model."""
+"""Document export engines (LaTeX → Tier-B). The draft editable-document model.
+
+End-matter sections (each vanishes byte-identically when empty): trust
+marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published
+claim artifacts" (:mod:`._nanopub_appendix`), and the "Data package"
+appendix (:mod:`._data_package` — 7 pt monospace tables + JSON embedded
+in the PDF via ``embedfile`` + a ``data-package.json`` sidecar, generated
+from snapshots frozen into figure chunks at mint time so the numbers
+always match the plotted pixels)."""
 
 from __future__ import annotations
 
