@@ -24,6 +24,14 @@ dials turn; sequence is bottom-up so each rung proves the one above:
 5. Fixer autonomy `PRECIS_FIXER_AUTONOMY=ship` (then `full`) once
    1–4 have soaked.
 
+NB (2026-08-16, post-4dff45dd): `diagnose_gripe`/`fix_gripe` are
+capability-routed on `{claude_bin, git, clones_dir, claude_config_mount}`,
+and `clones_dir` only advertises where `PRECIS_FIX_WORK_DIR` is exported in
+the worker daemon env — today: **no host**. Whichever step-2/3 host gets the
+fix lane must also get `PRECIS_FIX_WORK_DIR` (+ `PRECIS_FIX_REPO_DIR` /
+`PRECIS_FIX_REPOS`) in its deploy template, or minted jobs sit unroutable
+(the env-config-vs-deploy-template gap pattern).
+
 Follow-ons parked at build time (all small, none blocking arming):
 - Fixer lane write-back: append a timeline note / flip STATUS on the
   gripe when a build lands, so the gripe reflects the pushed branch
