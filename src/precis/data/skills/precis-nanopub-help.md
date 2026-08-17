@@ -82,7 +82,11 @@ failures an extraction agent can avoid up front:
   joined; never across chunks), trimmed to the bare assertion, free of
   citation markers (including markdown-link residue like
   ``[\[1,2\]](#page-…)``), and any structured `quantity` value must
-  appear inside some quote.
+  appear inside some quote. The citation-marker check is a regex, so
+  bracketed chemical nomenclature — "[60]fullerene", "[2+2]
+  cycloaddition" — false-positives as a citation; trim or re-pick the
+  quote to exclude the bracketed token (quotes stay verbatim — never
+  rewrite one to dodge the gate).
 - **Snip vs chunk overlap** — consecutive chunks overlap at their
   boundary, so a snip drawn from an overlap region matches 2× and is
   refused. Remedy: extend the quote one sentence into text unique to
@@ -140,6 +144,17 @@ evidence verb + finding`.
   in the sentence.
 - **Complete sentence**, numbers with units matching the source
   exactly, no marketing adjectives.
+
+## Door behavior under batch load (ops notes)
+
+- **Pace approve batches.** Rapid back-to-back approve POSTs have hung
+  the web process (all routes wedge until restart). Serialize
+  submissions and sleep ~6 s between POSTs; a batch of N takes ~6·N s
+  by design.
+- **A 502 is not reliably a no-write.** `evidence/add` has landed its
+  write behind a 502 (verify before retrying, or you duplicate the
+  edge); `approve` fails closed — its gates run before any write — so
+  a 502 there is safe to retry.
 
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
