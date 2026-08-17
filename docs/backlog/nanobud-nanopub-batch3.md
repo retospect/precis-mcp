@@ -164,6 +164,24 @@ Remaining:
     10.1016/j.carbon.2009.09.040 (ferrocene-CO synthesis mechanism).
   - Dedup flag: pa2069 vs pa173471 same Nasibulin 2007 paper (one
     real, one 0-chunk stub).
+- **Own-work hubs staged 2026-08-17 (opus agent; MCP still wedged —
+  1800 s probe timeout, melchior web door healthy)**: 13 hubs drafted +
+  offline-gate-verified (all_ok=True), NOTHING minted. Scratchpad
+  session e26f279b `specs3/`: 13 `mint-*.json` (put args) + 12
+  `approve-*.json` (hub=MINT-PENDING) + `submit3.sh` paced runner
+  (`sh submit3.sh name=<fiid> …`). Contents: 9 NEW own-result hubs for
+  the covalency-rejected papers — pa39796 n1 optimum 25±8% filling /
+  n2 50% collapse / n3 GCMC LJ vdW-stacked; pa40723 n4 Li energies
+  −1.917…−2.642 eV / n5 no-clustering −1.863 vs −1.030 eV / n6
+  metallic-character; pa170590 n7 dihedral switch / n8 HOMO–LUMO / n9
+  α-β-μ — all titles carry explicit non-covalent / adsorptive /
+  fullerene–fullerene framing, "nanobud" dropped for pa170590 — PLUS
+  the 4 carried specs2 hubs (h8 pa1797 Mulliken, h9/h10 pa199068,
+  h11 pa1638 FTIR mint-only/no-approve, DOI-less by policy). NOTE
+  (scope rule): the 9 non-covalent hubs stay OUTSIDE the nanobud claim
+  tree; Reto gives explicit go/no-go before they mint. pa40723 +
+  pa170590 grounded in own-abstract text (first-page-only ingests —
+  non-hearsay, but re-ingest for deeper grounding).
 - **Claim-mining survey done 2026-08-17 (read-only opus agent)** — tier-2
   papers hold 10 more mintable candidates, ranked (paper / claim /
   grounding chunk): 1. pa4365 configuration-selected metallicity 0.12 eV
