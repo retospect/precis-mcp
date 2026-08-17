@@ -99,6 +99,48 @@ Style: a quantitative claim corroborates in the **measured quantity**
 ("65 nm node" names no physical dimension) — a passage in the wrong
 currency imports a unit confusion into the artifact.
 
+## Claim-sentence grammar (the approved title)
+
+The approved title IS the claim — it carries all the meaning and is
+exactly as long as it needs to be (no length cap; `refs.title` syncs to
+the full approved string at approve). One plain prose sentence, shaped
+**general → specific**: `[epistemic mode + method] + [system] +
+evidence verb + finding`.
+
+- **Epistemic mode is mandatory.** Name the sim kind (DFT,
+  spin-polarized DFT, molecular dynamics, DFT–NEGF transport, …) or the
+  experimental technique (TEM, Raman, c-AFM, nanoindentation, …).
+  Gloss niche method names on first use: "first-principles (DFT)".
+- **Controlled evidence verbs** (small closed vocabulary — the verb
+  encodes epistemic reach, so pick by meaning, not variety):
+  - *predicts* — simulation/theory only, and only for a claim that
+    reaches beyond the model to the physical system (testable by a
+    future measurement): "DFT predicts nanobuds adsorb Li more
+    strongly than graphene."
+  - *finds / shows* — either mode; the study's own internal result (a
+    computed comparison, an analyzed dataset): "DFT calculations find
+    the bond-to-ring configuration most stable."
+  - *measures* — experiment only; a quantitative technique output:
+    "c-AFM measures a Seebeck coefficient of …".
+  - *observes* — experiment only; imaging/qualitative: "TEM observes
+    fullerene outgrowths on the sidewall."
+  - *demonstrates* — experiment only; a capability or effect realized
+    in the lab.
+  Never *measures/observes/demonstrates* for a simulation; reserve
+  *predicts* for forward-looking claims — a within-model comparison is
+  *found*, not *predicted*.
+- **Not colon-label style** ("DFT simulation of nanobuds: …") — the
+  sentence is canonicalized and signed; it must read as a standalone
+  assertion, not a filing label.
+- **Self-contained.** No dangling comparatives ("among those examined"
+  → name the set); no coined jargon without an inline gloss; name the
+  substrate explicitly (graphene sheet vs nanotube sidewall — say
+  which lattice carries the buds).
+- **No author names** — provenance lives in the evidence edges, never
+  in the sentence.
+- **Complete sentence**, numbers with units matching the source
+  exactly, no marketing adjectives.
+
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
 Distinct from mint gates; enumerated by `precis nanopub preflight` and

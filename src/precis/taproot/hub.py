@@ -400,7 +400,7 @@ def mint_hub(
         ref = store.insert_ref(
             kind="finding",
             slug=None,
-            title=claim.sentence.strip()[:200],
+            title=claim.sentence.strip(),
             meta=meta,
             conn=c,
         )
@@ -496,7 +496,8 @@ def refine_claim_sentence(
     summary dict (see below).
 
     The claim sentence lives in three places (:func:`mint_hub`): ``refs.title``
-    (truncated ``[:200]``), the ``finding_body`` chunk at ``ord=0``, and
+    (full length — a claim sentence carries all its meaning; it is exactly as
+    long as it needs to be), the ``finding_body`` chunk at ``ord=0``, and
     implicitly in the content-derived ``pub_id``. This is the retitle door
     that keeps all three in sync when a hub's wording needs fixing (e.g. a
     claim-quality rubric flags a dangling demonstrative) — there is otherwise
@@ -505,7 +506,7 @@ def refine_claim_sentence(
 
     Writes, all inside one transaction:
 
-    1. ``refs.title = sentence.strip()[:200]``; ``meta.scope`` is replaced
+    1. ``refs.title = sentence.strip()`` (never truncated); ``meta.scope`` is replaced
        (not merged) when ``scope`` is given, else the hub's existing scope
        is kept.
     2. The ``finding_body`` chunk (``ord=0``) is replaced via DELETE+INSERT
@@ -580,7 +581,7 @@ def refine_claim_sentence(
             dict(scope) if scope is not None else dict(current_meta.get("scope") or {})
         )
 
-        new_title = stripped[:200]
+        new_title = stripped
         store.update_ref(
             hub_ref_id,
             title=new_title,

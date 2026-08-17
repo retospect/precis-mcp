@@ -649,10 +649,10 @@ def render_claim_evidence(store: Store, head: str) -> dict[str, Any] | None:
 def claim_full_sentence(store: Store, hub_ref_id: int) -> str | None:
     """The hub's *full* claim sentence — its ``finding_body`` chunk at
     ``ord=0`` (:func:`~precis.taproot.hub.mint_hub` writes the whole sentence
-    there; ``refs.title`` is only its ``[:200]`` truncation, which shears a
-    long claim mid-word). ``None`` when no body chunk exists (a legacy hub
-    predating the finding_body write) — the caller then falls back to the
-    truncated title.
+    there; ``refs.title`` is full-length too since the ``[:200]`` cap was
+    dropped, but legacy hubs may still carry a truncated title). ``None``
+    when no body chunk exists (a legacy hub predating the finding_body
+    write) — the caller then falls back to the title.
 
     Full-page-only (the ``/claim/<head>`` h1 wants the complete sentence),
     kept OUT of the shared :func:`_render_one` shape for the same reason as

@@ -248,9 +248,9 @@ def test_refine_claim_sentence_updates_title_and_body(store: Any) -> None:
     result = refine_claim_sentence(store, hub, new_sentence)
 
     assert result["hub_ref_id"] == hub
-    assert result["old_title"] == _CLAIM.sentence[:200]
-    assert result["new_title"] == new_sentence[:200]
-    assert _ref_title(store, hub) == new_sentence[:200]
+    assert result["old_title"] == _CLAIM.sentence
+    assert result["new_title"] == new_sentence
+    assert _ref_title(store, hub) == new_sentence
     assert _finding_body(store, hub) == new_sentence
 
 

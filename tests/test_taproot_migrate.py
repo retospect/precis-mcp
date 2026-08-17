@@ -165,19 +165,19 @@ def test_score_hubs_excludes_compound_hubs(store: Store) -> None:
     assert compound not in ids  # the compound is excluded
 
 
-def test_score_hubs_scores_claim_sentence_not_truncated_title(store: Store) -> None:
-    """P0-1: :func:`mint_hub` truncates ``title`` to 200 chars but writes
-    the full sentence to the ``finding_body`` chunk — scoring must read
-    that chunk (via :data:`_CANDIDATE_HUBS_SQL`'s JOIN), not ``ref.title``,
-    or a conjunction past the truncation point is invisible."""
-    lead = "A" * 210  # past the 200-char title truncation boundary
-    sentence = f"{lead} and this trailing clause only exists past the title cutoff"
+def test_score_hubs_scores_full_claim_sentence(store: Store) -> None:
+    """A claim sentence is stored full-length in ``refs.title`` (no cap —
+    the title carries all the meaning) and mirrored in the ``finding_body``
+    chunk; scoring reads the chunk (via :data:`_CANDIDATE_HUBS_SQL`'s JOIN)
+    and both must agree even for a long sentence."""
+    lead = "A" * 210  # would have crossed the old 200-char cap
+    sentence = f"{lead} and this trailing clause only exists past the old cutoff"
     hub_id = mint_hub(store, _claim(sentence))
 
     scores = score_hubs(store)
     by_id = {s.ref_id: s for s in scores}
     assert by_id[hub_id].sentence == sentence
-    assert "and" not in by_id[hub_id].title  # truncated title never reaches "and"
+    assert by_id[hub_id].title == sentence  # full, never truncated
     assert "conjunction" in by_id[hub_id].signals
     assert by_id[hub_id].cohort == "likely-compound"
 

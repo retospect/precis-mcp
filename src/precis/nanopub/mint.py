@@ -102,6 +102,18 @@ def approve(
             "reopen it first (an approved string is frozen; a change is a "
             "re-review, post-publication a supersede)"
         )
+    # Sync the live hub title to the approved string BEFORE flipping the
+    # row, so gate #14 (drift, computed off refs.title) fires only on
+    # post-approval edits — not on the review-time rewording that just
+    # happened. Sync-first makes the two independent commits safe: if the
+    # approve below fails, a retitled still-candidate hub is benign (no
+    # frozen sha exists yet), whereas approve-then-sync would leave a
+    # reviewed row whose frozen sha spuriously drift-fails at sign.
+    # Title-only on purpose: refine_claim_sentence also replaces
+    # finding_body, which for chase-born findings is prose, not a
+    # sentence copy.
+    if approved != (hub_ref.title or "").strip():
+        store.blocks.set_ref_title(hub_ref_id, approved, source="reviewer")
     ok = store.nanopub_approve(
         row.id,
         approved_title=approved,

@@ -44,9 +44,10 @@ async def claim_view(request: Request, head: str) -> HTMLResponse:
         # shared evidence shape stays identical between the singular and bulk
         # (smartdraft rail) paths:
         #   • citers  — the "Used by" inbound-cites section.
-        #   • claim   — the UNtruncated sentence (refs.title is [:200]; the
-        #               whole sentence lives in the finding_body chunk),
-        #               falling back to the truncated title when absent.
+        #   • claim   — the full sentence from the finding_body chunk,
+        #               falling back to refs.title when absent (titles are
+        #               full-length since the [:200] cap was dropped, but
+        #               legacy hubs may still carry a truncated one).
         #   • discussions — the "Ask & think" follow-up threads, the same
         #               affordance the generic finding detail carried before
         #               /refs/finding/<hub> started redirecting here.

@@ -163,8 +163,9 @@ class FindingHandler(NumericRefHandler):
     ) -> Response:
         """Create a finding — trimodal.
 
-        **Ordinary (chase) mode.** Required: ``title`` (short claim
-        title, ≤200 chars), ``body`` (claim text + setup envelope as
+        **Ordinary (chase) mode.** Required: ``title`` (the claim
+        sentence — it carries all the meaning and is stored full-length,
+        never truncated), ``body`` (claim text + setup envelope as
         flowing prose), ``cited_in`` (the starting frontier of the
         chase, in ``<cite_key>[~<ord>]`` or ``kind:identifier[~<ord>]``
         form).
@@ -421,7 +422,7 @@ class FindingHandler(NumericRefHandler):
             extra_target = parse_link_target(link, store=self.store)
 
         body_clean = body_text.strip()
-        title_clean = title.strip()[:200]
+        title_clean = title.strip()
 
         meta: dict[str, Any] = {
             "scope": scope or {},

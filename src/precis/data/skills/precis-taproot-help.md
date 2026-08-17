@@ -397,7 +397,8 @@ edit(
 ```
 
 Retitles the hub in place (`src/precis/taproot/hub.py::refine_claim_sentence`):
-`refs.title` updates (`[:200]`), the `finding_body` chunk is DELETE+INSERT
+`refs.title` updates (full length, never truncated — the claim sentence
+carries all the meaning), the `finding_body` chunk is DELETE+INSERT
 re-emitted (embedding/summary cascade re-runs), card variants (`ord < 0`) are
 dropped for card_forge to re-emit, and a new content-derived `pub_id` is added
 — the **old** `pub_id` is kept as an alias, so existing `[<pub_id>]` cites

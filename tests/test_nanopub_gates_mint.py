@@ -341,6 +341,34 @@ def test_sign_refuses_on_title_drift(store: Any, monkeypatch: Any) -> None:
     assert any(v.gate == "drift" for v in exc.value.violations)
 
 
+def test_approve_title_override_syncs_hub_and_signs(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A review-time title override must sync refs.title (full length, not
+    [:200]) so gate #14 (drift) fires only on post-approval edits."""
+    priv, _pub = generate_keypair(2048)
+    monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
+
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "Short pre-review sentence.", paper, chunk)
+    long_title = (
+        "Spin-polarized DFT on graphene-fullerene nanobuds finds two junction "
+        "bonding configurations whose next-nearest-atom bonds give strong "
+        "ferromagnetic coupling, with net magnetic moments of 5.76 and 5.55 "
+        "Bohr magnetons, while the other bonding configurations are "
+        "non-magnetic."
+    )
+    assert len(long_title) > 200
+    row = mint.approve(
+        store, hub, payload=_payload(chunk, sha), title=long_title, interactive=True
+    )
+    assert row.approved_title == long_title
+    ref = store.fetch_refs_by_ids([hub])[hub]
+    assert ref.title == long_title
+    signed = mint.sign(store, hub)
+    assert signed.state == "signed"
+
+
 def test_compound_requires_signed_atoms_then_chains_them(
     store: Any, monkeypatch: Any
 ) -> None:

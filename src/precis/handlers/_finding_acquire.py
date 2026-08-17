@@ -190,7 +190,7 @@ def put_acquiring(
         extra_target = parse_link_target(link, store=store)
 
     body_clean = body_text.strip()
-    title_clean = title.strip()[:200]
+    title_clean = title.strip()
 
     # Deterministic dedup key: same (body, scope, wants) → same pub_id,
     # mirroring the ordinary mode's cited_in-keyed collapse.
