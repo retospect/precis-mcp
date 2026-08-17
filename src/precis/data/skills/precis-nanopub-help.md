@@ -56,7 +56,10 @@ failures an extraction agent can avoid up front:
   stays *hanging* (mintable, unpublishable) while the original is
   hunted.
 - **No source, no atom** — every claim needs its own verbatim quote
-  plus a snip that matches uniquely in the paper's stored text.
+  plus a snip that matches uniquely in the paper's stored text. Snip
+  contract: single-spaced lowercase ASCII letters/digits/hyphens
+  tokens (~8 words), matching exactly once across the paper's body
+  chunks.
 - **Quantities carry bound semantics** — `exact` / `upper` / `lower` /
   `approx-range`; "up to 400:1" and "400:1" are different claims.
 - **Structured fields must be quote-contained** — a
@@ -144,6 +147,12 @@ evidence verb + finding`.
   in the sentence.
 - **Complete sentence**, numbers with units matching the source
   exactly, no marketing adjectives.
+- **The title asserts what the quotes support, not what the hub body
+  says.** Hub bodies routinely overclaim (a range the paper never
+  states, a mechanism the passage doesn't name). Re-scope the approved
+  title to the evidence rather than inheriting the hub wording, and
+  note the divergence for the sign review — don't stretch a quote to
+  rescue the hub's phrasing.
 
 ## Door behavior under batch load (ops notes)
 

@@ -36,7 +36,10 @@ alongside `established` chase findings.
 ## The evidence model — typed, graded, cross-paper
 
 Papers attach to a hub as one of three typed edges (ADR 0073):
-`establishes` (originator), `corroborates`, `contradicts`. The
+`establishes` (originator), `corroborates`, `contradicts`. A live
+`contradicts` edge also blocks the hub's nanopub mint until adjudicated
+([[precis-nanopub-help]]) — attach one deliberately, never as a
+softer "partially disagrees". The
 originator (★) is **derived at read time**, not stored — it's whichever
 supporter(s) the *other* supporters' citations converge on
 (`src/precis/taproot/seniority.py::derive_evidence`, over the held
@@ -317,10 +320,11 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 
 ## Mint a claim hub from a claim I've already sourced
 
-`put(kind='finding', ...)` is **bimodal**: `supporters=` (no `cited_in`)
-mints/converges a claim **hub**; `cited_in=` (no `supporters`) files an
-ordinary chase-target finding (see [[precis-finding-help]]) — passing
-both, or neither, errors. Both modes route through the same single write
+`put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
+`wants=`) mints/converges a claim **hub**; `cited_in=` files an ordinary
+chase-target finding; `wants=`+`provenance=` mints an acquisition-mode
+finding (both non-hub modes: [[precis-finding-help]]) — mixing modes
+errors. Both modes route through the same single write
 door (`taproot/hub.py`, via `seed_claim_hub`), so a hub is still only ever
 paper-sourced — mint **requires paper supporters**, and a draft's own
 novel assertion (no `supporters`, no `cited_in`) errors rather than
@@ -499,4 +503,7 @@ get(
 )  # finding lifecycle, chase, the evidence view
 get(kind="skill", id="precis-citation-help")  # the inline [pc<id>] cite, write side
 get(kind="skill", id="precis-draft-help")  # authoring prose that cites hubs
+get(
+    kind="skill", id="precis-nanopub-help"
+)  # mint gates + publish pipeline downstream of a hub
 ```
