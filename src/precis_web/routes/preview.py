@@ -299,6 +299,7 @@ async def resolve(
     kind: str,
     ref_id: str,
     chunk: str | None = None,
+    embed: str | None = None,
 ) -> RedirectResponse:
     """Resolve a ``kind:ref`` click target to its native view.
 
@@ -310,8 +311,18 @@ async def resolve(
       chunk ord=N and use that as the PDF page.
 
     Other kinds ignore the chunk suffix; the click lands on the ref's
-    overview page.
+    overview page. ``?embed=1`` threads through to the redirect target —
+    the ``/nanopub`` workbench routes evidence clicks through this
+    resolver into its framed paper pane, which must stay chrome-less.
     """
+
+    def _thread_embed(url: str) -> str:
+        if not embed:
+            return url
+        base, _, frag = url.partition("#")
+        base += ("&" if "?" in base else "?") + f"embed={embed}"
+        return f"{base}#{frag}" if frag else base
+
     store = get_store(request)
     hub = get_runtime(request).hub
     numeric_id = _resolve_ref_id(store, kind, ref_id, hub=hub)
@@ -329,18 +340,19 @@ async def resolve(
     if kind == "paper" and chunk:
         if _CHUNK_RE.match(chunk):
             return RedirectResponse(
-                url=f"/papers/{numeric_id}?chunk={chunk}", status_code=303
+                url=_thread_embed(f"/papers/{numeric_id}?chunk={chunk}"),
+                status_code=303,
             )
         page = _page_from_chunk_suffix(store, numeric_id, chunk)
         if page is not None:
             return RedirectResponse(
-                url=f"/papers/{numeric_id}/pdf#page={page}",
+                url=_thread_embed(f"/papers/{numeric_id}/pdf#page={page}"),
                 status_code=303,
             )
 
     template = _NATIVE_URL.get(kind, "/refs/{kind}/{id}")
     target = template.format(kind=kind, id=numeric_id)
-    return RedirectResponse(url=target, status_code=303)
+    return RedirectResponse(url=_thread_embed(target), status_code=303)
 
 
 def _page_from_chunk_suffix(store: Store, ref_id: int, suffix: str) -> int | None:

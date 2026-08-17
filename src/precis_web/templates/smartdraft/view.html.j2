@@ -269,6 +269,8 @@
     <div class="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-slate-500">
       <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation)">🟢 sourced · 🟡 pending · 🔴 unsourced</span>
       {{ sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) }}
+      <a href="/nanopub?draft=dr{{ ref.id }}" class="hover:text-slate-800"
+         title="the /nanopub workbench, scoped to the claim hubs this draft cites — review &amp; sign what's left">review claims</a>
       <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
     </div>
   </div>

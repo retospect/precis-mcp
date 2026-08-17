@@ -41,6 +41,21 @@
     </p>
   </div>
 
+  {% if draft_filter %}
+  <div class="px-1">
+    <span class="inline-flex items-center gap-1.5 rounded-full bg-sky-100 text-sky-800 text-xs px-2.5 py-1">
+      draft {{ draft_filter.label }} — {{ draft_filter.n }} claim{{ 's' if draft_filter.n != 1 }}
+      <a href="/nanopub" class="text-sky-600 hover:text-rose-600" title="clear the draft filter">✕</a>
+    </span>
+  </div>
+  {% elif draft_notice %}
+  <div class="px-1">
+    <p class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      {{ draft_notice }}. <a href="/nanopub" class="underline">clear</a>
+    </p>
+  </div>
+  {% endif %}
+
   {% if stuck %}
   <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800">
     ⚠ {{ stuck|length }} OTS batch{{ 'es' if stuck|length != 1 }} pending past
@@ -58,7 +73,7 @@
     <span class="font-semibold">◆ Disputed — adjudicate first (oldest on top):</span>
     {% for r in disputed %}
     <a class="inline-block ml-2 hover:underline" target="np-review"
-       href="/nanopub/fi{{ r.ref_id }}?embed=1"
+       href="/claim/fi{{ r.ref_id }}?embed=1"
        title="{{ r.title }}">
       <span class="font-mono">fi{{ r.ref_id }}</span>{% if r.disputed_since %}
       <span class="text-rose-500">(since {{ r.disputed_since.strftime('%Y-%m-%d') }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
@@ -96,7 +111,7 @@
   <li class="mt-1">
     <details {% if n.children %}open{% endif %} class="group">
       <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-100"
-               data-pane="np-review" data-src="/nanopub/fi{{ n.row.ref_id }}?embed=1">
+               data-pane="np-review" data-src="/claim/fi{{ n.row.ref_id }}?embed=1">
         {% if n.children or n.evidence %}
         <span class="tree-caret text-slate-400 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
         {% else %}
@@ -108,7 +123,7 @@
               title="{% if n.relation == 'conjunct-of' %}Conjunct atom of the compound claim above — atoms mint and publish first; the compound cites their artifacts, not papers.{% else %}Refines the claim above — a narrower, sharper restatement.{% endif %}">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
         {% endif %}
         <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
-           target="np-review" href="/nanopub/fi{{ n.row.ref_id }}?embed=1">fi{{ n.row.ref_id }}</a>
+           target="np-review" href="/claim/fi{{ n.row.ref_id }}?embed=1">fi{{ n.row.ref_id }}</a>
         <span class="text-sm truncate" title="{{ n.row.title }}">{{ n.row.title }}</span>
         {% if n.row.trusty_uri %}
         <span class="font-mono text-xs text-slate-400 shrink-0"
@@ -121,7 +136,7 @@
       <ul class="ml-6 border-l border-slate-200 pl-3">
         {% for e in n.evidence %}
         <li class="tree-node mt-0.5 flex items-center gap-2 rounded px-2 py-0.5 text-xs text-slate-500 cursor-pointer hover:bg-slate-100"
-            {% if e.kind == 'finding' %}data-pane="np-review" data-src="/nanopub/fi{{ e.ref_id }}?embed=1"
+            {% if e.kind == 'finding' %}data-pane="np-review" data-src="/claim/fi{{ e.ref_id }}?embed=1"
             {% elif e.kind == 'paper' %}data-pane="np-paper" data-src="/papers/{{ e.ref_id }}?embed=1"{% endif %}>
           <span class="w-3"></span>
           <span class="font-mono px-1 rounded cursor-help
@@ -131,7 +146,7 @@
             title="{% if e.relation == 'contradicts' %}This source disputes the claim — publication is blocked until the dispute is adjudicated.{% elif e.relation == 'establishes' %}This source's passage directly asserts the claim — its primary grounding.{% elif e.relation == 'corroborates' %}This source's passage independently supports the claim.{% elif e.relation == 'derived-from' %}The claim was derived from this source, grounded through its pinned passage.{% else %}{{ e.relation }}{% endif %}">{{ e.relation }}</span>
           {% if e.kind == 'finding' %}
           <a class="truncate hover:underline" target="np-review"
-             href="/nanopub/fi{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>
+             href="/claim/fi{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>
           {% elif e.kind == 'paper' %}
           <a class="truncate hover:underline" target="np-paper"
              href="/papers/{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>

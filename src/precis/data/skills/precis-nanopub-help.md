@@ -168,7 +168,8 @@ evidence verb + finding`.
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
 Distinct from mint gates; enumerated by `precis nanopub preflight` and
-on the `/nanopub/fi<id>` review page:
+on the `/claim/fi<id>` page's review section (`/nanopub/fi<id>`
+redirects there — one page, reader evidence + review-and-sign):
 
 - **Withheld evidence edges** — an evidence edge neither
   verified-by-refine nor human-signed-off blocks publication; there is

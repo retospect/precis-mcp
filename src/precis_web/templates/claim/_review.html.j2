@@ -1,39 +1,37 @@
-{% extends "base.html.j2" %}
-{% block title %}Nanopub fi{{ hub_id }}{% endblock %}
-{% block content %}
-<div class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+{# The review-and-sign section — folded into claim/view.html.j2 from the
+   old nanopub/hub.html.j2 (nanopub-light-up UX consolidation: one page,
+   one way to look at a claim and sign it). Included only when the caller
+   set ctx['np'] (precis_web.nanopub_render.hub_context) — never rendered
+   for a FakeStore lacking the nanopub mixin. All state lives under `np.*`
+   (namespaced, not splatted, so it can't shadow the reader-evidence
+   context above); POST doors stay under /nanopub/fi<id>/... (unchanged —
+   only the GET page moved), addressed here via the shared `hub_ref_id`. #}
+<section id="review" class="mt-6 space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
   <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1 class="text-lg font-semibold leading-snug max-w-3xl">{{ bundle.sentence }}</h1>
-      <p class="text-xs text-slate-500 mt-1 font-mono">
-        fi{{ hub_id }} · {{ bundle.artifact_type }} ·
-        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ hub_id }}">claim page</a> ·
-        <a class="text-emerald-700 hover:underline" href="/nanopub">all claims</a>
-      </p>
-    </div>
+    <h2 class="text-sm font-semibold text-slate-700">Review &amp; sign</h2>
     <div class="text-right shrink-0">
       <span class="font-mono text-xs px-2 py-1 rounded
-        {% if disputed %}bg-rose-100 text-rose-700
-        {% elif state == 'published' %}bg-emerald-100 text-emerald-700
+        {% if np.disputed %}bg-rose-100 text-rose-700
+        {% elif np.state == 'published' %}bg-emerald-100 text-emerald-700
         {% else %}bg-slate-200 text-slate-700{% endif %}">
-        {% if disputed %}◆ blocked (disputed){% else %}{{ state }}{% endif %}
+        {% if np.disputed %}◆ blocked (disputed){% else %}{{ np.state }}{% endif %}
       </span>
-      {% if frozen %}
+      {% if np.frozen %}
       <div class="text-[11px] text-slate-500 mt-1" title="frozen-ness ladder: reviewed freezes the string; signed/anchored freeze the artifact bytes (append-only, DB-trigger enforced); published is public forever">
-        frozen: {{ frozen }}
+        frozen: {{ np.frozen }}
       </div>
       {% endif %}
     </div>
   </div>
 
-  {% if disputed %}
-  <section class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 space-y-3">
-    <h2 class="text-sm font-semibold text-rose-700">◆ Dispute — the actual conflict, side by side</h2>
-    {% for d in disputes %}
+  {% if np.disputed %}
+  <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 space-y-3">
+    <h3 class="text-sm font-semibold text-rose-700">◆ Dispute — the actual conflict, side by side</h3>
+    {% for d in np.disputes %}
     <div class="grid md:grid-cols-2 gap-3 text-sm">
       <div class="rounded-lg border border-slate-200 bg-white p-3">
         <div class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">this claim</div>
-        <p>{{ (row.approved_title if row and row.approved_title else bundle.sentence) }}</p>
+        <p>{{ (np.row.approved_title if np.row and np.row.approved_title else np.bundle.sentence) }}</p>
       </div>
       <div class="rounded-lg border border-slate-200 bg-white p-3">
         <div class="text-[11px] uppercase tracking-wide text-rose-600 mb-1">
@@ -57,20 +55,20 @@
     {% endfor %}
     <p class="text-xs text-rose-700/80">No forward transition while the edge stands —
       visible internally, unpublishable externally.</p>
-  </section>
+  </div>
   {% endif %}
 
   <div class="grid lg:grid-cols-5 gap-6">
     {# ── the DAG ── #}
     <div class="lg:col-span-3">
-      <svg viewBox="0 0 {{ graph.width }} {{ graph.height }}" class="w-full h-auto"
+      <svg viewBox="0 0 {{ np.graph.width }} {{ np.graph.height }}" class="w-full h-auto"
            role="img" aria-label="claim DAG">
         <defs>
           <marker id="np-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
             <path d="M0,0 L8,4 L0,8 z" fill="#64748b" opacity=".7"/>
           </marker>
         </defs>
-        {% for e in graph.edges %}
+        {% for e in np.graph.edges %}
         <path d="M{{ e.x1 }},{{ e.y1 }} L{{ e.x2 }},{{ e.y2 }}"
               fill="none" marker-end="url(#np-arr)"
               stroke="{% if e.cls == 'contradicts' %}#e11d48{% else %}#94a3b8{% endif %}"
@@ -79,7 +77,7 @@
         <text x="{{ (e.x1 + e.x2) // 2 + 6 }}" y="{{ (e.y1 + e.y2) // 2 }}"
               class="fill-slate-500" font-size="10">{{ e.label }}</text>
         {% endfor %}
-        {% for n in graph.nodes %}
+        {% for n in np.graph.nodes %}
         <g class="np-node cursor-pointer" data-id="{{ n.id }}" transform="translate({{ n.x - 100 }},{{ n.y - 28 }})">
           <rect width="200" height="56" rx="8" fill="#ffffff"
                 stroke="{% if 'contradicts' in n.cls or 'disputed' in n.cls %}#e11d48{% elif 'paper' in n.cls %}#b7791f{% elif 'atom' in n.cls %}#2b6cb0{% elif 'anchor' in n.cls %}#94a3b8{% else %}#059669{% endif %}"
@@ -98,27 +96,27 @@
     {# ── side panel: the publish row, rendered ── #}
     <div class="lg:col-span-2 space-y-4">
       <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-2 text-sm">
-        <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Publish row</h2>
-        {% if row %}
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Publish row</h3>
+        {% if np.row %}
         <table class="text-xs w-full">
           <tbody>
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">state</td><td class="font-mono">{{ row.state }}</td></tr>
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">approved</td><td>{{ row.approved_title or '—' }}</td></tr>
+            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">state</td><td class="font-mono">{{ np.row.state }}</td></tr>
+            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">approved</td><td>{{ np.row.approved_title or '—' }}</td></tr>
             {# The AIDA URI is just the approved sentence URL-encoded — the
                row above already shows it readably, so render only a copy
                affordance, never the percent-encoded monster. #}
-            {% if row.aida_uri %}
+            {% if np.row.aida_uri %}
             <tr><td class="text-slate-400 pr-3 py-0.5 align-top">aida</td><td>
               <button type="button" class="text-emerald-700 hover:underline text-xs"
-                      onclick="navigator.clipboard.writeText({{ row.aida_uri | tojson }}); this.textContent='copied ✓'">copy URI</button>
+                      onclick="navigator.clipboard.writeText({{ np.row.aida_uri | tojson }}); this.textContent='copied ✓'">copy URI</button>
             </td></tr>
             {% endif %}
             <tr><td class="text-slate-400 pr-3 py-0.5 align-top">trusty</td><td class="font-mono break-all">
-              {% if row.trusty_uri %}<a class="text-emerald-700 hover:underline" href="/np/{{ row.trusty_uri.rsplit('/', 1)[-1] }}">{{ row.trusty_uri }}</a>{% else %}—{% endif %}
+              {% if np.row.trusty_uri %}<a class="text-emerald-700 hover:underline" href="/np/{{ np.row.trusty_uri.rsplit('/', 1)[-1] }}">{{ np.row.trusty_uri }}</a>{% else %}—{% endif %}
             </td></tr>
-            <tr><td class="text-slate-400 pr-3 py-0.5">batch</td><td class="font-mono">{{ row.batch_id or '—' }}{% if proof_state %} · proof {{ proof_state }}{% endif %}</td></tr>
-            {% if row.published_at %}
-            <tr><td class="text-slate-400 pr-3 py-0.5">published</td><td>{{ row.published_at.strftime('%Y-%m-%d') }} → {{ row.registry_url }}</td></tr>
+            <tr><td class="text-slate-400 pr-3 py-0.5">batch</td><td class="font-mono">{{ np.row.batch_id or '—' }}{% if np.proof_state %} · proof {{ np.proof_state }}{% endif %}</td></tr>
+            {% if np.row.published_at %}
+            <tr><td class="text-slate-400 pr-3 py-0.5">published</td><td>{{ np.row.published_at.strftime('%Y-%m-%d') }} → {{ np.row.registry_url }}</td></tr>
             {% endif %}
           </tbody>
         </table>
@@ -130,59 +128,59 @@
 
       {# ── one action, labelled by the state's transition ── #}
       <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-3 text-sm">
-        <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Action</h2>
-        {% if action == 'approve' %}
-        <form method="post" action="/nanopub/fi{{ hub_id }}/approve" class="space-y-2">
-          {% if approve_error %}
-          <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ approve_error }}</div>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Action</h3>
+        {% if np.action == 'approve' %}
+        <form method="post" action="/nanopub/fi{{ hub_ref_id }}/approve" class="space-y-2">
+          {% if np.approve_error %}
+          <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ np.approve_error }}</div>
           {% endif %}
           <label class="block text-xs text-slate-500">Exact string to freeze (the signature covers this):</label>
-          <textarea name="title" rows="3" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 text-sm">{{ submitted_title | default(bundle.sentence, true) }}</textarea>
+          <textarea name="title" rows="3" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 text-sm">{{ np.submitted_title | default(np.bundle.sentence, true) }}</textarea>
           <label class="block text-xs text-slate-500">Grounding payload — quote + snip per passage, what you attest.
             Prefilled with a candidate from each grounding chunk; <b>trim the quote to the bare assertion</b> before approving:</label>
-          <textarea name="payload" rows="12" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 font-mono text-xs">{{ submitted_payload | default(suggested_payload, true) }}</textarea>
-          <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ action_label }}</button>
+          <textarea name="payload" rows="12" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 font-mono text-xs">{{ np.submitted_payload | default(np.suggested_payload, true) }}</textarea>
+          <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ np.action_label }}</button>
           <p class="text-[11px] text-slate-500">Every Layer-A mint gate runs now — the queue only holds strings that can mint.</p>
         </form>
-        {% elif action == 'sign' %}
-        <form method="post" action="/nanopub/fi{{ hub_id }}/sign" class="space-y-2">
+        {% elif np.action == 'sign' %}
+        <form method="post" action="/nanopub/fi{{ hub_ref_id }}/sign" class="space-y-2">
           <label class="flex items-center gap-2 text-xs text-slate-600">
             <input type="checkbox" name="attest" value="1">
             sign with the <b>attesting</b> key (your human signature — this is what makes it publishable)
           </label>
-          <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ action_label }}</button>
+          <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ np.action_label }}</button>
           <p class="text-[11px] text-slate-500">The sign button signs for real; unchecked = bot key (machine provenance only).</p>
         </form>
-        <form method="post" action="/nanopub/fi{{ hub_id }}/reopen">
+        <form method="post" action="/nanopub/fi{{ hub_ref_id }}/reopen">
           <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs">Reopen (edit the string)</button>
         </form>
-        {% elif action == 'reopen' %}
-        <form method="post" action="/nanopub/fi{{ hub_id }}/reopen">
-          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-sm">{{ action_label }}</button>
+        {% elif np.action == 'reopen' %}
+        <form method="post" action="/nanopub/fi{{ hub_ref_id }}/reopen">
+          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-sm">{{ np.action_label }}</button>
         </form>
         <p class="text-[11px] text-slate-500">Waiting for the OTS sweep to anchor; reopening discards the pointer
           (the artifact row itself is append-only, forever).</p>
-        {% elif action == 'publish-cli' %}
-        <p class="text-xs text-slate-600">{{ action_label }}:</p>
-        <pre class="bg-slate-100 rounded p-2 text-xs font-mono">precis nanopub publish fi{{ hub_id }} --live</pre>
+        {% elif np.action == 'publish-cli' %}
+        <p class="text-xs text-slate-600">{{ np.action_label }}:</p>
+        <pre class="bg-slate-100 rounded p-2 text-xs font-mono">precis nanopub publish fi{{ hub_ref_id }} --live</pre>
         <p class="text-[11px] text-slate-500">Deliberately not a web button — the registry POST propagates
           across mirrors forever.</p>
         {% else %}
-        <p class="text-xs text-slate-500">{{ action_label }}</p>
+        <p class="text-xs text-slate-500">{{ np.action_label }}</p>
         {% endif %}
       </section>
 
       {# ── withheld edges + sign-off doors ── #}
-      {% if withheld %}
+      {% if np.withheld %}
       <section class="rounded-lg border border-amber-300 bg-amber-50 p-4 space-y-3 text-sm">
-        <h2 class="text-xs font-semibold uppercase tracking-wide text-amber-700">
-          Withheld evidence edges ({{ withheld|length }})
-        </h2>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-amber-700">
+          Withheld evidence edges ({{ np.withheld|length }})
+        </h3>
         <p class="text-[11px] text-slate-500">Neither verified-by-refine nor signed off — each blocks
           publication until verified, or attested literally below (no mute button).</p>
-        {% for w in withheld %}
+        {% for w in np.withheld %}
         <div class="flex items-center gap-2">
-          <form method="post" action="/nanopub/fi{{ hub_id }}/signoff/{{ w.link_id }}" class="flex items-center gap-2 grow min-w-0">
+          <form method="post" action="/nanopub/fi{{ hub_ref_id }}/signoff/{{ w.link_id }}" class="flex items-center gap-2 grow min-w-0">
             <span class="text-xs grow truncate" title="{{ w.paper_title }}">
               {{ w.relation }} ← {{ w.paper_title }} <span class="font-mono text-slate-400">pc{{ w.paper_ref_id }}</span>
             </span>
@@ -190,7 +188,7 @@
                    class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">
             <button class="px-2 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 text-xs whitespace-nowrap">sign off</button>
           </form>
-          <form method="post" action="/nanopub/fi{{ hub_id }}/evidence/{{ w.link_id }}/remove"
+          <form method="post" action="/nanopub/fi{{ hub_ref_id }}/evidence/{{ w.link_id }}/remove"
                 onsubmit="return confirm('Remove this evidence edge?')">
             <button class="px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 text-xs"
                     title="delete this evidence edge from the hub">remove</button>
@@ -203,7 +201,7 @@
       {# ── evidence curation: attach a new edge (starts withheld) ── #}
       <details class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
         <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">Add evidence edge</summary>
-        <form method="post" action="/nanopub/fi{{ hub_id }}/evidence/add" class="mt-2 flex flex-wrap items-center gap-2">
+        <form method="post" action="/nanopub/fi{{ hub_ref_id }}/evidence/add" class="mt-2 flex flex-wrap items-center gap-2">
           <input name="source" placeholder="pa1234 (paper/patent)" required
                  class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-40">
           <input name="chunk" placeholder="pc5678 (passage, optional)"
@@ -220,14 +218,14 @@
       </details>
 
       {# ── publish preflight ── #}
-      {% if row %}
+      {% if np.row %}
       <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-1 text-sm">
-        <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Publish preflight</h2>
-        {% if not preflight %}
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Publish preflight</h3>
+        {% if not np.preflight %}
         <p class="text-emerald-600 text-xs">clear to publish — every publish-time gate passes</p>
         {% else %}
         <ul class="space-y-1">
-          {% for i in preflight %}
+          {% for i in np.preflight %}
           <li class="text-xs {% if i.blocking %}text-rose-600{% else %}text-slate-500{% endif %}">
             {{ '✖' if i.blocking else '·' }} <span class="font-mono">[{{ i.check }}]</span> {{ i.message }}
           </li>
@@ -238,31 +236,41 @@
       {% endif %}
     </div>
   </div>
-</div>
+</section>
 
 <script>
-  const NP_DETAIL = {{ graph.detail | tojson }};
-  const pane = document.getElementById("np-detail");
+  const NP_DETAIL = {{ np.graph.detail | tojson }};
+  const npPane = document.getElementById("np-detail");
   function npEsc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  // Inside the workbench the review iframe is named np-review; paper
-  // links (DAG detail, dispute block) AND claim-page links belong in the
-  // sibling paper pane — this pane must keep the review page. Delegated +
-  // capture so it also covers the detail links rendered below after a
-  // node click. Navigate the parent's iframe directly (same-origin, so
-  // reachable) rather than by target name — named-target resolution from
-  // a nested browsing context is unreliable across browsers, and a miss
-  // silently opens a new window. Standalone pages (no frame name) keep
-  // default navigation.
+  // Inside the workbench the review iframe is named np-review; paper AND
+  // claim-page links belong in the sibling paper pane, so this pane stays
+  // pinned to the reviewed claim. Delegated + capture so it also covers
+  // the detail links rendered below after a node click (targetless
+  // /papers/ or /claim/ hrefs) AND — unlike the pre-merge hub page, which
+  // never carried this reader markup — the evidence/citer rows above,
+  // whose links carry target="precis-paper" (the shared paper-reading
+  // window every non-embedded surface reuses) regardless of path shape:
+  // named-target resolution from a NESTED browsing context (this iframe)
+  // is unreliable across browsers and a miss silently opens a stray
+  // window, so anything marked for that window is intercepted here too,
+  // navigating the parent's np-paper iframe directly (same-origin, so
+  // reachable) instead of trying a same-named nested context.
+  // Standalone pages (no frame name) keep default navigation.
   if (window.name === "np-review") {
     document.addEventListener("click", e => {
       const a = e.target.closest("a[href]");
-      if (!a || a.target || a.host !== location.host) return;
+      // A bare "#review" fragment (the state chip above) is an in-page
+      // scroll, never a navigation away — must not be swept into the
+      // paper-pane redirect below.
+      if (!a || a.host !== location.host || (a.getAttribute("href") || "").startsWith("#")) return;
       try {
         const u = new URL(a.href);
-        if (!u.pathname.startsWith("/papers/") && !u.pathname.startsWith("/claim/")) return;
+        const toPaperPane = a.target === "precis-paper"
+          || u.pathname.startsWith("/papers/") || u.pathname.startsWith("/claim/");
+        if (!toPaperPane) return;
         u.searchParams.set("embed", "1");
         let frame = null;
         try { frame = window.parent.document.getElementById("np-paper"); } catch {}
@@ -286,7 +294,6 @@
             d.fields.map(([k, v]) => `<tr><td class="text-slate-400 pr-3 py-0.5 align-top whitespace-nowrap">${npEsc(k)}</td><td class="break-all">${npEsc(v)}</td></tr>`).join("") +
             `</table>` +
             d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-emerald-700 hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
-    pane.innerHTML = h;
+    npPane.innerHTML = h;
   }));
 </script>
-{% endblock %}

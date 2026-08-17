@@ -77,6 +77,38 @@ def test_claim_view_by_fi_handle(claim_client: TestClient, hub: Hub) -> None:
     assert r.status_code == 200
     assert _CLAIM.sentence in r.text
     assert "★" in r.text
+    # The store here is the real DB-backed Store (has the nanopub mixin) —
+    # the review-and-sign section is merged onto the same page, one URL.
+    assert 'id="review"' in r.text
+    assert "Approve" in r.text  # unminted → approve is the offered action
+
+
+class _NoNanopubMixinStore:
+    """Wraps a real store but hides ``nanopub_publish_row`` — stands in for
+    the ``FakeStore``s reader tests drive ``/claim`` with elsewhere, which
+    predate the nanopub mixin. The merged page must degrade to the plain
+    reader view, not 500."""
+
+    def __init__(self, inner: object) -> None:
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name: str) -> object:
+        if name == "nanopub_publish_row":
+            raise AttributeError(name)
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+
+def test_claim_page_context_degrades_without_nanopub_mixin(hub: Hub) -> None:
+    from precis_web.routes.claim import claim_page_context
+
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    ctx = claim_page_context(_NoNanopubMixinStore(hub.live_store), fi_handle)
+
+    assert ctx["missing"] is False
+    assert ctx["np"] is None  # the review section drops out, not the page
+    assert _CLAIM.sentence in ctx["claim"]
 
 
 def test_claim_view_reflects_unacquirable_supporter(

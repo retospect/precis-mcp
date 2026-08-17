@@ -206,6 +206,55 @@ def hub_tree(store: Store) -> list[HubTreeNode]:
     return roots
 
 
+def draft_cited_hub_ids(store: Store, draft_ref_id: int) -> set[int]:
+    """Claim-hub ref_ids ``draft_ref_id``'s chunks cite outbound — the
+    ``cites`` edge complement of :func:`~precis.taproot.seniority.
+    hub_citers`'s inbound walk. ``handlers/draft.py::sync_draft_links``
+    writes one chunk-grounded ``cites`` edge per citing passage
+    (``draft --cites--> finding/paper/patent``) whenever a body chunk
+    names a citable source; this reads it straight back, unfiltered by
+    kind (the ``/nanopub?draft=`` caller intersects against
+    :func:`hub_rows`, which already restricts to live ``TAPROOT:claim``
+    hubs, so a cited paper/patent silently drops out rather than needing
+    a second kind check here)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT l.dst_ref_id
+              FROM links l
+              JOIN refs r ON r.ref_id = l.dst_ref_id AND r.deleted_at IS NULL
+             WHERE l.src_ref_id = %(draft)s AND l.relation = 'cites'
+            """,
+            {"draft": draft_ref_id},
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def prune_tree(roots: list[HubTreeNode], cited: set[int]) -> list[HubTreeNode]:
+    """Filter a :func:`hub_tree` forest to roots whose subtree touches
+    ``cited`` — the ``/nanopub?draft=`` scoping. A kept root retains its
+    **full** subtree unmodified: a compound's conjunct atoms stay visible
+    even when only the compound itself (or a sibling atom) is directly
+    cited, since the point is reviewing everything under what the draft
+    invokes, not pruning down to the literal cite targets. Callers that
+    tally "what's left to sign" should count :func:`tree_ids` of the
+    pruned forest, not ``cited`` — the retained atoms are real sign work
+    (atoms publish before their compound)."""
+    return [r for r in roots if tree_ids([r]) & cited]
+
+
+def tree_ids(roots: list[HubTreeNode]) -> set[int]:
+    """Every ref_id in a forest — the displayed set a pruned tree's tally
+    must be computed over (see :func:`prune_tree`)."""
+    out: set[int] = set()
+    stack = list(roots)
+    while stack:
+        node = stack.pop()
+        out.add(node.row.ref_id)
+        stack.extend(node.children)
+    return out
+
+
 def hub_rows(store: Store) -> list[HubOverviewRow]:
     """Every live ``TAPROOT:claim`` hub with its publish posture, one
     query. Disputed first (oldest dispute on top), then minted hubs in

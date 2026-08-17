@@ -5,6 +5,16 @@ when the head isn't a live ``TAPROOT:claim`` hub — rendered as a friendly
 "no claim hub" stub rather than a 404, since a stray ``[fi123]`` cite is an
 ordinary finding, not an error.
 
+The **one** claim page (nanopub-light-up UX consolidation): the full page is
+the reader evidence view (sentence, ★ print set, corroborating/contradicting
+evidence, citers, discussions) *and*, when the store carries the nanopub
+mixin, the review-and-sign surface merged in under ``ctx['np']``
+(:func:`~precis_web.nanopub_render.hub_context` — namespaced rather than
+splatted flat so its keys can never silently shadow the reader context's
+own). ``/nanopub/fi<id>`` is now a redirect here; :func:`claim_page_context`
+is the shared builder ``routes/nanopub.py``'s approve-error re-render also
+calls, so both paths render byte-identical pages.
+
 ``POST /claim/<head>/unacquirable`` is the **claim-level** unacquirable-
 override write door (:mod:`precis.taproot.trust`'s only softener) — the
 twin of, but semantically distinct from, ``POST /papers/<id>/unacquirable``
@@ -25,45 +35,56 @@ from precis_web.claim_render import (
     render_claim_evidence,
 )
 from precis_web.deps import get_store, get_web_config, templates
+from precis_web.nanopub_render import hub_context
 from precis_web.routes.refs import _followup_discussions
 
 router = APIRouter(tags=["claim"])
 
 
-@router.get("/claim/{head}", response_class=HTMLResponse)
-async def claim_view(request: Request, head: str) -> HTMLResponse:
-    """The claim hub's evidence page: the sentence, the ★ print set, and the
-    fuller corroborating/contradicting evidence for context."""
-    store = get_store(request)
+def claim_page_context(store: Any, head: str) -> dict[str, Any]:
+    """The full ``/claim/<head>`` page context: the reader evidence shape
+    plus, when the store carries the nanopub mixin, the review-and-sign
+    context merged in under ``ctx['np']``. Shared by :func:`claim_view`
+    (the GET) and ``routes/nanopub.py``'s approve-error re-render (the one
+    POST door that still needs to re-render a full page on a gate refusal)
+    so both render byte-identical pages."""
     data = render_claim_evidence(store, head)
     if data is None:
-        ctx: dict[str, Any] = {"head": head, "missing": True}
-    else:
-        hub_ref_id = data["hub_ref_id"]
-        # Full-page-only enrichments — kept OUT of render_claim_evidence so the
-        # shared evidence shape stays identical between the singular and bulk
-        # (smartdraft rail) paths:
-        #   • citers  — the "Used by" inbound-cites section.
-        #   • claim   — the full sentence from the finding_body chunk,
-        #               falling back to refs.title when absent (titles are
-        #               full-length since the [:200] cap was dropped, but
-        #               legacy hubs may still carry a truncated one).
-        #   • discussions — the "Ask & think" follow-up threads, the same
-        #               affordance the generic finding detail carried before
-        #               /refs/finding/<hub> started redirecting here.
-        # getattr: reader tests drive this route with FakeStores that
-        # predate the nanopub mixin — degrade the chip, not the page.
-        _publish_row_fn = getattr(store, "nanopub_publish_row", None)
-        publish_row = _publish_row_fn(hub_ref_id) if _publish_row_fn else None
-        ctx = {
-            **data,
-            "missing": False,
-            "citers": claim_citers(store, hub_ref_id),
-            "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
-            "discussions": _followup_discussions(store, hub_ref_id),
-            # The review-and-sign surface's chip (slice 4) — state or None.
-            "publish_state": publish_row.state if publish_row else None,
-        }
+        return {"head": head, "missing": True}
+    hub_ref_id = data["hub_ref_id"]
+    # Full-page-only enrichments — kept OUT of render_claim_evidence so the
+    # shared evidence shape stays identical between the singular and bulk
+    # (smartdraft rail) paths:
+    #   • citers  — the "Used by" inbound-cites section.
+    #   • claim   — the full sentence from the finding_body chunk,
+    #               falling back to refs.title when absent (titles are
+    #               full-length since the [:200] cap was dropped, but
+    #               legacy hubs may still carry a truncated one).
+    #   • discussions — the "Ask & think" follow-up threads, the same
+    #               affordance the generic finding detail carried before
+    #               /refs/finding/<hub> started redirecting here.
+    #   • np      — the review-and-sign section (state header, DAG, dispute
+    #               panel, action box, …). getattr: reader tests drive this
+    #               route with FakeStores that predate the nanopub mixin —
+    #               degrade by dropping the section, not the page.
+    _publish_row_fn = getattr(store, "nanopub_publish_row", None)
+    return {
+        **data,
+        "missing": False,
+        "citers": claim_citers(store, hub_ref_id),
+        "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
+        "discussions": _followup_discussions(store, hub_ref_id),
+        "np": hub_context(store, hub_ref_id) if _publish_row_fn else None,
+    }
+
+
+@router.get("/claim/{head}", response_class=HTMLResponse)
+async def claim_view(request: Request, head: str) -> HTMLResponse:
+    """The claim hub's one page: the sentence, the ★ print set, the fuller
+    corroborating/contradicting evidence, and — when the store carries the
+    nanopub mixin — the review-and-sign section (state, DAG, approve/sign
+    action)."""
+    ctx = claim_page_context(get_store(request), head)
     return templates.TemplateResponse(request, "claim/view.html.j2", ctx)
 
 

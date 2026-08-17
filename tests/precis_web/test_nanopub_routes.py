@@ -1,5 +1,9 @@
-"""The /nanopub review-and-sign surface: queue table, per-hub page,
-interactive doors (approve/sign/signoff), and exact-bytes TriG serving.
+"""The /nanopub workbench + the merged claim page's review-and-sign
+section: claim forest, interactive doors (approve/sign/signoff), and
+exact-bytes TriG serving. ``/nanopub/fi<id>`` GETs now redirect to
+``/claim/fi<id>`` (nanopub-light-up merge) — most assertions here hit
+the old URL and rely on the TestClient's default redirect-following to
+land on the merged page; POST doors stay at ``/nanopub/fi<id>/...``.
 Real DB-backed store (the routes run real SQL through the nanopub
 mixin + overview/preflight modules)."""
 
@@ -17,6 +21,7 @@ from precis.nanopub.keys import generate_keypair
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from tests.test_nanopub_gates_mint import _payload, _seed_hub, _seed_paper
+from tests.workers._helpers import seed_ref
 
 
 @pytest.fixture
@@ -41,12 +46,18 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert f"fi{hub}" in resp.text
     assert "unminted" in resp.text
     # Hub rows load the review pane; the two iframes are the panes.
-    assert f'data-src="/nanopub/fi{hub}?embed=1"' in resp.text
+    assert f'data-src="/claim/fi{hub}?embed=1"' in resp.text
     assert 'name="np-review"' in resp.text
     assert 'name="np-paper"' in resp.text
     # The old tree URL redirects home.
     tree = client.get("/nanopub/tree", follow_redirects=False)
     assert tree.status_code == 307 and tree.headers["location"] == "/nanopub"
+    # The old per-hub review URL now redirects to the merged claim page.
+    redirected = client.get(f"/nanopub/fi{hub}", follow_redirects=False)
+    assert redirected.status_code == 307
+    assert redirected.headers["location"] == f"/claim/fi{hub}"
+    redirected_embed = client.get(f"/nanopub/fi{hub}?embed=1", follow_redirects=False)
+    assert redirected_embed.headers["location"] == f"/claim/fi{hub}?embed=1"
 
 
 def test_embed_mode_hides_the_site_chrome(
@@ -78,9 +89,12 @@ def test_hub_page_shows_state_and_action(
     # Framed in the workbench, paper links retarget to the paper pane.
     assert 'window.name === "np-review"' in resp.text
     assert '"np-paper"' in resp.text
-    # Non-hub → friendly 404, not a 500.
+    # Non-hub → the claim page's own friendly "no claim hub" stub (200),
+    # not a 404 — the merged page's degrade-gracefully policy, not an error.
     other = _seed_paper(store)[0]
-    assert client.get(f"/nanopub/fi{other}").status_code == 404
+    resp = client.get(f"/nanopub/fi{other}")
+    assert resp.status_code == 200
+    assert "No claim hub" in resp.text
 
 
 def test_approve_prefill_suggests_quote_and_unique_snip(
@@ -174,6 +188,40 @@ def test_approve_sign_and_serve_trig(
     assert client.get("/np/RAnope").status_code == 404
     # LIKE-wildcard probe: a bare '%' must 404, never match "any artifact".
     assert client.get("/np/%25").status_code == 404
+
+
+def test_claim_page_shows_review_section_with_publish_row(
+    client: TestClient, runtime_with_store
+) -> None:
+    """The merged ``/claim/fi<id>`` page (not ``/nanopub/fi<id>``) carries
+    the review-and-sign section: state header, frozen ladder, DAG, and the
+    publish-row panel — for a hub that already has a publish row, not just
+    a fresh unminted one."""
+    import json
+
+    store = _store(runtime_with_store)
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "A claim-page-reviewed claim.", paper, chunk)
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/approve",
+        data={
+            "title": "A claim-page-reviewed claim.",
+            "payload": json.dumps(_payload(chunk, sha)),
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/claim/fi{hub}"
+
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    assert 'id="review"' in resp.text
+    assert "Review &amp; sign" in resp.text
+    assert "reviewed" in resp.text
+    assert "frozen: string" in resp.text
+    assert "A claim-page-reviewed claim." in resp.text  # the approved title
+    assert 'name="attest"' in resp.text  # the Sign action's form
 
 
 def test_approve_gate_failure_is_a_400_not_a_500(
@@ -298,8 +346,8 @@ def test_tree_nests_conjunct_atom_under_compound(
     assert f'data-src="/papers/{paper}?embed=1"' in resp.text
     assert f"/refs/{paper}" not in resp.text
     # Both hubs load the review pane.
-    assert f'data-src="/nanopub/fi{compound}?embed=1"' in resp.text
-    assert f'data-src="/nanopub/fi{atom}?embed=1"' in resp.text
+    assert f'data-src="/claim/fi{compound}?embed=1"' in resp.text
+    assert f'data-src="/claim/fi{atom}?embed=1"' in resp.text
 
 
 def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) -> None:
@@ -316,3 +364,98 @@ def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) 
     resp = client.get("/nanopub")  # must terminate, not recurse forever
     assert resp.status_code == 200
     assert f"fi{a}" in resp.text and f"fi{b}" in resp.text
+
+
+def _seed_draft(store: Any, title: str = "A citing draft") -> int:
+    return seed_ref(store, title=title, kind="draft")
+
+
+def test_draft_filter_scopes_forest_and_tally(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    cited = _seed_hub(store, "A cited-by-draft claim.", paper, chunk)
+    paper2, chunk2, _sha2 = _seed_paper(store)
+    uncited = _seed_hub(store, "An uncited claim.", paper2, chunk2)
+    draft = _seed_draft(store)
+    # sync_draft_links' own shape: a chunk-grounded outbound cites edge,
+    # draft --cites--> hub.
+    store.add_link(src_ref_id=draft, dst_ref_id=cited, relation="cites")
+
+    unfiltered = client.get("/nanopub")
+    assert f"fi{cited}" in unfiltered.text and f"fi{uncited}" in unfiltered.text
+
+    resp = client.get(f"/nanopub?draft=dr{draft}")
+    assert resp.status_code == 200
+    assert f"fi{cited}" in resp.text
+    assert f"fi{uncited}" not in resp.text
+    assert f"draft dr{draft}" in resp.text and "1 claim" in resp.text
+    assert "2 hub" not in resp.text  # tally scoped, not the global count
+
+    # Bare numeric (no 'dr' prefix) parses the same way.
+    bare = client.get(f"/nanopub?draft={draft}")
+    assert f"fi{cited}" in bare.text and f"fi{uncited}" not in bare.text
+
+
+def test_draft_filter_keeps_full_subtree_of_a_cited_compound(
+    client: TestClient, runtime_with_store
+) -> None:
+    from precis.taproot.hub import link_claims
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    compound = _seed_hub(store, "A cited compound claim.", paper, chunk)
+    paper2, chunk2, _sha2 = _seed_paper(store)
+    atom = _seed_hub(store, "Its uncited-directly atom.", paper2, chunk2)
+    assert link_claims(
+        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+    )
+    draft = _seed_draft(store)
+    # The draft cites only the compound — never the atom directly.
+    store.add_link(src_ref_id=draft, dst_ref_id=compound, relation="cites")
+
+    resp = client.get(f"/nanopub?draft=dr{draft}")
+    assert resp.status_code == 200
+    # The compound's full subtree stays visible — reviewing everything
+    # under what the draft invokes, not just the literal cite target.
+    assert f"fi{compound}" in resp.text and f"fi{atom}" in resp.text
+    # And the tally counts the DISPLAYED set: the retained atom is real
+    # sign work (atoms publish before their compound), so the chip says
+    # 2 claims, not 1.
+    assert "— 2 claims" in resp.text
+
+
+def test_resolver_threads_embed_for_framed_panes(
+    client: TestClient, runtime_with_store
+) -> None:
+    """The np-review pane routes evidence clicks through /r and /c into
+    the framed paper pane with ?embed=1 — the resolvers must carry it
+    through their 303s or the pane regains full site chrome."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+
+    resp = client.get(f"/r/paper/{paper}?embed=1", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "embed=1" in resp.headers["location"]
+
+    resp = client.get(f"/c/pc{chunk}?embed=1", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "embed=1" in resp.headers["location"]
+
+
+def test_draft_filter_unknown_id_is_a_friendly_notice_not_a_500(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "An unfiltered claim.", paper, chunk)
+
+    resp = client.get("/nanopub?draft=dr999999999")
+    assert resp.status_code == 200
+    assert "showing all claims" in resp.text  # notice text, apostrophe HTML-escaped
+    assert f"fi{hub}" in resp.text  # degrades to the unfiltered view
+
+    junk = client.get("/nanopub?draft=not-an-id")
+    assert junk.status_code == 200
+    assert "showing all claims" in junk.text
