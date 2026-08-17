@@ -182,6 +182,40 @@ Remaining:
   tree; Reto gives explicit go/no-go before they mint. pa40723 +
   pa170590 grounded in own-abstract text (first-page-only ingests —
   non-hearsay, but re-ingest for deeper grounding).
+- **Covalent survey picks staged 2026-08-17 (builder agent; MCP probe
+  hung 1800 s again)**: 5 specs in session-e26f279b scratchpad
+  `specs4/` (h1–h5), gate-checked via build.py importing the REAL
+  `precis.nanopub.{snip,evidence}` (quotes sliced from stored chunk
+  text — verbatim structural). H1 pa4365 metallic-I/III + 0.18 eV
+  embedded (pc550457) — RE-SCOPED: the 0.12 eV type-II sentence is
+  citation-bearing (`<sup>8</sup>` residue) and 0.12 appears in no
+  other chunk, so the number is ungroundable; H2 pa4365 3.0 Å
+  threshold + symmetry (pc550459); H3 pa948 NMR — title tightened to
+  "largest CSI 121–133 ppm / smallest CSA 12–34 ppm of any carbon in
+  the model" (source compares within-model, not vs pristine; typo
+  "22 pm" preserved) (pc82612); H4 pa948 gaps 0.57–0.76 eV (pc82597);
+  H5 pa948 charge transfer 0.032→0.72 C + model-definition passages
+  pc82581/82582 added to ground the model-1/model-4 mapping. DOIs from
+  ref_identifiers (refs.meta doi NULL for both): pa4365
+  10.1021/jp906026c, pa948 10.1140/epjb/e2011-20139-5; refs.pdf_sha256
+  set for both. To finish: mint via MCP, patch fi ids into specs,
+  paced approves. Gate hole found → `docs/backlog/
+  nanopub-citation-marker-sup-residue.md`.
+- **Draft scope collisions found 2026-08-17 (dc2445932, energy-storage
+  ¶, pre-dates scope rule — edit set to propose to Reto)**: (a) Koh
+  et al. cited as "Li adsorption on graphene–fullerene nanobuds"
+  [fi191280] but pa40723's own system is adsorptive C60-on-SWCNT
+  (non-covalent, covalency hearsay); (b) Hernández Mendoza clause
+  "reinforcing the convergent picture that bud-site curvature favours
+  gas adsorption across independent computational studies" [fi191286]
+  overclaims — pa1638 is experimental with zero adsorption data (H2
+  deferred to future work); supportable only as synthesis route +
+  FTIR bonding; (c) Terzyk fullerene-intercalated nano-containers
+  [fi191282] is non-covalent intercalation inside the nanobud
+  narrative. New covalent hubs (fi211848–54 + h1–h5) are cited
+  NOWHERE in dr173020 yet — need woven into electronic-structure /
+  characterization sections (incl. the pa948-vs-pa4365 band-gap
+  disagreement) once minted.
 - **Claim-mining survey done 2026-08-17 (read-only opus agent)** — tier-2
   papers hold 10 more mintable candidates, ranked (paper / claim /
   grounding chunk): 1. pa4365 configuration-selected metallicity 0.12 eV
