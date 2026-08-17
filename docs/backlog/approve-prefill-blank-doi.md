@@ -18,13 +18,14 @@ Also seen in the same sweep (same prefill code path, lower frequency):
 
 - prefill picks tangential quotes (figure captions, table header rows)
   over the load-bearing sentence in the same chunk, and can emit a quote
-  with citation-marker/`<sup>` residue or an empty snip;
-- hub titles truncated at 200 chars surface as mid-word approve titles
-  (the `refs.title` cap) — prefill should flag when the stored title was
-  truncated so the reviewer knows to complete it.
+  with citation-marker/`<sup>` residue or an empty snip.
+
+(Mid-word truncated approve titles — the old `[:200]` `refs.title` cap —
+are gone: 9d0b9206 dropped the cap and syncs the full hub title on
+approve, so this sub-item no longer applies.)
 
 Fix: the prefill builder should resolve doi from `ref_identifiers` and
 sha from `refs.pdf_sha256` per passage (they're both already loaded for
 the gate preview), and prefer quote candidates that pass the
 citation-marker gate and contain the claim's numeric literals when the
-claim has any. Title-truncation flag is a one-line `len == 200` hint.
+claim has any.
