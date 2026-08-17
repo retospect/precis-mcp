@@ -164,5 +164,39 @@ Remaining:
     10.1016/j.carbon.2009.09.040 (ferrocene-CO synthesis mechanism).
   - Dedup flag: pa2069 vs pa173471 same Nasibulin 2007 paper (one
     real, one 0-chunk stub).
+- **Claim-mining survey done 2026-08-17 (read-only opus agent)** — tier-2
+  papers hold 10 more mintable candidates, ranked (paper / claim /
+  grounding chunk): 1. pa4365 configuration-selected metallicity 0.12 eV
+  type-II vs metallic I/III vs 0.18 eV embedded (pc550457; alt pc550458);
+  2. pa4365 3.0 Å spacing threshold + mirror-symmetry-breaking mechanism
+  (pc550459, citation-free); 3. pa948 ¹³C CSI/CSA localized at attachment
+  site — paper's headline novelty, NMR handle (pc82612; tighter alt
+  pc82603); 4. pa948 band gaps 0.57–0.76 eV vs pristine 1.82/0.81 eV
+  (pc82597) — puts a live DISAGREEMENT with pa4365's 0.12/0.18 eV on
+  record (finite H-capped vs periodic; review material); 5. pa206485
+  rise/fall 33.53/0.934 ms → 86.42/3.35 ms at Vgs −21 V (pc2901217) —
+  missing speed axis; 6. pa39796 fullerene Raman SUPPRESSED in stacked
+  composite (pc1260158, non-covalent framing) — completes the
+  predicted(pa4365)/measured(pa206485)/suppressed(pa39796) Raman triad;
+  7. pa1797 write actuation 0.457 THz, 1.6–1.65 V/nm, 5 ps (pc175726/
+  175740, "free C₆₀" framing); 8. pa948 charge transfer 0.032→0.72 C
+  (pc82598); 9. pa206485 detectivity 2.34e10 Jones (abstract pc2901189
+  only — body has just the formula); 10. pa39796 pillared gallery height
+  2.3–3.4 nm (pc1260163, non-covalent framing). Marginals on file:
+  pa4365 (5,5)-host gaps pc550465, pa948 bond lengths pc82599, pa206485
+  532 nm selectivity pc2901206, pa1797 K@C60 −0.96e endohedral pc175732,
+  pa1797 temp-insensitive 9 ps switching pc175729/30, pa39796 pore-size
+  shift pc1260167, pa40723 anti-clustering −1.863 vs −1.030 eV pc1307817
+  (overlap risk w/ own-work agent), pa170590 functional benchmark
+  pc2409795 (skip). **Draft-integrity flags for Reto**: pa1638 reports
+  NO hydrogen-storage measurement despite its title (conclusion pc155443
+  = "further work") — dr173020 must not cite it as H₂-storage evidence,
+  only as synthesis route + FTIR; pa199068/pa40723/pa170590 are
+  abstract+intro-only ingests (results not in store — re-ingest before
+  mining harder); pa170590 calls a C20–C40 dimer a "nanobud" (useful for
+  the review's scope-definition section); pc175737 (pa1797) is
+  OCR-corrupted beyond grounding; pa206485 stability sentence straddles
+  a chunk boundary (unmintable); chunks soft-delete column is
+  `retired_at`, not `deleted_at`.
 - Deploy pending: 13+ commits incl. /nanopub workbench UX + state
   tooltips — deploy after agents finish (bounce kills in-flight POSTs).
