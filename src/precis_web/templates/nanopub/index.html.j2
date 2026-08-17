@@ -4,12 +4,40 @@
 {% block main_class %}px-3 py-3{% endblock %}
 {% block content %}
 <div class="space-y-3">
+  {# One tooltip vocabulary for every state mention on the page (header
+     strip + row badges) — hover explains where a claim sits on the
+     candidate → reviewed → signed → anchored → published ladder and
+     what moves it next. #}
+  {% macro state_tip(key) -%}
+    {%- if key == 'unminted' -%}
+      Not minted — a free-form claim hub; nothing frozen, edit freely. Approve on its review page to enter the publish pipeline.
+    {%- elif key == 'candidate' -%}
+      Minted but unreviewed — nothing frozen yet. Next: approve freezes the exact claim sentence (candidate → reviewed).
+    {%- elif key == 'reviewed' -%}
+      Claim sentence frozen (approved title + sha). Next: a human Sign mints the artifact bytes (reviewed → signed).
+    {%- elif key == 'signed' -%}
+      Artifact bytes signed and immutable in the append-only proof store. Next: an OpenTimestamps batch anchors it (signed → anchored).
+    {%- elif key == 'anchored' -%}
+      Signed and OTS-anchored. Next: publish to the nanopub registry (anchored → published) — CLI-only and irreversible.
+    {%- elif key == 'published' -%}
+      Public and immutable — a change is a supersede or retract, never an edit.
+    {%- elif key == 'blocked' -%}
+      A live contradicts edge blocks minting and publication until the dispute is adjudicated — see the dispute panel on the review page.
+    {%- endif -%}
+  {%- endmacro %}
+
   <div class="flex items-baseline justify-between px-1">
     <h1 class="text-lg font-semibold">Nanopub claims</h1>
     <p class="text-xs text-slate-500">
-      {{ n_nodes }} hub{{ 's' if n_nodes != 1 }} — click a claim to review it
-      in the middle pane, a paper to read it on the right. Unpublished is a
-      good terminal state, not a backlog to burn down.
+      {{ n_nodes }} hub{{ 's' if n_nodes != 1 }}:
+      {% for s, c in state_counts %}<span class="whitespace-nowrap cursor-help
+        {%- if s in ('signed', 'anchored') %} text-sky-700
+        {%- elif s == 'published' %} text-emerald-700
+        {%- elif s == 'unminted' %} text-slate-400{% endif %}"
+        title="{{ state_tip(s) }}">{{ c }} {{ s }}</span>{{ ' · ' if not loop.last }}{% endfor %}
+      — click a claim to review it in the middle pane, a paper to read it
+      on the right. Unpublished is a good terminal state, not a backlog to
+      burn down.
     </p>
   </div>
 
@@ -39,14 +67,29 @@
   {% endif %}
 
   {% macro state_badge(r) %}
-  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0
+  {% set key = 'blocked' if r.disputed else (r.state or 'unminted') %}
+  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help
     {% if r.disputed %}bg-rose-100 text-rose-700
     {% elif r.state == 'published' %}bg-emerald-100 text-emerald-700
     {% elif r.state in ('signed', 'anchored') %}bg-sky-100 text-sky-700
     {% elif r.state %}bg-slate-200 text-slate-700
-    {% else %}bg-slate-100 text-slate-400{% endif %}">
+    {% else %}bg-slate-100 text-slate-400{% endif %}"
+    title="{{ state_tip(key) }}{% if r.updated_at %} In this state since {{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}Z.{% endif %}">
     {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
   </span>
+  {# Minted rows also get a five-dot pipeline strip — the transition
+     readout: filled dots = ladder rungs climbed, hover for the ladder
+     and the last-transition time. #}
+  {% if r.state %}
+  {% set steps = ['candidate', 'reviewed', 'signed', 'anchored', 'published'] %}
+  {% set idx = steps.index(r.state) if r.state in steps else -1 %}
+  <span class="np-steps shrink-0 cursor-help"
+        title="{{ steps|join(' → ') }} — at “{{ r.state }}”{% if r.updated_at %} since {{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}Z{% endif %}">
+    {%- for s in steps -%}
+    <i class="np-dot{% if idx >= loop.index0 %} on{% endif %}{% if r.state == 'published' %} pub{% endif %}"></i>
+    {%- endfor -%}
+  </span>
+  {% endif %}
   {% endmacro %}
 
   {% macro node(n) %}
@@ -61,7 +104,8 @@
         {% endif %}
         {{ state_badge(n.row) }}
         {% if n.relation %}
-        <span class="text-xs text-slate-400 shrink-0">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
+        <span class="text-xs text-slate-400 shrink-0 cursor-help"
+              title="{% if n.relation == 'conjunct-of' %}Conjunct atom of the compound claim above — atoms mint and publish first; the compound cites their artifacts, not papers.{% else %}Refines the claim above — a narrower, sharper restatement.{% endif %}">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
         {% endif %}
         <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
            target="np-review" href="/nanopub/fi{{ n.row.ref_id }}?embed=1">fi{{ n.row.ref_id }}</a>
@@ -70,7 +114,8 @@
         <span class="font-mono text-xs text-slate-400 shrink-0"
               title="{{ n.row.trusty_uri }}">{{ n.row.trusty_uri.rsplit('/', 1)[-1][:14] }}…</span>
         {% endif %}
-        {% if n.row.drifted %}<span class="text-xs text-amber-600 shrink-0">drifted</span>{% endif %}
+        {% if n.row.drifted %}<span class="text-xs text-amber-600 shrink-0 cursor-help"
+              title="The live hub title no longer matches the frozen approved sentence — signing is blocked; reopen and re-approve, or revert the edit.">drifted</span>{% endif %}
       </summary>
       {% if n.evidence or n.children %}
       <ul class="ml-6 border-l border-slate-200 pl-3">
@@ -79,10 +124,11 @@
             {% if e.kind == 'finding' %}data-pane="np-review" data-src="/nanopub/fi{{ e.ref_id }}?embed=1"
             {% elif e.kind == 'paper' %}data-pane="np-paper" data-src="/papers/{{ e.ref_id }}?embed=1"{% endif %}>
           <span class="w-3"></span>
-          <span class="font-mono px-1 rounded
+          <span class="font-mono px-1 rounded cursor-help
             {% if e.relation == 'contradicts' %}bg-rose-50 text-rose-600
             {% elif e.relation == 'establishes' %}bg-emerald-50 text-emerald-600
-            {% else %}bg-slate-100 text-slate-500{% endif %}">{{ e.relation }}</span>
+            {% else %}bg-slate-100 text-slate-500{% endif %}"
+            title="{% if e.relation == 'contradicts' %}This source disputes the claim — publication is blocked until the dispute is adjudicated.{% elif e.relation == 'establishes' %}This source's passage directly asserts the claim — its primary grounding.{% elif e.relation == 'corroborates' %}This source's passage independently supports the claim.{% elif e.relation == 'derived-from' %}The claim was derived from this source, grounded through its pinned passage.{% else %}{{ e.relation }}{% endif %}">{{ e.relation }}</span>
           {% if e.kind == 'finding' %}
           <a class="truncate hover:underline" target="np-review"
              href="/nanopub/fi{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>
@@ -169,6 +215,10 @@
 
 <style>
   .tree-node.selected { background: #ecfdf5; }
+  .np-steps { line-height: 0; }
+  .np-dot { display: inline-block; width: 5px; height: 5px; border-radius: 9999px; background: #cbd5e1; margin-right: 2px; }
+  .np-dot.on { background: #0284c7; }
+  .np-dot.on.pub { background: #059669; }
   .np-divider { width: 7px; flex: none; cursor: col-resize; border-radius: 4px; margin: 0 1px; }
   .np-divider:hover, .np-divider.dragging { background: #a7f3d0; }
 </style>

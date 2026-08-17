@@ -58,6 +58,7 @@ async def nanopub_index(request: Request) -> HTMLResponse:
     as leaves) beside a review pane (the per-hub page, action box
     included, framed) and a paper pane. The old queue table folded in as
     the disputed-first strip + the OTS section under the tree."""
+    from collections import Counter
     from datetime import UTC, datetime, timedelta
 
     from precis.nanopub import overview
@@ -65,10 +66,23 @@ async def nanopub_index(request: Request) -> HTMLResponse:
 
     store = get_store(request)
     roots = overview.hub_tree(store)
-    disputed = [r for r in overview.hub_rows(store) if r.disputed]
-
-    def _count(nodes: list[Any]) -> int:
-        return sum(1 + _count(n.children) for n in nodes)
+    rows = overview.hub_rows(store)
+    disputed = [r for r in rows if r.disputed]
+    # Pipeline-ordered per-state tally for the header strip (zeros
+    # dropped) — the at-a-glance "what moved" readout.
+    tally = Counter(r.state or "unminted" for r in rows)
+    state_counts = [
+        (s, tally[s])
+        for s in (
+            "candidate",
+            "reviewed",
+            "signed",
+            "anchored",
+            "published",
+            "unminted",
+        )
+        if tally[s]
+    ]
 
     batches = store.nanopub_batches()
     threshold = datetime.now(UTC) - timedelta(days=STUCK_PENDING_DAYS)
@@ -80,7 +94,8 @@ async def nanopub_index(request: Request) -> HTMLResponse:
         {
             "active_tab": "nanopub",
             "roots": roots,
-            "n_nodes": _count(roots),
+            "n_nodes": len(rows),
+            "state_counts": state_counts,
             "disputed": disputed,
             "batches": batches,
             "stuck": stuck,
