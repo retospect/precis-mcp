@@ -35,7 +35,10 @@
   {% if s2_fields %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">fields</dt><dd>{{ s2_fields | join(', ') }}</dd></div>
   {% endif %}
-  {% if read_first is not none %}
+  {# ``is defined`` guard: templates reload from disk before a bounced
+     worker re-imports routes, so a mid-deploy render may lack the var —
+     an Undefined passes ``is not none`` and then 500s in ``round``. #}
+  {% if read_first is defined and read_first is not none %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">read-first</dt><dd>{{ read_first | round(1) }} <span class="text-slate-400">/ 100 (reading priority)</span></dd></div>
   {% endif %}
 </dl>

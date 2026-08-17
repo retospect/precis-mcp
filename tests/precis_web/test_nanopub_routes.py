@@ -60,6 +60,9 @@ def test_embed_mode_hides_the_site_chrome(
     assert "<header" in full.text
     assert "<header" not in framed.text
     assert "An embedded claim." in framed.text
+    # The embed stamper sends external links out of the pane (publishers
+    # deny framing) and keeps same-host links embed-sticky.
+    assert '"_blank"' in framed.text and '"_blank"' not in full.text
 
 
 def test_hub_page_shows_state_and_action(

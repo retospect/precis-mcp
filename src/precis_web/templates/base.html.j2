@@ -155,7 +155,11 @@
       // used (capture phase, before the default navigation reads them).
       document.addEventListener("click", e => {
         const a = e.target.closest("a[href]");
-        if (!a || a.target || a.host !== location.host) return;
+        if (!a || a.target) return;
+        // External links must leave the pane: publishers (doi.org
+        // redirect targets) send X-Frame-Options/frame-ancestors deny,
+        // so navigating the iframe there shows a blank pane.
+        if (a.host !== location.host) { a.target = "_blank"; a.rel = "noopener"; return; }
         try { const u = new URL(a.href); u.searchParams.set("embed", "1"); a.href = u; } catch {}
       }, true);
       document.addEventListener("submit", e => {
