@@ -85,6 +85,8 @@ system cores — a container does not inherit the worker's ``nice``.
 
 from __future__ import annotations
 
+import os
+
 #: Capability set each executor provides. The dispatcher checks
 #: a job_type's REQUIRES against the chosen executor's PROVIDES;
 #: any missing capability is reason to reject the submit.
@@ -152,9 +154,26 @@ def is_known_executor(name: str) -> bool:
     return name in EXECUTOR_PROVIDES
 
 
+def suspended_job_types() -> frozenset[str]:
+    """Job types operator-suspended via ``PRECIS_SUSPENDED_JOB_TYPES``
+    (comma-separated list; deploy var ``precis_suspended_job_types``).
+
+    The operator hold switch for a compute lane: a suspended type's queued
+    jobs are never claimed — fresh or reclaimed — by ``claim_executor_jobs``,
+    so they wait in place until the env clears; in-flight rows are untouched
+    (they poll/finish normally). Minting sites may also consult this to stop
+    creating new work (``quest.compute.dispatch_autocatpath`` does). Read
+    per-call, not cached, so a plist re-render + bounce takes effect on the
+    next claim cycle.
+    """
+    raw = os.environ.get("PRECIS_SUSPENDED_JOB_TYPES", "")
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
 __all__ = [
     "DEFAULT_EXECUTOR",
     "EXECUTOR_PROVIDES",
     "ZERO_LLM_EXECUTORS",
     "is_known_executor",
+    "suspended_job_types",
 ]

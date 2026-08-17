@@ -18,3 +18,9 @@ precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('valu
 # ran ~$60/day and the tripped ceiling paused discretionary dispatch).
 # Zero-LLM compute mints are ceiling-exempt in code (workers/dispatch.py).
 precis_daily_cost_ceiling: 100.0
+
+# Operator hold: job_types the claim path skips (PRECIS_SUSPENDED_JOB_TYPES;
+# queued jobs wait in place, quest ticks stop minting new autocatpath trees).
+# Set 2026-08-17 — autocatpath compute suspended until further notice.
+# To resume: set to "" and redeploy.
+precis_suspended_job_types: "autocatpath_seed,autocatpath_aggregate"

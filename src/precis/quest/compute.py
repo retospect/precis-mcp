@@ -37,6 +37,7 @@ from precis.store import Tag
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
+from precis.workers.executors import suspended_job_types
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -940,6 +941,15 @@ def dispatch_autocatpath(
     advertised in ``resource_slots``, this raises loudly rather than silently
     minting an unrouted junk-EMT job.
     """
+    if "autocatpath_seed" in suspended_job_types():
+        # Operator hold (PRECIS_SUSPENDED_JOB_TYPES, deploy var
+        # `precis_suspended_job_types`): mint nothing while the compute lane
+        # is suspended — the claim side is independently gated in
+        # `claim_executor_jobs`, this just keeps the queue from growing.
+        return (
+            "autocatpath skipped: compute lane suspended via "
+            f"PRECIS_SUSPENDED_JOB_TYPES (structure {structure_ref_id})"
+        )
     if not isinstance(config, dict) or not config:
         return (
             f"autocatpath skipped: no reaction config for structure {structure_ref_id}"

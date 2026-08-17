@@ -65,6 +65,7 @@ from precis.workers.executors import (
     EXECUTOR_PROVIDES,
     ZERO_LLM_EXECUTORS,
     is_known_executor,
+    suspended_job_types,
 )
 from precis.workers.job_types import get_job_type
 from precis.workers.runner import BatchResult
@@ -698,6 +699,21 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             # crash a tick), so a plain dict is threaded through as-is.
             if isinstance(llm_select, dict):
                 params.setdefault("select", llm_select)
+
+        # Operator hold switch (``PRECIS_SUSPENDED_JOB_TYPES``): don't mint
+        # a job of a suspended type at all — the claim path independently
+        # refuses to run them, but skipping the mint too keeps the queue
+        # from accumulating rows during a long hold. No halt tag: the
+        # parent stays an ordinary candidate and mints on the next sweep
+        # after the hold clears. Counts as a no-op, not a failure.
+        if isinstance(job_type, str) and job_type in suspended_job_types():
+            log.debug(
+                "dispatch: parent todo id=%d job_type=%r is operator-"
+                "suspended (PRECIS_SUSPENDED_JOB_TYPES); skipping mint",
+                ref_id,
+                job_type,
+            )
+            return (0, False)
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on

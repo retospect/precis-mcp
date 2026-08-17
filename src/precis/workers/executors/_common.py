@@ -41,6 +41,7 @@ from precis.store._resource_slots_ops import (
     reserve_resource_slots,
 )
 from precis.store.types import BlockInsert, Tag
+from precis.workers.executors import suspended_job_types
 from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import reserve_active
 
@@ -335,7 +336,11 @@ def claim_executor_jobs(
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
     Claimable = ``kind='job'``, ``meta.executor`` matches,
-    ``STATUS:queued``, not terminal, lease expired or absent.
+    ``STATUS:queued``, not terminal, lease expired or absent — and the
+    row's ``meta.job_type`` is not operator-suspended
+    (:func:`~precis.workers.executors.suspended_job_types`,
+    ``PRECIS_SUSPENDED_JOB_TYPES``): a suspended type's rows wait queued,
+    untouched, until the hold clears; in-flight rows are unaffected.
 
     **Crash recovery (``reclaim_stale_running``).** Off by default (only
     ``coordinator`` leaves it off today), so a caller that doesn't opt in
@@ -499,6 +504,19 @@ def claim_executor_jobs(
                     AND t.namespace = 'OPEN'
                     AND {_doable_exclusion_clause()}
                )"""
+
+    # Operator hold switch (``PRECIS_SUSPENDED_JOB_TYPES``): a suspended
+    # job_type is never claimed — fresh or reclaimed — so its queued rows
+    # wait in place; in-flight rows keep polling/finishing normally. The
+    # COALESCE keeps a job with no ``meta.job_type`` claimable (it can't
+    # match any suspended name).
+    suspended = suspended_job_types()
+    suspend_sql = ""
+    suspend_params: tuple[list[str], ...] = ()
+    if suspended:
+        suspend_sql = """
+           AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"""
+        suspend_params = (sorted(suspended),)
 
     # ── Shared per-row bookkeeping (reservation + lease-identity stamp) ──
     # Computed once; used by BOTH the reclaim-only pre-pass and the
@@ -737,7 +755,7 @@ def claim_executor_jobs(
                       WHERE rt.ref_id = r.ref_id
                         AND t.namespace = %s
                         AND t.value = ANY(%s)
-                   ){exclusion_sql}{parent_sql}
+                   ){exclusion_sql}{parent_sql}{suspend_sql}
              ORDER BY r.ref_id ASC
              LIMIT %s
                FOR UPDATE OF r SKIP LOCKED
@@ -750,6 +768,7 @@ def claim_executor_jobs(
                 _NO_ADVERTISED_BOOT_ID,
                 STATUS_NAMESPACE,
                 list(TERMINAL),
+                *suspend_params,
                 reclaim_limit,
             ),
         ).fetchall()
@@ -793,7 +812,7 @@ def claim_executor_jobs(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}
+               ){exclusion_sql}{parent_sql}{suspend_sql}
          ORDER BY COALESCE(r.prio, %s) ASC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
@@ -805,6 +824,7 @@ def claim_executor_jobs(
             QUEUED,
             STATUS_NAMESPACE,
             list(TERMINAL),
+            *suspend_params,
             _DEFAULT_JOB_PRIO,
             limit * _CLAIM_OVERFETCH,
         ),

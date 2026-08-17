@@ -54,6 +54,9 @@ Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(25) }}
 Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
 Environment=PRECIS_MAX_TREE_USD={{ precis_max_tree_usd | default(10.0) }}
 Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+# Operator hold switch: comma-separated job_types the claim path skips
+# (queued rows wait; in-flight rows finish). Empty = nothing held.
+Environment=PRECIS_SUSPENDED_JOB_TYPES={{ precis_suspended_job_types | default('') }}
 # CPU-limit passthrough for containerized jobs this worker spawns
 # (docker run inherits cpuset/shares from the environment).
 Environment=PRECIS_JOB_CPUSET={{ precis_job_cpuset | default('') }}

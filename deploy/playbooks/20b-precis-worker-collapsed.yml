@@ -196,6 +196,7 @@
              'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
              'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
              'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+             'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
              'PRECIS_JOB_CPU_SHARES': precis_job_cpu_shares | default(''),
            })
          | combine({'PRECIS_JOB_CPUSET': precis_job_cpuset | default('')} if os_family == 'linux' else {})
