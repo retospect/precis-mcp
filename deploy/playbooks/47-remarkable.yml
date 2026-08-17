@@ -11,7 +11,8 @@
 # agent host (the gateway) that runs the remarkable_send claude_inproc job.
 #
 # NOT in redeploy-precis.yml / site.yml — run explicitly, and only after the
-# device credential is vaulted (populate-secrets-vault.yml). The send stays dark
+# device credential is vaulted (`precis secret set REMARKABLE_RMAPI_CONFIG`,
+# or the /secrets web editor). The send stays dark
 # until PRECIS_REMARKABLE_IMAGE is added to precis_shared_env (re-run
 # playbooks/37-precis-worker-agent.yml):
 #

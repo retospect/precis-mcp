@@ -80,7 +80,7 @@
   ansible.builtin.debug:
     msg: >-
       precis-remarkable image built. To arm the send: (1) vault the device
-      credential as REMARKABLE_RMAPI_CONFIG (populate-secrets-vault.yml or
+      credential as REMARKABLE_RMAPI_CONFIG (precis secret set, or
       /secrets), (2) add PRECIS_REMARKABLE_IMAGE={{ remarkable_image }} to
       precis_shared_env and re-run playbooks/37-precis-worker-agent.yml so the
       worker plist renders it. Until both are done the send stays dark (the

@@ -34,12 +34,12 @@ list in `inventory/group_vars/all/topology.yml`.
 ## Arming the send (S0 ops, one-time, Reto-gated)
 
 1. **Register the device** — run `rmapi` anywhere, paste the 8-letter code from
-   <https://my.remarkable.com/device/desktop/connect>. Copy the resulting
-   `~/.config/rmapi/rmapi.conf` body into `vault_remarkable_rmapi_config` in
-   `inventory/group_vars/all/vault.yml`.
-2. **Vault it** — `ansible-playbook playbooks/populate-secrets-vault.yml`
-   writes `REMARKABLE_RMAPI_CONFIG` into `vault.secrets` (the mapping is
-   already in that playbook), or set it via the `/secrets` web editor.
+   <https://my.remarkable.com/device/desktop/connect>.
+2. **Vault it** — pipe the resulting `~/.config/rmapi/rmapi.conf` body into
+   the DB secrets vault: `precis secret set REMARKABLE_RMAPI_CONFIG <
+   ~/.config/rmapi/rmapi.conf` (or use the `/secrets` web editor). The
+   ansible vault holds only deploy-time infra secrets (DB / TLS / tailscale)
+   — app credentials live in `vault.secrets` alone.
 3. **Build the image** — `ansible-playbook playbooks/47-remarkable.yml`.
 4. **Point the worker at it** — add
    `PRECIS_REMARKABLE_IMAGE: precis-remarkable:<sha>` to `precis_shared_env`

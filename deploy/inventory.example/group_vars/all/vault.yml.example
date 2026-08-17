@@ -2,8 +2,17 @@
 # Copy to `deploy/inventory/group_vars/all/vault.yml` and encrypt with:
 #   ansible-vault encrypt vault.yml
 # The encrypted file (with its ansible-vault header) lives ONLY in the local
-# overlay — it is gitignored and never committed to this public repo. This
-# template lists every vault_* variable the roles expect, all as CHANGEME.
+# overlay — it is gitignored and never committed to this public repo.
+#
+# SCOPE: deploy-time infra secrets ONLY — values ansible must have before the
+# app can run (DB passwords, TLS material, network join keys) plus the few
+# identity/contact values roles render into daemon plists. Application
+# credentials (LLM/API keys, service tokens, device credentials) live in the
+# DB secrets vault instead (`vault.secrets`, ADR 0055) — set them with
+# `precis secret set NAME --prompt` or the /secrets web editor; they
+# propagate to running daemons within the 60 s secrets-cache TTL, no deploy.
+# Keeping an app credential here too creates a second, silently-stale copy
+# that a later playbook run can clobber a rotation with — don't.
 
 # Postgres passwords
 vault_pg_cluster_pass: "CHANGEME"
@@ -16,9 +25,6 @@ vault_pg_admin_pass: "CHANGEME"
 # Tailscale
 vault_tailscale_authkey: "tskey-auth-CHANGEME"
 
-# Bitwarden
-vault_bitwarden_token: "CHANGEME"
-
 # Nginx TLS
 vault_nginx_ssl_cert: |
   -----BEGIN CERTIFICATE-----
@@ -29,12 +35,6 @@ vault_nginx_ssl_key: |
   ...
   -----END PRIVATE KEY-----
 
-# API keys for external services
-vault_anthropic_api_key: "CHANGEME"
-
-# Research service API keys
-vault_kagi_api_key: "CHANGEME"
-vault_kagi_summarizer_engine: "cecil"
 # Identity/contact env (gr204873) — routed to precis_identity_env
 # (deploy/group_vars/all.yml), which overrides the operator overlay's
 # plaintext precis_shared_env entries wherever set. Unset here → the
@@ -46,12 +46,6 @@ vault_semantic_scholar_api_key: "CHANGEME"  # Semantic Scholar (S2) API key
 vault_anki_user: "CHANGEME"  # AnkiWeb login email
 vault_edgar_user_agent: "CHANGEME"  # SEC EDGAR User-Agent string incl. contact email
 
-# Email (schedule-agent, alert-agent)
-vault_email_imap_host: "imap.example.com"
-vault_email_smtp_host: "smtp.example.com"
-vault_email_user: "CHANGEME"
-vault_email_pass: "CHANGEME"
-
 # Backblaze B2 (offsite backup)
 vault_b2_application_key_id: "CHANGEME"
 vault_b2_application_key: "CHANGEME"
@@ -59,24 +53,8 @@ vault_b2_bucket_name: "cluster-backups"
 
 # Discord bridge (asa-bot)
 vault_discord_guild_id: 0
-vault_discord_owner_id: "CHANGEME"  # your Discord user ID (enables /debug, /config)
-vault_discord_home_channel: "CHANGEME"  # channel ID for #home
 
-# Outlook Calendar (schedule-agent)
-vault_outlook_client_id: "CHANGEME"
-vault_outlook_client_secret: "CHANGEME"
-
-# reMarkable tablet — send-to-tablet draft export (roles/remarkable).
-# A bare device token (REMARKABLE_TOKEN fallback) …
-vault_remarkable_token: "CHANGEME"
-# … or the full rmapi config body (preferred; REMARKABLE_RMAPI_CONFIG). Mint it
-# once with `rmapi` + the 8-letter code from my.remarkable.com/device/desktop/
-# connect, then paste ~/.config/rmapi/rmapi.conf here (at least devicetoken:).
-vault_remarkable_rmapi_config: |
-  devicetoken: CHANGEME
-
-# EPO OPS API (precis patent kind) — register at https://developers.epo.org/
-# ORCID OAuth client — https://orcid.org/developer-tools
-# Elsevier Article Retrieval API — https://dev.elsevier.com/apikey/manage
-# Wiley TDM client token — https://onlinelibrary.wiley.com/library-info/resources/text-and-datamining
-# CORE API — https://core.ac.uk/services/api
+# Everything else — ANTHROPIC_API_KEY, Perplexity, Kagi, Wolfram, EPO OPS,
+# ORCID, Elsevier, Wiley, CORE, OpenAlex, Discord/Slack bot tokens, email
+# account passwords, Outlook OAuth, REMARKABLE_RMAPI_CONFIG, … — goes in the
+# DB vault: `precis secret set NAME --prompt`.
