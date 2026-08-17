@@ -125,10 +125,26 @@ Remaining:
   agent must FIRST verify each paper's structure is covalent
   (true-nanobud gate); skip + report vdW/deposited systems (pa206485
   "C60 clusters" and pa40723 look suspect). Launch once precis-web is
-  back. IN FLIGHT 2026-08-17: agent has minted+approved fi211848–
-  fi211854 (7, all confirmed `reviewed` in prod); it lost ~30 min to a
-  wedged session-MCP process mid-run — final covalency verdict table
-  still pending.
+  back. **Tier-2 DONE 2026-08-17** (agent report, verified in prod):
+  7 hubs minted+approved to `reviewed` — pa4365 fi211848/49, pa948
+  fi211850/51, pa206485 fi211852/53, pa1797 fi211854. Covalency
+  verdicts: pa4365, pa948 covalent; pa206485 passed WITH caveat
+  (spray-coated fullerenol clusters, linker-mediated covalency cited
+  to ref [41], "nanobud" appears nowhere — hubs kept device-level
+  responsivity/EQE; Reto may retire fi211852/53); pa1797 mixed
+  (anchor C60 chains covalent, mobile memory fullerene is vdW — vdW
+  nature written into the title). SKIPPED as not-true-nanobud:
+  pa39796 (LJ graphene–fullerene potential = non-bonded by
+  construction), pa40723 (covalency mention is prior-work hearsay;
+  own system adsorptive), pa170590 (C20/C40 fullerene–fullerene, no
+  tube/graphene substrate). **4 hubs staged, unminted** — session-MCP
+  server wedged (1800s timeouts, unrecovered); specs validated
+  against gate mirror, in scratchpad `specs2/`: h8 pa1797 Mulliken
+  (pc175741), h9/h10 pa199068 phenol+dispersion (pc2711468/69), h11
+  pa1638 FTIR (pc155441+155439). Mint once MCP is back (approve door
+  itself is fine). pa1638 is genuinely DOI-less (Sway-distributed
+  congress paper, cite_key tecnia22) — its passage stays OUT of the
+  payload per the one-DOI rule; edge visible internally only.
 - **Survey done (read-only)** — corpus is deep (88 substantive
   nanobud-title papers, 61 already ground claims); gap is
   under-linking, not missing literature. Queue if Reto wants more
