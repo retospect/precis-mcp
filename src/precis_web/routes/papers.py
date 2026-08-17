@@ -557,6 +557,14 @@ def _render_detail(
         "s2_fields": (
             meta.get("s2_fields") if isinstance(meta.get("s2_fields"), list) else []
         ),
+        # paper_rank pass (workers/paper_rank.py, console-gated default-OFF):
+        # query-independent 0-100 reading-priority composite; absent until
+        # the pass has scored this paper.
+        "read_first": (
+            meta["paper_rank"].get("read_first")
+            if isinstance(meta.get("paper_rank"), dict)
+            else None
+        ),
         "keywords": (
             meta.get("keywords") if isinstance(meta.get("keywords"), list) else []
         ),

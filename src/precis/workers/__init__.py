@@ -38,7 +38,7 @@ Three pass shapes share the one ``run_loop`` rotation (``runner.py``):
   ``refs`` (sibling-worker shape): ``classify``, ``bib_parse``,
   ``bib_mark``, ``chase``, ``fetch``, ``hub_refine``, ``nursery``,
   ``sweeper``, ``heartbeat``, ``corpus_reconcile``, ``paper_reconcile``,
-  ``paper_meta_enrich``, ``openalex_enrich``, ``stub_rank``,
+  ``paper_meta_enrich``, ``openalex_enrich``, ``stub_rank``, ``paper_rank``,
   ``llm_summarize``, ``backlog_groom``, ``diagnose_scan``, … (roster:
   ``registry.py``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
@@ -223,6 +223,11 @@ Notable pass mechanics
   ``stubs``/``chase-queue`` backlog views both sort on that prio, floating
   the relevant stubs instead of draining newest-first. Three-step pass —
   see :mod:`.stub_rank`'s own docstring.
+* ``paper_rank`` (console-gated, default-OFF — its only enable is a
+  ``service_config`` prio row, web Status → Services or ``precis service
+  prio``) writes a query-independent 0-100 reading-priority composite to
+  ``refs.meta['paper_rank']`` — never ``refs.prio``, which ``stub_rank``
+  owns. See :mod:`.paper_rank`'s own docstring.
 * ``cast_audio`` narrates the two daily casts (morning ``reading`` brief,
   evening ``nidra`` meditation) via a produce→narrate→publish spine;
   compose runs as ``claude_inproc`` job_types on ``Tier.BIG`` (an

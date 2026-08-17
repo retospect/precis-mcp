@@ -63,10 +63,16 @@ converged tick is a true no-op. Writes are a merge-patch
 touches ``refs.prio`` (:mod:`precis.workers.stub_rank` owns that column).
 
 Registered as the ``paper_rank`` :class:`~precis.workers.registry.
-ServiceSpec` (default-OFF, ``PRECIS_PAPER_RANK`` — a corpus-wide backfill is
-a deliberate, node-targeted batch, like ``bib_retag``); wired in
-``cli/worker.py``'s ``_register``. :func:`top_ranked_papers` is the read-side
-seam a reading-queue / quest-frontier consumer calls.
+ServiceSpec`; wired in ``cli/worker.py``'s ``_register``. The spec's
+``enable_env`` marker only makes it *register* everywhere (§L) — the one
+live gate is its ``service_config`` row: default-OFF with no row, enabled
+from the web Status → Services tab (or ``precis service prio '*'
+paper_rank <n>``), picked up on the next loop cycle without a redeploy.
+There is deliberately no deploy-time flag or seed (a corpus-wide backfill
+is an operator decision, not a deploy side-effect). The composite surfaces
+as the "read-first" row on the web paper Meta panel;
+:func:`top_ranked_papers` is the read-side seam a reading-queue /
+quest-frontier consumer calls.
 
 v2 hook: feynman also scores a sectioned NeurIPS-checklist rubric (worth up
 to 32) inside its methodology signal — out of scope here, a marker-count

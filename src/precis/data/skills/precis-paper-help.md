@@ -267,6 +267,19 @@ cites another paper with a resolved verdict shows a capped
 expanded. Nothing to configure from the agent side; this is a reading
 affordance that either shows up or doesn't.
 
+## Reading-priority score (dark, opt-in)
+## Which held paper is worth reading next?
+
+Cluster-side only (`paper_rank` service, default off — flip from the
+web Status → Services tab or `precis service prio '*' paper_rank <n>`):
+a background pass scores every held paper 0-100 on query-independent
+signals — citation impact and velocity, standing in the corpus's own
+citation graph, rigor/artifact markers — answering "worth reading at
+all", the complement of search's "matches this query". Retracted
+papers are capped low regardless of their other signals. When live,
+the score shows as the "read-first" row on the paper's web Meta panel.
+Nothing to configure from the agent side.
+
 ## Request a paper the library doesn't have
 ## Get a paper we don't hold yet
 
