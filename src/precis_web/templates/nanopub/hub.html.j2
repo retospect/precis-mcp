@@ -104,7 +104,15 @@
           <tbody>
             <tr><td class="text-slate-400 pr-3 py-0.5 align-top">state</td><td class="font-mono">{{ row.state }}</td></tr>
             <tr><td class="text-slate-400 pr-3 py-0.5 align-top">approved</td><td>{{ row.approved_title or '—' }}</td></tr>
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">aida</td><td class="font-mono break-all">{{ row.aida_uri or '—' }}</td></tr>
+            {# The AIDA URI is just the approved sentence URL-encoded — the
+               row above already shows it readably, so render only a copy
+               affordance, never the percent-encoded monster. #}
+            {% if row.aida_uri %}
+            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">aida</td><td>
+              <button type="button" class="text-emerald-700 hover:underline text-xs"
+                      onclick="navigator.clipboard.writeText({{ row.aida_uri | tojson }}); this.textContent='copied ✓'">copy URI</button>
+            </td></tr>
+            {% endif %}
             <tr><td class="text-slate-400 pr-3 py-0.5 align-top">trusty</td><td class="font-mono break-all">
               {% if row.trusty_uri %}<a class="text-emerald-700 hover:underline" href="/np/{{ row.trusty_uri.rsplit('/', 1)[-1] }}">{{ row.trusty_uri }}</a>{% else %}—{% endif %}
             </td></tr>
@@ -240,21 +248,32 @@
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
   // Inside the workbench the review iframe is named np-review; paper
-  // links (DAG detail, dispute block) belong in the sibling paper pane,
-  // not this one. Delegated + capture so it also covers the detail links
-  // rendered below after a node click. Standalone pages (no frame name)
-  // keep default navigation; base.html.j2's embed stamper skips targeted
-  // links, so stamp embed=1 here too.
+  // links (DAG detail, dispute block) AND claim-page links belong in the
+  // sibling paper pane — this pane must keep the review page. Delegated +
+  // capture so it also covers the detail links rendered below after a
+  // node click. Navigate the parent's iframe directly (same-origin, so
+  // reachable) rather than by target name — named-target resolution from
+  // a nested browsing context is unreliable across browsers, and a miss
+  // silently opens a new window. Standalone pages (no frame name) keep
+  // default navigation.
   if (window.name === "np-review") {
     document.addEventListener("click", e => {
       const a = e.target.closest("a[href]");
       if (!a || a.target || a.host !== location.host) return;
       try {
         const u = new URL(a.href);
-        if (!u.pathname.startsWith("/papers/")) return;
+        if (!u.pathname.startsWith("/papers/") && !u.pathname.startsWith("/claim/")) return;
         u.searchParams.set("embed", "1");
-        a.href = u;
-        a.target = "np-paper";
+        let frame = null;
+        try { frame = window.parent.document.getElementById("np-paper"); } catch {}
+        if (frame) {
+          e.preventDefault();
+          frame.removeAttribute("srcdoc");
+          frame.src = u;
+        } else {
+          a.href = u;
+          a.target = "np-paper";
+        }
       } catch {}
     }, true);
   }

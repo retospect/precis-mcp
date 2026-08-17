@@ -586,9 +586,10 @@ def _graph(store: Any, bundle: Any, row: Any) -> dict[str, Any]:
             "detail": {
                 "kind": f"{bundle.artifact_type} hub",
                 "title": bundle.sentence,
+                # No aida field: the URI is just the sentence URL-encoded —
+                # unreadable here; the publish-row panel has a copy button.
                 "fields": [
                     ["publish state", state],
-                    ["aida", (row.aida_uri or "—") if row else "—"],
                     ["trusty", (row.trusty_uri or "—") if row else "—"],
                 ],
                 "links": [["claim page", f"/claim/fi{bundle.hub_ref_id}"]],

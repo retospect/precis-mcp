@@ -208,7 +208,9 @@ def hub_tree(store: Store) -> list[HubTreeNode]:
 
 def hub_rows(store: Store) -> list[HubOverviewRow]:
     """Every live ``TAPROOT:claim`` hub with its publish posture, one
-    query. Disputed first (oldest dispute on top), then by state age."""
+    query. Disputed first (oldest dispute on top), then minted hubs in
+    mint order (publish-row ``created_at`` — stable across state
+    transitions, so signing a hub never moves its row), then unminted."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -243,7 +245,7 @@ def hub_rows(store: Store) -> list[HubOverviewRow]:
                        AND l.meta->'publish_signoff' IS NULL
               ) w ON TRUE
              WHERE r.kind = 'finding' AND r.deleted_at IS NULL
-             ORDER BY d.since ASC NULLS LAST, p.updated_at ASC NULLS LAST,
+             ORDER BY d.since ASC NULLS LAST, p.created_at ASC NULLS LAST,
                       r.ref_id
             """,
             {"terminal": list(TERMINAL_STATES)},
