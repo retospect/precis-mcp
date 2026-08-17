@@ -139,9 +139,22 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
 #: explicitly per job.
 DEFAULT_EXECUTOR = "claude_inproc"
 
+#: Executors whose jobs cannot spend LLM budget: remote/in-process compute
+#: lanes that never route through a paid LLM placement. The dispatcher's
+#: global daily cost ceiling (an *LLM* budget — it sums ``llm_call_log``)
+#: exempts candidates minting onto these lanes; blocking a pure-numpy
+#: ``autocatpath_aggregate`` because Claude ticks burned the window starved
+#: every pathway rollup for 29h (2026-08-16/17).
+ZERO_LLM_EXECUTORS: frozenset[str] = frozenset({"ssh_node", "job_inproc"})
+
 
 def is_known_executor(name: str) -> bool:
     return name in EXECUTOR_PROVIDES
 
 
-__all__ = ["DEFAULT_EXECUTOR", "EXECUTOR_PROVIDES", "is_known_executor"]
+__all__ = [
+    "DEFAULT_EXECUTOR",
+    "EXECUTOR_PROVIDES",
+    "ZERO_LLM_EXECUTORS",
+    "is_known_executor",
+]

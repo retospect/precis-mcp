@@ -63,6 +63,7 @@ from precis.utils.ref_tree import deleted_in_ancestry
 from precis.workers import planner_guardrails
 from precis.workers.executors import (
     EXECUTOR_PROVIDES,
+    ZERO_LLM_EXECUTORS,
     is_known_executor,
 )
 from precis.workers.job_types import get_job_type
@@ -284,8 +285,8 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # candidate, and siblings share a subtree (see RoundContext).
     guard_ctx = planner_guardrails.RoundContext()
     # Resolved lazily, and only if the daily ceiling actually trips — the common
-    # round never pays for this query.
-    cadence_ids: set[int] | None = None
+    # round never pays for these queries.
+    exempt_ids: set[int] | None = None
     for parent_id in candidate_ids:
         # Planner-coroutine guardrails: tick cap, per-todo cost cap,
         # global daily ceiling. The first two halt the parent
@@ -326,15 +327,28 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
             # Discretionary candidates still stop dead. Cadence work is not
             # un-capped — the per-todo and per-tree caps are checked ahead of
             # the ceiling and still halt it.
-            if cadence_ids is None:
+            #
+            # Zero-LLM compute is exempt for the same reason from the other
+            # side: the ceiling is an *LLM* budget, and a candidate minting
+            # onto a lane that can't spend it (``ssh_node`` aggregate rollup,
+            # ``job_inproc`` batch) gains nothing from waiting. Cadence-exempt
+            # quest ticks kept the trailing-24h window over the ceiling
+            # permanently, which starved every ``autocatpath_aggregate`` mint
+            # for 29h (2026-08-16/17) while their seed jobs — minted outside
+            # this dispatcher — kept succeeding.
+            if exempt_ids is None:
                 cadence_ids = _cadence_parent_ids(store, candidate_ids)
+                zero_llm_ids = _zero_llm_parent_ids(store, candidate_ids)
+                exempt_ids = cadence_ids | zero_llm_ids
                 log.info(
                     "dispatch: daily ceiling (%s) — discretionary dispatch "
-                    "paused; %d cadence candidate(s) still eligible",
+                    "paused; %d cadence + %d zero-LLM candidate(s) still "
+                    "eligible",
                     verdict.reason,
                     len(cadence_ids),
+                    len(zero_llm_ids),
                 )
-            if parent_id not in cadence_ids:
+            if parent_id not in exempt_ids:
                 continue
         try:
             claimed, minted = _claim_and_dispatch(store, parent_id)
@@ -376,6 +390,29 @@ def _cadence_parent_ids(store: Store, parent_ids: list[int]) -> set[int]:
             "AND w.deleted_at IS NULL "
             "AND w.meta ? 'schedule'",
             (parent_ids,),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _zero_llm_parent_ids(store: Store, parent_ids: list[int]) -> set[int]:
+    """Of ``parent_ids``, the ones whose mint is a *non-LLM* job: an explicit
+    ``meta.executor`` in :data:`ZERO_LLM_EXECUTORS` and no ``meta.llm_tier``.
+
+    The second exemption predicate for the global daily ceiling (the first is
+    ``_cadence_parent_ids``). The ceiling sums ``llm_call_log`` — an LLM
+    budget — so a compute-only mint can't spend against it and must not be
+    paused by it. The ``llm_tier`` veto is belt-and-suspenders: a hybrid
+    candidate that would also run a planner stays discretionary.
+    """
+    if not parent_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id FROM refs r "
+            "WHERE r.ref_id = ANY(%s) "
+            "AND r.meta->>'executor' = ANY(%s) "
+            "AND NOT (r.meta ? 'llm_tier')",
+            (parent_ids, list(ZERO_LLM_EXECUTORS)),
         ).fetchall()
     return {int(r[0]) for r in rows}
 

@@ -92,8 +92,10 @@ runs before every mint, cheapest first: per-todo tick cap
 (``PRECIS_MAX_TODO_USD`` $2), per-tree cost (``PRECIS_MAX_TREE_USD`` $10),
 and a global daily ceiling (``PRECIS_DAILY_COST_CEILING`` $20) that pauses
 discretionary dispatch for the round — cadence work (a tick whose parent
-carries ``meta.schedule``, ``dispatch._cadence_parent_ids``) is exempt from
-the ceiling alone, still bound by the three caps. Dollar caps read
+carries ``meta.schedule``, ``dispatch._cadence_parent_ids``) and zero-LLM
+compute mints (``ssh_node``/``job_inproc`` executor, no ``llm_tier``;
+``dispatch._zero_llm_parent_ids``) are exempt from the ceiling alone,
+still bound by the three caps. Dollar caps read
 ``llm_call_log.cost_usd`` (``plan_tick`` stamps ``LlmRequest.ref_id`` =
 parent), subscription transports included. Those are code defaults; prod
 runs the deploy templates' values (``tests/test_deploy_planner_caps.py``

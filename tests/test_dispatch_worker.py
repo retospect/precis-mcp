@@ -1245,3 +1245,61 @@ def test_daily_ceiling_exemption_is_off_when_the_ceiling_is_clear(
 
     assert len(_child_jobs_under(store, tick)) == 1
     assert len(_child_jobs_under(store, discretionary)) == 1
+
+
+def test_daily_ceiling_still_dispatches_zero_llm_compute(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tripped global ceiling must not starve a compute-only mint.
+
+    The ceiling is an LLM budget (it sums ``llm_call_log``); an ``ssh_node``
+    parent (e.g. the pure-numpy ``autocatpath_aggregate`` rollup) can't spend
+    against it. Regression: cadence-exempt quest ticks held the trailing-24h
+    window over the ceiling permanently, so no aggregate minted for 29h
+    (2026-08-16/17) while seed jobs — minted outside the dispatcher — kept
+    succeeding.
+    """
+    monkeypatch.setenv("PRECIS_DAILY_COST_CEILING", "0")
+    compute = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="aggregate rollup",
+        meta={"executor": "ssh_node", "job_type": "struct_relax", "params": {}},
+        parent_id=None,
+    )
+    discretionary = _dispatchable_child(store, "exploratory work", None)
+
+    run_dispatch_pass(store)
+
+    assert len(_child_jobs_under(store, int(compute.id))) == 1, (
+        "zero-LLM compute must dispatch through a tripped ceiling"
+    )
+    assert _child_jobs_under(store, discretionary) == [], (
+        "LLM-lane discretionary work must still be paused by the ceiling"
+    )
+
+
+def test_daily_ceiling_zero_llm_exemption_vetoed_by_llm_tier(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hybrid candidate (compute executor + ``meta.llm_tier``) stays
+    discretionary — the exemption is strictly for mints that can't spend."""
+    monkeypatch.setenv("PRECIS_DAILY_COST_CEILING", "0")
+    hybrid = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="hybrid planner-compute",
+        meta={
+            "executor": "ssh_node",
+            "job_type": "struct_relax",
+            "params": {},
+            "llm_tier": "haiku",
+        },
+        parent_id=None,
+    )
+
+    run_dispatch_pass(store)
+
+    assert _child_jobs_under(store, int(hybrid.id)) == [], (
+        "llm_tier candidate must not ride the zero-LLM exemption"
+    )

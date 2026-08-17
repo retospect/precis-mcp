@@ -12,3 +12,9 @@ precis_identity_env_raw:
   PRECIS_ANKI_USER: "{{ vault_anki_user | default('') }}"
   PRECIS_EDGAR_USER_AGENT: "{{ vault_edgar_user_agent | default('') }}"
 precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('value', 'equalto', '') | list | items2dict }}"
+
+# Fleet-wide trailing-24h LLM spend ceiling (PRECIS_DAILY_COST_CEILING).
+# Templates fall back to 50.0 when unset; raised 2026-08-17 (steady spend
+# ran ~$60/day and the tripped ceiling paused discretionary dispatch).
+# Zero-LLM compute mints are ceiling-exempt in code (workers/dispatch.py).
+precis_daily_cost_ceiling: 100.0

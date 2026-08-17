@@ -23,10 +23,17 @@ three caps the dispatcher consults before minting a planner job:
    when the project as a whole has spent enough.
 
 4. **Global daily cost ceiling** (``PRECIS_DAILY_COST_CEILING``,
-   default $20/day). Sums *all* recorded LLM spend over the last
-   24h; when the ceiling is hit the dispatcher returns 0 candidates
-   until the rolling window clears. Coarse but effective — protects
-   the overall budget envelope.
+   default $20/day; prod sets 100 via ``precis_daily_cost_ceiling``).
+   Sums *all* recorded LLM spend over the last 24h; when the ceiling
+   is hit the dispatcher pauses discretionary candidates until the
+   rolling window clears. Coarse but effective — protects the overall
+   budget envelope. Two dispatcher-side exemptions survive a tripped
+   ceiling (``workers/dispatch.py``): cadence work
+   (``_cadence_parent_ids``) and zero-LLM compute mints
+   (``_zero_llm_parent_ids`` — the ceiling is an LLM budget, and an
+   ``ssh_node``/``job_inproc`` mint can't spend against it; without
+   this the cadence-exempt quest ticks held the window over the
+   ceiling permanently and starved every ``autocatpath_aggregate``).
 
    Cap 4 is the only one that isn't planner-specific, and it is
    re-exported as :func:`daily_budget` because the dispatcher is not
