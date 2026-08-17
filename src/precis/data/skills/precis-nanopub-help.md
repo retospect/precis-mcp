@@ -80,8 +80,13 @@ failures an extraction agent can avoid up front:
 - **Quote mechanics** — the quote must be verbatim and contiguous
   within ONE stored chunk (adjacent sentences in the same chunk may be
   joined; never across chunks), trimmed to the bare assertion, free of
-  citation markers, and any structured `quantity` value must appear
-  inside some quote.
+  citation markers (including markdown-link residue like
+  ``[\[1,2\]](#page-…)``), and any structured `quantity` value must
+  appear inside some quote.
+- **Snip vs chunk overlap** — consecutive chunks overlap at their
+  boundary, so a snip drawn from an overlap region matches 2× and is
+  refused. Remedy: extend the quote one sentence into text unique to
+  its chunk and snip there — never weaken the snip.
 
 Grounding reaches the prefill through **both** edge shapes: inbound
 evidence edges carry per-edge grounding-chunk pointers; outbound

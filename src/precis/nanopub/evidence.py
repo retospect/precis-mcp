@@ -71,6 +71,10 @@ def citation_markers(text: str) -> list[str]:
     (``[100]``, ``[111]``, ``[0001]`` — digits 0–2 only) are exempt:
     in a nano corpus they are directions, not references, and the rare
     citation number they shadow is an acceptable recall loss."""
+    # Marker-extracted text escapes literal brackets (``[\[1,2\]](#page-…)``
+    # markdown-link residue) — strip the escapes first or numeric markers
+    # slip the net (caught live on fi19981's sim25 prefill, 2026-08-17).
+    text = text.replace("\\[", "[").replace("\\]", "]")
     hits = [
         m.group(0)
         for m in _NUMERIC_CITE.finditer(text)

@@ -141,6 +141,9 @@ def test_quote_citation_marker_is_rejected(store: Any) -> None:
     for quoted in (
         "Moore observed that transistor counts double every year [12]",
         "graphene shows very high carrier mobility (Novoselov et al. 2004)",
+        # Marker-extracted markdown-link residue escapes the brackets —
+        # the fi19981 sim25 class: many predicted the demise.[\[1,2\]](#p)
+        "many have predicted the demise of the law.[\\[1,2\\]](#page-17-0)",
     ):
         paper, chunk, _sha = _seed_paper(
             store,
