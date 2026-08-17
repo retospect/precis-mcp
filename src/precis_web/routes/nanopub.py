@@ -232,6 +232,76 @@ async def nanopub_signoff(
     return _back_to_hub(request, hub_id)
 
 
+def _parse_ref(value: str, prefixes: tuple[str, ...]) -> int:
+    """``pa4185`` / ``pc518151`` / bare ``4185`` → int ref/chunk id."""
+    from precis.errors import BadInput
+
+    v = value.strip().lower()
+    for p in prefixes:
+        v = v.removeprefix(p)
+    if not v.isdigit():
+        raise BadInput(f"not an id: {value!r} — want e.g. {prefixes[0]}123 or bare 123")
+    return int(v)
+
+
+@router.post("/nanopub/fi{hub_id}/evidence/add", response_model=None)
+async def nanopub_evidence_add(
+    request: Request,
+    hub_id: int,
+    source: str = Form(""),
+    chunk: str = Form(""),
+    relation: str = Form("corroborates"),
+) -> Response:
+    """Human curation door: attach one paper/patent evidence edge to the
+    hub. The new edge starts withheld (no ``support`` verdict), so it
+    still needs sign-off or refine-verification before publish."""
+    from precis.errors import BadInput
+    from precis.nanopub import evidence as ev
+    from precis.taproot.hub import attach_evidence
+
+    store = get_store(request)
+    try:
+        paper_ref_id = _parse_ref(source, ("pa", "pt"))
+        meta: dict[str, Any] = {}
+        if chunk.strip():
+            chunk_id = _parse_ref(chunk, ("pc",))
+            chunks = ev.fetch_chunks(store, [chunk_id])
+            if not chunks or chunks[0].ref_id != paper_ref_id:
+                raise BadInput(
+                    f"pc{chunk_id} is not a chunk of pa{paper_ref_id} — the "
+                    "grounding passage must live in the cited source"
+                )
+            meta["source_handle"] = f"pc{chunk_id}"
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=paper_ref_id,
+            role=relation,
+            meta=meta,
+            set_by="user",  # the actors vocab's direct-human slug
+        )
+    except BadInput as exc:
+        return _error(request, "Add refused", str(exc), 400)
+    return _back_to_hub(request, hub_id)
+
+
+@router.post("/nanopub/fi{hub_id}/evidence/{link_id}/remove", response_model=None)
+async def nanopub_evidence_remove(
+    request: Request, hub_id: int, link_id: int
+) -> Response:
+    from precis.nanopub.preflight import remove_evidence_edge
+
+    store = get_store(request)
+    if not remove_evidence_edge(store, hub_id, link_id, interactive=True):
+        return _error(
+            request,
+            "Remove refused",
+            f"no evidence edge {link_id} on fi{hub_id}",
+            400,
+        )
+    return _back_to_hub(request, hub_id)
+
+
 # ── page assembly ────────────────────────────────────────────────────
 
 _STATE_ACTION = {

@@ -173,17 +173,43 @@
         <p class="text-[11px] text-slate-500">Neither verified-by-refine nor signed off — each blocks
           publication until verified, or attested literally below (no mute button).</p>
         {% for w in withheld %}
-        <form method="post" action="/nanopub/fi{{ hub_id }}/signoff/{{ w.link_id }}" class="flex items-center gap-2">
-          <span class="text-xs grow truncate" title="{{ w.paper_title }}">
-            {{ w.relation }} ← {{ w.paper_title }} <span class="font-mono text-slate-400">pc{{ w.paper_ref_id }}</span>
-          </span>
-          <input name="note" placeholder="why it's ok (required)"
-                 class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">
-          <button class="px-2 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 text-xs whitespace-nowrap">sign off</button>
-        </form>
+        <div class="flex items-center gap-2">
+          <form method="post" action="/nanopub/fi{{ hub_id }}/signoff/{{ w.link_id }}" class="flex items-center gap-2 grow min-w-0">
+            <span class="text-xs grow truncate" title="{{ w.paper_title }}">
+              {{ w.relation }} ← {{ w.paper_title }} <span class="font-mono text-slate-400">pc{{ w.paper_ref_id }}</span>
+            </span>
+            <input name="note" placeholder="why it's ok (required)"
+                   class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">
+            <button class="px-2 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 text-xs whitespace-nowrap">sign off</button>
+          </form>
+          <form method="post" action="/nanopub/fi{{ hub_id }}/evidence/{{ w.link_id }}/remove"
+                onsubmit="return confirm('Remove this evidence edge?')">
+            <button class="px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 text-xs"
+                    title="delete this evidence edge from the hub">remove</button>
+          </form>
+        </div>
         {% endfor %}
       </section>
       {% endif %}
+
+      {# ── evidence curation: attach a new edge (starts withheld) ── #}
+      <details class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
+        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">Add evidence edge</summary>
+        <form method="post" action="/nanopub/fi{{ hub_id }}/evidence/add" class="mt-2 flex flex-wrap items-center gap-2">
+          <input name="source" placeholder="pa1234 (paper/patent)" required
+                 class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-40">
+          <input name="chunk" placeholder="pc5678 (passage, optional)"
+                 class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">
+          <select name="relation" class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs">
+            <option value="corroborates">corroborates</option>
+            <option value="establishes">establishes</option>
+            <option value="contradicts">contradicts</option>
+          </select>
+          <button class="px-2 py-1 rounded border border-emerald-400 text-emerald-700 hover:bg-emerald-50 text-xs">add</button>
+        </form>
+        <p class="text-[11px] text-slate-500 mt-1.5">New edges start withheld — sign off above (or let the
+          refine chase verify them) before publish. A contradicts edge blocks the claim outright.</p>
+      </details>
 
       {# ── publish preflight ── #}
       {% if row %}

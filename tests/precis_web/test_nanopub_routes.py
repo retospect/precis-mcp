@@ -217,6 +217,50 @@ def test_signoff_door_from_the_web(client: TestClient, runtime_with_store) -> No
     assert withheld_edges(store, hub) == []
 
 
+def test_evidence_add_and_remove_doors(client: TestClient, runtime_with_store) -> None:
+    from precis.nanopub.preflight import withheld_edges
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A curated claim.", paper, chunk)
+    paper2, chunk2, _sha2 = _seed_paper(store)
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/evidence/add",
+        data={
+            "source": f"pa{paper2}",
+            "chunk": f"pc{chunk2}",
+            "relation": "corroborates",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    edges = withheld_edges(store, hub)
+    assert len(edges) == 2  # seeded edge + the new one, both un-vouched
+    new = next(e for e in edges if e.paper_ref_id == paper2)
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/evidence/{new.link_id}/remove", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert [e.paper_ref_id for e in withheld_edges(store, hub)] == [paper]
+    # Gone means gone — a second remove is a 400, not a silent 303.
+    resp = client.post(
+        f"/nanopub/fi{hub}/evidence/{new.link_id}/remove", follow_redirects=False
+    )
+    assert resp.status_code == 400
+
+    # Junk source and a chunk from the wrong paper refuse with 400.
+    for data in (
+        {"source": "nope", "relation": "corroborates"},
+        {"source": f"pa{paper2}", "chunk": f"pc{chunk}", "relation": "corroborates"},
+    ):
+        resp = client.post(
+            f"/nanopub/fi{hub}/evidence/add", data=data, follow_redirects=False
+        )
+        assert resp.status_code == 400
+
+
 def test_tree_nests_conjunct_atom_under_compound(
     client: TestClient, runtime_with_store
 ) -> None:

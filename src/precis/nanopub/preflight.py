@@ -104,6 +104,33 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
     ]
 
 
+def remove_evidence_edge(
+    store: Store,
+    hub_ref_id: int,
+    link_id: int,
+    *,
+    interactive: bool = False,
+) -> bool:
+    """Human removal of one evidence edge — :func:`signoff_edge`'s
+    curation counterpart, same interactive door (a worker deleting
+    evidence is a defect by definition). Scoped to the hub's own inbound
+    evidence relations so a stray ``link_id`` can't unlink anything
+    else. Returns False when no such edge exists."""
+    if not interactive:
+        raise PermissionError(
+            "remove_evidence_edge() is a human act — invocable only from an "
+            "interactive surface (pass interactive=True from code a person "
+            "is driving)"
+        )
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM links WHERE link_id = %s AND dst_ref_id = %s "
+            "AND relation IN ('establishes', 'corroborates', 'contradicts')",
+            (link_id, hub_ref_id),
+        )
+        return cur.rowcount == 1
+
+
 def signoff_edge(
     store: Store,
     link_id: int,
