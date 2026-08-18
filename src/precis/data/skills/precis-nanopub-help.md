@@ -84,12 +84,17 @@ failures an extraction agent can avoid up front:
   within ONE stored chunk (adjacent sentences in the same chunk may be
   joined; never across chunks), trimmed to the bare assertion, free of
   citation markers (including markdown-link residue like
-  ``[\[1,2\]](#page-…)``), and any structured `quantity` value must
-  appear inside some quote. The citation-marker check is a regex, so
-  bracketed chemical nomenclature — "[60]fullerene", "[2+2]
+  ``[\[1,2\]](#page-…)`` and superscript residue like
+  ``…report.<sup>8</sup>`` — even a quote trimmed just before the tag,
+  leaving a citing sentence, is hearsay), and any structured `quantity`
+  value must appear inside some quote. The citation-marker check is a
+  regex, so bracketed chemical nomenclature — "[60]fullerene", "[2+2]
   cycloaddition" — false-positives as a citation; trim or re-pick the
   quote to exclude the bracketed token (quotes stay verbatim — never
-  rewrite one to dodge the gate).
+  rewrite one to dodge the gate). Scientific superscripts
+  (``cm<sup>-1</sup>``, ``Fe<sup>3+</sup>``, ``10<sup>3</sup>``,
+  ``<sup>13</sup>C``, ``m<sup>2</sup>``) are exempt by context and do
+  not trip it.
 - **Snip vs chunk overlap** — consecutive chunks overlap at their
   boundary, so a snip drawn from an overlap region matches 2× and is
   refused. Remedy: extend the quote one sentence into text unique to

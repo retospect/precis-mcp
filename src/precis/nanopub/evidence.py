@@ -62,15 +62,58 @@ _AUTHOR_YEAR_CITE = re.compile(
     r",?\s+(?:1[789]|20)\d{2}[a-z]?\)"
 )
 _MILLER_INDEX = re.compile(r"^\[[0-2]{3,4}\]$")
+#: Superscript citation-numeral residue that marker-ingest leaves as
+#: literal HTML (pc550457's "…similar to the previous report.<sup>8</sup>",
+#: found grounding pa4365, 2026-08-17). Requires a bare integer list
+#: (comma/dash-separated, e.g. ``<sup>8,9</sup>`` or ``<sup>3–5</sup>``)
+#: immediately inside the tag, closed by ``</sup>`` or truncated at the
+#: end of the quote (an extraction trimmed right before the close) — so
+#: genuine chemistry/math superscripts, which never open on a bare digit
+#: run alone, are exempt: ``<sup>-1</sup>`` (negative exponent, starts
+#: with ``-``) and ``<sup>3+</sup>`` (ionic charge, digit run doesn't
+#: reach the close) both fail to match. Bare-integer lookalikes that DO
+#: match the regex are context-filtered in :func:`citation_markers`:
+#: ``10<sup>3</sup>`` (power of ten — digit before the tag),
+#: ``<sup>13</sup>C`` (isotope — letter right after the close), and
+#: ``m<sup>2</sup>``/``cm<sup>3</sup>`` (unit exponent — letter before
+#: the tag with a lone 2/3/4 inside; a letter-preceded true citation
+#: with those numbers is an acceptable recall loss, same trade as the
+#: Miller-index carve-out).
+_SUPERSCRIPT_CITE = re.compile(r"<sup>\s*\d+(?:\s*[,;–—-]\s*\d+)*\s*(?:</sup>|$)")
+_UNIT_EXPONENTS = {"2", "3", "4"}
+
+
+def _superscript_cites(text: str) -> list[str]:
+    """`_SUPERSCRIPT_CITE` matches minus the scientific-notation
+    lookalikes documented on the pattern."""
+    out = []
+    for m in _SUPERSCRIPT_CITE.finditer(text):
+        prev = text[m.start() - 1] if m.start() else ""
+        nxt = text[m.end()] if m.end() < len(text) else ""
+        if prev.isdigit():  # 10<sup>3</sup>
+            continue
+        if nxt.isalpha():  # <sup>13</sup>C
+            continue
+        nums = re.findall(r"\d+", m.group(0))
+        if prev.isalpha() and len(nums) == 1 and nums[0] in _UNIT_EXPONENTS:
+            continue  # m<sup>2</sup>, cm<sup>3</sup>, Å<sup>3</sup>
+        out.append(m.group(0))
+    return out
 
 
 def citation_markers(text: str) -> list[str]:
     """Citation markers found in ``text``: numeric brackets (``[12]``,
-    ``[3,4]``, ``[1-5]``) and author–year parens (``(Moore, 1965)``,
-    ``(Xia et al. 2019)``). Crystallographic Miller-index lookalikes
-    (``[100]``, ``[111]``, ``[0001]`` — digits 0–2 only) are exempt:
-    in a nano corpus they are directions, not references, and the rare
-    citation number they shadow is an acceptable recall loss."""
+    ``[3,4]``, ``[1-5]``), author–year parens (``(Moore, 1965)``,
+    ``(Xia et al. 2019)``), and ``<sup>N</sup>`` superscript-numeral
+    residue left by marker-ingest (``<sup>8</sup>``, ``<sup>3,4</sup>``).
+    Crystallographic Miller-index lookalikes (``[100]``, ``[111]``,
+    ``[0001]`` — digits 0–2 only) are exempt: in a nano corpus they are
+    directions, not references, and the rare citation number they shadow
+    is an acceptable recall loss. Genuine superscript notation is exempt
+    too (``<sup>-1</sup>`` exponents, ``<sup>3+</sup>`` charges,
+    ``10<sup>3</sup>`` powers of ten, ``<sup>13</sup>C`` isotopes,
+    ``m<sup>2</sup>``-style unit exponents — see
+    :func:`_superscript_cites`)."""
     # Marker-extracted text escapes literal brackets (``[\[1,2\]](#page-…)``
     # markdown-link residue) — strip the escapes first or numeric markers
     # slip the net (caught live on fi19981's sim25 prefill, 2026-08-17).
@@ -81,6 +124,7 @@ def citation_markers(text: str) -> list[str]:
         if not _MILLER_INDEX.match(m.group(0))
     ]
     hits += [m.group(0) for m in _AUTHOR_YEAR_CITE.finditer(text)]
+    hits += _superscript_cites(text)
     return hits
 
 

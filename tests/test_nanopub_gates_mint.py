@@ -144,6 +144,9 @@ def test_quote_citation_marker_is_rejected(store: Any) -> None:
         # Marker-extracted markdown-link residue escapes the brackets —
         # the fi19981 sim25 class: many predicted the demise.[\[1,2\]](#p)
         "many have predicted the demise of the law.[\\[1,2\\]](#page-17-0)",
+        # pc550457's shape (pa4365, 2026-08-17): marker-ingest renders
+        # superscript citation numerals as literal <sup>N</sup> HTML.
+        "which is similar to the previous report.<sup>8</sup>",
     ):
         paper, chunk, _sha = _seed_paper(
             store,
@@ -171,6 +174,49 @@ def test_miller_index_bracket_is_not_a_citation(store: Any) -> None:
     payload["passages"][0]["quote"] = quoted
     payload["passages"][0]["snip"] = "we find"
     assert "primary-source" not in _gate_slugs(store, hub, payload)
+
+
+def test_genuine_superscript_notation_is_not_a_citation(store: Any) -> None:
+    # <sup>-1</sup> exponents and <sup>3+</sup> ionic charges are real
+    # chemistry/math notation, not citation-marker residue — only a bare
+    # integer list (the <sup>8</sup> pc550457 shape) should trip the gate.
+    for quoted in (
+        "the peak sits at 1580 cm<sup>-1</sup> in the Raman spectrum",
+        "the resulting Fe<sup>3+</sup> centers dominate the signal",
+        "the C<sub>60</sub> cage retains its icosahedral symmetry",
+        "the conductance increases by a factor of 10<sup>3</sup> here",
+        "the <sup>13</sup>C chemical shifts localize to the neck",
+        "a specific surface area of 1000 m<sup>2</sup>/g is measured",
+        "a pore volume of 1.2 cm<sup>3</sup>/g in the composite",
+    ):
+        assert evidence.citation_markers(quoted) == [], quoted
+        paper, chunk, _sha = _seed_paper(
+            store,
+            chunk_text=f"Our results. {quoted}, we find.",
+            section=["III. Results"],
+        )
+        hub = _seed_hub(store, "A spectroscopy claim.", paper, chunk)
+        payload = _payload(chunk, fields={})
+        payload["passages"][0]["quote"] = quoted
+        payload["passages"][0]["snip"] = "we find"
+        assert "primary-source" not in _gate_slugs(store, hub, payload)
+
+
+def test_superscript_citation_markers_detected(store: Any) -> None:
+    # Multi-cite and dangling-fragment shapes of the <sup>N</sup> residue.
+    assert evidence.citation_markers("prior work.<sup>8</sup>") == ["<sup>8</sup>"]
+    assert evidence.citation_markers("prior work.<sup>3,4</sup>") == ["<sup>3,4</sup>"]
+    assert evidence.citation_markers("prior work.<sup>3–5</sup>") == ["<sup>3–5</sup>"]
+    # A quote trimmed right before the closing tag still dangles the cite.
+    assert evidence.citation_markers("prior work.<sup>8") == ["<sup>8"]
+    # Letter-preceded cites still trip when the number can't be a unit
+    # exponent (multi-cite, or outside the 2–4 exponent range).
+    assert evidence.citation_markers("as shown for nanobuds<sup>12</sup>") == [
+        "<sup>12</sup>"
+    ]
+    assert evidence.citation_markers("as reported earlier<sup>3,4</sup>") == [
+        "<sup>3,4</sup>"
+    ]
 
 
 def test_acquisition_marked_hub_rejects_grounded_mint(store: Any) -> None:

@@ -412,6 +412,126 @@ def test_claim_view_dangling_source_handle_degrades(
     assert "passage text not available" in r.text
 
 
+# ── Quote-block abbreviation glossing (docs/backlog/claim-page-abbreviation-
+# glossing.md) — reuses the draft reader's linkify._highlight_abbrevs, sourced
+# from the QUOTED paper's own stored chunks, no persistent storage. ──
+
+
+def test_claim_view_grounding_quote_glosses_paper_abbreviation(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A grounding quote that merely USES an abbreviation gets the hover
+    gloss when that abbreviation is defined ELSEWHERE in the same source
+    paper's own stored chunks (inline ``Long Form (ABBR)`` first-use,
+    Schwartz-Hearst — same extractor the draft reader's recall highlight
+    uses, run against the paper being quoted, not the claim hub)."""
+    from precis_web import claim_render
+
+    claim_render._PAPER_ABBREV_CACHE.clear()
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="claim-abbrev-src", title="Abbreviation source", year=2015
+    ).id
+    # ord=0: defines PEI inline, elsewhere in the SAME paper — never quoted.
+    _insert_chunk(
+        store,
+        ref_id=paper,
+        ord=0,
+        text="We use polyethyleneimine (PEI) throughout the synthesis.",
+    )
+    # ord=1: the actual grounding quote — just uses the abbreviation.
+    quote_text = "PEI coats the surface uniformly at low concentration."
+    quote_handle = _insert_chunk(store, ref_id=paper, ord=1, text=quote_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": quote_handle},
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert quote_text in r.text
+    assert 'class="pa"' in r.text
+    assert "polyethyleneimine" in r.text  # the hover-gloss definition
+
+
+def test_claim_view_grounding_quote_no_gloss_without_definitions(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A source paper with no abbreviations defined anywhere renders its
+    quote exactly as before — the highlighter is a silent no-op, not an
+    error, when the map is empty."""
+    from precis_web import claim_render
+
+    claim_render._PAPER_ABBREV_CACHE.clear()
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="claim-no-abbrev-src", title="No glossary here", year=2016
+    ).id
+    quote_text = "PEI is mentioned here but never defined anywhere in this paper."
+    quote_handle = _insert_chunk(store, ref_id=paper, ord=0, text=quote_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": quote_handle},
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert quote_text in r.text
+    assert 'class="pa"' not in r.text
+
+
+def test_claim_view_grounding_quote_gloss_degrades_on_extraction_error(
+    claim_client: TestClient, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A term-extraction error (``defined_terms`` raising) must never
+    surface as a 500 — the quote page still renders, unglossed, exactly as
+    it would with no map."""
+    from precis.store._draft_ops import DraftStore
+    from precis_web import claim_render
+
+    claim_render._PAPER_ABBREV_CACHE.clear()
+
+    def _boom(self: object, ref_id: int) -> dict[str, object]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(DraftStore, "defined_terms", _boom)
+
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="claim-abbrev-err", title="Errors on extraction", year=2017
+    ).id
+    _insert_chunk(store, ref_id=paper, ord=0, text="We use polyethyleneimine (PEI).")
+    quote_text = "PEI is applied at the final step."
+    quote_handle = _insert_chunk(store, ref_id=paper, ord=1, text=quote_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": quote_handle},
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert quote_text in r.text
+    assert 'class="pa"' not in r.text
+
+
 def test_claim_preview_lists_cited_chunks(claim_client: TestClient, hub: Hub) -> None:
     hub_ref_id, chunk_handle, chunk_text = _seed_hub_with_chunk(hub)
     fi_handle = handle_registry.format_handle("finding", hub_ref_id)

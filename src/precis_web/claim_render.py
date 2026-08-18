@@ -26,7 +26,10 @@ render-window's worth at once).
 
 from __future__ import annotations
 
+import logging
 import re
+import threading
+from collections import OrderedDict
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -49,11 +52,13 @@ from precis.utils import handle_registry
 from precis.utils.mentions import strip_page_anchor_links
 from precis.utils.pub_id_lookup import lookup_pub_id_finding
 from precis.utils.table_data import parse_markdown_table
-from precis_web.linkify import render_markdown
+from precis_web.linkify import _highlight_abbrevs, render_markdown
 from precis_web.paper_ident import paper_head, paper_head_from_facts
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 #: A hub-cite head in prose: a ``[fi<id>]`` finding handle or a 6-char
 #: ``[<pub_id>]``, optionally pinned (`>`/`+` + handle list — ignored for
@@ -352,6 +357,71 @@ def _render_quote(text: str) -> tuple[Markup, bool]:
     return Markup("").join(parts), truncated
 
 
+#: Bounded ``source_ref_id → terms`` cache — the claim page's twin of
+#: ``routes/drafts.py``'s ``_ABBREV_CACHE``, but keyed by the QUOTED
+#: paper's own ref_id rather than a draft-under-edit's (version, ref_id)
+#: pair. A source paper's body chunks are immutable post-ingest (no
+#: in-place edit path — see CLAUDE.md's append-only chunks convention), so
+#: there's no version token to invalidate on; the cache is simply bounded.
+#: Same rich-record shape :func:`~precis_web.linkify._highlight_abbrevs`
+#: renders as a hover: paper-local ``chunk_kind='term'`` registry leaves
+#: (glossary/patent/BOM) win on a clash over inline ``Long Form (ABBR)``
+#: first-uses, per :meth:`~precis.store._draft_ops._AbbrevMixin.defined_terms`.
+_PAPER_ABBREV_CACHE: OrderedDict[int, dict[str, Any]] = OrderedDict()
+_PAPER_ABBREV_CACHE_MAX = 128
+#: Guards :data:`_PAPER_ABBREV_CACHE` — same concurrent-request race as
+#: ``routes/drafts.py``'s ``_ABBREV_CACHE_LOCK``.
+_PAPER_ABBREV_CACHE_LOCK = threading.Lock()
+
+
+def _paper_abbrevs_cached(store: Store, ref_id: int) -> dict[str, Any]:
+    """The quoted paper's own defined-terms map, memoised per ref_id — run
+    against an arbitrary SOURCE paper (not a draft under edit), so a page
+    quoting several sources builds each map once regardless of how many
+    grounding passages cite it. Degrades to ``{}`` (never raises) on any
+    extraction hiccup — a source lacking definitions, or whose store
+    predates the extractor — so the caller's highlight pass is then a
+    silent no-op and the quote renders exactly as before this feature."""
+    with _PAPER_ABBREV_CACHE_LOCK:
+        hit = _PAPER_ABBREV_CACHE.get(ref_id)
+        if hit is not None:
+            _PAPER_ABBREV_CACHE.move_to_end(ref_id)
+            return hit
+    try:
+        drafts = store.drafts
+        fn = getattr(drafts, "defined_terms", None) or drafts.defined_abbrevs
+        val = fn(ref_id) or {}
+    except Exception:
+        log.debug("paper abbrev extraction failed for ref_id=%s", ref_id, exc_info=True)
+        val = {}
+    with _PAPER_ABBREV_CACHE_LOCK:
+        _PAPER_ABBREV_CACHE[ref_id] = val
+        _PAPER_ABBREV_CACHE.move_to_end(ref_id)
+        while len(_PAPER_ABBREV_CACHE) > _PAPER_ABBREV_CACHE_MAX:
+            _PAPER_ABBREV_CACHE.popitem(last=False)
+    return val
+
+
+def _gloss_quote(store: Store, source_ref_id: int, quote_html: Markup) -> Markup:
+    """Wrap known abbreviations in a rendered grounding quote with the
+    source paper's own hover-gloss (reusing the draft reader's
+    :func:`~precis_web.linkify._highlight_abbrevs` on ALREADY-rendered
+    HTML, so it only ever rewrites text runs — never a tag, attribute, or
+    handle). Degrades silently to the quote unchanged when the source has
+    no definitions or the highlight pass itself errors — this is a reader
+    nicety, never worth failing the claim page over."""
+    abbrevs = _paper_abbrevs_cached(store, source_ref_id)
+    if not abbrevs:
+        return quote_html
+    try:
+        return Markup(_highlight_abbrevs(str(quote_html), abbrevs))
+    except Exception:
+        log.debug(
+            "abbrev highlight failed for source_ref_id=%s", source_ref_id, exc_info=True
+        )
+        return quote_html
+
+
 def _grounding_chunks(
     store: Store,
     rows: Iterable[tuple[dict[str, Any], str]],
@@ -377,7 +447,13 @@ def _grounding_chunks(
     ``chunk_cache`` — a pre-fetched ``{handle: chunk}`` map
     (:func:`~precis.store.Store.universal_chunks`) — skips the per-handle
     ``store.drafts.universal_chunk`` round trip when given (a bulk caller resolving
-    many hubs' grounding passages in one query, OPEN-ITEMS.md batch B)."""
+    many hubs' grounding passages in one query, OPEN-ITEMS.md batch B).
+
+    ``quote_html`` also carries the source paper's OWN abbreviation gloss
+    (:func:`_gloss_quote`) — no persistent storage, derived at render time
+    from that paper's stored chunks and memoised per ref_id
+    (:func:`_paper_abbrevs_cached`), same hover machinery the draft reader
+    uses. Silent no-op when the source has no definitions."""
     out: list[dict[str, Any]] = []
     by_handle: dict[str, dict[str, Any]] = {}
     for row, role_label in rows:
@@ -399,6 +475,8 @@ def _grounding_chunks(
             if len(collapsed) > _CHUNK_QUOTE_CHARS:
                 collapsed = collapsed[:_CHUNK_QUOTE_CHARS].rstrip() + "…"
             quote_html, quote_truncated = _render_quote(raw_text)
+            if chunk is not None:
+                quote_html = _gloss_quote(store, chunk["ref_id"], quote_html)
             entry = {
                 "handle": handle,
                 "is_chunk": row["source_is_chunk"],

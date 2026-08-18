@@ -21,6 +21,24 @@
   <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
   <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
   <style>[x-cloak] { display: none !important; }</style>
+  {# Abbreviation recall (linkify._highlight_abbrevs — draft reader +
+     claim-page quote blocks): an INSTANT custom tooltip, no native <abbr
+     title> show-delay. Definition rides in a nested .pa-pop, shown on
+     hover/focus via CSS. Shared here (not per-page) so every surface that
+     runs the highlighter — smartdraft, the claim page's quote blocks, and
+     any future one — gets it for free. #}
+  <style>
+    .pa{position:relative;text-decoration:underline dotted;
+        text-decoration-color:#94a3b8;cursor:help}
+    .pa>.pa-pop{display:none;position:absolute;bottom:100%;left:0;z-index:50;
+        margin-bottom:3px;width:max-content;max-width:18rem;white-space:normal;
+        border-radius:4px;background:#1e293b;color:#fff;
+        padding:2px 6px;font-size:11px;font-weight:400;line-height:1.3}
+    .pa:hover>.pa-pop,.pa:focus>.pa-pop,.pa:focus-within>.pa-pop{display:block}
+    .pa-pop>.pa-def,.pa-pop>.pa-attr,.pa-pop>.pa-link{display:block}
+    .pa-pop>.pa-attr{color:#cbd5e1;font-size:10px}
+    .pa-pop>.pa-link{color:#7dd3fc;margin-top:1px}
+  </style>
 </head>
 <body class="h-full text-slate-800">
   {# ``?embed=1`` = chrome-less pane mode: the page is being shown inside

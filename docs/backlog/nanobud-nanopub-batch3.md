@@ -137,12 +137,11 @@ Remaining:
   pa39796 (LJ graphene–fullerene potential = non-bonded by
   construction), pa40723 (covalency mention is prior-work hearsay;
   own system adsorptive), pa170590 (C20/C40 fullerene–fullerene, no
-  tube/graphene substrate). **4 hubs staged, unminted** — session-MCP
-  server wedged (1800s timeouts, unrecovered); specs validated
-  against gate mirror, in scratchpad `specs2/`: h8 pa1797 Mulliken
-  (pc175741), h9/h10 pa199068 phenol+dispersion (pc2711468/69), h11
-  pa1638 FTIR (pc155441+155439). Mint once MCP is back (approve door
-  itself is fine). pa1638 is genuinely DOI-less (Sway-distributed
+  tube/graphene substrate). **4 carried hubs MINTED 2026-08-18** (via
+  specs3): h8 pa1797 Mulliken → fi213466, h9 pa199068 phenol →
+  fi213467, h10 pa199068 dispersion → fi213468 (all approved →
+  `reviewed`); h11 pa1638 FTIR → fi213469 (mint-only, stays
+  `candidate`). pa1638 is genuinely DOI-less (Sway-distributed
   congress paper, cite_key tecnia22) — its passage stays OUT of the
   payload per the one-DOI rule; edge visible internally only.
 - **Survey done (read-only)** — corpus is deep (88 substantive
@@ -164,9 +163,10 @@ Remaining:
     10.1016/j.carbon.2009.09.040 (ferrocene-CO synthesis mechanism).
   - Dedup flag: pa2069 vs pa173471 same Nasibulin 2007 paper (one
     real, one 0-chunk stub).
-- **Own-work hubs staged 2026-08-17 (opus agent; MCP still wedged —
-  1800 s probe timeout, melchior web door healthy)**: 13 hubs drafted +
-  offline-gate-verified (all_ok=True), NOTHING minted. Scratchpad
+- **Own-work hubs staged 2026-08-17 (opus agent)** — MCP recovered
+  2026-08-18 (`/mcp` reconnect, fresh server at d8d5c38d); the 4
+  carried hubs are minted (ids above), the **9 non-covalent n1–n9
+  remain staged-only awaiting Reto's explicit go/no-go**. Scratchpad
   session e26f279b `specs3/`: 13 `mint-*.json` (put args) + 12
   `approve-*.json` (hub=MINT-PENDING) + `submit3.sh` paced runner
   (`sh submit3.sh name=<fiid> …`). Contents: 9 NEW own-result hubs for
@@ -198,9 +198,11 @@ Remaining:
   pc82581/82582 added to ground the model-1/model-4 mapping. DOIs from
   ref_identifiers (refs.meta doi NULL for both): pa4365
   10.1021/jp906026c, pa948 10.1140/epjb/e2011-20139-5; refs.pdf_sha256
-  set for both. To finish: mint via MCP, patch fi ids into specs,
-  paced approves. Gate hole found → `docs/backlog/
-  nanopub-citation-marker-sup-residue.md`.
+  set for both. **MINTED + APPROVED 2026-08-18**: h1 → fi213459,
+  h2 → fi213460, h3 → fi213461, h4 → fi213462, h5 → fi213464 (all
+  `reviewed`; paced 303s via run4.py). None cited in dr173020 yet —
+  edit set pending Reto's go. Gate hole found → `docs/backlog/
+  nanopub-citation-marker-sup-residue.md` (fix in flight 2026-08-18).
 - **Draft scope collisions found 2026-08-17 (dc2445932, energy-storage
   ¶, pre-dates scope rule — edit set to propose to Reto)**: (a) Koh
   et al. cited as "Li adsorption on graphene–fullerene nanobuds"
