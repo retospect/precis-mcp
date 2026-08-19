@@ -36,8 +36,12 @@ _BAD_TEMP_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\^\s*\{?\s*\\?circ"),  # ^\circ / ^{\circ}
     re.compile(r"[ºᵒ⁰∘]\s*[CFcf]\b"),  # ordinal/superscript/ring + C/F
     re.compile(r"\d\s*[oO]\s*[CF]\b"),  # 'o' as degree: 63oC, 63 o C
-    re.compile(r"\d\s+°"),  # number SPACE degree: 63 °C
-    re.compile(r"°\s+[CF]"),  # degree SPACE C: 63° C
+    # SI puts a space between value and unit symbol, and `°C` is a unit
+    # symbol: `63 °C`. The bare degree of an ANGLE is not a unit symbol and
+    # stays tight (`85°`), so both patterns below require a trailing C/F and
+    # leave angles alone.
+    re.compile(r"\d°[CF]\b"),  # no space at all: 63°C
+    re.compile(r"°\s+[CF]"),  # space on the wrong side: 63° C
     re.compile(r"\bdeg(?:rees?)?\.?\s*[CF]\b"),  # deg C / degrees C / degC
     re.compile(r"\bdegrees?\s+(?:celsius|fahrenheit)\b", re.IGNORECASE),  # spelt out
     re.compile(r"[+]\s*/\s*[-−]\s*\d"),  # +/- 1  (use ±)
@@ -288,13 +292,19 @@ def literal_cite_hint(text: str) -> str:
 def temperature_form_hint(text: str) -> str:
     r"""Nudge toward the canonical plain-text temperature/unit notation
     when the prose carries a malformed spelling: a superscript or
-    single-character degree (``℃``, ``63ºC``), a spaced sign
-    (``63 °C`` / ``63° C``), an ``o``-as-degree (``63oC``), LaTeX
+    single-character degree (``℃``, ``63ºC``), a missing or misplaced
+    space (``63°C`` / ``63° C``), an ``o``-as-degree (``63oC``), LaTeX
     (``^\circ`` / ``\degree``), the spelt-out "degrees Celsius", or
     ``+/-`` for a tolerance. The wanted form is the literal Unicode sign
-    with no space — ``63°C``, a range ``63–65°C``, a tolerance ``±1°C``
-    — so the canonical spelling trips none of the patterns and fires no
-    hint. A hint, never a refusal: the write still lands."""
+    spaced off the value — ``63 °C``, a range ``63–65 °C``, a tolerance
+    ``±1 °C`` — so the canonical spelling trips none of the patterns and
+    fires no hint. A hint, never a refusal: the write still lands.
+
+    The spacing follows SI: a space separates a value from a unit symbol,
+    and ``°C`` is a unit symbol. The degree of an **angle** is not, and
+    stays tight (``85°``) — see the "percent / degrees" row of the
+    ``precis-notation-canon`` skill, which governs claim sentences under
+    the same rule so the two surfaces cannot disagree."""
     offenders: list[str] = []
     for pat in _BAD_TEMP_PATTERNS:
         for m in pat.finditer(text):
@@ -305,9 +315,10 @@ def temperature_form_hint(text: str) -> str:
         return ""
     shown = ", ".join(repr(o) for o in offenders[:5])
     return (
-        "\n\n⚠ temperature/unit formatting: write the literal sign with "
-        "no space — `63°C` (degree sign `°`, then `C`), a range `63–65°C`, "
-        "a tolerance `±1°C` (the `±` sign). No superscript, no `℃`, no "
+        "\n\n⚠ temperature/unit formatting: write the literal sign spaced "
+        "off the value — `63 °C` (space, degree sign `°`, then `C`), a range "
+        "`63–65 °C`, a tolerance `±1 °C` (the `±` sign). An angle keeps no "
+        "space (`85°`). No superscript, no `℃`, no "
         'LaTeX (`^\\circ`, `\\degree`), no spelt-out "degrees Celsius", '
         f"no `+/-`. Found: {shown}."
     )

@@ -306,12 +306,15 @@ both render but read as shouting; `_italic_` does NOT render and leaves
 literal `_` (collides with `$x_1$` math subscripts). No em-dashes (`—`)
 — split the sentence, or use a colon/comma/parens.
 
-**Units & temperatures: literal sign, no space.** `63°C` — degree sign
-`°` (U+00B0) immediately after the digit, then `C`, no space. Range
-`63–65°C`; tolerance `±1°C` (`±` = U+00B1, not `+/-`). Not a superscript,
-not `℃`, not `63oC`/`63ºC`, not LaTeX (`^\circ`), not spaced (`63 °C`),
-not spelt out. A malformed temperature trips a `⚠ temperature/unit
-formatting` hint on write.
+**Units & temperatures: literal sign, spaced off the value.** `63 °C` —
+space, then degree sign `°` (U+00B0), then `C`. Range `63–65 °C`;
+tolerance `±1 °C` (`±` = U+00B1, not `+/-`). Not a superscript, not `℃`,
+not `63oC`/`63ºC`, not LaTeX (`^\circ`), not tight (`63°C`), not
+`63° C`, not spelt out. SI separates a value from a unit symbol and `°C`
+is one; the degree of an **angle** is not, so angles stay tight: `85°`.
+Same rule governs claim sentences (`precis-notation-canon`), so prose and
+claims cannot disagree. A malformed temperature trips a
+`⚠ temperature/unit formatting` hint on write.
 
 ## Figures & images
 

@@ -798,14 +798,17 @@ def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> N
 
 def test_temperature_form_hint(draft: DraftHandler, hub: Hub) -> None:
     """A malformed temperature/unit notation lands but trips the
-    ``temperature/unit formatting`` hint; the canonical ``63°C`` / ``±1°C``
-    is silent."""
+    ``temperature/unit formatting`` hint; the canonical ``63 °C`` / ``±1 °C``
+    is silent. Spacing follows SI (value, space, unit symbol) and matches the
+    claim-sentence canon; an **angle** is not a unit symbol and stays tight,
+    so ``85°`` must not fire."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].handle
 
     bad = [
-        "Anneal at 63 °C for an hour.",  # spaced degree
+        "Anneal at 63°C for an hour.",  # no space before the unit symbol
+        "Anneal at 63° C for an hour.",  # space on the wrong side
         "Anneal at 63oC for an hour.",  # 'o' as degree
         "Anneal at 63℃ for an hour.",  # single-char degree-C
         r"Anneal at $63^\circ$C.",  # LaTeX
@@ -818,8 +821,13 @@ def test_temperature_form_hint(draft: DraftHandler, hub: Hub) -> None:
         )
         assert "temperature/unit formatting" in r.body, text
 
-    # the canonical forms trip nothing
-    for ok in ("Anneal at 63°C.", "Hold to ±1°C over 63–65°C."):
+    # the canonical forms trip nothing — including a bare angle, which is
+    # not a unit symbol and must stay tight
+    for ok in (
+        "Anneal at 63 °C.",
+        "Hold to ±1 °C over 63–65 °C.",
+        "The tilt angle reaches 85° at saturation.",
+    ):
         r = draft.put(
             id="nt", chunk_kind="paragraph", text=ok, at={"after": "¶" + title_h}
         )

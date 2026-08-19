@@ -226,14 +226,20 @@ acquisition-mode finding (above) — mixing modes errors. Hub mint still
 assertion never becomes a thin-air hub); `link(kind='finding',
 rel='establishes'|'corroborates'|'contradicts', target=<pc/pa handle>)`
 attaches evidence to an existing hub. Full contract:
-`precis-taproot-help`. Evidence also accrues automatically via the
+`precis-taproot-help` — the claim sentence must pass its admissibility
+rules and the notation canon (`precis-notation-canon`); both advise
+here at mint and **block** at approve. Evidence also accrues automatically via the
 chase's forward bridge, gated behind `PRECIS_TAPROOT_CHASE_ENABLED`
 (default-OFF — not yet run at corpus scale, so evidence is
 sparse/absent for now beyond what's agent-minted). Once minted, a hub is
 citable by its finding handle, `[fi<id>]` — the same handle you'd
 `get(id='fi42')` with. It also carries an internal content-hash
 `pub_id` (mint-time convergence key: identical claim text always hashes
-to the same `pub_id`, so concurrent mints collapse to one hub); both
+to the same `pub_id`, so concurrent mints collapse to one hub). **That
+convergence is byte-level, not semantic** — it is not dedup: two wordings
+of one claim mint two hubs, each with half the evidence, so
+`precis-taproot-help` makes a semantic search mandatory before every
+mint. Both
 `[fi<id>]` and `[<pub_id>]` resolve to the same hub, but `fi<id>` is
 the form to cite. A bare pub_id also works as a get id —
 `get(kind='finding', id='ab12c3')` — handy when all you hold is the
