@@ -96,7 +96,9 @@ def _gate_slugs(store: Any, hub: int, payload: dict[str, Any]) -> set[str]:
 
 def test_clean_payload_passes_all_gates(store: Any) -> None:
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "MOFs can be anisotropic up to 400:1.", paper, chunk)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
     assert _gate_slugs(store, hub, _payload(chunk)) == set()
 
 
@@ -119,7 +121,9 @@ def test_pdf_sha_alias_row_does_not_block_mint(store: Any) -> None:
             (f"a{paper:063x}", paper),
         )
     assert evidence.pdf_sha_rows(store, paper) == [sha]
-    hub = _seed_hub(store, "MOFs can be anisotropic up to 400:1.", paper, chunk)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
     assert _gate_slugs(store, hub, _payload(chunk)) == set()
 
 
@@ -276,7 +280,7 @@ def test_field_not_contained_in_quote_fails(store: Any) -> None:
 
 def test_claim_without_quote_needs_explicit_hanging(store: Any) -> None:
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "An ungrounded claim.", paper, chunk)
+    hub = _seed_hub(store, "DFT shows the ungrounded claim persists.", paper, chunk)
     assert "schema-lint" in _gate_slugs(store, hub, {"passages": []})
     # Explicitly hanging is mintable (publish preflight blocks it later).
     assert _gate_slugs(store, hub, {"passages": [], "hanging": True}) == set()
@@ -343,7 +347,9 @@ def test_full_mint_pipeline(store: Any, monkeypatch: Any) -> None:
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
 
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "MOFs can be anisotropic up to 400:1.", paper, chunk)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
 
     row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
     assert row.state == "reviewed"
@@ -375,7 +381,7 @@ def test_sign_refuses_on_title_drift(store: Any, monkeypatch: Any) -> None:
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
 
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "The approved sentence.", paper, chunk)
+    hub = _seed_hub(store, "DFT shows the approved sentence holds.", paper, chunk)
     mint.approve(store, hub, payload=_payload(chunk), interactive=True)
     with store.pool.connection() as conn:
         conn.execute(
@@ -396,13 +402,14 @@ def test_approve_title_override_syncs_hub_and_signs(
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
 
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "Short pre-review sentence.", paper, chunk)
+    hub = _seed_hub(
+        store, "DFT shows the short pre-review sentence holds.", paper, chunk
+    )
     long_title = (
-        "Spin-polarized DFT on graphene-fullerene nanobuds finds two junction "
-        "bonding configurations whose next-nearest-atom bonds give strong "
-        "ferromagnetic coupling, with net magnetic moments of 5.76 and 5.55 "
-        "Bohr magnetons, while the other bonding configurations are "
-        "non-magnetic."
+        "Spin-polarized DFT calculations on graphene-fullerene nanobuds find "
+        "two distinct junction bonding configurations with net magnetic "
+        "moments of 5.76 and 5.55 Bohr magnetons, while other configurations "
+        "remain non-magnetic overall."
     )
     assert len(long_title) > 200
     row = mint.approve(
@@ -422,9 +429,9 @@ def test_compound_requires_signed_atoms_then_chains_them(
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
 
     paper, chunk, sha = _seed_paper(store)
-    atom = _seed_hub(store, "Atom A holds.", paper, chunk)
+    atom = _seed_hub(store, "DFT shows atom A holds.", paper, chunk)
     compound = mint_hub(
-        store, CanonicalClaim(sentence="Atom A holds and matters.", scope={})
+        store, CanonicalClaim(sentence="DFT shows atom A holds and matters.", scope={})
     )
     link_claims(
         store,

@@ -42,8 +42,8 @@ def _signed_hub(store: Any, monkeypatch: Any, sentence: str) -> Any:
 
 
 def test_stamp_upgrade_and_audit_roundtrip(store: Any, monkeypatch: Any) -> None:
-    row_a = _signed_hub(store, monkeypatch, "OTS claim one.")
-    row_b = _signed_hub(store, monkeypatch, "OTS claim two.")
+    row_a = _signed_hub(store, monkeypatch, "DFT finds OTS claim one holds.")
+    row_b = _signed_hub(store, monkeypatch, "DFT finds OTS claim two holds.")
 
     batch_id = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
     assert batch_id is not None
@@ -79,7 +79,9 @@ def test_stamp_upgrade_and_audit_roundtrip(store: Any, monkeypatch: Any) -> None
 
 
 def test_stamp_skips_drifted_rows(store: Any, monkeypatch: Any) -> None:
-    row = _signed_hub(store, monkeypatch, "Will drift before anchor.")
+    row = _signed_hub(
+        store, monkeypatch, "DFT finds the drift-before-anchor claim holds."
+    )
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET title = 'Edited after signing.' WHERE ref_id = %s",
@@ -122,7 +124,7 @@ def test_audit_flags_index_drift_and_alerts(store: Any) -> None:
 
 def test_sweep_pass_runs_audit_even_when_dark(store: Any, monkeypatch: Any) -> None:
     monkeypatch.delenv("PRECIS_OTS_ENABLED", raising=False)
-    row = _signed_hub(store, monkeypatch, "Dark-mode hub.")
+    row = _signed_hub(store, monkeypatch, "DFT finds the dark-mode hub claim holds.")
     from precis.workers.ots_sweep import run_ots_sweep_pass
 
     result = run_ots_sweep_pass(store)

@@ -70,7 +70,9 @@ def test_unminted_hub_has_no_publish_row(store: Any) -> None:
 
 
 def test_withheld_edge_blocks_and_signoff_clears(store: Any, monkeypatch: Any) -> None:
-    hub, row = _signed_hub(store, monkeypatch, "Withheld-edge claim.")
+    hub, row = _signed_hub(
+        store, monkeypatch, "DFT finds the withheld-edge claim holds."
+    )
     _anchor(store, _refresh(store, hub))
     _allow_signer(store, row)
     # A second, unverified evidence edge arrives.
@@ -103,7 +105,9 @@ def test_withheld_edge_blocks_and_signoff_clears(store: Any, monkeypatch: Any) -
 def test_trust_gate_requires_attesting_allowlist_entry(
     store: Any, monkeypatch: Any
 ) -> None:
-    hub, _row = _signed_hub(store, monkeypatch, "Trust-gated claim.")
+    hub, _row = _signed_hub(
+        store, monkeypatch, "DFT finds the trust-gated claim holds."
+    )
     row = _refresh(store, hub)
     _anchor(store, row)
     # No allowlist entry at all → blocked.
@@ -122,7 +126,7 @@ def test_hanging_claim_is_unpublishable(store: Any, monkeypatch: Any) -> None:
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
     paper, chunk, _sha = _seed_paper(store)
-    hub = _seed_hub(store, "A hanging claim.", paper, chunk)
+    hub = _seed_hub(store, "DFT finds the hanging claim holds.", paper, chunk)
     mint.approve(
         store,
         hub,
@@ -136,11 +140,13 @@ def test_compound_dependency_must_be_published(store: Any, monkeypatch: Any) -> 
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
     paper, chunk, sha = _seed_paper(store)
-    atom = _seed_hub(store, "The atom half.", paper, chunk)
+    atom = _seed_hub(store, "DFT finds the atom half holds.", paper, chunk)
     from precis.taproot.canon import CanonicalClaim
     from precis.taproot.hub import link_claims, mint_hub
 
-    compound = mint_hub(store, CanonicalClaim(sentence="The compound whole.", scope={}))
+    compound = mint_hub(
+        store, CanonicalClaim(sentence="DFT finds the compound whole holds.", scope={})
+    )
     link_claims(
         store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
     )
@@ -178,13 +184,15 @@ def _refresh(store: Any, hub: int) -> Any:
 
 
 def test_publish_needs_the_interactive_door(store: Any, monkeypatch: Any) -> None:
-    hub = _publishable_hub(store, monkeypatch, "Interactive-door claim.")
+    hub = _publishable_hub(
+        store, monkeypatch, "DFT finds the interactive-door claim holds."
+    )
     with pytest.raises(PermissionError):
         registry.publish(store, hub, live=True)
 
 
 def test_publish_dry_run_posts_nothing(store: Any, monkeypatch: Any) -> None:
-    hub = _publishable_hub(store, monkeypatch, "Dry-run claim.")
+    hub = _publishable_hub(store, monkeypatch, "DFT finds the dry-run claim holds.")
     posted: list[tuple[str, bytes]] = []
     result = registry.publish(
         store, hub, interactive=True, post=lambda u, b: posted.append((u, b))
@@ -199,7 +207,9 @@ def test_publish_dry_run_posts_nothing(store: Any, monkeypatch: Any) -> None:
 def test_publish_live_posts_exact_bytes_and_flips_state(
     store: Any, monkeypatch: Any
 ) -> None:
-    hub = _publishable_hub(store, monkeypatch, "Live-publish claim.")
+    hub = _publishable_hub(
+        store, monkeypatch, "DFT finds the live-publish claim holds."
+    )
     row = _refresh(store, hub)
     artifact = store.nanopub_artifact(row.artifact_id)
     posted: list[tuple[str, bytes]] = []
@@ -217,7 +227,9 @@ def test_publish_live_posts_exact_bytes_and_flips_state(
 
 
 def test_publish_blocked_on_preflight(store: Any, monkeypatch: Any) -> None:
-    hub, _row = _signed_hub(store, monkeypatch, "Blocked-publish claim.")
+    hub, _row = _signed_hub(
+        store, monkeypatch, "DFT finds the blocked-publish claim holds."
+    )
     # signed, not anchored, and no allowlist entry.
     with pytest.raises(registry.PublishBlocked) as exc:
         registry.publish(store, hub, live=True, interactive=True)

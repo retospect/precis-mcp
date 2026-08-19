@@ -66,6 +66,7 @@ from precis.taproot.canon import (
     Placement,
     claim_sha,
 )
+from precis.taproot.notation import lint_notation
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -128,6 +129,41 @@ EVIDENCE_SRC_KINDS: frozenset[str] = frozenset(
 
 _STATUS_NS = "STATUS"
 _STATUS_CANONICAL = "canonical"
+
+
+class TitleRoundTripError(RuntimeError):
+    """Raised when a just-written ``refs.title`` doesn't read back byte-for-
+    byte equal to the sentence the write door intended to persist.
+
+    The failure mode ``docs/backlog/hub-title-200-truncation-via-stale-mcp.md``
+    shipped silently for three weeks: a stale MCP build was serving a
+    handler from before a title-length-cap removal, so every hub it minted
+    got a ``refs.title`` cut at exactly 200 characters mid-word while the
+    ``finding_body`` chunk stayed full-length — nothing asserted the two
+    matched, so the divergence was invisible until a human spotted it.
+    :func:`_assert_title_round_trip` closes that gap at both real write
+    doors (:func:`mint_hub`, :func:`refine_claim_sentence`): raised inside
+    the write's own transaction/savepoint, so it rolls the write back
+    rather than leaving a truncated title committed — a failed mint is
+    always better than a silently truncated one.
+    """
+
+
+def _assert_title_round_trip(conn: Any, ref_id: int, intended: str, *, op: str) -> None:
+    """Read ``refs.title`` for ``ref_id`` back on ``conn`` and assert it
+    equals ``intended`` exactly, raising :class:`TitleRoundTripError`
+    otherwise. Must be called inside the same transaction/savepoint as the
+    title write, before it commits — see the class docstring."""
+    row = conn.execute("SELECT title FROM refs WHERE ref_id = %s", (ref_id,)).fetchone()
+    persisted = str(row[0]) if row is not None and row[0] is not None else None
+    if persisted != intended:
+        raise TitleRoundTripError(
+            f"{op}: ref_id={ref_id} title round-trip mismatch after write -- "
+            f"intended {len(intended)} chars, persisted {len(persisted or '')} "
+            f"chars. Likely cause: a caller running stale code that still "
+            "truncates refs.title (see "
+            "docs/backlog/hub-title-200-truncation-via-stale-mcp.md)."
+        )
 
 
 def _grounding_chunk_ord(
@@ -343,6 +379,10 @@ def mint_hub(
     door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
     taproot dedups upstream via canonicalization, so the hub write is direct.
 
+    The freshly-written ``refs.title`` is read back and asserted equal to
+    ``claim.sentence.strip()`` inside the same savepoint
+    (:func:`_assert_title_round_trip`) — see :class:`TitleRoundTripError`.
+
     Citability (slice F): the hub also gets a ``pub_id`` written
     to ``ref_identifiers`` — the same 6-char ``[a-z2-7]`` handle
     ``FindingHandler.put`` mints — so agent draft prose can cite it as
@@ -397,13 +437,15 @@ def mint_hub(
         meta: dict[str, Any] = {"scope": dict(claim.scope), "source": "taproot"}
         if extra_meta:
             meta.update(extra_meta)
+        intended_title = claim.sentence.strip()
         ref = store.insert_ref(
             kind="finding",
             slug=None,
-            title=claim.sentence.strip(),
+            title=intended_title,
             meta=meta,
             conn=c,
         )
+        _assert_title_round_trip(c, ref.id, intended_title, op="mint_hub")
         store.blocks.insert_blocks(
             ref.id,
             [
@@ -508,7 +550,9 @@ def refine_claim_sentence(
 
     1. ``refs.title = sentence.strip()`` (never truncated); ``meta.scope`` is replaced
        (not merged) when ``scope`` is given, else the hub's existing scope
-       is kept.
+       is kept. Read back and asserted equal to the intended title inside
+       this same transaction (:func:`_assert_title_round_trip`) — see
+       :class:`TitleRoundTripError`.
     2. The ``finding_body`` chunk (``ord=0``) is replaced via DELETE+INSERT
        (:meth:`~precis.store.Store.replace_body_chunk`) — never an in-place
        text UPDATE, so the embedding/summary cascade re-runs on the new
@@ -550,14 +594,20 @@ def refine_claim_sentence(
 
     Returns:
         ``{"hub_ref_id", "old_title", "new_title", "pub_id",
-        "pub_id_alias_kept"}`` — ``pub_id`` is the (possibly unchanged)
-        current pub_id after the write; ``pub_id_alias_kept`` is True iff a
-        new pub_id row was inserted (the old one stays live as an alias).
+        "pub_id_alias_kept", "notation"}`` — ``pub_id`` is the (possibly
+        unchanged) current pub_id after the write; ``pub_id_alias_kept`` is
+        True iff a new pub_id row was inserted (the old one stays live as an
+        alias). ``notation`` is
+        :func:`~precis.taproot.notation.lint_notation`'s advisory warnings
+        for the new ``sentence`` — never raises, never blocks the reword,
+        never rewrites the sentence.
 
     Raises:
         ValueError: ``hub_ref_id`` isn't a live ``TAPROOT:claim`` hub,
             ``sentence`` is empty/whitespace, or the new pub_id already
             belongs to a different ref (names that ref_id).
+        TitleRoundTripError: the written ``refs.title`` didn't read back
+            equal to the intended sentence (rolls the transaction back).
     """
     stripped = sentence.strip() if sentence else ""
     if not stripped:
@@ -588,6 +638,7 @@ def refine_claim_sentence(
             meta_patch={"scope": effective_scope} if scope is not None else None,
             conn=c,
         )
+        _assert_title_round_trip(c, hub_ref_id, new_title, op="refine_claim_sentence")
 
         # (2) finding_body chunk — DELETE+INSERT at ord=0.
         store.blocks.replace_body_chunk(
@@ -638,6 +689,7 @@ def refine_claim_sentence(
             "new_title": new_title,
             "pub_id": new_pub_id,
             "pub_id_alias_kept": alias_kept,
+            "notation": lint_notation(new_title),
         }
 
     if conn is not None:
@@ -1295,6 +1347,7 @@ __all__ = [
     "EVIDENCE_SRC_KINDS",
     "HUB_ROLES",
     "ExtractionOutcome",
+    "TitleRoundTripError",
     "apply_extraction",
     "apply_placement",
     "attach_evidence",

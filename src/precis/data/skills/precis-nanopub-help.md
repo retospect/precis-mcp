@@ -111,13 +111,19 @@ Style: a quantitative claim corroborates in the **measured quantity**
 ("65 nm node" names no physical dimension) — a passage in the wrong
 currency imports a unit confusion into the artifact.
 
-## Claim-sentence grammar (the approved title)
+## Claim-sentence grammar — write it at authoring, verified at approve
 
-The approved title IS the claim — it carries all the meaning and is
-exactly as long as it needs to be (no length cap; `refs.title` syncs to
-the full approved string at approve). One plain prose sentence, shaped
-**general → specific**: `[epistemic mode + method] + [system] +
-evidence verb + finding`.
+Write to this grammar when a hub is minted or reworded — not just when
+it's approved. `refs.title` still syncs to the approved string at approve,
+but approve **verifies** conformance; it does not compose the sentence, so
+a candidate that already reads as a claim needs no rewrite there. See
+`precis-taproot-help`'s "Claim admissibility": that gate decides whether a
+sentence is a claim at all, this grammar governs its shape once it is.
+
+The claim sentence IS the claim — it carries all the meaning and is
+exactly as long as it needs to be (no length cap). One plain prose
+sentence, shaped **general → specific**: `[epistemic mode + method] +
+[system] + evidence verb + finding`.
 
 - **Epistemic mode is mandatory.** Name the sim kind (DFT,
   spin-polarized DFT, molecular dynamics, DFT–NEGF transport, …) or the
@@ -141,6 +147,31 @@ evidence verb + finding`.
   Never *measures/observes/demonstrates* for a simulation; reserve
   *predicts* for forward-looking claims — a within-model comparison is
   *found*, not *predicted*.
+- **Tense encodes how the claim relates to time — simple present is
+  the default,** for both the evidence verb and the asserted content:
+  "DFT calculations show that X adsorbs Y." ("Showed" reads as a
+  one-time event that might no longer hold — the wrong reading of a
+  published result.)
+  - *Simple past* only when the claim's subject is itself a historical
+    event: "Haber's 1927 gold-from-seawater program failed because…".
+    Test: if rewriting to present makes the sentence false or absurd,
+    past is correct. Advisory — `past-tense` (the machine can't judge
+    this).
+  - *Present perfect* only for an existence/achievement claim, where
+    the point is that something has been realized at least once:
+    "room-temperature coherence has been demonstrated in…". Elsewhere
+    it hedges — hides the agent and the conditions, and weakens
+    falsifiability. Advisory — `present-perfect`.
+  - *Past passive with no result* is banned: "…was proposed by
+    Kirkpatrick et al.", "Surface interactions … were investigated" are
+    history-of-science or activity reports, not claims. Blocking —
+    `past-passive`. Correlates with the not-falsifiable stub pattern
+    (`precis-taproot-help`'s "Claim admissibility") — like the em-dash
+    rule there, a mechanical marker for a category error underneath.
+  - Measured over all 1,524 live hubs: present 756 (49.6%), present
+    perfect 104 (6.8%), simple past 95 (6.2%), past passive 6 (0.4%).
+    Among hubs carrying a recognized verb, present is already 79% —
+    this rule ratifies existing practice, not a new style.
 - **Not colon-label style** ("DFT simulation of nanobuds: …") — the
   sentence is canonicalized and signed; it must read as a standalone
   assertion, not a filing label.
@@ -150,8 +181,19 @@ evidence verb + finding`.
   which lattice carries the buds).
 - **No author names** — provenance lives in the evidence edges, never
   in the sentence.
-- **Complete sentence**, numbers with units matching the source
-  exactly, no marketing adjectives.
+- **Complete sentence**, no marketing adjectives. Numbers must match the
+  source in **value and bound** — never restate a quantity the passage
+  doesn't carry, and never convert into a unit the authors didn't use.
+  *Notation* is normalized per [[precis-notation-canon]] (UTF-8
+  superscripts, no digit-grouping commas, negative exponents over a
+  two-denominator solidus) — the canon governs
+  spelling, never magnitude. Where the canon and quote-containment
+  disagree, quote-containment wins: a structured quantity must appear in
+  the quoted passage, so keep the source's `0.05 ps` rather than
+  normalizing it to `50 fs`.
+- **Quotes are verbatim and are never normalized.** The canon applies to
+  the authored claim sentence only; a quote edited to match it fails the
+  mint gate.
 - **The title asserts what the quotes support, not what the hub body
   says.** Hub bodies routinely overclaim (a range the paper never
   states, a mechanism the passage doesn't name). Re-scope the approved

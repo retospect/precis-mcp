@@ -47,7 +47,9 @@ def test_our_own_signed_artifact_verifies_as_external(
 ) -> None:
     """The strongest fixture is a real signed nanopub: our own artifact,
     fed to the mirror indexer as if fetched, must verify and index."""
-    _hub, row = _signed_hub(store, monkeypatch, "A mirror-roundtrip claim.")
+    _hub, row = _signed_hub(
+        store, monkeypatch, "DFT shows a mirror-roundtrip claim holds."
+    )
     artifact = store.nanopub_artifact(row.artifact_id)
     code = _code_of(artifact)
 
@@ -68,7 +70,7 @@ def test_our_own_signed_artifact_verifies_as_external(
 def test_wrong_code_fails_verification(store: Any, monkeypatch: Any) -> None:
     """Anti-substitution: valid bytes served under a DIFFERENT code must
     not verify (a hostile mirror can't swap artifacts)."""
-    _hub, row = _signed_hub(store, monkeypatch, "A substituted claim.")
+    _hub, row = _signed_hub(store, monkeypatch, "DFT shows a substituted claim holds.")
     artifact = store.nanopub_artifact(row.artifact_id)
     idx = mirror.index_bytes(FAKE, artifact.trig_bytes)
     assert not idx.verified
@@ -279,7 +281,7 @@ def test_unverified_target_is_not_flagged(store: Any) -> None:
 def test_concurrence_alert_across_encodings(store: Any, monkeypatch: Any) -> None:
     """An external nanopub asserting our AIDA sentence — with '+' where
     we use '%20' — raises one deduped alert."""
-    hub, row = _signed_hub(store, monkeypatch, "A concurrence claim.")
+    hub, row = _signed_hub(store, monkeypatch, "DFT shows a concurrence claim holds.")
     plus_variant = str(row.aida_uri).replace("%20", "+")
     _plain_row(store, "RA" + "c" * 43, aida_uri=plus_variant)
 

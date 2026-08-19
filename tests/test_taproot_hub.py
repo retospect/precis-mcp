@@ -185,6 +185,32 @@ def test_mint_hub_pub_id_is_deterministic_over_claim_content(store: Any) -> None
     assert again == expected
 
 
+def test_mint_hub_round_trip_mismatch_raises_and_writes_nothing(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A ``store.insert_ref`` that silently truncates the title (the
+    historical stale-MCP failure mode,
+    docs/backlog/hub-title-200-truncation-via-stale-mcp.md) must raise
+    ``TitleRoundTripError`` and leave no trace of the hub -- the mint's
+    savepoint (and, at the top level, its ``store.tx()``) rolls back."""
+    from precis.taproot.hub import TitleRoundTripError
+
+    orig_insert_ref = store.insert_ref
+
+    def _truncating_insert_ref(*, title: str | None = None, **kw: Any) -> Any:
+        return orig_insert_ref(title=(title[:5] if title else title), **kw)
+
+    monkeypatch.setattr(store, "insert_ref", _truncating_insert_ref)
+
+    with pytest.raises(TitleRoundTripError, match="round-trip mismatch"):
+        mint_hub(store, _CLAIM)
+
+    expected_pub_id = make_pub_id(
+        make_taproot_hub_paper_id(_CLAIM.sentence, _CLAIM.scope)
+    )
+    assert _pub_id_ref(store, expected_pub_id) is None
+
+
 def test_mint_hub_pub_id_resolves_back_to_the_hub(store: Any) -> None:
     # Mirrors resolve.py::_lookup_finding's query shape: pub_id -> ref_id.
     hub = mint_hub(store, _CLAIM)
@@ -354,6 +380,32 @@ def test_refine_claim_sentence_rejects_pub_id_collision_with_another_ref(
 
     # Nothing was written on the collision -- rolled back atomically.
     assert _ref_title(store, hub) == _CLAIM.sentence[:200]
+    assert _finding_body(store, hub) == _CLAIM.sentence
+
+
+def test_refine_claim_sentence_round_trip_mismatch_raises_and_rolls_back(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A ``store.update_ref`` that silently truncates the title must raise
+    ``TitleRoundTripError`` and leave the hub's title/body untouched -- the
+    whole reword rolls back rather than persisting a truncated title."""
+    from precis.taproot.hub import TitleRoundTripError
+
+    hub = mint_hub(store, _CLAIM)
+    orig_update_ref = store.update_ref
+
+    def _truncating_update_ref(
+        ref_id: int, *, title: str | None = None, **kw: Any
+    ) -> Any:
+        return orig_update_ref(ref_id, title=(title[:5] if title else title), **kw)
+
+    monkeypatch.setattr(store, "update_ref", _truncating_update_ref)
+
+    with pytest.raises(TitleRoundTripError, match="round-trip mismatch"):
+        refine_claim_sentence(store, hub, "A reworded, sharper claim sentence.")
+
+    # Nothing was written -- rolled back atomically (title AND body chunk).
+    assert _ref_title(store, hub) == _CLAIM.sentence
     assert _finding_body(store, hub) == _CLAIM.sentence
 
 

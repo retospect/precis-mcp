@@ -18,11 +18,26 @@ hours), gr191125 (band-5 starves behind re-minted band-2 cron), gr200375
 1. `_candidate_parent_ids` orders `ORDER BY r.ref_id LIMIT 50` — the
    head-of-line starvation trap already fixed twice elsewhere
    (`auto_check.py` → `ORDER BY random()`, with the rationale in its
-   docstring; the doable view → least-served rotation). Latent today
-   (~6 effective candidates in prod, 242 raw auto-run todos), bites the
-   moment the eligible population exceeds the page — which the taproot
-   dogfood already produced once (~100 active `llm_tier` todos,
-   OPEN-ITEMS §plan_tick backlog).
+   docstring; the doable view → least-served rotation). ~~Latent today
+   (~6 effective candidates in prod, 242 raw auto-run todos)~~ — **NO
+   LONGER LATENT, confirmed live 2026-08-19.** The predicate returns **86**
+   candidates; melchior runs `--batch-size 32`, so the page is 32, not 50.
+   Two freshly-minted `taproot_backfill` todos (218295 / 218296, root
+   todos, fully eligible — no blocking child, no exclusion tag, no
+   schedule) sit at queue positions **85 and 86** and are therefore
+   unreachable on every pass, indefinitely. The user-visible symptom is
+   "I queued work and nothing ever happened", with no attention tag and
+   no failed job to explain it — the todo just stays `STATUS:open`
+   forever, which is the worst possible failure signature.
+
+   Compounding it: **all 86 candidates currently have zero live child
+   jobs** — the head of the queue is not churning, so the same oldest 32
+   re-occupy the page every pass and nothing behind them ever advances.
+   Whatever causes the zero-mint is a separate defect (under
+   investigation), but it converts this ordering flaw from "slow" into
+   "permanently stuck", which is the argument for fixing the picker even
+   before the mint bug is understood. Aging or `random()` would have let
+   the tail through regardless of the head's state.
 2. `prio` is honored at job-*claim* time
    (`executors/_common.py::claim_executor_jobs`, `COALESCE(prio,5), ref_id`)
    but ignored at *candidate* time — an urgent parent past position 50
@@ -209,3 +224,52 @@ problem, with its own policy —
    — toggle authoritative, heartbeat advisory. Leaning (c).
 4. **Does the interactive window throttle cadence work too?** Leaning
    no — cadences are the user's own deliverables (the 2026-08-07 lesson).
+
+## Live incident 2026-08-19 — cadence-exempt spend pins the ceiling permanently
+
+Root cause of the zero-mint noted in finding 1 above, now identified.
+**Discretionary dispatch has been paused continuously since 2026-08-16
+06:04 UTC** (~3.5 days) by the global daily cost ceiling:
+
+```
+dispatch: daily ceiling ($59.85 >= $50.00) — discretionary dispatch paused
+```
+
+The pass itself is healthy and runs every ~10-15 min (`dispatch claimed=0
+ok=0 failed=0`, last 2026-08-19 07:33:57 UTC); 53 ceiling-hit logs between
+08-16 06:04 and 08-17 19:15. Cadence + zero-LLM candidates stay exempt, so
+recurring work (news_poll, briefing, card_forge) kept succeeding the whole
+time — which is exactly why this reads as "everything is fine" from the
+outside while every non-recurring executor todo silently never runs.
+
+**The window is trailing-24h, not calendar-day, so it does not self-clear
+— and the exempt work is what holds it open.** `dispatch.py`'s own comment
+already names the pathology from a prior occurrence: "Cadence-exempt quest
+ticks kept the trailing-24h window over the ceiling permanently, which
+starved every `autocatpath_aggregate` mint for 29h (2026-08-16/17)". That
+29h incident has now recurred as a 3.5-day one and should be treated as
+chronic, not incidental: exempt spend alone exceeds the envelope, so the
+gate that is supposed to throttle discretionary work has become a
+permanent off-switch for it.
+
+This is a **third** fairness currency the design above doesn't yet cover:
+not cloud-$ vs local-slots, but *exempt vs discretionary claim on the same
+$ envelope*. Options, in rough order of structural merit:
+
+1. Reserve a discretionary floor — cadence/zero-LLM exempt work may not
+   consume more than X% of the envelope, so discretionary always retains a
+   slice. (Directly kills the self-sustaining lockout.)
+2. Charge exempt work to a separate envelope, so cadence spend cannot move
+   the discretionary gate at all.
+3. Age-based override — a candidate starved beyond N hours mints regardless
+   (bounded, one job), so nothing is *indefinitely* invisible.
+4. Raise `PRECIS_DAILY_COST_CEILING`. Treats the symptom, and the trailing
+   window means it will re-pin at whatever the new value is.
+
+Whatever is picked, the **observability gap is the urgent half**: a
+ceiling-paused todo shows `STATUS:open`, no attention tag, no failed job,
+no user-visible signal of any kind. It is indistinguishable from work that
+simply has not been reached yet. At minimum, a todo skipped by the ceiling
+should carry a visible reason tag, and `/status` (or the nursery digest)
+should surface "discretionary dispatch paused, N candidates waiting, oldest
+Nh" as a first-class state.

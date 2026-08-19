@@ -161,12 +161,12 @@ def test_approve_sign_and_serve_trig(
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "A web-signed claim.", paper, chunk)
+    hub = _seed_hub(store, "DFT finds the web-signed claim holds.", paper, chunk)
 
     resp = client.post(
         f"/nanopub/fi{hub}/approve",
         data={
-            "title": "A web-signed claim.",
+            "title": "DFT finds the web-signed claim holds.",
             "payload": json.dumps(_payload(chunk, sha)),
         },
         follow_redirects=False,
@@ -201,12 +201,14 @@ def test_claim_page_shows_review_section_with_publish_row(
 
     store = _store(runtime_with_store)
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "A claim-page-reviewed claim.", paper, chunk)
+    hub = _seed_hub(
+        store, "DFT finds the claim-page-reviewed claim holds.", paper, chunk
+    )
 
     resp = client.post(
         f"/nanopub/fi{hub}/approve",
         data={
-            "title": "A claim-page-reviewed claim.",
+            "title": "DFT finds the claim-page-reviewed claim holds.",
             "payload": json.dumps(_payload(chunk, sha)),
         },
         follow_redirects=False,
@@ -220,7 +222,9 @@ def test_claim_page_shows_review_section_with_publish_row(
     assert "Review &amp; sign" in resp.text
     assert "reviewed" in resp.text
     assert "frozen: string" in resp.text
-    assert "A claim-page-reviewed claim." in resp.text  # the approved title
+    assert (
+        "DFT finds the claim-page-reviewed claim holds." in resp.text
+    )  # approved title
     assert 'name="attest"' in resp.text  # the Sign action's form
 
 

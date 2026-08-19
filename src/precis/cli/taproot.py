@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 def add_parser(subparsers: Any) -> None:
     """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
-    ``backfill`` / ``backfill-grounding`` / ``direct-mint``)."""
+    ``backfill`` / ``backfill-grounding`` / ``direct-mint`` / ``lint``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -191,6 +191,61 @@ def add_parser(subparsers: Any) -> None:
         help="set_by actor slug for the writes (default: agent).",
     )
     dm.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    lint = tsub.add_parser(
+        "lint",
+        help="Lint claim-hub sentences/scope (notation + admissibility); "
+        "the measurement instrument for the corpus remediation effort -- "
+        "aggregate per-code counts over a cohort of live claim hubs.",
+    )
+    lint.add_argument(
+        "--hub",
+        action="append",
+        default=None,
+        help="Lint one hub (fi<id> handle, pub_id, or cite_key; repeatable). "
+        "Default: every live TAPROOT:claim hub.",
+    )
+    lint.add_argument(
+        "--codes",
+        action="append",
+        default=None,
+        help="Filter to named lint codes (the text before the first ':' in "
+        "a warning, e.g. 'ascii-ohm'); repeatable.",
+    )
+    lint.add_argument(
+        "--detail",
+        action="store_true",
+        help="List offending hub ref_ids per code (capped, with an "
+        "'and N more' tail) instead of only counts.",
+    )
+    lint.add_argument(
+        "--fix",
+        action="store_true",
+        help="Propose mechanically-safe notation fixes via "
+        "precis.taproot.notation.normalize_notation. Dry-run unless --apply "
+        "is also given; a no-op (reported, not an error) if "
+        "normalize_notation hasn't landed yet.",
+    )
+    lint.add_argument(
+        "--apply",
+        action="store_true",
+        help="With --fix, write the proposed fixes (refs.title + the ord=0 "
+        "body chunk, atomically). Ignored without --fix; default is dry-run.",
+    )
+    lint.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
+    )
+    lint.add_argument(
+        "--set-by",
+        default="agent",
+        help="set_by actor slug for --fix --apply writes (default: agent).",
+    )
+    lint.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -782,6 +837,365 @@ def _run_direct_mint(args: argparse.Namespace) -> None:
         print(rendered)
 
 
+#: Cohort query for ``taproot lint``'s default (no ``--hub``) run: every
+#: live claim hub. ``DISTINCT`` + explicit column selection is a belt-and-
+#: braces guard against row multiplication (``ref_tags``/``tags`` are each
+#: unique on their join key here, so this shouldn't duplicate rows -- but a
+#: naive version of this join inflated a prior corpus count from 1,524 to
+#: 1,710, so the guard stays even though the schema no longer requires it).
+#: ``rt.expires_at IS NULL OR rt.expires_at > now()`` excludes an expired
+#: tag row -- a bare join with no expiry filter over-counts stale tags.
+#:
+#: ``LEFT JOIN``s in the ``ord=0`` ``finding_body`` chunk (never retired,
+#: the DELETE+INSERT convention keeps at most one live row there) so the
+#: ``title-body-divergence``/``missing-body-chunk`` codes (:func:`_lint_hub`)
+#: have both sides of the comparison -- a live claim hub for which that
+#: chunk is somehow absent still surfaces (as ``chunk_text IS NULL``) rather
+#: than silently dropping out of the cohort.
+_LINT_COHORT_SQL = """
+    SELECT DISTINCT r.ref_id, r.title, r.meta, ch.text
+    FROM refs r
+    JOIN ref_tags rt ON rt.ref_id = r.ref_id
+    JOIN tags t ON t.tag_id = rt.tag_id
+               AND t.namespace = 'TAPROOT' AND t.value = 'claim'
+    LEFT JOIN chunks ch ON ch.ref_id = r.ref_id AND ch.ord = 0
+                        AND ch.chunk_kind = 'finding_body'
+                        AND ch.retired_at IS NULL
+    WHERE r.kind = 'finding'
+      AND r.deleted_at IS NULL
+      AND (rt.expires_at IS NULL OR rt.expires_at > now())
+    ORDER BY r.ref_id
+"""
+
+#: Per-code offending-ref_id cap for ``--detail`` output (text and json
+#: alike) -- a corpus-wide code can hit hundreds of hubs; the aggregate
+#: count already carries that signal, --detail is for "show me a sample."
+_LINT_DETAIL_CAP = 20
+
+
+def _select_lint_cohort(
+    store: Store, hubs: list[str] | None
+) -> list[tuple[int, str, dict[str, Any], str | None]]:
+    """Resolve the lint cohort to ``(ref_id, title, meta, body_text)`` rows.
+
+    ``hubs`` (from repeatable ``--hub``) resolves each handle through the
+    same ``resolve_hub_ref_id`` the ``refine`` subcommand uses (fi<id> /
+    pub_id / cite_key, gated on being a live claim hub) and preserves the
+    caller's order, deduped. ``None``/empty falls back to
+    :data:`_LINT_COHORT_SQL` -- every live claim hub. ``body_text`` is the
+    hub's live ``ord=0`` ``finding_body`` chunk text, or ``None`` when it's
+    missing (feeds :func:`_lint_hub`'s ``title-body-divergence`` /
+    ``missing-body-chunk`` codes).
+    """
+    if hubs:
+        from precis.taproot.authoring import resolve_hub_ref_id
+
+        ref_ids: list[int] = []
+        seen: set[int] = set()
+        for h in hubs:
+            rid = resolve_hub_ref_id(store, h)
+            if rid not in seen:
+                seen.add(rid)
+                ref_ids.append(rid)
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, r.meta, ch.text "
+                "FROM refs r "
+                "LEFT JOIN chunks ch ON ch.ref_id = r.ref_id AND ch.ord = 0 "
+                "                    AND ch.chunk_kind = 'finding_body' "
+                "                    AND ch.retired_at IS NULL "
+                "WHERE r.ref_id = ANY(%s) AND r.deleted_at IS NULL",
+                (ref_ids,),
+            ).fetchall()
+        by_id = {int(r[0]): (str(r[1] or ""), dict(r[2] or {}), r[3]) for r in rows}
+        return [(rid, *by_id[rid]) for rid in ref_ids if rid in by_id]
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(_LINT_COHORT_SQL).fetchall()
+    return [(int(r[0]), str(r[1] or ""), dict(r[2] or {}), r[3]) for r in rows]
+
+
+#: ``title-body-divergence``'s warning text -- kept as one constant so the
+#: comment about REPORTING-only stays attached to the string it applies to
+#: no matter where it's emitted from.
+#:
+#: **Never wire this into ``--fix``.** Picking which of ``refs.title`` /
+#: the ``finding_body`` chunk is authoritative is a human judgment call,
+#: not a mechanical rule -- the 200-char truncation repair
+#: (docs/backlog/hub-title-200-truncation-via-stale-mcp.md) needed the
+#: chunk for the 306 non-frozen hubs but ``nanopub_publish.approved_title``
+#: for the 26 frozen ones, because 21 of those had a reviewer-authored
+#: reword at approval that the chunk never saw. Automating "always prefer
+#: the chunk" (or the title) here would have destroyed those 21 roundtrip.
+_TITLE_BODY_DIVERGENCE_MSG = (
+    "title-body-divergence: refs.title and the ord=0 finding_body chunk "
+    "disagree after stripping -- reporting only, this is a human call "
+    "(see docs/backlog/hub-title-200-truncation-via-stale-mcp.md)"
+)
+
+#: ``missing-body-chunk``'s warning text -- a live claim hub with no live
+#: ``ord=0`` ``finding_body`` chunk is itself a finding (every hub should
+#: have one per :func:`~precis.taproot.hub.mint_hub`), independent of
+#: whatever ``refs.title`` says.
+_MISSING_BODY_CHUNK_MSG = (
+    "missing-body-chunk: no live ord=0 finding_body chunk for this hub"
+)
+
+
+def _lint_hub(title: str, meta: dict[str, Any], body: str | None = None) -> list[str]:
+    """Run both string linters over one hub's sentence (``refs.title``) +
+    scope (``refs.meta->'scope'``), plus the DB-derived title/body
+    comparison, and return the concatenated warning list.
+
+    ``body`` is the hub's ``ord=0`` ``finding_body`` chunk text (from
+    :func:`_select_lint_cohort`'s ``LEFT JOIN``); ``None`` means the join
+    found no live row for it. ``title-body-divergence`` and
+    ``missing-body-chunk`` are mutually exclusive per hub -- there is
+    nothing to "diverge" against when the chunk itself is absent.
+    """
+    from precis.taproot.notation import lint_notation
+    from precis.taproot.sentence_lint import lint_claim_sentence, lint_scope
+
+    scope = (meta or {}).get("scope") or {}
+    warnings = [*lint_notation(title), *lint_claim_sentence(title), *lint_scope(scope)]
+    if body is None:
+        warnings.append(_MISSING_BODY_CHUNK_MSG)
+    elif body.strip() != title.strip():
+        warnings.append(_TITLE_BODY_DIVERGENCE_MSG)
+    return warnings
+
+
+def _lint_code(warning: str) -> str:
+    """The lint code is the text before the first colon, e.g.
+    ``"ascii-ohm: 'kOhm' found -- use 'kΩ'"`` -> ``"ascii-ohm"``."""
+    return warning.split(":", 1)[0]
+
+
+def _lint_cohort(
+    cohort: list[tuple[int, str, dict[str, Any], str | None]], codes: list[str] | None
+) -> dict[str, Any]:
+    """Aggregate lint warnings across ``cohort`` by code.
+
+    ``codes`` (from repeatable ``--codes``), when given, filters to only
+    those named codes -- both in the per-code breakdown and in whether a
+    hub counts toward ``hubs_with_warnings``.
+    """
+    code_filter = set(codes) if codes else None
+    per_code: dict[str, list[int]] = {}
+    hubs_with_warnings = 0
+    for ref_id, title, meta, body in cohort:
+        hit = False
+        for warning in _lint_hub(title, meta, body):
+            code = _lint_code(warning)
+            if code_filter is not None and code not in code_filter:
+                continue
+            per_code.setdefault(code, []).append(ref_id)
+            hit = True
+        if hit:
+            hubs_with_warnings += 1
+    return {
+        "cohort_size": len(cohort),
+        "hubs_with_warnings": hubs_with_warnings,
+        "hubs_clean": len(cohort) - hubs_with_warnings,
+        "codes": per_code,
+    }
+
+
+def _print_lint(result: dict[str, Any], fmt: str, *, detail: bool) -> None:
+    codes: dict[str, list[int]] = result["codes"]
+
+    if fmt == "json":
+        codes_payload: dict[str, Any] = {}
+        for code, ref_ids in sorted(codes.items()):
+            entry: dict[str, Any] = {"count": len(ref_ids)}
+            if detail:
+                shown = ref_ids[:_LINT_DETAIL_CAP]
+                entry["hub_ids"] = [f"fi{r}" for r in shown]
+                if len(ref_ids) > _LINT_DETAIL_CAP:
+                    entry["more"] = len(ref_ids) - _LINT_DETAIL_CAP
+            codes_payload[code] = entry
+        print(
+            json.dumps(
+                {
+                    "cohort_size": result["cohort_size"],
+                    "hubs_with_warnings": result["hubs_with_warnings"],
+                    "hubs_clean": result["hubs_clean"],
+                    "codes": codes_payload,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    print(
+        f"cohort: {result['cohort_size']} hub(s) -- "
+        f"{result['hubs_with_warnings']} with warning(s), "
+        f"{result['hubs_clean']} clean"
+    )
+    if not codes:
+        print("no lint warnings.")
+        return
+    for code, ref_ids in sorted(codes.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        print(f"  {code}: {len(ref_ids)}")
+        if detail:
+            shown = ref_ids[:_LINT_DETAIL_CAP]
+            print("    " + ", ".join(f"fi{r}" for r in shown))
+            if len(ref_ids) > _LINT_DETAIL_CAP:
+                print(f"    ...and {len(ref_ids) - _LINT_DETAIL_CAP} more")
+
+
+def _run_lint_fix(
+    store: Store,
+    cohort: list[tuple[int, str, dict[str, Any], str | None]],
+    *,
+    apply: bool,
+    set_by: str,
+    results: list[dict[str, Any]],
+) -> bool:
+    """Propose (``apply=False``) or write (``apply=True``) mechanically-safe
+    notation fixes. Appends one entry per hub to the caller-owned ``results``
+    and returns ``notation_available``.
+
+    ``results`` is a parameter rather than a return value **so a mid-batch
+    failure still reports what already committed.** Each
+    ``refine_claim_sentence`` call commits its own transaction, so a raise on
+    hub N leaves hubs 1..N-1 live-rewritten; returning the list would discard
+    that record and leave an operator diffing the cohort by hand. Same
+    discipline as :func:`_run_mint`.
+
+    ``normalize_notation`` is imported defensively -- a sibling agent may
+    still be landing it in ``precis.taproot.notation`` -- so this degrades
+    to ``(``[]``, False)`` rather than an ``ImportError``/``AttributeError``
+    when it hasn't shipped yet.
+
+    An ``apply=True`` write goes through
+    :func:`~precis.taproot.hub.refine_claim_sentence` -- the existing write
+    door that updates ``refs.title`` AND the ``ord=0`` body chunk inside
+    one transaction, so they cannot diverge -- which itself reads
+    ``refs.title`` back and asserts it equals the intended (stripped)
+    sentence exactly, raising
+    :class:`~precis.taproot.hub.TitleRoundTripError` (propagated to
+    :func:`_run_lint`) otherwise. No separate check is needed here -- the
+    write door owns the guarantee for every caller, not just this CLI.
+    """
+    import importlib
+
+    notation_mod = importlib.import_module("precis.taproot.notation")
+    normalize = getattr(notation_mod, "normalize_notation", None)
+    if normalize is None:
+        return False
+
+    from precis.taproot.hub import refine_claim_sentence
+
+    for ref_id, title, _meta, _body in cohort:
+        new_title, notes = normalize(title)
+        changed = new_title.strip() != title.strip()
+        entry: dict[str, Any] = {
+            "hub_ref_id": ref_id,
+            "old_title": title,
+            "new_title": new_title,
+            "changed": changed,
+            "notes": list(notes),
+            "applied": False,
+        }
+        # Append BEFORE the write, so a raise still leaves this hub visible
+        # in the partial report as `applied: False`.
+        results.append(entry)
+        if changed and apply:
+            refine_claim_sentence(store, ref_id, new_title, set_by=set_by)
+            entry["applied"] = True
+    return True
+
+
+def _print_lint_fix(
+    results: list[dict[str, Any]], fmt: str, *, applied: bool, notation_available: bool
+) -> None:
+    if fmt == "json":
+        print(
+            json.dumps(
+                {"notation_available": notation_available, "results": results}, indent=2
+            )
+        )
+        return
+
+    if not notation_available:
+        print(
+            "taproot lint --fix: normalize_notation not available in "
+            "precis.taproot.notation yet -- no-op.",
+            file=sys.stderr,
+        )
+        return
+
+    changed = [r for r in results if r["changed"]]
+    if not changed:
+        print(
+            f"no mechanically-safe notation fixes proposed ({len(results)} hub(s) checked)."
+        )
+        return
+
+    tag = "" if applied else "  [DRY-RUN]"
+    for r in changed:
+        verb = "applied" if r["applied"] else "would apply"
+        print(f"fi{r['hub_ref_id']}: {verb}{tag}")
+        print(f"  - {r['old_title']}")
+        print(f"  + {r['new_title']}")
+        if r["notes"]:
+            print(f"    notes: {', '.join(r['notes'])}")
+
+
+def _run_lint(args: argparse.Namespace) -> None:
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.hub import TitleRoundTripError
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        cohort = _select_lint_cohort(store, args.hub)
+
+        if args.fix:
+            results: list[dict[str, Any]] = []
+            try:
+                notation_available = _run_lint_fix(
+                    store,
+                    cohort,
+                    apply=args.apply,
+                    set_by=args.set_by,
+                    results=results,
+                )
+            except TitleRoundTripError as exc:
+                # Never hide a partial run: hubs before the failure are
+                # already committed, so show them before exiting.
+                _print_lint_fix(
+                    results,
+                    args.format,
+                    applied=args.apply,
+                    notation_available=True,
+                )
+                done = sum(1 for r in results if r["applied"])
+                print(
+                    f"taproot lint: error: {exc}\n"
+                    f"  PARTIAL RUN -- {done} hub(s) already written before "
+                    f"the failure (listed above as 'applied').",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            _print_lint_fix(
+                results,
+                args.format,
+                applied=args.apply,
+                notation_available=notation_available,
+            )
+            return
+
+        result = _lint_cohort(cohort, args.codes)
+        _print_lint(result, args.format, detail=args.detail)
+    except BadInput as exc:
+        print(f"taproot lint: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
@@ -794,6 +1208,8 @@ def run(args: argparse.Namespace) -> None:
         _run_backfill_grounding(args)
     elif args.taproot_cmd == "direct-mint":
         _run_direct_mint(args)
+    elif args.taproot_cmd == "lint":
+        _run_lint(args)
     else:
         print(f"taproot: unknown subcommand {args.taproot_cmd!r}", file=sys.stderr)
         sys.exit(2)

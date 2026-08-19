@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 from precis.nanopub import evidence as ev
 from precis.nanopub import snip as sniplib
 from precis.nanopub.vocab import QUANTITY_BOUNDS
+from precis.taproot.notation import lint_notation
+from precis.taproot.sentence_lint import lint_claim_sentence
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -33,6 +35,67 @@ class GateViolation:
 
     gate: str
     message: str
+
+
+#: The Phase-1 enforcement-asymmetry split
+#: (``docs/backlog/nanopub-corpus-remediation.md``): ``lint_notation`` /
+#: ``lint_claim_sentence`` ADVISE everywhere (authoring, reword) and BLOCK
+#: only here, at approve/sign. This frozenset is the single place that
+#: decides block-vs-advise per lint code, so widening or narrowing the
+#: split is a one-line, auditable edit rather than scattered call-site
+#: logic — deliberately not derived from the lint modules themselves.
+#:
+#: BLOCKED — admissibility/grammar codes (a sentence failing these must
+#: never become a published artifact) plus every notation code that is
+#: *unambiguously wrong*: there is no excuse for 'kOhm' or '1e-6' surviving
+#: to approve. Most are also mechanically fixable by ``normalize_notation``;
+#: ``tex-residue`` is the exception — it blocks on sight, but only the
+#: simple ``$_{60}$``/``$^{2}$`` forms auto-fix, and a fragment like
+#: ``\mu_B$`` has no closed rewrite and waits for a human. Blocking does not
+#: imply auto-fixable; it implies no correct sentence looks like this.
+#:
+#: NOT blocked (advisory only — judgment calls or informational, must
+#: never gate a mint): ``two-denominator-solidus`` (deciding which
+#: factors move under a negative exponent is judgment, not transcription),
+#: ``formula-ascii-subscript`` (detector-only: ~23% of naive matches are
+#: nomenclature, not stoichiometry — crown ethers ``DB18C6``, functionals
+#: ``B3LYP``, ``S22``, vitamin ``B12``, point group ``C4``),
+#: ``approx-spacing``, ``tilde-approximation``, every ``scope-*`` code, and
+#: ``past-tense``/``present-perfect`` (2026-08-19 tense standard —
+#: machine-undecidable which reading applies, per
+#: ``sentence_lint``'s tense docstring; ``past-passive`` is the one tense
+#: code blocked, since a bare "study happened" passive with no result
+#: stated is never a claim).
+_BLOCKING_LINT_CODES: frozenset[str] = frozenset(
+    {
+        # lint_claim_sentence — admissibility + grammar
+        "not-falsifiable",
+        "dangling-reference",
+        "multi-assertion",
+        "no-evidence-verb",
+        "no-epistemic-mode",
+        "over-long",
+        "author-name",
+        "no-terminal-period",
+        "em-dash",
+        "past-passive",
+        # lint_notation — deterministically fixable
+        "ascii-plusminus",
+        "ascii-micro",
+        "ascii-degrees",
+        "ascii-ohm",
+        "ascii-angstrom",
+        "ascii-micrometre",
+        "e-notation",
+        "digit-grouping",
+        "ascii-multiplication",
+        "ascii-x-multiplier",
+        "hyphen-numeric-range",
+        "caret-exponent",
+        "ascii-minus-exponent",
+        "tex-residue",
+    }
+)
 
 
 def run_mint_gates(
@@ -56,6 +119,11 @@ def run_mint_gates(
 
     # 1 — contradicts-edge gate (first; SQL-cheap; worst-of applies).
     violations += check_contradicts(store, bundle)
+
+    # claim-sentence lint, blocking half (2026-08-19 corpus remediation,
+    # Phase 1). Advisory codes are deliberately not surfaced here — see
+    # check_claim_sentence's docstring.
+    violations += check_claim_sentence(bundle.sentence)
 
     # 2 + 16 — eligibility / rejection memo.
     if (hub_meta or {}).get("taproot_rejected"):
@@ -201,6 +269,58 @@ def run_mint_gates(
         violations += check_mint_order(store, bundle)
 
     return violations
+
+
+def check_claim_sentence(sentence: str) -> list[GateViolation]:
+    """Claim-sentence lint's blocking half (``docs/backlog/nanopub-corpus-
+    remediation.md`` Phase 1) — the notation and admissibility/grammar
+    lints run everywhere as advice (``lint_notation``,
+    ``lint_claim_sentence`` at authoring/reword); this is the one place
+    a subset of that advice becomes a hard mint gate, per
+    ``_BLOCKING_LINT_CODES``.
+
+    Deliberately severe by design, not a bug: measured over the live
+    corpus (2026-08-19, 1,524 hubs), only 21 (1.4%) lint clean, and
+    ``no-epistemic-mode`` alone hits 1,419 — so this gate will block
+    almost every legacy hub at approve. That is exactly the point: approve
+    is where a reviewer authors the publishable sentence, and the
+    remediation doc's Phase-3 cost argument is that a hub gets its grammar
+    fixed *on demand* when someone actually wants to publish it, instead
+    of rewriting ~1,400 sentences speculatively. Do not loosen
+    ``_BLOCKING_LINT_CODES`` to make the corpus "pass" this gate — that
+    defeats the remediation's whole premise.
+
+    Advisory-only codes (``two-denominator-solidus``, ``approx-spacing``,
+    ``tilde-approximation``, every ``scope-*`` code) are intentionally
+    never turned into a violation here — ``run_mint_gates`` has no
+    advisory channel today (its return type is "blocking or nothing"),
+    and inventing one is out of scope for this gate; they stay visible
+    only via the advisory lint surfaces (authoring/reword, ``precis
+    taproot lint``).
+
+    Never raises: an empty/missing sentence returns no violations rather
+    than failing the gate (a hub with a blank title has other problems a
+    schema-lint-style gate should catch, not this one)."""
+    out: list[GateViolation] = []
+    if not sentence:
+        return out
+    warnings = lint_notation(sentence) + lint_claim_sentence(sentence)
+    seen: set[str] = set()
+    for w in warnings:
+        code = w.split(":", 1)[0].strip()
+        if code not in _BLOCKING_LINT_CODES or code in seen:
+            continue
+        seen.add(code)
+        out.append(
+            GateViolation(
+                "claim-sentence",
+                f"{w} — fix the sentence before approve; this is the "
+                "publishable-standard bar (docs/backlog/"
+                "nanopub-corpus-remediation.md Phase 1), not a discretionary "
+                "style note",
+            )
+        )
+    return out
 
 
 def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]:

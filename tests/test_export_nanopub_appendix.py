@@ -46,7 +46,7 @@ def _export_docx_text(hub: Hub, ref: Any, tmp_path: Path, name: str) -> str:
 def test_signed_hub_cite_gets_appendix_entry_latex(
     hub: Hub, tmp_path: Path, monkeypatch: Any
 ) -> None:
-    sentence = "A minted nanobud claim."
+    sentence = "DFT shows a minted nanobud claim holds."
     claim_hub, row = _signed_hub(hub.live_store, monkeypatch, sentence)
     handle = handle_registry.format_handle("finding", claim_hub)
     ref = _draft_citing(hub, slug="dminted", text=f"Claim [{handle}] holds.")
@@ -75,7 +75,9 @@ def test_unminted_hub_produces_no_appendix_section(hub: Hub, tmp_path: Path) -> 
 def test_hub_cited_twice_yields_one_entry(
     hub: Hub, tmp_path: Path, monkeypatch: Any
 ) -> None:
-    claim_hub, row = _signed_hub(hub.live_store, monkeypatch, "Cited twice.")
+    claim_hub, row = _signed_hub(
+        hub.live_store, monkeypatch, "DFT shows the twice-cited claim holds."
+    )
     handle = handle_registry.format_handle("finding", claim_hub)
     ref = _draft_citing(
         hub, slug="dtwice", text=f"First [{handle}] and again [{handle}]."
@@ -89,7 +91,9 @@ def test_hub_cited_twice_yields_one_entry(
 def test_published_entry_shows_published_date(
     hub: Hub, tmp_path: Path, monkeypatch: Any
 ) -> None:
-    claim_hub, row = _signed_hub(hub.live_store, monkeypatch, "A public claim.")
+    claim_hub, row = _signed_hub(
+        hub.live_store, monkeypatch, "DFT shows a public claim holds."
+    )
     _anchor(hub.live_store, row)
     assert hub.live_store.nanopub_record_published(
         row.id, registry_url="test://registry"
@@ -107,7 +111,7 @@ def test_published_entry_shows_published_date(
 def test_docx_appendix_mirrors_latex(
     hub: Hub, tmp_path: Path, monkeypatch: Any
 ) -> None:
-    sentence = "A minted docx claim."
+    sentence = "DFT shows a minted docx claim holds."
     claim_hub, row = _signed_hub(hub.live_store, monkeypatch, sentence)
     handle = handle_registry.format_handle("finding", claim_hub)
     ref = _draft_citing(hub, slug="ddocx", text=f"Claim [{handle}] holds.")

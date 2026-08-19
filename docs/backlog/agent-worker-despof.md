@@ -28,6 +28,23 @@ claim-side affinity fallback (`LLM_AFFINITY_GRACE_MIN`,
 a model" to "who can run jobs that want it") is still open and belongs to
 whichever de-SPOF lever gets picked.
 
+Update 2026-08-19 — **topology changed; the SPOF did not.** The separate
+`com.precis.worker-agent` daemon was retired ~07-22 and the agent profile
+folded into the single `com.precis.worker` unit (`precis worker --profile
+all --batch-size 32 --idle-seconds 2`); `job_claude_inproc` has run inside
+it since ~08-07 18:34. Melchior is still the sole claude-lane executor, so
+every lever above still applies — but the *diagnostic surface* moved:
+`/var/log/precis-worker-agent.log` is a dead 0-byte file and the missing
+daemon is expected, both of which read as "worker is dead" to a fresh
+investigator (two agents in one session drew exactly that wrong
+conclusion). Worth a line in whatever runbook covers the lane.
+
+Live now: lane alive and polling, `claimed=0`, ~102 claude_inproc jobs
+queued since 08-16 00:12 UTC never claimed — a **selection** failure, not
+an outage, so the watchdog note below (dispatch-stall detector on
+expired-lease job refs) should also cover "queue depth grows while
+claimed=0", which no restart fixes.
+
 Silent-outage thread (merged from agent-worker-silent-outage): melchior
 `com.precis.worker-agent` was SIGKILL'd and stayed dead ~4 days
 (2026-07-26→30), silently stalling all agent-profile work. Root-cause the -9

@@ -37,14 +37,13 @@ alongside `established` chase findings.
 
 Papers attach to a hub as one of three typed edges (ADR 0073):
 `establishes` (originator), `corroborates`, `contradicts`. A live
-`contradicts` edge also blocks the hub's nanopub mint until adjudicated
-([[precis-nanopub-help]]) — attach one deliberately, never as a
-softer "partially disagrees". The
-originator (★) is **derived at read time**, not stored — it's whichever
-supporter(s) the *other* supporters' citations converge on
-(`src/precis/taproot/seniority.py::derive_evidence`, over the held
-`cites` graph). No intra-supporter citation edge held → every supporter
-stays `corroborates` (never guessed).
+`contradicts` edge blocks the hub's nanopub mint until adjudicated
+([[precis-nanopub-help]]) — attach deliberately, never as a softer
+"partially disagrees". The originator (★) is **derived at read time**,
+not stored — whichever supporter(s) the *other* supporters' citations
+converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
+the held `cites` graph). No intra-supporter citation edge held → every
+supporter stays `corroborates` (never guessed).
 
 **A compound hub holds no direct evidence.** When a claim decomposes into
 several atomic sub-claims (see the backfill decomposition note below), the
@@ -54,44 +53,41 @@ hub raises. Attach evidence to the atom hub the passage actually supports
 instead — `get(id='fi<id>', view='links')` lists a compound's `conjunct-of`
 atoms.
 
-A compound's **trust** is derived, not absent: worst-of its atoms' own trust
-states (`taproot/trust.py::_compound_trust`, status `hub-compound`). So
-`get(id='fi<id>', view='evidence')` on a compound shows a trust label with no
-direct evidence edges underneath it — that's the expected depth-1 rollup, not
-missing data.
+A compound's **trust** is derived, not absent: worst-of its atoms' own
+trust states (`taproot/trust.py::_compound_trust`, status `hub-compound`)
+— `get(id='fi<id>', view='evidence')` shows a trust label with no direct
+edges underneath, the expected depth-1 rollup, not missing data.
 
 **Edges are chunk-grounded.** An evidence edge names the *specific
 passage* that supports the claim: supply a supporter's `source_handle`
-(a `[pc<id>]` paper chunk) and the edge is stored `pc<id>`-granular, so
-the link graph — and every reader on it (the finding's link table, the
-citation tree) — resolves to that passage, not just the whole paper.
-Two distinct passages of one paper become **two edges** ("the set of
-chunks that support this point"). Omit `source_handle` and the edge
-falls back to a coarse ref-level `pa<id>` — the whole paper, no passage
-— which is exactly what makes a claim tree hard to walk. Always ground
-the edge when you know the chunk. See `precis-fisheye-help`'s Claims
-group (`fisheye+1hop` on prose that cites a hub) for the read-time
-render of this same evidence.
+(a `[pc<id>]` paper chunk) and the edge stores `pc<id>`-granular, so the
+link graph — every reader on it (the finding's link table, the citation
+tree) — resolves to that passage, not just the whole paper. Two distinct
+passages of one paper become **two edges** ("the set of chunks that
+support this point"). Omit `source_handle` and the edge falls back to a
+coarse ref-level `pa<id>` — the whole paper, no passage — exactly what
+makes a claim tree hard to walk. Always ground the edge when you know
+the chunk. See `precis-fisheye-help`'s Claims group (`fisheye+1hop` on
+prose that cites a hub) for the read-time render.
 
 **Patent evidence grounds in description text, not legal claims.** A
 patent's claims section defines legal scope, not empirical support
 (`docs/architecture/glossary.md`'s world-claim vs legal claim) —
-`hub_refine`'s discovery leg drops legal-claim blocks before they ever
-reach Verify, so the automated corroborator search never surfaces one.
-That's a discovery-side filter, not an attach-time guard: hand-attaching
-via `link()` still means picking a description/abstract passage yourself.
+`hub_refine`'s discovery leg drops legal-claim blocks before Verify, so
+the automated corroborator search never surfaces one. A discovery-side
+filter, not an attach-time guard: hand-attaching via `link()` still
+means picking a description/abstract passage yourself.
 
 **A prophetic patent example only ever corroborates.** When an evidence
 edge's grounding chunk is a patent paragraph the `patent_example` axis
 tagged `PATENT_EXAMPLE:prophetic` — present/future/modal tense, proposed
-rather than performed (US patent convention) — `attach_evidence`
-mechanically appends a fixed caveat to `meta.caveats`: `"prophetic
-example (proposed, not performed) — corroborates at best"`. It's
-injected at the single evidence-edge choke point, never by the verify
-LLM, so every prophetic-grounded edge carries it regardless of caller. A
-worked example (past tense, actually performed), and any patent chunk
-the axis hasn't tagged, get no caveat — it's a downgrade signal, never a
-hard exclusion.
+rather than performed (US patent convention) — `attach_evidence` appends
+a fixed caveat to `meta.caveats`: `"prophetic example (proposed, not
+performed) — corroborates at best"`. Injected at the single
+evidence-edge choke point, never by the verify LLM, so every
+prophetic-grounded edge carries it regardless of caller. A worked
+example (past tense, performed) and any untagged patent chunk get no
+caveat — a downgrade signal, never a hard exclusion.
 
 ## Cite a claim hub — the living citation
 ## What does a bare [fi<id>] cite resolve to?
@@ -143,9 +139,10 @@ the draft down to the underlying `[pc<id>]`; if it passes the rubric
 
 Most legacy prose cites raw paper chunks (`[pc<id>]`), written before claim
 hubs existed. Convert a draft scope's `[pc<id>]` (and `[pa<id>]`, below) cites
-into hub `[fi<id>]` cites by **enqueuing a `taproot_backfill` job**. The cascade
-is LLM-heavy (`extract → block → dedup_judge → place`) and by design runs on the
-cluster worker — **never in the MCP process**; the verb only mints the job:
+into hub `[fi<id>]` cites by **enqueuing a `taproot_backfill` job**. The
+cascade is LLM-heavy (`extract → block → dedup_judge → place`) and by
+design runs on the cluster worker — **never in the MCP process**; the
+verb only mints the job:
 
 ```python
 # Canonical: write the intent as a todo; the dispatch worker mints the job.
@@ -166,38 +163,36 @@ put(
 get(kind="job", id="jo<id>")  # poll: job_event stream + [pc]→[fi] as it runs
 ```
 
-`params.scope` is a draft slug (every body chunk), a `dc<id>` heading (its
-section), or a `dc<id>` leaf (one chunk); `params.ref_level` (default false)
-controls the `[pa]` arm (below). The job runs **serially and checkpointed** on
-the melchior agent worker: one chunk at a time (so hub convergence sees a stable
-committed set — no parallel near-duplicate race), progress recorded in
-`meta.done_chunk_ids`, and a re-claim resumes where it left off. **There is no
-preview** — the prose rewrite is a DELETE+INSERT through the draft edit door, so
-the chunk history is the undo if a conversion is wrong. The CLI form runs the
-same cascade in a shell / batch context:
+`params.scope` is a draft slug (every body chunk), a `dc<id>` heading
+(its section), or a `dc<id>` leaf (one chunk); `params.ref_level`
+(default false) controls the `[pa]` arm (below). The job runs
+**serially and checkpointed** on the melchior agent worker: one chunk
+at a time (so hub convergence sees a stable committed set — no
+parallel near-duplicate race), progress in `meta.done_chunk_ids`, a
+re-claim resumes where it left off. **No preview** — the prose rewrite
+is a DELETE+INSERT through the draft edit door (embeddings re-run), so
+the chunk history is the undo if a conversion is wrong. The CLI form
+runs the same cascade in a shell / batch context:
 
 ```bash
 precis taproot backfill --chunk dc1652005 --apply   # one chunk / section
 precis taproot backfill --draft my-draft-slug       # every body chunk in a draft
 ```
 
-It anchors on the `[pc<id>]` markers (the citation grouping picks the claim
-span — not a sentence split you pick yourself): each cite's preceding prose
-is the claim span, and adjacent pc-cites (`[pc1][pc2]`) grounding one span
-collapse to **one** written cite. Each span runs the full canonicalizer
-cascade (`extract_claim → block → dedup_judge → place → apply_extraction`):
-if the span bundles more than one atomic claim, extraction splits it into
-several atom hubs (each with its own evidence edge) plus a non-evidence
-**compound** hub `conjunct-of`-linked to them (see "The evidence model"
-above) — either way the prose rewrite target is **one** `[fi<hub>]` (the
-compound when one landed, else the lone atom), so a citer sees no change. A
-risky merge files a review `todo` and leaves the `[pc…]` untouched, and a
-pointer-only span (no groundable claim) is left as-is. The prose rewrite goes
-through the draft edit door (DELETE+INSERT, embeddings re-run). Idempotent at
-the draft level — a re-run finds no `[pc…]` left to convert.
-
-It is **on-demand, per draft or section** — not a corpus sweep. Idempotent at
-the draft level: a re-run finds no `[pc…]` left to convert.
+It anchors on the `[pc<id>]` markers (the citation grouping picks the
+claim span — not a sentence split you pick yourself): each cite's
+preceding prose is the claim span, and adjacent pc-cites (`[pc1][pc2]`)
+grounding one span collapse to **one** written cite. Each span runs the
+full canonicalizer cascade (`extract_claim → block → dedup_judge →
+place → apply_extraction`): a span bundling more than one atomic claim
+splits into several atom hubs (each with its own evidence edge) plus a
+non-evidence **compound** hub `conjunct-of`-linked to them (see "The
+evidence model" above) — either way the rewrite target is **one**
+`[fi<hub>]` (the compound when one landed, else the lone atom), so a
+citer sees no change. A risky merge files a review `todo` and leaves
+the `[pc…]` untouched; a pointer-only span (no groundable claim) is
+left as-is. It is **on-demand, per draft or section** — not a corpus
+sweep — and idempotent: a re-run finds no `[pc…]` left to convert.
 
 **Whole-paper `[pa<id>]` cites (the `[pa]` arm).** The same command also
 recognizes bare whole-paper `[pa<id>]` cites (kept in their own groups — a
@@ -205,20 +200,20 @@ recognizes bare whole-paper `[pa<id>]` cites (kept in their own groups — a
 paper is fetched:
 
 - a **stub** `[pa]` (an un-fetched paper, 0 body chunks) is **skipped**
-  (`stub-fetch-first`) — there's no passage to ground an edge, and an unread
+  (`stub-fetch-first`) — no passage to ground an edge, and an unread
   paper is never minted as evidence. Fetch the paper first, then re-ground.
-- a **fetched** `[pa]` is **re-grounded** by default: a locate (lexical pick +
-  a Tier.MEDIUM confirm) finds the supporting passage and the token is
-  rewritten `[pa<id>]`→`[pc<chunk>]` (action `reground`), which the existing
+- a **fetched** `[pa]` is **re-grounded** by default: a locate (lexical pick
+  + a Tier.MEDIUM confirm) finds the supporting passage and rewrites the
+  token `[pa<id>]`→`[pc<chunk>]` (action `reground`), which the existing
   `[pc]` path then promotes to a **chunk-grounded** hub on a later run
-  (two-step; no hub is minted by the re-ground itself). If no passage is found
-  it's `reground-nomatch` — left `[pa]`, no write. Pass `--ref-level` to
-  instead promote it whole-paper: it mints a **ref-level (ungrounded)** evidence
-  edge and rewrites `[pa]`→`[fi<hub>]` directly — for claims with no single
-  grounding passage (e.g. "X is a landmark result"); the job_summary reports the
-  `ref-level/ungrounded` count. A contiguous multi-paper `[pa1][pa2]` run
-  re-grounds all-or-nothing: if any supporter fails to locate, the whole run is
-  left untouched (never erase a token).
+  (two-step; no hub minted by the re-ground itself). No passage found →
+  `reground-nomatch`, left `[pa]`, no write. Pass `--ref-level` to instead
+  promote it whole-paper: mints a **ref-level (ungrounded)** evidence edge
+  and rewrites `[pa]`→`[fi<hub>]` directly — for claims with no single
+  grounding passage (e.g. "X is a landmark result"); `job_summary` reports
+  the `ref-level/ungrounded` count. A contiguous multi-paper `[pa1][pa2]`
+  run re-grounds all-or-nothing: any supporter failing to locate leaves
+  the whole run untouched (never erase a token).
 
 ```python
 # the [pa] arm rides the same job; ref_level=True promotes a fetched [pa]
@@ -236,6 +231,65 @@ put(
 
 CLI equivalent: `precis taproot backfill --chunk dc1652005 --apply [--ref-level]`.
 
+## Claim admissibility — the test before the tag
+
+Extraction order: **admissibility test → mint → notation autofix → dedup
+check → park for review.** Runs first, on the sentence, before any
+supporter is attached. Skip it and what gets minted is often not a claim
+at all — that gap produced 234 of 1,527 live claim hubs with no evidence
+edge, the orphan-hub bucket that turned out to be bibliography stubs.
+
+A sentence earns `TAPROOT:claim` only if it passes all four:
+
+1. **Falsifiable** — asserts a finding some future measurement could
+   contradict. Not a definition, not a topic label, not a bibliography
+   entry, not "X was investigated", not historical narration.
+   - Bad (bibliography entry): "Meir & Wingreen 1992 — Landauer formula
+     for interacting electrons."
+   - Bad (definition): "NUPACK is a software suite for…"
+   - Bad (states a study happened, asserts no finding): "Surface
+     interactions between graphene nanobuds and cerium(III) were
+     investigated."
+2. **Self-contained** — no "the same group", "this work", "as above", no
+   dangling comparative.
+   - Bad: "The same group demonstrated ultra-sensitive detection of
+     vitamins B9 and B12…" — "the same group" refers to nothing once the
+     sentence stands alone.
+3. **Method-attributed** — the epistemic mode is readable from the
+   sentence. Write to `precis-nanopub-help`'s claim-sentence grammar
+   (evidence verb + epistemic mode) at authoring time — it governs the
+   sentence's shape from the moment it's written, not just at approve.
+4. **Single assertion** — see [[precis-notation-canon]]'s terseness rule.
+
+An unfalsifiable entry can never be corroborated or contradicted, so it's
+inert mass in the graph, not just badly worded. Something was minting
+reading-list entries as claims; this test is what stops it at the door.
+
+**Enforcement asymmetry.** Notation/sentence lint *advises* at mint —
+flags, never blocks or rewrites. At approve
+(`nanopub/gates.py::run_mint_gates`) it *blocks* on the admissibility and
+grammar codes above plus every deterministically-fixable notation code,
+including `past-passive` (tense with no result — `precis-nanopub-help`'s
+claim-sentence grammar); judgment-only codes (`two-denominator-solidus`,
+`approx-spacing`, `tilde-approximation`, `past-tense`, `present-perfect`,
+`formula-ascii-subscript`, `scope-*`) stay advisory even at approve —
+nothing mechanical can resolve them. The line is *measured*, not
+assumed: a code earns blocking status by dry-running over the whole
+corpus at a zero false-positive rate
+(`docs/conventions/corpus-normalization.md`). `hyphen-numeric-range` and
+`ascii-x-multiplier` cleared that bar and block; `formula-ascii-subscript`
+did not (~23% nomenclature collisions) and stays advisory forever.
+Authoring stays frictionless; nothing ungoverned reaches *publishable*,
+but a hub can sit `candidate` indefinitely with an advisory flag
+unresolved.
+
+**Expect refusal at approve, not malfunction.** Only 21/1,524 live hubs
+(1.4%) currently lint clean. Common blockers: `no-epistemic-mode`
+(1,419), `no-evidence-verb` (1,232), `no-terminal-period` (330),
+`author-name` (157), `over-long` (152), `not-falsifiable` (138). A legacy
+hub failing approve is the intended workflow, not a bug — the sentence
+gets authored properly at that point, not patched around.
+
 ## What makes a mintable claim
 
 A hub's sentence is read alone — in other drafts, years later, without its
@@ -252,13 +306,9 @@ source paragraph. The bar is therefore stricter than for an inline citation.
     across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus."
   - Temporal/discourse openers count too — "Subsequent(ly)",
     "Previous(ly)", "Further", "Earlier", "In contrast", "Similarly",
-    "However", "Also" all point at prose the hub won't carry. Inline the
-    referent ("Compared to X, …") or drop the connective.
-    - Bad: "Subsequent DFT-D3 calculations reduced the sidewall binding
-      energy to +0.74 eV." (subsequent to what?)
-    - Good: "Including pairwise dispersion corrections (DFT-D3) reduces
-      the calculated C₆₀–nanotube sidewall binding energy from ~+1.5 eV
-      to +0.74 eV."
+    "However", "Also" all point at prose the hub won't carry (e.g.
+    "Subsequent DFT-D3 calculations reduced…" — subsequent to what?).
+    Inline the referent ("Compared to X, …") or drop the connective.
   - Fixing one found later: `edit(kind='finding', id='fi<id>',
     title='<self-contained rewording>')` retitles the hub in place.
 - **A world-claim.** About materials, results, mechanisms — never about the
@@ -273,18 +323,17 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   compound) is written only by the automated decomposition
   (`taproot/hub.py::apply_extraction`, run through `taproot_backfill`) — not
   hand-authored. Hand-minting from a passage that bundles several atomic
-  claims? Mint each atom as its own hub with its own grounded supporter,
+  claims? Mint each as its own hub with its own grounded supporter,
   rather than one bundled sentence.
 - **Ground on the primary, not the proxy.** If the grounding passage
   attributes the fact onward ("Ganji et al. [15] showed…"), that passage
   is testimony, not the source. Search the corpus for the primary
-  (`search(kind='paper', author='…')`); if held, attach a chunk of the
-  primary as the supporter — seniority then derives it as originator
-  automatically — and keep the citing passage as corroborator. If not
-  held, it's a chase-finding candidate (`precis-finding-help`), not a
-  hub grounding. Same discipline as citing generally, one level
-  stricter — see `precis-cite-paper-help`'s "cite the doer, not
-  hearsay."
+  (`search(kind='paper', author='…')`); if held, attach a chunk of it as
+  the supporter — seniority then derives it as originator automatically
+  — and keep the citing passage as corroborator. If not held, it's a
+  chase-finding candidate (`precis-finding-help`), not a hub grounding.
+  Same discipline as citing generally, one level stricter — see
+  `precis-cite-paper-help`'s "cite the doer, not hearsay."
 
 **Soft flags — mint, but expect review:**
 
@@ -296,17 +345,18 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   - Better: "Graphene–fullerene composites can be formed by physical
     mixing, without site-specific covalent attachment."
 - **Grounding depth.** One supporter is mintable; definitions and
-  landscape/survey claims also want a secondary source (a review) — the
-  `hub_refine` pass attaches corroborators when enabled. Abstract-only
+  landscape/survey claims also want a secondary source (a review) —
+  `hub_refine` attaches corroborators when enabled. Abstract-only
   grounding is fine for a definition/existence claim; a measurement or
-  mechanism claim grounded only on an abstract/intro chunk also wants the
-  body passage carrying the claim's specifics attached — `hub_refine`'s
-  job when enabled, `link(kind='finding', rel='corroborates',
-  target='pc<id>')` manually meanwhile.
-- **Notation.** Claim sentences are plain text rendered without a math
-  engine (list views, page titles, MCP output): write formulas with
-  UTF-8 sub/superscripts and symbols — `C₆₀`, `g-C₃N₄`, `≈10,000 cm²/Vs`,
-  `μB` — never TeX fragments (`C$_{60}$`, `$\mu_B$`).
+  mechanism claim grounded only on an abstract/intro chunk also wants
+  the body passage carrying its specifics attached — `hub_refine`'s job
+  when enabled, else `link(kind='finding', rel='corroborates',
+  target='pc<id>')` manually.
+- **Notation.** Claim sentences render as plain text (list views, page
+  titles, MCP output) — write formulas with UTF-8 sub/superscripts and
+  symbols (`C₆₀`, `g-C₃N₄`, `≈10⁴ cm² V⁻¹ s⁻¹`, `μB`), never TeX
+  fragments (`C$_{60}$`, `$\mu_B$`); it feeds the identity hash. Full
+  rules: [[precis-notation-canon]].
 
 **Sorts of claims** — the bar shifts by sort:
 
@@ -318,14 +368,76 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 | Mechanism | "Charge transfer at the C60–nanotube junction alters field-emission behavior." | Name the mechanism, not "plays an important role". |
 | Landscape | "Fullerene–2D hybridization has been pursued across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus." | Most prone to dangling referents; reviews are the right grounding. |
 
+## Search before you mint — strengthen, don't duplicate
+
+**A hard gate: never mint without searching first.** `pub_id` convergence
+is a *content hash* — it catches only byte-identical (post-NFKD)
+sentences. Two agents phrasing one claim two ways mint two hubs, each
+carrying half the evidence that should have stacked on one. Live
+example: `fi191132`/`fi211518` are the same pentagon–heptagon
+defect-pair claim, minted independently and never merged.
+
+Before every mint, search the claim sentence you are about to write:
+
+```python
+search(kind="finding", q="<the claim sentence>", status="*", mode="semantic")
+```
+
+`status='*'` is **required** — the default filter is `status='established'`
+and silently hides most hubs. If a search returns nothing on a topic the
+corpus plainly covers, round-trip a hub you know exists before trusting
+the empty.
+
+Then judge each near hit:
+
+- **Same claim, same scope** → *don't mint*. Attach your evidence to the
+  hub that exists: `link(kind='finding', id='fi<existing>',
+  rel='corroborates', target='pc<your chunk>')`. One hub with three
+  independent groundings outweighs three hubs with one each — the
+  strengthening move, and **the default outcome, not the exception**.
+- **Same claim, grounded only ref-level** → attach your `pc<id>` passage,
+  sharpening it from paper-level to passage-level grounding.
+- **Same claim, your wording is better** → reword in place
+  (`edit(kind='finding', id='fi<existing>', title=…)`; keeps the old
+  `pub_id` as an alias, evidence untouched), then attach.
+- **Different scope, or your source carries a quantity bound the
+  existing hub lacks** → mint, then `link(rel='refines')` to the
+  coarser one.
+- **Your source disagrees with the existing hub's number** → mint, and
+  `link(rel='contradicts')`. Never silently restate someone else's
+  quantity.
+- **Two existing hubs are near-duplicates of each other** → merge rather
+  than adding a third.
+
+**`contradicts` is a heavy edge — a live one makes the other hub
+unpublishable.** Fire it only for a genuine disagreement about the same
+system under the same conditions. A different functional, cell size,
+fullerene size, or measurement regime is a **scope mismatch, not a
+contradiction**: mint independently and flag the tension for a human,
+rather than marking sound work disputed.
+
+## Notation canon
+
+Claim sentences are hashed to derive `pub_id`
+(`identity.py::normalize_text_for_hash` → NFKD-fold, lowercase,
+whitespace-collapse), so notation is **load-bearing, not cosmetic** — two
+spellings of one quantity mint two hubs for the same claim. Quotes are
+the exception: verbatim, **never** normalized — the canon governs the
+authored sentence only.
+
+Full rules, forgiven/not-forgiven lists, the ASCII→UTF-8 fallback table,
+and the three carve-outs (quote-containment, never-convert-the-unit,
+nomenclature-isn't-notation) that outrank everything else:
+[[precis-notation-canon]].
+
 ## Mint a claim hub from a claim I've already sourced
 
 `put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
 `wants=`) mints/converges a claim **hub**; `cited_in=` files an ordinary
 chase-target finding; `wants=`+`provenance=` mints an acquisition-mode
 finding (both non-hub modes: [[precis-finding-help]]) — mixing modes
-errors. Both modes route through the same single write
-door (`taproot/hub.py`, via `seed_claim_hub`), so a hub is still only ever
+errors. Both modes route through the same single write door
+(`taproot/hub.py`, via `seed_claim_hub`), so a hub is still only ever
 paper-sourced — mint **requires paper supporters**, and a draft's own
 novel assertion (no `supporters`, no `cited_in`) errors rather than
 silently becoming a thin-air hub:
@@ -348,12 +460,11 @@ passage (`pc<id>`), not just the paper (`pa<id>`). List the same paper's
 different supporting passages as separate supporters (same `paper`,
 different `source_handle`) to attach the whole set. Omit it only when
 you genuinely can't name the chunk; the edge then stays coarse
-ref-level. It mints the hub (or converges onto an existing one for
+ref-level. Mints the hub (or converges onto an existing one for
 identical claim content, via the content-hash `pub_id`) and attaches
-each supporter's evidence edge, idempotently — a re-`put` of the same
+each supporter's evidence edge idempotently — a re-`put` of the same
 spec attaches nothing twice (the dedup key includes the grounding
-chunk, so re-running never duplicates a passage). Cite the resulting
-`[fi<id>]` in your prose afterward.
+chunk). Cite the resulting `[fi<id>]` afterward.
 
 The `precis taproot mint` CLI is the batch equivalent — many claims
 from one spec file:
@@ -380,10 +491,10 @@ link(kind="finding", id="fi42", rel="corroborates", target="pc293")
 supporting paper/chunk handle — `pc<id>` grounds the edge at that
 passage, `pa<id>` lands it ref-level. `rel` is a conservative write-time
 label only — the originator/corroborator split is **derived** at read
-time (`get(id='fi42', view='evidence')`), same as every other door on
-this page. `id` must resolve to a live `TAPROOT:claim` hub (`fi<id>`, a
-pub_id, or a bare ref_id); anything else, or `mode='remove'`, falls
-through to the generic finding-link door.
+time (`get(id='fi42', view='evidence')`), same as every other door here.
+`id` must resolve to a live `TAPROOT:claim` hub (`fi<id>`, a pub_id, or a
+bare ref_id); anything else, or `mode='remove'`, falls through to the
+generic finding-link door.
 
 ## Reword a hub in place
 
@@ -401,16 +512,16 @@ edit(
 ```
 
 Retitles the hub in place (`src/precis/taproot/hub.py::refine_claim_sentence`):
-`refs.title` updates (full length, never truncated — the claim sentence
-carries all the meaning), the `finding_body` chunk is DELETE+INSERT
-re-emitted (embedding/summary cascade re-runs), card variants (`ord < 0`) are
-dropped for card_forge to re-emit, and a new content-derived `pub_id` is added
-— the **old** `pub_id` is kept as an alias, so existing `[<pub_id>]` cites
-keep resolving. Evidence edges are untouched. Rejects a non-hub finding and
-`dry_run` (no preview; the write is direct). If the new wording's `pub_id`
-already belongs to a *different* live ref, that's a duplicate-hub signal —
-the call raises naming that ref rather than silently fusing it; see "Merge
-duplicate hubs" below.
+`refs.title` updates (full length, never truncated), the `finding_body`
+chunk is DELETE+INSERT re-emitted (embedding/summary cascade re-runs),
+card variants (`ord < 0`) drop for card_forge to re-emit, and a new
+content-derived `pub_id` is added — the **old** one is kept as an alias,
+so existing `[<pub_id>]` cites keep resolving. Evidence edges are
+untouched. Rejects a non-hub finding and `dry_run` (no preview; the
+write is direct). If the new wording's `pub_id` already belongs to a
+*different* live ref, that's a duplicate-hub signal — the call raises
+naming that ref rather than silently fusing it; see "Merge duplicate
+hubs" below.
 
 **Not this door for a materially sharper/narrower claim** — that's a new
 mint + `refines` link, below, not a retitle.
@@ -437,18 +548,18 @@ link(kind="finding", id=f"fi{out['hub_ref_id']}", rel="refines", target="fi<orig
 `id`/`target` each accept an `fi<id>` handle, a pub_id, or a bare
 ref_id; both must resolve to live `TAPROOT:claim` hubs. The link is
 **directed** (sharper → coarser), **advisory-only** (no evidence flows —
-each hub keeps its own paper→hub edges), and **idempotent**. In the
-Claims ring the original then shows `↰ refined by fi<sharper>` and the
-sharper one shows `↳ refines fi<original>`.
+each hub keeps its own paper→hub edges), and **idempotent**. The Claims
+ring then shows `↰ refined by fi<sharper>` on the original and `↳
+refines fi<original>` on the sharper one.
 
-The CLI equivalent: `precis taproot refine --from fi<sharper> --to
-fi<original>` (`--dry-run` to preview).
+CLI: `precis taproot refine --from fi<sharper> --to fi<original>`
+(`--dry-run` to preview).
 
 ### Merge duplicate hubs
 
-No automated merge door — the `pub_id`-collision raise from a reword attempt
-above is the handoff, not a self-serve button. Pick the survivor (better
-wording / more evidence), then:
+No automated merge door — the `pub_id`-collision raise from a reword
+attempt above is the handoff, not a self-serve button. Pick the
+survivor (better wording / more evidence), then:
 
 ```python
 # 1. repoint every citing draft chunk from the dup to the survivor
@@ -481,17 +592,17 @@ it's gone.
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links — `link(kind='finding', rel='refines')` and CLI `precis taproot refine` | live (advisory-only, no evidence flow) |
 | Whole-draft/section/chunk `[pc<id>]`→`[fi<id>]` backfill — `put(kind='job', job_type='taproot_backfill')` (serial, checkpointed, melchior `claude_inproc` lane) and CLI `precis taproot backfill` | live (on-demand; LLM runs on the cluster worker, never the MCP) |
-| Atomic decomposition — `extract_claim` splits a span into atom hubs + an optional bundling **compound** hub, `conjunct-of`-linked via `taproot/hub.py::apply_extraction`; runs inside the `taproot_backfill` cascade above, no separate door | live (compound hubs are excluded from `hub_refine`'s due-set and `chase_trigger`'s embed/probe — those two touch atoms only) |
+| Atomic decomposition — `extract_claim` splits a span into atom hubs + an optional bundling **compound** hub, `conjunct-of`-linked via `taproot/hub.py::apply_extraction`; runs inside `taproot_backfill`, no separate door | live (compound hubs excluded from `hub_refine`'s due-set and `chase_trigger`'s embed/probe — those two touch atoms only) |
 | Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `params.ref_level`/`--ref-level` whole-paper promote) | live (slices 1+2; job + CLI) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED` — a `chase`-pass sub-feature, not its own service) | dark, default-OFF |
-| Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF — `precis service prio '*' hub_refine <n>` / `/categorizers` |
-| Chase-trigger pass (`workers/chase_trigger.py`, `chase_trigger` service) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF — `precis service prio '*' chase_trigger <n>` / `/categorizers` |
+| Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF |
+| Chase-trigger pass (`workers/chase_trigger.py`, `chase_trigger` service) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF |
 | `axis:taproot` `TAPROOT:claim`/`TAPROOT:review` classifier (`PRECIS_AXES_ENABLED`) | dark, default-OFF |
 
-All dark rows default off — evidence stays sparse until turned on to seed
-it. Everything with its own `service_config` service (`hub_refine`,
-`chase_trigger`, and every `axis:<id>`) flips live via `precis service
-prio` / `/categorizers`, no redeploy; the forward chase bridge is a
+All dark rows default off — evidence stays sparse until turned on to
+seed it. Everything with its own `service_config` service (`hub_refine`,
+`chase_trigger`, every `axis:<id>`) flips live via `precis service prio`
+/ `/categorizers`, no redeploy; the forward chase bridge is a
 `chase`-pass-internal env flag, unaffected.
 
 ## See also
@@ -505,5 +616,5 @@ get(kind="skill", id="precis-citation-help")  # the inline [pc<id>] cite, write 
 get(kind="skill", id="precis-draft-help")  # authoring prose that cites hubs
 get(
     kind="skill", id="precis-nanopub-help"
-)  # mint gates + publish pipeline downstream of a hub
+)  # mint gates + claim-sentence grammar (authoring-scope) + publish pipeline
 ```

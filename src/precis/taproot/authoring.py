@@ -32,6 +32,7 @@ from precis.taproot.hub import (
     attach_evidence,
     mint_hub,
 )
+from precis.taproot.notation import lint_notation
 from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 
 if TYPE_CHECKING:
@@ -236,7 +237,7 @@ def seed_claim_hub(
     attaches no duplicate edge.
 
     Returns ``{'pub_id', 'hub_ref_id', 'attached', 'already', 'collapsed',
-    'ungrounded'}`` — ``attached``/``already`` count new vs.
+    'ungrounded', 'notation'}`` — ``attached``/``already`` count new vs.
     skipped-as-already-present evidence edges; ``ungrounded`` counts how
     many of the *newly attached* edges landed ref-level (no resolvable
     ``source_handle`` chunk), i.e. cite the whole paper rather than a
@@ -246,7 +247,11 @@ def seed_claim_hub(
     same call** (the edge dedup key can only carry one ``meta``, so a
     second supporter differing only by e.g. ``support`` would otherwise
     vanish silently — this surfaces it instead of hiding it in
-    ``already``; the earlier supporter's meta always wins).
+    ``already``; the earlier supporter's meta always wins). ``notation``
+    is :func:`~precis.taproot.notation.lint_notation`'s advisory warnings
+    for ``sentence`` — never raises, never blocks the mint, never rewrites
+    the sentence; a caller (CLI/MCP) is expected to surface it, not act on
+    it automatically.
 
     Raises:
         BadInput: a supporter's ``paper`` doesn't resolve (or resolves to a
@@ -336,4 +341,5 @@ def seed_claim_hub(
         "already": already,
         "collapsed": collapsed,
         "ungrounded": ungrounded,
+        "notation": lint_notation(sentence),
     }
