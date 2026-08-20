@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 
 def add_parser(subparsers: Any) -> None:
     """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
-    ``backfill`` / ``backfill-grounding`` / ``direct-mint`` / ``lint``)."""
+    ``merge`` / ``backfill`` / ``backfill-grounding`` / ``direct-mint`` /
+    ``lint``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -88,6 +89,39 @@ def add_parser(subparsers: Any) -> None:
         help="set_by actor slug for the write (default: agent).",
     )
     r.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
+
+    mg = tsub.add_parser(
+        "merge",
+        help="Collapse one claim hub (--loser) into another (--winner): "
+        "repoint every evidence/claim-link edge, dedup against edges the "
+        "winner already holds, drop self-loops, retire the loser. "
+        "Irreversible (links has no undo) -- dry-run first.",
+    )
+    mg.add_argument(
+        "--loser",
+        required=True,
+        help="Claim hub to retire and absorb into --winner (fi<id> handle, "
+        "pub_id, cite_key, or bare ref_id).",
+    )
+    mg.add_argument(
+        "--winner",
+        required=True,
+        help="Claim hub that survives, unchanged (same forms as --loser).",
+    )
+    mg.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the full plan (every edge repointed/dropped, the "
+        "publish-state check) and write nothing.",
+    )
+    mg.add_argument(
+        "--set-by",
+        default="agent",
+        help="set_by actor slug for the writes (default: agent).",
+    )
+    mg.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
 
     b = tsub.add_parser(
         "backfill",
@@ -475,6 +509,91 @@ def _run_refine(args: argparse.Namespace) -> None:
         print(f"{verb}: fi{from_hub} --refines--> fi{to_hub}")
     except BadInput as exc:
         print(f"taproot refine: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+
+def _print_merge_plan(plan: Any, *, dry_run: bool) -> None:
+    from precis.taproot.hub import MERGE_COLLAPSE_RELATION
+
+    tag = "[DRY-RUN] " if dry_run else ""
+
+    if plan.already_merged:
+        print(
+            f"{tag}no-op: fi{plan.loser_ref_id} was already merged into "
+            f"fi{plan.winner_ref_id}"
+        )
+        return
+
+    if not plan.edges:
+        print(f"{tag}no edges on fi{plan.loser_ref_id} to repoint")
+
+    for edge in plan.edges:
+        peer = f"fi{edge.other_ref_id}"
+        if edge.direction == "outbound":
+            old = f"fi{plan.loser_ref_id} --{edge.relation}--> {peer}"
+            new = f"fi{plan.winner_ref_id} --{edge.relation}--> {peer}"
+        else:
+            old = f"{peer} --{edge.relation}--> fi{plan.loser_ref_id}"
+            new = f"{peer} --{edge.relation}--> fi{plan.winner_ref_id}"
+
+        if edge.action == "repoint":
+            print(f"{tag}repoint (link_id={edge.link_id}): {old}  =>  {new}")
+        elif edge.action == "drop_redundant":
+            print(
+                f"{tag}drop redundant (link_id={edge.link_id}): {old}  -- "
+                f"winner already holds this edge as link_id="
+                f"{edge.duplicate_of_link_id}"
+                + (f"; meta={edge.meta}" if edge.meta else "")
+            )
+        else:  # drop_self_loop
+            print(
+                f"{tag}drop self-loop (link_id={edge.link_id}): {old}  -- "
+                f"repointing would yield fi{plan.winner_ref_id} --"
+                f"{edge.relation}--> fi{plan.winner_ref_id}"
+                + (f"; meta={edge.meta}" if edge.meta else "")
+            )
+
+    if plan.can_merge:
+        print(f"{tag}publish-state check: OK (neither side past 'candidate')")
+        print(
+            f"{tag}retire fi{plan.loser_ref_id}: refs.deleted_at set; "
+            f"recorded fi{plan.loser_ref_id} --{MERGE_COLLAPSE_RELATION}--> "
+            f"fi{plan.winner_ref_id}"
+        )
+    else:
+        print(f"{tag}publish-state check: BLOCKED -- {plan.block_reason}")
+        print(f"{tag}fi{plan.loser_ref_id} stays live -- merge refused")
+
+
+def _run_merge(args: argparse.Namespace) -> None:
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.authoring import resolve_hub_ref_id, resolve_merge_loser_ref_id
+    from precis.taproot.hub import merge_hubs
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        winner = resolve_hub_ref_id(store, args.winner)
+        loser = resolve_merge_loser_ref_id(store, args.loser)
+        if loser == winner:
+            print(
+                "taproot merge: error: --loser and --winner resolve to the "
+                f"same hub (ref_id={loser}); a hub can't merge into itself",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        plan = merge_hubs(
+            store,
+            loser_ref_id=loser,
+            winner_ref_id=winner,
+            set_by=args.set_by,
+            dry_run=args.dry_run,
+        )
+        _print_merge_plan(plan, dry_run=args.dry_run)
+    except BadInput as exc:
+        print(f"taproot merge: error: {exc.cause}", file=sys.stderr)
         sys.exit(1)
     finally:
         store.close()
@@ -1215,6 +1334,8 @@ def run(args: argparse.Namespace) -> None:
         _run_mint(args)
     elif args.taproot_cmd == "refine":
         _run_refine(args)
+    elif args.taproot_cmd == "merge":
+        _run_merge(args)
     elif args.taproot_cmd == "backfill":
         _run_backfill(args)
     elif args.taproot_cmd == "backfill-grounding":

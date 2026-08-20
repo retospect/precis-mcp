@@ -75,14 +75,24 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 
 from precis.store.types import Tag
-from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
+from precis.taproot.canon import (
+    CLAIM_HUB_PREDICATE_PARAMS,
+    claim_hub_predicate_sql,
+    claim_sha,
+)
 from precis.utils.embed_query import embed_query
-from precis.workers.hub_refine import _STATUS_CANONICAL, _STATUS_NAMESPACE
 
 if TYPE_CHECKING:
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
+
+#: The claim-hub tag predicate, pre-rendered for this module's own
+#: ``WHERE`` clause (:func:`~precis.taproot.canon.claim_hub_predicate_sql`
+#: — the single source of truth, not a fifth reinvention of the pair of
+#: ``EXISTS`` clauses ``workers/hub_refine.py`` used to duplicate here via
+#: a cross-module private import).
+_CLAIM_HUB_SQL = claim_hub_predicate_sql()
 
 #: Bump to force a lazy re-sweep of the whole corpus (every chunk re-probed
 #: against the current claim-embedding index).
@@ -154,25 +164,14 @@ def _refresh_claim_embeddings(
     target for :func:`_near_claims` either.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT r.ref_id, r.title, ce.claim_sha
           FROM refs r
           LEFT JOIN claim_embeddings ce
             ON ce.claim_ref_id = r.ref_id AND ce.embedder = %(embedder)s
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %(taproot_ns)s
-                    AND t.value = %(taproot_claim)s
-               )
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %(status_ns)s
-                    AND t.value = %(status_canonical)s
-               )
+           AND {_CLAIM_HUB_SQL}
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id
@@ -185,10 +184,7 @@ def _refresh_claim_embeddings(
         """,
         {
             "embedder": embedder_model,
-            "taproot_ns": TAPROOT_NAMESPACE,
-            "taproot_claim": TAPROOT_CLAIM,
-            "status_ns": _STATUS_NAMESPACE,
-            "status_canonical": _STATUS_CANONICAL,
+            **CLAIM_HUB_PREDICATE_PARAMS,
         },
     ).fetchall()
 

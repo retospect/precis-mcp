@@ -92,6 +92,20 @@ corpus-wide `normalize_notation` pass must be followed by recomputing
 Normalizing `10^4` -> `10⁴` can make two previously-distinct titles
 identical without collapsing their *already-stored* `pub_id`s; only a
 rescan after the pass catches the newly-created duplicate.
+
+**2026-08-20 numeric-value policy** adds `range-unit-repeated`, mechanically
+safe and auto-rewritten like `hyphen-numeric-range`/`ascii-x-multiplier`: a
+range's unit belongs once, after the second endpoint (`9-12 GPa`), not
+after both (`9 GPa-12 GPa`). Structurally disjoint from `hyphen-numeric-
+range` -- that rule requires the two numbers dash-adjacent with nothing
+between them, this one requires a unit token between the first number and
+the dash -- so a given range only ever trips one of the two.
+`precis-notation-canon.md` carries the two new form rules this policy also
+adds (the typical-plus-range shape, unit placement). The *authoring*
+judgment of range vs. typical-plus-range vs. bare point is not a notation
+question (this module has no source access to check it), so it lives in
+`sentence_lint.py`'s advisory-only `mixed-point-range` plus
+`precis-taproot-mint-help.md`'s numeric-value policy section.
 """
 
 from __future__ import annotations
@@ -239,8 +253,16 @@ _UNIT_TOKEN_ALT = "|".join(
 #: detector and `normalize_notation`'s rewriter (below) so they can't
 #: drift apart -- a match found by this regex IS, by construction, a real
 #: negative exponent, never a compound/series-name hyphen (`Fe-ZSM-5`,
-#: `MOF-74`, `UiO-66`, `HKUST-1`, `sub-10-nm`).
-_ASCII_MINUS_EXP_RE = re.compile(rf"(?<![A-Za-zµμΩ])({_UNIT_TOKEN_ALT})\^?-(\d+)\b")
+#: `MOF-74`, `UiO-66`, `HKUST-1`, `sub-10-nm`). The trailing negative
+#: lookahead `(?!\s?(?P=unit)\b)` (2026-08-20) excludes the other real
+#: collision this shape has with a unit symbol immediately left of a
+#: hyphen: `9 GPa-12 GPa` reads as `9 GPa⁻¹² GPa` under the exponent
+#: reading, which is nonsensical -- the same unit symbol repeating right
+#: after the digits is `range-unit-repeated`'s shape, not an exponent, so
+#: this rule stands down and lets that one fire instead.
+_ASCII_MINUS_EXP_RE = re.compile(
+    rf"(?<![A-Za-zµμΩ])(?P<unit>{_UNIT_TOKEN_ALT})\^?-(\d+)\b(?!\s?(?P=unit)\b)"
+)
 
 #: A caret followed by an uppercase letter is a letter superscript
 #: (`2^N`) -- canon keeps these ASCII (no Unicode subscript `d`/`g`, no
@@ -354,6 +376,26 @@ _HYPHEN_NUMERIC_RANGE_RE = re.compile(
 #: trailing `\b` means a grid-style label like `2x2` never fires (`x` is
 #: followed by another digit, so no word boundary sits between them).
 _ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
+
+#: `range-unit-repeated` (2026-08-20 numeric-value policy): a unit
+#: written after BOTH endpoints of a range -- `9 GPa-12 GPa`, `9 GPa-12
+#: GPa` -- instead of once, after the second endpoint (`9-12 GPa`). Fires
+#: regardless of dash char (`-`/`–`): the defect is the duplicated unit,
+#: not the dash spelling, which `hyphen-numeric-range` already governs
+#: separately and on a structurally disjoint shape (that rule requires
+#: the two numbers to be dash-adjacent with nothing between; this one
+#: requires a unit token *between* the first number and the dash, so the
+#: two never double-fire on the same span). The same
+#: `(?<![-A-Za-z\d])` guard as `hyphen-numeric-range` keeps a named-
+#: method hyphen (`M06-2X`) from reading its trailing digit as a range
+#: endpoint. `(?P=unit)` requires an exact repeat of the first unit's
+#: text, so `9 GPa-12 kPa` (a genuine unit change, not a duplication)
+#: never fires.
+_RANGE_UNIT_REPEATED_RE = re.compile(
+    r"(?<![-A-Za-z\d])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
+    r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
+)
 
 #: `formula-ascii-subscript` (`lint_notation` only -- see module
 #: docstring "canon v3" for why this is never auto-rewritten): a closed,
@@ -607,6 +649,16 @@ def lint_notation(sentence: str) -> list[str]:
             "(e.g. '4-8x acceleration' -> '4-8× acceleration')."
         )
 
+    m = _RANGE_UNIT_REPEATED_RE.search(sentence)
+    if m:
+        warnings.append(
+            f"range-unit-repeated: {m.group(0)!r} found -- state the unit "
+            "once, after the second endpoint of a range, never after both "
+            f"(e.g. '{m.group('num1')} {m.group('unit')}-{m.group('num2')} "
+            f"{m.group('unit')}' -> '{m.group('num1')}–{m.group('num2')} "
+            f"{m.group('unit')}')."
+        )
+
     m = _FORMULA_ASCII_SUBSCRIPT_RE.search(sentence)
     if m:
         warnings.append(
@@ -746,7 +798,7 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
     alone per canon), `ascii-minus-exponent`, `ascii-plusminus`,
     `ascii-micro`, `ascii-degrees`, `ascii-ohm`, `ascii-angstrom`,
     `ascii-micrometre`, `hyphen-numeric-range`, `ascii-x-multiplier`,
-    `no-terminal-period`.
+    `range-unit-repeated`, `no-terminal-period`.
 
     Never touches `two-denominator-solidus` (which factor moves under the
     exponent is a judgment call), `over-long`, `multi-assertion`, or
@@ -857,6 +909,13 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         applied,
     )
     s = _apply(s, _ASCII_X_MULT_RE, "×", "ascii-x-multiplier", applied)
+    s = _apply(
+        s,
+        _RANGE_UNIT_REPEATED_RE,
+        lambda m: f"{m.group('num1')}–{m.group('num2')} {m.group('unit')}",
+        "range-unit-repeated",
+        applied,
+    )
 
     stripped = s.rstrip()
     if stripped and stripped[-1] not in ".?!:":

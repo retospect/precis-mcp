@@ -295,6 +295,54 @@ def test_ascii_x_multiplier_does_not_fire_on_grid_label() -> None:
     assert not any("ascii-x-multiplier" in w for w in warnings)
 
 
+# ── 2026-08-20 numeric-value policy: range-unit-repeated ─────────────────
+
+
+def test_range_unit_repeated_fires_on_en_dash() -> None:
+    warnings = lint_notation("The bulk modulus spans 9 GPa–12 GPa across samples.")
+    assert any("range-unit-repeated" in w for w in warnings)
+
+
+def test_range_unit_repeated_fires_on_ascii_hyphen() -> None:
+    warnings = lint_notation("The bulk modulus spans 9 GPa-12 GPa across samples.")
+    assert any("range-unit-repeated" in w for w in warnings)
+
+
+def test_range_unit_repeated_does_not_fire_on_unit_stated_once() -> None:
+    # The correctly-formed shape -- unit once, after the second endpoint.
+    warnings = lint_notation("The bulk modulus spans 9–12 GPa across samples.")
+    assert not any("range-unit-repeated" in w for w in warnings)
+
+
+def test_range_unit_repeated_does_not_fire_on_genuine_unit_change() -> None:
+    # Not a duplication -- the two endpoints carry different units.
+    warnings = lint_notation("Pressure rose from 9 GPa-12 kPa during the ramp.")
+    assert not any("range-unit-repeated" in w for w in warnings)
+
+
+def test_range_unit_repeated_does_not_fire_on_named_method() -> None:
+    warnings = lint_notation("Energies were computed at SMD/M06-2X level.")
+    assert not any("range-unit-repeated" in w for w in warnings)
+
+
+def test_range_unit_repeated_does_not_fire_on_nomenclature() -> None:
+    for sentence in _NOMENCLATURE_HYPHEN_SENTENCES:
+        warnings = lint_notation(sentence)
+        assert not any("range-unit-repeated" in w for w in warnings), (
+            sentence,
+            warnings,
+        )
+
+
+def test_range_unit_repeated_auto_fixes() -> None:
+    out, codes = normalize_notation(
+        "The bulk modulus spans 9 GPa-12 GPa across samples."
+    )
+    assert "range-unit-repeated" in codes
+    assert "9–12 GPa" in out
+    assert "GPa-12 GPa" not in out
+
+
 # ── canon v3: formula-ascii-subscript (lint-only, never auto-rewritten) ──
 
 
@@ -617,6 +665,11 @@ _NORMALIZE_CASES: list[tuple[str, str, list[str]]] = [
         "Switches show a 10-100x stiffness ratio.",
         "Switches show a 10–100× stiffness ratio.",
         ["hyphen-numeric-range", "ascii-x-multiplier"],
+    ),
+    (
+        "The bulk modulus spans 9 GPa-12 GPa across samples.",
+        "The bulk modulus spans 9–12 GPa across samples.",
+        ["range-unit-repeated"],
     ),
 ]
 

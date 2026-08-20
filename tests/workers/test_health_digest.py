@@ -30,11 +30,14 @@ from pathlib import Path
 
 from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts, raise_alert
 from precis.store.types import Tag
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import mint_hub
 from precis.workers import health_digest, nursery
 from precis.workers.health_digest import (
     CheckResult,
     _cadence_staleness_checks,
     _check_chunks_extracted,
+    _check_claim_hub_dedup_index,
     _diagnose_embed_pipeline,
     _idle_aware_backlog_checks,
     _layer1_checks,
@@ -50,6 +53,7 @@ from precis.workers.health_digest import (
 from precis.workers.registry import ServiceKind, ServiceSpec
 from precis.workers.scheduler import Cadence
 from precis.workers.service_config import set_service_prio
+from tests.workers._helpers import make_mock_bge_m3, seed_ref
 
 # ── (c) zero-LLM, pure template ──────────────────────────────────────────
 
@@ -544,6 +548,68 @@ def test_chunks_extracted_ignores_card_forge_rewrite(store) -> None:
     with store.pool.connection() as conn:
         result = _check_chunks_extracted(conn)
     assert result.status == "stale"
+
+
+# ── claim_hub_dedup_index: strict claim-hub definition ────────────────────
+#
+# docs/backlog/claim-hub-definition-divergence.md — a TAPROOT:claim finding
+# without STATUS:canonical is a chase-tree finding mid-lifecycle
+# (STATUS:established/dead_chain/multi_candidate), never a hub. The
+# dedup-index coverage check must not count it in its denominator, or a
+# fixed `block()` and a stale check would disagree about coverage.
+
+
+def _embed_finding_body(store, ref_id: int, text: str, embedder) -> None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (row[0], "bge-m3", embedder.embed_one(text)),
+        )
+        conn.commit()
+
+
+def test_claim_hub_dedup_index_excludes_taproot_claim_without_status_canonical(
+    store,
+) -> None:
+    """A finding carrying ``TAPROOT:claim`` but ``STATUS:established`` (a
+    chase-tree finding, not a minted hub) must not inflate the denominator
+    -- only the one properly minted hub is counted."""
+    embedder = make_mock_bge_m3()
+    hub = mint_hub(store, CanonicalClaim(sentence="a minted hub claim", scope={}))
+    _embed_finding_body(store, hub, "a minted hub claim", embedder)
+
+    chase_ref = seed_ref(store, title="chase finding", kind="finding")
+    store.add_tag(chase_ref, Tag.closed("TAPROOT", "claim"), set_by="system")
+    store.add_tag(chase_ref, Tag.closed("STATUS", "established"), set_by="system")
+    # Deliberately no finding_body / embedding -- if this row were counted
+    # it would inflate BOTH the hub total and the unindexed count.
+
+    with store.pool.connection() as conn:
+        result = _check_claim_hub_dedup_index(conn)
+    assert result.status == "ok"
+    assert "1/1 indexed" in result.detail
+
+
+def test_claim_hub_dedup_index_reports_no_hubs_yet_for_a_bare_chase_finding(
+    store,
+) -> None:
+    """A corpus holding only a ``TAPROOT:claim``-without-``STATUS:canonical``
+    finding reads as "no hubs yet", not as an unindexed hub."""
+    chase_ref = seed_ref(store, title="chase finding", kind="finding")
+    store.add_tag(chase_ref, Tag.closed("TAPROOT", "claim"), set_by="system")
+    store.add_tag(chase_ref, Tag.closed("STATUS", "established"), set_by="system")
+
+    with store.pool.connection() as conn:
+        result = _check_claim_hub_dedup_index(conn)
+    assert result.status == "ok"
+    assert "no hubs yet" in result.detail
 
 
 # ── (3) chunks_classified: idle-aware on the classify service_config gate

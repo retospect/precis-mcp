@@ -20,12 +20,14 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim, NotClaim, Placement
 from precis.taproot.hub import (
+    MERGE_COLLAPSE_RELATION,
     PROPHETIC_EXAMPLE_CAVEAT,
     ExtractionOutcome,
     apply_extraction,
     apply_placement,
     attach_evidence,
     link_claims,
+    merge_hubs,
     mint_hub,
     refine_claim_sentence,
 )
@@ -367,6 +369,68 @@ def test_block_finds_a_minted_hub_that_has_no_card_combined(store: Any) -> None:
     candidates = block(_CLAIM, store, embedder)
 
     assert [c.hub_ref_id for c in candidates] == [hub]
+
+
+def test_block_excludes_taproot_claim_without_status_canonical(store: Any) -> None:
+    """docs/backlog/claim-hub-definition-divergence.md — a finding carrying
+    ``TAPROOT:claim`` but ``STATUS:established`` (a chase-tree finding
+    mid-lifecycle, never minted through ``mint_hub``) must never be offered
+    as a dedup merge candidate, even when its ``finding_body`` embedding is
+    the *exact* nearest neighbour to the query claim. This is the
+    over-merge direction the Phase-1 gate exists to keep at zero.
+    """
+    from precis.taproot.canon import block
+    from tests.workers._helpers import make_mock_bge_m3
+
+    embedder = make_mock_bge_m3()
+
+    # A real hub, for a different claim, so it is never the nearest match.
+    other_claim = CanonicalClaim(
+        sentence="Graphene exhibits a tensile strength of ~130 GPa.",
+        scope={},
+    )
+    hub = mint_hub(store, other_claim)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL",
+            (hub,),
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (row[0], "bge-m3", embedder.embed_one(other_claim.sentence)),
+        )
+        conn.commit()
+
+    # A chase-tree finding, never minted: TAPROOT:claim without
+    # STATUS:canonical. Its finding_body is verbatim the query claim's own
+    # sentence, so its embedding is the exact (zero-distance) nearest
+    # neighbour -- the strongest case for the over-merge bug.
+    chase_ref = seed_ref(store, title=_CLAIM.sentence, kind="finding")
+    seed_chunk(
+        store, ref_id=chase_ref, text=_CLAIM.sentence, ord=0, chunk_kind="finding_body"
+    )
+    store.add_tag(chase_ref, Tag.closed("TAPROOT", "claim"), set_by="system")
+    store.add_tag(chase_ref, Tag.closed("STATUS", "established"), set_by="system")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL",
+            (chase_ref,),
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (row[0], "bge-m3", embedder.embed_one(_CLAIM.sentence)),
+        )
+        conn.commit()
+
+    candidates = block(_CLAIM, store, embedder)
+
+    assert chase_ref not in [c.hub_ref_id for c in candidates]
 
 
 def test_refine_claim_sentence_mints_new_pub_id_and_keeps_old_as_alias(
@@ -1104,3 +1168,214 @@ def test_apply_extraction_without_compound_mints_only_the_atom(store: Any) -> No
             (outcome.atom_hub_ids[0],),
         ).fetchone()[0]
     assert n == 0
+
+
+# ── merge_hubs — the merge door (docs/backlog/claim-hub-merge-door.md) ──
+
+
+def _live_links(
+    store: Any, *, src: int | None = None, dst: int | None = None
+) -> list[Any]:
+    """Every live ``links`` row touching ``src`` and/or ``dst`` -- a raw
+    SQL peek (rather than :meth:`Store.links_for`) so a test can see the
+    full row shape (``link_id``, chunk endpoints) and count exactly what
+    ``merge_hubs`` did or didn't drop/repoint."""
+    clauses, params = [], []
+    if src is not None:
+        clauses.append("src_ref_id = %s")
+        params.append(src)
+    if dst is not None:
+        clauses.append("dst_ref_id = %s")
+        params.append(dst)
+    assert clauses, "_live_links needs at least one of src/dst"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT link_id, src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
+            "relation FROM links WHERE " + " AND ".join(clauses),
+            params,
+        ).fetchall()
+    return list(rows)
+
+
+def _mark_nanopub_state(store: Any, ref_id: int, state: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO nanopub_publish (claim_ref_id, state) VALUES (%s, %s)",
+            (ref_id, state),
+        )
+        conn.commit()
+
+
+def test_merge_hubs_repoints_a_plain_evidence_edge(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    paper = seed_ref(store, title="Collins 2006", kind="paper")
+    attach_evidence(store, hub_ref_id=loser, paper_ref_id=paper, role="corroborates")
+
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    assert not plan.already_merged
+    assert plan.can_merge
+    assert [e.action for e in plan.edges if e.relation == "corroborates"] == ["repoint"]
+    assert _edge(store, paper, loser) is None
+    assert _edge(store, paper, winner) == "corroborates"
+    with store.pool.connection() as conn:
+        deleted_at = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser,)
+        ).fetchone()[0]
+    assert deleted_at is not None
+    assert _edge(store, loser, winner) == MERGE_COLLAPSE_RELATION
+
+
+def test_merge_hubs_dedups_a_collision_with_the_winners_existing_edge(
+    store: Any,
+) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    paper = seed_ref(store, title="Collins 2006", kind="paper")
+    # Same paper, same role, ref-level (no chunk) on BOTH hubs.
+    attach_evidence(store, hub_ref_id=loser, paper_ref_id=paper, role="corroborates")
+    attach_evidence(store, hub_ref_id=winner, paper_ref_id=paper, role="corroborates")
+    winner_link_id = _live_links(store, src=paper, dst=winner)[0][0]
+
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    dropped = [e for e in plan.edges if e.relation == "corroborates"]
+    assert len(dropped) == 1
+    assert dropped[0].action == "drop_redundant"
+    assert dropped[0].duplicate_of_link_id == winner_link_id
+    # Exactly ONE corroborates edge survives from paper -> winner.
+    survivors = _live_links(store, src=paper, dst=winner)
+    assert len(survivors) == 1
+    assert survivors[0][0] == winner_link_id
+
+
+def test_merge_hubs_preserves_distinct_chunk_grounded_cites(store: Any) -> None:
+    """Two ``cites`` edges from DIFFERENT draft chunks are NOT redundant --
+    both must survive the merge (docs/backlog/claim-hub-merge-door.md
+    requirement 2)."""
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    draft = seed_ref(store, title="draft citing the loser twice", kind="draft")
+    seed_chunk(store, ref_id=draft, ord=0, text="paragraph one cites the claim")
+    seed_chunk(store, ref_id=draft, ord=1, text="paragraph two also cites the claim")
+    store.add_link(src_ref_id=draft, src_pos=0, dst_ref_id=loser, relation="cites")
+    store.add_link(src_ref_id=draft, src_pos=1, dst_ref_id=loser, relation="cites")
+
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    cite_edges = [e for e in plan.edges if e.relation == "cites"]
+    assert len(cite_edges) == 2
+    assert all(e.action == "repoint" for e in cite_edges)
+    survivors = _live_links(store, src=draft, dst=winner)
+    assert len(survivors) == 2
+    assert len({row[2] for row in survivors}) == 2  # two distinct src_chunk_id
+    assert _live_links(store, src=draft, dst=loser) == []
+
+
+def test_merge_hubs_drops_a_direct_self_loop(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    store.add_link(src_ref_id=loser, dst_ref_id=winner, relation="contradicts")
+
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    self_loops = [e for e in plan.edges if e.relation == "contradicts"]
+    assert len(self_loops) == 1
+    assert self_loops[0].action == "drop_self_loop"
+    assert _live_links(store, src=winner, dst=winner) == []
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'contradicts'"
+        ).fetchone()[0]
+    assert n == 0
+
+
+def test_merge_hubs_refuses_when_either_side_is_past_candidate(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    _mark_nanopub_state(store, loser, "reviewed")
+
+    with pytest.raises(BadInput, match="reviewed"):
+        merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    # Nothing moved -- the refusal is raised before any write.
+    with store.pool.connection() as conn:
+        deleted_at = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser,)
+        ).fetchone()[0]
+    assert deleted_at is None
+
+    # A dry run reports the SAME refusal instead of raising.
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+    assert plan.can_merge is False
+    assert "reviewed" in (plan.block_reason or "")
+
+
+def test_merge_hubs_is_idempotent_on_rerun(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    paper = seed_ref(store, title="Collins 2006", kind="paper")
+    attach_evidence(store, hub_ref_id=loser, paper_ref_id=paper, role="corroborates")
+
+    first = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+    assert not first.already_merged
+
+    second = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+    assert second.already_merged
+    assert second.edges == []
+
+    # Exactly one collapse edge, one evidence edge -- no double-move.
+    assert len(_live_links(store, src=loser, dst=winner)) == 1
+    assert len(_live_links(store, src=paper, dst=winner)) == 1
+
+
+def test_merge_hubs_rejects_self_merge(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    with pytest.raises(BadInput):
+        merge_hubs(store, loser_ref_id=hub, winner_ref_id=hub)
+
+
+def test_merge_hubs_dry_run_writes_nothing(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    paper = seed_ref(store, title="Collins 2006", kind="paper")
+    attach_evidence(store, hub_ref_id=loser, paper_ref_id=paper, role="corroborates")
+
+    plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+
+    assert any(e.action == "repoint" for e in plan.edges)
+    assert _edge(store, paper, loser) == "corroborates"  # untouched
+    assert _edge(store, paper, winner) is None
+    with store.pool.connection() as conn:
+        deleted_at = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser,)
+        ).fetchone()[0]
+    assert deleted_at is None
+    assert _edge(store, loser, winner) is None  # no collapse edge written
+
+
+def test_merge_hubs_draft_cites_edge_follows_to_the_winner(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    draft = seed_ref(store, title="draft citing the loser", kind="draft")
+    seed_chunk(store, ref_id=draft, ord=0, text="a paragraph citing the claim")
+    store.add_link(src_ref_id=draft, src_pos=0, dst_ref_id=loser, relation="cites")
+
+    merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    outbound = store.links_for(draft, direction="out", relation="cites")
+    assert any(link.dst_ref_id == winner for link in outbound)
+    assert not any(link.dst_ref_id == loser for link in outbound)
+
+
+def test_merge_hubs_does_not_touch_the_winners_sentence_or_pub_id(store: Any) -> None:
+    loser = mint_hub(store, _CLAIM)
+    winner = mint_hub(store, _SHARPER_CLAIM)
+    winner_pub_id_before = _pub_id(store, winner)
+    winner_title_before = _finding_body(store, winner)
+
+    merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+
+    assert _pub_id(store, winner) == winner_pub_id_before
+    assert _finding_body(store, winner) == winner_title_before

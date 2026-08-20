@@ -61,6 +61,72 @@ TAPROOT_NAMESPACE = "TAPROOT"
 TAPROOT_CLAIM = "claim"
 TAPROOT_REVIEW = "review"
 
+#: ``STATUS:canonical`` — the second half of the claim-hub definition (see
+#: :func:`claim_hub_predicate_sql`). Homed here, next to
+#: :data:`TAPROOT_NAMESPACE`/:data:`TAPROOT_CLAIM`, rather than in
+#: :mod:`precis.taproot.hub` (the module that actually writes it, via
+#: :func:`~precis.taproot.hub.mint_hub`) — ``hub.py`` already imports
+#: :data:`TAPROOT_NAMESPACE`/:data:`TAPROOT_CLAIM` from this module, so a
+#: home in ``hub.py`` would make this module import back from its own
+#: importer. ``hub.py`` imports these back from here instead.
+STATUS_NAMESPACE = "STATUS"
+STATUS_CANONICAL = "canonical"
+
+#: Bind params for :func:`claim_hub_predicate_sql`'s ``%(name)s``
+#: placeholders — merge into a query's own params dict.
+CLAIM_HUB_PREDICATE_PARAMS: dict[str, str] = {
+    "taproot_ns": TAPROOT_NAMESPACE,
+    "taproot_claim": TAPROOT_CLAIM,
+    "status_ns": STATUS_NAMESPACE,
+    "status_canonical": STATUS_CANONICAL,
+}
+
+
+def claim_hub_predicate_sql(*, ref_alias: str = "r") -> str:
+    """The claim-hub definition, as a pair of ``AND``-ed ``EXISTS`` SQL
+    clauses over ``ref_alias.ref_id`` (default ``r``, the alias every call
+    site already uses for its ``refs`` row).
+
+    :func:`~precis.taproot.hub.mint_hub` writes **both** ``TAPROOT:claim``
+    and ``STATUS:canonical`` on a hub, atomically, in one transaction, and
+    is the *only* writer of ``STATUS:canonical`` anywhere in this codebase.
+    A ``finding`` carrying ``TAPROOT:claim`` alone — without
+    ``STATUS:canonical`` — is not a hub: it is an ``axis_pass``-classified
+    chase-tree finding mid-lifecycle (``STATUS:established`` /
+    ``STATUS:dead_chain`` / ``STATUS:multi_candidate``, written by
+    ``workers/chase.py::_set_status``, which replaces every existing
+    ``STATUS:`` tag). This function **is** that definition — every reader
+    that needs "is this ref a claim hub" should call it rather than
+    reinvent the predicate (``docs/backlog/claim-hub-definition-divergence.md``:
+    three readers checked ``TAPROOT:claim`` alone and offered 280 chase
+    findings as claim hubs).
+
+    ``EXISTS`` rather than a join-and-filter on ``ref_tags``/``tags``: a
+    hub can carry at most one live tag per (namespace, value) pair, but an
+    ``EXISTS`` can't multiply the outer row count even if that invariant
+    were ever violated, where a ``JOIN`` silently could.
+
+    Deliberately **no** ``rt.expires_at`` filter (:func:`block`, the hot
+    dedup path this predicate was first extracted from, doesn't filter it
+    either — see that function's own comment on the asymmetry with
+    ``workers/health_digest.py::_check_claim_hub_dedup_index``, which does
+    filter it but can't call this helper at all: that module asserts zero
+    ``llm`` imports, direct or transitive, and this module imports
+    :mod:`precis.utils.llm.router`, so it keeps its own literal copy of
+    both ``EXISTS`` clauses instead).
+    """
+    return f"""\
+    EXISTS (
+        SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+         WHERE rt.ref_id = {ref_alias}.ref_id
+           AND t.namespace = %(taproot_ns)s AND t.value = %(taproot_claim)s
+    )
+    AND EXISTS (
+        SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+         WHERE rt.ref_id = {ref_alias}.ref_id
+           AND t.namespace = %(status_ns)s AND t.value = %(status_canonical)s
+    )"""
+
 
 def claim_sha(title: str) -> str:
     """Stable content hash of a claim sentence (a hub's ``title``).
@@ -807,11 +873,15 @@ def block(
     :meth:`~precis.store.Store.blocks.upsert_card_combined` is reached
     only from :class:`~precis.handlers._numeric_ref.NumericRefHandler`'s
     create path behind ``emits_card``, which ``finding`` does not set, and
-    taproot's system writer never emitted one. Measured over prod, 187 of
-    1,524 live hubs carried a card (12.3%) — and those 187 came from
-    ``workers/chase.py::_snapshot_chain``, whose text is a chain snapshot
-    rather than the claim sentence. So the dedup index was both mostly
-    empty and, where populated, off-content.
+    taproot's system writer never emitted one. Measured over prod on
+    2026-08-19, 187 of 1,524 ``TAPROOT:claim``-tagged findings carried a
+    card (12.3%) — and those 187 came from ``workers/chase.py::_snapshot_chain``,
+    whose text is a chain snapshot rather than the claim sentence. So the
+    dedup index was both mostly empty and, where populated, off-content.
+    (That 1,524 was the permissive ``TAPROOT:claim``-alone population —
+    :func:`claim_hub_predicate_sql` narrowed it to the strict count of
+    1,244 live hubs on 2026-08-20,
+    ``docs/backlog/claim-hub-definition-divergence.md``.)
 
     The body chunk is the right index and needs no new machinery: every
     hub has one (:func:`~precis.taproot.hub.mint_hub` writes it in the
@@ -831,20 +901,19 @@ def block(
     forbid it.
     """
     vector = embedder.embed_one(claim.sentence)
-    # NB: no ``rt.expires_at`` filter here, while
-    # ``workers/health_digest.py::_check_claim_hub_dedup_index`` — which
-    # watches this query's coverage invariant — does filter it. Inert today:
-    # nothing sets an expiry on ``TAPROOT:claim``. If that ever changes, the
-    # two disagree about which hubs are live and the health check will report
-    # coverage against a different denominator than the retrieval it guards.
-    # Unify both at that point; do not add a filter here on spec, since this
+    # NB: :func:`claim_hub_predicate_sql` has no ``rt.expires_at`` filter,
+    # while ``workers/health_digest.py::_check_claim_hub_dedup_index`` —
+    # which watches this query's coverage invariant, and keeps its own
+    # literal copy of this predicate rather than importing it (see that
+    # helper's docstring) — does filter it. Inert today: nothing sets an
+    # expiry on ``TAPROOT:claim``. If that ever changes, the two disagree
+    # about which hubs are live and the health check will report coverage
+    # against a different denominator than the retrieval it guards. Unify
+    # both at that point; do not add the filter here on spec, since this
     # is the hot dedup path.
-    sql = """
+    sql = f"""
         SELECT r.ref_id, r.title, (ce.vector <=> %(vec)s::vector) AS dist
         FROM refs r
-        JOIN ref_tags rt ON rt.ref_id = r.ref_id
-        JOIN tags t ON t.tag_id = rt.tag_id
-                   AND t.namespace = %(ns)s AND t.value = %(val)s
         JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = 0
                      AND c.chunk_kind = 'finding_body'
                      AND c.retired_at IS NULL
@@ -852,15 +921,15 @@ def block(
                                 AND ce.embedder = %(embedder)s
                                 AND ce.status = 'ok'
         WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+          AND {claim_hub_predicate_sql()}
         ORDER BY ce.vector <=> %(vec)s::vector ASC
         LIMIT %(k)s
     """
     params = {
         "vec": vector,
-        "ns": TAPROOT_NAMESPACE,
-        "val": TAPROOT_CLAIM,
         "embedder": embedder_name,
         "k": k,
+        **CLAIM_HUB_PREDICATE_PARAMS,
     }
     with store.pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -1142,7 +1211,10 @@ def place(
 
 __all__ = [
     "CLAIM_FORM_RULES",
+    "CLAIM_HUB_PREDICATE_PARAMS",
     "MERGE_CONFIDENCE_THRESHOLD",
+    "STATUS_CANONICAL",
+    "STATUS_NAMESPACE",
     "TAPROOT_CLAIM",
     "TAPROOT_NAMESPACE",
     "TAPROOT_REVIEW",
@@ -1154,6 +1226,7 @@ __all__ = [
     "Placement",
     "Verdict",
     "block",
+    "claim_hub_predicate_sql",
     "claim_sha",
     "dedup_judge",
     "extract_claim",

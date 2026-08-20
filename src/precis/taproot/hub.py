@@ -9,7 +9,7 @@ through this module. A raw ``INSERT`` / ``store.add_link`` for these
 relations elsewhere bypasses the vocabulary + ``TAPROOT:claim`` guards below
 and is a defect — the exact silent-junk-edge error taproot exists to prevent.
 
-Five functions:
+Six functions:
 
 1. :func:`mint_hub` — create a ``TAPROOT:claim`` ``finding`` hub for a
    paper-grounded claim (open #15: only paper-sourced claims become hubs).
@@ -36,6 +36,13 @@ Five functions:
    :func:`apply_placement`, the compound minted/converged with no evidence
    edge, ``conjunct-of`` links between them, and the not-a-claim audit memo
    (step 8) on the compound's ``meta``.
+6. :func:`merge_hubs` — collapse one already-minted hub (the "loser")
+   into another ("winner"): repoint every evidence/claim-link edge, dedup
+   against edges the winner already holds, drop self-loops, and retire the
+   loser. The merge door (docs/backlog/claim-hub-merge-door.md) none of
+   the above provide — :func:`apply_placement` only prevents a *second*
+   hub being minted for the same claim, it can't collapse two that both
+   already exist.
 
 Callers that populate the edges: ``workers/chase.py::_taproot_bridge`` (the
 forward bridge, supplies the verdict ``meta``), ``workers/hub_refine.py``,
@@ -49,7 +56,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from psycopg.errors import UniqueViolation
 
@@ -59,6 +66,8 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.ingest.provenance import check_ref_retraction
 from precis.store.types import ActorSlug, BlockInsert, Tag
 from precis.taproot.canon import (
+    STATUS_CANONICAL,
+    STATUS_NAMESPACE,
     TAPROOT_CLAIM,
     TAPROOT_NAMESPACE,
     CanonicalClaim,
@@ -126,9 +135,6 @@ _DEFAULT_ROLE = "corroborates"
 EVIDENCE_SRC_KINDS: frozenset[str] = frozenset(
     {"paper", "patent", "edgar", "datasheet"}
 )
-
-_STATUS_NS = "STATUS"
-_STATUS_CANONICAL = "canonical"
 
 
 class TitleRoundTripError(RuntimeError):
@@ -476,7 +482,7 @@ def mint_hub(
         # default finding search).
         store.add_tag(
             ref.id,
-            Tag.closed(_STATUS_NS, _STATUS_CANONICAL),
+            Tag.closed(STATUS_NAMESPACE, STATUS_CANONICAL),
             set_by="system",
             replace_prefix=True,
             conn=c,
@@ -963,6 +969,445 @@ def link_claims(
         return _do(c)
 
 
+#: The relation :func:`merge_hubs` writes from the retired loser to the
+#: winner to record a collapse (requirement 6, docs/backlog/claim-hub-merge-
+#: door.md). Reused, not invented: it is exactly the relation
+#: ``precis taproot refine`` / :func:`link_claims` already writes for
+#: "source hub is subsumed by target hub" (its default ``relation="refines"``)
+#: — a merge collapse is the limit case of a refine (the loser contributes
+#: nothing a reader can't already get from the winner). Deliberately **not**
+#: ``supersedes``/``superseded-by``: those are live in the ``relations``
+#: table but reserved for **nanopub artifact** versioning
+#: (``nanopub_publish``'s state machine / the mirror ops that derive
+#: ``retracted_by``/``superseded_by`` from that edge) — overloading them for
+#: hub *identity* collapse would make a nanopub-artifact reader see a claim
+#: hub in its supersession graph that was never itself published. Also
+#: deliberately not ``meta.superseded_by`` (the cross-kind soft-delete
+#: tombstone :meth:`~precis.store.Store.follow_supersede` transparently
+#: redirects universal-handle resolution through, used by paper dedup /
+#: memory consolidation) for the same reason — same word, different job;
+#: stamping it here would make a `fi<loser>` handle silently resolve as the
+#: winner post-merge, which is a *bigger* behavior change than this door was
+#: asked to make (open question, not decided here — see the module's
+#: ``merge_hubs`` docstring "Known gap").
+MERGE_COLLAPSE_RELATION = "refines"
+
+
+@dataclass(frozen=True)
+class MergeEdge:
+    """One ``links`` row touching the loser hub in a :func:`merge_hubs`
+    plan, and what the merge did (or would do, under ``dry_run=True``)
+    with it.
+
+    ``direction`` is relative to the **loser**: ``"outbound"`` means the
+    loser was ``src_ref_id`` (repointing moves ``src_ref_id`` to the
+    winner); ``"inbound"`` means the loser was ``dst_ref_id`` (repointing
+    moves ``dst_ref_id``). ``other_ref_id`` is the edge's non-loser
+    endpoint.
+    """
+
+    link_id: int
+    relation: str
+    direction: Literal["outbound", "inbound"]
+    other_ref_id: int
+    src_chunk_id: int | None
+    dst_chunk_id: int | None
+    meta: dict[str, Any]
+    action: Literal["repoint", "drop_redundant", "drop_self_loop"]
+    #: Set only when ``action == "drop_redundant"`` — the winner-side
+    #: ``link_id`` this edge would collide with after repointing.
+    duplicate_of_link_id: int | None = None
+
+
+@dataclass(frozen=True)
+class MergePlan:
+    """:func:`merge_hubs`'s full plan — the same object is returned for a
+    dry run (nothing applied) and a real run (exactly what was applied),
+    so the CLI has one formatter for both (requirement 8, merge-door doc).
+    """
+
+    loser_ref_id: int
+    winner_ref_id: int
+    #: True iff the loser was already retired with a recorded collapse
+    #: link to this exact winner — a no-op re-run (requirement 7).
+    #: ``edges``/``can_merge``/``block_reason`` are meaningless when this
+    #: is True (nothing left to compute).
+    already_merged: bool
+    #: False iff either side is past ``candidate`` in ``nanopub_publish``
+    #: (requirement 5) — the merge is refused. Always True when
+    #: ``already_merged`` is True.
+    can_merge: bool
+    block_reason: str | None
+    edges: list[MergeEdge]
+
+
+def _publish_states_past_candidate(conn: Any, ref_id: int) -> list[str]:
+    """The distinct ``nanopub_publish.state`` values recorded for
+    ``ref_id`` that are not ``'candidate'`` — empty when the hub never
+    entered the publish flow, or every row is still ``candidate``. **Any**
+    non-candidate row blocks a merge (requirement 5), including a
+    terminal ``superseded``/``retracted``/``rejected`` one: those still
+    mean an immutable ``nanopub_artifacts`` row exists (or, for
+    ``rejected``, that a human reviewed this exact claim string) keyed to
+    this ``claim_ref_id`` — merging the hub away would orphan that
+    history's referent."""
+    rows = conn.execute(
+        "SELECT DISTINCT state FROM nanopub_publish "
+        "WHERE claim_ref_id = %s AND state != 'candidate'",
+        (ref_id,),
+    ).fetchall()
+    return sorted(str(r[0]) for r in rows)
+
+
+def _collapse_recorded(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> bool:
+    """True iff the loser already carries the :data:`MERGE_COLLAPSE_RELATION`
+    edge to this exact winner — the idempotency check (requirement 7)."""
+    row = conn.execute(
+        "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+        "AND relation = %s LIMIT 1",
+        (loser_ref_id, winner_ref_id, MERGE_COLLAPSE_RELATION),
+    ).fetchone()
+    return row is not None
+
+
+def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> MergePlan:
+    """Read-only: compute the full :class:`MergePlan` for collapsing
+    ``loser_ref_id`` into ``winner_ref_id`` on ``conn``. Never writes.
+
+    Raises :class:`BadInput` for structural/usage problems (a ref that
+    doesn't exist at all, a live-but-not-a-claim-hub ref, or a
+    soft-deleted loser with no recorded merge into this winner) — those
+    are caller mistakes, not part of "the plan" a dry-run reports
+    (requirement 8's plan is about the merge's own mechanics, e.g. the
+    publish-state refusal, which IS reported rather than raised here).
+    """
+    loser_row = conn.execute(
+        "SELECT deleted_at FROM refs WHERE ref_id = %s", (loser_ref_id,)
+    ).fetchone()
+    if loser_row is None:
+        raise BadInput(f"loser ref_id={loser_ref_id} does not exist")
+
+    if loser_row[0] is not None:  # loser already soft-deleted
+        if _collapse_recorded(
+            conn, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
+        ):
+            return MergePlan(
+                loser_ref_id=loser_ref_id,
+                winner_ref_id=winner_ref_id,
+                already_merged=True,
+                can_merge=True,
+                block_reason=None,
+                edges=[],
+            )
+        raise BadInput(
+            f"loser ref_id={loser_ref_id} is already deleted, but carries no "
+            f"recorded {MERGE_COLLAPSE_RELATION!r} merge link into winner "
+            f"ref_id={winner_ref_id} -- refusing to guess what deleted it",
+            next=(
+                "if this loser was merged into a DIFFERENT winner, that's not "
+                "this merge's business; if it was deleted for an unrelated "
+                "reason, taproot merge cannot restore/redirect it"
+            ),
+        )
+
+    if not _is_claim_hub(loser_ref_id, conn=conn):
+        raise BadInput(
+            f"loser ref_id={loser_ref_id} is not a live TAPROOT:claim hub",
+            next="merge only collapses one claim hub into another",
+        )
+    if not _is_claim_hub(winner_ref_id, conn=conn):
+        raise BadInput(
+            f"winner ref_id={winner_ref_id} is not a live TAPROOT:claim hub",
+            next="merge only collapses one claim hub into another",
+        )
+
+    blocked: list[str] = []
+    for label, ref_id in (("loser", loser_ref_id), ("winner", winner_ref_id)):
+        states = _publish_states_past_candidate(conn, ref_id)
+        if states:
+            blocked.append(
+                f"{label} ref_id={ref_id} has nanopub_publish state(s) {states} "
+                "(past 'candidate')"
+            )
+    can_merge = not blocked
+    block_reason = "; ".join(blocked) if blocked else None
+
+    # Enumerate EVERY live link touching the loser, in either direction,
+    # regardless of relation -- the live vocabulary, not a hardcoded list
+    # (requirement 1: evidence edges, cites from draft chunks, refines,
+    # contradicts, conjunct-of, and anything a future relation adds).
+    rows = conn.execute(
+        "SELECT link_id, src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
+        "       relation, meta "
+        "FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+        (loser_ref_id, loser_ref_id),
+    ).fetchall()
+
+    edges: list[MergeEdge] = []
+    for (
+        link_id,
+        src_ref_id,
+        src_chunk_id,
+        dst_ref_id,
+        dst_chunk_id,
+        relation,
+        meta,
+    ) in rows:
+        outbound = src_ref_id == loser_ref_id
+        new_src = winner_ref_id if src_ref_id == loser_ref_id else src_ref_id
+        new_dst = winner_ref_id if dst_ref_id == loser_ref_id else dst_ref_id
+        other_ref_id = dst_ref_id if outbound else src_ref_id
+        direction: Literal["outbound", "inbound"] = (
+            "outbound" if outbound else "inbound"
+        )
+        edge_meta = dict(meta or {})
+
+        if new_src == new_dst:
+            # The loser was linked directly to the winner (or this row is
+            # itself a stale collapse edge from a prior partial attempt) --
+            # repointing would make the winner point at itself. Drop
+            # (requirement 3), never insert a self-loop.
+            edges.append(
+                MergeEdge(
+                    link_id=int(link_id),
+                    relation=relation,
+                    direction=direction,
+                    other_ref_id=int(other_ref_id),
+                    src_chunk_id=src_chunk_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=edge_meta,
+                    action="drop_self_loop",
+                )
+            )
+            continue
+
+        # Collision check (requirement 2): does the winner already hold
+        # this exact edge? Full endpoint match -- src/dst ref AND chunk,
+        # not just (src_ref, dst_ref, relation) -- so two chunk-grounded
+        # cites from DIFFERENT loser chunks stay distinct (they are NOT
+        # redundant: "the set of chunks that support this point").
+        dup = conn.execute(
+            "SELECT link_id FROM links "
+            "WHERE src_ref_id = %s AND src_chunk_id IS NOT DISTINCT FROM %s "
+            "AND dst_ref_id = %s AND dst_chunk_id IS NOT DISTINCT FROM %s "
+            "AND relation = %s AND link_id != %s LIMIT 1",
+            (new_src, src_chunk_id, new_dst, dst_chunk_id, relation, link_id),
+        ).fetchone()
+
+        if dup is not None:
+            edges.append(
+                MergeEdge(
+                    link_id=int(link_id),
+                    relation=relation,
+                    direction=direction,
+                    other_ref_id=int(other_ref_id),
+                    src_chunk_id=src_chunk_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=edge_meta,
+                    action="drop_redundant",
+                    duplicate_of_link_id=int(dup[0]),
+                )
+            )
+        else:
+            edges.append(
+                MergeEdge(
+                    link_id=int(link_id),
+                    relation=relation,
+                    direction=direction,
+                    other_ref_id=int(other_ref_id),
+                    src_chunk_id=src_chunk_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=edge_meta,
+                    action="repoint",
+                )
+            )
+
+    return MergePlan(
+        loser_ref_id=loser_ref_id,
+        winner_ref_id=winner_ref_id,
+        already_merged=False,
+        can_merge=can_merge,
+        block_reason=block_reason,
+        edges=edges,
+    )
+
+
+def _apply_merge_plan(
+    store: Store,
+    conn: Any,
+    plan: MergePlan,
+    *,
+    set_by: ActorSlug,
+) -> None:
+    """Write side of :func:`merge_hubs`: apply an already-computed,
+    already-allowed (``plan.can_merge``) :class:`MergePlan` on ``conn``.
+
+    Re-uses the plan's own per-edge decisions rather than re-querying for
+    collisions -- the read-then-decide-then-write split means every write
+    here is a plain ``UPDATE``/``DELETE`` by ``link_id``, no risk of a
+    duplicate decision changing between planning and applying within the
+    same transaction.
+    """
+    for edge in plan.edges:
+        if edge.action == "repoint":
+            column = "src_ref_id" if edge.direction == "outbound" else "dst_ref_id"
+            conn.execute(
+                f"UPDATE links SET {column} = %s WHERE link_id = %s",
+                (plan.winner_ref_id, edge.link_id),
+            )
+        else:  # drop_redundant | drop_self_loop -- links has no deleted_at
+            conn.execute("DELETE FROM links WHERE link_id = %s", (edge.link_id,))
+
+    # Record the collapse BEFORE retiring the loser: link_claims requires
+    # both endpoints to be live TAPROOT:claim hubs, which the loser still
+    # is at this point in the transaction (requirement 6). Idempotent by
+    # construction (link_claims no-ops on an existing edge) -- if the loser
+    # already carried a refines->winner edge from a manual `taproot refine`
+    # done before the merge, the loop above already dropped it as a
+    # self-loop (loser->winner, repointed src loser->winner == dst winner),
+    # so this always (re)creates exactly one collapse edge.
+    link_claims(
+        store,
+        from_hub_ref_id=plan.loser_ref_id,
+        to_hub_ref_id=plan.winner_ref_id,
+        relation=MERGE_COLLAPSE_RELATION,
+        set_by=set_by,
+        conn=conn,
+    )
+
+    store.soft_delete_ref(plan.loser_ref_id, conn=conn)
+
+
+def merge_hubs(
+    store: Store,
+    *,
+    loser_ref_id: int,
+    winner_ref_id: int,
+    set_by: ActorSlug = "agent",
+    dry_run: bool = False,
+    conn: Any = None,
+) -> MergePlan:
+    """Collapse ``loser_ref_id`` into ``winner_ref_id`` -- the merge door
+    (docs/backlog/claim-hub-merge-door.md) neither :func:`apply_placement`
+    (dedups only against a hub that doesn't exist yet) nor
+    :func:`refine_claim_sentence` / :func:`link_claims` (link-don't-merge,
+    move no evidence) provide: two hubs that both already exist, one of
+    which must absorb the other's evidence graph and stop existing.
+
+    The winner's own ``refs.title`` / ``meta.scope`` / ``pub_id`` are never
+    touched (requirement 10) -- rewording a hub for lint compliance is
+    :func:`refine_claim_sentence`'s separate job; folding the two together
+    would mean a failed reword takes the merge with it.
+
+    Mechanics, all inside one transaction (requirement 9) when
+    ``dry_run=False``:
+
+    1. Every live ``links`` row touching the loser (either direction, any
+       relation) is either repointed onto the winner, dropped as
+       redundant (the winner already holds the identical edge --
+       full endpoint match, so two chunk-grounded ``cites`` from
+       *different* loser chunks both survive), or dropped as a self-loop
+       (the loser and winner were directly linked). See :func:`_build_merge_plan`.
+    2. The collapse is recorded via a fresh
+       ``loser --{MERGE_COLLAPSE_RELATION}--> winner`` link (written
+       while the loser is still live, through :func:`link_claims` -- the
+       existing single write door for hub<->hub links, not a raw INSERT).
+    3. The loser is soft-deleted (``refs.deleted_at``).
+
+    ``links`` has no ``deleted_at`` -- every drop above is a **hard**
+    DELETE with no undo (requirement 4). ``dry_run=True`` is therefore the
+    only safety net: it runs the exact same planning logic
+    (:func:`_build_merge_plan`) and returns the resulting :class:`MergePlan`
+    **without ever opening a write transaction**, so there is nothing to
+    roll back to get a truthful preview.
+
+    **Refusal** (requirement 5): if either side has a ``nanopub_publish``
+    row past ``'candidate'``, the merge changes an identity a
+    signed/published artifact already froze. A *dry* run still computes
+    and returns the check result (``plan.can_merge`` / ``plan.block_reason``)
+    rather than raising -- "someone has to be able to read that and catch
+    a mistake before it happens" (the spec's own words) requires the
+    refusal to be visible in the printed plan, not just at write time. A
+    *real* run (``dry_run=False``) raises :class:`BadInput` naming which
+    side and what state before writing anything.
+
+    **Idempotent** (requirement 7): a loser that is already soft-deleted
+    *and* already carries the collapse-record edge to this exact winner
+    short-circuits to ``plan.already_merged=True`` with no further reads
+    or writes -- neither an error nor a second attempt to move edges that
+    have already moved. A soft-deleted loser with NO such record (deleted
+    for some unrelated reason, or merged into a *different* winner) is a
+    caller mistake, not idempotency, and raises.
+
+    **Known gap**: the loser's own ``nanopub_publish`` row(s) in state
+    ``'candidate'`` (if any -- allowed, since ``'candidate'`` never blocks
+    a merge) are left pointing at the now-deleted ``claim_ref_id``. Nothing
+    here migrates or retargets them onto the winner -- whether a candidate
+    publish attempt should follow its hub into the winner, or simply lapse,
+    is a product decision this build doesn't make; flagged, not solved.
+
+    Args:
+        loser_ref_id: The hub being retired. Absorbed into ``winner_ref_id``.
+        winner_ref_id: The hub that survives, unchanged (requirement 10).
+        set_by: Audit actor for the edge writes.
+        dry_run: Compute and return the plan; write nothing.
+        conn: An open transaction to fold this write into; ``None`` opens
+            its own (``store.tx()`` for a real run, a plain read connection
+            for ``dry_run=True`` -- see above).
+
+    Returns:
+        The computed :class:`MergePlan` -- identical shape for a dry run
+        (nothing applied) and a real run (exactly what was applied).
+
+    Raises:
+        BadInput: same ``ref_id`` on both sides; a ref that doesn't exist;
+            a live ref that isn't a claim hub; a soft-deleted loser with no
+            recorded merge into this winner; or (real run only) either
+            side past ``candidate`` in ``nanopub_publish``.
+    """
+    if loser_ref_id == winner_ref_id:
+        raise BadInput(
+            f"cannot merge a hub into itself (ref_id={loser_ref_id})",
+            next="loser and winner must be two distinct claim hubs",
+        )
+
+    def _do(c: Any) -> MergePlan:
+        plan = _build_merge_plan(
+            c, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
+        )
+        if dry_run or plan.already_merged:
+            return plan
+        if not plan.can_merge:
+            raise BadInput(
+                f"cannot merge fi{loser_ref_id} into fi{winner_ref_id}: "
+                f"{plan.block_reason}",
+                next=(
+                    "a hub past 'candidate' in nanopub_publish has a frozen "
+                    "identity -- merging it would retroactively re-identify "
+                    "a reviewed/signed/published artifact"
+                ),
+            )
+        _apply_merge_plan(store, c, plan, set_by=set_by)
+        log.info(
+            "taproot: merged hub ref_id=%s into ref_id=%s (%d edge(s) "
+            "repointed, %d dropped)",
+            loser_ref_id,
+            winner_ref_id,
+            sum(1 for e in plan.edges if e.action == "repoint"),
+            sum(1 for e in plan.edges if e.action != "repoint"),
+        )
+        return plan
+
+    if conn is not None:
+        return _do(conn)
+    if dry_run:
+        # Read-only planning never needs a write transaction.
+        with store.pool.connection() as c:
+            return _do(c)
+    with store.tx() as c:
+        return _do(c)
+
+
 def _mint_for_placement(
     store: Store,
     claim: CanonicalClaim,
@@ -1348,12 +1793,16 @@ __all__ = [
     "CLAIM_LINK_RELATIONS",
     "EVIDENCE_SRC_KINDS",
     "HUB_ROLES",
+    "MERGE_COLLAPSE_RELATION",
     "ExtractionOutcome",
+    "MergeEdge",
+    "MergePlan",
     "TitleRoundTripError",
     "apply_extraction",
     "apply_placement",
     "attach_evidence",
     "link_claims",
+    "merge_hubs",
     "mint_hub",
     "refine_claim_sentence",
 ]

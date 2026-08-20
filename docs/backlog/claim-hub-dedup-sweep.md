@@ -62,11 +62,17 @@ three of the four are **not** merges:
 2. **True paraphrases** (`fi176861`/`fi178714`, `fi176714`/`fi178555`,
    `fi191256`/`fi191263`). Merge: keep one hub, move evidence, retire the
    other. This is what `place()` would have done.
-3. **Genuine numeric disagreement** (`fi176432`/`fi177486`: 9–12 GPa vs
-   ~9 GPa). **Do not merge.** One is a range, one a point value; they may
-   both be right at different conditions, or one may be wrong. This is a
-   `disputes` case, not a duplicate — and it is a second real disagreement
-   the corpus can test opposition machinery on.
+3. **Neither claim is grounded** (`fi176432`/`fi177486`: 9–12 GPa vs ~9 GPa).
+   Read as a point-vs-range disagreement until the sources were checked
+   2026-08-20; it is not one. `fi176432` grounds to pa1698, whose passage
+   reports *hardness* "at least 130% greater than … conventional MOF
+   counterparts" and gives no modulus figure at all. `fi177486` grounds to
+   pa4246 — *ZIF-8 films as low-κ dielectrics*, a different MOF — with a NULL
+   grounding chunk. **Do not merge and do not harmonise into a range**: two
+   unsupported claims averaged together are still unsupported. Reground against
+   a source that measures HKUST-1's modulus, or retract both. The only other
+   edge each carries is a `cites` from draft 42995, which is the drafting
+   document, not evidence.
 4. **Scope-differing near-synonyms** (`fi176667`/`fi176669`: macrocycles vs
    structures; `fi176919`/`fi177522`: per-interface vs single-interface).
    These may be a `refines` relationship, not a merge — one is strictly

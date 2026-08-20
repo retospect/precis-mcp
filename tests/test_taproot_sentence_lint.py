@@ -530,3 +530,85 @@ def test_scope_empty_is_advisory_not_paired_with_other_codes() -> None:
     assert lint_scope({}) == [
         "scope-empty: scope is empty -- advisory only, not an error."
     ]
+
+
+# ── mixed-point-range (2026-08-20 numeric-value policy) ──────────────────
+# Deliberately conservative: this module has no access to the source, so it
+# flags only the false-precision *shape* -- a bare point beside a range
+# sharing its unit, no typical-value marker nearby -- and every negative
+# case below pins a way that shape must NOT be over-read.
+
+
+def test_mixed_point_range_fires_on_bare_point_beside_a_range() -> None:
+    warnings = lint_claim_sentence(
+        "Nanoindentation measures a hardness of 3.2 GPa, within a reported "
+        "range of 3–3.4 GPa."
+    )
+    assert any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_typical_plus_range() -> None:
+    # The preferred shape when the source designates a typical value --
+    # must never be flagged as false precision.
+    warnings = lint_claim_sentence(
+        "Nanoindentation measures a bulk modulus of approximately 9 GPa "
+        "across a reported 9–12 GPa range."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_approx_symbol_marker() -> None:
+    warnings = lint_claim_sentence(
+        "Nanoindentation measures a bulk modulus of ≈9 GPa across a "
+        "reported 9–12 GPa range."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_range_alone() -> None:
+    warnings = lint_claim_sentence(
+        "Nanoindentation measures a bulk modulus of 9–12 GPa across samples."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_point_alone() -> None:
+    warnings = lint_claim_sentence(
+        "Nanoindentation measures a bulk modulus of 9.4 GPa for the sample."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_different_units() -> None:
+    # The point value and the range share no unit -- not the same quantity.
+    warnings = lint_claim_sentence(
+        "DFT predicts a 1.2 eV band gap for a device operating at 9–12 GPa."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_two_ranges_same_unit() -> None:
+    # Two side-by-side ranges for two different regimes -- neither
+    # endpoint is a stray point, and this must never cross-fire.
+    warnings = lint_claim_sentence(
+        "The modulus measures 9–12 GPa for the annealed sample and 3–5 GPa "
+        "for the as-deposited one."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_hyphenated_compound_word() -> None:
+    # A hyphenated compound adjective must never be misread as a range.
+    warnings = lint_claim_sentence(
+        "DFT-computed values of 3.2 GPa are reported for the single-walled case."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_negative_number() -> None:
+    # A single negative value has no second number to form a range with --
+    # must never be mistaken for one.
+    warnings = lint_claim_sentence(
+        "DFT predicts a stress of −3.2 GPa near the interface."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)

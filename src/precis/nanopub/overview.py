@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from precis.store._nanopub_ops import TERMINAL_STATES
+from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -256,22 +257,23 @@ def tree_ids(roots: list[HubTreeNode]) -> set[int]:
 
 
 def hub_rows(store: Store) -> list[HubOverviewRow]:
-    """Every live ``TAPROOT:claim`` hub with its publish posture, one
-    query. Disputed first (oldest dispute on top), then minted hubs in
-    mint order (publish-row ``created_at`` — stable across state
-    transitions, so signing a hub never moves its row), then unminted."""
+    """Every live claim hub — ``TAPROOT:claim`` **and** ``STATUS:canonical``
+    (:func:`~precis.taproot.canon.claim_hub_predicate_sql`; a ``finding``
+    carrying ``TAPROOT:claim`` alone is a chase-tree finding, not a hub,
+    and must not appear here with a publish posture it can never have) —
+    with its publish posture, one query. Disputed first (oldest dispute on
+    top), then minted hubs in mint order (publish-row ``created_at`` —
+    stable across state transitions, so signing a hub never moves its
+    row), then unminted."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    p.id, p.state, p.approved_title, p.claim_sha,
                    p.trusty_uri, p.batch_id, p.updated_at,
                    d.since AS disputed_since,
                    COALESCE(w.n, 0) AS withheld_count
               FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-                         AND t.namespace = 'TAPROOT' AND t.value = 'claim'
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
               LEFT JOIN LATERAL (
@@ -294,10 +296,11 @@ def hub_rows(store: Store) -> list[HubOverviewRow]:
                        AND l.meta->'publish_signoff' IS NULL
               ) w ON TRUE
              WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+               AND {claim_hub_predicate_sql()}
              ORDER BY d.since ASC NULLS LAST, p.created_at ASC NULLS LAST,
                       r.ref_id
             """,
-            {"terminal": list(TERMINAL_STATES)},
+            {"terminal": list(TERMINAL_STATES), **CLAIM_HUB_PREDICATE_PARAMS},
         ).fetchall()
     return [
         HubOverviewRow(

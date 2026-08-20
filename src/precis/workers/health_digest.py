@@ -707,7 +707,10 @@ def _check_card_forge(conn: Any) -> CheckResult:
 
 
 def _check_claim_hub_dedup_index(conn: Any) -> CheckResult:
-    """Every live ``TAPROOT:claim`` hub is reachable by claim dedup.
+    """Every live claim hub (``TAPROOT:claim`` **and** ``STATUS:canonical``
+    — see :func:`precis.taproot.canon.claim_hub_predicate_sql`; a
+    ``finding`` carrying ``TAPROOT:claim`` alone is a chase-tree finding,
+    not a hub) is reachable by claim dedup.
 
     :func:`precis.taproot.canon.block` ANN-retrieves candidate duplicates
     over hubs' ``finding_body`` (``ord=0``) embeddings. A hub missing that
@@ -720,22 +723,33 @@ def _check_claim_hub_dedup_index(conn: Any) -> CheckResult:
     over ``card_combined`` (``ord=-1``), which no code path ever wrote for a
     hub, so coverage sat at 187/1,524 (12.3%) and every "no duplicates
     found" verdict in the corpus was vacuous — undetected for the whole life
-    of the feature. Coverage is the thing to watch, not the freshness of any
-    one pass: the body chunk is written in ``mint_hub``'s own transaction, so
-    a shortfall means either an embed backlog or a hub minted off-door.
+    of the feature. **That 1,524 was the permissive ``TAPROOT:claim``-alone
+    population** — 280 of those rows were chase-tree findings
+    (``STATUS:established``/``dead_chain``/``multi_candidate``), never
+    hubs; this check denominated against them too until 2026-08-20
+    (``docs/backlog/claim-hub-definition-divergence.md``). The strict
+    claim-hub count is 1,244. Coverage is the thing to watch, not the
+    freshness of any one pass: the body chunk is written in ``mint_hub``'s
+    own transaction, so a shortfall means either an embed backlog or a hub
+    minted off-door.
 
     A small non-zero count is usually just embed lag on a fresh mint, hence
     ``warn`` rather than error; a persistent or growing count is a real
     correctness hole.
+
+    Not imported from :mod:`precis.taproot.canon` — this module asserts
+    (``tests/workers/test_health_digest.py::test_module_imports_no_llm``)
+    that it carries no ``llm`` import, direct or transitive, and
+    ``taproot.canon`` imports :mod:`precis.utils.llm.router`; the two tag
+    literals are duplicated here instead (this module's existing
+    convention — every other tag check here inlines its namespace/value
+    literals rather than importing a constant, e.g. the ``STATUS`` checks
+    above).
     """
     sql = """
         SELECT count(*) AS hubs,
                count(*) FILTER (WHERE ce.chunk_id IS NULL) AS unindexed
           FROM refs r
-          JOIN ref_tags rt ON rt.ref_id = r.ref_id
-                          AND (rt.expires_at IS NULL OR rt.expires_at > now())
-          JOIN tags t ON t.tag_id = rt.tag_id
-                     AND t.namespace = 'TAPROOT' AND t.value = 'claim'
           LEFT JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = 0
                             AND c.chunk_kind = 'finding_body'
                             AND c.retired_at IS NULL
@@ -743,6 +757,17 @@ def _check_claim_hub_dedup_index(conn: Any) -> CheckResult:
                                        AND ce.embedder = %s
                                        AND ce.status = 'ok'
          WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                    AND t.namespace = 'TAPROOT' AND t.value = 'claim'
+               )
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = 'STATUS' AND t.value = 'canonical'
+               )
     """
     try:
         row = conn.execute(sql, (health_checks._EMBED_ARTIFACT,)).fetchone()

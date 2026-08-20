@@ -141,6 +141,21 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   symbols (`C₆₀`, `g-C₃N₄`, `≈10⁴ cm² V⁻¹ s⁻¹`, `μB`), never TeX
   fragments (`C$_{60}$`, `$\mu_B$`); it feeds the identity hash. Full
   rules: [[precis-notation-canon]].
+- **Numeric-value policy** (2026-08-20). A hub's sentence is the citable
+  artifact; the source paper's prose is a rendering of it — so a number
+  in a hub follows the source's precision, not the draft's:
+  1. Prefer the range wherever the source supports a spread, **and state
+     what varies** (anisotropy, measurement method, batch/sample, CI) — a
+     bare range without its cause is under-specified.
+  2. If the source designates a typical value, use typical-plus-range —
+     the most informative shape: `≈9 GPa across a reported 9–12 GPa`.
+  3. Source gives only a range → state the range alone. Never synthesize
+     a typical value; a midpoint is arithmetic, not measurement.
+  4. A bare point value is admissible only when the source reports it as
+     a point (one measurement, one computed value).
+  5. Hubs don't round — rounding is a draft concern (drafts are
+     rewritable; hubs destroy precision irrecoverably). Form rules
+     (dash, unit placement): [[precis-notation-canon]].
 
 **Sorts of claims** — the bar shifts by sort:
 

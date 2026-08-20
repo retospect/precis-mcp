@@ -90,11 +90,13 @@ it used — `claim-hub-definition-divergence.md` owns the fix.
 not on `refs.meta`, not on `nanopub_publish`. Both come from running
 `precis taproot lint`, so both go stale silently and must be re-derived at use.
 
-**Blocked on an input we do not have:** the boxel document's `dr` id was never
-obtained, so its per-document cohort pass cannot start. Every other document
-in the campaign has one. This is a question for Reto, not a task — until it is
-answered the boxel cohort is simply out of scope, and should not be counted as
-outstanding work against the campaign.
+**Boxel document is `dr42995`** (confirmed by Reto 2026-08-20) — *"Molecular
+Computing from Self-Assembling Nanoscale Cubes"*. Found by tracing the HKUST-1
+groundings rather than supplied; it cites claim hubs directly, so its cohort
+scopes exactly like `dr173020`'s (`links.src_chunk_id → chunks.ref_id = 42995`,
+`relation='cites'`). No longer blocked — the per-document cohort pass can start.
+Its first known defect: it cites both misgrounded HKUST-1 hubs, so the modulus
+figures in its interface section rest on nothing.
 
 ## Open — re-approval sequencing (load-bearing order)
 

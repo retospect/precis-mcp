@@ -95,6 +95,21 @@ of the bibliography-stub failure mode. The en dash `–` (U+2013, a
 different code point from em dash `—` U+2014) is never matched by
 `em-dash` -- it has 102 legitimate uses in this corpus (ranges, compound
 method/element names) that must never trip it.
+
+**`mixed-point-range` (2026-08-20 numeric-value policy) is the content
+counterpart to `notation.py`'s form checks.** The policy: prefer a range
+over a bare point wherever the source supports a spread, and if the
+source designates a typical value, use typical-plus-range
+(`≈9 GPa across a reported 9-12 GPa`) -- never a bare midpoint, since a
+midpoint is arithmetic, not a measurement. This module has no access to
+the source passage, so it can only ever flag the *shape* (a bare point
+and a range sharing a unit, with no typical-value marker nearby) --
+never confirm whether the point is source-designated or invented.
+Deliberately advisory-only and deliberately conservative for that reason
+-- a false positive here is worse than a miss, so a marker word anywhere
+in a short leading window suppresses the warning, and every range's own
+span is excluded from the point search so two side-by-side ranges (two
+different regimes) never cross-fire.
 """
 
 from __future__ import annotations
@@ -620,6 +635,85 @@ _FINITE_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── mixed-point-range (2026-08-20 numeric-value policy) ──────────────────
+#
+# Not a notation check -- `notation.py::_RANGE_UNIT_REPEATED_RE` already
+# owns the deterministic "unit stated twice in a range" form defect. This
+# is the content-shaped one the policy calls "the useful one": a sentence
+# giving both a range and a bare point value for what reads as the same
+# quantity (same unit) is the false-precision shape UNLESS the point
+# value carries a source-designated-typical marker ("approximately 9 GPa
+# across a reported 9-12 GPa" -- fine; "3.2 GPa" beside "3-3.4 GPa" with
+# no marker -- the shape the policy bans, a midpoint asserted as if
+# measured). This module has no access to the source passage, so it can
+# never tell a genuine source-designated typical from an invented one --
+# deliberately advisory-only, and deliberately conservative: a marker
+# word anywhere in a short window before the point value suppresses the
+# warning, and any point-looking number that falls inside a *second*
+# range in the same sentence is skipped rather than misread as a stray
+# point (two side-by-side ranges for two different regimes is common and
+# must never fire this).
+
+#: Numeric range with a trailing unit -- same shape as `notation.py`'s
+#: `hyphen-numeric-range`/`range-unit-repeated` detectors (deliberately
+#: not imported from there: this module stays a pure string check with no
+#: cross-module coupling, matching every other pattern here).
+_RANGE_WITH_UNIT_RE = re.compile(
+    r"(?<![-A-Za-z\d])(\d+(?:\.\d+)?)\s?[–-]\s?(\d+(?:\.\d+)?)"
+    r"\s?([A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
+)
+
+#: Wording that marks a nearby number as a source-designated typical, not
+#: an invented midpoint -- `≈9 GPa`, `~9 GPa`, `approximately`,
+#: `typically`, `nominally`, `on average`, `about`, `around`. Checked in
+#: a short window immediately before the point value; false-negative-
+#: biased on purpose -- an unrecognised marker phrase just means this
+#: code stays silent on a sentence that may in fact be fine, never that
+#: it wrongly blames one (module contract above).
+_TYPICAL_MARKER_RE = re.compile(
+    r"≈|~|\bapproximately\b|\btypically\b|\bnominally\b|\bon average\b|"
+    r"\babout\b|\baround\b|\bapprox\.?\b",
+    re.IGNORECASE,
+)
+
+#: Chars of leading context inspected for a typical-value marker --
+#: generous enough for "approximately " (14 chars) plus a short lead-in
+#: clause, tight enough that a marker from an unrelated earlier clause in
+#: a long sentence doesn't leak across and suppress a real miss.
+_TYPICAL_MARKER_WINDOW_CHARS = 24
+
+
+def _mixed_point_range_hit(sentence: str) -> tuple[str, str] | None:
+    """First bare point value sharing a range's unit with no nearby
+    typical-value marker, or ``None``. Returns ``(point_text, unit)``.
+
+    Checks each range's unit independently (a sentence can name two
+    ranges for two different regimes, each with its own unit) and always
+    excludes every range's own span from the point-value search -- one
+    range's right endpoint must never read as a stray point next to a
+    *different* range sharing its unit.
+    """
+    range_matches = list(_RANGE_WITH_UNIT_RE.finditer(sentence))
+    if not range_matches:
+        return None
+    range_spans = [m.span() for m in range_matches]
+    units = dict.fromkeys(m.group(3) for m in range_matches)  # dedup, keep order
+    for unit in units:
+        point_re = re.compile(
+            r"(?<![-\d.])(\d+(?:\.\d+)?)\s?" + re.escape(unit) + r"\b"
+        )
+        for m in point_re.finditer(sentence):
+            if any(start <= m.start() < end for start, end in range_spans):
+                continue  # this hit is a range endpoint, not a stray point
+            window = sentence[
+                max(0, m.start() - _TYPICAL_MARKER_WINDOW_CHARS) : m.start()
+            ]
+            if _TYPICAL_MARKER_RE.search(window):
+                continue
+            return m.group(1), unit
+    return None
+
+
 # ── author-name ───────────────────────────────────────────────────────────
 
 _AUTHOR_NAME_RE = re.compile(
@@ -773,6 +867,20 @@ def lint_claim_sentence(sentence: str) -> list[str]:
             f"author-name: {m.group(0)!r} found -- provenance belongs in "
             "evidence edges (`link(rel='corroborates', ...)`), not the "
             "claim sentence itself."
+        )
+
+    point_hit = _mixed_point_range_hit(sentence)
+    if point_hit:
+        point_text, unit = point_hit
+        warnings.append(
+            f"mixed-point-range: {point_text!r} {unit} found beside a "
+            f"{unit} range with no typical-value marker nearby -- if the "
+            "source designates a typical value, write it as "
+            f"'≈{point_text} {unit} across a reported <range> {unit}' "
+            "(precis-taproot-mint-help's numeric-value policy); "
+            "otherwise a bare point beside a range reads as an invented "
+            "midpoint. Advisory only -- this check has no access to the "
+            "source and cannot confirm which case applies."
         )
 
     return warnings

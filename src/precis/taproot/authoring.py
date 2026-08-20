@@ -39,7 +39,12 @@ from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-__all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
+__all__ = [
+    "resolve_hub_ref_id",
+    "resolve_merge_loser_ref_id",
+    "resolve_paper_ref_id",
+    "seed_claim_hub",
+]
 
 
 #: Supporter refs must be one of these kinds (taproot evidence relations /
@@ -148,6 +153,63 @@ def resolve_hub_ref_id(store: Store, hub: int | str) -> int:
             "pass a hub ref_id (int), a 'fi<id>' finding handle, a cite_key, "
             "or a pub_id slug for a live TAPROOT:claim hub — mint it first "
             "with 'precis taproot mint' if it doesn't exist yet"
+        ),
+    )
+
+
+def resolve_merge_loser_ref_id(store: Store, hub: int | str) -> int:
+    """Resolve ``precis taproot merge --loser``.
+
+    Like :func:`resolve_hub_ref_id`, and reusing the same resolvers, but
+    **not** gated on the ref currently being a *live* claim hub: the loser
+    side of an already-applied merge is soft-deleted
+    (:func:`~precis.taproot.hub.merge_hubs` sets ``refs.deleted_at``), and
+    re-running the same merge must still find it so
+    :func:`~precis.taproot.hub.merge_hubs` can report the idempotent no-op
+    (that function's own domain check, with a clearer error than a bare
+    resolution failure) rather than the CLI failing to resolve the handle
+    at all. This function's only job is "find *a* ref, live or not" —
+    :func:`~precis.taproot.hub.merge_hubs` decides what state it's allowed
+    to be in.
+
+    ``include_deleted=True`` covers the bare ``ref_id`` / cite_key / pub_id
+    forms. A ``fi<id>`` **universal handle** is the one exception: it still
+    won't resolve here for an already-merged loser, because
+    :meth:`~precis.store.Store.resolve_handle` only transparently follows a
+    soft-delete via ``meta.superseded_by`` — which a merge deliberately
+    never stamps (that field means something else for a claim hub; see
+    :data:`~precis.taproot.hub.MERGE_COLLAPSE_RELATION`'s docstring). An
+    idempotent re-run needs the loser's bare ref_id or its pub_id/cite_key,
+    not its ``fi<id>`` handle.
+
+    Raises:
+        BadInput: ``hub`` doesn't resolve to any ref at all (live or
+            soft-deleted).
+    """
+    if isinstance(hub, bool):  # bool is an int subclass -- guard the footgun
+        raise BadInput(f"cannot resolve claim hub: {hub!r}")
+
+    ref_id: int | None
+    if isinstance(hub, int):
+        ref_id = hub
+    else:
+        token = hub.strip()
+        target = resolve_handle_target(store, token)
+        if target is not None:
+            ref_id = target.dst_ref_id
+        else:
+            ref = resolve_handle_ref(store, token, include_deleted=True)
+            ref_id = int(ref.id) if ref is not None else None
+
+    if ref_id is not None:
+        return ref_id
+
+    raise BadInput(
+        f"cannot resolve claim hub: {hub!r}",
+        next=(
+            "pass a hub ref_id (int), a 'fi<id>' finding handle, a cite_key, "
+            "or a pub_id slug -- an already-merged loser resolves by ref_id "
+            "or pub_id/cite_key only, not its 'fi<id>' handle"
         ),
     )
 

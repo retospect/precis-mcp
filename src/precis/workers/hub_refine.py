@@ -160,7 +160,11 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 
 from precis.store.types import Tag
-from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
+from precis.taproot.canon import (
+    CLAIM_HUB_PREDICATE_PARAMS,
+    claim_hub_predicate_sql,
+    claim_sha,
+)
 from precis.taproot.hub import HUB_ROLES, attach_evidence, run_retraction_checks
 from precis.taproot.resolve import resolve_citation
 from precis.utils import handle_registry
@@ -172,13 +176,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: Mirrors ``taproot.hub``'s own private ``STATUS:canonical`` marker
-#: (``_STATUS_NS`` / ``_STATUS_CANONICAL`` there) — duplicated as plain
-#: strings here rather than importing hub.py's underscored names, the
-#: same call ``workers/inbound_chase.py`` makes for its own ``INBOUND``
-#: namespace constants.
-_STATUS_NAMESPACE = "STATUS"
-_STATUS_CANONICAL = "canonical"
+#: The claim-hub tag predicate, pre-rendered for embedding into this
+#: module's own ``WHERE`` clauses (:func:`~precis.taproot.canon.claim_hub_predicate_sql`
+#: — the single source of truth for "is this ref a claim hub", not a
+#: fourth reinvention of the pair of ``EXISTS`` clauses).
+_CLAIM_HUB_SQL = claim_hub_predicate_sql()
 
 #: The evidence-edge role hub-refine always attaches with — never
 #: ``establishes`` (originator promotion is derived elsewhere, see the
@@ -337,7 +339,7 @@ def _claim_hubs_due_for_refine(
     converge.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT r.ref_id, r.title, r.meta,
                EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
@@ -354,18 +356,7 @@ def _claim_hubs_due_for_refine(
           FROM refs r
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %(taproot_ns)s
-                    AND t.value = %(taproot_claim)s
-               )
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %(status_ns)s
-                    AND t.value = %(status_canonical)s
-               )
+           AND {_CLAIM_HUB_SQL}
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id
@@ -379,10 +370,7 @@ def _claim_hubs_due_for_refine(
             "due_ns": _DUE_NS,
             "due_value": _DUE_VALUE,
             "attempt_ns": _ATTEMPT_NS,
-            "taproot_ns": TAPROOT_NAMESPACE,
-            "taproot_claim": TAPROOT_CLAIM,
-            "status_ns": _STATUS_NAMESPACE,
-            "status_canonical": _STATUS_CANONICAL,
+            **CLAIM_HUB_PREDICATE_PARAMS,
         },
     ).fetchall()
 
