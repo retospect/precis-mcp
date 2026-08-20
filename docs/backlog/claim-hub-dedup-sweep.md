@@ -13,10 +13,18 @@ which every hub has. This item is the one-time backward sweep over the
 duplicates that accumulated while the index was blind; `place()` handles the
 forward direction from here.
 
-## The cohort, measured 2026-08-20
+## The cohort, measured 2026-08-20 — **contaminated, re-measure first**
+
+The measurement below used `TAPROOT:claim` alone as the hub predicate, which is
+`block()`'s definition and includes **280 rows that are not hubs** — see
+`claim-hub-definition-divergence.md`. The strict population is 1,244, not 1,527.
+Re-run the all-pairs scan against `TAPROOT:claim` **+ `STATUS:canonical`** before
+acting on any band; pairs whose either side is a chase-tree finding are not
+duplicates and must not reach the merge path. The table stands only as evidence
+that a real cohort exists.
 
 Cosine distance between the `finding_body` chunk embeddings of every live
-`TAPROOT:claim` hub pair (1,527 embedded hubs, all-pairs):
+`TAPROOT:claim` hub pair (1,527 embedded, permissive predicate, all-pairs):
 
 | band | pairs |
 |---|---|

@@ -66,13 +66,29 @@ where coverage is thickest.
    written to prod.
 2. **`pub_id` re-hash + duplicate rescan** — normalizing changes the hash
    input; stored `pub_id`s don't collapse on their own. Must follow #1.
-3. **156 of ~1,525 hubs (~10.2%)** carry a lint-flagged `scope` value,
-   accumulated while the lint was live but unsurfaced. Not mechanical — a
-   scope value is a term choice, rewriting one changes `pub_id` and may
-   collapse hubs.
-4. **Near-duplicate hub sweep** — 24 pairs under 0.10 cosine, 9 under 0.05,
-   spec in `claim-hub-dedup-sweep.md`. Must precede re-approval for the same
-   reason as #2: merging changes `pub_id`.
+3. **156 hubs** carry a lint-flagged `scope` value, accumulated while the lint
+   was live but unsurfaced. Not mechanical — a scope value is a term choice,
+   rewriting one changes `pub_id` and may collapse hubs.
+4. **Near-duplicate hub sweep** — spec in `claim-hub-dedup-sweep.md`. Its
+   cohort was measured over the permissive hub predicate and **must be
+   re-measured** before it runs. Must precede re-approval for the same reason
+   as #2: merging changes `pub_id`.
+5. **Title/body reconciliation residue.** 297 hubs diverge under the permissive
+   predicate, **45** under the strict one — and 43 of those 45 are inside the
+   dr173020 cohort. Raw and whitespace-normalized counts are identical at every
+   level, so **not one divergence is cosmetic**: every case is a wording
+   difference needing a call about which text is right. This is curation, not a
+   pass; do not plan it as a mechanical sweep.
+
+**Which denominator.** `mint_hub` writes both `TAPROOT:claim` and
+`STATUS:canonical`; `block()` and the nanopub overview read only the former and
+so count 1,524, while `hub_refine`/`chase_trigger` require both and count 1,244.
+The strict number is the real one. Every count above should say which predicate
+it used — `claim-hub-definition-divergence.md` owns the fix.
+
+**Neither the notation (456) nor the scope (156) verdict is stored anywhere** —
+not on `refs.meta`, not on `nanopub_publish`. Both come from running
+`precis taproot lint`, so both go stale silently and must be re-derived at use.
 
 **Blocked on an input we do not have:** the boxel document's `dr` id was never
 obtained, so its per-document cohort pass cannot start. Every other document
@@ -130,8 +146,17 @@ depth.
 Scope the cohort via `links.src_chunk_id → chunks.ref_id = 173020`
 (`relation='cites'`), run the passes above over it rather than the whole
 corpus. Live-count re-verified 2026-08-20: **126** distinct live findings
-cited, 118 with a `nanopub_publish` row (all `candidate` per the
-re-approval note above). `nanobud-nanopub-batch3.md` carries this
+cited (permissive predicate), 116 with a `nanopub_publish` row, **all
+`candidate`** — 0 reviewed, 0 signed, 0 published.
+
+The cohort is a far larger share of some passes than of others, which is the
+argument for running it cohort-scoped rather than waiting for corpus-wide
+sweeps: title/body is **43 of 45** strict-predicate divergences (96%), scope is
+123 of 394 hubs-with-a-scope (31%), and notation is a small minority — the
+notation backlog is overwhelmingly *not* nanobuds. Only the second of each
+known duplicate pair (fi191260, fi191262) is cited here; fi191179 and fi191192
+sit outside the cohort entirely, so a merge touches a hub the draft does not
+cite. `nanobud-nanopub-batch3.md` carries this
 cohort's per-hub sign-off/adjudication queue and points here for the
 count.
 
