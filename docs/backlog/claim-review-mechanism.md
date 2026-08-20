@@ -48,6 +48,79 @@ holds the fact.
   `precis-notation-canon` (dropped the unguarded v3.0 ASCII fallback
   table).
 
+## Reto's ruling 2026-08-20 — the source is the authority, the text is adjustable
+
+The draft is machine-written and carries no authority of its own. **Truth flows
+source → claim → draft**, and both the claim sentence and the draft prose may be
+rewritten to match what the underlying passage actually supports. A
+claim-versus-passage mismatch is therefore normally a **repair**, not a
+retraction: adjust the sentence to what the source says.
+
+**Reality is the arbiter; our wishes and assumptions do very little.** The
+draft's early assertions carry no weight. When claim and text disagree, refine
+rapidly along the whole stack — source, claim, and prose — and let the assertion
+die if that is where the evidence lands. Deleting a paragraph is a legitimate,
+expected outcome.
+
+Three limits, which are the difference between repair and drift:
+
+1. **Do not hunt for the one source that props up an early assumption.** This is
+   the dangerous failure mode, and a ~10× corpus makes it easy: search hard
+   enough and *something* supports almost any proposition. The order is read
+   what the literature says → write the claim that follows → then see whether
+   the draft's assertion survives. Never: keep the assertion, hunt for support.
+   A claim that had to be searched for is weaker evidence than one that fell out
+   of the reading.
+2. **Equally, do not let retrieval order set the claim.** Silently shrinking a
+   claim to fit whichever passage happened to get attached first shapes the
+   corpus by search accident rather than by the literature. The rule is not
+   "prefer the stronger claim" nor "prefer the weaker" — it is *state what the
+   best available evidence supports, in whichever direction that moves*. If the
+   honest answer is weaker, weaker is correct.
+3. **A mismatch has three causes and only one is "the claim is wrong"** — see
+   `nanobud-grounding-audit-2026-08-20.md`. The passage can be corrupt
+   (`ingest-strips-greek-glyphs.md`) and the reader can misjudge the study type.
+   Both were live today, and both would have been "repaired" into errors under a
+   rewrite-first reflex. Read the source before adjusting the sentence.
+
+**Design consequence — widening is motivated retrieval by construction.**
+`hub_refine` searches for evidence *supporting an existing claim*. Run alone
+against a large corpus that is a confirmation engine: it will find support for
+whatever the claim already says, including claims that are wrong. It must be
+paired with a disconfirmation search over the same neighbourhood — the
+`disputes`/`contradicts` work in
+`disputes-edge-nonblocking-disagreement.md`, which is built but dark (stage 7
+*Oppose* preserves a verdict and never writes the edge). Enabling widening
+without opposition would systematically harden the corpus's existing errors.
+Symmetric search is not a refinement of the widening plan; it is a precondition
+for it being honest.
+
+## The corpus grew ~10× — what that unlocks
+
+Reto added roughly ten times the original papers (2026-08-20). This changes the
+disposition of the weak sets rather than just their size:
+
+- The **331 `dr42995` hubs with no grounding text** move from "probably exclude"
+  to "reground first" — support that did not exist in the corpus may now.
+- The **313 hubs grounded *exclusively* by Greek-strip-exposed sources** may now
+  have a clean second witness, which repairs them without waiting on the ingest
+  fix. (It does not retire the ingest fix — new scarred papers keep arriving —
+  but it decouples the two.)
+- The **HKUST-1 pair** (`fi176432`/`fi177486`) becomes regroundable against a
+  source that actually measures the modulus, instead of a retract-both.
+- **New claims** can be mined from the added papers and from `dr42995`'s 9,175
+  uncited chunks.
+
+This is the moment the **widening** stage earns its keep. `hub_refine` /
+`chase_trigger` exist precisely to find more support for claims that already
+exist, and they have been built-but-dark; a 10× corpus growth is exactly the
+condition under which a re-run pays. Enabling them is now the highest-value next
+move rather than a deferred item. Constraints unchanged: land `exclude_ref_ids`
+first, `claim_embeddings` is EMPTY so `chase_trigger`'s first pass is a cold
+build of ~1,244 vectors, run `chase_trigger` alone until its sweep drains, and
+then `hub_refine` on a **single host** — the memo write is a read-modify-write on
+`meta` with no CAS (`store/_refs_ops.py::update_ref`).
+
 ## Open — disputes / adversarial review
 
 Owned by `docs/backlog/disputes-edge-nonblocking-disagreement.md`: the

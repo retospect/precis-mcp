@@ -34,6 +34,10 @@ Subcommands:
   ``--attesting`` entry is the human key.
 * ``publish FI --live`` — the registry POST, **the point of no
   return**; without ``--live`` a dry run printing what would be POSTed.
+* ``backfill-unheld``   — one-off: move the legacy "not in corpus" prose
+  marker onto ``meta.primary_source_unheld`` (dry run without
+  ``--apply``). Idempotent; an empty dry run means
+  :func:`precis.nanopub.gates.check_primary_source`'s prose arm can go.
 """
 
 from __future__ import annotations
@@ -172,6 +176,16 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Loop passes until no codes are missing (the initial pull).",
     )
     mir_sub.add_parser("status", help="Mirror row counts + flag totals.")
+
+    p_bu = s.add_parser(
+        "backfill-unheld",
+        help="Stamp meta.primary_source_unheld on legacy prose-marked hubs.",
+    )
+    p_bu.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the flag (default: dry run listing what would be stamped).",
+    )
     return parser
 
 
@@ -223,6 +237,8 @@ def run(args: argparse.Namespace) -> None:
             _publish(args, store)
         elif cmd == "mirror":
             _mirror(args, store)
+        elif cmd == "backfill-unheld":
+            _backfill_unheld(args, store)
     finally:
         store.close()
 
@@ -380,6 +396,33 @@ def _audit(store) -> None:
     for f in findings:
         print(f"[{f.kind}] {f.subject}: {f.message}")
     sys.exit(1)
+
+
+def _backfill_unheld(args: argparse.Namespace, store) -> None:
+    """One-off migration of the acquisition state out of prose.
+
+    Every hub whose ``finding_body`` still says "not in corpus" gets
+    ``meta.primary_source_unheld`` instead — the same fact, somewhere
+    ``refine_claim_sentence`` cannot overwrite. Idempotent (already-stamped
+    hubs drop out of the query), so re-running is a no-op and an empty dry
+    run is the signal that ``check_primary_source``'s prose arm has no
+    remaining source and can be deleted."""
+    from precis.nanopub import evidence
+
+    hubs = evidence.prose_marked_hubs(store)
+    if not hubs:
+        print(
+            "no prose-marked hubs left — every acquisition state is "
+            "structural (the gate's prose arm is retirable)"
+        )
+        return
+    for ref_id, title, marker in hubs:
+        print(f"fi{ref_id}  {marker!r}  {title[:70]}")
+    if not args.apply:
+        print(f"\ndry run — {len(hubs)} hub(s) would be stamped; re-run with --apply")
+        return
+    written = evidence.declare_primary_source_unheld(store, [h[0] for h in hubs])
+    print(f"\nstamped meta.{evidence.PRIMARY_UNHELD_META_KEY} on {written} hub(s)")
 
 
 def _preflight(args: argparse.Namespace, store) -> None:

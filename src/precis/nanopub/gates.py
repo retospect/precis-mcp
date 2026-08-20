@@ -105,6 +105,7 @@ def run_mint_gates(
     *,
     hub_meta: dict[str, Any] | None = None,
     at_sign: bool = False,
+    provenance_body: str | None = None,
 ) -> list[GateViolation]:
     """All Layer-A gates over one hub's frozen mint ``payload`` (the
     publish row's ``grounding`` envelope: ``passages`` / ``fields`` /
@@ -114,7 +115,19 @@ def run_mint_gates(
 
     ``at_sign`` adds the mint-order gate (#15): approval order is free
     (a compound's text can freeze before its atoms sign), only *mint*
-    order is constrained — a compound signs after its atoms."""
+    order is constrained — a compound signs after its atoms.
+
+    ``provenance_body`` overrides ``bundle.body`` for the acquisition
+    gate's prose arm ONLY (:func:`check_primary_source` — the one check
+    that reads a *state of the world*, is this hub's primary source in
+    the corpus, rather than the text being published).
+    :func:`precis.nanopub.mint.approve` passes the hub's PRE-reword body
+    there: a review-time reword replaces ``finding_body`` with the new
+    sentence, so gating the post-reword body would let the reword launder
+    the harvester's "not in corpus" note out of a claim on the very call
+    that approves it. Every other gate stays on ``bundle``: the
+    sentence-shaped lints must see exactly the text that gets frozen and
+    signed."""
     violations: list[GateViolation] = []
 
     # 1 — contradicts-edge gate (first; SQL-cheap; worst-of applies).
@@ -221,26 +234,7 @@ def run_mint_gates(
             )
         )
 
-    # Acquisition-marker hearsay gate (2026-08-16 intro-gap fix): a hub
-    # whose own prose says the primary source was never ingested cannot
-    # be grounded in a *citing* paper's text — section-path matching
-    # alone misses intros. Hanging mints (no passages) stay allowed:
-    # that IS the designed path while the paper hunt runs.
-    if passages:
-        marked = ev.ACQUISITION_MARKER.search(
-            bundle.body
-        ) or ev.ACQUISITION_MARKER.search(bundle.sentence)
-        if marked:
-            violations.append(
-                GateViolation(
-                    "primary-source",
-                    f"hub carries a needs-acquisition marker "
-                    f"({marked.group(0)!r}) — its primary source is "
-                    "explicitly not in the corpus, so any grounding passage "
-                    "is secondhand; acquire the primary and re-ground, or "
-                    "mint explicitly hanging",
-                )
-            )
+    violations += check_primary_source(bundle, payload, provenance_body=provenance_body)
 
     # Per-passage gates (3, 4, 8, and the 2026-08-15 hearsay gate).
     for i, passage in enumerate(passages, start=1):
@@ -269,6 +263,130 @@ def run_mint_gates(
         violations += check_mint_order(store, bundle)
 
     return violations
+
+
+def check_primary_source(
+    bundle: ev.HubBundle,
+    payload: dict[str, Any],
+    *,
+    provenance_body: str | None = None,
+) -> list[GateViolation]:
+    """Acquisition gate (2026-08-16 intro-gap fix, derived 2026-08-20): a
+    hub whose primary source is not in the corpus cannot be grounded in a
+    *citing* paper's text — that is hearsay whatever section the chunk
+    sits in, and section-path matching alone misses intros. Hanging mints
+    (no passages) stay allowed: that IS the designed path while the paper
+    hunt runs.
+
+    Four arms, any one blocks — three structural, one prose:
+
+    * **derived** (:attr:`~precis.nanopub.evidence.HubBundle.unheld_sources`)
+      — an evidence paper/patent with no live body chunk is one we know of
+      but do not hold, so a passage quoted from some *other* paper is
+      secondhand by construction. Structural, so a reword cannot launder
+      it and no writer has to remember to carry it forward.
+    * **awaiting** (:attr:`~precis.nanopub.evidence.HubBundle.awaiting_sources`
+      / :attr:`~precis.nanopub.evidence.HubBundle.acquiring`) — the
+      acquisition-mode mint's own record: a ``DREAM:acquire`` stub bound by
+      ``awaits-evidence``, or the ``STATUS:acquiring`` tag when the stub is
+      gone. Written by ``put(kind='finding', wants=...)`` since migration
+      0105; this gate is just the first reader. The derived arm misses it
+      because ``awaits-evidence`` is deliberately not an evidence relation
+      — the stub supports nothing yet — so the stub never enters
+      ``bundle.sources``.
+    * **declared** (:data:`~precis.nanopub.evidence.PRIMARY_UNHELD_META_KEY`
+      on ``refs.meta``) — for the shapes no edge expresses: a primary known
+      only by DOI/title that never got a ``refs`` row, a hub whose only
+      evidence edge points at the *citing* paper (which we do hold), or a
+      hub with no evidence edge at all. ``refs.meta`` survives a reword;
+      ``finding_body`` does not.
+    * **prose** — the harvester's "not in corpus" marker in the hub body or
+      sentence, the pre-structural way of saying the same thing.
+      ``provenance_body`` overrides
+      :attr:`~precis.nanopub.evidence.HubBundle.body` for this arm alone,
+      so :func:`precis.nanopub.mint.approve` can read the PRE-reword body
+      (the retitle door replaces ``finding_body`` with the new sentence).
+
+    **Retiring the prose arm** needs one thing to be true: every live hub
+    whose body matches :data:`~precis.nanopub.evidence.ACQUISITION_MARKER`
+    carries the declared flag instead (six in prod as of 2026-08-19).
+    ``precis nanopub backfill-unheld`` is that migration, and its dry run
+    is the test — an empty listing means the regex has no remaining source
+    and can go with the drop of a paragraph, since no code path writes the
+    prose. It stays for this release so nothing regresses mid-deploy.
+
+    A pure-prose hub is exactly the case ``approve`` must refuse BEFORE
+    rewording — see its short-circuit; once the body is rewritten the
+    marker is gone for good (``replace_body_chunk`` hard-deletes). The
+    structural arms need no such care."""
+    if not (payload.get("passages") or []):
+        return []
+    out: list[GateViolation] = []
+    for src in bundle.unheld_sources:
+        out.append(
+            GateViolation(
+                "primary-source",
+                f"evidence {src.kind} ref {src.ref_id} "
+                f"({src.title[:60]}…, role {src.role}) has no stored text — "
+                "we hold its metadata, not the paper, so this claim's "
+                "primary source is not in the corpus and any passage quoted "
+                "from another work is secondhand; acquire it and re-ground, "
+                "or mint explicitly hanging",
+            )
+        )
+    for src in bundle.awaiting_sources:
+        out.append(
+            GateViolation(
+                "primary-source",
+                f"hub awaits evidence from {src.kind} ref {src.ref_id} "
+                f"({src.title[:60]}…) — an acquisition-mode stub with no "
+                "stored text, so the paper this claim was minted against is "
+                "still not in the corpus; wait for the fetch (chase grounds "
+                "the claim itself once it lands), or mint explicitly hanging",
+            )
+        )
+    if bundle.acquiring and not bundle.awaiting_sources:
+        # The stub(s) are gone (soft-deleted) but the lifecycle state says
+        # the claim was never grounded — chase flips STATUS:acquiring the
+        # moment it is. Named separately only when no stub survives to
+        # name; otherwise the loop above already says which paper.
+        out.append(
+            GateViolation(
+                "primary-source",
+                "hub is STATUS:acquiring — the acquisition-mode lifecycle "
+                "says its supporting paper never landed (chase flips this to "
+                "tracing on grounding), so any passage quoted from another "
+                "work is secondhand; acquire the primary, or mint explicitly "
+                "hanging",
+            )
+        )
+    if bundle.primary_source_unheld:
+        out.append(
+            GateViolation(
+                "primary-source",
+                f"hub declares meta.{ev.PRIMARY_UNHELD_META_KEY} — its "
+                "primary source is recorded as not in the corpus, so any "
+                "grounding passage is secondhand; acquire the primary and "
+                "re-ground (clear the flag with it), or mint explicitly "
+                "hanging",
+            )
+        )
+    body = bundle.body if provenance_body is None else provenance_body
+    marked = ev.ACQUISITION_MARKER.search(body) or ev.ACQUISITION_MARKER.search(
+        bundle.sentence
+    )
+    if marked:
+        out.append(
+            GateViolation(
+                "primary-source",
+                f"hub carries a needs-acquisition marker "
+                f"({marked.group(0)!r}) — its primary source is "
+                "explicitly not in the corpus, so any grounding passage "
+                "is secondhand; acquire the primary and re-ground, or "
+                "mint explicitly hanging",
+            )
+        )
+    return out
 
 
 def check_claim_sentence(sentence: str) -> list[GateViolation]:

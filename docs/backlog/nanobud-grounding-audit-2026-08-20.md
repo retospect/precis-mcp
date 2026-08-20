@@ -23,7 +23,7 @@ not been audited and should be next.**
 | SUPPORTED | ~106 |
 | PARTIAL | ~10 |
 | NO_GROUNDING | 7 |
-| CONTRADICTED | 2 |
+| CONTRADICTED | 2 → **0 on verification** |
 | UNSUPPORTED | 0 |
 | JOINTLY_ONLY | 0 |
 
@@ -35,16 +35,56 @@ case did not appear at all.
 
 ## The two contradictions — fix before anything else
 
-- **`fi191323`** — claims field-emission threshold fields of **1–2 V/μm**; the
-  passage says **1–2 V/mm**. Three orders of magnitude, and the claim's version
-  is physically implausible. A transcription error that survived mint, lint and
-  approval. (One batch's summary names a different ref id than its detail table;
-  confirm the id before editing.)
+**Both verdicts were checked against the source papers and both are wrong. There
+are zero contradictions in this cohort.** Each failed in a different direction,
+and acting on either would have edited a correct claim into an incorrect one.
+
+- **`fi192819`** (the audit said `fi191323`; that ref is an unrelated finding
+  about computational approaches — the id was wrong, as the caveat above
+  warned). Claims field-emission threshold fields **1–2 V/μm**; its grounding
+  chunk in `pa494` reads *"in the range of 1–2 V/ mm"*. The audit called the
+  claim wrong. **It is backwards — the claim is right and the passage is
+  corrupt.** `pa494` contains **zero** micro signs (U+03BC/U+00B5) and **zero**
+  Greek letters anywhere in its chunks, while `°±×–—Å` survive intact — a
+  Symbol-font extraction failure that drops the Greek range and nothing else.
+  The paper states the unit in prose in another chunk: *"threshold field values
+  of few Volts per micron."* Corpus-wide, `V/μm` appears 82 times against 25
+  stripped forms. 1–2 V/μm is also the ordinary value for CNT/nanographene
+  emitters; 1–2 V/mm would beat every emitter ever reported by a thousandfold.
+  **Do not edit this claim.** The defect is in ingest —
+  `ingest-strips-greek-glyphs.md`.
 - **`fi211523`** — claims the laddering effect has been shown "only in molecular
-  dynamics simulations, not on physically fabricated junctions". Its own source
-  paper presents a method for producing the junctions and states the effect is
-  exhibited in that work. The claim asserts a negative about the literature that
-  the cited paper refutes.
+  dynamics simulations, not on physically fabricated junctions". The audit read
+  *"we present a novel method to produce"* and *"is exhibited in this work"* as
+  experimental. `pa2857` is **pure simulation**: LAMMPS, Tersoff–Brenner and
+  Lennard–Jones potentials, Nosé–Hoover thermostat, 0.5 fs timestep, strain
+  rates of 10⁸ s⁻¹. Its every experimental keyword is a citation to other
+  groups' work, and its conclusion says *"how to form individual embedding
+  nanobuds junction experimentally is still quite challengeable… further
+  theoretical and experimental works for the validation of the proposed
+  mechanism will be planned in the future."* The claim is exactly right.
+  **Do not edit this claim.**
+
+## What this does to the rest of the audit
+
+Two verdicts were checked; two were wrong. These were the *highest-confidence*
+findings — the ones where an LLM reader saw a flat numeric or logical
+contradiction — so the PARTIALs below, which rest on subtler judgments, carry at
+least the same error rate. **Nothing in this file may be acted on without
+reading the source paper first.** Re-verify before each edit; do not batch.
+
+A passage-versus-sentence mismatch has **three** causes and the audit's taxonomy
+admitted only one:
+
+1. the claim is wrong;
+2. the **passage** is corrupt (extraction scar — `fi192819`);
+3. the reader **misjudged what kind of study** the source is (`fi211523`).
+
+Cause 2 is the dangerous one, because it inverts the fix: the corpus looks like
+it contains a wrong claim when it actually contains a wrong *source text*, and
+"correcting" the claim propagates the scar into a signed artifact. Any future
+version of this pass must check the source paper's character inventory and study
+type before recording a contradiction.
 
 ## Seven hubs cannot be audited at all
 

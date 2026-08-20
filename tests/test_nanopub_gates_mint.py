@@ -4,12 +4,15 @@ vault rows and no network are involved."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
 
+from precis.errors import BadInput
 from precis.nanopub import evidence, gates, mint
 from precis.nanopub.keys import generate_keypair
+from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from tests.workers._helpers import seed_ref
@@ -84,6 +87,28 @@ def _payload(chunk_id: int, sha: str = "", **over: Any) -> dict[str, Any]:
     }
     base.update(over)
     return base
+
+
+def _finding_body(store: Any, hub: int) -> str:
+    """The hub's ``finding_body`` chunk text (ord=0) — what
+    ``canon.block()`` ANN-retrieves over."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body'",
+            (hub,),
+        ).fetchone()
+    return str(row[0]) if row else ""
+
+
+def _pub_ids(store: Any, hub: int) -> set[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id_value FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = 'pub_id'",
+            (hub,),
+        ).fetchall()
+    return {str(r[0]) for r in rows}
 
 
 def _gate_slugs(store: Any, hub: int, payload: dict[str, Any]) -> set[str]:
@@ -246,6 +271,242 @@ def test_acquisition_marked_hub_rejects_grounded_mint(store: Any) -> None:
     assert "primary-source" not in _gate_slugs(store, hub, hanging)
 
 
+def test_unheld_evidence_source_rejects_grounded_mint(store: Any) -> None:
+    """The derived arm: an evidence paper with no live body chunks is one
+    we hold the metadata of but not the text — the claim's primary source
+    is not in the corpus, whatever the hub's prose says. A quote from the
+    *citing* paper is secondhand by construction."""
+    citing, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the secondhand claim holds.", citing, chunk)
+    # Baseline: one held source, no marker prose — mints clean.
+    assert _gate_slugs(store, hub, _payload(chunk, sha)) == set()
+
+    stub = seed_ref(store, title="The primary we do not hold", kind="paper")
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=stub,
+        role="corroborates",
+        check_retraction=False,
+    )
+    bundle = evidence.load_bundle(store, hub)
+    assert [s.ref_id for s in bundle.unheld_sources] == [stub]
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+    # Hanging mints stay allowed — that IS the path while the hunt runs.
+    assert "primary-source" not in _gate_slugs(
+        store, hub, {"passages": [], "hanging": True}
+    )
+
+
+def _mute_prose_arm(monkeypatch: Any) -> None:
+    """Disable :data:`evidence.ACQUISITION_MARKER` for one test.
+
+    Every structural-arm test runs with the prose arm muted, so a refusal
+    proves the structure did it — the prose is a fallback we intend to
+    delete (see ``check_primary_source``'s retirement note), and a test
+    that passes only because of it would silently become a regression the
+    day it goes."""
+    monkeypatch.setattr(evidence, "ACQUISITION_MARKER", re.compile(r"(?!x)x"))
+
+
+def _await_stub(store: Any, hub: int, title: str) -> int:
+    """A ``DREAM:acquire``-shaped paper stub bound to ``hub`` the way
+    ``put(kind='finding', wants=...)`` binds one: an outbound
+    ``awaits-evidence`` link, no evidence edge (the stub supports nothing
+    yet). Returns the stub's ref_id."""
+    stub = seed_ref(store, title=title, kind="paper")
+    store.add_link(
+        src_ref_id=hub,
+        dst_ref_id=stub,
+        relation="awaits-evidence",
+        set_by="agent",
+    )
+    return stub
+
+
+def test_awaits_evidence_stub_rejects_grounded_mint(
+    store: Any, monkeypatch: Any
+) -> None:
+    """Case (a) — the primary is known only as a ``wants=`` descriptor, so
+    it has a ``DREAM:acquire`` stub and no evidence edge. The derived arm
+    is blind to it (``awaits-evidence`` is not an evidence relation, so the
+    stub never enters ``bundle.sources``); the awaiting arm reads the edge
+    the acquisition mint already wrote."""
+    _mute_prose_arm(monkeypatch)
+    citing, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the awaited claim holds.", citing, chunk)
+    assert _gate_slugs(store, hub, _payload(chunk, sha)) == set()
+
+    stub = _await_stub(store, hub, "The primary we are still fetching")
+    bundle = evidence.load_bundle(store, hub)
+    assert [s.ref_id for s in bundle.awaiting_sources] == [stub]
+    assert bundle.unheld_sources == []  # the derived arm cannot see it
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+    # Hanging mints stay allowed — that IS the path while the fetch runs.
+    assert "primary-source" not in _gate_slugs(
+        store, hub, {"passages": [], "hanging": True}
+    )
+
+
+def test_declared_primary_unheld_rejects_grounded_mint(
+    store: Any, monkeypatch: Any
+) -> None:
+    """Case (b) — the marker's canonical shape: the claim was read out of a
+    *citing* paper we hold, and the primary has no ``refs`` row at all, so
+    no edge can express its absence. ``refs.meta`` carries the state
+    instead, where a reword cannot reach it."""
+    _mute_prose_arm(monkeypatch)
+    citing, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the declared claim holds.", citing, chunk)
+    assert _gate_slugs(store, hub, _payload(chunk, sha)) == set()
+
+    store.update_ref(hub, meta_patch={evidence.PRIMARY_UNHELD_META_KEY: True})
+    bundle = evidence.load_bundle(store, hub)
+    assert bundle.primary_source_unheld
+    assert bundle.unheld_sources == [] and bundle.awaiting_sources == []
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+    assert "primary-source" not in _gate_slugs(
+        store, hub, {"passages": [], "hanging": True}
+    )
+
+
+def test_acquiring_hub_without_live_stub_rejects_grounded_mint(
+    store: Any, monkeypatch: Any
+) -> None:
+    """Case (c) — zero evidence edges, and the awaited stub since
+    soft-deleted, so both source-shaped arms resolve to nothing. The
+    lifecycle tag is the surviving trace: ``chase`` flips
+    ``STATUS:acquiring`` the moment a claim grounds, so a hub still
+    carrying it was never grounded."""
+    _mute_prose_arm(monkeypatch)
+    _citing, chunk, _sha = _seed_paper(store)
+    hub = mint_hub(
+        store, CanonicalClaim(sentence="DFT shows the orphaned claim holds.", scope={})
+    )
+    stub = _await_stub(store, hub, "The primary whose stub was withdrawn")
+    store.soft_delete_ref(stub)
+    store.add_tag(
+        hub,
+        Tag.closed("STATUS", "acquiring"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+
+    bundle = evidence.load_bundle(store, hub)
+    assert bundle.sources == [] and bundle.awaiting_sources == []
+    assert bundle.acquiring
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk))
+    assert "primary-source" not in _gate_slugs(
+        store, hub, {"passages": [], "hanging": True}
+    )
+
+
+def test_held_primary_with_no_acquisition_state_mints_clean(
+    store: Any, monkeypatch: Any
+) -> None:
+    """Control — the primary IS in the corpus and nothing records
+    otherwise: zero violations. The awaited stub landed its text, which is
+    how ``awaiting_sources`` self-clears (no cleanup pass deletes the
+    edge)."""
+    _mute_prose_arm(monkeypatch)
+    primary, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the held claim holds.", primary, chunk)
+    stub = _await_stub(store, hub, "The primary that landed")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+            "VALUES (%s, 'system', 0, 'paragraph', 'The acquired text.')",
+            (stub,),
+        )
+
+    bundle = evidence.load_bundle(store, hub)
+    assert bundle.awaiting_sources == []
+    assert not bundle.acquiring and not bundle.primary_source_unheld
+    assert gates.run_mint_gates(store, bundle, _payload(chunk, sha)) == []
+
+
+def test_reword_cannot_launder_the_structural_arms(store: Any) -> None:
+    """The defect that motivated all this: ``refine_claim_sentence``
+    replaces ``finding_body``, so a reword erases the prose marker. It
+    cannot touch an ``awaits-evidence`` edge."""
+    citing, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the laundered claim holds.", citing, chunk)
+    stub = _await_stub(store, hub, "The primary a reword cannot hide")
+    store.blocks.replace_body_chunk(
+        hub,
+        "DFT shows the laundered claim holds. Paper not in corpus — needs acquisition.",
+        chunk_kind="finding_body",
+        source="agent",
+    )
+    assert evidence.ACQUISITION_MARKER.search(evidence.hub_body(store, hub))
+
+    # The reword the retitle door performs: body replaced, marker gone.
+    store.blocks.replace_body_chunk(
+        hub,
+        "DFT shows the reworded claim holds.",
+        chunk_kind="finding_body",
+        source="reviewer",
+    )
+    assert not evidence.ACQUISITION_MARKER.search(evidence.hub_body(store, hub))
+    bundle = evidence.load_bundle(store, hub)
+    assert [s.ref_id for s in bundle.awaiting_sources] == [stub]
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+
+
+def test_backfill_moves_the_prose_marker_onto_the_declared_flag(
+    store: Any, monkeypatch: Any
+) -> None:
+    """``precis nanopub backfill-unheld``: the one-off that lets the prose
+    arm retire. Picks up exactly the marked hubs, is a no-op on re-run, and
+    leaves the body text alone (``chunks`` is append-only)."""
+    citing, chunk, sha = _seed_paper(store)
+    marked = _seed_hub(store, "DFT shows the legacy claim holds.", citing, chunk)
+    clean = _seed_hub(store, "DFT shows the tidy claim holds.", citing, chunk)
+    body = "DFT shows the legacy claim holds. Paper not in corpus — needs acquisition."
+    store.blocks.replace_body_chunk(
+        marked, body, chunk_kind="finding_body", source="agent"
+    )
+
+    found = evidence.prose_marked_hubs(store)
+    assert [h[0] for h in found] == [marked]
+    assert evidence.ACQUISITION_MARKER.search(found[0][2])
+
+    assert evidence.declare_primary_source_unheld(store, [h[0] for h in found]) == 1
+    # Idempotent: a stamped hub drops out of the query, so the dry run
+    # doubles as "is the prose arm retirable yet?".
+    assert evidence.prose_marked_hubs(store) == []
+    assert evidence.hub_body(store, marked) == body  # prose left in place
+
+    # The structural arm now carries what the prose used to, with the
+    # prose muted — which is the whole point of the move.
+    _mute_prose_arm(monkeypatch)
+    assert evidence.load_bundle(store, marked).primary_source_unheld
+    assert "primary-source" in _gate_slugs(store, marked, _payload(chunk, sha))
+    assert _gate_slugs(store, clean, _payload(chunk, sha)) == set()
+
+
+def test_card_variant_chunk_does_not_make_a_stub_held(store: Any) -> None:
+    # ord < 0 is a synthesized card, not the paper's text.
+    citing, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the card-variant claim holds.", citing, chunk)
+    stub = seed_ref(store, title="Stub with a summary card", kind="paper")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+            "VALUES (%s, 'system', -1, 'card_glossary', 'A synthesized card.')",
+            (stub,),
+        )
+    assert evidence.refs_without_body_chunks(store, [stub]) == {stub}
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=stub,
+        role="corroborates",
+        check_retraction=False,
+    )
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+
+
 def test_paraphrase_quote_fails_verbatim_gate(store: Any) -> None:
     paper, chunk, sha = _seed_paper(store)
     hub = _seed_hub(store, "MOFs are anisotropic.", paper, chunk)
@@ -396,8 +657,10 @@ def test_sign_refuses_on_title_drift(store: Any, monkeypatch: Any) -> None:
 def test_approve_title_override_syncs_hub_and_signs(
     store: Any, monkeypatch: Any
 ) -> None:
-    """A review-time title override must sync refs.title (full length, not
-    [:200]) so gate #14 (drift) fires only on post-approval edits."""
+    """A review-time title override runs through the retitle door: it must
+    sync refs.title (full length, not [:200]) AND the finding_body chunk the
+    dedup index retrieves over, so gate #14 (drift) fires only on
+    post-approval edits and no hub is left half-reworded."""
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
 
@@ -418,8 +681,158 @@ def test_approve_title_override_syncs_hub_and_signs(
     assert row.approved_title == long_title
     ref = store.fetch_refs_by_ids([hub])[hub]
     assert ref.title == long_title
+    # canon.block() ANN-retrieves over finding_body — a title-only sync
+    # leaves the dedup index searching the pre-review wording.
+    assert _finding_body(store, hub) == long_title
     signed = mint.sign(store, hub)
     assert signed.state == "signed"
+
+
+def test_approve_gates_the_reviewers_override_not_the_old_sentence(
+    store: Any,
+) -> None:
+    """The Layer-A gates must validate exactly the string that gets frozen.
+    A hub whose live sentence lints clean cannot smuggle an inadmissible
+    override past approve just because the OLD text passed."""
+    paper, chunk, sha = _seed_paper(store)
+    clean = "DFT shows MOFs can be anisotropic up to 400:1."
+    hub = _seed_hub(store, clean, paper, chunk)
+    assert _gate_slugs(store, hub, _payload(chunk, sha)) == set()
+
+    with pytest.raises(mint.MintGateError) as exc:
+        mint.approve(
+            store,
+            hub,
+            payload=_payload(chunk, sha),
+            # No controlled evidence verb (predicts/finds/shows/…) — the
+            # blocking half of lint_claim_sentence.
+            title="DFT suggests MOFs can be anisotropic up to 400:1.",
+            interactive=True,
+        )
+    assert any(v.gate == "claim-sentence" for v in exc.value.violations)
+    assert any("no-evidence-verb" in v.message for v in exc.value.violations)
+    # Nothing froze: the row never left candidate (it was never created).
+    assert store.nanopub_publish_row(hub) is None
+
+
+def test_approve_reword_cannot_launder_the_acquisition_marker(store: Any) -> None:
+    """A reword must not buy its way past the acquisition-marker gate.
+
+    refine_claim_sentence replaces finding_body with the new sentence, so
+    a title override that drops the harvester's "not in corpus" note would
+    erase the marker on the very call that approves the claim — publishing
+    a hub whose primary source we do not hold, grounded only in a citing
+    paper. approve() runs the acquisition gate against the PRE-reword body
+    (and refuses before the rewrite) for exactly this reason."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the pre-review sentence holds.", paper, chunk)
+    # Chase-born shape: the body is harvester prose, not a sentence copy.
+    store.blocks.replace_body_chunk(
+        hub,
+        "DFT shows the pre-review sentence holds. Paper not in corpus — "
+        "needs acquisition.",
+        chunk_kind="finding_body",
+        source="test",
+    )
+    assert "primary-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+
+    with pytest.raises(mint.MintGateError) as exc:
+        mint.approve(
+            store,
+            hub,
+            payload=_payload(chunk, sha),
+            title="DFT shows MOFs can be anisotropic up to 400:1.",
+            interactive=True,
+        )
+    assert any(v.gate == "primary-source" for v in exc.value.violations)
+    assert store.nanopub_publish_row(hub) is None
+
+
+def test_approve_retry_after_a_marker_refusal_still_refuses(store: Any) -> None:
+    """The retry hole: refusing with a pre-reword SNAPSHOT is not enough.
+
+    The reword lands anyway (a gate refusal leaves the hub reworded), so
+    the reviewer's second, identical approve finds requested == title —
+    no reword, nothing to snapshot — and re-reads a body the first call
+    already laundered. approve() therefore refuses the acquisition gate
+    BEFORE the rewrite, so the marker is still there on every retry."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the pre-review sentence holds.", paper, chunk)
+    marked = (
+        "DFT shows the pre-review sentence holds. Paper not in corpus — "
+        "needs acquisition."
+    )
+    store.blocks.replace_body_chunk(
+        hub, marked, chunk_kind="finding_body", source="test"
+    )
+    reworded = "DFT shows MOFs can be anisotropic up to 400:1."
+
+    for attempt in (1, 2):
+        with pytest.raises(mint.MintGateError) as exc:
+            mint.approve(
+                store,
+                hub,
+                payload=_payload(chunk, sha),
+                title=reworded,
+                interactive=True,
+            )
+        assert any(v.gate == "primary-source" for v in exc.value.violations), attempt
+        assert store.nanopub_publish_row(hub) is None, attempt
+    # Refusing before the rewrite also means the marker survives intact —
+    # nothing to carry forward, nothing for the next writer to forget.
+    assert _finding_body(store, hub) == marked
+
+
+def test_approve_reword_recomputes_pub_id_and_keeps_the_old_as_alias(
+    store: Any,
+) -> None:
+    """Rewording IS a new claim identity (module docstring) — approve routes
+    the override through refine_claim_sentence, so the content-derived
+    pub_id is recomputed and the old handle stays live as an alias."""
+    from precis.identity import make_pub_id, make_taproot_hub_paper_id
+
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows the short pre-review sentence holds.", paper, chunk
+    )
+    old_pub_ids = _pub_ids(store, hub)
+    assert len(old_pub_ids) == 1
+
+    reworded = "DFT shows the reviewer-sharpened sentence holds up to 400:1."
+    mint.approve(
+        store, hub, payload=_payload(chunk, sha), title=reworded, interactive=True
+    )
+
+    expected = make_pub_id(make_taproot_hub_paper_id(reworded, {}))
+    assert expected not in old_pub_ids
+    # New identity minted, old handle kept — prose citing [<old>] resolves.
+    assert _pub_ids(store, hub) == old_pub_ids | {expected}
+
+
+def test_approve_reword_survives_a_failed_flip_as_a_candidate(
+    store: Any, monkeypatch: Any
+) -> None:
+    """Ordering contract: the hub syncs BEFORE the publish row flips, so a
+    failure at the flip leaves a benign retitled STILL-candidate hub — never
+    a reviewed row whose frozen sha spuriously drift-fails at sign."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows the short pre-review sentence holds.", paper, chunk
+    )
+    reworded = "DFT shows the reviewer-sharpened sentence holds up to 400:1."
+    monkeypatch.setattr(store, "nanopub_approve", lambda *a, **k: False)
+
+    with pytest.raises(BadInput, match="left candidate state mid-approve"):
+        mint.approve(
+            store, hub, payload=_payload(chunk, sha), title=reworded, interactive=True
+        )
+
+    ref = store.fetch_refs_by_ids([hub])[hub]
+    assert ref.title == reworded
+    assert _finding_body(store, hub) == reworded
+    row = store.nanopub_publish_row(hub)
+    assert row is not None and row.state == "candidate"
+    assert row.claim_sha is None and row.approved_title is None
 
 
 def test_compound_requires_signed_atoms_then_chains_them(

@@ -66,7 +66,13 @@ a blind periodic rescan (the incremental-trigger design,
    carrying a ``corroborates`` edge on this hub (the idempotency precheck,
    done *before* any LLM spend) or already recorded in the hub's rejection
    memo (``meta['taproot_rejected']`` — a ``supports=no`` verdict from an
-   earlier pass, judged once, never re-verified).
+   earlier pass, judged once, never re-verified). Both settled sets are ALSO
+   pushed into the semantic legs as ``exclude_ref_ids``, so a settled source
+   can't occupy one of the ``topk`` discovery slots — without that, a hub
+   whose nearest neighbours are all sources it already holds widens by
+   nothing, spending its whole budget re-offering its own evidence. The
+   precheck remains the authority (the citation leg is unfiltered, and
+   verdicts land mid-loop); the SQL exclusion is a budget guarantee.
 4. **Verify** — ``workers._chase_llm._verify_support_with_caveats`` per
    surviving candidate. When the candidate source is a patent, the prompt
    picks up patent-aware reading rules (background/prior-art recitations
@@ -506,6 +512,22 @@ def _attached_source_ids(conn: Connection, hub_ref_id: int) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+def _rejected_source_ids(rejected: dict[str, Any]) -> set[int]:
+    """Numeric source ref_ids from the rejection memo.
+
+    The memo is keyed by ``str(source_ref_id)`` (JSON object keys are
+    strings); a non-numeric key is stale hand-edited meta and is skipped
+    rather than crashing the pass.
+    """
+    out: set[int] = set()
+    for key in rejected:
+        try:
+            out.add(int(key))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 @dataclass(frozen=True)
 class _Candidate:
     """One discover-step candidate passage headed for Filter→Verify→Write.
@@ -757,6 +779,21 @@ def _refine_one_hub(
         # grow with the number of kinds feeding discovery. Patent
         # legal-claim blocks are dropped before the merge: legal scope is
         # not empirical support (grounding policy).
+        #
+        # The already-settled source refs (attached supporters + rejection
+        # memo) are pushed INTO the query as ``exclude_ref_ids`` rather than
+        # left to the precheck below. The precheck alone is correct but
+        # wasteful: a settled source still occupies one of the ``topk``
+        # slots, so a hub whose nearest neighbours are all sources it
+        # already has widens by nothing — the discovery budget is spent
+        # re-offering evidence it holds. Filtering in SQL hands those slots
+        # to genuinely new sources. Exclusion is **ref**-grained, matching
+        # this module's source-level dedup (see :func:`_attached_source_ids`):
+        # a different passage from a settled source is excluded too, because
+        # the precheck would skip it anyway. The precheck stays as the
+        # authority — the citation leg is deliberately unfiltered, and
+        # verdicts land mid-loop.
+        settled_ref_ids = sorted(attached | _rejected_source_ids(rejected))
         paper_hits = store.blocks.search_blocks(
             q=claim_sentence,
             query_vec=query_vec,
@@ -764,6 +801,7 @@ def _refine_one_hub(
             kind="paper",
             limit=topk,
             max_distance=min_sim,
+            exclude_ref_ids=settled_ref_ids,
         )
         patent_hits = _drop_patent_claim_blocks(
             store.blocks.search_blocks(
@@ -773,6 +811,7 @@ def _refine_one_hub(
                 kind="patent",
                 limit=topk,
                 max_distance=min_sim,
+                exclude_ref_ids=settled_ref_ids,
             )
         )
         sem_hits = sorted([*paper_hits, *patent_hits], key=lambda hit: hit[2])[:topk]
