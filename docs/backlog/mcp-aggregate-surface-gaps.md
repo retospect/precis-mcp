@@ -20,7 +20,7 @@ cohort*, which is what every batch pass does.
 ## Gaps, most valuable first
 
 1. **Similarity scores on search results.** Sharpest gap, because a shipped
-   skill rule already depends on it: `precis-taproot-help`'s "Search before
+   skill rule already depends on it: `precis-taproot-mint-help`'s "Search before
    you mint" gate tells the agent to search for a proximate hub before
    minting. But `search` returns ranked hits with **no score**, so the agent
    cannot separate "0.93 — this is the same claim, attach to it" from

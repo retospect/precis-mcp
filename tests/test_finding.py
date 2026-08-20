@@ -843,6 +843,38 @@ class TestPutSupportersHubMint:
         with pytest.raises(BadInput):
             h.put(supporters=[{"paper": "miller23a"}])  # no title, no body
 
+    def test_supporters_lint_block_present_when_scope_prose(self, store) -> None:
+        """A scope value ``lint_scope`` flags as prose surfaces a ``lint
+        (advisory, hub already minted):`` block in the response body -- and
+        the hub is still minted (advisory, not blocking)."""
+        from precis.taproot.seniority import is_claim_hub
+
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        resp = h.put(
+            title="amine loading raises CO2 capacity",
+            scope={"method": "engineered into printed touch sensors"},
+            supporters=[{"paper": "miller23a"}],
+        )
+        assert "lint (advisory, hub already minted):" in resp.body
+        assert "scope-free-text" in resp.body
+
+        m = _search(r"claim hub fi(\d+)", resp.body)
+        hub_id = int(m.group(1))
+        assert is_claim_hub(store, hub_id)
+
+    def test_supporters_no_lint_block_when_clean(self, store) -> None:
+        """A clean scope/sentence -- no ``notation``/``scope_lint``
+        warnings -- omits the lint block entirely."""
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        resp = h.put(
+            title="amine loading raises CO2 capacity",
+            scope={"material": "amine"},
+            supporters=[{"paper": "miller23a"}],
+        )
+        assert "lint (advisory, hub already minted):" not in resp.body
+
     def test_normal_chase_finding_path_unaffected(self, store) -> None:
         """cited_in-only (no supporters=) still walks the ordinary
         chase-finding creation path unchanged."""

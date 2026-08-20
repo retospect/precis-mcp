@@ -795,11 +795,34 @@ def block(
     Embeds ``claim.sentence`` with ``embedder`` (an
     :class:`~precis.embedder.Embedder`-shaped object — ``embed_one(text) ->
     list[float]``) and ANN-retrieves over the ``TAPROOT:claim``-tagged
-    ``finding`` refs' ``card_combined`` (``ord=-1``) embeddings — the same
-    card index every other kind embeds into. Empty when no tagged hub
-    exists yet (brand-new claim; also today's degrade, since the
-    classifier that writes ``TAPROOT:claim`` is a Phase-2 predecessor, not
-    built here — see the build ticket).
+    ``finding`` refs' ``finding_body`` (``ord=0``) embeddings. Empty when
+    no tagged hub exists yet (brand-new claim; also today's degrade, since
+    the classifier that writes ``TAPROOT:claim`` is a Phase-2 predecessor,
+    not built here — see the build ticket).
+
+    **Why the body chunk and not ``card_combined`` (``ord=-1``).** This
+    retrieved over the card index until 2026-08-19, on the assumption —
+    stated in :func:`~precis.taproot.hub.mint_hub` — that an async
+    card-forge pass populated a fresh hub's card. No such pass exists:
+    :meth:`~precis.store.Store.blocks.upsert_card_combined` is reached
+    only from :class:`~precis.handlers._numeric_ref.NumericRefHandler`'s
+    create path behind ``emits_card``, which ``finding`` does not set, and
+    taproot's system writer never emitted one. Measured over prod, 187 of
+    1,524 live hubs carried a card (12.3%) — and those 187 came from
+    ``workers/chase.py::_snapshot_chain``, whose text is a chain snapshot
+    rather than the claim sentence. So the dedup index was both mostly
+    empty and, where populated, off-content.
+
+    The body chunk is the right index and needs no new machinery: every
+    hub has one (:func:`~precis.taproot.hub.mint_hub` writes it in the
+    same transaction as the ref), it holds exactly the claim sentence, and
+    :func:`~precis.taproot.hub.refine_claim_sentence` replaces it via
+    DELETE+INSERT so the embed cascade re-runs on every reword — the index
+    self-heals instead of drifting. A hub's ``card_combined`` would have
+    been a verbatim second copy of the sentence whose only distinguishing
+    property was that it could fall out of sync. Coverage went 12.3% →
+    100% on this switch alone; the standing invariant is watched by
+    ``workers/health_digest.py::_check_claim_hub_dedup_index``.
 
     ``store`` / ``embedder`` are explicit, injected params (not resolved
     from a global) so this stays trivially testable with a fake store/mock
@@ -808,16 +831,26 @@ def block(
     forbid it.
     """
     vector = embedder.embed_one(claim.sentence)
+    # NB: no ``rt.expires_at`` filter here, while
+    # ``workers/health_digest.py::_check_claim_hub_dedup_index`` — which
+    # watches this query's coverage invariant — does filter it. Inert today:
+    # nothing sets an expiry on ``TAPROOT:claim``. If that ever changes, the
+    # two disagree about which hubs are live and the health check will report
+    # coverage against a different denominator than the retrieval it guards.
+    # Unify both at that point; do not add a filter here on spec, since this
+    # is the hot dedup path.
     sql = """
         SELECT r.ref_id, r.title, (ce.vector <=> %(vec)s::vector) AS dist
         FROM refs r
         JOIN ref_tags rt ON rt.ref_id = r.ref_id
         JOIN tags t ON t.tag_id = rt.tag_id
                    AND t.namespace = %(ns)s AND t.value = %(val)s
-        JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = -1
+        JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = 0
+                     AND c.chunk_kind = 'finding_body'
                      AND c.retired_at IS NULL
         JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
                                 AND ce.embedder = %(embedder)s
+                                AND ce.status = 'ok'
         WHERE r.kind = 'finding' AND r.deleted_at IS NULL
         ORDER BY ce.vector <=> %(vec)s::vector ASC
         LIMIT %(k)s
@@ -1019,8 +1052,11 @@ def place(
        threshold) -> **attach**; not confirmed -> **needs_review** (design
        #16: a risky merge is never auto-applied — the caller should file a
        ``kind='todo'``, not attach or silently drop it).
-    3. Else any ``"contradicts"`` -> **new_contradicts**, linked to the
-       first such candidate.
+    3. Else any ``"contradicts"`` **at/above ``confidence_threshold``** ->
+       **new_contradicts**, linked to the first such candidate. Below
+       threshold -> **new**, unlinked, with the suspicion recorded in
+       ``reason`` only: the edge blocks publication at the nanopub mint
+       gates, so it is never written on an unconfirmed verdict.
     4. Else -> **new**.
 
     ``judged`` may be empty (``block`` found no candidates) -> **new**.
@@ -1062,13 +1098,43 @@ def place(
             ),
         )
 
-    contradicts = [(cand, v) for cand, v in judged if v["verdict"] == "contradicts"]
+    contradicts = [
+        (cand, v)
+        for cand, v in judged
+        if v["verdict"] == "contradicts" and v["confidence"] >= confidence_threshold
+    ]
     if contradicts:
         cand, v = contradicts[0]
         return Placement(
             action="new_contradicts",
             contradicts_hub_ref_id=cand.hub_ref_id,
             reason=v["rationale"],
+        )
+
+    # A sub-threshold ``"contradicts"`` mints the hub *unlinked*. The edge is
+    # not advisory: ``contradicts`` blocks publication at the nanopub mint
+    # gates, so a false positive suppresses a **stranger's** claim on one
+    # unreviewed MEDIUM-tier verdict. The sibling ``same`` branch already
+    # spends a second BIG call before acting on low confidence; this branch
+    # took ``judged[0]`` at *any* confidence and never confirmed.
+    #
+    # Nothing surfaced the asymmetry because the edge had never once been
+    # written — :func:`block` retrieved over ``card_combined``, which covered
+    # 187 of 1,524 live hubs (2026-08-20 prod count), so ``place`` almost
+    # never saw a candidate to judge and prod holds zero machine-written
+    # hub<->hub ``contradicts`` rows. Repointing that index at
+    # ``finding_body`` takes coverage to 100% and makes this branch reachable
+    # for the first time; the threshold is what keeps that repair from
+    # turning into a corpus-wide wave of unreviewed publication blocks.
+    unconfirmed = [(cand, v) for cand, v in judged if v["verdict"] == "contradicts"]
+    if unconfirmed:
+        _, v = unconfirmed[0]
+        return Placement(
+            action="new",
+            reason=(
+                f"unconfirmed contradiction (confidence={v['confidence']:.2f} < "
+                f"{confidence_threshold}), minted unlinked: {v['rationale']}"
+            ),
         )
 
     return Placement(action="new", reason="no matching or contradicting candidate")

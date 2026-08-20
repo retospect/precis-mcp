@@ -33,6 +33,7 @@ from precis.taproot.hub import (
     mint_hub,
 )
 from precis.taproot.notation import lint_notation
+from precis.taproot.sentence_lint import lint_scope
 from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 
 if TYPE_CHECKING:
@@ -237,7 +238,7 @@ def seed_claim_hub(
     attaches no duplicate edge.
 
     Returns ``{'pub_id', 'hub_ref_id', 'attached', 'already', 'collapsed',
-    'ungrounded', 'notation'}`` — ``attached``/``already`` count new vs.
+    'ungrounded', 'notation', 'scope_lint'}`` — ``attached``/``already`` count new vs.
     skipped-as-already-present evidence edges; ``ungrounded`` counts how
     many of the *newly attached* edges landed ref-level (no resolvable
     ``source_handle`` chunk), i.e. cite the whole paper rather than a
@@ -251,7 +252,19 @@ def seed_claim_hub(
     is :func:`~precis.taproot.notation.lint_notation`'s advisory warnings
     for ``sentence`` — never raises, never blocks the mint, never rewrites
     the sentence; a caller (CLI/MCP) is expected to surface it, not act on
-    it automatically.
+    it automatically. ``scope_lint`` is
+    :func:`~precis.taproot.sentence_lint.lint_scope`'s warnings for
+    ``scope``, under the same advisory contract.
+
+    ``scope_lint`` is returned here because ``scope`` is **in the identity
+    hash** (Decision 4), so a prose scope value silently forks a hub that
+    should have converged. Both live duplicate pairs in the corpus
+    (fi191179/fi191260, fi191192/fi191262) were forked exactly this way,
+    and a 2026-08-20 dry run found 156 of 1,525 hubs carrying a
+    lint-flagged scope value. The rule had shipped in ``2480c172`` and was
+    surfaced to no one at mint time — a detector nobody sees is not a
+    detector, which is why it is wired into the mint response and not just
+    the retrospective ``precis taproot lint`` pass.
 
     Raises:
         BadInput: a supporter's ``paper`` doesn't resolve (or resolves to a
@@ -342,4 +355,5 @@ def seed_claim_hub(
         "collapsed": collapsed,
         "ungrounded": ungrounded,
         "notation": lint_notation(sentence),
+        "scope_lint": lint_scope(scope),
     }

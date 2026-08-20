@@ -43,6 +43,29 @@ _DEDUP_PATH = "precis.workers.chase.dedup_judge"
 # ── seeding helpers (mirrors tests/workers/test_chase.py) ──────────────
 
 
+def _embed_hub_body(store: Any, hub: int, text: str, embedder: Any) -> None:
+    """Simulate the async ``embed:bge-m3`` pass landing on a minted hub.
+
+    ``mint_hub`` writes the ``finding_body`` chunk (``ord=0``) in its own
+    transaction, but the embedding ``canon.block`` ANN-joins against is
+    written later by the derived queue. Tests that need ``block`` to *see*
+    an existing hub have to close that window by hand.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL",
+            (hub,),
+        ).fetchone()
+        assert row is not None, f"hub {hub} has no finding_body chunk to embed"
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (row[0], "bge-m3", embedder.embed_one(text)),
+        )
+        conn.commit()
+
+
 def _seed_paper(
     store: Any,
     *,
@@ -342,24 +365,11 @@ def test_reestablished_finding_does_not_duplicate_hub_or_edge(store: Any) -> Non
     edges = _edges_from(store, paper)
     assert len(edges) == 1
 
-    # Simulate the async card_forge + embed passes that would, in
-    # production, run some time after mint_hub before a redispatch: the
-    # hub's card_combined chunk exists and carries an embedding (the same
-    # deterministic vector the query re-embeds to, since the claim
-    # sentence — the finding title — hasn't changed).
-    with store.pool.connection() as conn:
-        card = conn.execute(
-            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
-            "VALUES (%s, -1, 'card_combined', %s) RETURNING chunk_id",
-            (hub, finding.title),
-        ).fetchone()
-        assert card is not None
-        conn.execute(
-            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
-            "VALUES (%s, %s, %s, 'ok')",
-            (card[0], "bge-m3", embedder.embed_one(finding.title)),
-        )
-        conn.commit()
+    # Simulate the async embed pass that would, in production, run some
+    # time after mint_hub before a redispatch (the same deterministic
+    # vector the query re-embeds to, since the claim sentence — the
+    # finding title — hasn't changed).
+    _embed_hub_body(store, hub, finding.title, embedder)
 
     # Simulate a redispatch: STATUS flips back to tracing so the finding
     # re-enters the claim pool.
@@ -411,8 +421,8 @@ def test_two_findings_same_claim_without_pre_embedding_converge_to_one_hub(
     store: Any,
 ) -> None:
     """The real (previously data-losing) race: finding A's bridge mints a
-    hub for claim X. That hub's ``card_combined`` chunk gets embedded only
-    later, async, by card_forge/embed — deliberately NOT
+    hub for claim X. That hub's ``finding_body`` chunk gets embedded only
+    later, async, by the derived embed queue — deliberately NOT
     simulated here (contrast ``test_reestablished_finding_does_not_duplicate_
     hub_or_edge`` above, which inserts the embedding by hand). So when
     finding B's bridge runs for the SAME claim X before that embed lands,
@@ -443,9 +453,9 @@ def test_two_findings_same_claim_without_pre_embedding_converge_to_one_hub(
             taproot_enabled=True,
             taproot_embedder=embedder,
         )
-        # No card_combined embedding inserted for A's hub here — the
-        # window this test targets is exactly the gap before that
-        # async embed lands.
+        # No body-chunk embedding inserted for A's hub here — the window
+        # this test targets is exactly the gap before that async embed
+        # lands.
         outcome_b, _ = _advance(
             store,
             finding_b,
@@ -706,22 +716,10 @@ def test_reestablished_finding_does_not_duplicate_intermediate_edges(
     assert len(_edges_from(store, mid)) == 1
     assert len(_edges_from(store, term)) == 1
 
-    # Simulate the async card_forge + embed pass landing (same trick as
-    # the W1 idempotency test) so the second bridge pass's ``block`` ANN
-    # lookup actually finds the existing hub instead of racing a mint.
-    with store.pool.connection() as conn:
-        card = conn.execute(
-            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
-            "VALUES (%s, -1, 'card_combined', %s) RETURNING chunk_id",
-            (hub, finding.title),
-        ).fetchone()
-        assert card is not None
-        conn.execute(
-            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
-            "VALUES (%s, %s, %s, 'ok')",
-            (card[0], "bge-m3", embedder.embed_one(finding.title)),
-        )
-        conn.commit()
+    # Simulate the async embed pass landing (same trick as the W1
+    # idempotency test) so the second bridge pass's ``block`` ANN lookup
+    # actually finds the existing hub instead of racing a mint.
+    _embed_hub_body(store, hub, finding.title, embedder)
 
     # Re-fetch the finding's (chase-untouched) meta -- ``update_ref``'s
     # STATUS flip below doesn't change meta, so the original multi-hop

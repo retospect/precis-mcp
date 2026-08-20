@@ -246,6 +246,18 @@ class FindingHandler(NumericRefHandler):
                 set_by="agent",
             )
             ung = result["ungrounded"]
+            # Advisory lints, surfaced at the one moment the author can still
+            # act on them cheaply. `scope` is in the identity hash, so a prose
+            # scope value forks a hub that should have converged -- both live
+            # duplicate pairs in the corpus were forked exactly that way.
+            # Never blocks the mint; the hub above is already written.
+            lints = [*(result.get("notation") or []), *(result.get("scope_lint") or [])]
+            lint_note = (
+                "\nlint (advisory, hub already minted):\n"
+                + "\n".join(f"  - {w}" for w in lints)
+                if lints
+                else ""
+            )
             return Response(
                 body=(
                     f"claim hub fi{result['hub_ref_id']}  "
@@ -256,7 +268,7 @@ class FindingHandler(NumericRefHandler):
                     + (f", {ung} ref-level (ungrounded)" if ung else "")
                     + "\n"
                     f"cite it inline as [fi{result['hub_ref_id']}] — resolves to "
-                    "the current derived originator(s) on every render"
+                    "the current derived originator(s) on every render" + lint_note
                 )
             )
 

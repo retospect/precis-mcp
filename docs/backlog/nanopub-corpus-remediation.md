@@ -17,6 +17,29 @@ reviewed rows to candidate and re-approve under a corrected standard. Treat
 this as pre-launch cleanup, not a live-corpus migration. That choice expires
 the moment the first artifact is published.
 
+## Position, verified against prod 2026-08-19 (read-only)
+
+Re-measured directly rather than inherited from a transcript. Two repair
+steps have already landed; the rest of the sequence is untouched.
+
+| step | state |
+|---|---|
+| 1 — reset `reviewed`→`candidate`, unsign the 1 `signed` | **done**. `nanopub_publish` holds 139 rows, all `candidate`, with `approved_title` and `claim_sha` NULL on all 139 — a genuine reopen, not a state-only flip. The 77 drift rows and 5 truncations are dissolved. |
+| 2 — fi191259/fi191268 merge (Decision 6) | **done**. 191259 soft-deleted, 191268 live. |
+| 3 — title/body cohort repair | **not started**, and larger than the ~209 estimate: **297** live hubs have `btrim(chunk) <> btrim(title)`. **0** are missing the `ord=0` chunk, so `missing-body-chunk` is currently empty and the whole cohort is a divergence problem, not an absence problem. |
+| 4 — notation normalization | **dry-run clean 2026-08-20, ready to apply.** 456 of 1,524 hubs (29.9%) change, idempotent, zero known-wrong fires. Getting here took a code fix (canon v3.1): four sibling rules shared the `ascii-minus-exponent` defect, one of them corrupting oxidation states (`Zn2+-sensing`→`Zn2±sensing`). See the 2026-08-20 re-run below. Not yet applied to prod. |
+| 5 — `pub_id` re-hash + fresh duplicate scan | not started, and **re-scoped**: normalization creates zero new duplicates. Exactly two exact-sentence duplicate groups exist corpus-wide (fi191179/fi191260, fi191192/fi191262), both already live, both forked by free-text `scope` values rather than punctuation. A scan grouped on `pub_id` finds neither. |
+| blocker — dedup-index coverage | **RESOLVED 2026-08-19.** Was 187 of 1,524 (12.3%). There was no broken card-forge pass to repair — no code path has ever written a hub's `card_combined`. `block()` now retrieves over the `ord=0` `finding_body` chunk, which all 1,524 hubs have and all 1,524 have embedded, so coverage is 100% with no backfill. See defect 4 below. Dedup verdicts are believable from here on; step 5's duplicate scan is unblocked. |
+
+One consequence of step 1 worth stating, since it changes what is
+recoverable: the reopen NULLed `approved_title` on all 139 rows, so that
+column is no longer available as a repair source for the step-3 cohort.
+The 200-char repair had already written its reviewer-authored rewordings
+back into `refs.title` before the reset, so nothing known was lost — but
+the "restore from `approved_title`" option that the frozen cohort needed
+no longer exists, and step 3 must resolve `refs.title` vs chunk on those
+two witnesses alone.
+
 ## What the audit found
 
 | | count | of 1,527 |
@@ -63,7 +86,7 @@ more than any single count:
 
 Nothing else runs until this lands, or passes get re-run.
 
-**Notation canon v2** (`precis-taproot-help`). Reto's rulings, 2026-08-19:
+**Notation canon v2** (`precis-taproot-mint-help`). Reto's rulings, 2026-08-19:
 
 - ASCII→UTF-8 fallback table, now explicit and closed: `+/-` → `±`,
   `ug`/`micro` → `µ`, `degrees C` → ` °C`, `x`/`*` (multiplication) → `×`,
@@ -88,7 +111,7 @@ Nothing else runs until this lands, or passes get re-run.
   where multi-clause claims collapse into one truncated atom: shorter atoms
   make that failure mode structurally impossible.
 
-**Claim admissibility** (new section, `precis-taproot-help`). The test a
+**Claim admissibility** (new section, `precis-taproot-mint-help`). The test a
 sentence must pass *before* it earns a `TAPROOT:claim` tag:
 
 1. **Falsifiable** — asserts a finding that some future measurement could
@@ -322,6 +345,120 @@ the duplicate rescan must run *after* normalization, not before.
 Minor gap: `plus/minus 2 V` appears spelled out and `ascii-plusminus` does
 not catch it (only 4 hits corpus-wide, which is suspiciously low).
 
+### Phase 3.1 RE-RUN, 2026-08-20 — the exponent fix held; four more rules fail the same way
+
+Re-ran `normalize_notation` over all 1,524 live hubs from a fresh prod dump,
+now that the `_ACCEPTED_DENOMINATORS` gate has landed (`2480c172`). Pure
+string work, no DB session.
+
+**The `ascii-minus-exponent` fix is confirmed.** It now fires **once**
+corpus-wide, down from 149 fires of which 146 were wrong. No `Fe-ZSM-5`
+class rewrite survives. Totals: **466 hubs (30.6%) would change**, 63 of
+them shortening (so the `len(out) >= len(in)` assertion remains a bug, as
+the convention doc says), and the pass is **idempotent** — 0 hubs change on
+a second application.
+
+**But the same defect shape is present in four more rules, and it was
+masked by the exponent rule's noise.** Every ASCII→UTF-8 unit-symbol
+rewrite in the canon v2 table converts a *unit name* to a *unit symbol*
+without checking that a numeral precedes it. SI is explicit that symbols
+are used with numerical values and names with words, so each of these
+fires on adjectival and spelled-out prose where the name is correct:
+
+| rule | fires | right | wrong | the wrong shape |
+|---|---|---|---|---|
+| `ascii-plusminus` | 4 | 2 | **2** | ionic charge + hyphenated adjective: `Zn2+-sensing`→`Zn2±sensing` (fi176493), `Ni2+-binding`→`Ni2±binding` (fi177426) |
+| `ascii-micrometre` | 10 | 5 | **5** | `micron-scale`→`µm-scale` (fi34754, fi178208), `micrometre-dimension`→`µm-dimension` (fi176821), `nanometer to micrometer scale`→`nanometer to µm scale` (fi176900), `ten micrometres`→`ten µm` (fi218294) |
+| `ascii-micro` | 12 | ~9 | **≥3** | `Microsecond quantum coherence times`→`µs quantum…` (fi176479 — rewrites the sentence's opening word into a symbol), `nanoseconds to microseconds`→`nanoseconds to µs` (fi176550), `at microsecond timescales` (fi176762) |
+| `ascii-degrees` | 7 | 6 | **1 partial** | fi176552 `80 to 60 degrees C at 1 degree C/min` → converts the first, leaves the second: `80 to 60 °C at 1 degree C/min` — mixed forms in one sentence |
+
+`ascii-plusminus`'s wrong cases are the most damaging: they destroy an
+oxidation state. `Zn2±sensing` is not a notation variant of `Zn2+-sensing`,
+it is a different (meaningless) string, and it would have been written to
+2 hub titles and their `pub_id`s.
+
+**Two shared root causes**, both one guard away:
+
+1. **No numeral-left guard.** A unit *symbol* rewrite must require a
+   numeric value immediately to its left (optionally through an SI prefix).
+   `ascii-minus-exponent` got a unit-token guard; its four siblings never
+   did. `ascii-plusminus` additionally needs a numeral on **both** sides —
+   `±` means tolerance, and `<digit>+-<letter>` is a charge followed by a
+   compound adjective.
+2. **Partial application inside one sentence.** fi176552 and fi176900 come
+   out with two spellings of the same unit side by side, which is worse
+   than either input. A rule that rewrites some occurrences must rewrite
+   all of them or none.
+
+**FIXED the same day (canon v3.1).** All four rules now share a
+`_NUMERAL_LEFT` guard — a unit *symbol* rewrite requires a numeral
+immediately left of the unit name, optionally through a space or hyphen
+(`1-µm colloids` is a compound adjective and is preserved).
+`ascii-plusminus` additionally requires a numeral on **both** sides.
+`_OHM_RE` and `_ANGSTROM_RE` deliberately do not take the guard — an SI
+prefix intervenes (`40 kOhm`) and `per angstrom` is a correct
+unqualified use; both were inspected at 12/12 and 17/17 correct.
+
+One correction to the diagnosis above: `ascii-degrees`'s partial
+application was **not** the missing numeral guard. `deg(?:rees)?` never
+matched the *singular* — `1 degree C/min` failed on `deg` + `ree`. Now
+`deg(?:rees?)?`.
+
+**Post-fix re-run, same harness, directly comparable:** 456 hubs change
+(29.9%), still idempotent, and every false-positive class is gone —
+`ascii-plusminus` 4→2, `ascii-micrometre` 10→4, `ascii-micro` 12→7,
+each dropped fire inspected and confirmed wrong. `formula-ascii-subscript`
+now holds at 77→77 (was 77→78): normalization no longer creates a lint
+hit, because the `Zn2±` corruption that created it is gone. Detector and
+rewriter counts now agree exactly per rule, which is the invariant the
+module docstring claims and previously did not hold.
+
+**Step 4's auto-fix set is now shippable in full** — all 456, no
+detector-only demotion needed.
+
+**Re-derived lint counts after normalization** (the bucket-D re-derivation
+the broken detector owed us). Everything the rewriter claims to fix goes to
+zero. What remains is advisory-only by design:
+`two-denominator-solidus` 173 (unchanged — judgment call),
+`formula-ascii-subscript` 77, `tex-residue` 2, `approx-spacing` 1,
+`tilde-approximation` 1.
+
+**Normalization creates one lint hit** — `formula-ascii-subscript`
+77 → 78 — and it is the `ascii-plusminus` corruption above: `Zn2+-sensing`
+→ `Zn2±sensing` makes `Zn2` newly visible as an element+digits token. The
+counter caught the corruption independently, which is a small argument for
+keeping before/after lint deltas in the harness permanently.
+
+### The duplicate pair the plan predicted is not the pair we have
+
+The prediction was that adding terminal periods would make fi191179 and
+fi191260 byte-identical. **Measured: they are already byte-identical** —
+both 70 chars, *neither* carries a terminal period. The "differ only by a
+terminal period" reading was an artifact of the earlier broken run.
+
+Normalization creates **zero** new duplicate groups. There are exactly
+**two** exact-sentence duplicate groups corpus-wide, and both are live now:
+
+- **fi191179 / fi191260** — identical sentences; `scope.method` differs as
+  `"engineered into printed"` vs `"engineered into printed touch sensors"`.
+- **fi191192 / fi191262** — identical 192-char sentences; `scope.quantity`
+  differs only in prose framing (`"Pt binding energies of -3.34 and -3.78 eV
+  (…) and -2.12 eV binding on pristine graphene"` vs `"-3.34 and -3.78 eV
+  (…), -2.12 eV binding on pristine graphene"`).
+
+This is the **first confirmed live instance of the mechanism Decision 4
+predicted**: `pub_id` is behaving exactly as designed (scope is in the
+hash), and free-text scope *values* are what forked these hubs. Neither
+pair encodes a real regime distinction — both are the same claim written
+twice with the scope field paraphrased. It is direct evidence for the
+half of Decision 4 that was kept.
+
+Note for step 5: an exact-sentence duplicate scan must group on the
+sentence hash **ignoring scope**, then adjudicate scope separately —
+grouping on `pub_id` finds nothing, because scope is what is splitting
+them. fi191262 was approved during the nanobud batch-3 sweep, so this
+pair is inside the nanobud claim tree.
+
 ### The claim sentence is stored three times — which copies are real duplication
 
 Asked, and worth settling permanently because the next reader will ask again.
@@ -416,6 +553,34 @@ never called.**
    Note the 1,524 `finding_body` chunks are all embedded — it is specifically
    the card layer that is missing, so general semantic search still works and
    only dedup is blind. That asymmetry is why nobody noticed.
+
+   **RESOLVED 2026-08-19 — and the cause was worse than "a pass stopped
+   running": there was never a pass.** `Store.blocks.upsert_card_combined`
+   has exactly one caller, `NumericRefHandler._create`, behind the
+   `emits_card` class flag — which `FindingHandler` does not set. `mint_hub`
+   writes the ref and the `ord=0` body chunk and nothing else. So no path,
+   agent-facing or system, ever wrote a hub's `card_combined`; the "async
+   card-forge path" asserted in `hub.py`'s docstrings and in
+   `precis-taproot-help` never existed. The 187 hubs that *do* carry a card
+   got it from `workers/chase.py::_snapshot_chain`, which fires at chain
+   termination for `STATUS:tracing` findings — so that text is a chain
+   snapshot, not the claim sentence. The index was both 88% empty and
+   off-content where populated.
+
+   Fix: `block()` now retrieves over the `ord=0` `finding_body` chunk
+   (`+ ce.status = 'ok'`). No backfill, no new worker, no derived copy —
+   coverage went 12.3% → **100%** (1,524/1,524, all `status='ok'`, verified
+   against prod) the moment the join changed. It also closes the sync hazard
+   rather than managing it: `refine_claim_sentence` already DELETE+INSERTs
+   the body chunk, so the embed cascade re-runs and the dedup index tracks
+   every reword by construction. A hub's `card_combined` would only ever
+   have been a verbatim second copy of the sentence whose one distinguishing
+   property was that it could drift.
+
+   Standing invariant added: `health_digest.py::_check_claim_hub_dedup_index`
+   counts live hubs with no embedded body chunk and reports coverage, so a
+   future shortfall surfaces instead of being found by accident. Regression
+   test: `test_block_finds_a_minted_hub_that_has_no_card_combined`.
 
 **Design rule this establishes: derived is right, fire-and-forget is not.**
 Both this and the title/body divergence
@@ -559,7 +724,7 @@ the next 234 bibliography stubs from entering.
 5. **`place()` is NOT wired into `seed_claim_hub`** — explicitly deferred.
    Dedup therefore ships as an **offline pass** over the corpus, not as a
    change to the interactive `put(kind='finding')` door. The prose gate in
-   `precis-taproot-help` remains the only mint-time dedup control, with its
+   `precis-taproot-mint-help` remains the only mint-time dedup control, with its
    known weakness (see "Why dedup never fired" above) accepted for now.
 6. **One of the 191259/191268 pair is deleted** rather than merged — the
    forensic anomaly is most likely a truncation artefact, so the pair is one

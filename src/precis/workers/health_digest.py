@@ -706,6 +706,89 @@ def _check_card_forge(conn: Any) -> CheckResult:
     )
 
 
+def _check_claim_hub_dedup_index(conn: Any) -> CheckResult:
+    """Every live ``TAPROOT:claim`` hub is reachable by claim dedup.
+
+    :func:`precis.taproot.canon.block` ANN-retrieves candidate duplicates
+    over hubs' ``finding_body`` (``ord=0``) embeddings. A hub missing that
+    chunk — or holding one the embed pass hasn't vectorized — is *invisible*
+    to dedup: it can never be returned as a near-duplicate, so a fresh mint
+    of the same claim silently becomes a second hub. Nothing else surfaces
+    that; the mint just succeeds.
+
+    This is the invariant the 2026-08-19 audit lacked. Dedup then retrieved
+    over ``card_combined`` (``ord=-1``), which no code path ever wrote for a
+    hub, so coverage sat at 187/1,524 (12.3%) and every "no duplicates
+    found" verdict in the corpus was vacuous — undetected for the whole life
+    of the feature. Coverage is the thing to watch, not the freshness of any
+    one pass: the body chunk is written in ``mint_hub``'s own transaction, so
+    a shortfall means either an embed backlog or a hub minted off-door.
+
+    A small non-zero count is usually just embed lag on a fresh mint, hence
+    ``warn`` rather than error; a persistent or growing count is a real
+    correctness hole.
+    """
+    sql = """
+        SELECT count(*) AS hubs,
+               count(*) FILTER (WHERE ce.chunk_id IS NULL) AS unindexed
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                          AND (rt.expires_at IS NULL OR rt.expires_at > now())
+          JOIN tags t ON t.tag_id = rt.tag_id
+                     AND t.namespace = 'TAPROOT' AND t.value = 'claim'
+          LEFT JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = 0
+                            AND c.chunk_kind = 'finding_body'
+                            AND c.retired_at IS NULL
+          LEFT JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
+                                       AND ce.embedder = %s
+                                       AND ce.status = 'ok'
+         WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+    """
+    try:
+        row = conn.execute(sql, (health_checks._EMBED_ARTIFACT,)).fetchone()
+    except Exception:
+        log.exception("health_digest: claim-hub dedup-index probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after dedup-index probe failed")
+        return CheckResult(
+            "taproot",
+            "claim_hub_dedup_index",
+            "unknown",
+            "claim-hub dedup index: probe failed",
+            _WARN,
+        )
+    hubs = int(row[0]) if row else 0
+    unindexed = int(row[1]) if row else 0
+    if hubs == 0:
+        return CheckResult(
+            "taproot",
+            "claim_hub_dedup_index",
+            "ok",
+            "claim-hub dedup index: no hubs yet",
+            _WARN,
+        )
+    if unindexed == 0:
+        return CheckResult(
+            "taproot",
+            "claim_hub_dedup_index",
+            "ok",
+            f"claim-hub dedup index: {hubs}/{hubs} indexed",
+            _WARN,
+        )
+    pct = 100.0 * (hubs - unindexed) / hubs
+    return CheckResult(
+        "taproot",
+        "claim_hub_dedup_index",
+        "stale",
+        f"claim-hub dedup index: {unindexed} of {hubs} hubs unindexed "
+        f"({pct:.1f}% covered) — those hubs cannot be returned as "
+        f"duplicate candidates, so mints of the same claim will fork",
+        _WARN,
+    )
+
+
 def _check_agent_jobs_completing(conn: Any) -> CheckResult:
     """Agent (``claude_inproc``) jobs completing, not all-failing, in 6h.
 
@@ -901,6 +984,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_chunks_extracted(conn))
         out += _idle_aware_backlog_checks(conn)
         out.append(_check_card_forge(conn))
+        out.append(_check_claim_hub_dedup_index(conn))
         out.append(_check_agent_jobs_completing(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))

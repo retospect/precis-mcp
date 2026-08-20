@@ -742,7 +742,7 @@ def put(
     body: str | None = None,
     scope: dict[str, Any] | None = None,
     cited_in: str | None = None,
-    # finding Taproot hub-mint (see precis-taproot-help): supporters= (a list
+    # finding Taproot hub-mint (see precis-taproot-mint-help): supporters= (a list
     # of {paper, role?, source_handle?}) with NO cited_in mints/converges a
     # claim HUB instead of a chase finding — title=/body= carry the claim
     # sentence. Supplying both supporters= and cited_in= errors (two modes).

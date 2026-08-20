@@ -17,11 +17,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers._finding_evidence import _independent_supporter_counts
 from precis.handlers.finding import FindingHandler
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.taproot.seniority import (
+    EvidenceEdge,
     conjunct_atoms_bulk,
     derive_conjuncts,
     derive_evidence,
@@ -47,6 +49,31 @@ def _paper(store: Any, *, title: str, year: int | None = None) -> int:
     slug = f"sen{next(_slug_counter)}"
     ref = store.insert_ref(kind="paper", slug=slug, title=title, year=year, meta={})
     return ref.id
+
+
+def _paper_with_authors(
+    store: Any, *, title: str, authors: list[dict[str, Any]], year: int | None = None
+) -> int:
+    slug = f"sen{next(_slug_counter)}"
+    ref = store.insert_ref(
+        kind="paper", slug=slug, title=title, year=year, meta={}, authors=authors
+    )
+    return ref.id
+
+
+def _edge(pid: int, *, is_originator: bool = False) -> EvidenceEdge:
+    """A bare-minimum :class:`EvidenceEdge` for exercising
+    :func:`_independent_supporter_counts` directly, without a hub."""
+    return EvidenceEdge(
+        paper_ref_id=pid,
+        title=f"paper {pid}",
+        year=None,
+        derived_role="establishes" if is_originator else "corroborates",
+        is_originator=is_originator,
+        support=None,
+        caveats=[],
+        integrity="clean",
+    )
 
 
 def _cites(store: Any, *, src: int, dst: int) -> None:
@@ -491,6 +518,112 @@ def test_finding_view_evidence_marks_only_zero_block_papers_unfetched(
     )
     assert "(unfetched)" not in fetched_line
     assert "(unfetched)" in unfetched_line
+
+
+# ── independent-supporter count (derived, read-only) ────────────────────
+
+
+def test_independent_supporter_counts_zero_when_no_supporters(store: Any) -> None:
+    assert _independent_supporter_counts([], {}) == (0, 0)
+
+
+def test_independent_supporter_counts_single_supporter(store: Any) -> None:
+    p = _paper_with_authors(store, title="Solo", authors=[{"name": "A. One"}])
+    refs_by_id = store.fetch_refs_by_ids([p])
+
+    assert _independent_supporter_counts([_edge(p)], refs_by_id) == (1, 1)
+
+
+def test_independent_supporter_counts_collapses_shared_author(store: Any) -> None:
+    """Two supporting papers sharing an author (case/whitespace-insensitive
+    match) count as one independent supporter, even though both papers are
+    still counted in the paper total."""
+    p1 = _paper_with_authors(
+        store, title="Paper one", authors=[{"name": "Jane Doe"}, {"name": "Bob Roe"}]
+    )
+    p2 = _paper_with_authors(
+        store, title="Paper two", authors=[{"name": "  jane doe  "}, {"name": "Cy Fu"}]
+    )
+    refs_by_id = store.fetch_refs_by_ids([p1, p2])
+
+    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (1, 2)
+
+
+def test_independent_supporter_counts_distinct_authors_stay_separate(
+    store: Any,
+) -> None:
+    p1 = _paper_with_authors(store, title="Paper one", authors=[{"name": "Jane Doe"}])
+    p2 = _paper_with_authors(store, title="Paper two", authors=[{"name": "Cy Fu"}])
+    refs_by_id = store.fetch_refs_by_ids([p1, p2])
+
+    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (2, 2)
+
+
+def test_independent_supporter_counts_transitive_chain_collapses_to_one(
+    store: Any,
+) -> None:
+    """A shares an author with B, B shares a *different* author with C:
+    transitive closure collapses all three into one supporter."""
+    p1 = _paper_with_authors(
+        store, title="Paper one", authors=[{"name": "Jane Doe"}, {"name": "Ann Alpha"}]
+    )
+    p2 = _paper_with_authors(
+        store, title="Paper two", authors=[{"name": "Ann Alpha"}, {"name": "Bea Beta"}]
+    )
+    p3 = _paper_with_authors(store, title="Paper three", authors=[{"name": "Bea Beta"}])
+    refs_by_id = store.fetch_refs_by_ids([p1, p2, p3])
+
+    assert _independent_supporter_counts(
+        [_edge(p1), _edge(p2), _edge(p3)], refs_by_id
+    ) == (1, 3)
+
+
+def test_independent_supporter_counts_no_authors_stays_singleton(store: Any) -> None:
+    """A paper with no resolvable authors is its own group — sparse
+    author data never collapses papers into each other."""
+    p1 = _paper(store, title="No-author paper A")
+    p2 = _paper(store, title="No-author paper B")
+    refs_by_id = store.fetch_refs_by_ids([p1, p2])
+
+    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (2, 2)
+
+
+def test_finding_view_evidence_renders_independent_supporters_line(
+    store: Any,
+) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    a = _paper_with_authors(
+        store, title="Support A", authors=[{"name": "Jane Doe"}], year=2001
+    )
+    b = _paper_with_authors(
+        store, title="Support B", authors=[{"name": "jane doe"}], year=2002
+    )
+    c = _paper_with_authors(
+        store, title="Support C", authors=[{"name": "Cy Fu"}], year=2003
+    )
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=a, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=b, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=c, role="corroborates")
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert "independent supporters: 2 (3 papers)" in resp.body
+
+
+def test_finding_view_evidence_independent_supporters_zero_with_only_contradictors(
+    store: Any,
+) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    contradictor = _paper(store, title="Contradictor only", year=2001)
+    attach_evidence(
+        store, hub_ref_id=hub, paper_ref_id=contradictor, role="contradicts"
+    )
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert "independent supporters: 0 (0 papers)" in resp.body
 
 
 # ── view='evidence' patent rendering (patent-evidence-parity.md Phase 3) ──

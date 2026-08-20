@@ -18,7 +18,7 @@ Hub `fi191307`'s claim text wrongly read "corannulene-derived nanobowls"; the so
 
 ## Why this matters
 
-Per `precis-finding-help`, `scope` "filters search and dedups identical `(body, scope, cited_in)` re-submissions so two agents writing the same claim collapse". A hub whose title has been corrected but whose scope has not is therefore left in a state where (a) scope-filtered search returns the superseded term, and (b) **the dedup key no longer matches the corrected claim** — so a later mint of the same claim with the right scope would fail to converge onto this hub and could create a duplicate. Duplicate hubs have no automated merge door (`precis-taproot-help` says the `pub_id`-collision raise is the handoff, and merging is a manual three-step repoint/move/delete), so the cost of landing in that state is high.
+Per `precis-finding-help`, `scope` "filters search and dedups identical `(body, scope, cited_in)` re-submissions so two agents writing the same claim collapse". A hub whose title has been corrected but whose scope has not is therefore left in a state where (a) scope-filtered search returns the superseded term, and (b) **the dedup key no longer matches the corrected claim** — so a later mint of the same claim with the right scope would fail to converge onto this hub and could create a duplicate. Duplicate hubs have no automated merge door (`precis-taproot-mint-help` says the `pub_id`-collision raise is the handoff, and merging is a manual three-step repoint/move/delete), so the cost of landing in that state is high.
 
 ## Suggested direction
 

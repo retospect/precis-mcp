@@ -310,9 +310,10 @@ def test_refine_claim_sentence_replaces_ord0_chunk_not_updates_in_place(
 
 
 def test_refine_claim_sentence_drops_stale_card_variants(store: Any) -> None:
-    """No pass re-derives a hub's card_combined off content changes (see
-    the docstring) -- the retitle door deletes ord<0 rows so a stale card
-    never keeps matching the OLD wording in canon.block's ANN index."""
+    """No pass derives a hub's card_combined at all (see the docstring) --
+    the retitle door deletes ord<0 rows so a stale card can never keep
+    matching the OLD wording anywhere. canon.block indexes the ord=0
+    finding_body instead, which step 2 re-emits."""
     hub = mint_hub(store, _CLAIM)
     with store.pool.connection() as conn:
         conn.execute(
@@ -326,6 +327,46 @@ def test_refine_claim_sentence_drops_stale_card_variants(store: Any) -> None:
     refine_claim_sentence(store, hub, "A different, reworded claim sentence.")
 
     assert _card_ords(store, hub) == []
+
+
+def test_block_finds_a_minted_hub_that_has_no_card_combined(store: Any) -> None:
+    """The 2026-08-19 dedup outage, as a regression.
+
+    ``block`` used to ANN-retrieve over ``card_combined`` (``ord=-1``), a
+    chunk *no* code path writes for a claim hub — so a hub minted through
+    the ordinary door was invisible to dedup and a second mint of the same
+    claim forked a duplicate. In prod that left 187 of 1,524 hubs indexed.
+    Here: mint a hub, embed only what ``mint_hub`` actually writes, and
+    require ``block`` to return it.
+    """
+    from precis.taproot.canon import block
+    from tests.workers._helpers import make_mock_bge_m3
+
+    hub = mint_hub(store, _CLAIM)
+    embedder = make_mock_bge_m3()
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL",
+            (hub,),
+        ).fetchone()
+        assert row is not None, "mint_hub must write an ord=0 finding_body chunk"
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (row[0], "bge-m3", embedder.embed_one(_CLAIM.sentence)),
+        )
+        conn.commit()
+        # No ord<0 card exists, and nothing in the codebase would write one.
+        cards = conn.execute(
+            "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord < 0", (hub,)
+        ).fetchone()
+    assert cards is not None and cards[0] == 0
+
+    candidates = block(_CLAIM, store, embedder)
+
+    assert [c.hub_ref_id for c in candidates] == [hub]
 
 
 def test_refine_claim_sentence_mints_new_pub_id_and_keeps_old_as_alias(

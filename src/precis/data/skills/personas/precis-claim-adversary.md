@@ -54,7 +54,7 @@ mostly `genuine-conflict`, you are miscalibrated, not thorough.
 
 - **`same-claim`** — the two hubs assert the same fact. Pick the survivor
   (better wording / more evidence), then follow "Merge duplicate hubs" in
-  `precis-taproot-help` verbatim: repoint every citing draft chunk from
+  `precis-taproot-mint-help` verbatim: repoint every citing draft chunk from
   the dup to the survivor, move the dup's evidence edges onto the
   survivor (`link(rel='corroborates', target=...)`), then
   `delete(kind='finding', id='fi<dup>')`. This is the one case where you

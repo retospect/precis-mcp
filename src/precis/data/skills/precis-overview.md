@@ -248,6 +248,12 @@ get(kind="skill", id="precis-random-help")  # random corpus pick
 get(kind="skill", id="precis-folder-help")  # folders, placement, folder= search scope
 get(kind="skill", id="precis-taproot-help")  # cross-paper claim hubs, living citation
 get(
+    kind="skill", id="precis-taproot-mint-help"
+)  # author/mint/sharpen/merge a claim hub
+get(
+    kind="skill", id="precis-taproot-backfill-help"
+)  # batch-convert [pc]/[pa] cites into hub cites
+get(
     kind="skill", id="precis-notation-canon"
 )  # how to spell numbers/units in a claim sentence (blocks at approve)
 get(

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from precis.taproot.authoring import seed_claim_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub, refine_claim_sentence
@@ -108,8 +110,67 @@ def test_ascii_micro_fires_on_ug_slash_unit() -> None:
 
 
 def test_ascii_micro_fires_on_micro_prefix_word() -> None:
-    warnings = lint_notation("The complex binds at micromolar concentration.")
+    warnings = lint_notation("The complex binds at 5 micromolar concentration.")
     assert any("ascii-micro" in w for w in warnings)
+
+
+# ── the unit-NAME vs unit-SYMBOL guard (`_NUMERAL_LEFT`) ────────────────
+# SI writes a symbol with a numerical value and the name in words. Every
+# rule below fired on adjectival prose before 2026-08-20; each case is a
+# real corpus sentence that a rewrite would have damaged.
+
+
+@pytest.mark.parametrize(
+    "sentence,code",
+    [
+        # no value for the symbol to qualify -- the name is correct here
+        ("The complex binds at micromolar concentration.", "ascii-micro"),
+        ("Microsecond quantum coherence times have been demonstrated.", "ascii-micro"),
+        ("Switching speeds of about a microsecond were reached.", "ascii-micro"),
+        ("Bayesian force fields enable micron-scale catalysis.", "ascii-micrometre"),
+        (
+            "Assembled into cell-scale (micrometre-dimension) containers.",
+            "ascii-micrometre",
+        ),
+        # a spelled-out numeral is still not a numerical value
+        (
+            "Ballistic transport over ten micrometres at room temperature.",
+            "ascii-micrometre",
+        ),
+    ],
+)
+def test_unit_name_without_a_numeral_is_left_spelled_out(
+    sentence: str, code: str
+) -> None:
+    assert not any(code in w for w in lint_notation(sentence))
+    out, applied = normalize_notation(sentence)
+    assert code not in applied
+    assert out == sentence
+
+
+def test_ascii_plusminus_does_not_eat_an_oxidation_state() -> None:
+    """`Zn2+-sensing` -> `Zn2±sensing` destroys the charge and yields a
+    meaningless string. Tolerance needs a numeral on BOTH sides; here the
+    right-hand side is a hyphenated compound adjective."""
+    for sentence in (
+        "A BODIPY Zn2+-sensing gate was coupled via inner-filter transfer.",
+        "RFdiffusion designed square-planar Ni2+-binding histidine sites.",
+    ):
+        assert not any("ascii-plusminus" in w for w in lint_notation(sentence))
+        out, applied = normalize_notation(sentence)
+        assert "ascii-plusminus" not in applied
+        assert out == sentence
+
+
+def test_ascii_degrees_converts_every_occurrence_including_the_singular() -> None:
+    """A rule that rewrites some occurrences of a unit must rewrite all of
+    them -- `deg(?:rees)?` matched only the plural, so this sentence came
+    out carrying two spellings of one unit."""
+    out, applied = normalize_notation(
+        "Optimised thermal ramps (80 to 60 degrees C at 1 degree C/min) fold it."
+    )
+    assert applied == ["ascii-degrees"]
+    assert out == "Optimised thermal ramps (80 to 60 °C at 1 °C/min) fold it."
 
 
 def test_ascii_micro_does_not_fire_inside_ordinary_word() -> None:
@@ -472,9 +533,15 @@ _NORMALIZE_CASES: list[tuple[str, str, list[str]]] = [
         ["ascii-micro"],
     ),
     (
-        "The complex binds at micromolar concentration.",
-        "The complex binds at µM concentration.",
+        "The complex binds at 5 micromolar concentration.",
+        "The complex binds at 5 µM concentration.",
         ["ascii-micro"],
+    ),
+    (
+        # a hyphen between value and name is a compound adjective, kept
+        "Entropy penalty per bond on 1-micrometre colloids is -14.6R.",
+        "Entropy penalty per bond on 1-µm colloids is -14.6R.",
+        ["ascii-micrometre"],
     ),
     (
         "Annealing was carried out at 25 degrees C.",
@@ -610,7 +677,7 @@ def test_normalize_notation_does_not_double_count_combined_micro_rule() -> None:
     # Both the 'ug' sub-rule and the 'micro<unit>' sub-rule fire in one
     # sentence -- 'ascii-micro' must still appear exactly once.
     out, codes = normalize_notation(
-        "A 50 ug dose at micromolar concentration was applied."
+        "A 50 ug dose at 5 micromolar concentration was applied."
     )
     assert codes.count("ascii-micro") == 1
     assert "µg" in out and "µM" in out

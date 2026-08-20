@@ -131,7 +131,8 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Organize artifacts | `kind='folder'` + `link(rel='parent')`; `search(folder=...)` | `precis-folder-help` |
 | Verified claim → source | `kind='citation'` / `kind='finding'` | `precis-citation-help`, `precis-finding-help` |
 | Find/cite a cross-paper claim hub | `search(kind='finding', tags=['TAPROOT:claim'])` → cite `[fi<id>]` (living) or pin `[fi<id>>pa5]` | `precis-taproot-help` |
-| Mint a claim hub | **`search(kind='finding', q='<the sentence>', status='*', mode='semantic')` first** — attach to an existing hub rather than mint a near-duplicate — then `put(kind='finding', supporters=…)` | `precis-taproot-help`, `precis-notation-canon` |
+| Mint a claim hub | **`search(kind='finding', q='<the sentence>', status='*', mode='semantic')` first** — attach to an existing hub rather than mint a near-duplicate — then `put(kind='finding', supporters=…)` | `precis-taproot-mint-help`, `precis-notation-canon` |
+| Convert a draft's legacy `[pc]`/`[pa]` cites into hub cites | `put(kind='job', job_type='taproot_backfill', params={'scope': '<slug>'})` or `precis taproot backfill --draft <slug>` | `precis-taproot-backfill-help` |
 | Reusable reasoning step beside a draft | `kind='memory'` tagged `kind:lemma`/`kind:inference`, `entails`/`derived-from` edges → `get(view='argument')` | `precis-argument-help` |
 | Spaced-repetition cards (Anki) | **`search(kind='anki', q=…)` first (dedup)** → `put(kind='anki', text='… {{cN::…}} …', tags=['deck-<topic>'])` → syncs to AnkiWeb | `precis-cloze` (craft), `precis-anki-help` (ref) |
 | Cards I keep forgetting | `get(kind='anki', id='/leeches')` → fix the cloze (tag `precis-fix` in Anki) or study more | `precis-anki-help` |

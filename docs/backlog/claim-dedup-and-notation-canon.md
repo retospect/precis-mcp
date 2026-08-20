@@ -9,12 +9,12 @@ model: sonnet
 Both surfaced operating the mint path against smartdrafts dr43004 /
 dr43012 / dr43029 (2026-08-19). Both are *skill* gaps first — agents mint
 correctly-grounded hubs that are nonetheless near-duplicates of each
-other, because nothing in `precis-taproot-help` tells them to look first
+other, because nothing in `precis-taproot-mint-help` tells them to look first
 or to write numbers the same way twice.
 
 ## 1 — Search before minting; strengthen rather than duplicate
 
-`precis-taproot-help` currently sells `pub_id` convergence as if it were
+`precis-taproot-mint-help` currently sells `pub_id` convergence as if it were
 dedup: mint "converges onto an existing one for identical claim content".
 True but narrow — convergence is a **content hash**, so it catches only
 byte-identical (post-NFKD) sentences. Two agents phrasing one claim two
@@ -24,7 +24,7 @@ Live evidence: `fi191132` and `fi211518` are both "a pentagon–heptagon
 defect pair joins incompatible nanotube lattices" geometric-construction
 claims, minted independently and never merged.
 
-Proposed addition to `precis-taproot-help`, as a **hard gate** in the
+Proposed addition to `precis-taproot-mint-help`, as a **hard gate** in the
 mintable-claim rubric (not a soft flag), immediately before "Mint a claim
 hub from a claim I've already sourced":
 
@@ -66,7 +66,7 @@ of one unit, two of them minted the same day:
 
 | form | where |
 |---|---|
-| `≈10,000 cm²/Vs` | `precis-taproot-help`'s own example |
+| `≈10,000 cm²/Vs` | `precis-taproot-mint-help`'s own example |
 | `100,000 cm²V⁻¹s⁻¹` | `fi218293` |
 | `4,600 cm² V⁻¹ s⁻¹` | `fi218337` |
 

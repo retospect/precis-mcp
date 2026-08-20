@@ -226,7 +226,7 @@ acquisition-mode finding (above) — mixing modes errors. Hub mint still
 assertion never becomes a thin-air hub); `link(kind='finding',
 rel='establishes'|'corroborates'|'contradicts', target=<pc/pa handle>)`
 attaches evidence to an existing hub. Full contract:
-`precis-taproot-help` — the claim sentence must pass its admissibility
+`precis-taproot-mint-help` — the claim sentence must pass its admissibility
 rules and the notation canon (`precis-notation-canon`); both advise
 here at mint and **block** at approve. Evidence also accrues automatically via the
 chase's forward bridge, gated behind `PRECIS_TAPROOT_CHASE_ENABLED`
@@ -238,7 +238,7 @@ citable by its finding handle, `[fi<id>]` — the same handle you'd
 to the same `pub_id`, so concurrent mints collapse to one hub). **That
 convergence is byte-level, not semantic** — it is not dedup: two wordings
 of one claim mint two hubs, each with half the evidence, so
-`precis-taproot-help` makes a semantic search mandatory before every
+`precis-taproot-mint-help` makes a semantic search mandatory before every
 mint. Both
 `[fi<id>]` and `[<pub_id>]` resolve to the same hub, but `fi<id>` is
 the form to cite. A bare pub_id also works as a get id —
@@ -304,7 +304,7 @@ run `precis worker --only fetch`.
 **`edit(kind='finding', ...)` accepts exactly one of** `pick_candidate=`
 (above) | `title=` | `unacquirable_note=` — passing more than one errors.
 `title=` retitles a `TAPROOT:claim` hub in place (rejects a plain finding);
-see `precis-taproot-help`'s "Reword a hub in place". `unacquirable_note=`
+see `precis-taproot-mint-help`'s "Reword a hub in place". `unacquirable_note=`
 records a **claim-level** declaration — an author assertion about THIS
 claim, never inherited from its source paper — that a print-only/
 undigitized source is legitimately citeable despite no digital copy being

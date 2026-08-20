@@ -550,7 +550,7 @@ re-clusters the range into finer groups — narrow and repeat.
 meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 'params': {'scope': <slug-or-dc>}})` — converts `[pc<id>]`/`[pa<id>]`
 cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
-`get(kind='job', id='jo<id>')`. See `precis-taproot-help`.
+`get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
 
 **Never fabricate a handle** — including `[finding #amine-uptake]`-style
 markers. Resolves to nothing: never autolinks, never exports, flagged
@@ -787,7 +787,9 @@ get(
 get(
     kind="skill", id="precis-auto-tasks-help"
 )  # wait-on-ingest (paper_ingested) leaf pattern
+get(kind="skill", id="precis-taproot-help")  # cite a claim hub (living [fi<id>])
+get(kind="skill", id="precis-taproot-mint-help")  # mint a claim hub
 get(
-    kind="skill", id="precis-taproot-help"
-)  # cite a claim hub (living [fi<id>]); mint one; backfill [pc<id>] cites to it
+    kind="skill", id="precis-taproot-backfill-help"
+)  # backfill [pc<id>]/[pa<id>] cites to hub cites
 ```

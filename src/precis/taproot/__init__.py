@@ -140,8 +140,10 @@ the fisheye Claims ring (pin markers + ``refines`` lines).
 
 Not built: citation-card dedup (Phase-2 slice 2d), the S2
 global-citation-count originator fallback, the integrity axis (Phase 4), a
-corpus-wide backfill sweep, ``refines`` evidence-flow. Skill:
-``precis-taproot-help``.
+corpus-wide backfill sweep, ``refines`` evidence-flow. Skills:
+``precis-taproot-help`` (orientation, citing), ``precis-taproot-mint-help``
+(authoring/minting/merging), ``precis-taproot-backfill-help`` (batch
+``[pc]``/``[pa]`` conversion).
 """
 
 from __future__ import annotations

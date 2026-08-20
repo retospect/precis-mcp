@@ -61,24 +61,37 @@ not that it was obvious.
 **ASCII → UTF-8 fallback — closed list.** Apply these spelling
 substitutions wherever ASCII notation reaches an extraction:
 
-| ASCII | UTF-8 |
-|---|---|
-| `+/-` | `±` |
-| `ug`, `micro` | `µ` (U+00B5) |
-| `degrees C` | ` °C` |
-| `x`, `*` (multiplication) | `×` |
-| `Ohm` | `Ω` (so `kOhm` → `kΩ`) |
-| `Angstrom` | `Å` |
-| `micrometer`, `micron` | `µm` |
+| ASCII | UTF-8 | condition |
+|---|---|---|
+| `+/-` | `±` | a numeral on **both** sides |
+| `ug` | `µg` | none — symbol → symbol |
+| `micro`+unit word | `µ`+symbol | a numeral on the left |
+| `degrees C`, `degree C` | ` °C` | a numeral on the left |
+| `micrometer`, `micron` | `µm` | a numeral on the left |
+| `x`, `*` (multiplication) | `×` | none |
+| `Ohm` | `Ω` (so `kOhm` → `kΩ`) | none |
+| `Angstrom` | `Å` | none |
+
+**The numeral condition is load-bearing, not pedantry.** SI writes a unit
+*symbol* with a numerical value and the unit *name* in words, so
+`50 micrometres` → `50 µm` but `micron-scale particles` stays spelled out
+— there is no value for the symbol to qualify. Without the `±` condition
+the rule eats an oxidation state: `Zn2+-sensing` → `Zn2±sensing`, a
+different and meaningless string that would have been signed into an
+artifact. A rule that rewrites *some* occurrences of a unit must rewrite
+all of them in the sentence — two spellings of one unit is worse than
+either input. (Canon v3.1, `src/precis/taproot/notation.py`; the guard is
+`_NUMERAL_LEFT`.)
 
 Closed — don't extrapolate a spelling that isn't on this list without
 adding a row. **Symbol respelling is not unit conversion.** Carve-out 2
 below ("never convert the paper's unit") blocks changing a quantity's
 *unit*; it does not block writing that same unit's UTF-8 symbol instead of
 its ASCII spelling — `ug` → `µg` stays micrograms, it is not a conversion
-to milligrams. Apply the fallback table freely; carve-out 2 does not gate
-it. (All three normalization agents on the 2026-08-19 pass stalled on this
-exact ambiguity — it must not be misread again.)
+to milligrams. Apply the fallback table wherever its condition column is
+met; carve-out 2 does not gate it. (All three normalization agents on the
+2026-08-19 pass stalled on this exact ambiguity — it must not be misread
+again.)
 
 **Em-dash is never a claim separator.** ` — ` (and its ASCII stand-ins
 ` -- ` and spaced ` - ` used the same way) splits a citation from a topic
@@ -87,7 +100,7 @@ NEGF upper bounds on GNR-FET performance, APL 91`. Measured across the
 live corpus: 90 hubs contain an em-dash and **all 90** are this label
 shape — none is a legitimate parenthetical. If the material really is
 subordinate, replace the dash with a comma; far more often the two sides
-are a citation and a topic, which means [[precis-taproot-help]]'s "Claim
+are a citation and a topic, which means [[precis-taproot-mint-help]]'s "Claim
 admissibility" was failing outright and the ref should never have carried
 `TAPROOT:claim`. This is the single most reliable *syntactic* marker of
 the bibliography-stub failure mode — that's why it earns its own rule
@@ -96,7 +109,7 @@ compound names (table above); do not let this rule bleed into those 102
 correct uses, 42 of them numeric ranges.
 
 **Terseness is a rule, not a preference.** Prefer the shortest sentence
-that stays falsifiable and self-contained (see [[precis-taproot-help]]'s
+that stays falsifiable and self-contained (see [[precis-taproot-mint-help]]'s
 "Claim admissibility"). A sentence joining two assertions with "and" is
 two atoms — split it; a 506-character claim is not an atomic claim.
 Shorter atoms also close a known failure: the SMALL-tier extractor
@@ -145,6 +158,8 @@ mint gate.
 ## See also
 
 ```python
-get(kind="skill", id="precis-taproot-help")  # claim hubs, mint/reword doors
+get(
+    kind="skill", id="precis-taproot-mint-help"
+)  # mint/reword doors, admissibility rubric
 get(kind="skill", id="precis-nanopub-help")  # claim-sentence grammar, mint gates
 ```

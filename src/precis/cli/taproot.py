@@ -352,6 +352,7 @@ def _print_results(results: list[dict[str, Any]], fmt: str) -> None:
         return
 
     total_ungrounded = 0
+    lint_warnings: list[str] = []
     for r in results:
         snippet = (r.get("sentence") or "").strip()
         if len(snippet) > 60:
@@ -367,6 +368,18 @@ def _print_results(results: list[dict[str, Any]], fmt: str) -> None:
             f"(+{r['attached']} evidence, {r['already']} already"
             f"{collapsed_note}{ungrounded_note}){suffix}"
         )
+        lint_warnings += [
+            f"{r['pub_id']}  {w}"
+            for w in [*(r.get("notation") or []), *(r.get("scope_lint") or [])]
+        ]
+
+    # Advisory lints were previously carried in the result dict and printed
+    # only under --format json, i.e. surfaced to nobody on the default path.
+    # A scope warning matters most here, at mint: `scope` is in the identity
+    # hash, so prose in a scope value forks a hub that should have converged
+    # (156/1525 hubs corpus-wide, 2026-08-20). Never blocks the mint.
+    for w in lint_warnings:
+        print(f"lint: {w}", file=sys.stderr)
 
     # Nudge: an ungrounded edge cites the whole paper (pa<id>), not the
     # passage (pc<id>) — supplying source_handle makes the citation tree

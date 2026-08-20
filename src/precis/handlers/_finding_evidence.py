@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from precis.store.types import Ref
 from precis.taproot import seniority
+from precis.utils.authors import author_names
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -36,6 +37,12 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     analogue of the draft citations view's to-fetch worklist), so a
     reader of one hub's evidence list, not just a citing draft's
     worklist, can see which claims rest on un-verifiable evidence.
+
+    A one-line ``independent supporters: N (M papers)`` summary follows
+    the support sections (:func:`_independent_supporter_counts`) —
+    distinct supporting (establishes/corroborates) papers, with
+    shared-author papers collapsed to one supporter. Advisory only: a
+    defeasible truth-proxy signal, never a gate and never a verdict.
     """
     from precis.export._patent_cite import format_patent_bibliography_entry
     from precis.format import render_agent_table
@@ -92,6 +99,11 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     if evidence.coverage_note:
         lines += ["", evidence.coverage_note]
 
+    independent, papers = _independent_supporter_counts(
+        evidence.originators + evidence.corroborators, refs_by_id
+    )
+    lines += ["", f"independent supporters: {independent} ({papers} papers)"]
+
     lines += ["", "## contradicts", ""]
     lines.append(_table(evidence.contradictors) if evidence.contradictors else "(none)")
 
@@ -99,6 +111,59 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         lines += ["", "support outcomes are populated by chase (Phase 3)"]
 
     return Response(body="\n".join(lines))
+
+
+def _independent_supporter_counts(
+    supporters: list[seniority.EvidenceEdge],
+    refs_by_id: dict[int, Ref],
+) -> tuple[int, int]:
+    """Group *supporters* (a hub's originator + corroborator edges —
+    ``establishes``/``corroborates`` only, never ``contradicts``) into
+    **independent supporters**: distinct supporting papers, with any
+    papers that share an author collapsed into one supporter — shared
+    authorship is not independent replication. Returns
+    ``(independent_supporter_count, paper_count)``; read-only, derived
+    fresh from ``evidence`` + the already-fetched ``refs_by_id`` on every
+    call — no stored count.
+
+    Grouping is a union-find over normalized author display names
+    (:func:`precis.utils.authors.author_names`, case-folded) so it's a
+    transitive closure: paper A sharing an author with B, and B sharing a
+    *different* author with C, still collapses all three into one group.
+    A paper with no resolvable authors is its own singleton group, never
+    merged with anything — sparse author data undercounts collapses
+    (never fabricates one).
+    """
+    paper_ids = sorted({e.paper_ref_id for e in supporters})
+    if not paper_ids:
+        return 0, 0
+
+    parent: dict[int, int] = {pid: pid for pid in paper_ids}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    by_author: dict[str, list[int]] = {}
+    for pid in paper_ids:
+        ref = refs_by_id.get(pid)
+        names = author_names(ref.authors) if ref is not None else []
+        for name in {n.strip().casefold() for n in names if n.strip()}:
+            by_author.setdefault(name, []).append(pid)
+
+    for group in by_author.values():
+        for other_pid in group[1:]:
+            union(group[0], other_pid)
+
+    roots = {find(pid) for pid in paper_ids}
+    return len(roots), len(paper_ids)
 
 
 def _collapse_patent_families(

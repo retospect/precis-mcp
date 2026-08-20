@@ -98,6 +98,48 @@ def test_seed_claim_hub_happy_path(store: Any) -> None:
     assert matching[0].source_handle == "pc123"
 
 
+# ── scope_lint advisory key (wired 2026-08-20) ──────────────────────────
+
+
+def test_seed_claim_hub_scope_lint_fires_for_prose_scope(store: Any) -> None:
+    """A prose scope value (>4 words) trips ``lint_scope`` -- the mint
+    result carries the warning under ``scope_lint`` -- but the hub is
+    minted and the evidence edge attached regardless: advisory means
+    advisory, never blocking."""
+    paper = seed_ref(store, title="Sensor Paper 2022", kind="paper")
+
+    out = seed_claim_hub(
+        store,
+        sentence="Amine loading raises CO2 capacity in aqueous solvents.",
+        scope={"method": "engineered into printed touch sensors"},
+        supporters=[{"paper": paper}],
+    )
+
+    assert out["scope_lint"]
+    assert any("scope-free-text" in w for w in out["scope_lint"])
+
+    # Critical assertion: the mint is NOT blocked.
+    assert out["attached"] == 1
+    assert _ref_tag(store, out["hub_ref_id"], "TAPROOT") == "claim"
+    assert _pub_id_row(store, out["hub_ref_id"]) == out["pub_id"]
+
+
+def test_seed_claim_hub_scope_lint_empty_for_clean_scope(store: Any) -> None:
+    """A clean, controlled-term scope value produces no ``scope_lint``
+    warnings."""
+    paper = seed_ref(store, title="Clean Scope Paper 2022", kind="paper")
+
+    out = seed_claim_hub(
+        store,
+        sentence="Pd/C catalyzes Suzuki coupling at room temperature.",
+        scope={"material": "Pd/C"},
+        supporters=[{"paper": paper}],
+    )
+
+    assert out["scope_lint"] == []
+    assert out["attached"] == 1
+
+
 # ── chunk grounding (source_handle → src_chunk_id) ────────────────────────
 
 
@@ -449,6 +491,66 @@ def test_cli_mint_smoke(store: Any, capsys: Any) -> None:
             "SELECT count(*) FROM refs WHERE kind = 'finding'"
         ).fetchone()
     assert row[0] == 1
+
+
+def test_cli_mint_prints_lint_warning_to_stderr(store: Any, capsys: Any) -> None:
+    """``_print_results`` collects ``notation``/``scope_lint`` per result
+    and prints each to stderr as ``lint: <pub_id>  <warning>`` -- advisory,
+    doesn't block the mint (stdout still reports the attach)."""
+    from precis.cli import taproot as taproot_cli
+
+    paper = seed_ref(store, title="Sensor Paper 2022", kind="paper")
+    spec = json.dumps(
+        [
+            {
+                "sentence": ("Amine loading raises CO2 capacity in aqueous solvents."),
+                "scope": {"method": "engineered into printed touch sensors"},
+                "supporters": [{"paper": paper, "role": "corroborates"}],
+            }
+        ]
+    )
+
+    args = _cli_args(json_spec=spec)
+    args.taproot_cmd = "mint"
+    taproot_cli.run(args)
+
+    captured = capsys.readouterr()
+    assert "+1 evidence" in captured.out
+    assert "lint: " in captured.err
+    assert "scope-free-text" in captured.err
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'finding'"
+        ).fetchone()
+    assert row[0] == 1
+
+
+def test_cli_mint_no_lint_line_for_clean_spec(store: Any, capsys: Any) -> None:
+    """A clean spec (no notation/scope_lint warnings) prints no ``lint:``
+    line to stderr."""
+    from precis.cli import taproot as taproot_cli
+
+    paper = seed_ref(store, title="Clean Paper 2022", kind="paper")
+    spec = json.dumps(
+        [
+            {
+                "sentence": "Pd/C catalyzes Suzuki coupling at room temperature.",
+                "scope": {"material": "Pd/C"},
+                "supporters": [
+                    {"paper": paper, "role": "corroborates", "source_handle": "pc1"}
+                ],
+            }
+        ]
+    )
+
+    args = _cli_args(json_spec=spec)
+    args.taproot_cmd = "mint"
+    taproot_cli.run(args)
+
+    captured = capsys.readouterr()
+    assert "+1 evidence" in captured.out
+    assert "lint: " not in captured.err
 
 
 def test_cli_mint_dry_run_writes_nothing(store: Any, capsys: Any) -> None:

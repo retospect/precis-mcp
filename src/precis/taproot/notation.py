@@ -57,6 +57,24 @@ naive rewrite found roughly a third of matches in this second group --
 so it stays `lint_notation`-only, per this module's advisory contract;
 `normalize_notation` never touches it.
 
+**Canon v3.1** closes the same defect in the four remaining members of
+the ASCII->UTF-8 family. `ascii-minus-exponent` had been read as a
+one-off, but the 2026-08-20 corpus re-run showed its shape repeated
+wherever a rule converts a unit *name* to a unit *symbol* without
+checking that a numerical value precedes it -- SI writes a symbol with a
+value and the name in words. `ascii-plusminus` was the damaging one: with
+no right-hand numeral guard it consumed an oxidation state
+(`Zn2+-sensing` -> `Zn2±sensing`), 2 of its 4 corpus fires. `ascii-
+micrometre` was 5 right : 5 wrong (`micron-scale` -> `µm-scale`, `ten
+micrometres` -> `ten µm`); `ascii-micro` rewrote a sentence-opening
+`Microsecond` into `µs`. All four now share `_NUMERAL_LEFT`. The same
+pass fixed a partial-application bug in `ascii-degrees`, whose
+plural-only `deg(?:rees)?` left `1 degree C/min` ASCII while converting
+`60 degrees C` in the same sentence -- a rule that rewrites some
+occurrences of a unit must rewrite all of them. `_OHM_RE` and
+`_ANGSTROM_RE` deliberately keep no numeral guard: an SI prefix
+intervenes (`40 kOhm`) and `per angstrom` is a correct unqualified use.
+
 :func:`normalize_notation` is the deterministic counterpart: it applies
 only the classes of fix that are mechanically unambiguous (the ASCII->
 UTF-8 respelling table, digit grouping, ASCII multiplication, E-notation,
@@ -236,7 +254,29 @@ _CARET_EXPONENT_RE = re.compile(r"\^(?![A-Z])")
 # exempt from the "never convert the paper's unit" carve-out (canon v2,
 # `docs/backlog/nanopub-corpus-remediation.md` Phase 0).
 
-_PLUSMINUS_RE = re.compile(r"\+/-|\+-")
+#: A numeral immediately left of a spelled-out unit name, with an optional
+#: single space or hyphen between. SI writes a unit *symbol* with a
+#: numerical value and the unit *name* in words, so `50 micrometres` ->
+#: `50 µm` is a respelling but `micron-scale particles` -> `µm-scale
+#: particles` is not -- there is no value for the symbol to qualify. A
+#: corpus dry run (2026-08-20) found every unqualified name->symbol rule
+#: firing on adjectival prose: `micron-scale`, `micrometre-dimension`,
+#: `nanometer to micrometer scale`, `ten micrometres`, and a sentence-
+#: opening `Microsecond` rewritten to `µs`. That is the same defect shape
+#: as the pre-`_ACCEPTED_DENOMINATORS` `ascii-minus-exponent` rule, one
+#: family over: a rule that reads a *pattern* where it must read a *role*.
+#: `_OHM_RE` and `_ANGSTROM_RE` deliberately do NOT take this guard -- an
+#: SI prefix intervenes (`40 kOhm`) and `per angstrom` is a correct
+#: unqualified use; both were inspected at 12/12 and 17/17 correct.
+_NUMERAL_LEFT = r"(?P<num>\d)(?P<sep>\s?-?\s?)"
+
+#: Tolerance `±` needs a numeral on BOTH sides. Without the right-hand
+#: guard this fires on an oxidation state followed by a hyphenated
+#: compound adjective and destroys it: `Zn2+-sensing` -> `Zn2±sensing`,
+#: `Ni2+-binding` -> `Ni2±binding` (2 of its 4 corpus fires, 2026-08-20).
+#: `Zn2±sensing` is not a notation variant of the input, it is a different
+#: and meaningless string -- and it would have been signed into an artifact.
+_PLUSMINUS_RE = re.compile(r"(?<=\d)(\s?)(?:\+/-|\+-)(\s?)(?=\d)")
 
 #: `ug` reading as a mass unit -- preceded by a digit (with optional
 #: space), or immediately followed by `/` (`ug/mL`). Word-bounded so it
@@ -248,20 +288,28 @@ _UG_UNIT_RE = re.compile(r"\d\s?ug\b|\bug/")
 #: `microscopy`/`microscope`/`microstructure`/`microorganism`, none of
 #: which are a prefix+unit compound.
 _MICRO_PREFIX_RE = re.compile(
-    r"\bmicro("
+    _NUMERAL_LEFT + r"micro(?P<unit>"
     r"molar|watts?|amperes?|amps?|volts?|grams?|liters?|litres?|"
     r"seconds?|farads?|henr(?:y|ies)|siemens|newtons?|pascals?|joules?"
     r")\b",
     re.IGNORECASE,
 )
 
-_DEGREES_C_RE = re.compile(r"\bdeg(?:rees)?\.?\s?C\b")
+#: `rees?` (not `rees`) so the SINGULAR `1 degree C` matches. The plural-
+#: only alternation silently half-converted `80 to 60 degrees C at 1
+#: degree C/min` -- the first occurrence became `°C`, the second stayed
+#: ASCII, leaving two spellings of one unit in one sentence, which is
+#: worse than either input. A rule that rewrites some occurrences of a
+#: unit must rewrite all of them.
+_DEGREES_C_RE = re.compile(_NUMERAL_LEFT + r"deg(?:rees?)?\.?\s?C\b")
 
 _OHM_RE = re.compile(r"\b([kM]?)([Oo]hm)s?\b")
 
 _ANGSTROM_RE = re.compile(r"\bÅngströms?\b|\bAngstroms?\b", re.IGNORECASE)
 
-_MICROMETRE_WORD_RE = re.compile(r"\bmicromet(?:er|re)s?\b|\bmicrons?\b", re.IGNORECASE)
+_MICROMETRE_WORD_RE = re.compile(
+    _NUMERAL_LEFT + r"(?:micromet(?:er|re)s?|microns?)\b", re.IGNORECASE
+)
 #: `um` reading as a length unit -- same preceded-by-digit / followed-by-
 #: `/` guard as `_UG_UNIT_RE`, so `album`/`forum`/`vacuum` never match.
 _UM_UNIT_RE = re.compile(r"\d\s?um\b|\bum/")
@@ -646,12 +694,24 @@ _MICRO_UNIT_ABBREV: dict[str, str] = {
 }
 
 
+def _num_unit(m: re.Match[str], symbol: str) -> str:
+    """Re-emit a `_NUMERAL_LEFT`-guarded match as value + separator +
+    unit symbol.
+
+    An empty separator becomes a space (canon separates a value from a
+    unit symbol), while an explicit hyphen is preserved -- `1-µm colloids`
+    is a compound adjective, not a spacing error.
+    """
+    sep = m.group("sep") or " "
+    return f"{m.group('num')}{sep}{symbol}"
+
+
 def _sub_micro_prefix(m: re.Match[str]) -> str:
-    """`micromolar` -> `µM`, etc. -- unmapped unit words (never happens
+    """`4 micromolar` -> `4 µM`, etc. -- unmapped unit words (never happens
     given `_MICRO_PREFIX_RE`'s closed alternation, but kept defensive)
     pass through unchanged rather than losing text."""
-    abbrev = _MICRO_UNIT_ABBREV.get(m.group(1).lower(), "")
-    return f"µ{abbrev}" if abbrev else m.group(0)
+    abbrev = _MICRO_UNIT_ABBREV.get(m.group("unit").lower(), "")
+    return _num_unit(m, f"µ{abbrev}") if abbrev else m.group(0)
 
 
 def _apply(
@@ -747,7 +807,7 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         "ascii-minus-exponent",
         applied,
     )
-    s = _apply(s, _PLUSMINUS_RE, "±", "ascii-plusminus", applied)
+    s = _apply(s, _PLUSMINUS_RE, r"\1±\2", "ascii-plusminus", applied)
 
     micro_applied: list[str] = []
     s = _apply(
@@ -761,7 +821,7 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
     if micro_applied:
         applied.append("ascii-micro")
 
-    s = _apply(s, _DEGREES_C_RE, "°C", "ascii-degrees", applied)
+    s = _apply(s, _DEGREES_C_RE, lambda m: _num_unit(m, "°C"), "ascii-degrees", applied)
     s = _apply(
         s,
         _OHM_RE,
@@ -772,7 +832,13 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
     s = _apply(s, _ANGSTROM_RE, "Å", "ascii-angstrom", applied)
 
     micrometre_applied: list[str] = []
-    s = _apply(s, _MICROMETRE_WORD_RE, "µm", "ascii-micrometre", micrometre_applied)
+    s = _apply(
+        s,
+        _MICROMETRE_WORD_RE,
+        lambda m: _num_unit(m, "µm"),
+        "ascii-micrometre",
+        micrometre_applied,
+    )
     s = _apply(
         s,
         _UM_UNIT_SUB_RE,

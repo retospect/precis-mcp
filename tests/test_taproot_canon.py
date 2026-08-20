@@ -675,14 +675,44 @@ def test_place_low_confidence_same_confirm_also_uncertain_needs_review() -> None
     assert result.action == "needs_review"
 
 
-def test_place_new_contradicts_on_contradiction() -> None:
-    judged = [(_CAND, _verdict("contradicts", 0.8, "opposite polarity"))]
+def test_place_new_contradicts_on_confident_contradiction() -> None:
+    judged = [(_CAND, _verdict("contradicts", 0.9, "opposite polarity"))]
     result = place(_CLAIM, judged)
     assert result == Placement(
         action="new_contradicts",
         contradicts_hub_ref_id=101,
         reason="opposite polarity",
     )
+
+
+def test_place_low_confidence_contradiction_mints_unlinked() -> None:
+    """A sub-threshold ``contradicts`` must NOT write the edge.
+
+    ``contradicts`` blocks publication at the nanopub mint gates, so acting
+    on an unconfirmed verdict suppresses another author's claim. The hub is
+    still minted — the claim is not lost — but it lands unlinked, with the
+    suspicion carried in ``reason`` for a human to pick up.
+    """
+    judged = [(_CAND, _verdict("contradicts", 0.84, "maybe opposite"))]
+    result = place(_CLAIM, judged)
+    assert result.action == "new"
+    assert result.contradicts_hub_ref_id is None
+    assert "unconfirmed contradiction" in result.reason
+    assert "maybe opposite" in result.reason
+
+
+def test_place_confident_contradiction_wins_over_unconfident_one() -> None:
+    """Threshold filtering must not reorder — the first *qualifying*
+    candidate is chosen, not the first candidate that happens to say
+    "contradicts"."""
+    judged = [
+        (_CAND, _verdict("contradicts", 0.10, "weak hunch")),
+        (_CAND2, _verdict("contradicts", 0.95, "clear opposite")),
+    ]
+    result = place(_CLAIM, judged)
+    assert result.action == "new_contradicts"
+    assert result.contradicts_hub_ref_id == 202
+    assert result.reason == "clear opposite"
 
 
 def test_place_same_takes_priority_over_contradicts() -> None:

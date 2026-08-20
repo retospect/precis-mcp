@@ -46,6 +46,11 @@ stays authoritative; the nanopub is the frozen published form.
 
 ## Mint gates (why a claim you drafted may not mint)
 
+**Admissible is not true.** Every gate below checks that a claim is
+well-formed, sourced, and traceable — none checks whether it is
+*correct*. A hub that clears every gate has passed admissibility, not
+verification; read "mintable" as "safe to cite," never as "confirmed."
+
 Layer-A validators run at approve and again at sign; the common
 failures an extraction agent can avoid up front:
 
@@ -117,7 +122,7 @@ Write to this grammar when a hub is minted or reworded — not just when
 it's approved. `refs.title` still syncs to the approved string at approve,
 but approve **verifies** conformance; it does not compose the sentence, so
 a candidate that already reads as a claim needs no rewrite there. See
-`precis-taproot-help`'s "Claim admissibility": that gate decides whether a
+`precis-taproot-mint-help`'s "Claim admissibility": that gate decides whether a
 sentence is a claim at all, this grammar governs its shape once it is.
 
 The claim sentence IS the claim — it carries all the meaning and is
@@ -166,7 +171,7 @@ sentence, shaped **general → specific**: `[epistemic mode + method] +
     Kirkpatrick et al.", "Surface interactions … were investigated" are
     history-of-science or activity reports, not claims. Blocking —
     `past-passive`. Correlates with the not-falsifiable stub pattern
-    (`precis-taproot-help`'s "Claim admissibility") — like the em-dash
+    (`precis-taproot-mint-help`'s "Claim admissibility") — like the em-dash
     rule there, a mechanical marker for a category error underneath.
   - Measured over all 1,524 live hubs: present 756 (49.6%), present
     perfect 104 (6.8%), simple past 95 (6.2%), past passive 6 (0.4%).
@@ -226,6 +231,35 @@ redirects there — one page, reader evidence + review-and-sign):
   are trusted, and publishing requires the *attesting* (human) entry.
 - **Order** — atoms publish before the compounds citing them; hanging
   claims never publish; a drifted or disputed hub is blocked.
+
+## Content review is a separate axis from gate admissibility
+
+Every gate above (mint and publish) checks *form* — well-formed,
+sourced, traceable. Whether anything else in the corpus actually
+**disagrees** with the claim is a different question, and today the
+only edge that carries that signal is `contradicts` — which blocks
+publication of the *other* hub, so filing one is expensive and rare (2
+`contradicts` edges across 1,527 live hubs).
+
+`docs/backlog/disputes-edge-nonblocking-disagreement.md` **proposes** —
+not yet built — splitting that into a free, non-blocking `disputes`
+edge ("these two claims appear to conflict; someone should look") and
+keeping `contradicts` as the adjudicated, blocking outcome. A
+`disputes` edge would resolve into exactly one of five verdicts, only
+the last blocking:
+
+- `same-claim` → attach evidence to the survivor, retire the duplicate
+- `refines` → typed `refines` edge
+- `scope-mismatch` → different regime; annotate scope on both, no edge
+  — the expected majority
+- `unit-error` → one side is arithmetically wrong; retract it
+- `genuine-conflict` → `contradicts`, plus a hunt for a third
+  adjudicating source
+
+None of this exists in code yet — no `disputes` relation, no non-blocking
+render. Until it ships, a suspected conflict has no free way to be
+filed; raise it to a human rather than either staying silent or firing
+`contradicts` on a hunch.
 
 ## Triage lane (small-model-safe: classify and file, never fix)
 

@@ -59,7 +59,7 @@ Patents cite the same way by their chunk handle `[pk<id>]`; an in-flight
 **Several papers back the same claim?** Converge them onto one living
 hub instead of stacking `[pc<id>]` cites: `put(kind='finding',
 title=<claim>, supporters=[{'paper':'pa5','source_handle':'pc293'}])`
-mints/converges a citable `[fi<id>]`. See [[precis-taproot-help]].
+mints/converges a citable `[fi<id>]`. See [[precis-taproot-mint-help]].
 
 The handle is a value you **copy from search / get output** — never
 construct or guess it. There is no slug to assemble. Find it with a
@@ -226,6 +226,6 @@ get(
 )  # claim-level citation density discipline
 get(kind="skill", id="precis-bibliography-help")  # read side: who cites this paper
 get(
-    kind="skill", id="precis-taproot-help"
+    kind="skill", id="precis-taproot-mint-help"
 )  # converge multi-paper claims into one living [fi<id>] hub
 ```

@@ -373,8 +373,8 @@ def mint_hub(
     The hub is a ``finding`` (reuse, not a new kind — the argument graph precedent):
     ``claim.sentence`` → ``title`` (list-view scannability) *and* a
     ``finding_body`` chunk at ``ord=0`` (so it embeds + full-text-searches,
-    and the card pass emits the ``card_combined`` that :func:`canon.block`
-    ANN-retrieves over); ``claim.scope`` → ``meta.scope``; ``STATUS:canonical``;
+    and is the chunk :func:`canon.block` ANN-retrieves over for dedup);
+    ``claim.scope`` → ``meta.scope``; ``STATUS:canonical``;
     ``TAPROOT:claim``. This is taproot's *system-writer* path — the agent-facing
     door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
     taproot dedups upstream via canonicalization, so the hub write is direct.
@@ -394,10 +394,11 @@ def mint_hub(
     the pub_id is deterministic per canonicalized claim.
 
     **Converge-to-attach on a pub_id collision.** A freshly minted hub's
-    ``card_combined`` chunk + embedding are written *async* (the derived queue —
-    card_forge/embed run later), so :func:`~precis.taproot.canon.block` can
-    return zero candidates for a claim whose hub was just minted but not
-    yet embedded. Two findings asserting the identical claim (successive
+    ``finding_body`` chunk lands in *this* transaction, but its embedding is
+    written async (the derived queue — ``embed:bge-m3`` runs later), so
+    :func:`~precis.taproot.canon.block` can return zero candidates for a
+    claim whose hub was just minted but not yet embedded. Two findings
+    asserting the identical claim (successive
     chase passes, or concurrent workers) can then both resolve
     ``place() == "new"`` and both call this function for the *same*
     deterministic ``pub_id``. Because that's the identity contract
@@ -558,17 +559,18 @@ def refine_claim_sentence(
        text UPDATE, so the embedding/summary cascade re-runs on the new
        wording (repo convention: ``chunks`` is append-only except for the
        DELETE+INSERT re-emit path).
-    3. Every card variant (``ord < 0``) is deleted. No pass in this codebase
-       re-derives a hub's ``card_combined`` off ``finding_body``/title
-       content changes — :func:`mint_hub` itself never emits one, and the
-       one pass that DELETE+INSERTs a finding's ``card_combined``
-       (``workers/chase.py::_snapshot_chain``) only runs at chain
-       termination for a ``STATUS:tracing`` finding, never for a
-       ``STATUS:canonical`` hub. Deleting here is the safe branch: a stale
-       card must never keep matching the OLD wording in
-       :func:`~precis.taproot.canon.block`'s ANN dedup index; the async
-       card-forge path :func:`mint_hub` already documents as populating a
-       fresh hub's card re-emits the new one.
+    3. Every card variant (``ord < 0``) is deleted, and nothing re-emits one.
+       No pass in this codebase derives a hub's ``card_combined``:
+       :func:`mint_hub` never emits one, the handler create door's
+       ``emits_card`` branch is off for ``finding``, and the single pass that
+       DELETE+INSERTs a finding's ``card_combined``
+       (``workers/chase.py::_snapshot_chain``) runs only at chain termination
+       for a ``STATUS:tracing`` finding, never for a ``STATUS:canonical`` hub.
+       That is a closed gap rather than an open one: since 2026-08-19
+       :func:`~precis.taproot.canon.block` ANN-retrieves over the
+       ``finding_body`` chunk replaced in step 2, so the dedup index tracks
+       the new wording by construction. Deleting is still the right branch —
+       a stale card must never keep matching the OLD wording anywhere.
     4. The ``pub_id`` is recomputed from ``(new sentence, effective scope)``
        via :func:`~precis.identity.make_taproot_hub_paper_id` /
        :func:`~precis.identity.make_pub_id`. If it differs from the hub's
