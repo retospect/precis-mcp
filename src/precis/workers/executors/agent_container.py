@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
 import subprocess
 import time
 from collections.abc import Sequence
@@ -349,7 +350,12 @@ def _validate_mount(m: Mount) -> None:
         raise ValueError(
             f"agent_container: mount host_path does not exist: {m.host_path!r}"
         )
-    if not os.path.isabs(m.container_path):
+    # posixpath, not os.path: container_path names a path INSIDE the (always
+    # Linux) container, so it must be judged by POSIX rules whatever the host
+    # is. On a Windows host `os.path.isabs("/work")` is False under py3.13
+    # (ntpath stopped calling a lone leading slash absolute), which would
+    # reject every legitimate mount.
+    if not posixpath.isabs(m.container_path):
         raise ValueError(
             "agent_container: mount container_path must be absolute, got "
             f"{m.container_path!r}"
@@ -370,7 +376,8 @@ def _mount_flag(m: Mount) -> str:
 
 
 def _validate_workdir(workdir: str) -> None:
-    if not os.path.isabs(workdir):
+    # `-w <path>` is likewise resolved inside the container — POSIX rules.
+    if not posixpath.isabs(workdir):
         raise ValueError(f"agent_container: workdir must be absolute, got {workdir!r}")
 
 
