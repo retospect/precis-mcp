@@ -13,6 +13,7 @@ missing the required vars.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -532,6 +533,11 @@ class TestUnsandboxedAckGate:
         with pytest.raises(ContainerRequiredError, match="refusing"):
             fix_gripe._spawn_claude(self._cfg(), Path("/tmp/x"), "prompt")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="agent containers bind the host clone at its own path inside a "
+        "Linux image — a POSIX-host-only arrangement",
+    )
     def test_spawn_claude_containerizes_without_ack(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

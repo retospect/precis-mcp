@@ -303,13 +303,16 @@ def test_multiple_mounts_each_get_own_v_flag(tmp_path) -> None:
         cenv=cenv,
         net=net,
         mounts=(
-            ac.Mount(host_path=str(d1), container_path=str(d1), mode="rw"),
-            ac.Mount(host_path=str(d2), container_path=str(d2), mode="rw"),
+            # container_path is a path inside the (Linux) image, so it's a
+            # POSIX path whatever the host is — not a second copy of the host
+            # path, which is only spellable that way on a POSIX host.
+            ac.Mount(host_path=str(d1), container_path="/mnt/a", mode="rw"),
+            ac.Mount(host_path=str(d2), container_path="/mnt/b", mode="rw"),
         ),
     )
     assert argv.count("-v") == 2
-    assert f"{d1}:{d1}" in argv
-    assert f"{d2}:{d2}" in argv
+    assert f"{d1}:/mnt/a" in argv
+    assert f"{d2}:/mnt/b" in argv
 
 
 def test_mount_rejects_relative_host_path() -> None:
@@ -368,17 +371,18 @@ def test_mount_rejects_bad_mode(tmp_path) -> None:
         )
 
 
-def test_workdir_emits_w_flag(tmp_path) -> None:
+def test_workdir_emits_w_flag() -> None:
     cenv, net = _default_cenv_net()
+    # `-w` is resolved inside the image, so it's a container-side POSIX path.
     argv = ac.build_agent_run_argv(
         container_bin="podman",
         name="agent-1",
         image="precis-agent:x",
         cenv=cenv,
         net=net,
-        workdir=str(tmp_path),
+        workdir="/work",
     )
-    assert argv[argv.index("-w") + 1] == str(tmp_path)
+    assert argv[argv.index("-w") + 1] == "/work"
 
 
 def test_workdir_rejects_relative_path() -> None:
@@ -411,7 +415,7 @@ def test_no_mounts_no_workdir_is_byte_identical() -> None:
 def test_containerize_claude_argv_threads_mounts_and_workdir(tmp_path) -> None:
     env = Envelope(egress="api-only", write="full")
     host = ["claude", "-p", "the prompt"]
-    m = ac.Mount(host_path=str(tmp_path), container_path=str(tmp_path), mode="rw")
+    m = ac.Mount(host_path=str(tmp_path), container_path="/work", mode="rw")
     argv = ac.containerize_claude_argv(
         host,
         env,
@@ -419,10 +423,10 @@ def test_containerize_claude_argv_threads_mounts_and_workdir(tmp_path) -> None:
         model="opus",
         image="precis-agent:x",
         mounts=(m,),
-        workdir=str(tmp_path),
+        workdir="/work",
     )
-    assert f"{tmp_path}:{tmp_path}" in argv
-    assert argv[argv.index("-w") + 1] == str(tmp_path)
+    assert f"{tmp_path}:/work" in argv
+    assert argv[argv.index("-w") + 1] == "/work"
 
 
 # ── container bin resolution (podman / docker / OrbStack) ──────────────

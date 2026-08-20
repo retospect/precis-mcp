@@ -27,8 +27,13 @@ from precis.utils import http
 class TestDrainSleep:
     def test_full_sleep_returns_false(self) -> None:
         start = time.monotonic()
-        assert drain_sleep(0.05) is False
-        assert time.monotonic() - start >= 0.05
+        assert drain_sleep(0.2) is False
+        # Windows' monotonic clock ticks at ~15.6 ms, so a wait that really
+        # did run to completion can still *measure* fractionally short. Sleep
+        # well clear of one tick and allow a tick of slack when asserting —
+        # the claim under test is "it waited out the timeout", not the
+        # wall-clock precision of the platform's timer.
+        assert time.monotonic() - start >= 0.15
 
     def test_wakes_early_on_drain(self) -> None:
         request_drain()
