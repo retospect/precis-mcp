@@ -1,7 +1,7 @@
 # fisheye Claims ring doesn't surface conjunct-of edges
 
 `precis.utils.refeye` derives the Claims ring via `derive_refines` only;
-`conjunct-of` edges (migration 0126, taproot-atomic-claims) are written but
+`conjunct-of` edges (migration 0126, taproot-compound-migration) are written but
 invisible in the one human-facing surface a reviewer uses. Matters before
 the planned migration pass over the existing compound hubs — the reviewer
 approving splits can't see atom↔compound structure via fisheye. Wire

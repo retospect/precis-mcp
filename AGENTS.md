@@ -84,21 +84,26 @@ precis-mcp/
    handler, multi-package coordination): produce
    a spec in `docs/backlog/<slug>.md` first (docs/README.md §Backlog
    lifecycle). The spec is the artefact reviewers react to before code lands.
-3. Apply `docs/conventions/thresholds.md`. If a threshold trips, stop
+3. **Check the premise before building on it.** When a plan item — yours, a
+   backlog file's, or another agent's — rests on a claim that is cheap to
+   check against the code or the DB, check it first. Specs go stale silently:
+   items routinely propose building what already shipped, or gate work on a
+   flag that no longer does anything. One grep before the work beats the work.
+4. Apply `docs/conventions/thresholds.md`. If a threshold trips, stop
    and ask the user; do not push past it silently.
-4. Implement. Keep edits minimal and scoped to the plan.
-5. Run the full check before claiming done. Tests: **`scripts/test`** — runs
+5. Implement. Keep edits minimal and scoped to the plan.
+6. Run the full check before claiming done. Tests: **`scripts/test`** — runs
    pytest in the dev container against your worktree with the test DB wired
    (don't hand-roll `uv run pytest`: the torch-free host reports spurious
    missing-extra failures for `marker`, `sympy`, …). Lint/types on the host:
    `uv run ruff check . && uv run ruff format --check . && uv run mypy src tests`.
-6. If you altered the schema, run `precis migrate --dry-run` against a
+7. If you altered the schema, run `precis migrate --dry-run` against a
    throwaway DB; confirm only the new file is pending and apply
    succeeds.
-7. Bump version (`uv version X.Y.Z`) for any user-visible change. The
+8. Bump version (`uv version X.Y.Z`) for any user-visible change. The
    dated change story is the git history — there is no CHANGELOG file;
    write a clear conventional-commit message instead.
-8. Fold the "why" of any substantive trade-off into the owning package
+9. Fold the "why" of any substantive trade-off into the owning package
    docstring in the same commit (compact; never delete a refused
    alternative — condense it).
 

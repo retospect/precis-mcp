@@ -42,8 +42,11 @@ alongside `established` chase findings.
 
 Papers attach to a hub as one of three typed edges (ADR 0073):
 `establishes` (originator), `corroborates`, `contradicts`. A live
-`contradicts` edge blocks the hub's nanopub mint until adjudicated
-([[precis-nanopub-help]]) — attach deliberately, never as a softer
+`contradicts` edge from a **paper or patent** blocks the hub's nanopub mint
+until adjudicated (a hub-, finding-, edgar- or datasheet-sourced dispute
+does not fire the gate — it holds at human review instead;
+[[precis-nanopub-help]] has the scope) —
+attach deliberately, never as a softer
 "partially disagrees". The originator (★) is **derived at read time**,
 not stored — whichever supporter(s) the *other* supporters' citations
 converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
@@ -51,8 +54,7 @@ the held `cites` graph). No intra-supporter citation edge held → every
 supporter stays `corroborates` (never guessed).
 
 **A compound hub holds no direct evidence.** When a claim decomposes into
-several atomic sub-claims (see [[precis-taproot-backfill-help]]'s
-decomposition note), the bundling sentence gets its own hub — cite-able,
+several atomic sub-claims, the bundling sentence gets its own hub — cite-able,
 but attach-only-through-atoms: `link(...,
 rel='establishes'|'corroborates'|'contradicts')` onto a compound
 hub raises. Attach evidence to the atom hub the passage actually supports

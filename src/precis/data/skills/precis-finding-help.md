@@ -203,8 +203,8 @@ search(kind="finding", q="...", status="*")  # all states
 
 ## Find claim hubs — taproot's cross-paper evidence aggregation (opt-in)
 
-Behind `axis:taproot` (default-OFF; `PRECIS_AXES_ENABLED` /
-`/categorizers`), a finding classifies `TAPROOT:claim` (a grounded
+Behind `axis:taproot` (default-OFF; `PRECIS_AXES_ENABLED` seeds the boot
+default, `/categorizers` is the live switch), a finding classifies `TAPROOT:claim` (a grounded
 world-claim other papers' evidence can attach to) or `TAPROOT:review`
 (an editorial note on a draft, excluded from the claim graph).
 

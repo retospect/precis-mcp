@@ -1,7 +1,8 @@
 """hub_refine — periodic, converging enrichment of existing taproot claim hubs.
 
-Build ticket: ``docs/backlog/taproot-hub-refine.md``. Closes a gap the
-shipped taproot phases leave open: evidence attaches to a claim hub only as
+Stage 5 (*widen*) of the claim lifecycle in ``precis.taproot``'s package
+docstring; operational runbook ``docs/runbooks/taproot-chase-enablement.md``.
+Closes a gap the shipped taproot phases leave open: evidence attaches to a claim hub only as
 a side effect of chasing a *finding* (the forward bridge,
 ``workers/chase.py``'s ``_taproot_bridge``) or when a human hands
 ``precis taproot mint`` a supporter list. Neither ever looks at an
@@ -130,8 +131,15 @@ discover sources is still verified only once — in practice far less once
 memos fill in. See the build ticket's "Non-negotiable: it must converge" for
 the full rationale.
 
-Ship dark: ``PRECIS_TAPROOT_REFINE_ENABLED`` (default ``"0"``), like every
-other taproot flag. Once claiming work, the pass always verifies with the
+Ship dark: this is a **service**, so the switch is a ``service_config`` prio
+row — ``precis service prio <host> hub_refine 1``, live, no redeploy. There is
+no env flag: since the §L cutover a ``ServiceSpec``'s ``enable_env`` is never
+read (``cli/worker.py::_should_register``), so setting
+``PRECIS_TAPROOT_REFINE_ENABLED`` does nothing. Enable on exactly **one host**
+— the rejection memo is a read-modify-write on ``meta``
+(``docs/runbooks/taproot-chase-enablement.md``).
+
+Once claiming work, the pass always verifies with the
 LLM — there is no separate ``with_llm`` toggle here (unlike ``chase``): a
 hub-refine run that can't verify can't do anything, so reaching this pass
 at all already implies paying for it. The one hard dependency is the
@@ -219,12 +227,6 @@ _DUE_VALUE = "1"
 _ATTEMPT_NS = "TAPROOT_REFINE_ATTEMPT"
 _ATTEMPT_VALUE = "1"
 ATTEMPT_COOLDOWN_MIN = 30
-
-
-def hub_refine_enabled() -> bool:
-    """``PRECIS_TAPROOT_REFINE_ENABLED`` — default OFF (dark, like every
-    other taproot flag)."""
-    return bool(int(os.environ.get("PRECIS_TAPROOT_REFINE_ENABLED", "0") or "0"))
 
 
 def _backstop_hours() -> float:
@@ -983,6 +985,5 @@ def run_hub_refine_pass(
 
 
 __all__ = [
-    "hub_refine_enabled",
     "run_hub_refine_pass",
 ]

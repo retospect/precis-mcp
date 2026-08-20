@@ -4,253 +4,108 @@ title: "nanobud draft (dr173020): batch-3 nanopub queue + remaining citation lif
 model: sonnet
 ---
 
-# Nanobud paper — batch-3 state (updated 2026-08-17, post-sweep)
+# Nanobud paper (dr173020) — batch-3 open queue
 
-57 hubs `reviewed` + fi191146 `signed`. Done this pass (all via authorized
-web-door writes): graphene atoms fi211519/20/21 + compound fi211522
-approved (compound title repaired; atoms grounded pc42017/pc42018);
-fi191123/191138/191145/191147/191150/191155 grounded + approved
-(fi191145 dropped unsupported "soluble derivatives"; fi191147 narrowed to
-modulus-only — strength passage was CNT-not-CNB; fi191155 re-approved
-with em dashes). fi191130: keep as unminted internal note (pristine-tube
-baseline, redundant with reviewed DFT–NEGF hub, markup-dirty source).
-Citation lifecycle: Kroto/Krätschmer/Iijima already in corpus as stubs;
-Tans transistor imported as pa211788 (backlog's 10.1038/24521 was the
-peapods DOI — real Tans DOI is 10.1038/29954), cited on dc2445904;
-dc2445860 re-anchored to pc209502; pc417846 promoted (citation 211822).
+Scope rule (Reto): **true nanobuds only** — covalently bonded
+fullerene–tube/graphene hybrids; no vdW/deposited/mixed systems in the
+claim tree. Cited-finding count and re-approval state for this cohort are
+owned by `claim-review-mechanism.md`'s worked-example section — point
+there rather than restate (all `nanopub_publish` rows, including
+fi191146, reset to `candidate` by the title/body reconciliation pass; the
+sign-off queue below is a full re-review, not just the withheld edges).
 
-Remaining:
+## Sign-off queue
 
-- **pc436382 on dc2445855 — Reto's call**: confirmed wrong source
-  (biomass-catalysis review, secondhand Nobel mention). Drop the handle
-  (paragraph already cites Kroto + Novoselov/Geim) or name the intended
-  bibliography entry.
-- **Reto's manual steps**: withheld-edge sign-offs + attesting Sign for
-  all reviewed hubs (fi191146 signed, awaiting OTS anchor). Nuance to
-  eyeball at sign: fi211520/21 quotes say "for bulk graphite"
-  (bulk-equivalent units); titles say monolayer graphene.
-- **Sweep done (opus agent)**: premise correction — all 129 findings
-  dr173020 cites were already TAPROOT:claim hubs with edges; gap was
-  unapproved hubs. Approved 21 (fi191262/191270/191263/192836 catalysis-
-  sensing; fi191279/191280/191281/191283 battery; fi191291/191293/
-  191295/191298 composites-junctions; fi191165/191166/192819/191167
-  thermal-FE-NLO; fi191315/191319/191320/191321/191322 perspectives-
-  sensing-nanopore) + 2 new edges (fi204564←pc56033, fi192879←pc66326).
-  5 draft edits verified in prod: dc2445924 FE attribution restored,
-  dc2445908 solubility overclaim cut, dc2445922 C20-chain topology
-  un-inverted, dc2445902 "six heptagons"→"heptagons" (nanobud has 5),
-  dc2445887 [2+2]/[4+4] stability ordering un-inverted.
-- **DONE 2026-08-17 (post-restart)**: precis-web bounced (kickstart,
-  user-authorized) and back to 200. The 5 blocked approvals all landed
-  (fi204564, fi192879, fi190998, fi191000, fi191001 — last two needed a
-  snip fix: sentence straddled overlapping chunks 388403/388404, quote
-  extended into 388404-unique text). Paper deletes verified in prod:
-  pa173471 (dup), pa211835 + pa211836 (un-imports). Tier-2 grounding
-  agent launched with covalency gate. Ops note from sweep agent: on the
-  nanopub doors a 502 is not reliably a no-write — `evidence/add`
-  landed through a 502 (once, no dup) while `approve` fails closed
-  (gates run before write).
-- **Exact draft-cite coverage (prod count 2026-08-17)**: 127 findings
-  cited by dr173020 → 1 signed + 51 reviewed = 52 with nanopubs; 75
-  without a nanopub row. Of those 75: 5 = the blocked retries, 1 =
-  fi191130 (deliberately unminted), leaving **69 to ground+approve**:
-  189521,189524,189526,189527,189534-189549(11),190976-190978,190983,
-  190986,190987,190993,190995,191002-191004,191007,191009-191011,
-  191014-191016,191018,191019,191021,191169,191170,191255,191258,
-  191260,191268,191271,191278,191282,191284-191288,191292,191294,
-  191296,191297,191299,191303,191306-191308,191314,191316,191318,
-  191323,191324,191329,191334,191335,192855. Batch when web back —
-  PACE the POSTs (outage hit under approve load; serialize + sleep).
-  **Batch C landed 2026-08-17**: 16/16 approved (fi191294 needed
-  de-bracketing — primary-source gate misreads "[60]fullerene"
-  nomenclature as citation marker "[60]"). 3 hubs blocked, Reto's
-  call: fi191169 (OEM-supply claim unsupported — paper says
-  "prototyping phase with >30 customers", not OEM supply; no
-  epistemic method), fi191282 (source ref 3838 Terzyk has no DOI
-  row — needs DOI backfill before a passage is mintable), fi191286
-  (only grounding chunk is hearsay citing Mpourmpakis — needs the
-  primary imported or claim stays unminted).
-  **Batch D landed 2026-08-17**: 12/12 approved clean. 1 blocked,
-  Reto's call: fi191316 has a live `contradicts` edge from fi192706
-  (claim-strength inflation, "will ultimately require" vs source's
-  "could be used") — adjudicate the contradiction before approve.
-  Agent notes for sign review: fi191307/fi191308 are near-duplicate
-  hubs (both ground pa5887, design vs electronic-results); fi191323
-  is a methodological-capability claim (grounded but asserts about
-  method, not nature — keep?); three titles were de-inflated to
-  match source (fi191308 "only a subset", fi191318 size-dependence
-  only, fi191324 own-implementation pitfalls).
-  **Batch A landed 2026-08-17**: 13/13 approved clean. 3 blocked,
-  Reto's call: fi189536 (evidence chunk is an SCC-DFTB adsorption
-  study that never asserts bilayer-deposition/blending — only
-  secondary review pa4801 says so, secondhand), fi189542
-  (sole chunk is an intro recap with a [15] marker + live
-  `contradicts` edge from ref 5828), fi189549 (bibliographic
-  meta-claim about a micro-review — no epistemic mode).
-  Sign-review notes: fi189526 is a literature-scope claim (about
-  the literature, not nature — keep?); fi189543 title takes 19°
-  where its two sources say ≈19° (primary pa783) vs ≈20° (review
-  pa5828); fi189524 title narrowed from "improves properties" to
-  the two specific simulation results.
-  **Batch B landed 2026-08-17**: 21/21 approved clean (fi190976,
-  190977, 190978, 190983, 190986, 190987, 190993, 190995, 191002,
-  191003, 191004, 191007, 191009, 191010, 191011, 191014, 191015,
-  191016, 191018, 191019, 191021). None blocked. Sign-review
-  notes — six titles deliberately diverge from the hub body
-  because the hub's own wording wasn't quote-supported:
-  fi190977/fi191014 hub "0.7–2 nm" exists in neither paper —
-  190977 restates the C42/C60 size statistics, 191014 uses the
-  measured 0.4–2 nm; fi191002 stability driver is neck length,
-  not wall defects; fi191021 band-gap control is C20 adsorption
-  density, not chirality; fi190978 re-scoped to [2+2]-stable /
-  [4+4]-unstable; fi190976 max coverage at 1000 °C (hub said
-  1000–1150). Author names stripped from six titles.
-- **Suspected, not fixed (Reto review)**: dc2445908 uncited "soluble
-  derivatives" first sentence + downstream solubility thread; dc2445887
-  induction-plasma specifics have no corpus source; dc2445902 5-vs-6
-  heptagon distinction could be stated; dc2445888 −0.48 eV end
-  unverified; dc2445939 says B3LYP-D3 but pa3941 used CAM-B3LYP.
-- **MELCHIOR PRECIS-WEB DOWN** (mid-session, all routes hang, DB fine)
-  — blocks: 5 retry approvals, pa173471 dup delete
-  (POST /papers/173471/delete, verified 0-chunk 0-link stub of pa2069),
-  tier-2 grounding batch. Restart/deploy is Reto's call.
-- **Scope rule (Reto 2026-08-17): true nanobuds only** — covalently
-  bonded fullerene–tube/graphene hybrids. No vdW/deposited/mixed
-  systems in the claim tree.
-- **Un-import (delete when web back)**: pa211835 Anisimov + pa211836
-  Bucky-Corn — imported as "related", overruled by scope rule; both
-  still 0-chunk stubs, soft-delete via POST /papers/<id>/delete.
-- **Next batch (user-ordered): ground tier-2 papers** pa4365, pa948,
-  pa39796, pa206485, pa1638, pa1797, pa199068, pa170590, pa40723 —
-  agent must FIRST verify each paper's structure is covalent
-  (true-nanobud gate); skip + report vdW/deposited systems (pa206485
-  "C60 clusters" and pa40723 look suspect). Launch once precis-web is
-  back. **Tier-2 DONE 2026-08-17** (agent report, verified in prod):
-  7 hubs minted+approved to `reviewed` — pa4365 fi211848/49, pa948
-  fi211850/51, pa206485 fi211852/53, pa1797 fi211854. Covalency
-  verdicts: pa4365, pa948 covalent; pa206485 passed WITH caveat
-  (spray-coated fullerenol clusters, linker-mediated covalency cited
-  to ref [41], "nanobud" appears nowhere — hubs kept device-level
-  responsivity/EQE; Reto may retire fi211852/53); pa1797 mixed
-  (anchor C60 chains covalent, mobile memory fullerene is vdW — vdW
-  nature written into the title). SKIPPED as not-true-nanobud:
-  pa39796 (LJ graphene–fullerene potential = non-bonded by
-  construction), pa40723 (covalency mention is prior-work hearsay;
-  own system adsorptive), pa170590 (C20/C40 fullerene–fullerene, no
-  tube/graphene substrate). **4 carried hubs MINTED 2026-08-18** (via
-  specs3): h8 pa1797 Mulliken → fi213466, h9 pa199068 phenol →
-  fi213467, h10 pa199068 dispersion → fi213468 (all approved →
-  `reviewed`); h11 pa1638 FTIR → fi213469 (mint-only, stays
-  `candidate`). pa1638 is genuinely DOI-less (Sway-distributed
-  congress paper, cite_key tecnia22) — its passage stays OUT of the
-  payload per the one-DOI rule; edge visible internally only.
-- **Survey done (read-only)** — corpus is deep (88 substantive
-  nanobud-title papers, 61 already ground claims); gap is
-  under-linking, not missing literature. Queue if Reto wants more
-  claims:
-  - Draft-cited but ungrounded (highest value): pa42555 Iijima 1991,
-    pa42559 peapods, pa42556 Krätschmer fullerite, pa42557 Kroto C60,
-    pa211788 Tans transistor — background-fact claims.
-  - Substantive ungrounded nanobud papers, ranked: pa4365 (Raman
-    attaching-vs-embedding config), pa948 (DFT nanobuds), pa39796
-    (fullerene-pillared porous graphene H2O adsorption), pa206485
-    (C60-SWCNT phototransistor gain), pa1638 (H2 storage), pa1797
-    (T-shaped triple-value memory), pa199068 (phenol remediation),
-    pa170590 (C20/C40 molecular switches), pa40723 (Li adsorption).
-  - Import net-new (only 2): Chernozatonskii "Bucky-Corn" vdW
-    composite (arXiv:1504.00463, Mol Phys 2016 — non-covalent
-    counterpoint); Anisimov et al. Carbon 48 380 (2010) DOI
-    10.1016/j.carbon.2009.09.040 (ferrocene-CO synthesis mechanism).
-  - Dedup flag: pa2069 vs pa173471 same Nasibulin 2007 paper (one
-    real, one 0-chunk stub).
-- **Own-work hubs staged 2026-08-17 (opus agent)** — MCP recovered
-  2026-08-18 (`/mcp` reconnect, fresh server at d8d5c38d); the 4
-  carried hubs are minted (ids above), the **9 non-covalent n1–n9
-  remain staged-only awaiting Reto's explicit go/no-go**. Scratchpad
-  session e26f279b `specs3/`: 13 `mint-*.json` (put args) + 12
-  `approve-*.json` (hub=MINT-PENDING) + `submit3.sh` paced runner
-  (`sh submit3.sh name=<fiid> …`). Contents: 9 NEW own-result hubs for
-  the covalency-rejected papers — pa39796 n1 optimum 25±8% filling /
-  n2 50% collapse / n3 GCMC LJ vdW-stacked; pa40723 n4 Li energies
-  −1.917…−2.642 eV / n5 no-clustering −1.863 vs −1.030 eV / n6
-  metallic-character; pa170590 n7 dihedral switch / n8 HOMO–LUMO / n9
-  α-β-μ — all titles carry explicit non-covalent / adsorptive /
-  fullerene–fullerene framing, "nanobud" dropped for pa170590 — PLUS
-  the 4 carried specs2 hubs (h8 pa1797 Mulliken, h9/h10 pa199068,
-  h11 pa1638 FTIR mint-only/no-approve, DOI-less by policy). NOTE
-  (scope rule): the 9 non-covalent hubs stay OUTSIDE the nanobud claim
-  tree; Reto gives explicit go/no-go before they mint. pa40723 +
-  pa170590 grounded in own-abstract text (first-page-only ingests —
-  non-hearsay, but re-ingest for deeper grounding).
-- **Covalent survey picks staged 2026-08-17 (builder agent; MCP probe
-  hung 1800 s again)**: 5 specs in session-e26f279b scratchpad
-  `specs4/` (h1–h5), gate-checked via build.py importing the REAL
-  `precis.nanopub.{snip,evidence}` (quotes sliced from stored chunk
-  text — verbatim structural). H1 pa4365 metallic-I/III + 0.18 eV
-  embedded (pc550457) — RE-SCOPED: the 0.12 eV type-II sentence is
-  citation-bearing (`<sup>8</sup>` residue) and 0.12 appears in no
-  other chunk, so the number is ungroundable; H2 pa4365 3.0 Å
-  threshold + symmetry (pc550459); H3 pa948 NMR — title tightened to
-  "largest CSI 121–133 ppm / smallest CSA 12–34 ppm of any carbon in
-  the model" (source compares within-model, not vs pristine; typo
-  "22 pm" preserved) (pc82612); H4 pa948 gaps 0.57–0.76 eV (pc82597);
-  H5 pa948 charge transfer 0.032→0.72 C + model-definition passages
-  pc82581/82582 added to ground the model-1/model-4 mapping. DOIs from
-  ref_identifiers (refs.meta doi NULL for both): pa4365
-  10.1021/jp906026c, pa948 10.1140/epjb/e2011-20139-5; refs.pdf_sha256
-  set for both. **MINTED + APPROVED 2026-08-18**: h1 → fi213459,
-  h2 → fi213460, h3 → fi213461, h4 → fi213462, h5 → fi213464 (all
-  `reviewed`; paced 303s via run4.py). None cited in dr173020 yet —
-  edit set pending Reto's go. Gate hole found → `docs/backlog/
-  nanopub-citation-marker-sup-residue.md` (fix in flight 2026-08-18).
-- **Draft scope collisions found 2026-08-17 (dc2445932, energy-storage
-  ¶, pre-dates scope rule — edit set to propose to Reto)**: (a) Koh
-  et al. cited as "Li adsorption on graphene–fullerene nanobuds"
-  [fi191280] but pa40723's own system is adsorptive C60-on-SWCNT
-  (non-covalent, covalency hearsay); (b) Hernández Mendoza clause
-  "reinforcing the convergent picture that bud-site curvature favours
-  gas adsorption across independent computational studies" [fi191286]
-  overclaims — pa1638 is experimental with zero adsorption data (H2
-  deferred to future work); supportable only as synthesis route +
-  FTIR bonding; (c) Terzyk fullerene-intercalated nano-containers
-  [fi191282] is non-covalent intercalation inside the nanobud
-  narrative. New covalent hubs (fi211848–54 + h1–h5) are cited
-  NOWHERE in dr173020 yet — need woven into electronic-structure /
-  characterization sections (incl. the pa948-vs-pa4365 band-gap
-  disagreement) once minted.
-- **Claim-mining survey done 2026-08-17 (read-only opus agent)** — tier-2
-  papers hold 10 more mintable candidates, ranked (paper / claim /
-  grounding chunk): 1. pa4365 configuration-selected metallicity 0.12 eV
-  type-II vs metallic I/III vs 0.18 eV embedded (pc550457; alt pc550458);
-  2. pa4365 3.0 Å spacing threshold + mirror-symmetry-breaking mechanism
-  (pc550459, citation-free); 3. pa948 ¹³C CSI/CSA localized at attachment
-  site — paper's headline novelty, NMR handle (pc82612; tighter alt
-  pc82603); 4. pa948 band gaps 0.57–0.76 eV vs pristine 1.82/0.81 eV
-  (pc82597) — puts a live DISAGREEMENT with pa4365's 0.12/0.18 eV on
-  record (finite H-capped vs periodic; review material); 5. pa206485
-  rise/fall 33.53/0.934 ms → 86.42/3.35 ms at Vgs −21 V (pc2901217) —
-  missing speed axis; 6. pa39796 fullerene Raman SUPPRESSED in stacked
-  composite (pc1260158, non-covalent framing) — completes the
-  predicted(pa4365)/measured(pa206485)/suppressed(pa39796) Raman triad;
-  7. pa1797 write actuation 0.457 THz, 1.6–1.65 V/nm, 5 ps (pc175726/
-  175740, "free C₆₀" framing); 8. pa948 charge transfer 0.032→0.72 C
-  (pc82598); 9. pa206485 detectivity 2.34e10 Jones (abstract pc2901189
-  only — body has just the formula); 10. pa39796 pillared gallery height
-  2.3–3.4 nm (pc1260163, non-covalent framing). Marginals on file:
-  pa4365 (5,5)-host gaps pc550465, pa948 bond lengths pc82599, pa206485
-  532 nm selectivity pc2901206, pa1797 K@C60 −0.96e endohedral pc175732,
-  pa1797 temp-insensitive 9 ps switching pc175729/30, pa39796 pore-size
-  shift pc1260167, pa40723 anti-clustering −1.863 vs −1.030 eV pc1307817
-  (overlap risk w/ own-work agent), pa170590 functional benchmark
-  pc2409795 (skip). **Draft-integrity flags for Reto**: pa1638 reports
-  NO hydrogen-storage measurement despite its title (conclusion pc155443
-  = "further work") — dr173020 must not cite it as H₂-storage evidence,
-  only as synthesis route + FTIR; pa199068/pa40723/pa170590 are
-  abstract+intro-only ingests (results not in store — re-ingest before
-  mining harder); pa170590 calls a C20–C40 dimer a "nanobud" (useful for
-  the review's scope-definition section); pc175737 (pa1797) is
-  OCR-corrupted beyond grounding; pa206485 stability sentence straddles
-  a chunk boundary (unmintable); chunks soft-delete column is
-  `retired_at`, not `deleted_at`.
-- Deploy pending: 13+ commits incl. /nanopub workbench UX + state
-  tooltips — deploy after agents finish (bounce kills in-flight POSTs).
+Withheld-edge sign-offs + re-sign for the full reviewed cohort (state
+reset — see above). Nuance to eyeball at sign: fi211520/21 quotes say
+"for bulk graphite" (bulk-equivalent units) while their titles say
+monolayer graphene. Open keep-or-drop calls surfaced during batch review,
+still Reto's: fi191307/fi191308 (near-duplicate hubs, both ground pa5887 —
+design vs electronic-results); fi191323 (methodological-capability claim —
+asserts about method, not nature); fi189526 (literature-scope claim —
+about the literature, not nature).
+
+## Seven blocked adjudications (Reto's call, each)
+
+- **fi191169** — OEM-supply claim unsupported: paper says "prototyping
+  phase with >30 customers," not OEM supply; no epistemic method.
+- **fi191282** — source ref 3838 (Terzyk) has no DOI row; needs DOI
+  backfill before a passage is mintable.
+- **fi191286** — only grounding chunk is hearsay citing Mpourmpakis;
+  needs the primary imported or the claim stays unminted.
+- **fi191316** — live `contradicts` edge from fi192706 (claim-strength
+  inflation: "will ultimately require" vs source's "could be used");
+  adjudicate before approve.
+- **fi189536** — evidence chunk is an SCC-DFTB adsorption study that
+  never asserts bilayer-deposition/blending; only secondary review pa4801
+  says so, secondhand.
+- **fi189542** — sole chunk is an intro recap with a `[15]` marker + a
+  live `contradicts` edge from ref 5828.
+- **fi189549** — bibliographic meta-claim about a micro-review; no
+  epistemic mode.
+
+## Staged n1–n9 go/no-go
+
+9 non-covalent own-result hubs staged outside the nanobud claim tree
+(covalency-rejected papers), awaiting Reto's explicit go/no-go.
+Scratchpad session `e26f279b`, `specs3/`: `mint-*.json` + `approve-*.json`
+(hub=MINT-PENDING) + `submit3.sh` paced runner. Contents: pa39796 — n1
+optimum 25±8% filling / n2 50% collapse / n3 GCMC LJ vdW-stacked; pa40723
+— n4 Li energies −1.917…−2.642 eV / n5 no-clustering −1.863 vs −1.030 eV /
+n6 metallic-character; pa170590 — n7 dihedral switch / n8 HOMO–LUMO / n9
+α-β-μ. All titles carry explicit non-covalent/adsorptive/fullerene–
+fullerene framing; pa40723 + pa170590 are grounded in own-abstract text
+(first-page-only ingest — non-hearsay, but shallow; see re-ingest list).
+
+## Un-cited weave-in: fi211848–54 / h1–h5
+
+Minted and approved (`reviewed`) but cited nowhere in dr173020: fi211848–
+54 (Tier-2 — pa4365, pa948, pa206485, pa1797) and h1–h5 (`specs4` —
+pa4365, pa948). Need weaving into the electronic-structure/
+characterization sections, including the pa948-vs-pa4365 band-gap
+disagreement. Reto may retire fi211852/53 (pa206485 passed covalency
+review only WITH caveat — spray-coated fullerenol clusters,
+linker-mediated covalency cited to a secondary ref, "nanobud" appears
+nowhere in-paper). (H1's original grounding hit the `<sup>N</sup>`
+citation-marker-residue gate hole, fixed in `5d1ef498`.)
+
+## dc-level scope collisions and suspects
+
+Found pre-scope-rule, dc2445932 (energy-storage ¶):
+
+- Koh et al. cited as "Li adsorption on graphene–fullerene nanobuds"
+  [fi191280], but pa40723's own system is adsorptive C60-on-SWCNT
+  (non-covalent; covalency is hearsay).
+- Hernández Mendoza clause [fi191286] — "reinforcing the convergent
+  picture that bud-site curvature favours gas adsorption across
+  independent computational studies" overclaims: pa1638 is experimental
+  with zero adsorption data (H2 deferred to future work); supportable
+  only as synthesis route + FTIR bonding.
+- Terzyk fullerene-intercalated nano-containers [fi191282] is non-covalent
+  intercalation inside the nanobud narrative.
+
+Suspected, not fixed (Reto review): dc2445908 uncited "soluble
+derivatives" first sentence + downstream solubility thread; dc2445887
+induction-plasma specifics have no corpus source; dc2445902 5-vs-6
+heptagon distinction could be stated; dc2445888 −0.48 eV end unverified;
+dc2445939 says B3LYP-D3 but pa3941 used CAM-B3LYP.
+
+**pc436382 on dc2445855 — Reto's call**: confirmed wrong source
+(biomass-catalysis review, secondhand Nobel mention). Drop the handle
+(paragraph already cites Kroto + Novoselov/Geim) or name the intended
+bibliography entry.
+
+## Re-ingest list
+
+pa199068, pa40723, pa170590 — abstract+intro-only ingests, results not in
+store; re-ingest before mining either harder. pa1797's chunk pc175737 is
+OCR-corrupted beyond grounding (separate defect, not an ingest depth
+issue). pa1638 stays genuinely DOI-less (Sway-distributed congress paper,
+`cite_key` tecnia22) — its passage (h11, mint-only, `candidate`) stays out
+of the payload under the one-DOI rule; edge visible internally only.
+
+## Mining queue
+
+The ten ranked tier-2 mint candidates from the 2026-08-17 survey — each with
+its grounding chunk — plus the marginals and the draft-integrity flags now
+live in `nanobud-claim-mining-candidates.md`. None are minted.

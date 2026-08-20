@@ -13,10 +13,12 @@ claim hub, and it is `hub_refine`.** Reground is not a new worker; it is
 *re-grounding* pass. Every capability below extends the existing
 claim→discover→verify→write→stamp spine. Do not mint a parallel
 `reground_claim` producer — that is the failure mode this item exists to
-prevent. This spec supersedes the additive-only follow-ons in
-`taproot-hub-refine.md` (contradicts edges, grounding-depth policy) and the
-batch view in `taproot-grounding-none-fit-triage.md` (prune spurious edges);
-fold both into the single pass.
+prevent. This spec superseded and absorbed the additive-only follow-ons
+that used to live in `taproot-hub-refine.md` (contradicts edges,
+grounding-depth policy — both folded into stages 2–3 below) and the
+ref-level batch view that used to live in `taproot-grounding-none-fit-triage.md`
+(prune spurious edges — folded in as the pilot dataset below); both files
+are deleted, `git log` keeps them.
 
 ## Motivation / why
 
@@ -112,6 +114,30 @@ scope / draft scope), same shape as `taproot_backfill.py` — JobTypeSpec +
 `ctx.set_meta`, per-hub `job_event`/`job_summary` chunks. `hub_ids` override
 bypasses the due-set so a draft's whole hub set can be regrounded on demand.
 
+**Applier must enforce add-first in code, not in a prompt.** The manual
+123-hub pass over draft 173020 ran this as an applier-prompt instruction only;
+under partial failure (a permission classifier blocked `link` adds but let
+paired prunes through) two of four affected hubs (fi191307, fi192836) were
+pruned to zero live evidence edges before being caught and restored by hand.
+The `reground_claim` job_type must instead, deterministically:
+
+1. Issue all adds first, and **read back** that each is actually committed
+   (query `links`, don't trust the write call's return).
+2. Issue a prune only for the subset whose replacement add is confirmed
+   committed; an add that failed withholds its paired prune and flags the hub
+   for review instead of silently skipping it.
+3. After the transaction, **re-check `count(live edges) > 0`** for the hub
+   and refuse/roll back if it would land at zero.
+4. Surface partial-failure counts in the job result — a caller reading only
+   the summary must still see that something was withheld.
+
+The technique that found the original damage — an **intent-vs-committed
+diff** (rebuild each hub's intended end state from its scout result, diff
+against handles actually committed, apply the delta adds-first) — surfaced
+residue no error string mentioned (10 missing adds + 8 stale edges in one
+wave). The job_type should expose this diff as a first-class
+verification/repair mode, not just a one-off recovery step.
+
 ## Explicitly NOT in scope
 
 - **No second mechanism.** Not a new worker, not a parallel producer — every
@@ -152,8 +178,24 @@ bypasses the due-set so a draft's whole hub set can be regrounded on demand.
 - External: Perplexity + S2 kinds, `paper_bib_entries` DOI mining, all via
   `safe_fetch`.
 - Draft handler (retire/regenerate stage only) — draft-text edit path.
-- Flag: reuse `PRECIS_TAPROOT_REFINE_ENABLED`; the destructive
-  retire/regenerate sub-stage behind its own explicit gate.
+- Flag: `hub_refine` is its own service — `precis service prio <host>
+  hub_refine <n>` (`_should_register` in `cli/worker.py` never reads
+  `enable_env`; the env var is dead, see `taproot.md`'s decisions log). The
+  destructive retire/regenerate sub-stage stays behind its own explicit gate,
+  separate from the enrichment flip.
+
+## Pilot dataset: the 292 ref-level none-fit edges
+
+Precedes the 173020 hub-level pilot below; same audit/prune stage, ref-level
+grain. The semantic backfill took grounding 22%→63%; the remaining ref-level
+edges split three ways: (a) **292 "none-fit"** — a mix of genuinely spurious
+edges (remove, don't ground), real-but-diffuse whole-paper support, and
+retrieval misses; needs top-10 retrieval + full-claim embedding + an explicit
+"is this edge spurious at all?" judgment before any removal (candidate set
+regenerable via the pgvector LATERAL query); (b) **67 papers** have no
+body-chunk embeddings — reground after `embed:bge-m3` catches up; (c) **9**
+low-confidence (<0.5) groundings deliberately held. Semantic rows are tagged
+`meta.src_grounding.method='semantic_backfill'` — reversible as a set.
 
 ## Pilot findings (2026-08-12, 10 hubs of draft 173020)
 
@@ -215,8 +257,17 @@ rarer tail.
   173020; the job_type is the durable form. Keep any agent run bounded — an
   unbounded taproot pass monopolizes the serial `claude_inproc` lane.
 - **Strict-judge rubric** must be eval-gated before the prune stage enables
-  in prod (re-run slice_refine_eval on the v2 rubric; over-prune is the
-  dangerous direction, mirroring canon's zero-false-`same`).
+  in prod — **live blocker, re-run `slice_refine_eval` on the deployed v2
+  rubric before any prod enable**: hub 176363 must drop its contradicting
+  partials, 176272/176360 must keep theirs; over-prune is the dangerous
+  direction, mirroring canon's zero-false-`same`.
+- **Conflict-safe `taproot_rejected` memo write** carried over from
+  hub-refine's follow-ons, unresolved: defence-in-depth against a lost-update
+  when two passes touch one hub's `meta` concurrently.
+- **v2 notes** carried over from the hub-refine build ticket, unresolved:
+  `TAPROOT:saturated` long-backoff after K empty passes; paper-version memo
+  invalidation; a queryable `taproot_evidence_judgment` table if judgment
+  analytics are ever wanted.
 
 ## Running it with agents (interim runbook, draft 173020)
 
@@ -254,8 +305,7 @@ verdict SUPPORTABLE / NEEDS_EXTERNAL / RETIRE (+ one-sentence groundable
 scripts/prod-psql "SELECT f.id FROM refs f
   WHERE f.kind='finding' AND f.deleted_at IS NULL
     AND f.tags @> ARRAY['TAPROOT:claim','STATUS:canonical']
-    AND EXISTS (SELECT 1 FROM links l
-                WHERE l.dst_ref_id=f.id AND l.deleted_at IS NULL)
+    AND EXISTS (SELECT 1 FROM links l WHERE l.dst_ref_id=f.id)
     AND f.id = ANY(<hubs cited in draft 173020>)
     AND f.id NOT IN (<the 11 already done>)
   ORDER BY f.id"
@@ -279,7 +329,9 @@ with no barrier. Run in waves of ~30–40 to eyeball each batch, or all at once.
 - prune: `link(kind='finding', id=H, mode='remove', rel='corroborates',
   target='<handle>')`
 - contradicts: remove the corroborates edge, then re-add `rel='contradicts'`.
-On a bad handle: record the error, continue.
+On a bad handle: record the error, continue. `links` has **no `deleted_at`
+column** — `mode='remove'` is a hard delete; a `deleted_at IS NULL` filter on
+`links` errors, not just under-returns.
 
 **4 — read the result.** Workflow returns `{summary, held}`. `summary`:
 total / applied / noop / retire_held / would_strand / reword_flagged /
@@ -292,7 +344,7 @@ MCP in-process on the post-add Crossref retraction cascade even though the
 write commits — so confirm committed state read-only:
 ```
 scripts/prod-psql "SELECT dst_ref_id AS hub, count(*) edges
-  FROM links WHERE dst_ref_id = ANY(<ids>) AND deleted_at IS NULL
+  FROM links WHERE dst_ref_id = ANY(<ids>)
     AND rel IN ('establishes','corroborates','contradicts')
   GROUP BY 1 ORDER BY 1"
 ```
@@ -304,3 +356,25 @@ draft-rewrite pass (reword-in-place / replace-with-fact / stitch-delete;
 reground on reword; auto-applied per the standing liberty; scoped to draft
 173020's own prose; flag other-artifact citers; full before→after diff for
 end-review).
+
+## Open residual: draft 173020's 123-hub run, `fi189542`
+
+The manual pass (evidence + prose + hub-claim, 123 hubs: 108 edge adds, 36
+prunes, 24 draft rewrites, 2 retitles) is otherwise complete. One hub is
+still open: `fi189542` ("opening angles … 85° …") and its sibling `fi189543`
+both hung off one proxy edge (ref 783 @ pc64732, deferring to a corrupted
+bibliography entry — see `citation-matcher-title-mismatch.md`, read that
+first before chasing either primary). `fi189543` is resolved — regrounded
+onto `pc972025` (ref 5828), quantifier "most abundant" dropped since its only
+support was the pruned proxy. `fi189542` carries a `contradicts` edge
+(`pc972022`, ref 5828 — its formula predicts 83.6°, not 85°) rather than a
+unilateral number fix, since the hub faithfully reports its source's error.
+Remaining:
+
+1. Acquire Krishnan et al. 1997 (`10.1038/41284`, paywalled) —
+   `put(kind='paper', doi='10.1038/41284')` — to adjudicate 85° vs 83.6°.
+2. Once held, either correct `fi189542` from the primary or let the
+   `contradicts` edge stand as the honest record.
+3. Optional: Iijima et al. 1999 (`10.1016/S0009-2614(99)00642-9`) if the
+   abundance question is ever reopened — no longer load-bearing since
+   `fi189543` doesn't assert abundance.

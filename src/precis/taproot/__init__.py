@@ -14,6 +14,39 @@ un-decomposable bundling sentence, no direct evidence — see :mod:`.hub`).
 Design:
 ``docs/backlog/taproot.md``; governance: taproot evidence relations (+ the living citation pins).
 
+**The claim lifecycle — ten stages, and which are real.** A claim is admitted,
+placed, grounded, widened, weighed, opposed, adjudicated, gated, published:
+
+1. **Extract** — is this sentence a claim? — live (:mod:`.canon`)
+2. **Admit** — falsifiable · self-contained · method-attributed · single
+   assertion — live; *advisory at mint, blocking at approve*
+   (``nanopub/gates.py::_BLOCKING_LINT_CODES``)
+3. **Place** — is this the same claim we already hold? — live (``place``)
+4. **Ground** — which passage supports it — live, per-passage
+5. **Widen** — who else in the corpus speaks to this? — **built, dark**
+   (``workers/hub_refine.py``)
+6. **Weigh** — how much *independent* support? — partial: the union-find
+   supporter count (``handlers/_finding_evidence.py``) is display-only and
+   gates nothing
+7. **Oppose** — what conflicts with this? — **found but discarded**:
+   ``workers/_chase_llm.py::_verify_support_with_caveats`` returns a
+   ``contradicts`` flag that hub_refine memoes as rejected instead of writing
+   the edge
+8. **Adjudicate** — is the conflict real, and who wins? — **absent**
+9. **Gate** — publishable? — live, admissibility only
+10. **Publish** — mint · sign · anchor — live, human doors
+
+Two structural cautions this ordering hides. **The ratchet**: every stage
+promotes and almost nothing demotes, so a claim accumulates support and never
+re-opens when contradicting evidence lands later — ``chase_trigger``'s
+``TAPROOT_DUE`` marking is the only re-opening mechanism, and it is dark.
+**Scale changes the risk profile of a wrong judge**: at a handful of
+hand-written edges a bad LLM verdict is a nuisance; at ~1.5k hubs × k
+candidates the same error rate is a corpus-wide event. Every automated writer
+here needs a confidence floor, an idempotency story, and a dry-run mode before
+its first large run — ``place``'s confidence gate on ``contradicts`` is one
+instance of that pattern, not a one-off.
+
 Module map (each module's docstring carries its own detail):
 
 - :mod:`.canon` — the canonicalizer cascade: ``extract_claim`` (SMALL; chunk
@@ -82,11 +115,31 @@ Module map (each module's docstring carries its own detail):
   block→judge→place cascade through :mod:`.hub`; ``meta.demanded_by``
   accumulates the requesting passages. Directed, never harvest.
 
-Producers (all default-OFF env flags; each degrades to a logged no-op when no
-embedder is available):
+Producers (all dark by default; each degrades to a logged no-op when no
+embedder is available). **Enablement, canonically —** two mechanisms, and the
+difference matters because one of them looks like the other and isn't:
+
+- A pass that is its own **service** (``hub_refine``, ``chase_trigger``, the
+  axis classifier) flips live via a ``service_config`` prio row —
+  ``precis service prio <host> <service> 1``, no redeploy. Since the §L
+  control cutover, registration is purely structural
+  (``cli/worker.py::_should_register``): a ``ServiceSpec``'s ``enable_env``
+  **is never read**, so setting ``PRECIS_TAPROOT_REFINE_ENABLED`` or
+  ``PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`` in a plist does nothing at all.
+  The per-cycle ``pass_gate`` is the one decision point. Enable on **one
+  host** — ``hub_refine``'s rejection memo is a read-modify-write on ``meta``
+  (procedure: ``docs/runbooks/taproot-chase-enablement.md``).
+- A **sub-feature of another pass** has no ``ServiceSpec`` to flip, so it
+  keeps a genuine in-pass env flag, consulted per call: the forward chase
+  bridge (``PRECIS_TAPROOT_CHASE_ENABLED``, ``workers/chase.py``) and the
+  inbound chase / citer sidecar (``PRECIS_INBOUND_CHASE_ENABLED``,
+  ``workers/inbound_chase.py::inbound_chase_enabled``, also gating the paper
+  render at ``handlers/paper.py``). These two are live env vars; do not
+  "modernize" them into ``service prio``.
 
 - **Forward chase bridge** (``workers/chase.py::_taproot_bridge``,
-  ``PRECIS_TAPROOT_CHASE_ENABLED``) — on a finding's established-terminal hop
+  ``PRECIS_TAPROOT_CHASE_ENABLED`` — in-pass env flag, see above) — on a
+  finding's established-terminal hop
   builds the claim from the finding's own title (no ``extract_claim``; a
   chase finding is already a user-asserted claim) and runs block -> judge ->
   place -> ``apply_placement`` in the SAME transaction as the
@@ -94,8 +147,8 @@ embedder is available):
   rolls back the flip. Skips on NO-SUPPORT. Intermediate chain hops attach as
   extra corroborators. Idempotent: a re-established finding's ``block`` finds
   the existing hub and ``add_link`` no-ops the repeat edge.
-- **hub_refine** (``workers/hub_refine.py``,
-  ``PRECIS_TAPROOT_REFINE_ENABLED``) — revisits *existing* hubs (everything
+- **hub_refine** (``workers/hub_refine.py``; ``service prio`` — stage 5,
+  *Widen*) — revisits *existing* hubs (everything
   else attaches evidence only as a side effect of a chase or a mint); a
   **compound** hub is excluded from the due-set entirely (its only possible
   write is a direct evidence attach, which ``attach_evidence`` refuses) —
@@ -112,8 +165,8 @@ embedder is available):
   (rendered on the claim page); resolved-but-not-held cites land in
   ``meta.unresolved_citations``, never auto-fetched; a miss never flips hub
   trust. Converging by construction, not a periodic re-scan.
-- **chase_trigger** (``workers/chase_trigger.py``,
-  ``PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED``) — the incremental due-set
+- **chase_trigger** (``workers/chase_trigger.py``; ``service prio``) — the
+  incremental due-set
   watermark: sha-gated hub vectors in ``claim_embeddings``, reverse ANN from
   newly-embedded paper/patent chunks (loose similarity floor — over-triggering
   is cheap, hub_refine prechecks), marks near hubs ``TAPROOT_DUE``; drains

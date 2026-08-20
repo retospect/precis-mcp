@@ -63,9 +63,16 @@ Option 3 is the recommendation.
   2026-08-20 check found none for `contradicts` specifically; run it
   across **all** relations before adding a constraint, since the migration
   fails on existing duplicates.
-- Does any legitimate use case want two edges of the same relation between
-  the same pair — e.g. the same paper supporting a claim via two different
-  passages? If grounding lives on the link row rather than in a separate
-  column, a unique constraint on the triple would wrongly collapse them.
-  **This is the question that decides whether option 1 is even correct** —
-  resolve it before writing the migration.
+- **Answered: yes, two edges of the same relation between the same pair is
+  legitimate — per-passage grounding is the shipped contract.** Grounding
+  lives on the link row: `src_chunk_id` is a real `links` column, and
+  `hub.py`'s `_resolve_source_ord` docstring states the design directly —
+  "two distinct passages of the same paper become two edges ('the set of
+  chunks that support this point'), not one collapsed ref-level edge." A
+  unique constraint on the bare `(src_ref_id, dst_ref_id, relation)` triple
+  would wrongly collapse them. **The index must include the grounding
+  chunk**: `(src_ref_id, dst_ref_id, relation, coalesce(src_chunk_id, 0))`
+  — `coalesce` because the column is nullable (a ref-level edge with no
+  chunk pointer) and a unique index treats two NULLs as distinct, which
+  would silently defeat the constraint for exactly the ref-level edges it
+  most needs to guard. Unblocked.

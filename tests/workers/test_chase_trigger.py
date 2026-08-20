@@ -26,7 +26,6 @@ from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import link_claims, mint_hub
 from precis.workers.chase_trigger import (
     _near_claims,
-    chase_trigger_enabled,
     run_chase_trigger_pass,
 )
 from tests.workers._helpers import make_mock_bge_m3
@@ -81,19 +80,6 @@ def _chunk_swept(store: Any, ref_id: int, ord_: int) -> bool:
         t.namespace == "closed" and t.prefix == "CHASETRIG"
         for t in store.tags_for(ref_id, pos=ord_)
     )
-
-
-# ── chase_trigger_enabled ──────────────────────────────────────────────
-
-
-def test_disabled_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED", raising=False)
-    assert chase_trigger_enabled() is False
-
-
-def test_enabled_via_env(monkeypatch) -> None:
-    monkeypatch.setenv("PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED", "1")
-    assert chase_trigger_enabled() is True
 
 
 # ── embedder-unavailable degrade ───────────────────────────────────────

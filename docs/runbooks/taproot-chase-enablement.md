@@ -3,8 +3,8 @@
 Turns on the two dark passes shipped in Phase 1 (plan
 `transient-napping-parrot`): `chase_trigger` (ingest→claim due-marker) and
 `hub_refine` (drains the due-set, LLM-verifies, attaches evidence). Both ship
-`*_ENABLED=0`. This is the *deliberate flip* — never enable blind (the plan's
-gate); the pipeline has never run at corpus scale.
+dark, gated by `service_config` alone. This is the *deliberate flip* — never
+enable blind (the plan's gate); the pipeline has never run at corpus scale.
 
 ## Non-negotiable: single-instance
 
@@ -16,27 +16,32 @@ never-refined / sha-reopened / backstop hub → duplicate LLM verify + a
 lost-update on the `meta['taproot_rejected']` read-modify-write. It self-heals
 next cadence, but it wastes spend and muddies the memo.
 
-Both passes carry **empty `default_profiles`** (registry.py) — they run only
-where their `enable_env` flag (or a `service_config` override) turns them on,
-not by profile rotation. **Do NOT set the flags in the `precis_worker_agent`
-plist env**: that role deploys to *two* hosts (`gateway` + `inference`,
-playbook `37-precis-worker-agent.yml`) → two instances → the bug goes live.
-
-**Enable via a single-host `service_config` override instead** — structurally
-one instance, live-toggleable, instant rollback, no redeploy:
+Both passes carry **empty `default_profiles`** (registry.py), so `service_config`
+is the only thing that turns them on. **A `service_config` row scoped to `'*'`
+is the hazard** — it enables the pass on *every* worker host at once, which is
+exactly the multi-instance bug above. Always name a single host:
 
     precis service prio <host> chase_trigger 1     # e.g. host = melchior
     precis service prio <host> hub_refine    1
 
 `prio 1..10` = on at that claim weight; `prio 0` / `precis service clear` =
 off. Pick ONE host (the agent node that already carries the embedder + LLM
-router). Verify with `precis service list`.
+router). Verify with `precis service list` — check the host column, not just
+that a row exists.
 
-**On/off asymmetry:** a dark pass registers only if `_pass_enabled` is true at
-**boot** (`cli/worker.py` — categorizers get live-register, these don't). So
-turning a pass ON needs the `service_config` row set *then a one-host daemon
-kick* (`launchctl kickstart -k` the agent worker on that host). Turning it OFF
-is live — the per-cycle gate drops it next cycle, no restart.
+**The env flags are not the switch, in either direction.** Since the §L
+control cutover `_should_register` (`cli/worker.py`) never reads a
+`ServiceSpec`'s `enable_env` value — its mere *presence* makes the pass
+register — so setting `PRECIS_TAPROOT_REFINE_ENABLED` /
+`PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED` in a plist does nothing at all, and
+neither pass is in the deploy-time seed loop that mirrors older flags into
+rows. Do not remove `enable_env` from either spec either: that would
+*unregister* the pass entirely.
+
+**On and off are both live**, no daemon kick: registration is unconditional
+and the per-cycle `pass_gate` re-reads `service_config` through a 5-second TTL
+cache (`workers/service_config.py`), so a prio flip takes effect within one
+cycle in either direction.
 
 ## Sequence
 

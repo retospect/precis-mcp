@@ -12,7 +12,11 @@ Built (slices 1–3, all local / reversible):
 
 - :mod:`.aida` — canonicalised AIDA URIs: one sentence, one URI
   (``%20`` never ``+``; lenient parse, strict mint — both encodings are
-  live in the public corpus for identical sentences).
+  live in the public corpus for identical sentences). Sentence-only
+  identity — narrower than the taproot hub's ``pub_id``, which hashes
+  sentence **+** ``scope`` (``precis.identity.make_taproot_hub_paper_id``):
+  two hubs forked on scope alone with identical sentence text mint to the
+  same AIDA URI (observed twice in the corpus).
 - :mod:`.snip` — locator normalization (casefold, whitespace collapse,
   soft-hyphen/ligature strip) + the ``searchSnip`` contract: lowercase
   ASCII tokens, validated **unique-within-paper** against stored chunk

@@ -1,4 +1,4 @@
-"""Scenario tests for ``precis.workers.hub_refine`` (docs/backlog/taproot-hub-refine.md).
+"""Scenario tests for ``precis.workers.hub_refine`` — lifecycle stage 5, *widen*.
 
 Real DB ``store`` fixture (mirrors ``test_taproot_chase_bridge.py``): a
 hub is a real ``mint_hub``-minted ``TAPROOT:claim``/``STATUS:canonical``
@@ -27,7 +27,6 @@ from precis.workers.hub_refine import (
     _claim_hubs_due_for_refine,
     _is_compound_hub,
     _refine_one_hub,
-    hub_refine_enabled,
     run_hub_refine_pass,
 )
 from precis_web.claim_render import render_claim_evidence
@@ -169,19 +168,6 @@ def _edge_src_chunk_id(store: Any, src: int) -> int | None:
         ).fetchone()
     assert row is not None
     return None if row[0] is None else int(row[0])
-
-
-# ── hub_refine_enabled ───────────────────────────────────────────────
-
-
-def test_disabled_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("PRECIS_TAPROOT_REFINE_ENABLED", raising=False)
-    assert hub_refine_enabled() is False
-
-
-def test_enabled_via_env(monkeypatch) -> None:
-    monkeypatch.setenv("PRECIS_TAPROOT_REFINE_ENABLED", "1")
-    assert hub_refine_enabled() is True
 
 
 # ── embedder-unavailable degrade ─────────────────────────────────────

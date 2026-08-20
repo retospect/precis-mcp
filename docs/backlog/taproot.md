@@ -79,7 +79,9 @@ fused-but-distinct claims; uncertain ⇒ separate. The 238-pair fixture
 (`tests/fixtures/taproot/`) grades collapsed 3-way and stays the
 regression bar; **nothing downstream runs at corpus scale until the
 over-merge rate holds ~zero.** Atomic splitting of multi-assertion
-chunks is deferred (a bundled `X∧Y` just under-merges).
+chunks **is live** (migration 0126, `conjunct-of` relation,
+`hub.apply_extraction`, compound hubs — see `taproot-compound-migration.md`
+for the corpus-wide migration of existing hubs).
 
 ## Axis A — support-resolution pipeline (Phase 3, open)
 

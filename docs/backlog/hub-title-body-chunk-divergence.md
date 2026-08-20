@@ -48,7 +48,8 @@ So the authoritative side differs by cohort: **title** for the August set,
 **body** for the June set. A single blanket rule would destroy content in one
 group or the other — the same trap as the 200-char repair, where restoring
 frozen hubs from the chunk would have reverted 21 deliberate reviewer
-rewordings (`hub-title-200-truncation-via-stale-mcp.md`).
+rewordings (root-caused and repaired 2026-08-17, 9d0b9206; the two hardening
+residuals live in `mcp-staleness-title-roundtrip-guards.md`).
 
 Example: fi191126 — title 224 chars, body 115, both coherent sentences, the
 title strictly richer.

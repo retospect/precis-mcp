@@ -875,7 +875,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_inbound_chase_pass)
 
         # hub_refine — periodic, converging enrichment of EXISTING taproot
-        # claim hubs (docs/backlog/taproot-hub-refine.md): per due hub,
+        # claim hubs (lifecycle stage 5, `precis.taproot` docstring): per due hub,
         # semantic-search the corpus for corroborating paper chunks,
         # LLM-verify, attach the survivors. Default-OFF — dark like every
         # other taproot service (§L: enable via `service prio '*' hub_refine

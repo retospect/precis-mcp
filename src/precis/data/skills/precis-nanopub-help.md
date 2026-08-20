@@ -237,9 +237,20 @@ redirects there — one page, reader evidence + review-and-sign):
 Every gate above (mint and publish) checks *form* — well-formed,
 sourced, traceable. Whether anything else in the corpus actually
 **disagrees** with the claim is a different question, and today the
-only edge that carries that signal is `contradicts` — which blocks
-publication of the *other* hub, so filing one is expensive and rare (2
-`contradicts` edges across 1,527 live hubs).
+only edge that carries that signal is `contradicts`, so filing one is
+expensive and rare.
+
+**Know what it actually blocks.** Only a **paper- or patent-sourced**
+`contradicts` edge blocks the mint mechanically. `check_contradicts` reads
+`bundle.contradicts`, and that bundle is filtered twice: once to
+`EVIDENCE_SRC_KINDS` in `taproot/seniority.py::_fetch_evidence_rows`, then
+again to `("paper", "patent")` by `nanopub/evidence.py::load_bundle`'s
+`_source`. So a **hub- or finding-sourced** dispute never fires the gate —
+deliberately, so the opposing hub isn't rendered as a "contradictor" in the
+evidence table — and an `edgar`- or `datasheet`-sourced one doesn't either,
+which is *not* deliberate (`attach_evidence` accepts those kinds). Both
+surface in the overview's `disputed` bucket and hold at human review instead.
+Treat any non-paper/patent dispute as needing a person, not as blocked.
 
 `docs/backlog/disputes-edge-nonblocking-disagreement.md` **proposes** —
 not yet built — splitting that into a free, non-blocking `disputes`

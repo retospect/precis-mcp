@@ -59,8 +59,9 @@ stops probing against them.
     :data:`CHASETRIG_VERSION` to force a lazy re-sweep of the whole corpus
     (e.g. after a claim-embedding scheme change).
 
-Ship dark: :func:`chase_trigger_enabled` defaults OFF
-(``PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED``), like every other taproot flag.
+Ship dark: this is a **service** — flip it with ``precis service prio <host>
+chase_trigger 1``, live, no redeploy. ``PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED``
+is not read by anything (see ``cli/worker.py::_should_register``).
 No embedder wired -> the whole pass degrades to a logged no-op (mirrors
 ``hub_refine``'s own embedder-unavailable degrade).
 """
@@ -96,12 +97,6 @@ _DUE_VALUE = "1"
 #: The ref kinds a corroborator can come from -- bounds the sweep to the
 #: same universe hub_refine's own discovery draws candidates from.
 _CORROBORATOR_KINDS = ["paper", "patent"]
-
-
-def chase_trigger_enabled() -> bool:
-    """``PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`` -- default OFF (dark, like
-    every other taproot flag)."""
-    return bool(int(os.environ.get("PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED", "0") or "0"))
 
 
 def _min_sim_default() -> float:
@@ -445,4 +440,4 @@ def run_chase_trigger_pass(
     }
 
 
-__all__ = ["chase_trigger_enabled", "run_chase_trigger_pass"]
+__all__ = ["run_chase_trigger_pass"]

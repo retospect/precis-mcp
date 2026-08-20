@@ -23,7 +23,7 @@ multiple hits. Depends on 2b (shipped), so it is unblocked.
 
 Related unbuilt Phase-3+ items tracked elsewhere / later: the S2
 global-citation-count originator fallback (seniority), the integrity axis
-(Phase 4), the corpus-wide backfill sweep (`taproot-hub-refine.md` owns the
+(Phase 4), the corpus-wide backfill sweep (`taproot-reground.md` owns the
 reconcile worker).
 
 ## Acceptance
