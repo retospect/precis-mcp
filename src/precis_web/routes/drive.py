@@ -476,7 +476,7 @@ async def index(
         # is already guaranteed non-blank by the outer ``if q:``).
         if selected_kinds:
             result_total = await asyncio.to_thread(
-                store.count_blocks_lexical,
+                store.blocks.count_blocks_lexical,
                 q=q,
                 kinds=selected_kinds,
                 tags=tags,
@@ -489,8 +489,10 @@ async def index(
         # Floor to what's actually on the page: the fused ranking can surface
         # semantic-only hits the lexical count misses, so without this the
         # header could read the absurd "showing 30 of ~5".
-        # (store is untyped Any, so mypy can't see count_blocks_lexical's
-        # `-> int`; both branches above always set an int, never None.)
+        # (store is untyped Any, so mypy can't see
+        # ``store.blocks.count_blocks_lexical``'s `-> int` — nor, for the
+        # same reason, that it lives on the composed BlockStore rather than
+        # on Store; both branches above always set an int, never None.)
         assert isinstance(result_total, int)
         result_total = max(result_total, offset + len(rows))
     else:

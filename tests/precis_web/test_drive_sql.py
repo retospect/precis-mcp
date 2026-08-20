@@ -406,3 +406,18 @@ def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
     assert hit["kind"] == "conv"
     assert hit["open_url"] == f"/refs/conv/{ref.id}"
     assert "reingest" in hit["preview"]
+
+
+def test_search_with_kind_chip_renders(drive_client, store):
+    """A submitted search with a kind chip selected returns 200.
+
+    Regression for the store-decomposition carve (33985c3f): the header's
+    "showing N of ~K" total calls ``count_blocks_lexical``, which lives on
+    the composed :class:`BlockStore` (``store.blocks``), not on ``Store``.
+    ``store`` is untyped ``Any`` in the web routes, so mypy can't see the
+    missing attribute — only a request through the real store does. The
+    FakeStore suite can't catch it either (it answers any attribute).
+    """
+    store.insert_ref(kind="draft", slug="computing-notes", title="computer", meta={})
+    resp = drive_client.get("/drive?submitted=1&q=computer&sort=relevance&k=draft")
+    assert resp.status_code == 200
