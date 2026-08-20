@@ -302,20 +302,28 @@ def test_probe_treats_lock_contention_as_healthy_not_a_failure() -> None:
         probe_fail_threshold=1,  # even 1 tick would flip it if miscounted
     )
     try:
-        assert service._ready.wait(timeout=2.0)
+        assert service._ready.wait(timeout=10.0)
 
         # Simulate a legitimate slow real embed holding the lock —
         # not calling embedder.embed() at all, just holding the lock
         # the way EmbedderService.embed() would while encoding.
+        #
+        # Hand off via an event rather than a sleep, and hold well past the
+        # probe ticks below: a loaded runner can leave the holder unscheduled
+        # for longer than a fixed 0.05s nap, and a hold that expires mid-test
+        # lets the probe take the lock and run for real — either way the
+        # contention this test is about never happens (a macOS CI flake).
+        acquired = threading.Event()
         release = threading.Event()
 
         def _hold_lock() -> None:
             with service._encode_lock:
-                release.wait(timeout=2.0)
+                acquired.set()
+                release.wait(timeout=60.0)
 
         holder = threading.Thread(target=_hold_lock, daemon=True)
         holder.start()
-        time.sleep(0.05)  # let the holder grab the lock first
+        assert acquired.wait(timeout=10.0), "holder never took the encode lock"
 
         try:
             service._run_probe_once()
