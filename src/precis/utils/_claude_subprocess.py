@@ -81,6 +81,27 @@ def resolve_binary() -> str:
     return os.environ.get("PRECIS_CLAUDE_BIN", "claude")
 
 
+def exit_detail(stdout: str, stderr: str, *, limit: int = 400) -> str:
+    """The cause blurb for a non-zero ``claude -p`` exit.
+
+    ``claude -p`` prints *its own* errors — invalid API key, not logged
+    in, unknown flag — to **stdout**, leaving stderr empty, so a
+    stderr-only message renders as a bare ``exited 1:`` with no cause.
+    That is what a dead ``ANTHROPIC_API_KEY`` looked like from the
+    diagnose lane for an entire debugging session (gr211457). Prefer
+    stderr when it carries anything; otherwise fall back to stdout's
+    *tail* — under ``--output-format stream-json`` the terminal
+    ``{"type":"result"}`` event (which holds the error text) is last.
+    """
+    err = (stderr or "").strip()
+    if err:
+        return err[:limit]
+    out = (stdout or "").strip()
+    if not out:
+        return "(no output on stdout or stderr)"
+    return out[-limit:] if len(out) > limit else out
+
+
 def run_claude(
     argv: list[str],
     *,
@@ -151,7 +172,7 @@ def run_claude(
 
     if res.returncode != 0:
         raise error_cls(
-            f"{label} exited {res.returncode}: {(res.stderr or '').strip()[:400]}",
+            f"{label} exited {res.returncode}: {exit_detail(res.stdout, res.stderr)}",
             stdout=res.stdout,
             stderr=res.stderr,
             returncode=res.returncode,
@@ -189,8 +210,9 @@ async def run_claude_async(
     * Wall-clock ``timeout_s`` exceeded → the process is killed and
       ``error_cls`` is raised with "timed out after {timeout_s}s", carrying
       whatever stdout/stderr was captured before the kill.
-    * Non-zero exit → ``error_cls`` raised with "exited {rc}: {stderr}",
-      carrying the full stdout/stderr + ``returncode``.
+    * Non-zero exit → ``error_cls`` raised with "exited {rc}: {detail}"
+      (:func:`exit_detail` — stderr, else stdout's tail), carrying the
+      full stdout/stderr + ``returncode``.
     * Clean (exit 0) run → returns an object with ``.stdout`` / ``.stderr``
       (mirrors ``subprocess.CompletedProcess`` closely enough for every
       downstream reader, which only touches those two attributes).
@@ -262,7 +284,7 @@ async def run_claude_async(
     stderr = to_str(stderr_bytes)
     if returncode != 0:
         raise error_cls(
-            f"{label} exited {returncode}: {stderr.strip()[:400]}",
+            f"{label} exited {returncode}: {exit_detail(stdout, stderr)}",
             stdout=stdout,
             stderr=stderr,
             returncode=returncode,
@@ -272,6 +294,7 @@ async def run_claude_async(
 
 __all__ = [
     "ClaudeProcessError",
+    "exit_detail",
     "extract_cost_usd",
     "resolve_binary",
     "run_claude",
