@@ -15,10 +15,21 @@ from __future__ import annotations
 import os
 import shlex
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 from precis.utils._claude_subprocess import ClaudeProcessError, run_claude
 from precis.utils.claude_oauth import ENV_VAR
+
+#: Every test here execs a shebang'd bash stub as the ``claude`` binary — a
+#: shape Windows can't run at all (``OSError: [WinError 193]``), and one that
+#: only ever matters on the Linux hosts/containers that actually run claude.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only shebang stub exec'd as the claude binary",
+)
 
 
 def _write_env_dump_stub(path: Path, dump_path: Path) -> None:

@@ -255,7 +255,10 @@ def _client_identity() -> tuple[str, str, int, int, str]:
         except Exception:
             # getuser() raises when no passwd entry matches the uid — happens
             # in slim containers. The numeric uid still identifies the caller.
-            user = f"uid:{os.getuid()}"
+            # os.getuid() is POSIX-only, so don't let the fallback itself
+            # raise on Windows — the pid is the only handle left there.
+            _getuid = getattr(os, "getuid", None)
+            user = f"uid:{_getuid()}" if _getuid else f"uid:pid-{os.getpid()}"
         argv = " ".join(
             os.path.basename(a) if i == 0 else _scrub_argv(a)
             for i, a in enumerate(sys.argv[:4])

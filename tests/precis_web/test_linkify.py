@@ -1021,7 +1021,7 @@ def _base_template_script() -> str:
     import precis_web
 
     path = Path(precis_web.__file__).parent / "templates" / "base.html.j2"
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
 
 
 def test_base_template_installs_one_delegated_popover_registry() -> None:

@@ -1099,7 +1099,7 @@ def test_smartdraft_claims_rail_chip_carries_data_claim_head(
     tpl_path = (
         Path(precis_web.__file__).parent / "templates" / "smartdraft" / "view.html.j2"
     )
-    assert 'data-claim-head="{{ entry.head }}"' in tpl_path.read_text()
+    assert 'data-claim-head="{{ entry.head }}"' in tpl_path.read_text(encoding="utf-8")
 
 
 def test_smartdraft_review_toc_button_forces_rerun_outstanding_stays_incremental(

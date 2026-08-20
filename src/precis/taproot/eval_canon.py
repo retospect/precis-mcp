@@ -187,7 +187,7 @@ def _load_jsonl(fixture_path: str | Path) -> list[dict[str, Any]]:
     lines and blank lines skipped)."""
     path = Path(fixture_path)
     rows: list[dict[str, Any]] = []
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):

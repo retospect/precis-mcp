@@ -9,6 +9,7 @@ podman needed (this module never shells out to a container runtime).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,11 @@ class TestArtifactStore:
     def test_verify_artifact_missing_file(self, tmp_path: Path) -> None:
         assert harvest.verify_artifact("deadbeef", root=tmp_path) is False
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX symlink semantics — Windows stores the extended-length "
+        r"(\\?\) form of the link target, so the linkname never matches",
+    )
     def test_symlinked_out_of_tree_file_not_dereferenced_in_tarball(
         self, tmp_path: Path
     ) -> None:

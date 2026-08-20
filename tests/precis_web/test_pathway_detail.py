@@ -641,7 +641,7 @@ def test_structure_detail_template_ships_refresh_detail_js() -> None:
         / "templates"
         / "structure"
         / "detail.html.j2"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "refreshDetail(" in tpl
     assert "r_cov" in tpl
 
@@ -932,7 +932,7 @@ def test_pathway_diagram_template_uses_pixel_space_half_not_index_space() -> Non
         / "templates"
         / "refs"
         / "pathway_detail.html.j2"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "xScale(xOf[id] - half)" not in tpl
     assert "xScale(xOf[id] + half)" not in tpl
     assert "xScale(xOf[e.source] + half)" not in tpl

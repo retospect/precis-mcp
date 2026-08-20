@@ -7,6 +7,7 @@ model, network, or DB is touched.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -290,10 +291,17 @@ def test_urllib_transport_503_still_classifies_as_unavailability(
 class _FakeSseTransport:
     """Yields scripted SSE event dicts; records the payloads sent. An entry
     that is an Exception instance is raised mid-stream instead of yielded
-    (a socket idle-timeout / connection failure at that point)."""
+    (a socket idle-timeout / connection failure at that point).
 
-    def __init__(self, events: list[Any]) -> None:
+    ``tick_s`` burns a little real time before each event. The hard-ceiling
+    tests need measurable elapsed time between events: Windows'
+    ``time.monotonic`` has ~15 ms granularity, so a tight scripted loop can
+    read a genuine 0.0 s elapsed and slip under even a 1e-9 s ceiling.
+    """
+
+    def __init__(self, events: list[Any], *, tick_s: float = 0.0) -> None:
         self._events = list(events)
+        self._tick_s = tick_s
         self.sent: list[dict[str, Any]] = []
 
     def post_sse(
@@ -306,6 +314,8 @@ class _FakeSseTransport:
     ) -> Any:
         self.sent.append(payload)
         for ev in self._events:
+            if self._tick_s:
+                time.sleep(self._tick_s)
             if isinstance(ev, Exception):
                 raise ev
             yield ev
@@ -410,7 +420,7 @@ def test_streaming_idle_timeout_carries_partials() -> None:
 
 
 def test_streaming_hard_ceiling_carries_partials() -> None:
-    tx = _FakeSseTransport([_delta("a"), _delta("b"), _delta("c")])
+    tx = _FakeSseTransport([_delta("a"), _delta("b"), _delta("c")], tick_s=0.02)
     client = ToolChatClient(
         url="http://x/v1",
         api_key="k",
@@ -607,7 +617,7 @@ def test_streaming_drain_abort_flags_drained_on_the_exception() -> None:
         url="http://x/v1",
         api_key="k",
         model="m",
-        transport=_FakeSseTransport([_delta("a"), _delta("b")]),
+        transport=_FakeSseTransport([_delta("a"), _delta("b")], tick_s=0.02),
         stream=True,
         timeout=1e-9,
     )

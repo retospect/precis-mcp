@@ -531,7 +531,13 @@ class TestLeaseKeepalive:
 
         store = _FakeStore()
         with coordinator._LeaseKeepalive(store, 55, {"lease_boot_id": "b"}):
-            time.sleep(0.09)  # several ticks at a 0.02s interval
+            # Wait for the ticks rather than sleeping a fixed span: at a
+            # 0.02s interval a loaded/oversubscribed runner can schedule the
+            # keepalive thread just once inside a 0.09s window (a macOS CI
+            # flake). Generous deadline, exits as soon as the point is proven.
+            deadline = time.monotonic() + 10.0
+            while len(renewals) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
 
         # Renewed more than once (the whole point — a single claim-time
         # stamp wouldn't need a keepalive at all), always for the right

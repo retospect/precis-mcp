@@ -6,6 +6,8 @@ silent or in-process execution."""
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from precis.render.sandbox import DEFAULT_MAX_NPROC, render_python
@@ -57,6 +59,10 @@ def test_home_is_redirected(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.ok, r.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only rlimit containment (no `resource` module on Windows)",
+)
 def test_nproc_limit_is_applied() -> None:
     # Fork-bomb containment: the child's own process-count ceiling
     # (RLIMIT_NPROC) must be bounded, not left at whatever ambient limit the

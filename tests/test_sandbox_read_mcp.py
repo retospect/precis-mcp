@@ -278,6 +278,10 @@ def _is_alive(pid: int) -> bool:
     return True
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only SIGTERM→grace→SIGKILL escalation (no signal.SIGKILL on Windows)",
+)
 class TestReapReadMcp:
     def test_sigterm_reaps_a_cooperative_child(
         self, monkeypatch: pytest.MonkeyPatch

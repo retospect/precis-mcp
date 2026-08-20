@@ -13,7 +13,17 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
+
+#: The entrypoint under test is a POSIX shell script the images run as PID 1;
+#: there is no `bash` on a stock Windows runner and no Windows image stage to
+#: gate, so the whole module is Linux/macOS-only.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only shell entrypoint (bash, exec)"
+)
 
 _ENTRYPOINT = Path(__file__).resolve().parent.parent / "docker" / "docker-entrypoint.sh"
 

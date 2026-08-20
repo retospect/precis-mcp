@@ -18,7 +18,13 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy src tests
+      # `--all-extras`, not the bare env: mypy needs every optional dep
+      # importable or it reports `import-not-found` for fastapi/markupsafe
+      # (the [web] extra) and flips the `type: ignore`s guarding the asa
+      # bridge to `unused-ignore`. This matches the ship gate, whose dev
+      # image installs `uv sync --all-extras` — note `--extra all` is NOT
+      # the same set (`asa` is deliberately outside `[all]`).
+      - run: uv run --all-extras mypy src tests
 
   # Linux legs run the FULL suite against a real PostgreSQL + pgvector,
   # so the db-tagged tests (~41% of the suite) actually gate the release

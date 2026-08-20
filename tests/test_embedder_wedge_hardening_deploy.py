@@ -23,7 +23,19 @@ from __future__ import annotations
 
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
+
+#: The §3 tests execute the watchdog as a real POSIX shell script (``sh``, a
+#: chmod'd stub ``curl`` on a ``:``-separated ``PATH``, ``touch`` as the
+#: restart command). None of that exists on a Windows runner, and the script
+#: only ever ships to Linux/macOS hosts — so those tests are POSIX-only. The
+#: §1 template-text assertions above stay platform-independent.
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only sh watchdog script executed for real"
+)
 
 _REPO = Path(__file__).resolve().parent.parent
 _EMBEDDER_ROLE = _REPO / "deploy" / "roles" / "precis_embedder"
@@ -132,6 +144,7 @@ def _run_tick(
     )
 
 
+@_posix_only
 def test_watchdog_script_never_exits_nonzero(tmp_path: Path) -> None:
     script = tmp_path / "watchdog.sh"
     _render_watchdog_script(script)
@@ -145,6 +158,7 @@ def test_watchdog_script_never_exits_nonzero(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+@_posix_only
 def test_watchdog_escalates_from_third_consecutive_restart_cycle(
     tmp_path: Path,
 ) -> None:
@@ -178,6 +192,7 @@ def test_watchdog_escalates_from_third_consecutive_restart_cycle(
     assert "restart cycle 4" in outputs[3]
 
 
+@_posix_only
 def test_watchdog_cycle_streak_resets_on_recovery(tmp_path: Path) -> None:
     script = tmp_path / "watchdog.sh"
     _render_watchdog_script(script)
@@ -212,6 +227,7 @@ def test_watchdog_cycle_streak_resets_on_recovery(tmp_path: Path) -> None:
     assert "ESCALATION" not in result.stdout
 
 
+@_posix_only
 def test_watchdog_first_failure_timestamp_persists_across_cycles(
     tmp_path: Path,
 ) -> None:
