@@ -52,10 +52,22 @@ Nothing is published, so this was free to do now. It also means step 5 of
 `replace_body_chunk` is DELETE+INSERT, so each repaired hub's new chunk starts
 with no embedding — all 42 confirmed awaiting one. Until the pass reaches them,
 their ANN blocking entry is *absent* rather than *wrong*, which is a temporary
-regression in dedup recall for those hubs specifically. The corpus-wide
-unembedded backlog was 182,860 chunks at the time of the run, with the embedder
-alive and doing ~800/hour in passes — so this is not instant. Re-check before
+regression in dedup recall for those hubs specifically. Re-check before
 trusting a dedup sweep over these 42.
+
+It clears fast, though: a first pass measured the corpus-wide unembedded count
+at 182,860 and concluded ~9 days at the embedder's ~800/hour. That was wrong —
+**182,415 of those are `chunk_kind='references'`, which
+`EmbedHandler.skip_chunk_kinds` drops at the claim query by design** (tagged at
+ingest by `pipeline._retag_references`; bibliography lines are retrieval noise).
+The real queue is ~540 chunks — 424 `paragraph`, 52 `job_summary`, and these 42,
+which are the *only* unembedded `finding_body` chunks in the corpus. One pass.
+
+Worth keeping as a measurement lesson, because it is the same error as the
+`prose_marked_hubs` bug fixed the same day (`8d985d2b`): a population counted
+without the filter its consumer applies. There the query was narrower than the
+gate's reach; here it was wider than the worker's. Both directions mislead —
+match the predicate to the consumer, every time.
 
 Snapshots for reversal: `before-snapshot.json` (prior body text + `pub_id`s per
 hub) and `apply-result.json` in the same directory.
