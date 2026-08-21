@@ -548,13 +548,34 @@ def test_literal_cite_in_draft_is_flagged(draft: DraftHandler, hub: Hub) -> None
     assert "literal \\cite" not in r2.body  # a bare [pc<id>] handle is clean
 
 
-def test_edit_and_delete_require_chunk_handle(draft: DraftHandler, hub: Hub) -> None:
+def test_edit_requires_chunk_handle(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     with pytest.raises(BadInput, match="targets a chunk"):
         draft.edit(id="nt", text="x")  # a slug, not a ¶handle
-    with pytest.raises(BadInput, match="targets a chunk"):
-        draft.delete(id="nt")
+
+
+def test_delete_ref_level_id_soft_deletes_whole_draft(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ref-level id (slug or numeric ref id) deletes the document, not a
+    chunk — what ``/drive``'s generic per-row delete button dispatches."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="paragraph", text="body", at={"after": "¶" + title_h})
+
+    ref_id = hub.live_store.get_ref(kind="draft", id="nt").id  # type: ignore[union-attr]
+
+    r = draft.delete(id="nt")
+    assert "deleted draft" in r.body
+    # ref soft-deleted…
+    assert hub.live_store.get_ref(kind="draft", id="nt") is None
+    # …and every chunk retired with it.
+    assert hub.live_store.drafts.reading_order(ref_id) == []
+
+    with pytest.raises(BadInput):
+        draft.delete(id="")  # no target at all is still a clean refusal
 
 
 def test_reading_window(draft: DraftHandler, hub: Hub) -> None:

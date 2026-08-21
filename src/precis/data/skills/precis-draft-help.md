@@ -485,6 +485,7 @@ edit(
 delete(id="dc12")  # retire a chunk (un-delete restores)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
 delete(id="dc20", mode="cascade")  # delete heading AND its contents
+delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
 ```
 
 `find=` is located **literally**; every occurrence is swapped for
@@ -511,6 +512,12 @@ contents) or `cascade` (delete the section) — no default for that
 destructive choice. Retired chunks drop out of the document but their
 history (and any anchor to them) survives; you cannot delete the last
 live chunk — a draft is never empty.
+
+`delete` reads its granularity off the id: a chunk address (`dc<id>` /
+`¶<base58>`) retires that chunk, a **ref-level** id (the slug, or the
+numeric ref id) soft-deletes the **whole document** — ref plus every
+chunk, one transaction, recoverable. The owning project todo is left
+intact: that deletes the document, not the project.
 
 ## References in prose — handles route by what they name
 
