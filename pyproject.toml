@@ -55,7 +55,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp[cli]>=1.0,<2",
+    "mcp[cli]>=1.0,<3",
     "psycopg[binary,pool]>=3.2",
     # pgvector-python >=0.5 returns fetched vector columns as a non-iterable
     # ``Vector`` object (was a numpy array). Every raw-vector read now routes
