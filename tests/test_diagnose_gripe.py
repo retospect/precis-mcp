@@ -361,3 +361,96 @@ class TestComposePrompt:
         assert "Confidence:" in prompt
         assert "READ-ONLY" in prompt
         assert "do NOT edit, commit, branch, or push" in prompt
+
+
+# ── Auth: subscription OAuth token first, metered API key as fallback ──
+
+
+class TestSpawnAuth:
+    """``--bare`` auth is *strictly* ``ANTHROPIC_API_KEY`` (``claude --help``),
+    and upstream ``call_claude_agent`` derives the container's secret-by-key
+    channel from the same flag (``"api" if bare else agent_run_mode()``). So
+    ``bare`` has to track which credential we actually have, and dropping it
+    for an OAuth run must not silently switch on the CLAUDE.md / ``.claude``
+    hook discovery that ``--bare`` was suppressing."""
+
+    @staticmethod
+    def _clone_with_project_config(tmp_path: Path) -> Path:
+        clone = tmp_path / "clone"
+        (clone / ".claude").mkdir(parents=True)
+        (clone / ".claude" / "settings.json").write_text('{"hooks": {}}')
+        (clone / "CLAUDE.md").write_text("# project brief")
+        (clone / "AGENTS.md").write_text("# conventions")
+        (clone / "src.py").write_text("x = 1\n")
+        return clone
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch) -> dict:
+        """Stub the agent chokepoint; return the kwargs it was called with."""
+        seen: dict = {}
+
+        def _fake(prompt: str, **kw: object) -> AgentResult:
+            seen.update(kw)
+            seen["prompt"] = prompt
+            return AgentResult(
+                final_text="ok", cost_usd=0.0, duration_s=0.0, turns_used=1
+            )
+
+        monkeypatch.setattr(
+            "precis.utils.claude_agent.call_claude_agent", _fake, raising=True
+        )
+        # Deterministic: no vault reads in either direction.
+        monkeypatch.setattr(
+            "precis.secrets.get_secret", lambda name, **kw: None, raising=True
+        )
+        return seen
+
+    def test_oauth_token_drops_bare_and_strips_project_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = self._clone_with_project_config(tmp_path)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-TEST")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        seen = self._capture(monkeypatch)
+
+        dg._spawn_claude(model="m", clone_dir=clone, prompt="p", timeout_s=1.0)
+
+        assert seen["bare"] is False
+        env = seen["env_base"]
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-TEST"
+        # The billed path is scrubbed so the CLI cannot choose it.
+        assert "ANTHROPIC_API_KEY" not in env
+        # ...and the ambient project config --bare used to suppress is gone.
+        assert not (clone / "CLAUDE.md").exists()
+        assert not (clone / "AGENTS.md").exists()
+        assert not (clone / ".claude").exists()
+        # Only the auto-loaded config goes; the code under diagnosis stays.
+        assert (clone / "src.py").exists()
+
+    def test_api_key_only_keeps_bare_and_leaves_the_clone_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No token: fall back to the metered key, keep ``--bare`` — which
+        suppresses the discovery itself, so nothing needs stripping."""
+        clone = self._clone_with_project_config(tmp_path)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-TEST")
+        seen = self._capture(monkeypatch)
+
+        dg._spawn_claude(model="m", clone_dir=clone, prompt="p", timeout_s=1.0)
+
+        assert seen["bare"] is True
+        assert seen["env_base"]["ANTHROPIC_API_KEY"] == "sk-ant-api03-TEST"
+        assert (clone / "CLAUDE.md").exists()
+        assert (clone / ".claude").exists()
+
+    def test_no_credential_at_all_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = self._clone_with_project_config(tmp_path)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        self._capture(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="no usable credential"):
+            dg._spawn_claude(model="m", clone_dir=clone, prompt="p", timeout_s=1.0)

@@ -205,32 +205,82 @@ def _git_clone_readonly(repo_dir: Path, dest: Path) -> None:
     )
 
 
+#: Ambient project config ``claude -p`` auto-loads from its cwd when
+#: ``--bare`` is absent: the project brief (memory) and the ``.claude``
+#: directory (settings, hooks, agents, skills).
+_AMBIENT_PROJECT_CONFIG = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".claude")
+
+
+def _strip_ambient_project_config(clone_dir: Path) -> None:
+    """Delete the auto-discovered project config from a throwaway clone.
+
+    ``--bare`` bundles two unrelated behaviours: it forces
+    ``ANTHROPIC_API_KEY`` auth **and** it skips "hooks, LSP, plugin sync,
+    attribution, auto-memory, keychain reads, and CLAUDE.md auto-discovery"
+    (``claude --help``). Authing off the subscription OAuth token means
+    dropping the flag, which would switch that discovery back on — and this
+    agent's cwd is a clone of *this very repo*, so it would auto-load
+    precis-mcp's own project brief as memory and its ``.claude`` hooks as
+    executable PreToolUse/SessionStart shims, inside the container. Neither
+    belongs in an isolated read-only diagnosis run; both are ambient context
+    the ``--bare`` era never had.
+
+    Deleting them from the clone (throwaway, ``--local``, discarded by
+    ``_dispatch``, never committed, mounted ``ro``) restores the old
+    contract on the only axis that matters. The clone's ``git status`` shows
+    the deletions — harmless for a run that never commits.
+    """
+    for name in _AMBIENT_PROJECT_CONFIG:
+        target = clone_dir / name
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        except OSError:  # pragma: no cover — best-effort hygiene
+            log.warning("diagnose_gripe: could not strip %s from clone", name)
+
+
 def _spawn_claude(
     *, model: str, clone_dir: Path, prompt: str, timeout_s: float
 ) -> AgentResult:
     """Run the diagnosis agent through the ``call_claude_agent`` chokepoint.
 
-    Mirrors ``fix_gripe._spawn_claude``'s isolation shape — ``bare=True``
-    (API-key auth only), ``env_base=_restricted_env(...)`` (no DB creds),
-    ``egress='api-only'`` — and its ``require_container=not
-    _unsandboxed_ack()`` fail-closed gate (gr179498): this agent also gets
-    full Bash/Read tool access on VERBATIM, agent-filable gripe text, so it
-    reuses the same operator ack rather than a bespoke one. The one
-    difference: the clone mount is ``mode="ro"`` (fix_gripe's is ``"rw"``,
-    since it needs to commit) — diagnose_gripe never writes to its clone,
-    so the container structurally can't either.
+    Mirrors ``fix_gripe._spawn_claude``'s isolation shape —
+    ``env_base=_restricted_env(...)`` (no DB creds), ``egress='api-only'``
+    — and its ``require_container=not _unsandboxed_ack()`` fail-closed gate
+    (gr179498): this agent also gets full Bash/Read tool access on VERBATIM,
+    agent-filable gripe text, so it reuses the same operator ack rather than
+    a bespoke one. The one difference: the clone mount is ``mode="ro"``
+    (fix_gripe's is ``"rw"``, since it needs to commit) — diagnose_gripe
+    never writes to its clone, so the container structurally can't either.
+
+    **Auth** prefers the subscription OAuth token and falls back to the
+    metered API key. ``bare`` tracks that choice because it *is* the choice:
+    ``--bare`` auth is "strictly ANTHROPIC_API_KEY … OAuth and keychain are
+    never read" (``claude --help``), and upstream
+    ``call_claude_agent`` derives the container's secret-by-key channel from
+    it (``container_mode = "api" if bare else agent_run_mode()``). So a
+    token-authed run must drop the flag — and with it ``--bare``'s
+    suppression of CLAUDE.md/hook discovery, which
+    :func:`_strip_ambient_project_config` restores by hand.
     """
     from precis.utils.claude_agent import call_claude_agent
+    from precis.utils.claude_oauth import ENV_VAR as OAUTH_ENV_VAR
     from precis.workers.envelope import Envelope
     from precis.workers.executors.agent_container import Mount
 
-    env_base = _restricted_env(clone_dir)
-    if "ANTHROPIC_API_KEY" not in env_base:
+    env_base = _restricted_env(clone_dir, prefer_oauth=True)
+    oauth = bool(env_base.get(OAUTH_ENV_VAR))
+    if not oauth and "ANTHROPIC_API_KEY" not in env_base:
         raise RuntimeError(
-            "diagnose_gripe: ANTHROPIC_API_KEY is required to run claude -p "
-            "in the precis container (OAuth / keychain auth aren't reachable "
-            "from inside the container)."
+            "diagnose_gripe: no usable credential — set CLAUDE_CODE_OAUTH_TOKEN "
+            "(subscription auth, preferred) or ANTHROPIC_API_KEY in the secrets "
+            "vault. The container reaches neither the keychain nor an "
+            "interactive login, so one of the two must be passed in by key."
         )
+    if oauth:
+        _strip_ambient_project_config(clone_dir)
     # write axis is moot (mcp_config=None below — no MCP server, so no DB
     # reachable regardless); egress must stay reachable for the LLM call
     # itself. Mirrors fix_gripe._spawn_claude's envelope rationale.
@@ -241,7 +291,7 @@ def _spawn_claude(
     return call_claude_agent(
         prompt,
         model=model,
-        bare=True,
+        bare=not oauth,
         env_base=env_base,
         cwd=clone_dir,
         mounts=mounts,
