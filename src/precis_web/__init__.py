@@ -21,7 +21,9 @@ mutating route a CSRF target, with no cookie to mark ``SameSite``.
 ``PRECIS_WEB_AUTH=off`` disables the gate for local development only.
 ``/account``
 (``routes/account.py``) is the signed-in user's own page — password,
-profile, podcast link; roster management stays in the CLI.
+profile, and the podcast subscribe URL (shown whole, copyable: the row
+holds only the token's digest, so the readable copy comes from the
+vault); roster management stays in the CLI.
 
 Nav (template ``templates/base.html.j2``; badge counts
 ``nav.py::nav_badges``):

@@ -115,15 +115,42 @@ KDF needed). `precis users feed-token <login>` mints + prints the full
 feed URL; minting rotates, invalidating the old one. Everything else on
 the app requires Basic.
 
+The token is threaded into the `<atom:link rel=self>` **and every
+enclosure URL** the feed emits (`audio_feed.build_rss(credential=…)`) —
+the app fetches the audio later, in a request carrying no session and no
+reliable Basic support, so the credential has to live in the URLs the
+feed hands it. A *Basic*-authenticated feed request gets the caller's own
+token looked up and threaded the same way, so subscribing with the plain
+`/podcast/feed.xml` doesn't yield a feed whose episodes silently fail to
+download.
+
+**The plaintext is also vaulted** (`PRECIS_WEB_FEED_TOKEN:<login>`, via
+`precis.secrets`) so `/account` can show the URL again. The row keeps
+only the digest and that is still the *only* thing that authenticates —
+what the vault buys is that looking up your own subscribe URL doesn't
+require minting a new one, which would unsubscribe the phone that was
+already working. Vault values are pgcrypto ciphertext, so the
+"a logical dump is safe to share" guarantee behind §2b is unchanged. No
+vault (or a token minted before this) ⇒ `/account` says so and offers
+the only fix, a fresh link. `WebUser.has_feed_token` (derived column, not
+the digest) is what tells the page which of the three states it is in.
+
+**Known, accepted:** the row write and the vault write in
+`account.py::feed_token` aren't atomic, so two overlapping rotates (two
+tabs) can leave the row on B's digest and the vault on A's plaintext —
+`/account` then shows a URL that 401s until the next rotate. Reviewer
+finding, left unfixed: self-correcting, needs concurrent rotates by one
+person, and the fix is a transaction spanning two stores.
+
 ## 4a. `/account` — the signed-in user's own page
 
 Top-bar chip (the user's `abbrev`, far right) → `/account`. Three
 sections: **change password** (current password required — a browser
 holds Basic credentials for the life of the tab, so being authenticated
 says nothing about who is at the keyboard), **profile** (full name,
-email — display only), **podcast link** (mint/revoke; the plaintext token
-is rendered inline, never through a redirect, so it stays out of history
-and referrers).
+email — display only), **podcast link** (the subscribe URL shown whole
+with a copy button, plus mint/revoke; rendered inline, never through a
+redirect, so the token stays out of history and referrers).
 
 Roster management stays CLI-only: every account is fully authorized, so
 a web "add user" button would let one stolen credential become several.

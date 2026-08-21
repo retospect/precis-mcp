@@ -28,12 +28,20 @@ was peppered and the pepper cannot be resolved,
 :func:`verify_password` raises :class:`PepperUnavailable` rather than
 returning False — a lost pepper is an outage to fix, not a typo to
 retry.
+
+**Feed tokens** (the podcast ``?t=`` credential) are the other half of
+this module. They are 32 random bytes, so the row stores a bare SHA-256
+and that digest is the only thing that authenticates. The *plaintext* is
+additionally kept in the vault (:func:`remember_feed_token`) purely so
+``/account`` can show you your own subscribe URL — see there for why a
+write-only credential is the wrong shape for this one.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets as _stdlib_secrets
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +54,11 @@ if TYPE_CHECKING:
 #: :func:`precis.secrets.get_secret`, so an env var of the same name
 #: overrides (bootstrap / tests) before the DB vault is consulted.
 PEPPER_SECRET = "PRECIS_WEB_PASSWORD_PEPPER"
+
+log = logging.getLogger(__name__)
+
+#: Vault prefix for the plaintext podcast token, keyed by login.
+FEED_TOKEN_SECRET_PREFIX = "PRECIS_WEB_FEED_TOKEN:"
 
 #: Algo tags written into ``web_users.password_algo``.
 ALGO_PLAIN = "scrypt-v1"
@@ -88,6 +101,11 @@ class WebUser:
     last_login_at: datetime | None
     created_at: datetime | None
     updated_at: datetime | None
+    #: Whether ``feed_token_sha256`` is set. The digest itself never
+    #: leaves the store — only whether there is a live podcast link, so
+    #: ``/account`` knows the difference between "no link yet" and "a
+    #: link exists but this deployment can't read it back".
+    has_feed_token: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -260,9 +278,81 @@ def feed_token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def feed_token_secret_name(login: str) -> str:
+    """Vault name holding ``login``'s *plaintext* podcast token.
+
+    The colon is deliberate: :func:`precis.secrets.get_secret` lets an
+    environment variable of the same name win, and no shell exports a
+    name with a colon in it — so a per-user credential can't be shadowed
+    by a stray export.
+    """
+    return f"{FEED_TOKEN_SECRET_PREFIX}{normalize_login(login)}"
+
+
+def remember_feed_token(login: str, token: str, *, store: Store) -> bool:
+    """Keep the plaintext token so ``/account`` can show the URL again.
+
+    ``feed_token_sha256`` stays the *verification* path — nothing checks
+    this copy — so a stolen row still yields no working feed URL. This
+    exists only because the alternative is worse: with the digest alone,
+    the only way to see your own subscription URL is to mint a new one,
+    which silently unsubscribes the phone that was already working. A
+    credential you cannot read is a credential you rotate by accident.
+
+    The vault, not a column, because that is exactly the line
+    :mod:`precis.secrets` draws: vault values are pgcrypto ciphertext
+    under a passphrase a logical ``pg_dump`` structurally never emits, so
+    the "a dump is safe to share" promise the pepper rests on survives
+    unchanged. Returns False when the vault is unavailable — the token
+    itself is already stored and working, so this degrades to the old
+    show-once behaviour rather than failing the mint.
+    """
+    from precis import secrets as vault
+
+    try:
+        vault.set_secret(feed_token_secret_name(login), token, store=store)
+    except Exception:  # pragma: no cover - vault outage / not provisioned
+        log.warning("feed token for %s minted but not vaulted", login, exc_info=True)
+        return False
+    return True
+
+
+def recall_feed_token(login: str, *, store: Store) -> str | None:
+    """The stored plaintext token, or None if there isn't one to show."""
+    from precis import secrets as vault
+
+    try:
+        return vault.get_secret(feed_token_secret_name(login), store=store) or None
+    except Exception:  # pragma: no cover - vault outage
+        log.debug("feed token recall failed for %s", login, exc_info=True)
+        return None
+
+
+def forget_feed_token(login: str, *, store: Store) -> bool:
+    """Drop the stored plaintext — revoke, rotate-over, and delete-user.
+
+    Deleting a name that was never stored is a no-op in the vault, not an
+    error, so anything raising here is a real outage — and the caller has
+    just told someone their link is revoked. False means the plaintext is
+    still sitting there; say so rather than let it become a credential
+    nobody knows about.
+    """
+    from precis import secrets as vault
+
+    try:
+        vault.delete_secret(feed_token_secret_name(login), store=store)
+    except Exception:  # pragma: no cover - vault outage
+        log.warning(
+            "feed token for %s revoked but still in the vault", login, exc_info=True
+        )
+        return False
+    return True
+
+
 __all__ = [
     "ALGO_PEPPERED",
     "ALGO_PLAIN",
+    "FEED_TOKEN_SECRET_PREFIX",
     "MIN_PASSWORD_LENGTH",
     "PEPPER_SECRET",
     "PasswordRecord",
@@ -271,9 +361,13 @@ __all__ = [
     "burn_verify",
     "ensure_pepper",
     "feed_token_digest",
+    "feed_token_secret_name",
+    "forget_feed_token",
     "hash_password",
     "mint_feed_token",
     "normalize_login",
+    "recall_feed_token",
+    "remember_feed_token",
     "resolve_pepper",
     "validate_password",
     "verify_password",

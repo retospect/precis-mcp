@@ -133,15 +133,41 @@
 <h2 class="text-sm font-semibold text-slate-700 mb-2">Private podcast link</h2>
 <div class="rounded-lg border border-slate-200 bg-white px-4 py-4 max-w-2xl">
   {% if feed_url %}
-  <p class="text-xs text-slate-600 mb-2">Paste this into your podcast app:</p>
-  <input readonly value="{{ feed_url }}" onclick="this.select()"
-         class="w-full rounded border border-emerald-300 bg-emerald-50 px-2 py-1
-                text-xs font-mono text-slate-700 mb-3" />
+  <p class="text-xs text-slate-600 mb-2">
+    Paste this into your podcast app — it's your personal subscribe URL, and the
+    episode downloads carry the same token so they work off the phone.
+  </p>
+  <div class="flex items-center gap-2 mb-3">
+    <input id="feed-url" readonly value="{{ feed_url }}" onclick="this.select()"
+           class="flex-1 min-w-0 rounded border border-emerald-300 bg-emerald-50
+                  px-2 py-1 text-xs font-mono text-slate-700" />
+    <button type="button"
+            onclick="const i=document.getElementById('feed-url');
+                     i.select();
+                     (navigator.clipboard?navigator.clipboard.writeText(i.value)
+                      :Promise.reject()).catch(()=>document.execCommand('copy'));
+                     this.textContent='copied';
+                     setTimeout(()=>this.textContent='copy',1500);"
+            class="shrink-0 rounded border border-slate-300 text-xs px-2 py-1
+                   text-slate-600 hover:bg-slate-50 transition">copy</button>
+  </div>
+  <p class="text-[11px] text-slate-400 mb-3">
+    Anyone holding this URL can hear your episodes — it authenticates on its own,
+    which is the point (podcast apps handle HTTP Basic on enclosure downloads
+    inconsistently). Generate a new one to cut off a link you've shared or lost.
+  </p>
+  {% elif user.has_feed_token %}
+  <p class="text-xs text-amber-700 mb-3">
+    You have a live feed link, but this server can't read it back to show you —
+    it's stored hashed and the vault has no copy (minted before the vault
+    existed, or the vault isn't configured here). Generate a new one to get a
+    URL you can copy; the old link stops working when you do.
+  </p>
   {% else %}
   <p class="text-xs text-slate-500 mb-3">
     A personal feed URL carrying a token, because podcast apps handle HTTP Basic
-    on enclosure downloads inconsistently. The token is stored hashed, so an
-    existing link can't be shown again — only replaced.
+    on enclosure downloads inconsistently. Generate one and it stays here for you
+    to copy.
   </p>
   {% endif %}
   <div class="flex items-center gap-2">
@@ -149,13 +175,17 @@
       <input type="hidden" name="action" value="rotate" />
       <button type="submit"
               class="rounded bg-emerald-600 text-white text-xs px-3 py-1.5
-                     hover:bg-emerald-700 transition">Generate new link</button>
+                     hover:bg-emerald-700 transition">
+        {% if user.has_feed_token %}Generate new link{% else %}Generate link{% endif %}
+      </button>
     </form>
+    {% if user.has_feed_token %}
     <form method="post" action="/account/feed-token">
       <input type="hidden" name="action" value="revoke" />
       <button type="submit"
               class="text-xs text-slate-400 hover:text-rose-600 transition">revoke</button>
     </form>
+    {% endif %}
   </div>
 </div>
 {% endif %}

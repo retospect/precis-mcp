@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from precis import audio_feed as podcast
-from precis.users import feed_token_digest
+from precis.users import feed_token_digest, recall_feed_token
 from precis_web.config import WebConfig
 from precis_web.deps import get_web_config
 
@@ -41,9 +41,13 @@ router = APIRouter(tags=["podcast"])
 def _require_listener(request: Request, cfg: WebConfig) -> str | None:
     """Authorize a podcast request; return the feed token it presented.
 
-    Returns the ``?t=`` token when that is what authenticated the caller
-    (so the feed can thread it back into enclosure URLs), ``None`` when
-    Basic did or when auth is off entirely. Raises 401/503 exactly like
+    Returns the feed token to thread back into enclosure URLs, or
+    ``None`` when there is none to thread (auth off, or a Basic caller
+    whose token this deployment can't read back). A Basic caller gets
+    *their own* token looked up: subscribing by pasting the plain
+    ``/podcast/feed.xml`` into an app that does send Basic would
+    otherwise yield a feed whose enclosures carry no credential, and the
+    episodes would silently fail to download. Raises 401/503 exactly like
     the middleware otherwise.
     """
     from precis_web.auth import (
@@ -81,7 +85,7 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
             headers={"WWW-Authenticate": 'Basic realm="precis"'},
         )
     try:
-        authenticate(store, creds[0], creds[1])
+        user = authenticate(store, creds[0], creds[1])
     except AuthError as exc:
         headers = (
             {"WWW-Authenticate": 'Basic realm="precis"'} if exc.challenge else None
@@ -89,7 +93,9 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
         raise HTTPException(
             status_code=exc.status, detail=exc.detail, headers=headers
         ) from exc
-    return None
+    if not user.has_feed_token:
+        return None
+    return recall_feed_token(user.login, store=store)
 
 
 def _base_url(request: Request, cfg: WebConfig) -> str:

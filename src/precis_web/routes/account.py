@@ -10,11 +10,11 @@ Three things live here today:
 
 * **Change password** — the only self-service credential path there is.
 * **Profile** — full name and email, both display-only fields.
-* **Podcast feed link** — mint or revoke the per-user ``?t=`` token.
-  Web-only by necessity: the plaintext token exists for exactly one
-  moment (:func:`precis.users.mint_feed_token` stores only its digest),
-  and reading it off a terminal you SSH'd into is not how you get a URL
-  onto a phone.
+* **Podcast feed link** — the subscribe URL, shown whole so it can be
+  copied into a podcast app, plus mint/revoke. The row stores only the
+  token's digest, so the readable copy comes from the vault
+  (:func:`precis.users.recall_feed_token`); when the vault can't produce
+  one, the page falls back to "mint to see a link".
 
 **Changing your password signs you out, and that is not a bug.** HTTP
 Basic has no session to re-issue: the browser holds the old credential
@@ -50,8 +50,11 @@ from precis.users import (
     MIN_PASSWORD_LENGTH,
     PepperUnavailable,
     WebUser,
+    forget_feed_token,
     hash_password,
     mint_feed_token,
+    recall_feed_token,
+    remember_feed_token,
     resolve_pepper,
     validate_password,
     verify_password,
@@ -105,8 +108,21 @@ def _render(
     user: WebUser | None,
     error: str = "",
     notice: str = "",
-    feed_url: str = "",
+    feed_url: str | None = None,
 ) -> HTMLResponse:
+    """Render the page, looking the feed URL up unless one was passed.
+
+    ``feed_url=None`` means "work it out" — only the mint path passes one
+    explicitly, because that token isn't readable back until the vault
+    write it just did. Defaulting to ``""`` instead would mean every
+    error re-render (wrong current password, mismatched confirm, bad
+    email) silently dropped the URL, and the template reads a missing URL
+    on a user who *has* a token as "the vault can't read your link,
+    generate a new one" — advice that would kill a working subscription
+    because someone mistyped a password.
+    """
+    if feed_url is None:
+        feed_url = _feed_url(request, user) if user else ""
     return templates.TemplateResponse(
         request,
         "account/index.html.j2",
@@ -119,6 +135,10 @@ def _render(
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
+        # The body carries a live credential on every render now, not
+        # just after minting. Same rule the other sensitive dynamic
+        # routes use — keep it out of the disk and back-forward caches.
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -136,12 +156,10 @@ async def index(request: Request, changed: str = "", saved: str = "") -> HTMLRes
     if changed:
         notice = "Password changed — this page loaded with the new one."
     elif saved:
-        notice = "Profile saved."
-    return _render(
-        request,
-        user=_fresh(request, user) if user else None,
-        notice=notice,
-    )
+        notice = "Saved."
+    if user is None:
+        return _render(request, user=None, notice=notice)
+    return _render(request, user=_fresh(request, user), notice=notice)
 
 
 @router.post("/password")
@@ -216,25 +234,62 @@ async def feed_token(request: Request, action: str = Form("rotate")) -> Response
 
     The minted URL is rendered inline rather than passed through a
     redirect: a token in a redirect target lands in browser history, the
-    address bar, and any referrer that follows.
+    address bar, and any referrer that follows. Revoking clears both the
+    row digest (which is what authenticates) and the vault copy (which is
+    only what makes the link readable) — leaving either behind is a
+    credential nobody knows is still there.
     """
     user = _require_self(request)
     store = get_store(request)
     if action == "revoke":
         store.set_web_user_feed_token(user.login, None)
+        if not forget_feed_token(user.login, store=store):
+            # The link is dead either way — the digest is what
+            # authenticates — but the plaintext outliving it is the exact
+            # leftover this feature is supposed not to create.
+            return _render(
+                request,
+                user=_fresh(request, user),
+                error=(
+                    "Link revoked, but the stored copy of the token could not "
+                    "be deleted — the vault didn't answer. It no longer works; "
+                    "check the precis-web log."
+                ),
+            )
         return RedirectResponse("/account?saved=1", status_code=303)
 
     token, digest = mint_feed_token()
     store.set_web_user_feed_token(user.login, digest)
+    vaulted = remember_feed_token(user.login, token, store=store)
+    notice = "New feed link — any previous one stopped working."
+    if not vaulted:
+        notice += (
+            " Copy it now: this deployment has no vault, so it can't be shown again."
+        )
     return _render(
         request,
-        user=user,
+        # Re-read: the row now has a digest, which is what the template
+        # keys "revoke" and "generate *new*" off.
+        user=_fresh(request, user),
         feed_url=f"{_base_url(request)}/podcast/feed.xml?t={token}",
-        notice=(
-            "New feed link — copy it now, it isn't stored and can't be "
-            "shown again. Any previous link stopped working."
-        ),
+        notice=notice,
     )
+
+
+def _feed_url(request: Request, user: WebUser) -> str:
+    """The subscribe URL, or "" when there is no readable token.
+
+    Guarded on ``feed_token_sha256``: the row is what decides whether a
+    link is live, and a vault entry can outlive it (``precis users
+    feed-token --clear`` on an older build wrote only the row). Showing a
+    URL that 401s would be worse than showing none.
+    """
+    if not user.has_feed_token:
+        return ""
+    token = recall_feed_token(user.login, store=get_store(request))
+    if not token:
+        return ""
+    return f"{_base_url(request)}/podcast/feed.xml?t={token}"
 
 
 def _base_url(request: Request) -> str:

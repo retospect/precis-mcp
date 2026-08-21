@@ -12,6 +12,8 @@ point of most of these is what happens to the *stored* row.
 from __future__ import annotations
 
 import base64
+import os
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +38,7 @@ GOOD = "correct-horse"
 NEW = "battery-staple-9"
 
 
-def _user(login: str = "reto") -> WebUser:
+def _user(login: str = "reto", *, has_feed_token: bool = False) -> WebUser:
     return WebUser(
         id=1,
         login=login,
@@ -47,6 +49,7 @@ def _user(login: str = "reto") -> WebUser:
         last_login_at=None,
         created_at=None,
         updated_at=None,
+        has_feed_token=has_feed_token,
     )
 
 
@@ -94,6 +97,9 @@ class FakeStore:
 
     def set_web_user_feed_token(self, login: str, digest: str | None) -> bool:
         self.feed_digest = digest
+        # Mirror the real column: ``has_feed_token`` is derived from the
+        # digest's presence, and /account keys its buttons off a re-read.
+        self.user = replace(self.user, has_feed_token=digest is not None)
         return True
 
 
@@ -106,6 +112,32 @@ def _client(store: FakeStore, **cfg_kw) -> TestClient:
 def _auth(password: str = GOOD, login: str = "reto") -> dict[str, str]:
     raw = base64.b64encode(f"{login}:{password}".encode()).decode()
     return {"Authorization": f"Basic {raw}"}
+
+
+@pytest.fixture(autouse=True)
+def vault(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """An in-memory stand-in for :mod:`precis.secrets`.
+
+    Patched at the module the helpers import, so the real
+    ``remember/recall/forget_feed_token`` code runs — the thing under
+    test is that wiring, not psycopg. Env wins first, exactly as
+    ``get_secret`` does, so the pepper tests keep working.
+    """
+    from precis import secrets as vault_mod
+
+    box: dict[str, str] = {}
+
+    def _get(name, *, store=None, default=None):
+        return os.environ.get(name) or box.get(name) or default
+
+    monkeypatch.setattr(vault_mod, "get_secret", _get)
+    monkeypatch.setattr(
+        vault_mod, "set_secret", lambda n, v, *, store: box.__setitem__(n, v)
+    )
+    monkeypatch.setattr(
+        vault_mod, "delete_secret", lambda n, *, store: box.pop(n, None)
+    )
+    return box
 
 
 @pytest.fixture(autouse=True)
@@ -252,7 +284,7 @@ def test_profile_rejects_a_non_address() -> None:
 # ── podcast token ────────────────────────────────────────────────────
 
 
-def test_feed_token_is_shown_once_and_works() -> None:
+def test_feed_token_is_minted_and_works() -> None:
     store = FakeStore()
     client = _client(store)
     r = client.post("/account/feed-token", data={"action": "rotate"}, headers=_auth())
@@ -263,10 +295,30 @@ def test_feed_token_is_shown_once_and_works() -> None:
     assert client.get(f"/podcast/feed.xml?t={token}").status_code == 200
 
 
-def test_feed_token_revoke_clears_it() -> None:
+def test_the_feed_url_is_still_there_on_the_next_visit() -> None:
+    """The reason the plaintext is vaulted at all.
+
+    Show-once meant the only way to see your subscribe URL was to mint a
+    new one — which unsubscribes the phone that was already working.
+    """
     store = FakeStore()
-    store.feed_digest = "deadbeef"
-    r = _client(store).post(
+    client = _client(store)
+    minted = client.post(
+        "/account/feed-token", data={"action": "rotate"}, headers=_auth()
+    )
+    token = minted.text.split("/podcast/feed.xml?t=")[1].split('"')[0]
+
+    later = client.get("/account", headers=_auth())
+    assert f"/podcast/feed.xml?t={token}" in later.text
+
+
+def test_feed_token_revoke_clears_the_row_and_the_vault(vault) -> None:
+    store = FakeStore()
+    client = _client(store)
+    client.post("/account/feed-token", data={"action": "rotate"}, headers=_auth())
+    assert vault  # the plaintext was stored
+
+    r = client.post(
         "/account/feed-token",
         data={"action": "revoke"},
         headers=_auth(),
@@ -274,6 +326,78 @@ def test_feed_token_revoke_clears_it() -> None:
     )
     assert r.status_code == 303
     assert store.feed_digest is None
+    # A readable credential left behind for a link nobody can use is the
+    # kind of leftover that outlives the person who forgot about it.
+    assert vault == {}
+    assert "/podcast/feed.xml?t=" not in client.get("/account", headers=_auth()).text
+
+
+def test_a_live_link_the_vault_cant_read_says_so() -> None:
+    """Minted before the vault (or on a deployment without one).
+
+    The row still authenticates it, so the page must not claim there is
+    no link — it has to offer the only fix there is, which is a new one.
+    """
+    store = FakeStore()
+    store.user = _user(has_feed_token=True)
+    store.feed_digest = "deadbeef"
+    body = _client(store).get("/account", headers=_auth()).text
+    assert "can&#39;t read it back" in body or "can't read it back" in body
+    assert "/podcast/feed.xml?t=" not in body
+
+
+def test_a_basic_authenticated_feed_still_carries_the_token() -> None:
+    """Subscribing with the bare feed URL must not yield tokenless audio.
+
+    A podcast app that *does* send Basic on the feed request often won't
+    on the enclosure fetch, so the credential has to be inside the URLs
+    the feed hands out either way.
+    """
+    store = FakeStore()
+    client = _client(store)
+    minted = client.post(
+        "/account/feed-token", data={"action": "rotate"}, headers=_auth()
+    )
+    token = minted.text.split("/podcast/feed.xml?t=")[1].split('"')[0]
+
+    feed = client.get("/podcast/feed.xml", headers=_auth())
+    assert feed.status_code == 200
+    assert f"?t={token}" in feed.text
+
+
+def test_a_rejected_form_doesnt_read_as_a_lost_feed_link() -> None:
+    """Mistyping a password must not look like "your podcast link is gone".
+
+    The template reads *no URL on a user who has a token* as "this server
+    can't show it — generate a new one". If an error re-render dropped
+    the URL, a typo would talk the user into killing a subscription that
+    was working fine.
+    """
+    store = FakeStore()
+    client = _client(store)
+    minted = client.post(
+        "/account/feed-token", data={"action": "rotate"}, headers=_auth()
+    )
+    token = minted.text.split("/podcast/feed.xml?t=")[1].split('"')[0]
+
+    rejected = client.post(
+        "/account/password",
+        data={
+            "current_password": "not-the-password",
+            "new_password": NEW,
+            "confirm_password": NEW,
+        },
+        headers=_auth(),
+    )
+    assert rejected.status_code == 200
+    assert "Current password is not correct." in rejected.text
+    assert f"/podcast/feed.xml?t={token}" in rejected.text
+
+
+def test_the_account_page_is_never_cached() -> None:
+    """It carries a live credential in the body on every render now."""
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert r.headers["cache-control"] == "no-store"
 
 
 # ── auth off ─────────────────────────────────────────────────────────

@@ -27,7 +27,10 @@ from precis.users import PasswordRecord, WebUser, normalize_login
 
 _USER_COLS = (
     "id, login, abbrev, full_name, email, disabled_at, "
-    "last_login_at, created_at, updated_at"
+    "last_login_at, created_at, updated_at, "
+    # Presence, never the digest: callers decide whether a podcast link
+    # exists, and nothing outside this module needs the hash itself.
+    "(feed_token_sha256 IS NOT NULL) AS has_feed_token"
 )
 
 
@@ -42,6 +45,7 @@ def _row_to_user(row: tuple[Any, ...]) -> WebUser:
         last_login_at=row[6],
         created_at=row[7],
         updated_at=row[8],
+        has_feed_token=bool(row[9]),
     )
 
 
@@ -102,9 +106,9 @@ class WebUsersMixin:
         if not row:
             return None
         record = PasswordRecord(
-            password_hash=str(row[9]),
-            password_salt=str(row[10]),
-            password_algo=str(row[11]),
+            password_hash=str(row[10]),
+            password_salt=str(row[11]),
+            password_algo=str(row[12]),
         )
         return _row_to_user(row), record
 

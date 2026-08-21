@@ -48,6 +48,16 @@ from precis.cli._common import resolve_dsn
 if TYPE_CHECKING:
     from precis.store import Store
 
+#: Printed when the row-side revoke worked but the vault delete didn't.
+#: The link is dead regardless — the digest is what authenticates — but a
+#: readable token nobody is tracking is exactly what this is meant to
+#: avoid, so it must not scroll past as a success.
+_STRANDED_TOKEN = (
+    "\nwarning: the vault copy of {login}'s feed token could not be deleted. "
+    "The link no longer works, but the plaintext is still stored as "
+    "PRECIS_WEB_FEED_TOKEN:{login} — remove it once the vault is reachable."
+)
+
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     parser = sub.add_parser("users", help="Manage precis-web login accounts.")
@@ -248,24 +258,40 @@ def _toggle(args: argparse.Namespace, store: Store, *, disabled: bool) -> None:
 
 
 def _rm(args: argparse.Namespace, store: Store) -> None:
+    from precis.users import forget_feed_token
+
     if not store.delete_web_user(args.login):
         raise SystemExit(f"error: no such user {args.login!r}")
+    # The row is gone, so the digest that authenticated the podcast link
+    # is too; drop the vault copy in the same breath rather than leaving
+    # a readable credential for a user who no longer exists.
+    forgot = forget_feed_token(args.login, store=store)
     print(f"deleted {args.login}")
+    if not forgot:
+        print(_STRANDED_TOKEN.format(login=args.login), file=sys.stderr)
 
 
 def _feed_token(args: argparse.Namespace, store: Store) -> None:
     import os
 
-    from precis.users import mint_feed_token
+    from precis.users import forget_feed_token, mint_feed_token, remember_feed_token
 
     if args.clear:
         if not store.set_web_user_feed_token(args.login, None):
             raise SystemExit(f"error: no such user {args.login!r}")
+        forgot = forget_feed_token(args.login, store=store)
         print(f"feed token revoked for {args.login}")
+        if not forgot:
+            print(_STRANDED_TOKEN.format(login=args.login), file=sys.stderr)
         return
     token, digest = mint_feed_token()
     if not store.set_web_user_feed_token(args.login, digest):
         raise SystemExit(f"error: no such user {args.login!r}")
+    # Vault the plaintext so /account can show this same URL later. The
+    # CLI prints it here either way; what the vault buys is that the user
+    # never has to re-mint (and unsubscribe their phone) just to look it
+    # up again.
+    vaulted = remember_feed_token(args.login, token, store=store)
     base = (args.base_url or os.environ.get("PRECIS_PODCAST_BASE_URL") or "").rstrip(
         "/"
     )
@@ -274,6 +300,12 @@ def _feed_token(args: argparse.Namespace, store: Store) -> None:
     )
     print("Subscribe to this URL in the podcast app (any previous one is now dead):")
     print(url)
+    if not vaulted:
+        print(
+            "\nnot stored in the vault — /account won't be able to show this "
+            "link again, so keep a copy",
+            file=sys.stderr,
+        )
     if not base:
         print(
             "\nno origin known — prefix it with the tailscale-served host, or set "
