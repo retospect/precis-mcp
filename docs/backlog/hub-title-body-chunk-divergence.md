@@ -18,6 +18,48 @@ Measured 2026-08-19 over the live claim cohort (`kind='finding'` +
 Found while picking an exemplar hub, not by any check — nothing in the
 codebase compares the two.
 
+## APPLIED 2026-08-21 — 42 repaired on prod, 3 held
+
+Ran against `precis_prod` (Reto authorized the writes), via
+`~/precis-experiments/taproot-divergence-45-2026-08-21/repair.py` — a one-off,
+**not** a `lint --fix` arm, since the "never wire this into `--fix`" directive
+below is about who makes the call, and this run is that call made once for one
+measured cohort.
+
+Result: **42 repaired, 0 failed.** Corpus-wide strict divergence went
+45 → **3**, and the 3 remaining are exactly the held-back rows
+(fi190976, fi191129, fi191134). Each repaired hub now has one live `ord=0`
+`finding_body` chunk whose text equals `refs.title`.
+
+### Every one of the 42 moved its `pub_id` — which is a *correction*, not churn
+
+Predicted zero: `refine_claim_sentence` was called with the hub's existing
+title, so the sentence input to `make_taproot_hub_paper_id` was unchanged.
+All 42 nonetheless inserted a new `pub_id` row. The reason is the divergence
+itself — the stored `pub_id` was minted from the *original* sentence, the one
+that still matches the **body**; the title drifted afterwards via `approve()`'s
+old direct-write door. So the identity of a diverged hub tracked neither
+current string, exactly as this document's opening section warned, and
+re-deriving it from the repaired sentence is the fix rather than a side effect.
+
+Old `pub_id` rows are **kept as aliases** (the door's contract — draft prose
+citing `[<old pub_id>]` keeps resolving); hubs now carry 2–4 `pub_id` rows.
+Nothing is published, so this was free to do now. It also means step 5 of
+`nanopub-corpus-remediation.md` (`pub_id` re-hash) is already done for these 42.
+
+### Transient: the 42 have no body embedding until the embedder catches up
+
+`replace_body_chunk` is DELETE+INSERT, so each repaired hub's new chunk starts
+with no embedding — all 42 confirmed awaiting one. Until the pass reaches them,
+their ANN blocking entry is *absent* rather than *wrong*, which is a temporary
+regression in dedup recall for those hubs specifically. The corpus-wide
+unembedded backlog was 182,860 chunks at the time of the run, with the embedder
+alive and doing ~800/hour in passes — so this is not instant. Re-check before
+trusting a dedup sweep over these 42.
+
+Snapshots for reversal: `before-snapshot.json` (prior body text + `pub_id`s per
+hub) and `apply-result.json` in the same directory.
+
 ## Re-measured strict 2026-08-21 — it is 45, and there is only one cohort
 
 The count above used `kind='finding'` + `TAPROOT:claim`, which sweeps in the
