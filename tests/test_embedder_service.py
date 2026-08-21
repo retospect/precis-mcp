@@ -298,7 +298,15 @@ def test_probe_treats_lock_contention_as_healthy_not_a_failure() -> None:
         max_inflight=4,
         warm=True,
         probe_interval_s=1000.0,
-        probe_timeout_s=0.2,
+        # NOT a token budget: _run_probe_once waits `probe_timeout_s * 1.5`
+        # for a probe thread that spends the first `probe_timeout_s` blocked
+        # in acquire() before it can record "contended" — so the slack for
+        # thread scheduling is only half this value. At 0.2s that left 0.1s,
+        # under macOS CI jitter, and a late thread reads as a hung wedge and
+        # flips `ready` (the failure this test then reports). The production
+        # default is 20.0s, i.e. 10s of slack, so this margin is a test-config
+        # artifact rather than anything the service gets wrong.
+        probe_timeout_s=1.0,
         probe_fail_threshold=1,  # even 1 tick would flip it if miscounted
     )
     try:
