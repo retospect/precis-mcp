@@ -25,7 +25,13 @@ codebase compares the two.
 - semantic search and `view='toc'` match against text no human reads;
 - the ANN blocking step in `taproot/canon.py::block` — the first stage of the
   dedup cascade — compares the *chunk*, so two hubs whose titles are near
-  identical can fail to block if their chunks diverged, and vice versa;
+  identical can fail to block if their chunks diverged, and vice versa.
+  **This got sharper on 2026-08-20**, when `block()` was repointed from the
+  `card_combined` card (`ord=-1`, 12% coverage) to `finding_body` (`ord=0`,
+  100%) — see `claim-hub-dedup-sweep.md`. Coverage went to 100%, but for these
+  297 the string it now reliably retrieves is the *wrong* one. Fixing coverage
+  promoted divergence from a latent defect to the live limiter on dedup
+  precision, which is why this sequences ahead of the sweep;
 - the corpus lint triage in `nanopub-corpus-remediation.md` ran over
   `refs.title`, so for one hub in five its verdict describes a different
   string than the one search sees.
@@ -60,9 +66,33 @@ A writer that updates `refs.title` without going through
 `taproot/hub.py::refine_claim_sentence`, which is the only door that updates
 all three sites (title, `ord=0` chunk, `pub_id`) in one transaction. The
 generic `store/_refs_ops.py::replace_ref_text` is not the culprit — it is
-reachable only from `handlers/quest.py` and `handlers/todo.py`. The
-regrounding pass is the likely August writer; identify it before repairing,
-or the repair re-diverges on the next run.
+reachable only from `handlers/quest.py` and `handlers/todo.py`.
+
+### Swept 2026-08-21 — no live bypassing writer remains
+
+The regrounding pass was the standing suspect. It is not the writer *now*:
+`taproot/reground.py` contains no reference to `title` at all. Swept the rest
+of the hub-writing surface, and every remaining path either routes through the
+door or never touches a hub title:
+
+| path | verdict |
+|---|---|
+| `taproot/reground.py` | no `title` reference at all |
+| `store/_blocks_ops.py::set_ref_title` | bare title UPDATE, no chunk sync — but called **only** from `handlers/memory.py`, never a hub |
+| `taproot/{apply_migrate,backfill,directed}.py` | only ever set *todo* titles (review-merge tasks) |
+| `workers/hub_refine.py` | reads title, computes `claim_sha`; writes via the door |
+| `cli/taproot.py`, `nanopub/mint.py` | call `refine_claim_sentence` explicitly |
+
+The August cohort is most likely residue of `approve()`'s title-override door,
+which wrote titles directly until it was routed through `refine_claim_sentence`
+on 2026-08-20 (see `acquisition-marker-lives-in-the-wrong-place.md`, "How it
+surfaced"). That door is fixed.
+
+**Consequence: work item 1 is closed and the repair is no longer temporary.**
+A cohort repair run now will not re-diverge. Note this is a point-in-time
+sweep, not a structural guarantee — `set_ref_title` still exists as an
+unsynced title writer one import away from a hub path, and nothing fails
+loudly if a future caller reaches for it.
 
 ## The body is internal — it is never published
 
@@ -77,7 +107,21 @@ gate. Nothing about it is externally visible. This is what makes the
 "one authored sentence, reassembly on export" design safe — see
 `nanopub-corpus-remediation.md`.
 
-### Precondition: migrate the 6 acquisition markers first
+### Precondition: migrate the 6 acquisition markers first — now one command
+
+**Status 2026-08-21: built, not yet run on prod.** The structural replacement
+shipped 2026-08-20 — `gates.check_primary_source` now has three structural arms
+(`derived` / `awaiting` / `declared`) ahead of the prose one, and the migration
+off prose is a dry-run-by-default backfill:
+
+```
+precis nanopub backfill-unheld            # dry run: lists the hubs + matched marker
+precis nanopub backfill-unheld --apply    # stamp meta.primary_source_unheld
+```
+
+Its empty listing **is** the retirement test. Full detail and the teardown list
+in `acquisition-marker-lives-in-the-wrong-place.md`. Everything below records
+why the precondition exists.
 
 The hearsay gate reads `body` **because** it currently differs from `title` —
 its own comment says "title alone misses the harvester's 'not in corpus'
@@ -105,7 +149,8 @@ than today — `ACQUISITION_MARKER` is a regex over free text
 
 ## Work
 
-1. **Find and fix the writer.** Until then any repair is temporary.
+1. ~~**Find and fix the writer.**~~ **Done 2026-08-21** — swept, no live
+   bypassing writer remains (see above). The repair is no longer temporary.
 2. **Repair per cohort**, not globally: August → chunk from title, June →
    title from body. Re-derive `pub_id` after, and re-run the duplicate scan,
    since collapsing divergence can surface hidden duplicates (this already
