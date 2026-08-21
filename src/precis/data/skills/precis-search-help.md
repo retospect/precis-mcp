@@ -2,6 +2,12 @@
 id: precis-search-help
 title: precis — the search verb (mechanics, pagination, filters)
 summary: hybrid lexical and semantic search — pagination, tag filters, scope, exclude, cross-kind fan-out
+answers:
+  - how do I search for exact text instead of a fuzzy match?
+  - how do I filter search results by tag?
+  - how do I search inside just one ref instead of the whole corpus?
+  - how do I run a broad, high-recall search across many papers?
+  - how do I paginate through search results?
 applies-to: search (every kind that supports it)
 status: active
 ---

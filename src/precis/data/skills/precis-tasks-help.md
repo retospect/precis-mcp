@@ -2,6 +2,12 @@
 id: precis-tasks-help
 title: precis — hierarchical task tree (strategic / tactical / subtask)
 summary: the todo tree — strategic/tactical/subtask levels, doable rotation, halt/ask-user yielding
+answers:
+  - how do I add a strategic root or a project?
+  - how do I split a task into subtasks?
+  - what's the dashboard view for my project's tree?
+  - I'm stuck on a leaf — how do I decompose it?
+  - how do I attach a longer spec or acceptance criteria to a todo?
 applies-to: get/search/put/delete/tag/link (kind='todo'; tree views)
 status: active
 ---

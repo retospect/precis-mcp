@@ -34,6 +34,7 @@ from precis.cli import (
     draft,
     email,
     enrich_openalex,
+    eval_cmd,
     fetch_openalex,
     fix_metadata,
     gripe,
@@ -284,6 +285,10 @@ def main() -> None:
         sim.run(args)
         return
 
+    if args.cmd == "eval":
+        eval_cmd.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -373,6 +378,7 @@ def _build_parser() -> argparse.ArgumentParser:
     taproot_migrate.add_parser(sub)
     email.add_parser(sub)
     sim.add_parser(sub)
+    eval_cmd.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)

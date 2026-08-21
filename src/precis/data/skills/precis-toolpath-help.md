@@ -2,6 +2,12 @@
 id: precis-toolpath-help
 title: precis — canonical call sequences per scenario
 summary: toolpaths — the canonical get/search/put/edit/tag/link sequence for each common goal, with the skill to read for depth
+answers:
+  - I know what I want to accomplish but not which verbs to call — where do I start?
+  - what's the call sequence to mint a claim hub?
+  - how do I run an async paper-search campaign?
+  - how do I wire a job under a todo?
+  - a search(kind='skill') reply looks like an error — should I reword the query?
 applies-to: all
 status: active
 ---

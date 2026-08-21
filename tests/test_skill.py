@@ -701,6 +701,108 @@ def test_search_omits_escalation_line_when_all_matches_wired(
     assert "Also matched in unwired skills:" not in out.body
 
 
+def test_semantic_row_question_only_uses_skill_title_anchor() -> None:
+    """A ``question_only`` hit has no heading of its own (it matched a
+    front-matter question, not any one H2 section) — its display
+    anchor is the skill's title so the row reads as "this skill", not
+    a blank/empty section cell."""
+    from precis.handlers.skill import _semantic_row, _skill_title
+    from precis.skill_index import SearchHit
+
+    hit = SearchHit(
+        slug="precis-overview",
+        chunk_idx=9,
+        heading="",
+        score=0.9,
+        snippet="top-level orientation",
+        variant="question_only",
+    )
+    row = _semantic_row(hit)
+    assert row.section == _skill_title("precis-overview")
+    assert row.section != ""
+
+
+def test_semantic_row_heading_only_uses_its_own_heading_anchor() -> None:
+    """A ``heading_only`` hit already carries the right heading text —
+    it *is* the heading — so it needs no special-casing."""
+    from precis.handlers.skill import _semantic_row
+    from precis.skill_index import SearchHit
+
+    hit = SearchHit(
+        slug="precis-overview",
+        chunk_idx=3,
+        heading="Verb cheat-sheet",
+        score=0.9,
+        snippet="Verb cheat-sheet",
+        variant="heading_only",
+    )
+    row = _semantic_row(hit)
+    assert row.section == "Verb cheat-sheet"
+
+
+def test_semantic_search_distinct_section_count_skips_twin_variants(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``more`` column counts additional matching *sections* for a
+    slug. A ``body_only``/``heading_only``/``question_only`` hit is an
+    embedding-surface affordance, not a distinct section, so none of
+    them may inflate the count — extending the pre-existing
+    ``body_only`` exclusion to the v4 variants."""
+    from precis.skill_index import SearchHit
+
+    slug = "precis-overview"
+    hits = [
+        SearchHit(
+            slug=slug,
+            chunk_idx=0,
+            heading="A",
+            score=0.9,
+            snippet="s",
+            variant="structural",
+        ),
+        SearchHit(
+            slug=slug,
+            chunk_idx=1,
+            heading="B",
+            score=0.8,
+            snippet="s",
+            variant="structural",
+        ),
+        SearchHit(
+            slug=slug,
+            chunk_idx=2,
+            heading="B",
+            score=0.7,
+            snippet="s",
+            variant="body_only",
+        ),
+        SearchHit(
+            slug=slug,
+            chunk_idx=3,
+            heading="B",
+            score=0.6,
+            snippet="s",
+            variant="heading_only",
+        ),
+        SearchHit(
+            slug=slug,
+            chunk_idx=4,
+            heading="",
+            score=0.5,
+            snippet="s",
+            variant="question_only",
+        ),
+    ]
+    monkeypatch.setattr(skill, "_semantic_hits", lambda q, *, page_size: hits)
+
+    out = skill.search(q="zzzznonexistentqueryzzzz")
+    rows = [ln for ln in out.body.splitlines() if ln.startswith(f"{slug}\t")]
+    assert rows, f"expected a {slug} row; got body:\n{out.body}"
+    # Two structural hits for this slug → one *additional* beyond the
+    # row shown → "+1", not "+3" (which double-counts the three twins).
+    assert "+1" in rows[0], rows[0]
+
+
 def test_search_emits_more_column(skill: SkillHandler) -> None:
     """The result table carries a ``more`` column counting additional
     semantic H2 hits per slug (``+N`` / ``.``) — mirrors the

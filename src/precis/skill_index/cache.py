@@ -12,7 +12,7 @@ Format:
         "embedder_model": "...",
         "chunker_version": 1,
         "chunks": [
-            {"heading": "...", "text": "...", "embedding": [...]},
+            {"heading": "...", "text": "...", "embedding": [...], "variant": "structural"},
             ...
         ]
     }
@@ -57,16 +57,23 @@ class CachedChunk:
     in-memory index can rebuild itself from disk without re-reading
     the source file when nothing is stale.
 
-    ``body_only`` mirrors :class:`~precis.skill_index.chunker.Chunk` —
-    a v3 heading-stripped twin. Persisted so the TOC adapter can
-    filter twins back out and align the structural chunks 1:1 with a
-    fresh structural-only chunking.
+    ``variant`` mirrors :class:`~precis.skill_index.chunker.Chunk` —
+    ``"structural"`` for a normal per-heading chunk, else one of the
+    v3/v4 twins (``body_only`` / ``heading_only`` / ``question_only``).
+    Persisted so the TOC adapter can filter twins back out and align
+    the structural chunks 1:1 with a fresh structural-only chunking.
+    ``body_only`` is a read-only convenience view (True for every
+    non-structural variant) so existing filters don't need to change.
     """
 
     heading: str
     text: str
     embedding: list[float]
-    body_only: bool = False
+    variant: str = "structural"
+
+    @property
+    def body_only(self) -> bool:
+        return self.variant != "structural"
 
 
 @dataclass
@@ -162,7 +169,7 @@ class EmbeddingCache:
                     heading=str(c["heading"]),
                     text=str(c["text"]),
                     embedding=[float(x) for x in c["embedding"]],
-                    body_only=bool(c.get("body_only", False)),
+                    variant=str(c.get("variant", "structural")),
                 )
                 for c in chunks_raw
             ]

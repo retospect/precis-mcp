@@ -352,8 +352,92 @@ mcp: FastMCP = FastMCP("precis-mcp", instructions=_INSTRUCTIONS)
 # ---------------------------------------------------------------------------
 
 
+#: ``PRECIS_MCP_PROFILE`` values. ``typed`` (default) is the
+#: eight-tool surface this file has always registered — unchanged.
+#: ``command`` collapses it into the single ``precis(command, text=
+#: None)`` tool parsed by :mod:`precis.tools.command_parser` — see
+#: the :mod:`precis.tools.command_parser` docstring. Read once at import time
+#: (module-level tool registration already runs at import time), so
+#: the env var must be set before ``precis serve`` imports this
+#: module.
+_MCP_PROFILE_ENV = "PRECIS_MCP_PROFILE"
+_COMMAND_EXAMPLE = "get(kind='skill', id='toc')"
+
+# Kept terse (~150-200 tokens): the whole point of the command profile
+# is a frozen, tiny standing schema. Teaches the call syntax, the
+# text= escape hatch for large bodies, and the two discovery
+# entrypoints — everything else lives in skills.
+_COMMAND_TOOL_DESCRIPTION = (
+    "Execute one precis verb call. `command` is a single call with "
+    f"keyword args only, e.g. {_COMMAND_EXAMPLE} — values must be "
+    "literals (str/int/float/bool/None/list/dict/tuple), no "
+    "expressions, no positional args. Verbs: get/search/put/edit/"
+    "delete/tag/link/more; kind= is the discriminator. Put a large "
+    "body in the separate `text=` param instead of quoting it inside "
+    "`command` (avoids escaping): "
+    "command=\"put(kind='memory', mode='create')\", text='...'. "
+    "Discover: search(kind='skill', q='<goal>') | "
+    "get(kind='skill', id='toc'). Build/sha/DB: "
+    "get(kind='skill', id='precis-status')."
+)
+
+
+def _mcp_profile() -> str:
+    return os.environ.get(_MCP_PROFILE_ENV, "typed")
+
+
+def precis(command: str, text: str | None = None) -> Any:
+    """Execute one precis verb call parsed from ``command``.
+
+    Parses via :func:`precis.tools.command_parser.parse_command` and
+    routes into ``TOOL_REGISTRY[verb]['func'](**kwargs)`` — the exact
+    function the typed profile registers as its own tool, so
+    validation, reserved-arg checks, error rendering and ``Next:``
+    hints are byte-identical between profiles. A parse failure (bad
+    syntax, unregistered verb, non-literal value, ambiguous ``text=``)
+    or an unknown/duplicate keyword surfaces as the same
+    ``[error:BadInput] ...`` envelope the typed tools use — never a
+    raw crash.
+    """
+    from precis.errors import BadInput
+    from precis.tools import TOOL_REGISTRY
+    from precis.tools import core as _tools_core
+    from precis.tools.command_parser import CommandParseError, parse_command
+
+    def _bad_input(cause: str, *, hint: str) -> Any:
+        body = _tools_core._get_runtime().render_error(BadInput(cause, next=hint))
+        return _tools_core._validation_error(body)
+
+    try:
+        verb, kwargs = parse_command(command, text=text)
+    except CommandParseError as e:
+        return _bad_input(str(e), hint=f"call must look like {_COMMAND_EXAMPLE}")
+
+    try:
+        return TOOL_REGISTRY[verb]["func"](**kwargs)
+    except TypeError as e:
+        return _bad_input(
+            f"{verb}(...): {e}",
+            hint=f"see get(kind='skill', id='precis-{verb}-help') for valid args",
+        )
+
+
+def _install_command_profile() -> None:
+    """Register the single ``precis(command, text=None)`` tool.
+
+    Mirrors the ``**_TOOL_KW`` FastMCP registration the typed loop
+    uses (``structured_output=False``) so the error envelope shaping
+    (see the module docstring above ``_TOOL_KW``) applies identically.
+    """
+    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(precis)
+
+
 def _register_tools_from_registry() -> None:
-    """Register all tools from the shared registry with FastMCP."""
+    """Register the active ``PRECIS_MCP_PROFILE`` tool surface with FastMCP."""
+    if _mcp_profile() == "command":
+        _install_command_profile()
+        return
+
     for tool_name, tool_info in TOOL_REGISTRY.items():
         # Register the tool function with FastMCP
         mcp.tool(**_TOOL_KW)(tool_info["func"])

@@ -35,7 +35,11 @@ summary, pinned-skills banner) all compose on top.
 
 from __future__ import annotations
 
+import importlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from types import ModuleType
 
 import pytest
 
@@ -173,6 +177,91 @@ def test_tools_list_carries_every_seven_verb() -> None:
             f"verb {verb!r} missing from tools/list — registration "
             f"regression. Saw: {sorted(names)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# PRECIS_MCP_PROFILE switch (see precis.tools.command_parser docstring)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _server_with_profile(
+    monkeypatch: pytest.MonkeyPatch, profile: str | None
+) -> Iterator[ModuleType]:
+    """Reload ``precis.server`` with ``PRECIS_MCP_PROFILE`` set, then
+    restore the typed (default) profile on exit.
+
+    Tool registration runs once at module-import time, keyed off the
+    env var — so exercising the other profile needs a full reload of
+    the module-level ``mcp`` singleton. Always reloads back to the
+    default afterwards so later tests in the same worker see the
+    typed surface regardless of test order.
+    """
+    from precis import server
+
+    if profile is None:
+        monkeypatch.delenv("PRECIS_MCP_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("PRECIS_MCP_PROFILE", profile)
+    try:
+        importlib.reload(server)
+        yield server
+    finally:
+        monkeypatch.undo()
+        importlib.reload(server)
+
+
+def test_typed_profile_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PRECIS_MCP_PROFILE`` unset keeps the eight-tool typed surface."""
+    with _server_with_profile(monkeypatch, None) as server:
+        names = {tool.name for tool in server.mcp._tool_manager.list_tools()}
+    assert names == {
+        "get",
+        "search",
+        "put",
+        "edit",
+        "delete",
+        "tag",
+        "link",
+        "more",
+    }
+
+
+def test_command_profile_registers_single_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PRECIS_MCP_PROFILE=command`` collapses the surface to one tool."""
+    with _server_with_profile(monkeypatch, "command") as server:
+        names = {tool.name for tool in server.mcp._tool_manager.list_tools()}
+    assert names == {"precis"}
+
+
+def test_command_profile_tools_list_under_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``precis(command)``'s own ``tools/list`` JSON stays tiny.
+
+    The whole point of the frontier profile is a frozen, near-zero
+    standing schema — pin it separately from the typed profile's
+    22 KB budget above. Measured actual ~852 B; capped at 1 KB
+    (actual + ~20%) so a careless description rewrite still trips
+    this before it erodes the profile's cost advantage.
+    """
+    with _server_with_profile(monkeypatch, "command") as server:
+        wire = [
+            {
+                "name": tool.name,
+                "description": tool.description or "",
+                "inputSchema": tool.parameters or {},
+            }
+            for tool in server.mcp._tool_manager.list_tools()
+        ]
+    serialised = json.dumps(wire, separators=(",", ":"))
+    size = len(serialised.encode("utf-8"))
+    assert size < 1024, (
+        f"command-profile tools/list wire-shape JSON is {size} bytes "
+        "(cap: 1 KB). Trim precis.server._COMMAND_TOOL_DESCRIPTION."
+    )
 
 
 @pytest.mark.parametrize(

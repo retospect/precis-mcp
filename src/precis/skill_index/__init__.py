@@ -12,7 +12,9 @@ Three pieces:
 
 - :mod:`precis.skill_index.chunker` — split a markdown file into
   one chunk per H2 section (head + body), preserving the heading
-  for display.
+  for display; the index adds non-structural twin variants
+  (``body_only``, ``heading_only``, front-matter ``question_only``)
+  as extra embedding surface — see :class:`~.chunker.Chunk`.
 - :mod:`precis.skill_index.cache` — read/write per-slug embedding
   cache files keyed by ``(cache_namespace, embedder_model,
   chunker_version, file_sha256)``. JSON on disk so the cache is

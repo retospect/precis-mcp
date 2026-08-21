@@ -334,12 +334,24 @@ class _SkillSearchRow:
 
 
 def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
-    """Build a row from a semantic hit, normalising heading + snippet."""
+    """Build a row from a semantic hit, normalising heading + snippet.
+
+    Display anchor for the ``section`` column depends on the hit's
+    chunk variant: a ``heading_only`` hit already carries the right
+    heading text (it *is* the heading), so the plain ``hit.heading``
+    path covers it. A ``question_only`` hit has no heading at all — it
+    matched a front-matter question, not any one section — so its
+    anchor is the skill's title instead of a blank cell, and the
+    result reads as "this skill" rather than a weird empty section.
+    """
+    section = hit.heading or ""
+    if hit.variant == "question_only":
+        section = _skill_title(hit.slug) or hit.slug
     return _SkillSearchRow(
         slug=hit.slug,
         score=hit.score,
         source="semantic",
-        section=hit.heading or "",
+        section=section,
         snippet=(hit.snippet or "").strip(),
     )
 
@@ -1073,8 +1085,9 @@ class SkillHandler(Handler):
                 index._build()
                 entry = index._entries.get(slug) if index._entries else None
                 if entry is not None:
-                    # The index embeds body-only twins (v3) after the
-                    # structural chunks; drop them so what's left aligns
+                    # The index embeds non-structural twins (body_only, and
+                    # v4 heading_only/question_only) after the structural
+                    # chunks; drop them so what remains aligns
                     # 1:1 with the structural-only ``chunk_by_h2`` above.
                     structural = [c for c in entry.chunks if not c.body_only]
                     if len(structural) == len(chunks):

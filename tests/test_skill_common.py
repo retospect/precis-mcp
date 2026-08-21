@@ -157,6 +157,54 @@ def test_invokes_personas_block_followed_by_another_key() -> None:
     assert fm.status == "active"
 
 
+# ── answers (list shapes, question-target build) ───────────────────────
+
+
+def test_answers_block_form() -> None:
+    text = (
+        "---\n"
+        "summary: top-level orientation\n"
+        "answers:\n"
+        "  - how do I check my build?\n"
+        "  - how do I file a bug?\n"
+        "---\n"
+    )
+    fm = parse_frontmatter(text)
+    assert fm.answers == (
+        "how do I check my build?",
+        "how do I file a bug?",
+    )
+    assert fm.summary == "top-level orientation"
+
+
+def test_answers_inline_comma_form() -> None:
+    text = "---\nanswers: first question?, second question?\n---\n"
+    fm = parse_frontmatter(text)
+    assert fm.answers == ("first question?", "second question?")
+
+
+def test_answers_default_empty() -> None:
+    fm = parse_frontmatter("---\nid: precis-overview\n---\n")
+    assert fm.answers == ()
+
+
+def test_answers_is_a_known_key_not_extra() -> None:
+    # ``answers:`` must validate as a registered field, not fall into
+    # the unknown-key ``extra`` bucket.
+    fm = parse_frontmatter("---\nanswers:\n  - a question?\n---\n")
+    assert fm.answers == ("a question?",)
+    assert "answers" not in fm.extra
+
+
+def test_answers_and_summary_absent_on_plain_skill() -> None:
+    # Most existing skills predate the question-targets build and carry
+    # neither field — the parser must not require them.
+    text = "---\nid: precis-overview\nstatus: active\n---\nbody\n"
+    fm = parse_frontmatter(text)
+    assert fm.summary is None
+    assert fm.answers == ()
+
+
 # ── unknown keys ──────────────────────────────────────────────────────
 
 

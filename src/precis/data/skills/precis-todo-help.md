@@ -2,6 +2,12 @@
 id: precis-todo-help
 title: precis — create, prioritise, complete todos
 summary: basic todo CRUD — create, prioritise, complete; status workflow, project and topic tagging
+answers:
+  - how do I file something I need to do?
+  - how do I see what's on my plate?
+  - how do I mark a todo as done?
+  - how do I set the priority on a task?
+  - how do I tag a todo with a project or topic?
 applies-to: get/search/put/delete/tag/link (kind='todo')
 status: active
 ---

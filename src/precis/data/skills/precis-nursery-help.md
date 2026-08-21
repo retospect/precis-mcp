@@ -2,6 +2,12 @@
 id: precis-nursery-help
 title: precis — nursery detector of todo-tree incoherence
 summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts
+answers:
+  - why did a nursery alert fire on my todo tree?
+  - what does an orphan or stale-claim alert mean?
+  - how do I tell if a worker is dead vs just quiet?
+  - why is a leaf stuck in doable and not getting picked up?
+  - what counts as a spin loop and what threshold triggers it?
 applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
 status: active
 ---

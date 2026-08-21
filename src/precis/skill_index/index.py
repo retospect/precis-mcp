@@ -81,11 +81,12 @@ def _bounded(fn: Callable[..., Any], *args: Any, timeout: float) -> Any:
         ex.shutdown(wait=False)
 
 
-#: The index embeds body-only twins (v3) in addition to the
-#: structural per-heading chunks — extra embedding surface costs a
-#: few vectors per skill (corpus is ~150 chunks) and buys a
-#: heading-noise-free match. Structural-only callers (the ``slug~N``
-#: addresser, the TOC adapter) keep the default ``chunk_by_h2``.
+#: The index embeds body-only, heading-only, and question-only twins
+#: (v3/v4) in addition to the structural per-heading chunks — extra
+#: embedding surface costs a few vectors per skill (corpus is ~150
+#: chunks) and buys heading-noise-free and question-shaped matches.
+#: Structural-only callers (the ``slug~N`` addresser, the TOC adapter)
+#: keep the default ``chunk_by_h2``.
 _index_chunker = functools.partial(chunk_by_h2, with_body_aliases=True)
 
 log = logging.getLogger(__name__)
@@ -105,10 +106,17 @@ class SearchHit:
     heading: str
     score: float
     snippet: str
-    #: True for a v3 body-only twin (heading-stripped embedding of a
-    #: section already represented by a structural chunk). Callers
-    #: counting "distinct sections matched" should skip these.
-    body_only: bool = False
+    #: Mirrors the source chunk's variant — ``"structural"``,
+    #: ``"body_only"`` (v3), or ``"heading_only"`` / ``"question_only"``
+    #: (v4). See :class:`~precis.skill_index.chunker.Chunk`.
+    variant: str = "structural"
+
+    @property
+    def body_only(self) -> bool:
+        """True for any non-structural twin. Callers counting "distinct
+        sections matched" should skip these — they're an embedding-surface
+        affordance, not a real section."""
+        return self.variant != "structural"
 
 
 class FileCorpusIndex:
@@ -224,7 +232,7 @@ class FileCorpusIndex:
                         heading=chunk.heading,
                         score=score,
                         snippet=_snippet(chunk.text),
-                        body_only=chunk.body_only,
+                        variant=chunk.variant,
                     )
                 )
 
@@ -321,7 +329,7 @@ class FileCorpusIndex:
                 heading=c.heading,
                 text=c.text,
                 embedding=list(v),
-                body_only=c.body_only,
+                variant=c.variant,
             )
             for c, v in zip(chunks, vectors, strict=False)
         ]

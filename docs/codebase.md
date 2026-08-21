@@ -83,8 +83,10 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
 | **Nanopub publication** | `src/precis/nanopub/`, `nanopub_*` tables (0128) | reviewed claims → signed, OTS-anchored artifacts; append-only proof store |
 
-Surfaces on top: the **MCP server** (`precis serve`, the 7 verbs — the
-product; network transports gate on `PRECIS_MCP_TOKEN`), the **CLI**
+Surfaces on top: the **MCP server** (`precis serve`, the 8 verbs — the
+product; network transports gate on `PRECIS_MCP_TOKEN`; `PRECIS_MCP_PROFILE=command`
+swaps the typed surface for one `precis(command, text=)` tool over the same
+dispatcher — `tools/command_parser.py`), the **CLI**
 (`precis …`), the **web UI** (`src/precis_web/`, behind HTTP Basic against
 `web_users` — `precis_web/auth.py`, roster via `precis users`, self-service
 at `/account`), the

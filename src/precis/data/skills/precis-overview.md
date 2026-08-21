@@ -2,6 +2,12 @@
 id: precis-overview
 title: precis — seven verbs, one address scheme
 summary: top-level orientation — seven verbs, address scheme, kinds table, skill index
+answers:
+  - what verbs does precis support?
+  - when do I use get vs search vs put?
+  - how do I address a specific chunk or section of a ref?
+  - what's the difference between id= and q=?
+  - which skill do I need for a given kind?
 applies-to: all
 status: active
 ---
