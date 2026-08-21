@@ -52,6 +52,7 @@ def gate_tier(
     *,
     transport: str | None = None,
     local: bool = False,
+    bare: bool = False,
     store: Store | None = None,
 ) -> str | None:
     """Gate an LLM dispatch. ``None`` to allow; a reason string to refuse.
@@ -75,6 +76,18 @@ def gate_tier(
     a paid tier failed over to. Gating on the *resolved transport*, not the
     tier band, is what keeps a paid-band tier (BIG/MEDIUM) flowing on local.
 
+    ``bare=True`` means the resolved rung opted into ``--bare`` API-key auth
+    (``Rung.bare``): it is still a ``claude_p``/``claude_agent`` *transport*,
+    but it spends **real dollars**, not subscription quota — so it takes the
+    dollar gate, not the quota gate. Keying on the transport alone would gate
+    a per-token-billed call against the quota snapshot: a false refusal when
+    quota is spent, and — the dangerous direction — a tripped dollar cap that
+    fails to stop the one call shape the operator flipped *to* per-token
+    billing. ⚠ The gate is correct; the *meter* is not yet: ``meter.spent_usd``
+    still excludes every ``claude_p``/``claude_agent`` row as notional, so bare
+    spend does not itself accumulate toward the cap it is now gated on —
+    ``docs/backlog/bare-rung-billing-accounting.md``.
+
     ``transport=None`` (legacy callers, tests) falls back to the dollar gate,
     preserving the pre-split behaviour.
     """
@@ -83,7 +96,7 @@ def gate_tier(
     if not is_paid(tier):
         return None
     st = store if store is not None else meter.active_store()
-    if transport in meter.OAUTH_TRANSPORTS:
+    if transport in meter.OAUTH_TRANSPORTS and not bare:
         return _gate_quota(st)
     return _gate(st, label="paid model call")
 

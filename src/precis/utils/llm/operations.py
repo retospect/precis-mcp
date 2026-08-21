@@ -178,6 +178,27 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "and logs to `llm_call_log` like every other op."
         ),
     ),
+    "chase:verify": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Taproot evidence verify (MEDIUM)",
+        description=(
+            "`_chase_llm._verify_support_with_caveats` — the does-this-passage-"
+            "support-this-claim verdict behind every taproot evidence edge. "
+            "Shared by the `chase` and `hub_refine` passes."
+        ),
+        note=(
+            "The single highest-leverage tier in the taproot lane: its verdict "
+            "decides what becomes a citable evidence edge, and a `no`/`partial` "
+            "is memoed rather than attached, so a weak verifier silently shapes "
+            "the corpus. Registered steerable (2026-08-21) so that tier is an "
+            "`llm.op.chase:verify` row rather than a redeploy — the intended "
+            'escalation is `{"tier": "big"}` before a bulk refine sweep. '
+            "MEDIUM stays the code default because `chase` runs continuously "
+            "and a blanket BIG would re-price the steady state, not just the "
+            "sweep."
+        ),
+    ),
 }
 
 #: Observed operations deliberately NOT steerable, with why. The override layer

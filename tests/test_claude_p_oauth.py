@@ -92,3 +92,87 @@ def test_prefer_oauth_keeps_api_key_when_no_token() -> None:
 def test_prefer_oauth_none_when_neither() -> None:
     env: dict[str, str] = {}
     assert prefer_oauth_over_api_key(env) == "none"
+
+
+# ── bare mode: the deliberate opt-in to API-key (billed) auth ──────────
+#
+# Everything above is the cheap path and must stay the default. These pin the
+# escape hatch a chain rung opts into with ``{"bare": true}``: ``--bare`` skips
+# keychain reads, so the OAuth token is unusable and the key must be present
+# and NOT scrubbed.
+
+
+def _capture_args(captured: dict) -> object:
+    def _fake(args, *, binary, label, timeout_s, error_cls, env=None):
+        captured["args"] = args
+        captured["env"] = env
+        return SimpleNamespace(stdout='{"ok": true}', stderr="")
+
+    return _fake
+
+
+def test_bare_uses_api_key_from_vault_and_drops_the_token(monkeypatch):
+    # A daemon env carrying only the subscription token; the key is in the vault.
+    monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-SUBSCRIPTION")
+    monkeypatch.delenv(API_KEY_VAR, raising=False)
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    monkeypatch.setattr(
+        "precis.secrets.get_secret",
+        lambda name, **kw: "sk-ant-api-KEY" if name == API_KEY_VAR else None,
+        raising=True,
+    )
+
+    captured: dict = {}
+    monkeypatch.setattr(claude_p, "run_claude", _capture_args(captured))
+
+    claude_p.call_claude_p("judge this. reply JSON {}", bare=True)
+
+    assert "--bare" in captured["args"]
+    assert captured["env"][API_KEY_VAR] == "sk-ant-api-KEY"
+    # The token is dropped: --bare can't read it, and leaving it in makes the
+    # resolved credential ambiguous in a subprocess dump.
+    assert ENV_VAR not in captured["env"]
+
+
+def test_bare_prefers_an_env_key_over_the_vault(monkeypatch):
+    monkeypatch.setenv(API_KEY_VAR, "sk-ant-api-FROMENV")
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    monkeypatch.setattr(
+        "precis.secrets.get_secret", lambda name, **kw: "sk-ant-api-FROMVAULT"
+    )
+
+    captured: dict = {}
+    monkeypatch.setattr(claude_p, "run_claude", _capture_args(captured))
+
+    claude_p.call_claude_p("judge this. reply JSON {}", bare=True)
+
+    assert captured["env"][API_KEY_VAR] == "sk-ant-api-FROMENV"
+
+
+def test_bare_raises_when_no_key_anywhere(monkeypatch):
+    import pytest
+
+    monkeypatch.delenv(API_KEY_VAR, raising=False)
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    monkeypatch.setattr("precis.secrets.get_secret", lambda name, **kw: None)
+    monkeypatch.setattr(claude_p, "run_claude", _capture_args({}))
+
+    # Fails loudly rather than spawning claude to exit 1 on an auth error.
+    with pytest.raises(claude_p.ClaudePError, match=API_KEY_VAR):
+        claude_p.call_claude_p("judge this. reply JSON {}", bare=True)
+
+
+def test_default_is_not_bare(monkeypatch):
+    # The regression that matters: no caller gets billed auth by accident.
+    monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-SUBSCRIPTION")
+    monkeypatch.setenv(API_KEY_VAR, "sk-ant-api-KEY")
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+
+    captured: dict = {}
+    monkeypatch.setattr(claude_p, "run_claude", _capture_args(captured))
+
+    claude_p.call_claude_p("judge this. reply JSON {}")
+
+    assert "--bare" not in captured["args"]
+    assert captured["env"][ENV_VAR] == "sk-ant-oat01-SUBSCRIPTION"
+    assert API_KEY_VAR not in captured["env"]

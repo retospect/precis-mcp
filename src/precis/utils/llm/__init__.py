@@ -60,6 +60,14 @@ Resolution, per dispatch (in order)
    ``CLAUDE_AGENT``/``OPENAI_TOOLS``): unfiltered, an agentic call on a
    completion wire writes its verb calls as prose and bills in full. An
    emptied chain falls back to the correct-by-construction default, logged.
+   A rung may also carry ``"bare": true`` — the auth opt-in: that rung runs
+   ``claude -p --bare``, dropping the OAuth token and authenticating with a
+   vault-resolved ``ANTHROPIC_API_KEY`` (per-token billing, not subscription
+   quota; the breaker gates it on dollars accordingly). False everywhere by
+   default; a non-boolean degrades the *whole* chain to the default (a
+   billing switch must not flip on a typo); inert + warned on a non-claude
+   transport. ⚠ ``meter.spent_usd`` does not yet count bare spend —
+   ``docs/backlog/bare-rung-billing-accounting.md``.
 5. **Chain filters** — per-request ``LlmRequest.placement``
    (``'local'``/``'cloud'``, strict: emptying a nonempty chain is an
    *error* — the caller asked for a rung the chain lacks); the cloud

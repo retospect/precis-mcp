@@ -2372,6 +2372,97 @@ def test_resolve_chain_valid_override_maps_rungs_in_order(
     ]
 
 
+def test_resolve_chain_parses_bare_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``bare`` is how an operator moves one rung's spend onto ANTHROPIC_API_KEY."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"model": "claude-sonnet-5", "transport": "claude_p", "bare": True},
+            {"model": "claude-sonnet-5", "transport": "claude_p"},
+        ],
+    )
+
+    chain = router.resolve_chain(
+        Tier.BIG, tools_needed=False, backend=Backend.ANTHROPIC
+    )
+
+    assert chain == [
+        Rung(Transport.CLAUDE_P, model="claude-sonnet-5", label="chain", bare=True),
+        # Absent → False. Never inherited from a sibling rung.
+        Rung(Transport.CLAUDE_P, model="claude-sonnet-5", label="chain", bare=False),
+    ]
+
+
+def test_resolve_chain_non_boolean_bare_degrades_whole_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A billing switch must not be decided by a truthy string typo."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"model": "claude-sonnet-5", "transport": "claude_p", "bare": "true"}
+        ],
+    )
+
+    chain = router.resolve_chain(
+        Tier.BIG, tools_needed=False, backend=Backend.ANTHROPIC
+    )
+
+    assert chain == router._default_chain(
+        Tier.BIG, tools_needed=False, backend=Backend.ANTHROPIC
+    )
+    assert all(not r.bare for r in chain)
+
+
+def test_provider_for_bare_builds_a_per_rung_claude_provider() -> None:
+    """bare can't come off the shared singleton — it would leak onto every
+    other caller of that transport."""
+    shared = router.provider_for(Transport.CLAUDE_P)
+    billed = router.provider_for(Transport.CLAUDE_P, bare=True)
+
+    assert billed is not shared
+    # _bare is an implementation detail of the claude providers, not part of the
+    # LlmProvider protocol — read it structurally so mypy checks the protocol.
+    assert getattr(billed, "_bare", None) is True
+    assert getattr(shared, "_bare", None) is False
+    # A transport with no notion of claude auth keeps the singleton.
+    assert router.provider_for(
+        Transport.OPENAI_COMPAT, bare=True
+    ) is router.provider_for(Transport.OPENAI_COMPAT)
+
+
+def test_failover_passes_the_rung_bare_flag_to_the_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: the flag on the rung reaches call_claude_p."""
+    from typing import Any
+
+    seen: list[bool] = []
+
+    def _fake_provider_for(transport: Transport, *, bare: bool = False) -> Any:
+        seen.append(bare)
+
+        class _P:
+            def run(self, req: Any, *, model: str) -> LlmResult:
+                return LlmResult(
+                    text="ok",
+                    model=model,
+                    tier=req.tier,
+                    cost_usd=None,
+                    turns_used=None,
+                )
+
+        return _P()
+
+    monkeypatch.setattr(router, "provider_for", _fake_provider_for, raising=True)
+
+    router.FailoverProvider(
+        [Rung(Transport.CLAUDE_P, model="claude-sonnet-5", bare=True)]
+    ).run(router.LlmRequest(tier=Tier.BIG, prompt="hi"), model="claude-sonnet-5")
+
+    assert seen == [True]
+
+
 def test_resolve_chain_override_placement_missing_labels_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

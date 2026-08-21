@@ -50,7 +50,12 @@ from precis.utils._claude_subprocess import (
     resolve_binary,
     run_claude,
 )
-from precis.utils.claude_oauth import ensure_oauth_token, prefer_oauth_over_api_key
+from precis.utils.claude_oauth import (
+    API_KEY_VAR,
+    ENV_VAR,
+    ensure_oauth_token,
+    prefer_oauth_over_api_key,
+)
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +139,55 @@ class ClaudePResult:
     cache_creation_tokens: int | None = None
 
 
+def _bare_auth_env(env: dict[str, str]) -> None:
+    """Prepare ``env`` for ``--bare`` (API-key) auth. Mutates in place.
+
+    Two moves, both required:
+
+    * **Drop the OAuth token.** ``--bare`` skips keychain reads, so a token
+      left in the env is dead weight that only muddies which credential the
+      CLI actually resolved. Removing it makes the billed path unambiguous
+      in a subprocess dump.
+    * **Fill the key from the vault** when the ambient env lacks it. Same
+      resolution as ``fix_gripe._restricted_env`` — ``get_secret`` is env →
+      ``vault.reveal`` → ``~/.secrets/pw/<NAME>`` — so a launchd daemon that
+      carries no ``ANTHROPIC_*`` env still authenticates. Best-effort by
+      construction: ``get_secret`` never raises.
+
+    Raises:
+        ClaudePError: when no key resolves. Raising beats letting ``claude``
+            exit 1 with an auth error the caller would have to
+            reverse-engineer, and it keeps *this call* off the subscription
+            it was configured to avoid. Note this is call-level, not
+            ladder-level: :class:`~precis.utils.llm.router.FailoverProvider`
+            treats the raise as a rung failure and moves to the next rung,
+            which may well be a non-bare (subscription) one. That failover
+            is deliberate — a missing key should degrade the billing path,
+            not stop the pass — so read the warning it logs, don't assume a
+            bare rung guarantees API-key billing.
+    """
+    env.pop(ENV_VAR, None)
+    if not env.get(API_KEY_VAR):
+        try:
+            from precis import secrets as _secrets
+
+            key = _secrets.get_secret(API_KEY_VAR) or ""
+        except Exception:
+            # Defensive only — get_secret swallows its own errors. An
+            # import-time failure must not take down the subprocess spawn.
+            log.warning("claude_p: vault lookup for %s raised", API_KEY_VAR)
+            key = ""
+        if key:
+            env[API_KEY_VAR] = key
+    if not env.get(API_KEY_VAR):
+        raise ClaudePError(
+            f"claude_p: bare mode needs {API_KEY_VAR} (billed per token) and "
+            f"neither the environment nor the vault holds one. Set it with "
+            f"`precis secret set {API_KEY_VAR}`, or drop `bare` from the "
+            f"chain rung to use the subscription."
+        )
+
+
 def call_claude_p(
     prompt: str,
     *,
@@ -141,6 +195,7 @@ def call_claude_p(
     max_usd: float | None = None,
     timeout_s: float | None = None,
     extra_args: tuple[str, ...] = (),
+    bare: bool = False,
 ) -> ClaudePResult:
     """Run ``claude -p <prompt>`` and parse the last JSON block from stdout.
 
@@ -157,6 +212,17 @@ def call_claude_p(
             (``PRECIS_CLAUDE_TIMEOUT_S`` or ``120``).
         extra_args: Additional CLI flags to pass through. Use
             sparingly — most callers should rely on the defaults.
+        bare: Force **API-key** auth (``ANTHROPIC_API_KEY``, billed per
+            token) instead of the Max subscription's OAuth token. Adds
+            ``--bare``, which skips keychain reads — so the token is
+            unreachable inside the child no matter what the env holds —
+            and sources the key env → vault, the same resolution
+            ``fix_gripe._restricted_env`` uses on the agentic lane.
+            Default ``False``: OAuth wins and the key is scrubbed, which
+            is the cheap path and must stay the default. Set it per
+            **chain rung** (``{"transport": "claude_p", "bare": true}``
+            in ``llm.chain.<tier>``), so moving one tier's spend onto the
+            API key is an operator config change, not a code change.
 
     Returns:
         :class:`ClaudePResult` with the parsed dict.
@@ -197,6 +263,10 @@ def call_claude_p(
         # Bypass interactive permission prompts; the worker has no TTY.
         "--permission-mode",
         "bypassPermissions",
+        # Strips keychain reads (plus hooks/LSP/plugin sync/CLAUDE.md
+        # auto-discovery), so auth falls to ANTHROPIC_API_KEY — see the
+        # ``bare`` arg and _bare_auth_env below.
+        *(("--bare",) if bare else ()),
         *extra_args,
         # ``--`` end-of-options sentinel, prompt last and positional: a prompt
         # that begins with ``-`` (tex/paper text, a template edge) must never
@@ -215,14 +285,21 @@ def call_claude_p(
     # (2026-07-12 incident) — see utils/claude_oauth. Override-safe: a token
     # already in the env (plist var / interactive shell / test) wins.
     proc_env = dict(os.environ)
-    ensure_oauth_token(proc_env)
-    # Prefer OAuth (subscription) over ANTHROPIC_API_KEY (billed per token);
-    # call_claude_p has no ``bare`` mode, so it always prefers the token.
-    if prefer_oauth_over_api_key(proc_env) == "api_key":
-        log.warning(
-            "claude_p: no OAuth token — auth is falling back to "
-            "ANTHROPIC_API_KEY, billed per token. Install ~/.claude_oauth_token."
-        )
+    if bare:
+        # Deliberate opt-in to the billed path: do NOT call
+        # prefer_oauth_over_api_key (it would scrub the key), and do not
+        # bootstrap the token — ``--bare`` makes it unusable anyway.
+        _bare_auth_env(proc_env)
+    else:
+        ensure_oauth_token(proc_env)
+        # Prefer OAuth (subscription) over ANTHROPIC_API_KEY (billed per
+        # token). Reached only on the non-bare path.
+        if prefer_oauth_over_api_key(proc_env) == "api_key":
+            log.warning(
+                "claude_p: no OAuth token — auth is falling back to "
+                "ANTHROPIC_API_KEY, billed per token. Install "
+                "~/.claude_oauth_token."
+            )
 
     log.debug("claude_p: invoking model=%s max_usd=%.4f", model, max_usd)
     res = run_claude(
