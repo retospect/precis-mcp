@@ -14,39 +14,51 @@ and its evolution: `grounding-verification-rubric.md`. Population and partition:
 carry more than one evidence edge; each was scored separately, which repeatedly
 mattered — see §Per-edge below).
 
-## Result
+## Result — complete, all 10 shards, 619 hub-edge pairs
 
 | disposition | count | share | repair |
 |---|---|---|---|
-| **NONE** | **325** | **76%** | none needed |
-| CLAIM_DEFECT | 53 | 12% | fix the sentence |
-| WRONG_SOURCE | 17 | 4% | re-cite; re-grounding cannot help |
-| NEEDS_SECOND_EDGE | 12 | 3% | add an edge |
-| SCOPE_DRIFT | 8 | 2% | none — broader subject, nothing false |
-| FRONT_MATTER_ANCHOR | 7 | 2% | re-anchor |
-| WRONG_CHUNK | 6 | 1% | re-ground; **never edit the sentence** |
+| **NONE** | **450** | **73%** | none needed |
+| CLAIM_DEFECT | 80 | 13% | fix the sentence |
+| NEEDS_SECOND_EDGE | 26 | 4% | add an edge |
+| WRONG_SOURCE | 21 | 3% | re-cite; re-grounding cannot help |
+| SCOPE_DRIFT | 15 | 2% | none — broader subject, nothing false |
+| FRONT_MATTER_ANCHOR | 12 | 2% | re-anchor |
+| WRONG_CHUNK | 8 | 1% | re-ground; **never edit the sentence** |
+| NO_ANCHOR | 7 | 1% | → `repair-evidence` |
 
-Passage-level: **65% clean** (279 SUPPORTED or ADJACENT_CHUNK).
+Passage-level: **62% clean** (384 SUPPORTED or ADJACENT_CHUNK).
 
-Per-shard `NONE` rates were 73–82% with one outlier at 59% (shard 05, the
-protein-design cluster — see §Author-collision). Stability across six shards
-means this is a property of the corpus, not of sampling.
+Counting `SCOPE_DRIFT` as benign — it is — **75% of the draft's verified claims
+need no work at all.** The genuine repair load is **149 edges**, and only 80 of
+those are claims; the rest is plumbing.
+
+Per-shard `NONE` ran 54–82%. Two outliers pull down: shard 05 (protein-design
+cluster, 59% — see §Author-collision) and shard 02r (54%, driven by 10
+`NEEDS_SECOND_EDGE` and 6 `NO_ANCHOR`). Stability across the other eight means
+this is a property of the corpus, not of sampling.
 
 `source_corrupt` fired **zero times in 428 edges**. The Greek-strip scar is real
 (`ingest-strips-greek-glyphs.md`) but does not reach this draft's grounding.
 
 ## The rubric decision that dominated everything
 
-**`ADJACENT_CHUNK` absorbed 105 of 428 edges — 25%.**
+**`ADJACENT_CHUNK` absorbed 165 of 619 edges — 27%.**
 
 These are edges where the anchored chunk is on-topic but the confirming detail
 sits elsewhere in the same paper. Every one is benign. Under the first rubric's
 `ord ± 1` reading they scored PARTIAL, and an earlier three-shard run reported
 "51% partial, only 34% supported" on exactly that basis.
 
-Confirmed cases ranged **1 to 40 chunks away**, so the correct rule is *any
-chunk of the same source, provided the anchored chunk is already on-topic*.
-Distance is not the signal; topicality is.
+Confirmed cases ranged **1 to 398 chunks away** (that one in a 619-chunk
+review), so the correct rule is *any chunk of the same source, provided the
+anchored chunk is already on-topic*. Distance is not the signal; topicality is.
+
+The three shards first run on the coarse rubric were **re-verified from scratch**
+under the corrected one. The comparison is the proof: `WRONG_CHUNK` fell 4 → 0
+(shard 00) and 5 → 1 (shard 01). The coarse rubric was not merely inflating
+PARTIAL — it was *manufacturing mis-anchored edges* out of chunk boundaries, and
+acting on it would have re-grounded edges that were already correct.
 
 Had the repair lanes been driven off the coarse rubric, a quarter of the corpus
 would have been "repaired" for a chunk-boundary artifact — rewriting correct
@@ -124,11 +136,16 @@ Zero-hit probes without word boundaries produced errors in **every** shard:
 CLAIM_DEFECT** on re-probe — the claim was genuinely supported. Always
 boundary-anchor before recording a zero.
 
-## Coverage caveat
+## Coverage
 
-Shards 00–02 (177 hubs) first ran on the coarse rubric and are being re-verified;
-their original numbers are **not** comparable and must not be merged with the
-table above. The 428 pairs are the trustworthy measurement.
+Complete. All 590 hubs with a readable passage, all 619 edges, all under the
+corrected rubric. The coarse-rubric verdict files (`verdicts_00/01/02.jsonl`) are
+**superseded** by `verdicts_00r/01r/02r.jsonl` and must not be merged with the
+rest.
+
+Not covered, by construction: the 330 hubs whose edges have no passage at all
+(271 repairable, 59 needing acquisition) — those go to `repair-evidence`, not to
+verification.
 
 ## Standing rule for every repair below
 

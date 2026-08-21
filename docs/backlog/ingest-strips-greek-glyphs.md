@@ -318,6 +318,24 @@ precondition — it fires on surface areas ("2000 m²/g") and bibliography initi
 
 ## Exposure, measured
 
+> **⚠ The corrected detector is still not sufficient — criterion (3) is a
+> NEGATIVE test.** "No LaTeX Greek macro anywhere in the document" is equally
+> consistent with *the paper is corrupt* and *the paper never needed Greek*.
+> Measured during the dr42995 audit: the three-criterion screen fired on **8 of
+> 54** sources in one shard — a software-ecosystems study, a Loihi abstract,
+> caDNAno — every one of which renders cleanly with intact math and correct
+> sub/superscript markup.
+>
+> **The figures below are therefore upper bounds, not counts.** This is the
+> third detector in this family to fail the same way (24% → 28% → this), and the
+> pattern is always the same: a signal read as evidence of damage without
+> measuring how often it occurs in undamaged documents.
+>
+> Before the flag is actionable it needs a **positive** corruption signature —
+> a stranded unit where a Greek prefix is required (`1–2 V/ mm` for `V/μm`, a
+> bare `m` where `μm` is meant), or the font-level test in §Fix order, which is
+> the only deterministic one available.
+
 Re-derived 2026-08-20 with the LaTeX discriminator, all regexes proven against
 positive controls first (a known α-chunk, a known °-chunk, and pa47024's one
 genuine `$\mu$m` span) so no zero-count is an escaping bug:

@@ -73,6 +73,41 @@ dry-run over the `dr42995` cohort, a read of its proposals, then a small
 precis taproot repair-evidence --draft dr42995 --limit 20 --out /tmp/repair-dr42995.jsonl
 ```
 
+### Blocker, found 2026-08-21: it cannot be run from an interactive SSH session
+
+Deployed and attempted on melchior. **All 20 edges errored**, every one with
+`claude -p … "result":"Not logged in · Please run /login"`. Four escalating
+attempts all failed the same way:
+
+1. plain `ssh melchior` as the operator → not logged in
+2. `+ HOME=/Users/deploy` (the daemon's home, `.claude` present) → not logged in
+3. `--tier small` with the daemon's full `EnvironmentVariables` exported → **HTTP
+   401, "Missing…"** — the OpenRouter key is not in that plist either
+4. `sudo -n -E -u deploy -H` → not logged in
+
+**Cause:** the `claude` credential is bound to the **macOS login keychain**,
+which is per-user and requires a GUI login session. `sudo` does not unlock it,
+and no reconstruction of `HOME`/env from an SSH session reaches it.
+
+**This is not an outage.** `llm_call_log` shows `big`/`claude_p` at **16 calls,
+0 errors** on the same day, most recent 01:59, and `small`/`openai_compat` at
+23k calls/day — the daemons' own context has working credentials. Only
+interactive one-offs are affected. (`medium`/`claude_p` last ran 2026-08-17,
+which is idleness, not failure.)
+
+**Therefore run it one of two ways:**
+- as a **worker job**, in the process context that already dispatches
+  successfully — the architecturally right answer, but `repair-evidence` is not
+  a registered job type yet; or
+- **by a human on melchior in a logged-in session**, which is the cheap answer
+  for a one-off backfill.
+
+**The tool itself behaved correctly under total dispatch failure** and this is
+worth keeping: it emitted `error` rows with `reason: null`, never recorded a
+dead dispatch as `verify-rejected` or `no-passage`, exited non-zero, and wrote
+nothing. A pass that silently converted infrastructure failure into "no
+grounding found" would have looked like a successful audit of 20 edges.
+
 The machinery it reuses: `src/precis/taproot/reground.py`. It takes a claim
 and a candidate source paper, ranks that paper's body chunks by content-word
 overlap (with notation folding, so `10^4` and `10⁴` match), excludes hearsay
