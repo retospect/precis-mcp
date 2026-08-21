@@ -1,9 +1,10 @@
 """Tests for the diagnose scanner (``workers/diagnose_scan.py``).
 
 Covers: minting a ``diagnose_gripe`` job per undiagnosed open gripe, the
-idem_key dedup (never twice for one gripe), skipping a gripe that already
-carries a ``DIAGNOSIS (auto`` comment, the reused ``no-groom`` opt-out, the
-per-pass cap, and prio inheritance.
+idem_key dedup (never twice for one gripe) and its exclusion from candidate
+selection so a failed job can't starve the queue, skipping a gripe that
+already carries a ``DIAGNOSIS (auto`` comment, the reused ``no-groom``
+opt-out, the per-pass cap, and prio inheritance.
 """
 
 from __future__ import annotations
@@ -89,14 +90,48 @@ def test_no_remint_via_idem_key(store: Store) -> None:
     run_diagnose_scan_pass(store)
     assert len(_diagnose_jobs(store)) == 1
 
-    # A second pass sees the gripe as still open and still undiagnosed
-    # (no DIAGNOSIS comment landed — no dispatch ran), but the idem_key
-    # guard still blocks a second mint: any status counts.
+    # A second pass sees the gripe as still open and still undiagnosed (no
+    # DIAGNOSIS comment landed — no dispatch ran), but its held idem_key now
+    # drops it before selection: any status counts, so it is not even a
+    # candidate, let alone a mint.
     result = run_diagnose_scan_pass(store)
+    assert result.claimed == 0
     assert result.ok == 0
     jobs = _diagnose_jobs(store)
     assert len(jobs) == 1
     assert jobs[0]["meta"]["params"] == {"gripe_id": gid}
+
+
+def test_held_key_does_not_consume_a_cap_slot(store: Store) -> None:
+    """A gripe whose diagnose job failed must not starve the queue behind it.
+
+    The prod wedge (2026-08-16→21): selection asks "has a DIAGNOSIS comment?"
+    while minting asks "is the idem_key held?". A failed job answers no to the
+    first and yes to the second, so the gripe stayed a candidate forever —
+    and since the cap bounds *candidates*, the top _CAP failures re-selected
+    every pass, minted nothing, and hid everything further down the list.
+    """
+    ids = [_open_gripe(store, f"gripe {i}") for i in range(_CAP + 1)]
+
+    # Pass 1 fills the cap with the _CAP newest gripes; every job then fails,
+    # so none of them ever writes a DIAGNOSIS comment.
+    first = run_diagnose_scan_pass(store)
+    assert first.ok == _CAP
+    for job in _diagnose_jobs(store):
+        store.add_tag(
+            job["id"],
+            Tag.closed("STATUS", "failed"),
+            set_by="agent",
+            replace_prefix=True,
+        )
+
+    # Pass 2 must skip those _CAP burned keys and reach the one gripe left.
+    second = run_diagnose_scan_pass(store)
+    assert second.claimed == 1, "burned keys must not be selected as candidates"
+    assert second.ok == 1
+
+    minted_for = {j["meta"]["params"]["gripe_id"] for j in _diagnose_jobs(store)}
+    assert minted_for == set(ids), "the oldest gripe was starved by failed jobs"
 
 
 def test_no_remint_even_after_job_terminal(store: Store) -> None:
