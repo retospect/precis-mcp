@@ -1,0 +1,263 @@
+"""``web_users`` CRUD — the precis-web Basic-auth identity table.
+
+Mixin on :class:`precis.store.Store`. Migration ``0131_web_users.sql``
+defines the table; :mod:`precis.users` owns the password KDF and the
+feed-token digest, so nothing in this module ever sees a plaintext.
+
+Two read shapes, deliberately separate:
+
+- :meth:`get_web_user_credentials` returns the row *with* its
+  :class:`~precis.users.PasswordRecord` — the auth gate's hot path.
+- :meth:`list_web_users` / :meth:`get_web_user` return
+  :class:`~precis.users.WebUser` only, so the CLI and any future UI can
+  render the roster without secret material passing through them.
+
+Reads do **not** filter out disabled rows; the caller decides. The gate
+rejects ``disabled_at IS NOT NULL`` explicitly so a disabled account is
+distinguishable from a deleted one in the logs.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from psycopg import Connection
+
+from precis.users import PasswordRecord, WebUser, normalize_login
+
+_USER_COLS = (
+    "id, login, abbrev, full_name, email, disabled_at, "
+    "last_login_at, created_at, updated_at"
+)
+
+
+def _row_to_user(row: tuple[Any, ...]) -> WebUser:
+    return WebUser(
+        id=int(row[0]),
+        login=str(row[1]),
+        abbrev=str(row[2]),
+        full_name=row[3],
+        email=row[4],
+        disabled_at=row[5],
+        last_login_at=row[6],
+        created_at=row[7],
+        updated_at=row[8],
+    )
+
+
+class WebUsersMixin:
+    """Mixin: assumes the concrete Store provides ``self.pool``."""
+
+    pool: Any
+
+    # ── reads ────────────────────────────────────────────────────────
+
+    def count_web_users(self, *, enabled_only: bool = True) -> int:
+        """How many accounts exist.
+
+        The auth gate calls this to tell "nobody has run ``precis users
+        add`` yet" (503, fail closed) apart from "your password is
+        wrong" (401). ``enabled_only`` because a roster of nothing but
+        disabled accounts is, for the operator staring at the 503, the
+        same situation.
+        """
+        sql = "SELECT count(*) FROM web_users"
+        if enabled_only:
+            sql += " WHERE disabled_at IS NULL"
+        with self.pool.connection() as conn:
+            row = conn.execute(sql).fetchone()
+        return int(row[0]) if row else 0
+
+    def list_web_users(self) -> list[WebUser]:
+        """Every account, enabled first then by login."""
+        sql = (
+            f"SELECT {_USER_COLS} FROM web_users "
+            "ORDER BY (disabled_at IS NOT NULL), login"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [_row_to_user(r) for r in rows]
+
+    def get_web_user(self, login: str) -> WebUser | None:
+        sql = f"SELECT {_USER_COLS} FROM web_users WHERE login = %s"
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (normalize_login(login),)).fetchone()
+        return _row_to_user(row) if row else None
+
+    def get_web_user_credentials(
+        self, login: str
+    ) -> tuple[WebUser, PasswordRecord] | None:
+        """The auth gate's read: identity + stored password triple.
+
+        ``None`` for an unknown login — the gate then burns an
+        equivalent scrypt (:func:`precis.users.burn_verify`) so the
+        miss isn't detectable by timing.
+        """
+        sql = (
+            f"SELECT {_USER_COLS}, password_hash, password_salt, password_algo "
+            "FROM web_users WHERE login = %s"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (normalize_login(login),)).fetchone()
+        if not row:
+            return None
+        record = PasswordRecord(
+            password_hash=str(row[9]),
+            password_salt=str(row[10]),
+            password_algo=str(row[11]),
+        )
+        return _row_to_user(row), record
+
+    def get_web_user_by_feed_token(self, digest: str) -> WebUser | None:
+        """Resolve a ``/podcast?t=`` credential by its SHA-256 digest.
+
+        Enabled accounts only: disabling a user must kill their feed with
+        the same keystroke it kills their login.
+        """
+        sql = (
+            f"SELECT {_USER_COLS} FROM web_users "
+            "WHERE feed_token_sha256 = %s AND disabled_at IS NULL"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (digest,)).fetchone()
+        return _row_to_user(row) if row else None
+
+    # ── writes ───────────────────────────────────────────────────────
+
+    def create_web_user(
+        self,
+        *,
+        login: str,
+        abbrev: str,
+        password: PasswordRecord,
+        full_name: str | None = None,
+        email: str | None = None,
+        conn: Connection | None = None,
+    ) -> WebUser:
+        """INSERT one account. Raises on a duplicate login/abbrev (the
+        table's UNIQUE constraints) rather than silently upserting — an
+        accidental ``users add`` for an existing login must not reset
+        that user's password."""
+        sql = (
+            "INSERT INTO web_users "
+            "(login, abbrev, full_name, email, "
+            " password_hash, password_salt, password_algo) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            f"RETURNING {_USER_COLS}"
+        )
+        params = (
+            normalize_login(login),
+            normalize_login(abbrev),
+            full_name,
+            normalize_login(email) if email else None,
+            password.password_hash,
+            password.password_salt,
+            password.password_algo,
+        )
+        if conn is not None:
+            row = conn.execute(sql, params).fetchone()
+        else:
+            with self.pool.connection() as c:
+                with c.transaction():
+                    row = c.execute(sql, params).fetchone()
+        assert row is not None  # RETURNING on a successful INSERT
+        return _row_to_user(row)
+
+    def set_web_user_password(self, login: str, password: PasswordRecord) -> bool:
+        """Replace one account's stored password triple. False if unknown."""
+        sql = (
+            "UPDATE web_users SET password_hash = %s, password_salt = %s, "
+            "password_algo = %s, updated_at = now() WHERE login = %s"
+        )
+        params = (
+            password.password_hash,
+            password.password_salt,
+            password.password_algo,
+            normalize_login(login),
+        )
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(sql, params)
+        return bool(cur.rowcount)
+
+    def update_web_user(
+        self,
+        login: str,
+        *,
+        abbrev: str | None = None,
+        full_name: str | None = None,
+        email: str | None = None,
+    ) -> bool:
+        """Patch the display fields. ``None`` means "leave alone" — use
+        the empty string to clear ``full_name`` / ``email``."""
+        sets: list[str] = []
+        params: list[Any] = []
+        if abbrev is not None:
+            sets.append("abbrev = %s")
+            params.append(normalize_login(abbrev))
+        if full_name is not None:
+            sets.append("full_name = %s")
+            params.append(full_name or None)
+        if email is not None:
+            sets.append("email = %s")
+            params.append(normalize_login(email) or None)
+        if not sets:
+            return False
+        sets.append("updated_at = now()")
+        params.append(normalize_login(login))
+        sql = f"UPDATE web_users SET {', '.join(sets)} WHERE login = %s"
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(sql, params)
+        return bool(cur.rowcount)
+
+    def set_web_user_disabled(self, login: str, *, disabled: bool) -> bool:
+        """Soft-disable / re-enable. Soft because ``abbrev`` is meant to
+        stay resolvable for attribution after the person stops logging
+        in."""
+        sql = (
+            "UPDATE web_users "
+            "SET disabled_at = CASE WHEN %s THEN now() ELSE NULL END, "
+            "    updated_at = now() "
+            "WHERE login = %s"
+        )
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(sql, (disabled, normalize_login(login)))
+        return bool(cur.rowcount)
+
+    def set_web_user_feed_token(self, login: str, digest: str | None) -> bool:
+        """Store (or clear) the podcast token digest. Rotating overwrites,
+        so the previous feed URL stops working immediately."""
+        sql = (
+            "UPDATE web_users SET feed_token_sha256 = %s, updated_at = now() "
+            "WHERE login = %s"
+        )
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(sql, (digest, normalize_login(login)))
+        return bool(cur.rowcount)
+
+    def delete_web_user(self, login: str) -> bool:
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(
+                    "DELETE FROM web_users WHERE login = %s",
+                    (normalize_login(login),),
+                )
+        return bool(cur.rowcount)
+
+    def touch_web_user_login(self, login: str) -> None:
+        """Stamp ``last_login_at``. Best-effort and deliberately outside
+        the auth decision — a write failure here must never lock anyone
+        out, and the gate's credential cache means it fires roughly once
+        per TTL rather than per request."""
+        try:
+            with self.pool.connection() as conn:
+                with conn.transaction():
+                    conn.execute(
+                        "UPDATE web_users SET last_login_at = now() WHERE login = %s",
+                        (normalize_login(login),),
+                    )
+        except Exception:  # pragma: no cover - liveness bookkeeping only
+            return

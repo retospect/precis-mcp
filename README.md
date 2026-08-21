@@ -173,6 +173,8 @@ config:
 | `ORCID_CLIENT_ID` + `_SECRET` | Enables the `orcid` researcher-identity kind.    |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
 | `PERPLEXITY_API_KEY`          | Enables `websearch` / `perplexity-reasoning` / `perplexity-research`. |
+| `PRECIS_WEB_AUTH`             | `off` disables the `precis web` HTTP Basic gate (local dev only). Anything else — including unset — keeps it **on**: every route requires an account from `precis users`. |
+| `PRECIS_WEB_PASSWORD_PEPPER`  | Vault-resident pepper HMAC'd into web passwords before scrypt, so a shareable *logical* `pg_dump` carries no crackable hashes. `precis users add` mints one on first use; you rarely set this by hand. |
 | `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
 | `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
 
@@ -280,8 +282,9 @@ precis serve-embeddings            # HTTP embedding service (server side of
                                    #   /model /embed /metrics).
 precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
                                    #   Conversations / Status tabs (needs the
-                                   #   [web] extra; binds 127.0.0.1:9100, no
-                                   #   auth — reach it over Tailscale).
+                                   #   [web] extra; binds 127.0.0.1:9100 behind
+                                   #   HTTP Basic — create an account first, or
+                                   #   every page answers 503).
 
 # Background processing
 precis worker [--profile system|agent]
@@ -293,6 +296,22 @@ precis worker [--profile system|agent]
 precis watch [PATH]                # Watch an inbox dir and ingest dropped PDFs
                                    #   (papers / books / presentations routing).
 precis add <pdf|url>               # Ingest one paper on the spot.
+
+# Web accounts (precis web logins; every account is fully authorized)
+precis users add <login> --abbrev <ab> [--name N --email E]
+                                   # Create an account; password from a no-echo
+                                   #   prompt (or --password-stdin). Never argv.
+precis users list                  # The roster.
+precis users passwd <login>        # THE recovery path — Basic auth has no
+                                   #   email reset flow, by design.
+precis users disable|enable|rm <login>
+precis users feed-token <login>    # Mint + print the private podcast feed URL
+                                   #   (?t=… , since podcast apps handle Basic
+                                   #   on enclosures inconsistently).
+                                   # Signed-in users do the self-service half —
+                                   #   password, profile, podcast link — at
+                                   #   /account in the web UI. Creating and
+                                   #   removing accounts stays here.
 
 # Database
 precis migrate                     # Run pending forward-only SQL migrations.

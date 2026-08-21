@@ -22,6 +22,7 @@ from precis.utils.prompt import Block, Layer, persist_assembled_context
 from precis.workers.structural import STRUCTURAL
 from precis_web import env_context
 from precis_web.app import create_app
+from precis_web.config import WebConfig
 
 # ── real-DB route layer ──────────────────────────────────────────────
 
@@ -31,7 +32,9 @@ def real_client(runtime_with_store) -> TestClient:
     """A real FastAPI ``TestClient`` backed by the shared test DB (not the
     FakeStore ``client`` fixture) — needed to seed a real
     ``meta.assembled_context`` and prove the panel's SQL finds it."""
-    return TestClient(create_app(runtime=runtime_with_store))
+    return TestClient(
+        create_app(runtime=runtime_with_store, web_config=WebConfig(corpus_dir=None))
+    )
 
 
 def test_env_route_renders_last_real_capture_for_planner_job(

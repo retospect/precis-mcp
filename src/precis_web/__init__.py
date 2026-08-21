@@ -1,11 +1,27 @@
 """precis_web — the cluster web surface for precis-mcp.
 
 A FastAPI service that imports the ``precis`` package directly and renders
-server-side (Jinja + HTMX + Alpine), served over the Tailscale LAN (no
-auth). :func:`create_app` (``app.py``) wires one router per page plus error
-handlers and a lifespan that builds the single
-:class:`precis.runtime.PrecisRuntime`. Optional install extra
+server-side (Jinja + HTMX + Alpine), served over the Tailscale LAN behind
+**HTTP Basic auth** (``auth.py``). :func:`create_app` (``app.py``) wires
+one router per page plus error handlers and a lifespan that builds the
+single :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); the ``precis web`` CLI subcommand imports it lazily.
+
+**Auth.** Every route and mount is gated by
+``auth.py::BasicAuthMiddleware`` against the ``web_users`` table
+(migration 0131, roster managed by ``precis users``). Each account is
+fully authorized — there are no roles; per-route ACLs and ask-routing are
+a separate deferred design. Exemptions: ``/healthz`` (supervisor probe)
+and ``/podcast`` (authenticates itself, additionally accepting a per-user
+``?t=`` feed token because podcast clients handle Basic inconsistently on
+enclosure URLs). An empty roster fails *closed* with a 503 naming the
+``precis users add`` line to run. A cross-site state-changing request is
+refused 403 (``Origin``/``Referer`` must match) — Basic auth makes every
+mutating route a CSRF target, with no cookie to mark ``SameSite``.
+``PRECIS_WEB_AUTH=off`` disables the gate for local development only.
+``/account``
+(``routes/account.py``) is the signed-in user's own page — password,
+profile, podcast link; roster management stays in the CLI.
 
 Nav (template ``templates/base.html.j2``; badge counts
 ``nav.py::nav_badges``):
@@ -20,6 +36,8 @@ Nav (template ``templates/base.html.j2``; badge counts
   need, so it is never inside a dropdown.
 * **Ops ▾** — System, Categorizers, Agent Logs, Console, Env, Secrets.
 * 🔍 loupe — global search, submits to ``/drive``.
+* **Account** (far right) — the signed-in user's ``abbrev`` as a chip,
+  linking to ``/account``; a plain "Account" label when the gate is off.
 
 **Drive (`/drive`)** is the unified seek+manage surface:
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag

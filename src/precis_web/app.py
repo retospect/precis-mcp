@@ -1,9 +1,11 @@
 """FastAPI application factory.
 
-``create_app`` wires the four tab routers, the error handlers, and a
-lifespan that builds the single :class:`precis.runtime.PrecisRuntime`
-at startup (and closes its store at shutdown). Tests pass a pre-built
-(possibly fake) runtime to skip the DB connect.
+``create_app`` wires the four tab routers, the error handlers, the HTTP
+Basic gate (:mod:`precis_web.auth`, on unless ``PRECIS_WEB_AUTH`` says
+otherwise), and a lifespan that builds the single
+:class:`precis.runtime.PrecisRuntime` at startup (and closes its store
+at shutdown). Tests pass a pre-built (possibly fake) runtime to skip the
+DB connect.
 """
 
 from __future__ import annotations
@@ -69,6 +71,24 @@ def create_app(
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+    # HTTP Basic in front of everything — routes, the /static mount, and
+    # anything added later. Added AFTER gzip so it is the OUTERMOST layer
+    # (Starlette applies middleware in reverse): an unauthenticated
+    # request is rejected before any handler or compressor touches it.
+    # Off only when PRECIS_WEB_AUTH explicitly says so; see
+    # WebConfig.auth_required for why the dataclass default differs from
+    # the from_env default.
+    if cfg.auth_required:
+        from precis_web.auth import BasicAuthMiddleware
+
+        app.add_middleware(BasicAuthMiddleware)
+    else:
+        log.warning(
+            "precis web: HTTP auth DISABLED (PRECIS_WEB_AUTH) — every route, "
+            "including /secrets and /console, is open to anything that can "
+            "reach this port"
+        )
+
     register_error_handlers(app)
 
     # Self-hosted front-end assets under static/ (tailwind.css — a prebuilt
@@ -82,6 +102,7 @@ def create_app(
     # Routers — one per tab. Imported here (not at module top) so the
     # package import surface stays light and circular-import-free.
     from precis_web.routes import (
+        account,
         agentlogs,
         alerts,
         asks,
@@ -159,6 +180,7 @@ def create_app(
     app.include_router(secrets.router)
     app.include_router(settings.router)
     app.include_router(manual.router)
+    app.include_router(account.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

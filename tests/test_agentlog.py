@@ -196,6 +196,7 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
     from fastapi.testclient import TestClient
 
     from precis_web.app import create_app
+    from precis_web.config import WebConfig
 
     proj = _proj(hub)
     draft.put(id="smoke", title="Smoke Doc", project=proj)
@@ -213,7 +214,10 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
     chunk = hub.live_store.drafts.reading_order(ref.id)[0]
     agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[chunk.chunk_id])
 
-    app = create_app(runtime=types.SimpleNamespace(store=hub.live_store))
+    app = create_app(
+        runtime=types.SimpleNamespace(store=hub.live_store),
+        web_config=WebConfig(corpus_dir=None),
+    )
     with TestClient(app) as client:
         r1 = client.get("/agentlogs")
         assert r1.status_code == 200

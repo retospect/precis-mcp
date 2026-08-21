@@ -67,6 +67,7 @@ from precis.cli import (
     taproot,
     taproot_migrate,
     tools,
+    users,
     verify,
     watch,
     web,
@@ -127,6 +128,10 @@ def main() -> None:
 
     if args.cmd == "settings":
         settings.run(args)
+        return
+
+    if args.cmd == "users":
+        users.run(args)
         return
 
     if args.cmd == "db":
@@ -331,6 +336,7 @@ def _build_parser() -> argparse.ArgumentParser:
     secret.add_parser(sub)
     nanopub.add_parser(sub)
     settings.add_parser(sub)
+    users.add_parser(sub)
     db.add_parser(sub)
     maintenance.add_parser(sub)
     enrich_openalex.add_parser(sub)

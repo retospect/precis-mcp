@@ -24,6 +24,7 @@ from datetime import datetime
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from xml.sax.saxutils import escape, quoteattr
 
 #: Enclosure MIME by audio extension. Podcast apps key playback off this.
@@ -164,6 +165,7 @@ def build_rss(
     base_url: str,
     channel: ChannelMeta | None = None,
     audio_path_prefix: str = "/podcast/audio",
+    credential: str | None = None,
 ) -> str:
     """Render RSS 2.0 (with iTunes tags) for the episodes.
 
@@ -174,10 +176,18 @@ def build_rss(
     need *absolute* URLs, so the base must be the reachable origin, not
     loopback — see ``PRECIS_PODCAST_BASE_URL``. The ``<guid>`` stays the bare
     episode id, so extension/URL changes never re-add already-seen episodes.
+
+    ``credential`` is the per-user feed token (:mod:`precis.users`) the
+    caller authenticated with, appended as ``?t=`` to the self-link and
+    every enclosure. The whole point of the token is that a podcast app
+    fetches the *audio* on its own later, in a request that carries no
+    session and no reliable Basic support — so the credential has to
+    travel inside the URLs the feed hands it, not just the feed request.
     """
     ch = channel or ChannelMeta()
     base = base_url.rstrip("/")
-    feed_url = f"{base}/podcast/feed.xml"
+    query = f"?t={quote(credential, safe='')}" if credential else ""
+    feed_url = f"{base}/podcast/feed.xml{query}"
     lines: list[str] = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<rss version="2.0" '
@@ -193,7 +203,7 @@ def build_rss(
         'type="application/rss+xml"/>',
     ]
     for ep in episodes:
-        enclosure_url = f"{base}{audio_path_prefix}/{ep.audio_file}"
+        enclosure_url = f"{base}{audio_path_prefix}/{ep.audio_file}{query}"
         lines.append("<item>")
         lines.append(f"<title>{escape(ep.title)}</title>")
         lines.append(f"<description>{escape(ep.description)}</description>")

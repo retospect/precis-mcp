@@ -1,10 +1,20 @@
-"""Web-layer configuration. Env-driven, frozen, no auth in cut 1.
+"""Web-layer configuration. Env-driven, frozen.
 
 Distinct from :class:`precis.config.PrecisConfig` (which the runtime
 loads for DB / embedder / kinds). This holds only the web-surface
 knobs: bind address, the corpus root for PDF streaming, the caller
-``source`` stamped onto handler writes, and an *optional* bearer
-token (unset = open, the cut-1 default).
+``source`` stamped onto handler writes, and whether the HTTP Basic gate
+(:mod:`precis_web.auth`) is installed.
+
+**``auth_required`` has two different defaults on purpose.**
+:meth:`WebConfig.from_env` — the only path a served process takes —
+defaults it **True**: production is closed unless someone explicitly
+sets ``PRECIS_WEB_AUTH=off``. The bare dataclass default is **False**,
+because the ~20 in-process ``create_app(...)`` call sites in the test
+suite construct ``WebConfig()`` directly and are exercising routes, not
+the gate. ``tests/precis_web/test_auth.py`` pins
+``WebConfig.from_env().auth_required is True`` so the served default
+can't regress to open by accident.
 """
 
 from __future__ import annotations
@@ -21,6 +31,16 @@ _DEFAULT_CORPUS = Path.home() / "work" / "corpus"
 #: ``web:*`` is classified as owner by ``precis.handlers._todo_guards``
 #: so the owner can edit strategic / tactical tiers the workers can't.
 DEFAULT_SOURCE = "web:owner"
+
+#: Values of ``PRECIS_WEB_AUTH`` that disable the Basic gate. Spelled as
+#: an opt-*out* whitelist rather than a truthy check so a typo
+#: (``PRECIS_WEB_AUTH=flase``) leaves the door locked, not open.
+_AUTH_OFF = frozenset({"0", "off", "no", "false", "none", "disabled"})
+
+
+def _auth_required_from_env() -> bool:
+    """True unless ``PRECIS_WEB_AUTH`` explicitly names an off value."""
+    return os.environ.get("PRECIS_WEB_AUTH", "on").strip().lower() not in _AUTH_OFF
 
 
 @dataclass(frozen=True)
@@ -51,7 +71,10 @@ class WebConfig:
     #: Defaults to ``"owner"`` (generalises the formerly hard-coded
     #: ``"reto"``). See ``docs/backlog/user-identity-and-ask-routing.md``.
     owner: str = "owner"
-    auth_token: str | None = None
+    #: Install the HTTP Basic gate (:mod:`precis_web.auth`) in front of
+    #: every route and mount. See the module docstring for why this is
+    #: False here and True out of :meth:`from_env`.
+    auth_required: bool = False
     #: Directory holding published podcast episodes (audio + JSON sidecars).
     #: ``None`` → the ``/podcast`` feed is empty/disabled. Set via
     #: ``PRECIS_PODCAST_DIR``. See :mod:`precis_web.podcast`.
@@ -113,7 +136,7 @@ class WebConfig:
             precis_root=precis_root,
             source=os.environ.get("PRECIS_SOURCE", DEFAULT_SOURCE),
             owner=os.environ.get("PRECIS_OWNER", "owner"),
-            auth_token=os.environ.get("PRECIS_WEB_AUTH_TOKEN") or None,
+            auth_required=_auth_required_from_env(),
             podcast_dir=(
                 Path(pd).expanduser()
                 if (pd := os.environ.get("PRECIS_PODCAST_DIR"))
