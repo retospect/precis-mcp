@@ -333,6 +333,11 @@ web = [
     "uvicorn[standard]>=0.29",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
+    # /manual renders its markdown chapters (routes/manual.py). Already in
+    # the resolved tree as a transitive of rich, so this adds no install
+    # weight — declared because a route importing it must not depend on
+    # another package's dependency choices.
+    "markdown-it-py>=3.0",
 ]
 # CAD STEP interchange (ADR 0041 §10). The lightweight printable path
 # (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,

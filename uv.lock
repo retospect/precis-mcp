@@ -3311,6 +3311,7 @@ all = [
     { name = "fastapi" },
     { name = "habanero" },
     { name = "jinja2" },
+    { name = "markdown-it-py" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
     { name = "pymupdf" },
     { name = "python-multipart" },
@@ -3364,6 +3365,7 @@ tts = [
 web = [
     { name = "fastapi" },
     { name = "jinja2" },
+    { name = "markdown-it-py" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -3407,6 +3409,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=5.0" },
     { name = "mace-torch", marker = "extra == 'dft-ml'", specifier = ">=0.3" },
     { name = "manifold3d", specifier = ">=2.5" },
+    { name = "markdown-it-py", marker = "extra == 'web'", specifier = ">=3.0" },
     { name = "marker-pdf", marker = "sys_platform != 'win32' and extra == 'paper'", specifier = ">=1.0" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.0,<2" },

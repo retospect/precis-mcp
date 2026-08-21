@@ -57,6 +57,7 @@
              • Browse ▾ — the corpus look-up long tail (Drive's five
                standalone kind-specific readers), behind a dropdown.
              • Attention (right, badged) — Needs you, Gripes, Alerts.
+             • Manual — the user-facing how-to, top-level and unbadged.
              • Ops ▾ — System + the admin/dev surfaces, right dropdown.
              • 🔍 loupe — global search, submits to Drive. #}
         <nav class="flex flex-wrap items-center gap-0.5 py-1.5 text-xs">
@@ -135,6 +136,14 @@
               {% endif %}
             </a>
             <span class="mx-1 h-4 w-px bg-slate-700"></span>
+            {# Manual — the user-facing how-to (routes/manual.py). Top-level
+               and unbadged: it is the thing you go looking for when you do
+               NOT know which tab you need, so it must not be inside a
+               dropdown. #}
+            <a href="/manual"
+               class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'manual' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Manual
+            </a>
             {# Ops ▾ — System (merged Status+Factory+Budget, WS3) + the
                admin/dev surfaces. #}
             <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">

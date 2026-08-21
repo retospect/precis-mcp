@@ -102,6 +102,7 @@ def create_app(
         gripes,
         items,
         llm,
+        manual,
         mermaid,
         nanopub,
         needs_you,
@@ -157,6 +158,7 @@ def create_app(
     app.include_router(factory.router)
     app.include_router(secrets.router)
     app.include_router(settings.router)
+    app.include_router(manual.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

@@ -1,0 +1,30 @@
+{% extends "base.html.j2" %}
+{% block title %}Manual{% endblock %}
+{% block content %}
+
+<div class="mb-5">
+  <h1 class="text-lg font-semibold">Manual</h1>
+  <p class="text-sm text-slate-500">How to do the things this system is for.</p>
+</div>
+
+{% if chapters %}
+<ol class="space-y-2 max-w-3xl">
+  {% for c in chapters %}
+  <li class="rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-300">
+    <a href="/manual/{{ c.slug }}" class="block">
+      <div class="flex items-baseline gap-2">
+        <span class="text-xs font-semibold text-slate-400">{{ c.number }}</span>
+        <span class="font-medium text-slate-800">{{ c.title }}</span>
+      </div>
+      {% if c.blurb %}
+      <p class="mt-1 text-sm text-slate-600">{{ c.blurb }}</p>
+      {% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="text-sm text-slate-500">No chapters found.</p>
+{% endif %}
+
+{% endblock %}

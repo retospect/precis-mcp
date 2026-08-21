@@ -15,6 +15,9 @@ Nav (template ``templates/base.html.j2``; badge counts
   kind-specific readers Drive's generic rows can't reproduce: Clusters,
   Structures, CAD, Figures, Mermaid.
 * **Attention** (right, badged) — Needs you, Gripes, Alerts.
+* **Manual** (``/manual``) — the user-facing how-to. Top-level and
+  unbadged: it is what you reach for when you don't know which tab you
+  need, so it is never inside a dropdown.
 * **Ops ▾** — System, Categorizers, Agent Logs, Console, Env, Secrets.
 * 🔍 loupe — global search, submits to ``/drive``.
 
@@ -50,6 +53,19 @@ unchanged.
 ``STATUS`` (closed vocab ``open → triaged → ready_for_fix → in_review →
 wontfix``), detail + comment timeline, and ``retire`` (soft-delete, the
 "fix landed" resolution, distinct from ``wontfix``).
+
+**Manual (`/manual`)** — ``routes/manual.py``: the *user*-facing manual
+(how to write a paper, publish a claim, clear a figure, watch a quest
+loop), rendered from markdown chapters in ``src/precis_web/manual/``.
+Deliberately inside the package, not ``docs/``: the wheel ships only
+``src/`` (``docs/`` is sdist-only, so a chapter there is absent on a
+deployed node), and a chapter describing a button belongs in the same
+diff as the button. Filename carries order + slug
+(``01-writing-a-paper.md`` → chapter 1 at ``/manual/writing-a-paper``);
+title and index blurb are parsed from the first heading + paragraph, so
+there is no second table of contents to drift. Distinct from
+``precis/data/skills/`` (agent-facing runtime docs) and ``docs/``
+(repo-dev docs).
 
 **Categorizers console (`/categorizers`)** — ``routes/categorizers.py``:
 every axis/topic with coverage + last-run (deferred htmx OOB swaps via
