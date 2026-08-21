@@ -100,10 +100,33 @@ existing registries are per-draft leaves hanging off a draft ref — a BOM
 belongs to *this* build's draft, a drawings registry to *this* patent's
 draft. A scope-key vocabulary is corpus-global: every claim hub across every
 project shares one vocabulary. It needs a singleton home, not a draft
-parent. Whether that's a dedicated ref kind, a fixed sentinel draft ref that
-every scope-key row hangs off of, or a table outside the `term`-leaf family
-entirely is not decided here — flagging it as the question to settle before
-implementation starts.
+parent.
+
+### Settled 2026-08-21 (Reto): claim hubs are not draft-scoped
+
+> "The nanopubs … can be used in any draft, and will be published … the
+> nanopubs are ultimately published separately and can be shared between
+> any drafts."
+
+A draft is a *view* onto hubs, never their owner. Two consequences:
+
+1. **The sentinel-draft option is dead.** Parenting the registry to a fixed
+   draft ref would make a draft load-bearing for a vocabulary that outlives
+   every draft — the same shape defect as the acquisition marker (a durable
+   state parked where a legitimate writer destroys it). Remaining choice is
+   a dedicated corpus-global ref kind (preferred — `refs.meta` is jsonb, so
+   no migration) or a table outside the `term`-leaf family.
+2. **`draft_chunk` as a scope key is now a correctness bug, not untidiness**
+   — see the lifted-defects section below.
+
+**Drop `count` from the stored columns.** The frequency table is derivable
+(`GROUP BY` over `refs.meta->'scope'` across live hubs); storing it
+materializes an aggregate with an update path someone will forget, and it
+goes stale silently — precisely how the invented 7-key list drifted from
+reality. Store only what is *curated*: `key`, `alias_of`, `gloss`. A key
+that needs neither an alias nor a gloss needs no row. The registry is a
+small curated overlay on measured usage, not a mirror of the vocabulary:
+no seeding pass, no registry/corpus drift, ordering true by construction.
 
 ## The constraint that bites: scope is inside the identity hash
 
@@ -155,6 +178,16 @@ registry governs keys, never values.
   the frequency ordering the whole registry design depends on being
   trustworthy. They need a separate home (a distinct `meta` key, not
   `scope`), not a slot in this registry.
+
+  **`draft_chunk` is the urgent half (raised 2026-08-21).** Now that hubs are
+  confirmed draft-independent and separately publishable, a `draft_chunk` key
+  inside `scope` puts a pointer to one document's chunk **inside `pub_id`**,
+  the identity hash of an artifact that must stand alone. Those 10 hubs
+  cannot mint a defensible identity: their global identity is parameterised
+  by a local, mutable drafting artifact, and any hub minted from a different
+  draft of the same claim gets a different `pub_id` for no scientific reason.
+  Lift it out **before** the key-normalization pass (work item 6), not with
+  it — and re-derive `pub_id` for those 10 afterwards.
 - **`scope-free-text` (156 hubs) is the defect that actually matters, and
   the registry must not soften it.** Because scope is inside the identity
   hash, a sentence fragment stuffed into a scope *value* manufactures
@@ -168,14 +201,18 @@ registry governs keys, never values.
 
 ## Work
 
-1. Settle the open design question above — singleton home for a
-   corpus-global registry vs. the existing per-draft `term`-leaf shape.
-2. Design the registry table (key, count, alias_of, gloss) and the write
-   path that surfaces it frequency-ordered — likely a `put(kind='finding',
-   scope=…)`-adjacent lookup, not a new verb.
-3. Lift `quantity_bound` and `draft_chunk` out of `scope` into their own
-   `meta` field; re-derive the out-of-vocabulary counts above once that's
-   done, since they're currently inflating the "needs a registry key" tally.
+1. ~~Settle the open design question above.~~ **Done 2026-08-21** —
+   corpus-global, not draft-parented; sentinel-draft ruled out; `count`
+   derived rather than stored. Remaining sub-choice: dedicated ref kind
+   (preferred) vs. a table outside the `term`-leaf family.
+2. Design the curated overlay (`key`, `alias_of`, `gloss` — **no `count`**)
+   and the write path that surfaces it ordered by *derived* frequency —
+   likely a `put(kind='finding', scope=…)`-adjacent lookup, not a new verb.
+3. **Do this first.** Lift `quantity_bound` and `draft_chunk` out of `scope`
+   into their own `meta` field, and re-derive `pub_id` for the 10
+   `draft_chunk` hubs — their identity is currently parameterised by a
+   drafting artifact (see above). Re-derive the out-of-vocabulary counts
+   afterwards, since they currently inflate the "needs a registry key" tally.
 4. Seed the registry from the measured 2026-08-19 counts (in-vocabulary +
    out-of-vocabulary keys above), curate `alias_of` for the near-synonym
    forks (`support`/`substrate`, `catalyst`/`catalyst_material`, etc. —
