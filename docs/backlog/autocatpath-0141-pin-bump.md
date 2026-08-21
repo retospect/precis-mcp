@@ -6,6 +6,21 @@ prio: high
 
 # Bump the autocatpath floor pin to 0.14.1 — end the per-deploy override wipe
 
+> **BLOCKED 2026-08-21 — 0.14.1 does not exist as a release.** `gh release
+> list --repo retospect/catpath` tops out at **0.13.0** (2026-08-12); the
+> 0.14.1 that memory recalls on spark was an out-of-band build, not a
+> published artifact. The item's own acceptance criterion ("confirm 0.14.1 is
+> released there … before shipping") therefore fails at step one. Unblock =
+> cut a catpath release ≥0.14.1 first, then do the bump below.
+>
+> Also verified 2026-08-21, and it defuses the urgency: spark's
+> `/opt/precis/venv` runs **0.13.0**, `constraints.txt` pins `==0.13.0`, and
+> melchior carries **no** `PRECIS_AUTOCATPATH_VERSION` override. Engine, pin
+> and idem-key token therefore agree, so the stale-engine dedup this item
+> guards against is not currently live — the mismatch only appears when an
+> unreleased engine is hand-installed over the pin. That is why the
+> 2026-08-21 un-suspension did not need this bump.
+
 ## Motivation / why
 
 The `PRECIS_AUTOCATPATH_VERSION=0.14.1` env override on melchior's worker

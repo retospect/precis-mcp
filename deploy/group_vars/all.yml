@@ -21,6 +21,12 @@ precis_daily_cost_ceiling: 100.0
 
 # Operator hold: job_types the claim path skips (PRECIS_SUSPENDED_JOB_TYPES;
 # queued jobs wait in place, quest ticks stop minting new autocatpath trees).
-# Set 2026-08-17 — autocatpath compute suspended until further notice.
-# To resume: set to "" and redeploy.
-precis_suspended_job_types: "autocatpath_seed,autocatpath_aggregate"
+# Held 2026-08-17 → 2026-08-21 (autocatpath compute). Released on operator
+# request after confirming the GPU node is coherent: engine 0.13.0 installed,
+# constraints.txt pins the same, and NO PRECIS_AUTOCATPATH_VERSION override is
+# present — so the idem-key version token derives the version actually running
+# and re-dispatches cannot dedup onto a stale-engine job. (0.13.0 is the newest
+# catpath *release*; the 0.14.1 referenced by the pin-bump backlog item is
+# unreleased, so that bump is not a prerequisite here.)
+# To suspend again: list job_types comma-separated and redeploy.
+precis_suspended_job_types: ""
