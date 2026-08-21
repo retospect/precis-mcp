@@ -51,7 +51,7 @@ def test_home_token_file_is_ignored(tmp_path, monkeypatch):
     twin of the same guard in ``tests/utils/test_claude_oauth.py``."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".claude_oauth_token").write_text("stale-file\n")
+    (tmp_path / ".claude_oauth_token").write_text("stale-file\n", encoding="utf-8")
     _vault(monkeypatch, "rotated-vault")
     env: dict[str, str] = {}
     ensure_oauth_token(env)

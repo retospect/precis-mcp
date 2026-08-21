@@ -262,7 +262,7 @@ def _temp_from_linux_thermal() -> float | None:
     readings: list[float] = []
     for path in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 raw = fh.read().strip()
         except OSError:
             continue

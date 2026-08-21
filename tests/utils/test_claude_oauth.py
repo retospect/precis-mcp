@@ -65,7 +65,9 @@ def test_home_token_file_is_ignored(tmp_path, monkeypatch):
     test ever goes green on the file's value, rotation is broken again.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".claude_oauth_token").write_text("sk-ant-oat01-STALEFILE\n")
+    (tmp_path / ".claude_oauth_token").write_text(
+        "sk-ant-oat01-STALEFILE\n", encoding="utf-8"
+    )
     _vault(monkeypatch, "sk-ant-oat01-ROTATED")
     env: dict[str, str] = {}
     ensure_oauth_token(env)

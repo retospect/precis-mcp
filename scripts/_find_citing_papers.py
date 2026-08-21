@@ -450,7 +450,7 @@ def _aggregate(
 
     for path in cache_files:
         try:
-            blob = json.loads(path.read_text())
+            blob = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
 
@@ -679,7 +679,7 @@ def _aggregate_per_source(
 
     for path in cache_files:
         try:
-            blob = json.loads(path.read_text())
+            blob = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         src_slug = blob.get("slug") or path.stem
@@ -777,7 +777,7 @@ def _write_per_source_markdown(
                 )
         lines.append("")
 
-    out.write_text("\n".join(lines))
+    out.write_text("\n".join(lines), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -818,7 +818,7 @@ def _date_to_int(s: str) -> int:
 
 
 def _write_jsonl(hits: list[AggregatedHit], path: Path) -> None:
-    with path.open("w") as f:
+    with path.open("w", encoding="utf-8") as f:
         for h in hits:
             f.write(
                 json.dumps(
@@ -939,7 +939,7 @@ def _write_markdown(
         lines.append("---")
         lines.append("")
 
-    out.write_text("\n".join(lines))
+    out.write_text("\n".join(lines), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -1124,10 +1124,13 @@ def main() -> None:
                             "error": "no s2 lookup id",
                             "citations": [],
                         }
-                    )
+                    ),
+                    encoding="utf-8",
                 )
             else:
-                cache_path.write_text(json.dumps(blob, ensure_ascii=False))
+                cache_path.write_text(
+                    json.dumps(blob, ensure_ascii=False), encoding="utf-8"
+                )
                 n_fetched += 1
                 if blob.get("error"):
                     n_failed += 1
@@ -1182,7 +1185,7 @@ def main() -> None:
         )
         # JSONL: one line per (source, citation) pair so downstream
         # consumers can join either way.
-        with out_jsonl.open("w") as f:
+        with out_jsonl.open("w", encoding="utf-8") as f:
             for slug, cites in by_source.items():
                 for c in cites:
                     f.write(

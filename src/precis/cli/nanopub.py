@@ -195,7 +195,7 @@ def _hub_id(raw: str) -> int:
 
 def _read_payload(path: str | None) -> dict:
     if path:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     if sys.stdin.isatty():
         return {}

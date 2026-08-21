@@ -248,7 +248,7 @@ def test_news_help_skill_present_and_shaped() -> None:
 
     p = pathlib.Path(precis.__file__).parent / "data" / "skills" / "precis-news-help.md"
     assert p.exists(), "precis-news-help skill file missing"
-    text = p.read_text()
+    text = p.read_text(encoding="utf-8")
     assert "id: precis-news-help" in text
     assert "news_poll" in text and "briefing" in text
 

@@ -45,7 +45,7 @@ def load_axis(axis_id: str) -> dict:
     p = AXES_DIR / f"{axis_id}.yaml"
     if not p.exists():
         sys.exit(f"error: no axis definition at {p}")
-    return yaml.safe_load(p.open())
+    return yaml.safe_load(p.open(encoding="utf-8"))
 
 
 # ---- gold sets --------------------------------------------------------
@@ -54,10 +54,10 @@ def load_axis(axis_id: str) -> dict:
 def load_gold(family: str) -> tuple[str, list[dict]]:
     """Return (item_kind, records). family in {'chunks','papers'}."""
     if family == "chunks":
-        d = yaml.safe_load((GOLD_DIR / "gold_set_chunks.yaml").open())
+        d = yaml.safe_load((GOLD_DIR / "gold_set_chunks.yaml").open(encoding="utf-8"))
         return "chunk", d["chunks"]
     if family == "papers":
-        d = yaml.safe_load((GOLD_DIR / "gold_set.yaml").open())
+        d = yaml.safe_load((GOLD_DIR / "gold_set.yaml").open(encoding="utf-8"))
         return "paper", d["papers"]
     sys.exit(f"error: unknown gold family {family!r} (want chunks|papers)")
 

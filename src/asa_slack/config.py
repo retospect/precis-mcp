@@ -98,7 +98,7 @@ class Config:
         for c in candidates:
             p = Path(c)
             if p.exists():
-                data = yaml.safe_load(p.read_text()) or {}
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
                 break
 
         db_url = os.environ.get("PRECIS_DATABASE_URL")
@@ -143,7 +143,7 @@ def _load_token(env_name: str, file_path: str) -> str:
         return vault_val.strip()
     p = Path(file_path)
     if p.exists():
-        return p.read_text().strip()
+        return p.read_text(encoding="utf-8").strip()
     raise RuntimeError(
         f"Slack token not found at ${env_name}, the precis vault, or {file_path}"
     )

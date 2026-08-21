@@ -2990,7 +2990,7 @@ def _read_system_prompt(sp: str | Path | None) -> str | None:
         return None
     if isinstance(sp, Path):
         try:
-            return sp.read_text()
+            return sp.read_text(encoding="utf-8")
         except OSError:
             return None
     return sp

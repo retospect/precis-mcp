@@ -127,7 +127,8 @@ def main() -> None:
         "16354f43-b0a8-449f-976b-9c6a780dfb08/scratchpad/scorecard.json"
     )
     out.write_text(
-        json.dumps({d: results[d] for d, *_ in ROSTER if d in results}, indent=2)
+        json.dumps({d: results[d] for d, *_ in ROSTER if d in results}, indent=2),
+        encoding="utf-8",
     )
     print(f"\nraw results -> {out}")
 

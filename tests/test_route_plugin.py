@@ -411,7 +411,9 @@ def test_container_dispatch_round_trip(
 
     def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
         # Simulate the container: drop trees.json into the bound out-dir.
-        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
+        (out_dir / "trees.json").write_text(
+            _aizynth_trees(solved=True), encoding="utf-8"
+        )
         return 0, "aizynthcli ok"
 
     monkeypatch.setattr(chem_jobs, "STAGER", _stager)
@@ -531,7 +533,7 @@ def test_parse_syngraph_reads_route_json() -> None:
 
 def test_parse_syngraph_on_real_linchemin_fixture() -> None:
     """The captured real LinChemIn output parses into a coherent RouteGraph."""
-    g = parse_syngraph(_ROUTE_FIXTURE.read_text())
+    g = parse_syngraph(_ROUTE_FIXTURE.read_text(encoding="utf-8"))
     assert g.engine == "aizynth" and g.solved and len(g.steps) == 2
     assert g.steps[0].product == "CC(=O)Oc1ccccc1C(=O)O"  # target-first
     # LinChemIn descriptors are present (nr_steps/longest_seq/convergence/…).
@@ -590,8 +592,10 @@ def test_container_prefers_route_json_over_trees(
     out_dir.mkdir()
 
     def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
-        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
-        (out_dir / ROUTE_FILE).write_text(_route_json())
+        (out_dir / "trees.json").write_text(
+            _aizynth_trees(solved=True), encoding="utf-8"
+        )
+        (out_dir / ROUTE_FILE).write_text(_route_json(), encoding="utf-8")
         return 0, "ok"
 
     monkeypatch.setattr(
@@ -629,7 +633,9 @@ def test_container_falls_back_to_trees_when_no_route_json(
     out_dir.mkdir()
 
     def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
-        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
+        (out_dir / "trees.json").write_text(
+            _aizynth_trees(solved=True), encoding="utf-8"
+        )
         return 0, "ok"
 
     monkeypatch.setattr(
@@ -664,8 +670,10 @@ def test_container_bad_route_json_falls_back_to_trees(
     out_dir.mkdir()
 
     def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
-        (out_dir / "trees.json").write_text(_aizynth_trees(solved=True))
-        (out_dir / ROUTE_FILE).write_text("{ this is not valid json ")
+        (out_dir / "trees.json").write_text(
+            _aizynth_trees(solved=True), encoding="utf-8"
+        )
+        (out_dir / ROUTE_FILE).write_text("{ this is not valid json ", encoding="utf-8")
         return 0, "ok"
 
     monkeypatch.setattr(

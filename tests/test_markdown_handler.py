@@ -41,7 +41,7 @@ def test_construction_fails_on_missing_root(store: Store, tmp_path: Path) -> Non
 
 def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
     f = tmp_path / "f.md"
-    f.write_text("hi")
+    f.write_text("hi", encoding="utf-8")
     with pytest.raises(ValueError, match="not a directory"):
         MarkdownHandler(hub=Hub(store=store), root=f)
 
@@ -282,7 +282,7 @@ def test_put_create_rejects_existing(handler: MarkdownHandler, md_root: Path) ->
 def test_put_append(handler: MarkdownHandler, md_root: Path) -> None:
     _write(md_root, "doc.md", "# Doc\n\nFirst para.\n")
     handler.edit(id="doc", text="Appended paragraph.", mode="append")
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "First para." in raw
     assert "Appended paragraph." in raw
     # The block list should now have the new paragraph.
@@ -318,7 +318,7 @@ def test_put_replace_block(handler: MarkdownHandler, md_root: Path) -> None:
         text="Replacement paragraph.",
         mode="replace",
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "Replacement paragraph." in raw
     assert "Original paragraph." not in raw
     # Sibling content preserved.
@@ -357,7 +357,7 @@ def test_put_delete_block(handler: MarkdownHandler, md_root: Path) -> None:
     target = next(b for b in blocks if b.text.startswith("Delete"))
 
     handler.delete(id=f"doc~{target.slug}")
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "Delete me." not in raw
     assert "Keep me." in raw
 
@@ -417,7 +417,7 @@ def test_put_edit_swaps_token_in_block(handler: MarkdownHandler, md_root: Path) 
         after=" fence",
         text="a",
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "over a fence." in raw
     # The first 'The' should be untouched.
     assert raw.startswith("# Title\n\nThe fox")
@@ -434,7 +434,7 @@ def test_put_edit_whole_file_no_selector(
         find="bar",
         text="QUX",
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "Foo and QUX and baz." in raw
 
 
@@ -449,7 +449,7 @@ def test_put_edit_match_all_replaces_every_occurrence(
         text="Y",
         match="all",
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "Y is Y and Y." in raw
 
 
@@ -467,7 +467,7 @@ def test_put_edit_match_nth_picks_specified(
         match="nth",
         nth=2,
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "x is Y and x." in raw
 
 
@@ -551,7 +551,7 @@ def test_put_insert_after_anchor(handler: MarkdownHandler, md_root: Path) -> Non
         where="after",
         text=" cruel",
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "Hello cruel world." in raw
 
 
@@ -564,7 +564,7 @@ def test_put_insert_before_anchor(handler: MarkdownHandler, md_root: Path) -> No
         where="before",
         text="big ",
     )
-    raw = (md_root / "doc.md").read_text()
+    raw = (md_root / "doc.md").read_text(encoding="utf-8")
     assert "big world." in raw
 
 
@@ -603,7 +603,7 @@ def test_put_edit_dry_run_does_not_write(
         dry_run=True,
     )
     # File still has the original content.
-    assert (md_root / "doc.md").read_text() == initial
+    assert (md_root / "doc.md").read_text(encoding="utf-8") == initial
     # Response is the dry-run header + diff.
     assert "DRY RUN" in out.body
     assert "Draft" in out.body or "-Draft" in out.body
@@ -680,7 +680,7 @@ def test_put_edit_dry_run_block_scoped(handler: MarkdownHandler, md_root: Path) 
         text="cat",
         dry_run=True,
     )
-    assert (md_root / "doc.md").read_text() == initial
+    assert (md_root / "doc.md").read_text(encoding="utf-8") == initial
     assert "DRY RUN" in out.body
     assert "-First paragraph with fox" in out.body
     assert "+First paragraph with cat" in out.body
@@ -699,7 +699,7 @@ def test_put_insert_dry_run_does_not_write(
         text=" cruel",
         dry_run=True,
     )
-    assert (md_root / "doc.md").read_text() == initial
+    assert (md_root / "doc.md").read_text(encoding="utf-8") == initial
     assert "DRY RUN" in out.body
     assert "+Hello cruel world." in out.body
 

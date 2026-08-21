@@ -291,7 +291,7 @@ class TestRunInProcessGroup:
         returncode = _run_in_process_group(cmd, env=os.environ.copy())
         assert returncode == 0
 
-        grandchild_pid = int(pidfile.read_text().strip())
+        grandchild_pid = int(pidfile.read_text(encoding="utf-8").strip())
 
         deadline = time.monotonic() + 5.0
         dead = False
@@ -564,7 +564,7 @@ class TestWriteError:
 
         assert err_path.exists()
         assert err_path.name == "bad.error.txt"
-        text = err_path.read_text()
+        text = err_path.read_text(encoding="utf-8")
         assert "bad.pdf" in text
         assert "ingest blew up" in text
         assert "Traceback" in text
@@ -629,7 +629,7 @@ class TestProcessPdf:
         store.set_pdf_storage_path.assert_called_once_with("a" * 64, str(dest))
 
         # ingest.log written with correct columns.
-        log_lines = (corpus_dir / "ingest.log").read_text().splitlines()
+        log_lines = (corpus_dir / "ingest.log").read_text(encoding="utf-8").splitlines()
         assert len(log_lines) == 1
         cols = log_lines[0].split("\t")
         assert cols[1] == "owner"
@@ -680,7 +680,7 @@ class TestProcessPdf:
         # The pre-existing corpus copy is untouched.
         assert existing.read_bytes() == b"%PDF original"
         # Log line records ``existed`` not ``inserted``.
-        log_text = (corpus_dir / "ingest.log").read_text()
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
         assert "\texisted\t" in log_text
 
     def test_existed_but_missing_recovers_to_corpus(self, tmp_path: Path):
@@ -725,7 +725,7 @@ class TestProcessPdf:
         assert not pdf.exists()  # moved out of inbox
         assert dest.parent != duplicates_dir
         # Log line records ``recovered``.
-        log_text = (corpus_dir / "ingest.log").read_text()
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
         assert "\trecovered\t" in log_text
         # Recovery is a corpus placement → storage_path is rewritten to it.
         store.set_pdf_storage_path.assert_called_once_with("c" * 64, str(dest))
@@ -764,7 +764,7 @@ class TestProcessPdf:
         # Sibling .error.txt with traceback.
         err_files = list(bucket.glob("*.error.txt"))
         assert len(err_files) == 1
-        assert "marker exploded" in err_files[0].read_text()
+        assert "marker exploded" in err_files[0].read_text(encoding="utf-8")
         # Failure does NOT write to ingest.log.
         assert not (corpus_dir / "ingest.log").exists()
 
@@ -970,7 +970,7 @@ class TestProcessPdf:
         assert len(ts_buckets) == 1
         err_files = list(ts_buckets[0].glob("*.error.txt"))
         assert len(err_files) == 1
-        assert "no <body>" in err_files[0].read_text()
+        assert "no <body>" in err_files[0].read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

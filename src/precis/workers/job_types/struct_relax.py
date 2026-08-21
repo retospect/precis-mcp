@@ -481,13 +481,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     node = params.get("target_node") or _NODE
 
     in_dir, out_dir = STAGER(structure_ref_id)
-    Path(in_dir, "POSCAR").write_text(poscar)
+    Path(in_dir, "POSCAR").write_text(poscar, encoding="utf-8")
     run_params: dict[str, Any] = {"fidelity": fidelity, "model": model, "steps": steps}
     # Variable-cell relax mode passes through to the container contract (absent
     # ⇒ atoms-only, the historical default the container already assumes).
     if cell:
         run_params["cell"] = cell
-    Path(in_dir, "params.json").write_text(json.dumps(run_params, sort_keys=True))
+    Path(in_dir, "params.json").write_text(
+        json.dumps(run_params, sort_keys=True), encoding="utf-8"
+    )
     argv = build_run_argv(ref_id=structure_ref_id, in_dir=in_dir, out_dir=out_dir)
     ctx.append_chunk("job_event", f"relax[{fidelity}] on {node}: {' '.join(argv)}")
 
@@ -538,7 +540,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
     try:
-        result = json.loads(result_path.read_text())
+        result = json.loads(result_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         ctx.record_failure(
             f"struct_relax: malformed {_RESULT_FILE}: {exc}", failure_class="infra"

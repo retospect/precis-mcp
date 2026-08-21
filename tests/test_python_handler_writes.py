@@ -118,7 +118,7 @@ def test_create_writes_new_file(handler: PythonHandler, repo: Path) -> None:
     assert "qualname preserved:  ok" in out.body
     new_file = repo / "pkg" / "new.py"
     assert new_file.exists()
-    body = new_file.read_text()
+    body = new_file.read_text(encoding="utf-8")
     assert "def foo()" in body
 
 
@@ -158,7 +158,7 @@ def test_append_adds_at_eof(handler: PythonHandler, repo: Path) -> None:
         text="\n\ndef appended() -> int:\n    return 0\n",
         mode="append",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def appended()" in body
     # And it parses (gate 1 happy).
     import ast
@@ -192,7 +192,7 @@ def test_replace_by_qualname_swaps_function(handler: PythonHandler, repo: Path) 
         text="def helper(x: int) -> int:\n    return x * 2\n",
         mode="replace",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "return x * 2" in body
     assert "return x + 1" not in body
 
@@ -204,7 +204,7 @@ def test_replace_by_qualname_swaps_method(handler: PythonHandler, repo: Path) ->
         text="    def greet(self, name: str) -> str:\n        return f'hello {name}'\n",
         mode="replace",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "f'hello {name}'" in body or 'f"hello {name}"' in body
 
 
@@ -230,7 +230,7 @@ def test_replace_by_line_range(handler: PythonHandler, repo: Path) -> None:
         mode="replace",
         allow_rename=True,  # signature changes type annotation
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "return x - 1" in body
 
 
@@ -240,7 +240,7 @@ def test_replace_by_block_selector(handler: PythonHandler, repo: Path) -> None:
         text="    def greet(self, name: str) -> str:\n        return name.upper()\n",
         mode="replace",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "name.upper()" in body
 
 
@@ -253,7 +253,7 @@ def test_replace_whole_file(handler: PythonHandler, repo: Path) -> None:
         mode="replace",
         allow_rename=True,
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "brand_new" in body
     assert "helper" not in body
 
@@ -269,7 +269,7 @@ def test_replace_requires_text(handler: PythonHandler) -> None:
 
 
 def test_gate1_blocks_syntax_error(handler: PythonHandler, repo: Path) -> None:
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="ast.parse failed"):
         handler.edit(
             id="r::pkg.m.helper",
@@ -277,7 +277,7 @@ def test_gate1_blocks_syntax_error(handler: PythonHandler, repo: Path) -> None:
             mode="replace",
         )
     # File untouched.
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ def test_gate1_blocks_syntax_error(handler: PythonHandler, repo: Path) -> None:
 def test_gate2_blocks_accidental_rename(handler: PythonHandler, repo: Path) -> None:
     """Replacing `helper` with a body that defines `renamed` drops a
     qualname — gate 2 must reject."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="qualname-drop"):
         handler.edit(
             id="r::pkg.m.helper",
@@ -296,7 +296,7 @@ def test_gate2_blocks_accidental_rename(handler: PythonHandler, repo: Path) -> N
             mode="replace",
         )
     # File still has original content.
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_gate2_bypassed_with_allow_rename(handler: PythonHandler, repo: Path) -> None:
@@ -306,7 +306,7 @@ def test_gate2_bypassed_with_allow_rename(handler: PythonHandler, repo: Path) ->
         mode="replace",
         allow_rename=True,
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def renamed" in body
     assert "def helper" not in body
 
@@ -314,7 +314,7 @@ def test_gate2_bypassed_with_allow_rename(handler: PythonHandler, repo: Path) ->
 def test_gate2_blocks_class_method_drop(handler: PythonHandler, repo: Path) -> None:
     """Replacing class C with a body that omits `shout` should fail —
     `pkg.m.C.shout` would disappear from the file."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="qualname-drop"):
         handler.edit(
             id="r::pkg.m.C",
@@ -326,7 +326,7 @@ def test_gate2_blocks_class_method_drop(handler: PythonHandler, repo: Path) -> N
 ''',
             mode="replace",
         )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_gate2_passes_when_symbol_moved_within_file(
@@ -340,7 +340,7 @@ def test_gate2_passes_when_symbol_moved_within_file(
         text="def helper(x: int) -> int:\n    # moved logic\n    return x + 100\n",
         mode="replace",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "return x + 100" in body
 
 
@@ -357,7 +357,7 @@ def test_gate3_runs_ruff_fix(handler: PythonHandler, repo: Path) -> None:
         text="import json\ndef helper(x: int) -> int:\n    return x + 1\n",
         mode="replace",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "import json" not in body  # ruff stripped it
 
 
@@ -369,7 +369,7 @@ def test_gate3_runs_ruff_format(handler: PythonHandler, repo: Path) -> None:
         text="def helper(x:int)->int:\n    return x+1\n",
         mode="replace",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     # Spaces around '->' and ':' get normalised by ruff format.
     assert "x: int" in body
     assert "-> int" in body
@@ -389,7 +389,7 @@ def test_gate3_missing_ruff_does_not_block(
         mode="replace",
     )
     assert "ruff:                skipped" in out.body
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "return x + 99" in body  # write still happened
 
 
@@ -402,13 +402,13 @@ def test_delete_by_qualname_removes_function(
     handler: PythonHandler, repo: Path
 ) -> None:
     handler.delete(id="r::pkg.m.helper")
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def helper" not in body
 
 
 def test_delete_by_block_selector(handler: PythonHandler, repo: Path) -> None:
     handler.delete(id="r/pkg/m.py~C.shout")
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def shout" not in body
     assert "def greet" in body  # didn't delete the wrong method
 
@@ -416,7 +416,7 @@ def test_delete_by_block_selector(handler: PythonHandler, repo: Path) -> None:
 def test_delete_by_line_range(handler: PythonHandler, repo: Path) -> None:
     """Lines 4-6 are the helper function in the dedented fixture."""
     handler.delete(id="r/pkg/m.py~L4-L6")
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def helper" not in body
 
 
@@ -497,7 +497,7 @@ def test_edit_swaps_token_in_function(handler: PythonHandler, repo: Path) -> Non
         find="x + 1",
         text="x + 2",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "x + 2" in body
     assert "x + 1" not in body
     # Other symbols intact.
@@ -516,7 +516,7 @@ def test_edit_uses_anchors_to_disambiguate(handler: PythonHandler, repo: Path) -
         after=")",
         text="full_name",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "len(full_name)" in body
     # Other `name` occurrences unchanged.
     assert "self, name: str" in body  # both methods' signatures intact
@@ -533,7 +533,7 @@ def test_edit_match_all_replaces_every_occurrence(
         text="name: bytes",
         match="all",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert body.count("name: bytes") == 2
     assert "name: str" not in body
 
@@ -550,7 +550,7 @@ def test_edit_match_nth_picks_specified(handler: PythonHandler, repo: Path) -> N
         match="nth",
         nth=2,
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert body.count("name: bytes") == 1
     assert "def greet(self, name: str)" in body  # first occurrence untouched
     assert "def shout(self, name: bytes)" in body  # second occurrence changed
@@ -559,13 +559,13 @@ def test_edit_match_nth_picks_specified(handler: PythonHandler, repo: Path) -> N
 def test_edit_unique_match_errors_when_ambiguous(
     handler: PythonHandler, repo: Path
 ) -> None:
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput) as excinfo:
         handler.edit(id="r/pkg/m.py", mode="find-replace", find="name", text="renamed")
     msg = str(excinfo.value)
     assert "matches" in msg
     # File untouched on validation failure.
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_edit_within_qualname_region(handler: PythonHandler, repo: Path) -> None:
@@ -577,7 +577,7 @@ def test_edit_within_qualname_region(handler: PythonHandler, repo: Path) -> None
         find=".upper()",
         text=".lower()",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert ".lower()" in body
     # `greet` body unchanged.
     assert "return helper(len(name))" in body
@@ -585,7 +585,7 @@ def test_edit_within_qualname_region(handler: PythonHandler, repo: Path) -> None
 
 def test_edit_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> None:
     """Gate 1 (ast.parse) catches an edit that produces invalid Python."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="ast.parse failed"):
         handler.edit(
             id="r/pkg/m.py",
@@ -594,14 +594,14 @@ def test_edit_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> None
             text="def )(broken",
         )
     # File untouched.
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_edit_blocks_qualname_drop_via_anchored_replace(
     handler: PythonHandler, repo: Path
 ) -> None:
     """An anchored edit that renames a `def` should fail gate 2."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="qualname-drop"):
         handler.edit(
             id="r/pkg/m.py",
@@ -609,7 +609,7 @@ def test_edit_blocks_qualname_drop_via_anchored_replace(
             find="def helper(",
             text="def renamed(",
         )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_edit_qualname_rename_with_allow_rename(
@@ -622,7 +622,7 @@ def test_edit_qualname_rename_with_allow_rename(
         text="def renamed(",
         allow_rename=True,
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def renamed(" in body
     assert "def helper(" not in body
 
@@ -700,7 +700,7 @@ def test_insert_after_function_definition(handler: PythonHandler, repo: Path) ->
         where="after",
         text="\n\ndef twice(x: int) -> int:\n    return x * 2\n",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def twice" in body
     assert "def helper" in body  # original preserved
 
@@ -716,7 +716,7 @@ def test_insert_before_function_definition(handler: PythonHandler, repo: Path) -
         where="before",
         text="def zeroth(x: int) -> int:\n    return 0\n\n\n",
     )
-    body = (repo / "pkg" / "m.py").read_text()
+    body = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     assert "def zeroth" in body
     assert body.index("def zeroth") < body.index("def helper")
 
@@ -733,7 +733,7 @@ def test_insert_requires_where(handler: PythonHandler) -> None:
 
 def test_insert_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> None:
     """An insert that breaks syntax fails gate 1, file untouched."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="ast.parse failed"):
         handler.edit(
             id="r/pkg/m.py",
@@ -742,7 +742,7 @@ def test_insert_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> No
             where="before",
             text="def )(broken",
         )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 # ---------------------------------------------------------------------------
@@ -752,7 +752,7 @@ def test_insert_blocks_syntax_breakage(handler: PythonHandler, repo: Path) -> No
 
 def test_edit_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None:
     """dry_run=True must NOT touch the file on disk."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     out = handler.edit(
         id="r/pkg/m.py",
         mode="find-replace",
@@ -761,7 +761,7 @@ def test_edit_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None
         dry_run=True,
     )
     # File untouched.
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
     # Header advertises a dry run plus the gates.
     assert "DRY RUN" in out.body
     assert "ast.parse:" in out.body
@@ -801,7 +801,7 @@ def test_edit_dry_run_full_format(handler: PythonHandler, repo: Path) -> None:
 
 def test_edit_dry_run_runs_gates(handler: PythonHandler, repo: Path) -> None:
     """A syntactically broken dry_run still fires gate 1 (no write)."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="ast.parse failed"):
         handler.edit(
             id="r/pkg/m.py",
@@ -810,12 +810,12 @@ def test_edit_dry_run_runs_gates(handler: PythonHandler, repo: Path) -> None:
             text="def )(broken",
             dry_run=True,
         )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_edit_dry_run_qualname_drop_blocks(handler: PythonHandler, repo: Path) -> None:
     """dry_run still enforces gate 2 (qualname-drop)."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     with pytest.raises(BadInput, match="qualname-drop"):
         handler.edit(
             id="r/pkg/m.py",
@@ -824,14 +824,14 @@ def test_edit_dry_run_qualname_drop_blocks(handler: PythonHandler, repo: Path) -
             text="def renamed(",
             dry_run=True,
         )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
 
 
 def test_edit_dry_run_qualname_with_allow_rename(
     handler: PythonHandler, repo: Path
 ) -> None:
     """dry_run + allow_rename: gate 2 passes, file still untouched."""
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     out = handler.edit(
         id="r/pkg/m.py",
         mode="find-replace",
@@ -840,14 +840,14 @@ def test_edit_dry_run_qualname_with_allow_rename(
         allow_rename=True,
         dry_run=True,
     )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
     assert "DRY RUN" in out.body
     assert "qualname-drop:" in out.body
     assert "ok" in out.body  # allow_rename → ok
 
 
 def test_insert_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> None:
-    pre = (repo / "pkg" / "m.py").read_text()
+    pre = (repo / "pkg" / "m.py").read_text(encoding="utf-8")
     out = handler.edit(
         id="r/pkg/m.py",
         mode="insert",
@@ -856,7 +856,7 @@ def test_insert_dry_run_does_not_write(handler: PythonHandler, repo: Path) -> No
         text="\n\ndef twice(x: int) -> int:\n    return x * 2\n",
         dry_run=True,
     )
-    assert (repo / "pkg" / "m.py").read_text() == pre
+    assert (repo / "pkg" / "m.py").read_text(encoding="utf-8") == pre
     assert "DRY RUN" in out.body
     # Diff shows the new function as added lines.
     assert "+def twice" in out.body or "+\n+def twice" in out.body

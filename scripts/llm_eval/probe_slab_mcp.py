@@ -43,7 +43,7 @@ from precis.utils.llm.router import Tier
 SKILL = (
     resources.files("precis.data")
     .joinpath("skills/precis-structure-help.md")
-    .read_text()
+    .read_text(encoding="utf-8")
 )
 
 LIT_HINT = (
@@ -175,7 +175,7 @@ def main() -> None:
         "/private/tmp/claude-501/-Users-reto-work-projects-code-precis-mcp/"
         "16354f43-b0a8-449f-976b-9c6a780dfb08/scratchpad/slab_probe.json"
     )
-    out.write_text(json.dumps(results, indent=2))
+    out.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     # --- report, grouped by task ---
     def key(r: dict) -> tuple:

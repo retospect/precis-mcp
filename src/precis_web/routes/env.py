@@ -87,7 +87,7 @@ def _parse_wrapper_env(path: str) -> dict[str, str]:
         return {}
     p = Path(path)
     try:
-        raw = p.read_text()
+        raw = p.read_text(encoding="utf-8")
     except OSError:
         return {}
     locals_map: dict[str, str] = {}
@@ -181,7 +181,7 @@ def _read_file(path: str | None, *, max_chars: int = 50_000) -> dict[str, Any]:
         }
     p = Path(path)
     try:
-        raw = p.read_text(errors="replace")
+        raw = p.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return {
             "path": str(p),
@@ -223,7 +223,7 @@ def _parse_mcp_config(path: str | None) -> dict[str, Any]:
         return {"path": path, "exists": False, "servers": [], "unreadable": False}
     p = Path(path)
     try:
-        raw = p.read_text()
+        raw = p.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {"path": path, "exists": False, "servers": [], "unreadable": False}
     except OSError as exc:

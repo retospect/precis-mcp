@@ -188,7 +188,7 @@ def ingest_paper(
     if not yaml_path.exists():
         raise FileNotFoundError(yaml_path)
 
-    with open(yaml_path) as f:
+    with open(yaml_path, encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     doc = _validate_doc(yaml_path, doc)
 

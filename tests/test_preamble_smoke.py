@@ -79,7 +79,7 @@ def test_preamble_compiles_with_tooltip_macros(tmp_path: Path) -> None:
     # that compiled: pdfcomment loaded, and the tooltip annotation carrying
     # the full term made it into the PDF. Without this, a TeX install missing
     # pdfcomment.sty would silently un-cover the exact regression surface.
-    log_text = (tmp_path / "main.log").read_text(errors="replace")
+    log_text = (tmp_path / "main.log").read_text(errors="replace", encoding="utf-8")
     assert "pdfcomment" in log_text, "pdfcomment.sty not loaded — tooltip branch dark"
     tooltips = _tooltip_strings(res.pdf.read_bytes())
     assert "Three Letter Acronym" in tooltips, (

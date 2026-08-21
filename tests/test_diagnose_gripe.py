@@ -40,7 +40,7 @@ def _make_repo(tmp_path: Path) -> Path:
     subprocess.run(
         ["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True
     )
-    (repo / "f.txt").write_text("x")
+    (repo / "f.txt").write_text("x", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=str(repo), check=True, capture_output=True)
     subprocess.run(
         [
@@ -378,10 +378,12 @@ class TestSpawnAuth:
     def _clone_with_project_config(tmp_path: Path) -> Path:
         clone = tmp_path / "clone"
         (clone / ".claude").mkdir(parents=True)
-        (clone / ".claude" / "settings.json").write_text('{"hooks": {}}')
-        (clone / "CLAUDE.md").write_text("# project brief")
-        (clone / "AGENTS.md").write_text("# conventions")
-        (clone / "src.py").write_text("x = 1\n")
+        (clone / ".claude" / "settings.json").write_text(
+            '{"hooks": {}}', encoding="utf-8"
+        )
+        (clone / "CLAUDE.md").write_text("# project brief", encoding="utf-8")
+        (clone / "AGENTS.md").write_text("# conventions", encoding="utf-8")
+        (clone / "src.py").write_text("x = 1\n", encoding="utf-8")
         return clone
 
     @staticmethod

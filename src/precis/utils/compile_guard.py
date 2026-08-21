@@ -131,7 +131,7 @@ def check_workspace_compiles(
     excerpt = ""
     if log_path.exists():
         try:
-            log_text = log_path.read_text(errors="replace")
+            log_text = log_path.read_text(errors="replace", encoding="utf-8")
             tail = log_text.splitlines()[-30:]
             excerpt = "\n".join(tail)
         except OSError:

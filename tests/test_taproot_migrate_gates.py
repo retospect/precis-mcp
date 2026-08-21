@@ -54,7 +54,9 @@ _KNOWN_FALSE_POSITIVES = frozenset({"fi176365", "fi176449", "fi176468", "fi17636
 
 def _load_rows() -> list[dict[str, Any]]:
     return [
-        json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()
+        json.loads(line)
+        for line in FIXTURE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
     ]
 
 

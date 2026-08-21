@@ -29,7 +29,7 @@ def _stub_rmapi(tmp_path: Path, *, succeed: bool = True) -> Path:
     exits 0/1."""
     script = tmp_path / "rmapi"
     tail = "exit 0\n" if succeed else "echo 'upload failed' >&2\nexit 1\n"
-    script.write_text('#!/bin/sh\necho "rmapi $@"\n' + tail)
+    script.write_text('#!/bin/sh\necho "rmapi $@"\n' + tail, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return script
 
@@ -131,7 +131,7 @@ def _stub_container(
         sys.exit(0)
         """
     )
-    script.write_text(src)
+    script.write_text(src, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return script
 
@@ -167,7 +167,7 @@ def test_send_pdf_uploads_via_container(tmp_path, monkeypatch) -> None:
     assert res.ok and res.returncode == 0
     assert res.name == "My Draft" and res.folder == "/Precis"
 
-    argv = log.read_text()
+    argv = log.read_text(encoding="utf-8")
     assert "--env REMARKABLE_RMAPI_CONFIG" in argv  # secret passed by key
     assert "SECRET123" not in argv  # …never the value on the command line
     assert "precis-remarkable:t" in argv  # the configured image

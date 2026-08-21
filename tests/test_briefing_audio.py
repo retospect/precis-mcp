@@ -122,7 +122,9 @@ def _fake_podman(cmd, **kwargs):
 
     outdir = next(_Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
     (outdir / "out.mp3").write_bytes(b"fake-mp3")
-    (outdir / "result.json").write_text(_json.dumps({"segments": 4, "duration_s": 7.5}))
+    (outdir / "result.json").write_text(
+        _json.dumps({"segments": 4, "duration_s": 7.5}), encoding="utf-8"
+    )
 
 
 def test_publishes_episode_and_stamps_marker(tmp_path):

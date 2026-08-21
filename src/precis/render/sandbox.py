@@ -191,10 +191,13 @@ def render_python(
         work = Path(td)
         (work / ".mpl").mkdir()
         harness = work / "harness.py"
-        harness.write_text(_HARNESS)
+        harness.write_text(_HARNESS, encoding="utf-8")
         out = work / "figure.png"
         spec = work / "spec.json"
-        spec.write_text(json.dumps({"code": code, "inputs": inputs, "out": str(out)}))
+        spec.write_text(
+            json.dumps({"code": code, "inputs": inputs, "out": str(out)}),
+            encoding="utf-8",
+        )
 
         argv = [sys.executable, "-I", str(harness), str(spec)]
         try:

@@ -251,7 +251,7 @@ def test_get_step_view(cad, tmp_path):
     out = tmp_path / "flange.step"
     resp = cad.get(id="flange", view="step", args={"path": str(out)})
     assert out.exists()
-    assert "ISO-10303" in out.read_text(errors="replace")[:200]
+    assert "ISO-10303" in out.read_text(errors="replace", encoding="utf-8")[:200]
     assert "STEP" in resp.body
 
 

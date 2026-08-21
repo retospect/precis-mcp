@@ -1199,7 +1199,7 @@ time.sleep(30)
 
 def _write_stub(tmp_path: Path, text: str, name: str = "stub.py") -> Path:
     script = tmp_path / name
-    script.write_text(text)
+    script.write_text(text, encoding="utf-8")
     return script
 
 
@@ -1248,7 +1248,7 @@ def test_submit_seed_partial_detached_returns_handle_without_blocking(
     assert os.path.exists(os.path.join(handle["dir"], "request.json"))
 
     # cleanup: release the gate so the child exits instead of leaking.
-    open(os.path.join(handle["dir"], "go"), "w").close()
+    open(os.path.join(handle["dir"], "go"), "w", encoding="utf-8").close()
     _poll_until_terminal(handle)
 
 
@@ -1265,7 +1265,7 @@ def test_poll_seed_partial_detached_running_then_done(
 
     assert runner.poll_seed_partial_detached(handle) == {"state": "running"}
 
-    open(os.path.join(handle["dir"], "go"), "w").close()
+    open(os.path.join(handle["dir"], "go"), "w", encoding="utf-8").close()
     status = _poll_until_terminal(handle)
 
     assert status["state"] == "done"
@@ -1290,7 +1290,7 @@ def test_poll_seed_partial_detached_done_captures_stdout_tail(
 
     assert runner.poll_seed_partial_detached(handle) == {"state": "running"}
 
-    open(os.path.join(handle["dir"], "go"), "w").close()
+    open(os.path.join(handle["dir"], "go"), "w", encoding="utf-8").close()
     status = _poll_until_terminal(handle)
 
     assert status["state"] == "done"
@@ -1310,7 +1310,7 @@ def test_poll_seed_partial_detached_done_reaps_the_child(
     script = _write_stub(tmp_path, _STUB_GATED_OK)
     _patch_child_cmd(monkeypatch, script)
     handle = runner.submit_seed_partial_detached({}, 3, 0)
-    open(os.path.join(handle["dir"], "go"), "w").close()
+    open(os.path.join(handle["dir"], "go"), "w", encoding="utf-8").close()
 
     status = _poll_until_terminal(handle)
     assert status["state"] == "done"
@@ -1406,10 +1406,12 @@ def test_subprocess_main_round_trips_envelope(
     )
     req = tmp_path / "req.json"
     out = tmp_path / "out.json"
-    req.write_text(_json.dumps({"config": {}, "seed": 3, "model_index": 0}))
+    req.write_text(
+        _json.dumps({"config": {}, "seed": 3, "model_index": 0}), encoding="utf-8"
+    )
     rc = runner._subprocess_main(["prog", str(req), str(out)])
     assert rc == 0
-    payload = _json.loads(out.read_text())
+    payload = _json.loads(out.read_text(encoding="utf-8"))
     assert payload["ok"] and payload["result"]["seed"] == 3
 
     def _boom(*a: Any, **k: Any) -> Any:
@@ -1418,7 +1420,7 @@ def test_subprocess_main_round_trips_envelope(
     monkeypatch.setattr(runner, "run_seed_partial", _boom)
     rc = runner._subprocess_main(["prog", str(req), str(out)])
     assert rc == 1
-    payload = _json.loads(out.read_text())
+    payload = _json.loads(out.read_text(encoding="utf-8"))
     assert payload["ok"] is False and "nope" in payload["error"]
 
 
@@ -1861,7 +1863,9 @@ def test_child_cmd_unbuffered_so_a_killed_child_still_has_its_log(
     assert "-u" in runner._child_cmd("req.json", "out.json")
 
     script = tmp_path / "chatty_child.py"
-    script.write_text("import time\nprint('progress: step 1')\ntime.sleep(60)\n")
+    script.write_text(
+        "import time\nprint('progress: step 1')\ntime.sleep(60)\n", encoding="utf-8"
+    )
     log_path = tmp_path / "stdout.log"
     with open(log_path, "wb") as out_fh:
         proc = subprocess.Popen(
@@ -1879,7 +1883,7 @@ def test_child_cmd_unbuffered_so_a_killed_child_still_has_its_log(
     finally:
         if proc.poll() is None:  # pragma: no cover - defensive
             proc.kill()
-    assert "progress: step 1" in log_path.read_text()
+    assert "progress: step 1" in log_path.read_text(encoding="utf-8")
 
 
 def test_tail_logs_keeps_stderr_even_when_stdout_is_huge(tmp_path: Path) -> None:
@@ -1892,8 +1896,10 @@ def test_tail_logs_keeps_stderr_even_when_stdout_is_huge(tmp_path: Path) -> None
     progress push the stderr traceback clean out of the window, losing
     exactly the line that says why the run died. Budget is per stream.
     """
-    (tmp_path / "stderr.log").write_text("ValueError: the real reason it died\n")
-    (tmp_path / "stdout.log").write_text("progress\n" * 5000)
+    (tmp_path / "stderr.log").write_text(
+        "ValueError: the real reason it died\n", encoding="utf-8"
+    )
+    (tmp_path / "stdout.log").write_text("progress\n" * 5000, encoding="utf-8")
 
     tail = runner._tail_logs(str(tmp_path), limit=1000)
 
@@ -1904,8 +1910,8 @@ def test_tail_logs_keeps_stderr_even_when_stdout_is_huge(tmp_path: Path) -> None
 
 def test_tail_logs_gives_a_lone_stream_the_whole_budget(tmp_path: Path) -> None:
     """One empty stream must not cost the other half its window."""
-    (tmp_path / "stderr.log").write_text("")
-    (tmp_path / "stdout.log").write_text("x" * 900)
+    (tmp_path / "stderr.log").write_text("", encoding="utf-8")
+    (tmp_path / "stdout.log").write_text("x" * 900, encoding="utf-8")
 
     tail = runner._tail_logs(str(tmp_path), limit=800)
 

@@ -47,14 +47,14 @@ def main() -> int:
 
     state = os.path.join(tempfile.gettempdir(), f"precis-sizenudge-{sid}")
     try:
-        with open(state) as f:
+        with open(state, encoding="utf-8") as f:
             fired = int(f.read().strip() or "0")
     except (OSError, ValueError):
         fired = 0
     if crossed <= fired:
         return 0
     try:
-        with open(state, "w") as f:
+        with open(state, "w", encoding="utf-8") as f:
             f.write(str(crossed))
     except OSError:
         pass

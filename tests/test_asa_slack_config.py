@@ -37,8 +37,8 @@ def test_falls_back_to_file_when_no_env_or_vault(tmp_path, monkeypatch):
     monkeypatch.setattr("asa_slack.config.reveal_secret", lambda name, **kw: None)
     bot_file = tmp_path / "bot-token"
     app_file = tmp_path / "app-token"
-    bot_file.write_text("xoxb-from-file\n")
-    app_file.write_text("xapp-from-file\n")
+    bot_file.write_text("xoxb-from-file\n", encoding="utf-8")
+    app_file.write_text("xapp-from-file\n", encoding="utf-8")
     cfg = SlackConfig(bot_token_file=str(bot_file), app_token_file=str(app_file))
     bot_token, app_token = load_slack_tokens(cfg)
     assert bot_token == "xoxb-from-file"

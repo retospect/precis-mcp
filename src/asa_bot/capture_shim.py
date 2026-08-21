@@ -101,7 +101,7 @@ class CaptureShim:
     def _append_fallback(self, data: dict[str, Any]) -> None:
         record = dict(data)
         record["fallback_ts"] = datetime.now(tz=UTC).isoformat()
-        with self._fallback_path.open("a") as fh:
+        with self._fallback_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
 
     async def replay_fallback(self) -> int:
@@ -114,7 +114,7 @@ class CaptureShim:
             return 0
         remaining: list[str] = []
         replayed = 0
-        with self._fallback_path.open() as fh:
+        with self._fallback_path.open(encoding="utf-8") as fh:
             lines = fh.readlines()
         for line in lines:
             try:
@@ -129,7 +129,7 @@ class CaptureShim:
                 replayed += 1
             except Exception:
                 remaining.append(line)
-        with self._fallback_path.open("w") as fh:
+        with self._fallback_path.open("w", encoding="utf-8") as fh:
             fh.writelines(remaining)
         if replayed:
             log.info("capture-shim replayed %d fallback records", replayed)

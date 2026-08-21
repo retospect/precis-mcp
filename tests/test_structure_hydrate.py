@@ -25,7 +25,7 @@ _CONFIG_ID = "PdNO111top-a1b2c3"
 
 
 def _load_raw() -> dict:
-    return json.loads(FIXTURE.read_text())
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 @pytest.fixture

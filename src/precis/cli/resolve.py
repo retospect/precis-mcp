@@ -211,7 +211,9 @@ def run(args: argparse.Namespace) -> None:
         print(f"resolve: {message}", file=sys.stderr)
 
     if args.bib and args.format == "latex" and summary.inflight_pub_ids:
-        Path(args.bib).write_text(_emit_stub_bib(summary.inflight_pub_ids))
+        Path(args.bib).write_text(
+            _emit_stub_bib(summary.inflight_pub_ids), encoding="utf-8"
+        )
         print(
             f"resolve: wrote {len(summary.inflight_pub_ids)} stub bib "
             f"entries to {args.bib}",
@@ -220,8 +222,8 @@ def run(args: argparse.Namespace) -> None:
 
     if args.inplace and src_path is not None:
         backup = src_path.with_suffix(src_path.suffix + ".precis.bak")
-        backup.write_text(text)
-        src_path.write_text(resolved)
+        backup.write_text(text, encoding="utf-8")
+        src_path.write_text(resolved, encoding="utf-8")
         print(
             f"resolve: rewrote {src_path} (backup: {backup})",
             file=sys.stderr,
@@ -285,7 +287,7 @@ def _read_input(args: argparse.Namespace) -> tuple[str, Path | None]:
     if not src.is_file():
         print(f"resolve: file not found: {src}", file=sys.stderr)
         sys.exit(2)
-    return src.read_text(), src
+    return src.read_text(encoding="utf-8"), src
 
 
 class _Summary:

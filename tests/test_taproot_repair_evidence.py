@@ -457,7 +457,11 @@ def test_cli_dry_run_is_the_default_and_writes_nothing(
 
     taproot_cli.run(_cli_args(out=str(out)))
 
-    rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     assert len(rows) == 1
     assert rows[0]["link_id"] == link_id
     assert rows[0]["chunk_id"] == chunk_id
@@ -481,7 +485,11 @@ def test_cli_apply_repairs_the_original_row(
 
     taproot_cli.run(_cli_args(apply=True, out=str(out)))
 
-    rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     assert rows[0]["applied"] is True
     src_chunk_id, meta = _link_row(store, link_id)
     assert src_chunk_id == chunk_id
@@ -512,7 +520,11 @@ def test_cli_reports_a_dead_dispatch_as_an_error_row_and_exits_nonzero(
         taproot_cli.run(_cli_args(apply=True, out=str(out)))
     assert exc.value.code == 1
 
-    rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     assert rows[0]["link_id"] == link_id
     assert rows[0]["reason"] is None
     assert "dispatch timed out" in rows[0]["error"]

@@ -768,7 +768,8 @@ def test_eval_canonicalization_scores_a_perfect_judge(tmp_path: Any) -> None:
     fixture.write_text(
         '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "equivalent"}\n'
         '{"pair_id": 2, "claim_a": "C", "claim_b": "D", "relation": "orthogonal"}\n'
-        '{"pair_id": 3, "claim_a": "E", "claim_b": "F", "relation": "contradicts"}\n'
+        '{"pair_id": 3, "claim_a": "E", "claim_b": "F", "relation": "contradicts"}\n',
+        encoding="utf-8",
     )
     # A "perfect" stub judge: pair 1 -> same, pair 2 -> different, pair 3 -> contradicts.
     answers: dict[int, canon.Verdict3] = {1: "same", 2: "different", 3: "contradicts"}
@@ -790,7 +791,8 @@ def test_eval_canonicalization_scores_a_perfect_judge(tmp_path: Any) -> None:
 def test_eval_canonicalization_flags_an_over_merge(tmp_path: Any) -> None:
     fixture = tmp_path / "pairs.jsonl"
     fixture.write_text(
-        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "orthogonal"}\n'
+        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "orthogonal"}\n',
+        encoding="utf-8",
     )
 
     def bad_judge(a: str, b: str) -> Verdict:
@@ -805,7 +807,8 @@ def test_eval_canonicalization_flags_an_over_merge(tmp_path: Any) -> None:
 def test_eval_canonicalization_flags_an_under_merge_as_tolerated(tmp_path: Any) -> None:
     fixture = tmp_path / "pairs.jsonl"
     fixture.write_text(
-        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "equivalent"}\n'
+        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "equivalent"}\n',
+        encoding="utf-8",
     )
 
     def cautious_judge(a: str, b: str) -> Verdict:
@@ -821,7 +824,8 @@ def test_eval_canonicalization_flags_an_under_merge_as_tolerated(tmp_path: Any) 
 def test_report_format_renders_confusion_and_rates(tmp_path: Any) -> None:
     fixture = tmp_path / "pairs.jsonl"
     fixture.write_text(
-        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "orthogonal"}\n'
+        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "orthogonal"}\n',
+        encoding="utf-8",
     )
     report = eval_canonicalization(
         fixture, dedup_judge_fn=lambda a, b: _verdict("different", 0.9), progress=False
@@ -842,7 +846,8 @@ def test_eval_extraction_scores_a_perfect_extractor(tmp_path: Any) -> None:
     fixture = tmp_path / "passages.jsonl"
     fixture.write_text(
         '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n'
-        '{"id": 2, "passage": "p2", "expected_atom_count": 0, "expected_not_claims": []}\n'
+        '{"id": 2, "passage": "p2", "expected_atom_count": 0, "expected_not_claims": []}\n',
+        encoding="utf-8",
     )
     answers: dict[int, ClaimExtraction] = {
         1: ClaimExtraction(atoms=(_ATOM_A,), compound=None, not_claims=()),
@@ -869,7 +874,8 @@ def test_eval_extraction_flags_a_compound_without_atoms_violation(
 ) -> None:
     fixture = tmp_path / "passages.jsonl"
     fixture.write_text(
-        '{"id": 1, "passage": "p1", "expected_atom_count": 0, "expected_not_claims": []}\n'
+        '{"id": 1, "passage": "p1", "expected_atom_count": 0, "expected_not_claims": []}\n',
+        encoding="utf-8",
     )
     # A misbehaving stub that bypasses _coerce_extraction's invariant —
     # eval_extraction's hard gate should still catch it.
@@ -884,7 +890,8 @@ def test_eval_extraction_flags_a_compound_without_atoms_violation(
 def test_eval_extraction_flags_a_residual_conjunction_atom(tmp_path: Any) -> None:
     fixture = tmp_path / "passages.jsonl"
     fixture.write_text(
-        '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n'
+        '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n',
+        encoding="utf-8",
     )
     unsplit = ClaimExtraction(
         atoms=(
@@ -908,7 +915,8 @@ def test_eval_extraction_bare_and_condition_list_is_not_flagged(tmp_path: Any) -
     list joined by a bare "and" must not be treated as an un-split atom."""
     fixture = tmp_path / "passages.jsonl"
     fixture.write_text(
-        '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n'
+        '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n',
+        encoding="utf-8",
     )
     clean = ClaimExtraction(
         atoms=(
@@ -929,7 +937,8 @@ def test_eval_extraction_disagreement_is_soft_not_a_violation(tmp_path: Any) -> 
     never counted among either hard gate's violations."""
     fixture = tmp_path / "passages.jsonl"
     fixture.write_text(
-        '{"id": 1, "passage": "p1", "expected_atom_count": 2, "expected_not_claims": []}\n'
+        '{"id": 1, "passage": "p1", "expected_atom_count": 2, "expected_not_claims": []}\n',
+        encoding="utf-8",
     )
     one_atom = ClaimExtraction(atoms=(_ATOM_A,), compound=None, not_claims=())
     report = eval_extraction(fixture, extract_fn=lambda t: one_atom, progress=False)
@@ -942,7 +951,8 @@ def test_eval_extraction_disagreement_is_soft_not_a_violation(tmp_path: Any) -> 
 def test_extraction_report_format_renders_gates_and_metric(tmp_path: Any) -> None:
     fixture = tmp_path / "passages.jsonl"
     fixture.write_text(
-        '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n'
+        '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n',
+        encoding="utf-8",
     )
     one_atom = ClaimExtraction(atoms=(_ATOM_A,), compound=None, not_claims=())
     report = eval_extraction(fixture, extract_fn=lambda t: one_atom, progress=False)

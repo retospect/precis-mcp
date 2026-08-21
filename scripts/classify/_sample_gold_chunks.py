@@ -256,7 +256,7 @@ def main() -> None:
         bucket_counts[r["weak"]] += 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w") as f:
+    with args.output.open("w", encoding="utf-8") as f:
         f.write("# gold_set_chunks — hand/LLM-labeled paper CHUNKS for the\n")
         f.write("# chunk-level axes role: and open-question: (ADR 0047).\n")
         f.write(f"# {len(picked)} chunks. Weak-bucket mix: ")

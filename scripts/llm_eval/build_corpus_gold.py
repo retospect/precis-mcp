@@ -289,7 +289,7 @@ TASKS = [
 
 if __name__ == "__main__":
     out = Path(__file__).parent / "gold_set" / "corpus_v1.json"
-    out.write_text(json.dumps(TASKS, indent=2))
+    out.write_text(json.dumps(TASKS, indent=2), encoding="utf-8")
     n_recall = sum(t["axis"] == "long-context-recall" for t in TASKS)
     n_tool = sum(t["axis"] == "tool-structured" for t in TASKS)
     print(

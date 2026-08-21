@@ -197,7 +197,7 @@ def test_agentic_gate_explicit_override(monkeypatch) -> None:
 
 def test_agentic_gate_auto_on_mcp_config(monkeypatch, tmp_path) -> None:
     cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}")
+    cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     assert dp._agentic_enabled() is True
     # override still wins over the auto-trigger

@@ -165,6 +165,17 @@ Start at `docs/codebase.md`'s package map, then the owning package's
   registered synthesis pass. "Update" = DELETE + INSERT so the
   embedding/summary cascade re-runs — in-place UPDATE strands
   `chunk_embeddings`/`chunk_summaries`.
+- **Text IO always names its encoding.** `open()`/`Path.open()`/
+  `read_text()`/`write_text()` default to the *locale* encoding, which is
+  cp1252 on the Windows CI leg — a bare read of a UTF-8 file dies there with
+  `UnicodeDecodeError` and never locally. Two guards, because neither is
+  enough: ruff `PLW1514` (preview rule, opted in by exact code — see the
+  `[tool.ruff.lint]` comment) only tracks a name as a `Path` while it's bound
+  directly to `Path(...)`, and the `/` binop erases that — `Path(d) / "x"`
+  then `.read_text()` is invisible to it (69 of the 388 real sites were all it
+  saw). `tests/test_text_io_encoding.py` AST-walks the rest. Neither sees
+  `subprocess(..., text=True)`, which decodes the child's stdout by the same
+  locale rule; pass `encoding="utf-8"` there by hand.
 - **Outbound HTTP → `safe_fetch`.** Agent-supplied-URL fetches (direct or
   post-redirect) must use `safe_get`/`safe_stream`
   (`src/precis/utils/safe_fetch.py`); raw

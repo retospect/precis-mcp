@@ -178,11 +178,11 @@ def parse_af3_output(
     cif_path = _find_one(out_dir, "_model.cif")
     summary_path = _find_one(out_dir, "_summary_confidences.json")
 
-    cif = cif_path.read_text() if cif_path else ""
+    cif = cif_path.read_text(encoding="utf-8") if cif_path else ""
     summary: dict[str, Any] = {}
     if summary_path:
         try:
-            loaded = json.loads(summary_path.read_text())
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 summary = loaded
         except (ValueError, OSError):

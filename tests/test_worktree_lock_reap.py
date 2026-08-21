@@ -181,7 +181,7 @@ def repo_trio(tmp_path: Path) -> dict[str, Path]:
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
     (hooks_dir / "session-start-lock.sh").chmod(0o755)
-    (primary / "README.md").write_text("root\n")
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
     _git(primary, "add", "-A")
     _git(primary, "commit", "-q", "-m", "initial")
 
@@ -191,7 +191,7 @@ def repo_trio(tmp_path: Path) -> dict[str, Path]:
     _git(primary, "worktree", "add", "-q", "-b", "worktree-B", str(b), "main")
 
     # B does real work...
-    (b / "feature.txt").write_text("feature work\n")
+    (b / "feature.txt").write_text("feature work\n", encoding="utf-8")
     _git(b, "add", "-A")
     _git(b, "commit", "-q", "-m", "feature work")
 
@@ -251,7 +251,8 @@ def test_session_start_lock_locks_durable_pid_not_transient_wrapper(
         f"""echo $$ > "{claude_pid_file}"
 bash -c 'echo $$ > "{wrapper_pid_file}"; cd "{b}" && bash "{hook}"; :'
 sleep 60
-"""
+""",
+        encoding="utf-8",
     )
     inner.chmod(0o755)
 
@@ -265,8 +266,8 @@ sleep 60
         assert _wait_for(lambda: wrapper_pid_file.exists()), (
             "wrapper pid never recorded"
         )
-        durable_pid = int(claude_pid_file.read_text().strip())
-        wrapper_pid = int(wrapper_pid_file.read_text().strip())
+        durable_pid = int(claude_pid_file.read_text(encoding="utf-8").strip())
+        wrapper_pid = int(wrapper_pid_file.read_text(encoding="utf-8").strip())
 
         # `claude_bin` is exec'd directly by Popen (no intervening shell),
         # so the Popen'd pid IS the "claude"-named process.
@@ -323,7 +324,8 @@ def test_live_locked_session_survives_reap_then_dead_lock_is_still_reaped(
     inner.write_text(
         f"""bash "{hook}"
 sleep 120
-"""
+""",
+        encoding="utf-8",
     )
     inner.chmod(0o755)
 

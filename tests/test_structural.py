@@ -521,7 +521,7 @@ def test_tool_starved_pass_raises_alert_not_digest(
     what the dropped-credential incident needed and didn't have."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}")
+    cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
@@ -548,7 +548,7 @@ def test_pass_using_precis_tool_writes_digest_no_starvation_alert(
     starved, however few calls it made."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}")
+    cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
@@ -597,7 +597,7 @@ def test_tool_starved_check_needs_a_definitive_zero(
     ``_is_silent_empty``'s never-a-false-zero discipline."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}")
+    cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,
@@ -641,7 +641,7 @@ def test_silent_empty_still_fires_even_with_mcp_config_offered(
     checked first."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}")
+    cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     _stub_agent(
         monkeypatch,

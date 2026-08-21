@@ -779,7 +779,7 @@ class TestRunExceptionMapping:
         )
         _run("git", "config", "user.email", "t@t")
         _run("git", "config", "user.name", "t")
-        (repo / "f.txt").write_text("x")
+        (repo / "f.txt").write_text("x", encoding="utf-8")
         _run("git", "add", ".")
         _run("git", "commit", "-q", "-m", "init")
         return repo
@@ -956,7 +956,7 @@ class TestRunPerformsTrustedSidePush:
             # Simulate the agent's ONLY allowed action: committing locally
             # inside the (already-cloned) sandbox working tree. No push —
             # the agent has no origin mount and no push creds.
-            (clone_dir / "fix.txt").write_text("fixed")
+            (clone_dir / "fix.txt").write_text("fixed", encoding="utf-8")
             env = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": "agent",

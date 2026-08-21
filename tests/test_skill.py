@@ -729,7 +729,7 @@ def test_overview_kinds_table_names_env_gates() -> None:
     text = (
         resources.files("precis.data.skills")
         .joinpath("precis-overview.md")
-        .read_text("utf-8")
+        .read_text(encoding="utf-8")
     )
     # Every shipped file-backed kind row names its env-var gate.
     # ``markdown`` / ``plaintext`` / ``tex`` all share ``PRECIS_ROOT``

@@ -598,7 +598,7 @@ def test_neutral_cwd_is_stable_and_empty() -> None:
 
 
 def test_ambient_scan_finds_a_project_claude_md(tmp_path: Path) -> None:
-    (tmp_path / "CLAUDE.md").write_text("# rogue persona\n")
+    (tmp_path / "CLAUDE.md").write_text("# rogue persona\n", encoding="utf-8")
     sub = tmp_path / "work"
     sub.mkdir()
     found = pt._ambient_claude_md_paths(str(sub))

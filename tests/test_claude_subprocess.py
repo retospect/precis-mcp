@@ -43,7 +43,8 @@ def _write_env_dump_stub(path: Path, dump_path: Path) -> None:
     ``subprocess.run(env=...)`` handed it — a full replacement, not a merge)
     to ``dump_path``, then exits 0."""
     path.write_text(
-        f"#!/usr/bin/env bash\nenv > {shlex.quote(str(dump_path))}\nexit 0\n"
+        f"#!/usr/bin/env bash\nenv > {shlex.quote(str(dump_path))}\nexit 0\n",
+        encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
@@ -89,7 +90,7 @@ def test_bootstrap_oauth_false_keeps_isolated_env_free_of_real_token(
         bootstrap_oauth=False,
     )
 
-    dumped = dump.read_text()
+    dumped = dump.read_text(encoding="utf-8")
     assert ENV_VAR not in dumped
     # the caller's own dict must be untouched — run_claude copies, never
     # mutates the dict it was handed.
@@ -121,7 +122,7 @@ def test_bootstrap_oauth_default_true_injects_token_from_vault(
         env=caller_env,
     )
 
-    dumped = dump.read_text()
+    dumped = dump.read_text(encoding="utf-8")
     assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT" in dumped
     # Still never mutates the caller's dict — only the internal copy that
     # was actually handed to the subprocess gains the token.
@@ -152,7 +153,7 @@ def test_run_claude_env_none_does_not_touch_process_environ(
         env=None,
     )
 
-    dumped = dump.read_text()
+    dumped = dump.read_text(encoding="utf-8")
     assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT-2" in dumped
     assert ENV_VAR not in os.environ
 
@@ -169,7 +170,7 @@ def _write_failing_stub(path: Path, *, stdout: str = "", stderr: str = "") -> No
     if stderr:
         lines.append(f"printf %s {shlex.quote(stderr)} >&2")
     lines.append("exit 1")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
 

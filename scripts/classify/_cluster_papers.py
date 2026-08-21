@@ -161,7 +161,7 @@ def main() -> None:
     labels = km.fit_predict(vecs)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", newline="") as f:
+    with args.output.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["slug", "cluster", "journal", "year", "n_blocks", "title"])
         for slug, cluster, jr, yr, nb, ti in zip(
@@ -178,7 +178,7 @@ def main() -> None:
     if args.top_journals is not None:
         jcounts = Counter(j for j in journals if j)
         out = args.output.with_name("top-journals.txt")
-        with out.open("w") as f:
+        with out.open("w", encoding="utf-8") as f:
             f.write(f"# top {args.top_journals} journal names by paper count\n")
             f.write("# (use to seed src/precis/data/axes/journal_domains.yaml)\n\n")
             for jr, n in jcounts.most_common(args.top_journals):

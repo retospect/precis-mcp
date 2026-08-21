@@ -340,7 +340,7 @@ def test_cache_corrupt_file_returns_none(tmp_path: Path) -> None:
     # Manually plant a junk file at the expected path.
     path = cache.path_for("broken")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("not json {{{")
+    path.write_text("not json {{{", encoding="utf-8")
     assert cache.load("broken", "any-sha") is None
 
 

@@ -183,7 +183,7 @@ def _load_axes() -> list[dict[str, Any]]:
     axes: list[dict[str, Any]] = []
     for path in sorted(_AXES_DIR.glob("*.yaml")):
         try:
-            data = yaml.safe_load(path.read_text())
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:
             log.exception("categorizers: failed to parse axis file %s", path)
             continue
@@ -196,7 +196,7 @@ def _load_topics() -> list[dict[str, Any]]:
     topics: list[dict[str, Any]] = []
     for path in sorted(_TOPICS_DIR.glob("*.yaml")):
         try:
-            data = yaml.safe_load(path.read_text())
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:
             log.exception("categorizers: failed to parse topic file %s", path)
             continue

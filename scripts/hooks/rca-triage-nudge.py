@@ -59,7 +59,7 @@ def main() -> int:
     if os.path.exists(marker):
         return 0
     try:
-        with open(marker, "w") as f:
+        with open(marker, "w", encoding="utf-8") as f:
             f.write("fired\n")
     except OSError:
         return 0  # can't write the marker — stay silent rather than repeat

@@ -41,7 +41,7 @@ def load_axis(axis_id: str, axes_dir: Path) -> dict:
     p = axes_dir / f"{axis_id}.yaml"
     if not p.exists():
         sys.exit(f"error: no axis def at {p}")
-    return yaml.safe_load(p.open())
+    return yaml.safe_load(p.open(encoding="utf-8"))
 
 
 # ---- claim: body chunks lacking this axis's tag -----------------------

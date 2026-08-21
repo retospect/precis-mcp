@@ -390,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(report.format())
         if args.json:
-            with open(args.json, "w") as f:
+            with open(args.json, "w", encoding="utf-8") as f:
                 json.dump(report.to_dict(), f, indent=2, default=str)
     finally:
         store.close()

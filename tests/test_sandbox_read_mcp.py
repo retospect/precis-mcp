@@ -129,7 +129,7 @@ class TestMcpJsonPayload:
         assert path.is_file()
         import json
 
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert data["mcpServers"]["precis"]["url"] == "http://10.0.2.2:6001/mcp"
 
 

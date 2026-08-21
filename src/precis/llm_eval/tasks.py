@@ -60,7 +60,7 @@ def load_gold_set(path: str | Path | None = None) -> list[GoldTask]:
     """
     p = Path(path) if path is not None else default_gold_path()
     try:
-        raw = json.loads(p.read_text())
+        raw = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BadInput(f"llm eval: cannot read gold set {p}: {exc}") from exc
     if not isinstance(raw, list):

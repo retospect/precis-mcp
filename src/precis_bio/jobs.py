@@ -162,7 +162,8 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> ProteinFold
 
     in_dir, out_dir = STAGER(ref_id)
     Path(in_dir, INPUT_FILE).write_text(
-        json.dumps(engine.build_input(name=name, sequence=sequence, seeds=seeds))
+        json.dumps(engine.build_input(name=name, sequence=sequence, seeds=seeds)),
+        encoding="utf-8",
     )
     argv = engine.run_argv(
         ref_id=ref_id,

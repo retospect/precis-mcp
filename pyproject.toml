@@ -515,7 +515,14 @@ line-length = 88
 extend-exclude = [".claude"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW1514"]
+# PLW1514 (unspecified-encoding) is still a preview rule in ruff 0.16, so it
+# needs `preview` on to fire at all. `explicit-preview-rules` keeps that from
+# being a blanket opt-in: preview rules arrive only when named by their exact
+# code, so the prefix selectors above (E/F/I/UP/B/SIM/RUF) stay stable-only and
+# a ruff upgrade can't silently redden the gate with unrelated preview rules.
+preview = true
+explicit-preview-rules = true
 ignore = [
     "B008",    # function-call-in-default-argument (typer pattern)
     "E501",    # line-too-long (formatter handles what it can)

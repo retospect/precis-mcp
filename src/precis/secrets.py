@@ -140,7 +140,7 @@ def _pgpass_lookup(*, host: str, port: str, dbname: str, user: str) -> str | Non
     first-match-wins, per libpq's own rules. ``None`` when absent."""
     path = Path(os.environ.get("PGPASSFILE") or (Path.home() / ".pgpass"))
     try:
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
     for raw in lines:
@@ -230,7 +230,7 @@ def _file_dir() -> Path:
 
 def _from_file(name: str) -> str | None:
     try:
-        text = (_file_dir() / name).read_text().strip()
+        text = (_file_dir() / name).read_text(encoding="utf-8").strip()
     except OSError:
         return None
     return text or None
