@@ -71,13 +71,41 @@ overlapping the first.
 Not reproduced deterministically — the interleaving above is the mechanism
 that fits the evidence, not a captured trace.
 
+## `scripts/ship` has the same steal race — and half the fix already
+
+Noted 2026-08-21 while waiting on the ship lock. `scripts/ship`'s
+`precis-ship.lock.d` mutex is the same shape: read `holder`, `kill -0` it, then
+an unconditional `rm -rf` that is not atomic with the `mkdir`. Two waiters can
+still both acquire.
+
+Its **release** path, though, is what `scripts/deploy` should copy:
+
+```bash
+if [[ "$holder_pid" == "$$" ]]; then      # positive ownership match
+    rm -rf "$LOCKDIR" 2>/dev/null || true
+fi
+```
+
+with the reasoning already written down beside it — a missing or unparseable
+holder is ambiguous (ours with a failed write, or a sibling mid-steal), and
+deleting a sibling's live lock has no recovery while leaking our own self-heals
+via the staleness steal. `scripts/deploy`'s trap removes whatever directory is
+present, unconditionally, which is the second half of the race table above.
+
+So the fix has an in-repo precedent, and the two lock implementations should
+end up sharing one. Fixing only `deploy` leaves `ship` able to double-acquire —
+and a double ship is the shared-`.git/index` clobber that
+`shared_index_ship_race` documents.
+
 ## Work
 
-1. **Make the steal atomic.** Acquire identity and directory in one step
+1. **Make the steal atomic.** Applies to `scripts/deploy` **and**
+   `scripts/ship`. Acquire identity and directory in one step
    rather than two: `mkdir` a uniquely-named dir and `rename`/`ln` it into
    place, or re-read the pid immediately after a successful `mkdir` and
    abort if it is not ours. A steal must fail when the directory it targets
-   is no longer the one it inspected.
+   is no longer the one it inspected. Give `scripts/deploy`'s trap the
+   ownership check `scripts/ship` already has.
 2. **Fix the assert's `fail_msg`.** It sends the operator to "re-run" while
    explicitly denying the cause. It should compare the installed sha's
    *ancestry* to the pinned one and say so: installed-is-a-descendant means

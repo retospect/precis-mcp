@@ -1,6 +1,6 @@
 ---
 status: draft
-title: 297 claim hubs have a refs.title that differs from their ord=0 body chunk — search and dedup run on the wrong string
+title: 45 claim hubs have a refs.title that differs from their ord=0 body chunk — search and dedup run on the wrong string (297 was the contaminated-predicate count)
 model: sonnet
 ---
 
@@ -17,6 +17,38 @@ Measured 2026-08-19 over the live claim cohort (`kind='finding'` +
 
 Found while picking an exemplar hub, not by any check — nothing in the
 codebase compares the two.
+
+## Re-measured strict 2026-08-21 — it is 45, and there is only one cohort
+
+The count above used `kind='finding'` + `TAPROOT:claim`, which sweeps in the
+~280 chase-tree findings that never mint. Adding `STATUS:canonical` (the real
+claim-hub predicate — `taproot/canon.py::claim_hub_predicate_sql`):
+
+| | hubs |
+|---|---|
+| strict claim hubs | 1,249 |
+| **diverged** | **45 (3.6%)** |
+| of those, body longer | **3** |
+| of those, title longer | 42 |
+
+By `created_at`: 2026-08-03 (5), 2026-08-04 (37), 2026-08-17 (3). **Zero June.**
+
+So the whole ~209-hub June cohort below — the half that needs the *opposite*
+repair — consists entirely of non-canonical chase-tree rows. They never mint,
+and their bodies are internal (see "the body is internal", below).
+
+The 3 remaining body-longer rows are all 2026-08-04, i.e. the same August
+incident, and reading them shows length is not evidence of authority: each has
+an authored claim sentence in `title` and a discursive recap in the body
+("The original nanobud synthesis by Nasibulin et al. employed…"). fi190976,
+fi191129, fi191134 — eyeball before the run, but the expected verdict is
+title-authoritative like the other 42.
+
+**Consequence: for real hubs this is one cohort in one direction — chunk ←
+title, which is exactly what `refine_claim_sentence` already does.** The
+opposite-repair hazard, and the ordering constraint it forces in work item 4,
+apply only to chase-tree rows. Both are recorded below as originally written;
+read them as describing the permissive population.
 
 ## Why this is worse than a cosmetic split
 
@@ -167,19 +199,26 @@ see the status note above.
 
 1. ~~**Find and fix the writer.**~~ **Done 2026-08-21** — swept, no live
    bypassing writer remains (see above). The repair is no longer temporary.
-2. **Repair per cohort**, not globally: August → chunk from title, June →
-   title from body. Re-derive `pub_id` after, and re-run the duplicate scan,
-   since collapsing divergence can surface hidden duplicates (this already
-   happened twice: fi191259/191268 and fi191179/191260).
+2. **Repair the 45 strict hubs: chunk from title, one direction.** The June
+   cohort that motivated "per cohort, not globally" is not in the strict
+   population at all (see the re-measure above) — eyeball fi190976, fi191129,
+   fi191134 first, then run. Re-derive `pub_id` after, and re-run the duplicate
+   scan, since collapsing divergence can surface hidden duplicates (this
+   already happened twice: fi191259/191268 and fi191179/191260).
+   Chase-tree rows are out of scope: they never mint, and nothing publishes
+   their bodies. If they are ever repaired it is a separate, lower-stakes pass
+   that still needs the per-cohort split.
 3. **Detection has landed** — `title-body-divergence` and
    `missing-body-chunk` in the `precis taproot lint` cohort sweep, reporting
    only. Do not add either to `--fix`; see the opposite-repair argument above.
-4. Sequence this **before Phase 3.1 (notation normalization), not just before
-   re-approval.** `refine_claim_sentence` — the door every repair pass writes
-   through — sets the title *and derives the body chunk from it*. So
-   normalizing a June-cohort hub would overwrite its good body text with the
-   normalized short label. The ~209 June hubs must have the better text
-   promoted into `title` first; only then is deriving the chunk safe.
+4. ~~Sequence this **before Phase 3.1 (notation normalization)**~~ —
+   **dissolved 2026-08-21 for hubs.** The constraint was: `refine_claim_sentence`
+   sets the title *and derives the body chunk from it*, so normalizing a
+   June-cohort hub would overwrite its good body with the normalized short
+   label. There are no June-cohort *hubs* — all 45 are title-authoritative, so
+   deriving the chunk is already the correct repair and normalization can run
+   in either order. Kept here because the reasoning still governs any future
+   pass over chase-tree rows.
    Re-approval comes after both, per the drift-ordering constraint in
    `nanopub-corpus-remediation.md`: repairing a title once its `claim_sha` has
    frozen re-triggers gate #14.
