@@ -307,13 +307,18 @@ def check_primary_source(
       so :func:`precis.nanopub.mint.approve` can read the PRE-reword body
       (the retitle door replaces ``finding_body`` with the new sentence).
 
-    **Retiring the prose arm** needs one thing to be true: every live hub
-    whose body matches :data:`~precis.nanopub.evidence.ACQUISITION_MARKER`
-    carries the declared flag instead (six in prod as of 2026-08-19).
-    ``precis nanopub backfill-unheld`` is that migration, and its dry run
-    is the test — an empty listing means the regex has no remaining source
-    and can go with the drop of a paragraph, since no code path writes the
-    prose. It stays for this release so nothing regresses mid-deploy.
+    **Retiring the prose arm** needs one thing to be true: every live
+    ``finding`` whose body matches
+    :data:`~precis.nanopub.evidence.ACQUISITION_MARKER` carries the declared
+    flag instead. ``precis nanopub backfill-unheld`` is that migration, and
+    its dry run is the test — an empty listing means the regex has no
+    remaining source and can go with the drop of a paragraph, since no code
+    path writes the prose. **Verified empty on prod 2026-08-21**: all six
+    rows are stamped, and none is ``STATUS:canonical``, so the dry run only
+    became a sound test once
+    :func:`~precis.nanopub.evidence.prose_marked_hubs` stopped scoping
+    itself to canonical hubs (see its docstring). The arm stays for this
+    release so nothing regresses mid-deploy.
 
     A pure-prose hub is exactly the case ``approve`` must refuse BEFORE
     rewording — see its short-circuit; once the body is rewritten the

@@ -107,9 +107,24 @@ gate. Nothing about it is externally visible. This is what makes the
 "one authored sentence, reassembly on export" design safe — see
 `nanopub-corpus-remediation.md`.
 
-### Precondition: migrate the 6 acquisition markers first — now one command
+### Precondition: migrate the 6 acquisition markers first — SATISFIED
 
-**Status 2026-08-21: built, not yet run on prod.** The structural replacement
+**Status 2026-08-21: satisfied on prod — this no longer blocks the repair.**
+All six marker-carrying rows already carry `meta.primary_source_unheld`, so the
+gate's structural `declared` arm covers every one of them and deriving the body
+chunk from the title can no longer silently disable it.
+
+Two caveats worth carrying, since the table below is what made this a
+precondition:
+
+- the six are **not canonical claim hubs** — they carry `TAPROOT:claim` without
+  `STATUS:canonical`, i.e. chase-tree rows. The 2026-08-19 measurement used the
+  permissive predicate, so "6 hubs" overstated what they are;
+- the dry run that reports this was itself scoped to canonical hubs and so
+  could not see them. Fixed 2026-08-21 — full account in
+  `acquisition-marker-lives-in-the-wrong-place.md`.
+
+The structural replacement
 shipped 2026-08-20 — `gates.check_primary_source` now has three structural arms
 (`derived` / `awaiting` / `declared`) ahead of the prose one, and the migration
 off prose is a dry-run-by-default backfill:
@@ -145,7 +160,8 @@ than today — `ACQUISITION_MARKER` is a regex over free text
 (`not (yet )?in (the )?corpus|needs? acquisition`), so a reworded note like
 "primary not yet acquired" already slips past it.
 
-**Do not derive the body chunk until those 6 are migrated.**
+~~**Do not derive the body chunk until those 6 are migrated.**~~ Migrated —
+see the status note above.
 
 ## Work
 

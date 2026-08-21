@@ -433,25 +433,37 @@ def hub_body(store: Store, hub_ref_id: int) -> str:
 
 
 def prose_marked_hubs(store: Store) -> list[tuple[int, str, str]]:
-    """Every live claim hub whose ``finding_body`` still carries the
+    """Every live ``finding`` whose ``finding_body`` still carries the
     legacy :data:`ACQUISITION_MARKER` prose, as ``(ref_id, title,
     matched marker)`` — the backfill's dry run, and the standing answer
     to "can the prose arm go yet?" (empty = yes).
 
+    **Deliberately not scoped to canonical claim hubs.** This asked
+    :func:`~precis.taproot.canon.claim_hub_predicate_sql` until
+    2026-08-21, which made the answer wrong in the dangerous direction:
+    ``mint``/``approve`` apply no such predicate, so the gate runs on any
+    ``finding`` handed to them, and all six of prod's prose-marked rows
+    carry ``TAPROOT:claim`` *without* ``STATUS:canonical`` — chase-tree
+    findings, invisible to the strict query. Unstamped, they would have
+    reported "retirable" while the prose was still the only record of
+    their acquisition state. The two errors are not symmetric: a false
+    positive delays retiring a paragraph, a false negative silently
+    deletes a live provenance gate, so this matches the gate's reach
+    rather than the corpus's tidier definition of a hub.
+
     The one regex serves both dialects: PostgreSQL's ARE understands
     ``(?:…)`` non-capturing groups, so :data:`ACQUISITION_MARKER`'s
     pattern goes straight into ``~*`` and there is no second copy to
-    drift. Hubs already carrying :data:`PRIMARY_UNHELD_META_KEY` are
+    drift. Refs already carrying :data:`PRIMARY_UNHELD_META_KEY` are
     excluded — that is what makes the backfill idempotent and this list
     a shrinking work queue rather than a census."""
-    from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
-
-    params: dict[str, object] = dict(CLAIM_HUB_PREDICATE_PARAMS)
-    params["marker"] = ACQUISITION_MARKER.pattern
-    params["flag"] = PRIMARY_UNHELD_META_KEY
+    params: dict[str, object] = {
+        "marker": ACQUISITION_MARKER.pattern,
+        "flag": PRIMARY_UNHELD_META_KEY,
+    }
     with store.pool.connection() as conn:
         rows = conn.execute(
-            f"""
+            """
             SELECT r.ref_id, r.title,
                    substring(c.text from %(marker)s)
               FROM refs r
@@ -463,7 +475,6 @@ def prose_marked_hubs(store: Store) -> list[tuple[int, str, str]]:
                AND c.retired_at IS NULL
                AND c.text ~* %(marker)s
                AND (r.meta ->> %(flag)s)::boolean IS NOT TRUE
-               AND {claim_hub_predicate_sql()}
              ORDER BY r.ref_id
             """,
             params,

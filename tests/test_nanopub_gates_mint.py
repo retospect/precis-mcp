@@ -485,6 +485,41 @@ def test_backfill_moves_the_prose_marker_onto_the_declared_flag(
     assert _gate_slugs(store, clean, _payload(chunk, sha)) == set()
 
 
+def test_backfill_sees_marked_findings_that_are_not_canonical_hubs(
+    store: Any,
+) -> None:
+    """The retirement test must span the *gate's* reach, not the corpus's
+    definition of a hub. ``mint``/``approve`` apply no claim-hub predicate,
+    so a ``TAPROOT:claim`` finding that lost ``STATUS:canonical`` to
+    ``chase.py::_set_status`` still reaches ``check_primary_source`` — and
+    all six of prod's prose-marked rows are exactly that shape. Scoping this
+    query to canonical hubs (as it did until 2026-08-21) reported "no prose
+    left, retirable" while their acquisition state lived only in prose."""
+    citing, chunk, _sha = _seed_paper(store)
+    chased = _seed_hub(store, "DFT shows the chased claim holds.", citing, chunk)
+    store.blocks.replace_body_chunk(
+        chased,
+        "DFT shows the chased claim holds. Paper not in corpus — needs acquisition.",
+        chunk_kind="finding_body",
+        source="agent",
+    )
+    # Demote out of the claim-hub predicate the way chase.py does: the
+    # STATUS tag is replaced wholesale, TAPROOT:claim is left alone.
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            DELETE FROM ref_tags
+             USING tags
+             WHERE ref_tags.tag_id = tags.tag_id
+               AND ref_tags.ref_id = %s
+               AND tags.namespace = 'STATUS'
+            """,
+            (chased,),
+        )
+
+    assert [h[0] for h in evidence.prose_marked_hubs(store)] == [chased]
+
+
 def test_card_variant_chunk_does_not_make_a_stub_held(store: Any) -> None:
     # ord < 0 is a synthesized card, not the paper's text.
     citing, chunk, sha = _seed_paper(store)

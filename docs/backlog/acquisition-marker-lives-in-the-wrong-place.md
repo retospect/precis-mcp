@@ -75,8 +75,9 @@ one call).
 
 The prose regex stays as a fallback for one release. It has **no writer in this
 codebase** — it is agent free text — so retiring it needs only one thing to be
-true: every live hub whose `finding_body` matches `ACQUISITION_MARKER` carries the
-declared flag instead. Six such hubs in prod as of 2026-08-19.
+true: every live `finding` whose `finding_body` matches `ACQUISITION_MARKER`
+carries the declared flag instead. Six such rows in prod as of 2026-08-19 — all
+six stamped as of 2026-08-21, and none of them a canonical hub (see below).
 
 The backfill is idempotent, dry-run by default, and its empty listing IS the
 retirement test:
@@ -85,6 +86,35 @@ retirement test:
 precis nanopub backfill-unheld            # dry run: lists the hubs + matched marker
 precis nanopub backfill-unheld --apply    # stamp meta.primary_source_unheld
 ```
+
+### Verified empty on prod 2026-08-21 — after fixing the test itself
+
+The dry run prints "no prose-marked hubs left". Measured directly rather than
+trusting it, because this listing is what authorizes deleting a live provenance
+gate. Across the **whole** `finding` corpus (no predicate filter) exactly six
+rows carry the marker, and:
+
+| | |
+|---|---|
+| carry `TAPROOT:claim` | 6 |
+| carry `STATUS:canonical` | **0** |
+| already stamped `primary_source_unheld` | **6** |
+
+Two independent things were true at once, and only one of them was the good one.
+The stamp had already been applied (so the precondition is genuinely satisfied),
+**and** all six sit outside `claim_hub_predicate_sql()` — which
+`prose_marked_hubs` was scoping itself to. Unstamped, they would have been
+invisible and the dry run would have printed the same all-clear.
+
+That is the third instance of the strict-vs-permissive claim-hub predicate
+confusion in this corpus work, and the first where the strict predicate was the
+*wrong* one: `mint`/`approve` apply no claim-hub predicate at all, so the gate
+runs on any `finding` handed to them. The errors are asymmetric — a false
+positive delays deleting a paragraph, a false negative silently disables a
+provenance check — so the query now matches the gate's reach, not the corpus's
+definition of a hub. Fixed 2026-08-21 with a regression test
+(`test_backfill_sees_marked_findings_that_are_not_canonical_hubs`) that fails
+against the old query.
 
 (`evidence.prose_marked_hubs` / `declare_primary_source_unheld`. Already-stamped
 hubs drop out of the query, so re-running is a no-op and the listing shrinks to
