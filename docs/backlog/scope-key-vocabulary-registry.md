@@ -12,7 +12,25 @@ controlled key vocabulary shipped as a fixed 7-key set —
 `precis/taproot/sentence_lint.py::SCOPE_KEYS` (`material, method, regime,
 system, quantity, substrate, temperature`) — chosen without consulting usage.
 
-Measured 2026-08-19 over 1,524 live claim hubs (`lint_scope`):
+> **The 2026-08-19 table below used the contaminated predicate**
+> (`TAPROOT:claim` alone, which sweeps in 280 chase-tree findings that never
+> mint). Re-measured 2026-08-21 against the strict population
+> (`+ STATUS:canonical`, **n=1249**), keys with ≥6 uses:
+>
+> | key | n | | key | n | | key | n |
+> |---|---|---|---|---|---|---|---|
+> | material | 232 | | oxidant | 27 | | solvent | 14 |
+> | method | 206 | | device | 25 | | quantity_bound | 12 |
+> | quantity | 79 | | property | 23 | | system | 8 |
+> | catalyst | 52 | | mode | 14 | | temperature | 8 |
+> | substrate | 35 | | regime | 30 | | process | 6 |
+>
+> `catalyst` (52) still outranks four of the seven approved keys, so the
+> core argument holds. But **seed and curate from the strict numbers, not
+> the ones below** — and note `draft_chunk` drops to 0.
+
+Measured 2026-08-19 over 1,524 live claim hubs (`lint_scope`), permissive
+predicate — superseded by the strict table above:
 
 | in vocabulary | n | | out of vocabulary | n |
 |---|---|---|---|---|
@@ -116,8 +134,15 @@ A draft is a *view* onto hubs, never their owner. Two consequences:
    state parked where a legitimate writer destroys it). Remaining choice is
    a dedicated corpus-global ref kind (preferred — `refs.meta` is jsonb, so
    no migration) or a table outside the `term`-leaf family.
-2. **`draft_chunk` as a scope key is now a correctness bug, not untidiness**
-   — see the lifted-defects section below.
+2. **The per-draft view is still required** (Reto, same exchange: *"I still
+   want to have the option to see per draft"*). Draft-independence is about
+   *ownership and identity*, not visibility — "which hubs does this draft
+   use?" must stay answerable. Serve it with a **draft→hub edge**, not a
+   scope key: a hub is used by *many* drafts, so a scalar inside `scope`
+   could only ever name one of them, and would change `pub_id` per draft.
+   Drafts already cite hubs this way (`cites` edges from the drafting
+   document — see `claim-hub-dedup-sweep.md`), so the substrate exists;
+   confirm coverage before building anything new.
 
 **Drop `count` from the stored columns.** The frequency table is derivable
 (`GROUP BY` over `refs.meta->'scope'` across live hubs); storing it
@@ -179,15 +204,20 @@ registry governs keys, never values.
   trustworthy. They need a separate home (a distinct `meta` key, not
   `scope`), not a slot in this registry.
 
-  **`draft_chunk` is the urgent half (raised 2026-08-21).** Now that hubs are
-  confirmed draft-independent and separately publishable, a `draft_chunk` key
-  inside `scope` puts a pointer to one document's chunk **inside `pub_id`**,
-  the identity hash of an artifact that must stand alone. Those 10 hubs
-  cannot mint a defensible identity: their global identity is parameterised
-  by a local, mutable drafting artifact, and any hub minted from a different
-  draft of the same claim gets a different `pub_id` for no scientific reason.
-  Lift it out **before** the key-normalization pass (work item 6), not with
-  it — and re-derive `pub_id` for those 10 afterwards.
+  **`draft_chunk`: retracted as a claim-hub defect, 2026-08-21.** It was
+  briefly raised here as a `pub_id` blocker on the strength of the "10"
+  above. Re-measured against the **strict** population
+  (`TAPROOT:claim` + `STATUS:canonical`, `n=1249`): **`draft_chunk` appears
+  on 0 hubs.** All 10 live on the 280 non-hub rows the contaminated
+  predicate swept in (chase-tree findings — see
+  `claim-hub-definition-divergence.md`), which never mint and have no
+  `pub_id`. Nothing to lift on the minting path. `quantity_bound` (12) *is*
+  real on strict hubs and still needs its own `meta` home.
+
+  The general principle survives the retraction and is worth keeping: a key
+  inside `scope` is inside `pub_id`, so anything naming a *local, mutable
+  drafting artifact* must never appear there. Guard against it re-entering
+  rather than repairing it now.
 - **`scope-free-text` (156 hubs) is the defect that actually matters, and
   the registry must not soften it.** Because scope is inside the identity
   hash, a sentence fragment stuffed into a scope *value* manufactures
@@ -208,11 +238,11 @@ registry governs keys, never values.
 2. Design the curated overlay (`key`, `alias_of`, `gloss` — **no `count`**)
    and the write path that surfaces it ordered by *derived* frequency —
    likely a `put(kind='finding', scope=…)`-adjacent lookup, not a new verb.
-3. **Do this first.** Lift `quantity_bound` and `draft_chunk` out of `scope`
-   into their own `meta` field, and re-derive `pub_id` for the 10
-   `draft_chunk` hubs — their identity is currently parameterised by a
-   drafting artifact (see above). Re-derive the out-of-vocabulary counts
-   afterwards, since they currently inflate the "needs a registry key" tally.
+3. Lift `quantity_bound` (12) out of `scope` into its own `meta` field and
+   re-derive `pub_id` for those hubs. **`draft_chunk` needs no repair** — 0
+   on strict hubs (retraction recorded above); just keep it out.
+3b. Verify the draft→hub `cites` edge covers the per-draft view before
+   assuming it does, then expose "hubs used by draft X" off that edge.
 4. Seed the registry from the measured 2026-08-19 counts (in-vocabulary +
    out-of-vocabulary keys above), curate `alias_of` for the near-synonym
    forks (`support`/`substrate`, `catalyst`/`catalyst_material`, etc. —
