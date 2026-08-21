@@ -38,11 +38,24 @@ repair — consists entirely of non-canonical chase-tree rows. They never mint,
 and their bodies are internal (see "the body is internal", below).
 
 The 3 remaining body-longer rows are all 2026-08-04, i.e. the same August
-incident, and reading them shows length is not evidence of authority: each has
-an authored claim sentence in `title` and a discursive recap in the body
-("The original nanobud synthesis by Nasibulin et al. employed…"). fi190976,
-fi191129, fi191134 — eyeball before the run, but the expected verdict is
-title-authoritative like the other 42.
+incident. Length is not evidence of authority — but reading them in full (not
+the truncated prefixes an earlier pass judged from) they are **not** uniformly
+title-authoritative, and two must not be repaired mechanically:
+
+| hub | verdict |
+|---|---|
+| fi190976 | **title-authoritative, safe.** Title is the claim (max fullerene coverage at 1000 °C); body is a narrative recap attributing to Nasibulin et al. over a broader 1000–1150 °C process range. Nothing lost. |
+| fi191129 | **do not overwrite — the body holds a second atom.** It ends "…with the width of this plateau set by the length of the neck connecting tube and fullerene", a clause the title does not carry. This is a decomposition candidate (`conjunct-of`), not a divergence repair. |
+| fi191134 | **contradiction — adjudicate against the source.** Title: higher defect concentrations "reduce the bandgap back toward zero" (non-monotonic). Body: "the degree of opening scaling linearly with defect content" (monotonic). These are different physical claims; one is wrong. Repairing either direction enshrines a possibly-false claim. |
+
+Full text of all 45 exported for review:
+`~/precis-experiments/taproot-divergence-45-2026-08-21/review.md`.
+
+So the run is **42 mechanical + 3 held**, not 45. That the three exceptions
+are all *content* problems rather than formatting ones is the same lesson the
+original two-cohort analysis taught, arriving by a different route: the cheap
+signal (length, date) sorts the population, and the expensive one (reading it)
+is still required at the boundary.
 
 **Consequence: for real hubs this is one cohort in one direction — chunk ←
 title, which is exactly what `refine_claim_sentence` already does.** The
@@ -199,10 +212,11 @@ see the status note above.
 
 1. ~~**Find and fix the writer.**~~ **Done 2026-08-21** — swept, no live
    bypassing writer remains (see above). The repair is no longer temporary.
-2. **Repair the 45 strict hubs: chunk from title, one direction.** The June
-   cohort that motivated "per cohort, not globally" is not in the strict
-   population at all (see the re-measure above) — eyeball fi190976, fi191129,
-   fi191134 first, then run. Re-derive `pub_id` after, and re-run the duplicate
+2. **Repair 42 of the 45 strict hubs: chunk from title, one direction.** The
+   June cohort that motivated "per cohort, not globally" is not in the strict
+   population at all (see the re-measure above). **Hold fi191129** (second
+   atom — route to the decomposition pass) **and fi191134** (title/body
+   contradict on the physics — needs the source paper); fi190976 is safe. Re-derive `pub_id` after, and re-run the duplicate
    scan, since collapsing divergence can surface hidden duplicates (this
    already happened twice: fi191259/191268 and fi191179/191260).
    Chase-tree rows are out of scope: they never mint, and nothing publishes
