@@ -40,8 +40,13 @@ _HEADERS: tuple[tuple[bytes, bytes], ...] = (
     # executable.
     (b"x-content-type-options", b"nosniff"),
     # The podcast feed token travels as a ``?t=`` query parameter, so a
-    # referrer on any outbound navigation is a credential leak.
-    (b"referrer-policy", b"no-referrer"),
+    # referrer on any outbound navigation is a credential leak —
+    # ``same-origin`` sends no referrer off-origin. NOT ``no-referrer``:
+    # under that policy the Fetch spec serializes ``Origin`` as ``null``
+    # even on same-origin form POSTs, and ``check_same_origin`` then
+    # refuses every legitimate browser submission (seen live 2026-08-22:
+    # /drive delete 403'd from origin '').
+    (b"referrer-policy", b"same-origin"),
     # Funnel is HTTPS-only and there is no HTTP listener to downgrade to,
     # so this is belt-and-braces. Scoped to this host: sibling tailnet
     # names (caspar.<tailnet>.ts.net) are NOT subdomains of this one, so

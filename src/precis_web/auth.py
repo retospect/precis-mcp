@@ -210,6 +210,14 @@ def check_same_origin(scope: Scope, headers: dict[bytes, bytes]) -> None:
     cross-origin POST (that is the header's entire purpose), so the
     no-header case is ``curl``/scripts/the MCP client, which have no
     ambient credential to be tricked into replaying.
+
+    ``Origin: null`` (an *opaque* origin) is refused, deliberately: a
+    sandboxed ``<iframe>`` on an attacker's page POSTs with exactly that
+    header, so letting it through reopens the hole. The flip side is
+    that our own pages must never carry ``Referrer-Policy:
+    no-referrer`` — the Fetch spec serializes ``Origin`` as ``null``
+    under that policy even same-origin, which locks every browser form
+    out (see ``security_headers.py``).
     """
     if scope.get("method", "GET").upper() in _SAFE_METHODS:
         return

@@ -346,6 +346,16 @@ def test_same_origin_post_passes_the_check() -> None:
     assert resp.status_code != 403
 
 
+def test_a_null_origin_post_is_refused() -> None:
+    """``Origin: null`` is an attacker-reachable value — a sandboxed
+    iframe POSTs with exactly that header — so it must stay refused.
+    The legitimate-browser side of this is handled by never serving
+    ``Referrer-Policy: no-referrer`` (which would null Origin even
+    same-origin); see test_security_headers."""
+    client = _client(FakeUserStore(user=_user(), record=hash_password("pw")))
+    assert _post(client, "/settings/set", Origin="null").status_code == 403
+
+
 def test_a_headerless_post_is_allowed() -> None:
     """curl and the like send neither header and hold no ambient
     credential to be tricked into replaying — refusing them would break

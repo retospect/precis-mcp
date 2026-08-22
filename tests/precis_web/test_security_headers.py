@@ -46,7 +46,7 @@ def test_an_authenticated_page_carries_them() -> None:
         ("x-frame-options", "DENY"),
         ("content-security-policy", "frame-ancestors 'none'"),
         ("x-content-type-options", "nosniff"),
-        ("referrer-policy", "no-referrer"),
+        ("referrer-policy", "same-origin"),
     ):
         assert resp.headers[header] == value
     assert "max-age=" in resp.headers["strict-transport-security"]
@@ -56,6 +56,20 @@ def test_they_are_present_with_auth_off() -> None:
     """Auth-off is when the app is *most* exposed, not least."""
     resp = _client(auth=False).get("/", follow_redirects=False)
     assert resp.headers["x-frame-options"] == "DENY"
+
+
+def test_referrer_policy_is_never_no_referrer() -> None:
+    """``no-referrer`` breaks every browser form in the app.
+
+    Under ``Referrer-Policy: no-referrer`` the Fetch spec serializes the
+    ``Origin`` header as ``null`` even on *same-origin* POSTs, and
+    ``check_same_origin`` (correctly) refuses opaque origins — so every
+    form submission 403s. Happened live 2026-08-22 (/drive delete).
+    ``same-origin`` keeps the ``?t=`` podcast token out of outbound
+    referrers just as well, without nulling ``Origin``.
+    """
+    policy = _client().get("/", follow_redirects=False).headers["referrer-policy"]
+    assert policy == "same-origin"
 
 
 def test_the_csp_does_not_restrict_scripts_or_styles() -> None:
