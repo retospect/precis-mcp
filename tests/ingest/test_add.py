@@ -155,6 +155,43 @@ class TestPrecisAddFresh:
         assert result.inserted is True
         assert result.identifiers["pdf_sha256"] == "a" * 64
 
+    def test_pdf_input_threads_marker_fallback_meta_into_result(
+        self, store, tmp_path: Path
+    ):
+        """gr236139: ``PaperToWrite.meta`` fallback flags set by
+        ``extract_paper`` must surface on the returned ``IngestResult``
+        so the watcher can alert / route without re-deriving them."""
+        pdf = tmp_path / "scanned.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        paper = _fixture_paper(pdf_sha256="c" * 64)
+        paper = PaperToWrite(
+            **{
+                **paper.__dict__,
+                "meta": {
+                    **paper.meta,
+                    "extract_used_fallback": True,
+                    "extract_fallback_empty": True,
+                },
+            }
+        )
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+
+        assert isinstance(result, IngestResult)
+        assert result.used_marker_fallback is True
+        assert result.fallback_empty_body is True
+
+    def test_pdf_input_defaults_fallback_flags_false(self, store, tmp_path: Path):
+        pdf = tmp_path / "clean.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        paper = _fixture_paper(pdf_sha256="d" * 64)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+
+        assert result is not None
+        assert result.used_marker_fallback is False
+        assert result.fallback_empty_body is False
+
     def test_unsupported_input_type_raises(self, store):
         # Pass a raw string — not one of the tagged-union variants.
         with pytest.raises(TypeError):

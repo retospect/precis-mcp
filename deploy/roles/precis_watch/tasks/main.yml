@@ -59,6 +59,17 @@
     msg: "{{ precis_watch_venv }}/bin/precis not found. Run playbooks/20-precis-worker.yml on this host first."
   when: not precis_bin.stat.exists
 
+# surya-ocr ≥0.22.1 (via marker-pdf 2.0) auto-selects a llamacpp inference
+# backend on mps/cpu hosts and hard-requires a `llama-server` binary on
+# PATH — without it every Marker extraction degrades to fitz (gr236139).
+# The plist PATH already includes /opt/homebrew/bin.
+- name: Install llama.cpp for surya's mps/cpu backend (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: llama.cpp
+    state: present
+  become: false
+
 - name: Pre-create precis-watch log file (macOS — launchd can't if it's not the root user)
   when: os_family == "darwin"
   ansible.builtin.file:

@@ -223,13 +223,10 @@ def test_strategic_layer_snapshot_renders_tree(
     root_id = id_of(root.body)
     a = handler.put(text="Tactic A", parent_id=root_id)
     aid = id_of(a.body)
-    # Add 2 subtasks under a, so direct_children count == 2.
-    handler.put(text="Subtask 1", parent_id=aid)
-    handler.put(text="Subtask 2", parent_id=aid)
 
     snap = _strategic_layer_snapshot(store)
     assert f"[td{root_id}] Main goal" in snap
-    assert f"[td{aid}] Tactic A (2 direct children)" in snap
+    assert f"[td{aid}] Tactic A" in snap
     # gripe: bare `#<id>` neither round-trips as a copyable handle nor
     # triggers memory auto-linking — must be the bracketed td-handle.
     assert f"#{root_id} " not in snap

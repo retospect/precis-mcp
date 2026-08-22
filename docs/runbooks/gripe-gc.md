@@ -53,6 +53,29 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
 
 ## Log
 
+- **2026-08-22** — targeted sweep over the 27 open gripes carrying stale
+  `STATUS:done` (gr207238's drift report — should have been soft-deleted, not
+  status-tagged). **Closed 25**, each verified against an actual commit on
+  `main` (or, for 3 pulse-probe gripes, against the gripe's own prior
+  investigative comment): gr193672 (030ea413), gr178699 (91bab110), gr172202
+  (eef20cf8), gr170069 (23ff8cf8, via gr170073's already-closed finding),
+  gr162444 (37294af8), gr55671 (162d56e9), plus two batch-fix commits that
+  each named several gripes explicitly in their own commit message —
+  667629c5 closed gr39242/gr39244/gr39245/gr39246/gr39247/gr39248/gr39249/
+  gr39250/gr39251/gr39252/gr39253/gr38683, and b3085a73 closed
+  gr38684/gr38690/gr38692/gr38693 (the last two re-verified live: `search
+  (kind='skill', q=...)` and `search(kind='paper', q='*')` on prod both now
+  degrade cleanly instead of 500ing). gr179358/gr179357/gr179356 (nursery
+  backlog triage, dream_agent false-alarm, chunk_keywords self-recovery)
+  closed on their own prior verified resolution comments — operational
+  fixes, no code commit applies. **Left open (2):** gr162624 (llm-catalog
+  variant-precise offerings — own comment says "SHIPPED... dark, NOT yet
+  deployed" with explicit residual follow-ups) and gr49604 (Discord
+  pagination truncation — only the secondary auto-caption-duplication note
+  was fixed by 988e683e; the actual root cause, an asa_bot-side fix, is
+  still explicitly open). gr207238 (the drift-report gripe itself) left
+  untouched — its part (b), a code/schema fix to stop `STATUS:done` from
+  being a valid gripe tag, is still unresolved.
 - **2026-08-10** — full sweep (issue-closer agent) over 66 open (gr197709
   skipped — closed separately by the caller; 2 new gripes, gr202117 +
   gr202116, filed mid-pass, landing the end count at 67). **Closed 0.** Every

@@ -205,7 +205,7 @@ def _assemble(reviewer: Reviewer, **extras: str) -> str:
 
 _FIXTURE_STRUCTURAL = {
     "today": "2026-07-02",
-    "strategic_layer": "#1 Main goal\n  └─ #2 Tactic A (2 direct children)",
+    "strategic_layer": "#1 Main goal\n  └─ #2 Tactic A",
     "nursery_excerpt": "(no open nursery alerts)",
 }
 

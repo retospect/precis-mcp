@@ -745,6 +745,59 @@ def _check_elsevier_truncation(
         )
 
 
+#: gr236139 — stable (source, fingerprint) so every host's fallback
+#: sighting dedups onto the *same* open alert row (raise_alert's own
+#: reraise throttle, ~15 min by default) instead of minting one row per
+#: PDF. A single alert whose ``seen_count`` keeps climbing is exactly the
+#: "this has become a 100%-fallback regime" signal an operator needs —
+#: weeks of per-PDF ``log.warning`` calls rotted unseen (the incident
+#: this hardens against: surya-ocr 0.22.1's new hard llama-server
+#: requirement broke every Marker invocation on melchior for weeks and
+#: ingest silently kept eating PDFs via the fitz fallback).
+_MARKER_FALLBACK_ALERT_SOURCE = "ingest:marker-fallback"
+_MARKER_FALLBACK_ALERT_FINGERPRINT = "marker-fallback"
+
+
+def _check_marker_fallback(pdf: Path, result: IngestResult, *, store: Store) -> None:
+    """Raise a rate-limited ops alert when this ingest fell back to fitz.
+
+    Fires whenever :func:`precis.ingest.pipeline.extract_paper` took the
+    Marker → fitz fallback branch (``result.used_marker_fallback``) on a
+    fresh insert. The fitz fallback itself is correct defense-in-depth
+    and is left unchanged — this only makes a *standing* fallback
+    regime visible instead of rotting in the Marker module's
+    ``log.warning`` (marker.py has no :class:`~precis.store.Store` at
+    that seam; the watcher is the nearest caller that does, mirroring
+    :func:`_check_elsevier_truncation`). Best-effort: any failure here
+    is swallowed — a detector must never fail the ingest it's checking.
+    """
+    if not result.inserted or not result.used_marker_fallback:
+        return
+    title = "Marker extraction falling back to fitz"
+    detail = (
+        f"{pdf.name} (ref_id={result.ref_id}) fell back from Marker to "
+        "fitz page-level extraction. The fitz fallback is correct "
+        "defense-in-depth, but a standing fallback regime silently "
+        "degrades every ingest's full-text quality — see gr236139 (the "
+        "surya-ocr 0.22.1 llama-server-binary incident)."
+    )
+    try:
+        raise_alert(
+            store,
+            source=_MARKER_FALLBACK_ALERT_SOURCE,
+            fingerprint=_MARKER_FALLBACK_ALERT_FINGERPRINT,
+            title=title,
+            detail=detail,
+            severity="warn",
+            subject_ref_id=result.ref_id,
+        )
+    except Exception:  # pragma: no cover — defensive, never fail the ingest
+        log.exception(
+            "precis watch: failed to raise marker-fallback alert for ref_id=%s",
+            result.ref_id,
+        )
+
+
 def process_pdf(
     pdf: Path,
     *,
@@ -784,7 +837,13 @@ def process_pdf(
        ``None`` and we leave the file in place so the owning host
        can finish.
     4. On ``inserted=True`` move to corpus (``corpus_dir`` for paper,
-       ``corpus_pres_dir`` for pres).
+       ``corpus_pres_dir`` for pres) — *unless* ``result.fallback_empty_body``
+       (gr236139: the Marker→fitz fallback ran and yielded 0 body chunks on
+       a ≥1-page PDF), which routes to ``errors/`` instead and leaves the
+       sidecar unconsumed rather than reporting a silently-empty ingest as
+       a success. Any ``result.used_marker_fallback`` (empty body or not)
+       also raises a rate-limited ops alert — see
+       :func:`_check_marker_fallback`.
     5. On ``inserted=False`` move to ``errors/duplicates``.
     6. On exception write ``.error.txt`` next to the PDF in
        ``errors/<ts>/`` and swallow — exceptions are contained
@@ -935,6 +994,39 @@ def process_pdf(
         # right now (advisory lock held in the DB). Leave the file — and
         # its sidecar — in place so the owning host folds correctly and
         # clears the manifest on its own success.
+        return None
+
+    _check_marker_fallback(pdf, result, store=store)
+
+    if result.inserted and result.fallback_empty_body:
+        # gr236139 — the fitz fallback ran and produced 0 body chunks on
+        # a ≥1-page PDF (image-only/scanned, the fallback can't OCR).
+        # The ref/card row is already committed (precis_add's write is
+        # atomic per-call, and by this point it has already returned) —
+        # but reporting *this ingest* as a success would be exactly the
+        # silent data loss gr236139 hardens against: the PDF would move
+        # to corpus, ingest.log would say "inserted", and — worse — the
+        # one-shot OA-fetch sidecar would be consumed, so a later re-fetch
+        # attempt for the same stub is permanently foreclosed even though
+        # no usable body text was ever captured. Route to errors/ instead
+        # and deliberately skip clear_sidecar below so the fold stays
+        # retryable.
+        log.error(
+            "precis watch: %s used the fitz fallback and yielded 0 body "
+            "chunks (ref_id=%d) — routing to errors/ instead of "
+            "reporting success; sidecar left in place for retry",
+            pdf.name,
+            result.ref_id,
+        )
+        try:
+            raise RuntimeError(
+                f"extraction fell back to fitz and produced 0 body chunks "
+                f"for {pdf.name} (ref_id={result.ref_id}, "
+                f"paper_id={result.paper_id!r}); likely an image-only/"
+                "scanned PDF Marker couldn't run OCR on — see gr236139"
+            )
+        except RuntimeError as exc:
+            _handle_failure(pdf, exc, errors_dir=errors_dir)
         return None
 
     _check_elsevier_truncation(pdf, sidecar, result, store=store)

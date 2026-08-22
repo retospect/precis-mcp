@@ -106,3 +106,11 @@ Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict
   full-enum. Filed: `worker_logs` unbounded → added 30-day sweeper GC. No bloat
   (all dead_pct <5%). Kept `chunks_keywords_gin` (backs `mode='verbatim'`) +
   `tag_embeddings_vector_hnsw` (live, just below the ANN size threshold).
+
+- **2026-08-22** — Healthy. No active long-runners (empty pg_stat_activity).
+  Seq-scan tables stable; `worker_logs` down to 4.5 GB (from 7.1 GB — sweeper
+  GC working). Still-unused drop candidates: `llm_call_log` request/response
+  hash indexes (136 MB combined, lifetime idx_scan=0) — verify no live queries
+  on those columns, then drop via forward migration. Dead bloat all <5%,
+  vacuum nominal. Fleet note: melchior `llm_summarize` logged 66 transient
+  summarizer 504s against 117k chunk_summaries written — noisy-but-working.

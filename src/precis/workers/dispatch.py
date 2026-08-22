@@ -444,7 +444,11 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       the parent, which the exclusion registry handles.
     * No **live** child todo — a child of ``kind='todo'`` whose own
       STATUS is open / doing (the planner spawned children and they
-      are still working). This is the coroutine yield: a parent that
+      are still working). Terminal child statuses are ``done`` /
+      ``won't-do`` / ``auto-timeout`` — the full closed set
+      ``auto_check.py`` defines; omitting ``auto-timeout`` here once
+      wedged a parent (and the whole plan_tick mint) permanently and
+      alert-invisibly when its auto-check children timed out. This is the coroutine yield: a parent that
       minted children sits silent until they all resolve, then
       re-becomes a candidate so the planner can read the
       ``job_summary`` chunks and continue. **Exception:** a child
@@ -505,7 +509,10 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          ) NOT IN ('done', 'won''t-do')
+                          -- terminal-status set must match auto_check.py's
+                          -- closed states: a child parked on auto-timeout is
+                          -- settled, not live (gr236586 planner wedge)
+                          ) NOT IN ('done', 'won''t-do', 'auto-timeout')
                       AND """
             + _parked_child_still_blocks_sql("r", "c")
             + """
@@ -623,7 +630,10 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          ) NOT IN ('done', 'won''t-do')
+                          -- terminal-status set must match auto_check.py's
+                          -- closed states: a child parked on auto-timeout is
+                          -- settled, not live (gr236586 planner wedge)
+                          ) NOT IN ('done', 'won''t-do', 'auto-timeout')
                       AND """
             + _parked_child_still_blocks_sql("r", "c")
             + """

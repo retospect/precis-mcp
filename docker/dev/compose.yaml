@@ -74,6 +74,13 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile
       target: dev
+      # Seed the models stage from the local :premodels tag so a dep bump
+      # doesn't cascade into a ~3.8 GB model re-bake (models sits downstream
+      # of deps). scripts/build-image guarantees the tag exists before
+      # building; without this the Dockerfile's `FROM scratch AS premodels`
+      # placeholder wins and bake-models.py refetches everything.
+      additional_contexts:
+        premodels: docker-image://precis-mcp:premodels
       # GitHub token for the autocatpath layer — the catpath repo is
       # private, so an unauthenticated `git fetch` inside the build fails.
       # scripts/build-image exports GH_TOKEN (from `gh auth token`); a

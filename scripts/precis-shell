@@ -54,6 +54,12 @@ done
 
 have_image() { docker image inspect "$1" >/dev/null 2>&1; }
 
+# The catpath repo is private: the dev-venv layer's `git fetch` reads a
+# BuildKit secret (id=gh_token, see docker/Dockerfile). Empty is harmless
+# when anonymous access works. A caller-set GH_TOKEN wins over `gh auth
+# token`. Without this, --rebuild dies on "could not read Username".
+export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
+
 # Bootstrap the seed: if no :premodels tag yet, retag whatever model-
 # bearing image is already around. The Dockerfile's models-stage
 # COPY only looks at /opt/precis/models on the seed, which exists in
@@ -80,6 +86,7 @@ if [[ "${rebuild_base}" == 1 ]] || ! have_image "${BASE_IMAGE}"; then
         --target models \
         --build-arg "UID=$(id -u)" \
         --build-arg "GID=$(id -g)" \
+        --secret "id=gh_token,env=GH_TOKEN" \
         "${base_args[@]}" \
         -t "${BASE_IMAGE}" \
         -f docker/Dockerfile \
@@ -92,6 +99,7 @@ if [[ "${rebuild}" == 1 ]] || ! have_image "${IMAGE}"; then
         --target dev \
         --build-arg "UID=$(id -u)" \
         --build-arg "GID=$(id -g)" \
+        --secret "id=gh_token,env=GH_TOKEN" \
         --build-context "premodels=docker-image://${BASE_IMAGE}" \
         -t "${IMAGE}" \
         -f docker/Dockerfile \

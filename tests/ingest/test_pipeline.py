@@ -577,6 +577,144 @@ class TestExtractPaper:
 
 
 # ---------------------------------------------------------------------------
+# gr236139 — Marker→fitz fallback signal threaded into PaperToWrite.meta
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPaperMarkerFallbackMeta:
+    def _fake_meta(self, pdf: Path) -> PdfMetadata:
+        return PdfMetadata(pdf_path=pdf, title="X", year=2024)
+
+    def test_fallback_with_body_chunks_flags_used_but_not_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """The fitz fallback producing real chunks is correct defense-in-
+        depth — flag that a fallback happened (for the ops alert) but do
+        NOT flag it as the zero-body-chunk data-loss case."""
+        pdf = tmp_path / "fallback_ok.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        def _fake_extract_blocks_marker(
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+        ):
+            if fallback_info is not None:
+                fallback_info["used_fallback"] = True
+                fallback_info["reason"] = "llama-server binary not found"
+            return [
+                {"type": "paragraph", "text": "Some readable body text.", "page": 0}
+            ]
+
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=self._fake_meta(pdf),
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_blocks_marker",
+                side_effect=_fake_extract_blocks_marker,
+            ),
+        ):
+            paper = extract_paper(pdf)
+
+        body = [c for c in paper.chunks if c.ord >= 0]
+        assert len(body) == 1
+        assert paper.meta["extract_used_fallback"] is True
+        assert paper.meta["extract_fallback_reason"] == "llama-server binary not found"
+        assert "extract_fallback_empty" not in paper.meta
+
+    def test_fallback_empty_body_on_multi_page_pdf_flags_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """gr236139's silent-data-loss signature: fallback ran, extracted
+        zero blocks, but the PDF genuinely has pages (an image-only /
+        scanned PDF fitz can't OCR)."""
+        pdf = tmp_path / "scanned.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        def _fake_extract_blocks_marker(
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+        ):
+            if fallback_info is not None:
+                fallback_info["used_fallback"] = True
+                fallback_info["reason"] = "llama-server binary not found"
+            return []
+
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=self._fake_meta(pdf),
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_blocks_marker",
+                side_effect=_fake_extract_blocks_marker,
+            ),
+            patch("precis.ingest.pipeline._pdf_page_count", return_value=5),
+        ):
+            paper = extract_paper(pdf)
+
+        body = [c for c in paper.chunks if c.ord >= 0]
+        assert body == []
+        assert paper.meta["extract_used_fallback"] is True
+        assert paper.meta["extract_fallback_empty"] is True
+
+    def test_fallback_empty_body_on_zero_page_pdf_does_not_flag_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """A genuinely empty (0-page) PDF isn't the data-loss signature —
+        only a ≥1-page PDF that yielded nothing is."""
+        pdf = tmp_path / "empty.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        def _fake_extract_blocks_marker(
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+        ):
+            if fallback_info is not None:
+                fallback_info["used_fallback"] = True
+                fallback_info["reason"] = "boom"
+            return []
+
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=self._fake_meta(pdf),
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_blocks_marker",
+                side_effect=_fake_extract_blocks_marker,
+            ),
+            patch("precis.ingest.pipeline._pdf_page_count", return_value=0),
+        ):
+            paper = extract_paper(pdf)
+
+        assert paper.meta["extract_used_fallback"] is True
+        assert "extract_fallback_empty" not in paper.meta
+
+    def test_no_fallback_leaves_meta_clean(self, tmp_path: Path) -> None:
+        pdf = tmp_path / "clean.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+
+        def _fake_extract_blocks_marker(
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+        ):
+            return [{"type": "paragraph", "text": "Body text.", "page": 0}]
+
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=self._fake_meta(pdf),
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_blocks_marker",
+                side_effect=_fake_extract_blocks_marker,
+            ),
+        ):
+            paper = extract_paper(pdf)
+
+        assert "extract_used_fallback" not in paper.meta
+        assert "extract_fallback_empty" not in paper.meta
+
+
+# ---------------------------------------------------------------------------
 # fetch_paper_by_doi — CrossRef stubbed
 # ---------------------------------------------------------------------------
 
