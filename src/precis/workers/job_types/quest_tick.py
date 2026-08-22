@@ -16,6 +16,22 @@ runs); the coordinator only owns the *scheduling*: it waits on the in-flight sim
 and resumes when they are done. That makes the cadence **self-paced by sim
 completion**, not a timer.
 
+**One tick is several slices.** ``run_quest_tick`` is itself a resumable stage
+machine (see that module's stage banner), and this coordinator drives it
+``sliced=True``: the phase grows sub-states ``tick:llm`` → ``tick:apply`` →
+``tick:search`` → ``tick:compute`` → ``tick:ladder`` (one slice per rung) →
+``tick:finish`` → ``await``, each of which makes at most ONE LLM call. The
+tick's own checkpoint rides ``coordinator_state["tick"]`` (small scalars; the
+bulky payload/prompt live on the tick's ``agentlog`` row, referenced by id), and
+a mid-tick boundary wakes immediately rather than on the heartbeat. So a slice
+killed by a node reboot / OOM / wall-clock costs one stage instead of re-running
+the primary LLM call — quest 164903 burned 53% of 24 h of tick time re-running
+one doomed cloud call before this, and during the 2026-08-10→16 deploy-bounce
+storm the monolithic tick could never finish inside the inter-restart window at
+all (gripe 210417). Only a tick's FIRST slice runs the backpressure /
+starvation / weave-body gates below — a resume is mid-tick, and re-testing the
+pending set there would see the sims the tick itself just dispatched.
+
 **Liveness + backpressure.** Like ``good_search``, the wait uses an ``at_time``
 heartbeat (not a bare ``children_done``) so a sim stuck at ``STATUS:queued``
 behind other spark work can't park the loop forever, and — the property the
@@ -744,52 +760,73 @@ def _phase_weave_tick(
 
 
 def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
-    """Harvest finished sims + review/propose (local LLM) + dispatch a batch."""
+    """Harvest finished sims + review/propose (local LLM) + dispatch a batch.
+
+    The tick itself is **sliced** (``run_quest_tick(sliced=True)``, see that
+    module's stage banner): it returns a ``TickSlice`` at each of its stage
+    boundaries — ``tick:llm`` → ``tick:apply`` → ``tick:search`` →
+    ``tick:compute`` → ``tick:ladder`` (one slice per rung) → ``tick:finish``
+    — which this phase parks in ``coordinator_state`` and hands straight
+    back on the next slice. Each of those is at most ONE LLM call, so a
+    coordinator slice killed by a node reboot / OOM / deploy bounce costs
+    one stage rather than the whole (up to 4-call, multi-hour) tick. Only
+    the FIRST slice of a tick runs the backpressure + starvation gates and
+    the weave-body routing: a *resume* is mid-tick, and re-testing the
+    pending set there would see the sims the tick itself just dispatched and
+    defer — throwing the checkpoint away.
+    """
     from precis.dispatch import Hub
     from precis.quest.search import make_acquiring_search
-    from precis.quest.tick import run_quest_tick
+    from precis.quest.tick import TickSlice, run_quest_tick
 
     params = (ctx.meta or {}).get("params") or {}
     quest_id = int(params["quest_id"])  # schema-required
     tier = params.get("tier") or "big"
-    slice_count = int(state.get("slice_count") or 0) + 1
+    raw_resume = state.get("tick")
+    resume = raw_resume if isinstance(raw_resume, dict) else None
+    # ``slice_count`` counts TICKS, not coordinator slices — a resumed
+    # mid-tick slice is the same tick, so it must not advance the counter the
+    # fallback-query rotation and the job_event labels read.
+    slice_count = int(state.get("slice_count") or 0) + (0 if resume else 1)
 
-    # Backpressure: never dispatch a new batch while this quest's sims are still
-    # in flight (defensive — _phase_await only routes here when idle). No tick
-    # ran, so carry the give-up budgets forward unchanged.
-    pending = _pending_sim_ids(ctx.store, quest_id)
-    if pending:
-        return _await_yield(
-            {"slice_count": slice_count, **_carry_budgets(state)}, pending
-        )
+    if resume is None:
+        # Backpressure: never dispatch a new batch while this quest's sims are
+        # still in flight (defensive — _phase_await only routes here when idle).
+        # No tick ran, so carry the give-up budgets forward unchanged.
+        pending = _pending_sim_ids(ctx.store, quest_id)
+        if pending:
+            return _await_yield(
+                {"slice_count": slice_count, **_carry_budgets(state)}, pending
+            )
 
-    # Starvation gate: don't stack a batch onto an already-deep compute queue.
-    queued = _queued_sim_count(ctx.store)
-    if queued >= _max_queued_sims():
-        ctx.append_chunk(
-            "job_event",
-            f"tick #{slice_count}: deferring — {queued} sim(s) queued node-wide "
-            f"(≥ {_max_queued_sims()}); waiting for the queue to drain",
-        )
-        now = time.time()
-        return Yield(
-            state={
-                "phase": "await",
-                "slice_count": slice_count,
-                "child_job_ids": [],
-                # A defer is not a tick — preserve both give-up budgets.
-                **_carry_budgets(state),
-            },
-            wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
-        )
+        # Starvation gate: don't stack a batch onto an already-deep compute queue.
+        queued = _queued_sim_count(ctx.store)
+        if queued >= _max_queued_sims():
+            ctx.append_chunk(
+                "job_event",
+                f"tick #{slice_count}: deferring — {queued} sim(s) queued node-wide "
+                f"(≥ {_max_queued_sims()}); waiting for the queue to drain",
+            )
+            now = time.time()
+            return Yield(
+                state={
+                    "phase": "await",
+                    "slice_count": slice_count,
+                    "child_job_ids": [],
+                    # A defer is not a tick — preserve both give-up budgets.
+                    **_carry_budgets(state),
+                },
+                wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
+            )
 
-    # Rung 6e-2: a quest marked ``meta.quest_body == "weave"`` (a paper-writing/
-    # topic-dossier quest — see ``precis.quest.weave_tick.mark_weave_quest``)
-    # runs the weave body instead of the catalyst propose-experiment tick
-    # below. Checked here (not up-front in ``_dispatch``) so it still benefits
-    # from the backpressure/starvation-gate checks above unchanged.
-    if _quest_body(ctx.store, quest_id) == QUEST_BODY_WEAVE:
-        return _phase_weave_tick(ctx, quest_id, params, state, slice_count)
+        # Rung 6e-2: a quest marked ``meta.quest_body == "weave"`` (a
+        # paper-writing/topic-dossier quest — see
+        # ``precis.quest.weave_tick.mark_weave_quest``) runs the weave body
+        # instead of the catalyst propose-experiment tick below. Checked here
+        # (not up-front in ``_dispatch``) so it still benefits from the
+        # backpressure/starvation-gate checks above unchanged.
+        if _quest_body(ctx.store, quest_id) == QUEST_BODY_WEAVE:
+            return _phase_weave_tick(ctx, quest_id, params, state, slice_count)
 
     search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
     outcome = run_quest_tick(
@@ -800,7 +837,24 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         search_fn=search_fn,
         job_ref_id=ctx.ref_id,
         embedder=_build_search_embedder(ctx.store),
+        tick_state=resume,
+        sliced=True,
     )
+    if isinstance(outcome, TickSlice):
+        # Mid-tick stage boundary: park the tick's own checkpoint and come
+        # straight back (the wake_runner piggy-backs the 2s system-worker
+        # poll, so this costs seconds, not a heartbeat). Not a tick outcome —
+        # the give-up budgets carry forward untouched, exactly like a defer.
+        return Yield(
+            state={
+                "phase": f"tick:{outcome.stage}",
+                "slice_count": slice_count,
+                "child_job_ids": [],
+                "tick": outcome.state,
+                **_carry_budgets(state),
+            },
+            wake_when=WakeWhen("at_time", {"ts": int(time.time())}),
+        )
     status = getattr(outcome, "status", "?")
     note = getattr(outcome, "note", "") or ""
     ctx.append_chunk(

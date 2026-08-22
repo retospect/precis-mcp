@@ -168,6 +168,16 @@ def touch_from_env(store: Store, *, chunk_ids: Iterable[int]) -> None:
         )
 
 
+def _patch_meta(store: Store, log_id: int, patch: dict[str, Any]) -> None:
+    """Merge ``patch`` into an agentlog's ``meta`` (jsonb ``||``)."""
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb, updated_at = now() "
+            "WHERE ref_id = %s AND kind = 'agentlog'",
+            (json.dumps(patch), int(log_id)),
+        )
+
+
 def finalize_log(
     store: Store,
     *,
@@ -190,12 +200,50 @@ def finalize_log(
         patch["result"] = result
     if meta_extra:
         patch.update(meta_extra)
-    with store.tx() as conn:
-        conn.execute(
-            "UPDATE refs SET meta = meta || %s::jsonb, updated_at = now() "
-            "WHERE ref_id = %s AND kind = 'agentlog'",
-            (json.dumps(patch), int(log_id)),
-        )
+    _patch_meta(store, log_id, patch)
+
+
+#: ``meta`` key :func:`stash_checkpoint` writes under.
+CHECKPOINT_KEY = "checkpoint"
+
+
+def stash_checkpoint(store: Store, *, log_id: int, checkpoint: dict[str, Any]) -> None:
+    """Park a **mid-run** blob on a still-open agentlog (``meta.checkpoint``).
+
+    The counterpart to :func:`finalize_log`'s run-*end* stamp: a run that
+    is sliced across several worker passes (today: ``run_quest_tick``'s
+    resumable stages) parks the bulky things one slice hands the next —
+    the model's parsed payload, a re-prompt it already assembled — right
+    next to the ``meta.prompt`` it already wrote at open, and carries only
+    this log's *id* in its own checkpoint. Bulky per-run state therefore
+    rides the ref the retention GC already reaps
+    (:func:`gc_stale_logs`) instead of accreting in a job's or a quest's
+    ``meta``.
+
+    Whole-replaces the key (the caller owns the blob's shape and always
+    writes the full thing), so a re-stash after a resumed slice is an
+    overwrite, never a merge of two generations.
+    """
+    _patch_meta(store, log_id, {CHECKPOINT_KEY: checkpoint})
+
+
+def read_checkpoint(store: Store, *, log_id: int) -> dict[str, Any]:
+    """The blob :func:`stash_checkpoint` parked, plus the run's ``prompt``.
+
+    ``{}`` when the log is gone or carries neither — a caller that can't
+    read its checkpoint back must degrade (run un-sliced), never crash.
+    """
+    try:
+        ref = store.get_ref(kind="agentlog", id=int(log_id))
+    except Exception:
+        log.warning("agentlog: checkpoint read failed for %s", log_id, exc_info=True)
+        return {}
+    meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
+    out: dict[str, Any] = dict(meta.get(CHECKPOINT_KEY) or {})
+    prompt = meta.get("prompt")
+    if prompt is not None and "prompt" not in out:
+        out["prompt"] = prompt
+    return out
 
 
 def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int:
@@ -321,6 +369,7 @@ def _now_iso(store: Store) -> str:
 
 
 __all__ = [
+    "CHECKPOINT_KEY",
     "ENV_VAR",
     "RETENTION_DAYS",
     "attach_touch",
@@ -329,5 +378,7 @@ __all__ = [
     "gc_stale_logs",
     "list_recent",
     "open_log",
+    "read_checkpoint",
+    "stash_checkpoint",
     "touch_from_env",
 ]

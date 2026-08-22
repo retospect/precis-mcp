@@ -14,11 +14,13 @@ before; ``TestRC2SelfRest`` overrides it to drive the self-rest gate itself.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from precis.quest.weave_tick import QUEST_BODY_WEAVE
 from precis.workers.executors._yield import Done, Yield
 from precis.workers.job_types import quest_tick as qt
 
@@ -529,6 +531,97 @@ class TestPhaseAwaitDryTicks:
         assert out.state["dry_ticks"] == 2
         assert out.state["punt_ticks"] == 4
         assert out.state["tick_failures"] == 1
+
+
+class TestTickSlicing:
+    """quest-tick-slicing: ``run_quest_tick(sliced=True)`` hands back a
+    ``TickSlice`` at each of its stage boundaries; this phase parks it in
+    ``coordinator_state`` as ``tick:<stage>`` + ``tick`` and resumes from it
+    on the next slice. A kill then costs one stage (≈ one LLM call) rather
+    than a whole multi-hour, up-to-4-call tick."""
+
+    @staticmethod
+    def _stub_slice(monkeypatch: pytest.MonkeyPatch, stage: str, state: dict[str, Any]):
+        from precis.quest.tick import TickSlice
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake(store: Any, quest_id: int, **kw: Any) -> Any:
+            calls.append({"quest_id": quest_id, **kw})
+            return TickSlice(stage=stage, state=state)
+
+        monkeypatch.setattr("precis.quest.tick.run_quest_tick", _fake)
+        return calls
+
+    def test_mid_tick_slice_parks_the_checkpoint_and_comes_straight_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ckpt = {"stage": "apply", "agentlog_id": 9001}
+        calls = self._stub_slice(monkeypatch, "apply", ckpt)
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "tick:apply"
+        assert out.state["tick"] == ckpt
+        assert out.state["slice_count"] == 1
+        # Immediate wake — the wake_runner piggy-backs the 2s system-worker
+        # poll, so a stage boundary costs seconds, not a heartbeat.
+        assert out.wake_when.kind == "at_time"
+        assert out.wake_when.payload["ts"] <= int(time.time()) + 1
+        assert calls[0]["sliced"] is True and calls[0]["tick_state"] is None
+
+    def test_a_resumed_slice_hands_the_checkpoint_back_and_skips_the_gates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A resume is MID-tick: re-running the backpressure / starvation
+        # gates there would see the sims the tick itself just dispatched and
+        # defer — throwing the checkpoint away.
+        calls = _stub_tick(monkeypatch, _Outcome())
+        _stub_pending(monkeypatch, [[811]])  # would defer a FRESH tick
+        _stub_queued(monkeypatch, 99)  # ditto
+        ckpt = {"stage": "compute", "agentlog_id": 9001}
+        state = {"phase": "tick:compute", "slice_count": 3, "tick": ckpt}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert len(calls) == 1
+        assert calls[0]["tick_state"] == ckpt
+        assert calls[0]["sliced"] is True
+        # The tick finished on this slice → normal await yield, and the tick
+        # counter did NOT advance (a resume is the same tick).
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await"
+        assert out.state["slice_count"] == 3
+        assert out.state["child_job_ids"] == [811]
+        assert "tick" not in out.state  # checkpoint dropped once consumed
+
+    def test_a_mid_tick_yield_preserves_the_giveup_budgets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A stage boundary is not a tick outcome — it must reset neither the
+        # failure, dry, nor punt streak (same rule as a defer).
+        self._stub_slice(monkeypatch, "search", {"stage": "search"})
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {"tick_failures": 2, "dry_ticks": 1, "punt_ticks": 4}
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["tick_failures"] == 2
+        assert out.state["dry_ticks"] == 1
+        assert out.state["punt_ticks"] == 4
+
+    def test_a_resumed_slice_never_routes_to_the_weave_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The weave-vs-catalyst routing decision belongs to the tick's FIRST
+        # slice; a mid-tick resume must go straight back into the catalyst
+        # tick it already started.
+        calls = _stub_tick(monkeypatch, _Outcome())
+        monkeypatch.setattr(qt, "_quest_body", lambda store, qid: QUEST_BODY_WEAVE)
+        _stub_pending(monkeypatch, [[]])
+        _stub_queued(monkeypatch, 0)
+        state = {"phase": "tick:apply", "slice_count": 1, "tick": {"stage": "apply"}}
+        qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert len(calls) == 1  # run_quest_tick, not weave_tick
 
 
 class TestPhaseAwait:

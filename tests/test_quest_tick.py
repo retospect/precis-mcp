@@ -11,6 +11,7 @@ cleanly), the ``build_tick_prompt`` context assembly, and the handler's
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from types import SimpleNamespace
@@ -33,7 +34,7 @@ from precis.quest.dossier import (
     read_narrative,
     rewrite_dossier,
 )
-from precis.quest.tick import build_tick_prompt, run_quest_tick
+from precis.quest.tick import TickSlice, build_tick_prompt, run_quest_tick
 
 
 def _mk_quest(store: Any, text: str) -> int:
@@ -1436,6 +1437,202 @@ class TestQuestTickAgentlog:
         row = next(r for r in rows if r["parent_ref_id"] == qid)
         assert row["source"] == "quest_tick"
         assert row["status"] == "failed"
+
+
+def _drive_sliced(store: Any, qid: int, disp: Any, **kw: Any) -> tuple[Any, list[str]]:
+    """Run one tick slice-by-slice, JSON round-tripping the checkpoint between
+    slices exactly as ``coordinator_state`` (a jsonb column) does — i.e.
+    simulating a worker that is killed at every single stage boundary and
+    resumed from nothing but the persisted state. Returns
+    ``(outcome, stages_parked_at)``."""
+    state: dict[str, Any] | None = None
+    stages: list[str] = []
+    for _ in range(20):  # a tick has ≤6 stages; the bound guards a livelock
+        r = run_quest_tick(
+            store, qid, dispatch_fn=disp, tick_state=state, sliced=True, **kw
+        )
+        if not isinstance(r, TickSlice):
+            return r, stages
+        stages.append(r.stage)
+        state = json.loads(json.dumps(r.state))
+    raise AssertionError(f"tick never finished; parked at {stages}")
+
+
+class TestTickSlicing:
+    """quest-tick-slicing: one tick is a resumable stage machine whose every
+    stage makes AT MOST one LLM call, so a slice killed by a node reboot /
+    OOM / deploy bounce costs one stage instead of re-running the primary
+    LLM call (quest 164903 burned 53% of 24h of tick time doing exactly
+    that). ``sliced=False`` — the CLI, the allocator, every other test here
+    — runs the identical stages end-to-end in one call."""
+
+    _PAYLOAD: dict[str, Any] = {
+        "logbook": [{"entry_type": "observation", "text": "an observation"}],
+        "dossier_text": "A rewritten dossier, freshly proposed.",
+    }
+
+    def test_kill_after_the_llm_call_resumes_without_a_second_llm_call(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([self._PAYLOAD])
+
+        out, stages = _drive_sliced(store, qid, disp)
+
+        # ONE router invocation for the whole tick, even though the worker
+        # "died" at every boundary — the primary payload was replayed from
+        # its checkpoint, never re-prompted.
+        assert len(reqs) == 1
+        assert stages == ["apply", "search", "compute", "finish"]
+        assert out.status == "succeeded"
+        # …and the tick's writes all landed exactly once.
+        assert out.logbook_added == 1
+        assert out.dossier_rewritten is True
+        assert read_narrative(store, qid) == self._PAYLOAD["dossier_text"]
+        assert [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if (b.meta or {}).get("entry_type") == "observation"
+        ]
+
+    def test_a_sliced_tick_matches_an_unsliced_one(self, store: Any) -> None:
+        sliced_qid = _mk_quest(store, "A striving")
+        whole_qid = _mk_quest(store, "A striving")
+        disp_a, reqs_a = _sequenced_dispatch([self._PAYLOAD])
+        disp_b, reqs_b = _sequenced_dispatch([self._PAYLOAD])
+
+        sliced, _ = _drive_sliced(store, sliced_qid, disp_a)
+        whole = run_quest_tick(store, whole_qid, dispatch_fn=disp_b)
+
+        assert len(reqs_a) == len(reqs_b) == 1
+        # Same outcome shape, quest id aside — the behavioural no-op.
+        assert dataclasses.replace(sliced, quest_id=0) == dataclasses.replace(
+            whole, quest_id=0
+        )
+
+    def test_the_payload_rides_the_agentlog_not_the_checkpoint(
+        self, store: Any
+    ) -> None:
+        # The whole point of the by-reference checkpoint: a ~50 KB model
+        # payload must never be inlined into the coordinator job's meta.
+        qid = _mk_quest(store, "A striving")
+        disp, _ = _sequenced_dispatch([self._PAYLOAD])
+        first = run_quest_tick(store, qid, dispatch_fn=disp, sliced=True)
+        assert isinstance(first, TickSlice)
+        assert first.stage == "apply"
+        assert "payload" not in first.state
+        assert "prompt" not in first.state
+        assert set(first.state) <= {  # only small scalars cross the boundary
+            "stage",
+            "agentlog_id",
+            "is_review",
+            "reason",
+            "tier",
+            "prompt_chars",
+            "resp_chars",
+            "cost",
+        }
+        log_ref = store.get_ref(kind="agentlog", id=first.state["agentlog_id"])
+        assert log_ref is not None
+        parked = log_ref.meta["checkpoint"]["payload"]
+        assert parked["dossier_text"] == self._PAYLOAD["dossier_text"]
+
+    def test_a_tick_without_an_agentlog_runs_whole_rather_than_slicing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # No agentlog → nowhere to park the payload → degrade to today's
+        # single-slice behaviour rather than inline it or crash.
+        def _boom(*a: Any, **kw: Any) -> int:
+            raise RuntimeError("agentlog down")
+
+        monkeypatch.setattr("precis.agentlog.open_log", _boom)
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([self._PAYLOAD])
+        out = run_quest_tick(store, qid, dispatch_fn=disp, sliced=True)
+        assert not isinstance(out, TickSlice)
+        assert out.status == "succeeded" and out.dossier_rewritten is True
+        assert len(reqs) == 1
+
+    def test_the_ladder_takes_one_slice_per_rung(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # No stage may bundle two LLM calls, so each of the ladder's two
+        # rungs is its own slice.
+        monkeypatch.setattr(
+            compute_mod,
+            "run_compute_step",
+            lambda *a, **kw: compute_mod.ComputeStep(
+                candidates_created=0,
+                sims_dispatched=0,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            ),
+        )
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(qid, {"ticks_since_experiment": 1})
+        empty = {"logbook": [], "dossier_text": "", "proposals": []}
+        disp, reqs = _sequenced_dispatch([empty])
+
+        out, stages = _drive_sliced(store, qid, disp, compute=True, review=False)
+
+        assert out.status == "succeeded"
+        assert len(reqs) == 3  # primary + 2 ladder rungs, one call each
+        assert stages == [
+            "apply",
+            "search",
+            "compute",
+            "ladder",  # rung 0 came back empty → the escalated rung
+            "ladder",  # rung 1 came back empty → give up, honestly
+            "finish",
+        ]
+        assert any(
+            "agent declined to propose an untried variant" in (b.text or "")
+            for b in store.blocks.list_blocks_for_ref(qid)
+        )
+
+    def test_every_tick_llm_call_carries_an_explicit_timeout(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # The 2026-08-13 budget fix gave only the PRIMARY call a ceiling;
+        # the ladder rungs and the narrative-compress re-prompt rode the
+        # transport default, so a hung one burned an unbounded slice.
+        monkeypatch.setattr(
+            compute_mod,
+            "run_compute_step",
+            lambda *a, **kw: compute_mod.ComputeStep(
+                candidates_created=0,
+                sims_dispatched=0,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            ),
+        )
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(qid, {"ticks_since_experiment": 1})
+        rewrite_dossier(store, qid, "Short prior synthesis, ten words long right here.")
+        big = " ".join(f"word{i}" for i in range(200))
+        # primary: a big no-progress rewrite (trips the growth ratchet) and
+        # no proposals (fires the ladder); later calls stay empty so both
+        # ladder rungs AND the compress retry happen.
+        disp, reqs = _sequenced_dispatch(
+            [{"logbook": [], "dossier_text": big, "proposals": []}]
+        )
+
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True, review=False)
+
+        assert out.status == "succeeded"
+        assert len(reqs) == 4  # primary + 2 ladder rungs + 1 compress retry
+        assert {r.source for r in reqs} == {
+            "quest_tick",
+            "quest_tick_commit",
+            "quest_tick_narrative_compress",
+        }
+        assert all(getattr(r, "timeout_s", None) for r in reqs), [
+            (r.source, getattr(r, "timeout_s", None)) for r in reqs
+        ]
 
 
 class TestQuestTickJobTranscript:

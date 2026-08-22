@@ -35,7 +35,7 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
@@ -1251,81 +1251,77 @@ def _build_commit_prompt(
 _COMMIT_SOURCE = "quest_tick_commit"
 
 
-def _commit_reprompt_ladder(
-    store: Store,
-    quest: Ref,
-    tier: Any,
-    *,
-    stall: int,
-    disp: Callable[[Any], Any],
-    by: str,
-    base_prompt: str | None = None,
-    narrative_override: str | None = None,
-) -> tuple[tuple[Any, list[str]] | None, bool]:
-    """At most 2 extra LLM calls: re-prompt at ``tier``, then one tier up.
+def _commit_ladder_tiers(tier: Any) -> list[Any]:
+    """The ladder's rungs, in order: re-prompt at ``tier``, then one tier up.
 
-    Returns ``(committed, any_transport_error)``:
-
-    * ``committed`` is ``(ComputeStep, proposal_names)`` on a successful
-      commit (the model proposed something, materialised/dispatched via the
-      SAME :func:`precis.quest.compute.run_compute_step` path as any
-      ordinary proposal — idempotent, content-addressed), or ``None`` when
-      neither rung's response carried a usable ``proposals`` entry. Never
-      fabricates a candidate itself.
-    * ``any_transport_error`` is ``True`` when at least one rung came back
-      with an LLM ``error``/``paused`` result (breaker/quota/transport
-      trouble) rather than a genuine empty ``proposals`` — so the caller's
-      back-off log can say "agent unreachable" instead of "agent declined"
-      (this feature exists to diagnose stalls from the logbook, so that
-      distinction is the whole point).
-
-    The caller wraps this in a ``try/except`` — a raise here must never crash
-    the tick. ``base_prompt`` (see :func:`_build_commit_prompt`) skips a
-    redundant full-context rebuild when the primary tick already built the
-    identical (``review=False``) prompt this call; ``narrative_override``
-    (only meaningful on a rebuild) keeps that rebuild showing the model its
-    own just-proposed narrative rather than last tick's persisted one.
+    At most two — the current tier, then the senior/review tier — and one
+    **slice** each (:meth:`_TickRun._stage_ladder`), since each rung is its
+    own LLM call and the whole point of the slicing is that no stage bundles
+    two.
     """
-    from precis.quest.compute import run_compute_step
-    from precis.utils.llm.router import LlmRequest, Tier
-
-    prompt = _build_commit_prompt(
-        store,
-        quest,
-        stall=stall,
-        base_prompt=base_prompt,
-        narrative_override=narrative_override,
-    )
-    quest_id = quest.id
+    from precis.utils.llm.router import Tier
 
     tiers = [tier]
     if tier != Tier.FRONTIER:
         tiers.append(Tier.FRONTIER)  # escalate once — the senior/review tier
+    return tiers
 
-    any_error = False
-    for attempt_tier in tiers:
-        res = disp(
-            LlmRequest(
-                tier=attempt_tier,
-                prompt=prompt,
-                source=_COMMIT_SOURCE,
-                ref_id=quest_id,
-            )
+
+def _commit_rung(
+    store: Store,
+    quest_id: int,
+    attempt_tier: Any,
+    prompt: str,
+    *,
+    disp: Callable[[Any], Any],
+    by: str,
+) -> tuple[tuple[Any, list[str]] | None, bool]:
+    """One rung of the commit re-prompt ladder — a single LLM call.
+
+    Returns ``(committed, transport_error)``:
+
+    * ``committed`` is ``(ComputeStep, proposal_names)`` when this rung's
+      model proposed something, materialised/dispatched via the SAME
+      :func:`precis.quest.compute.run_compute_step` path as any ordinary
+      proposal (idempotent, content-addressed), or ``None`` when the
+      response carried no usable ``proposals`` entry. Never fabricates a
+      candidate itself.
+    * ``transport_error`` is ``True`` when the rung came back with an LLM
+      ``error``/``paused`` result (breaker/quota/transport trouble) rather
+      than a genuine empty ``proposals`` — the caller ORs it across rungs so
+      its back-off log can say "agent unreachable" instead of "agent
+      declined" (this feature exists to diagnose stalls from the logbook, so
+      that distinction is the whole point).
+
+    The caller wraps this in a ``try/except`` — a raise here must never
+    crash the tick. Carries an explicit :func:`_tick_llm_timeout_s` ceiling
+    (the transport default used to apply here, so a hung ladder rung could
+    outlive the tick's own budget).
+    """
+    from precis.quest.compute import run_compute_step
+    from precis.utils.llm.router import LlmRequest
+
+    res = disp(
+        LlmRequest(
+            tier=attempt_tier,
+            prompt=prompt,
+            source=_COMMIT_SOURCE,
+            ref_id=quest_id,
+            timeout_s=_tick_llm_timeout_s(),
         )
-        if getattr(res, "error", None) or getattr(res, "paused", False):
-            any_error = True  # transient/breaker/quota trouble — try the next rung
-            continue
-        payload = _payload_from_result(res)
-        proposals = [
-            p for p in ((payload or {}).get("proposals") or []) if isinstance(p, dict)
-        ]
-        if not proposals:
-            continue
-        proposals = proposals[: max_proposals_per_tick()]  # WIP cap (one at a time)
-        step = run_compute_step(store, quest_id, proposals, by=by)
-        names = [str(p.get("name") or "?") for p in proposals]
-        return (step, names), any_error
-    return None, any_error
+    )
+    if getattr(res, "error", None) or getattr(res, "paused", False):
+        return None, True  # transient/breaker/quota trouble — try the next rung
+    payload = _payload_from_result(res)
+    proposals = [
+        p for p in ((payload or {}).get("proposals") or []) if isinstance(p, dict)
+    ]
+    if not proposals:
+        return None, False
+    proposals = proposals[: max_proposals_per_tick()]  # WIP cap (one at a time)
+    step = run_compute_step(store, quest_id, proposals, by=by)
+    names = [str(p.get("name") or "?") for p in proposals]
+    return (step, names), False
 
 
 # ── narrative growth-ratchet gate (dossier-hygiene design) ─────────────
@@ -1389,6 +1385,12 @@ def _reprompt_narrative_compress(
     gate — a compress reply is not trusted blindly), or ``""`` on any
     transport trouble / empty reply. Mirrors the commit ladder's own
     degrade-don't-crash convention: a raise here must never crash the tick.
+
+    Carries the same explicit :func:`_tick_llm_timeout_s` ceiling as every
+    other tick call: without one this rode the transport default, so a
+    compress re-prompt that hung burned an unbounded slice on what is by
+    construction the *cheapest* call of the tick (rewrite one paragraph
+    shorter).
     """
     from precis.utils.llm.router import LlmRequest
 
@@ -1401,6 +1403,7 @@ def _reprompt_narrative_compress(
                 ),
                 source=_COMPRESS_SOURCE,
                 ref_id=quest_id,
+                timeout_s=_tick_llm_timeout_s(),
             )
         )
     except Exception:
@@ -1485,7 +1488,1041 @@ def _apply_narrative_gate(
     return None
 
 
-# ── the tick ──────────────────────────────────────────────────────────
+# ── the tick, sliced into resumable stages ────────────────────────────
+#
+# One tick used to be a single monolithic in-process call: prompt assembly
+# → primary LLM call → apply/ledger → inline lit-search → compute dispatch
+# → the commit re-prompt ladder (up to 2 more LLM calls) → the narrative
+# compress re-prompt (a 4th) → dossier regen. Up to four LLM calls and
+# hours of wall-clock behind ONE coordinator slice, and ``coordinator_
+# state`` checkpointed only the loop phase (``tick``/``await``) — so a
+# slice killed at the last phase redid the prompt and the primary LLM from
+# scratch. Quest 164903 burned 53% of 24 h of tick time re-running one
+# doomed cloud call that way, and during the 2026-08-10→16 deploy-bounce
+# storm the tick could never finish inside the inter-restart window at all.
+#
+# The tick is now a small state machine over the phase boundaries below,
+# each of which makes **at most one LLM call**, so a kill costs one stage
+# rather than the whole tick:
+#
+#     llm → apply → search → compute → ladder(×rungs) → finish
+#
+# :func:`run_quest_tick` with ``sliced=True`` (the coordinator — see
+# :mod:`precis.workers.job_types.quest_tick`) returns a :class:`TickSlice`
+# at every boundary and is handed its ``state`` back on the next slice;
+# every other caller (the CLI, the allocator, every unit test) gets the old
+# run-to-completion behaviour out of the same loop over the same stages, so
+# the sliced and un-sliced paths cannot drift.
+#
+# **Where the checkpoint lives.** The small counters ride in
+# ``TickSlice.state`` (→ the job's ``meta.coordinator_state``). The bulky
+# things one stage hands the next — the primary LLM's parsed payload, the
+# assembled prompt, the ladder's re-prompt — ride on the tick's OWN
+# ``agentlog`` row (``meta.prompt`` was already written there at open;
+# ``meta.checkpoint`` is the rest, see :func:`precis.agentlog.
+# stash_checkpoint`), referenced from the state by ``agentlog_id`` alone. A
+# 50 KB payload therefore never lands in job or quest ``meta``, and the
+# agentlog's existing 30-day retention GC reaps it. A tick whose agentlog
+# failed to open (best-effort, as before) has nowhere to checkpoint and
+# simply runs to completion in one slice — degrade, don't crash.
+#
+# **Idempotence on re-run.** The checkpoint advances only at a stage
+# boundary, so a stage whose writes landed but whose Yield didn't is
+# replayed from its start:
+#
+# ===========  ==============================================================
+#  stage        replay is safe because…
+# ===========  ==============================================================
+#  llm          it is the FIRST stage — a replay is exactly today's
+#               behaviour (a fresh tick), nothing earlier to lose.
+#  apply        ledger ops are content-addressed (``add_attempt`` dedups an
+#               identical/near-duplicate node and only ever advances a
+#               status; ``mark_attempt`` is a set-status; ``append_ledger_
+#               entry`` dedups), and a re-added `hypothesis` is dropped by
+#               the same near-dup guard the model's own spins hit. NOT
+#               idempotent: plain `note`/`observation`/`decision` entries
+#               would duplicate — WORM by design, ≤4 lines, read only as
+#               logbook tail.
+#  search       ``PaperHandler.acquire`` collapses identifiers on an
+#               already-held/already-wanted paper and the `serves` link is
+#               unique, so a replay re-links nothing; it re-issues the
+#               query (the only real cost) and re-logs one entry per query.
+#  compute      ``_ensure_candidate_detail`` is content-addressed (returns
+#               ``was_dup``) and ``dispatch_relax`` / ``dispatch_
+#               autocatpath`` mint content-addressed jobs that collapse
+#               onto the in-flight one; the harvest is a fold over finished
+#               runs. Fully idempotent.
+#  ladder       one rung per slice; a replayed rung costs one LLM call and
+#               lands on the same idempotent ``run_compute_step`` path.
+#  finish       ``rewrite_dossier`` is a whole-replace and
+#               ``stamp_ref_meta`` an overwrite (both idempotent). NOT
+#               idempotent: ``update_cascade_state``'s counter bump and the
+#               `cost` deed would double-count.
+# ===========  ==============================================================
+#
+# Requeue-from-checkpoint of a crashed ``STATUS:running`` slice is
+# deliberately NOT part of this (the claim SQL requires ``queued`` — see
+# ``workers/executors/coordinator.py`` §_persist_dispatch_result); the
+# reap/re-mint path stays, it just got cheap.
+
+#: The tick's stage boundaries, in order. The coordinator mirrors these
+#: into ``coordinator_state.phase`` as ``tick:<stage>``.
+TICK_STAGES: tuple[str, ...] = (
+    "llm",
+    "apply",
+    "search",
+    "compute",
+    "ladder",
+    "finish",
+)
+
+
+@dataclass(frozen=True)
+class TickSlice:
+    """A tick paused at a stage boundary — the ``sliced=True`` counterpart
+    of a :class:`QuestTickOutcome`.
+
+    ``state`` is opaque, JSON-serializable, and belongs to the tick: the
+    coordinator parks it verbatim in ``coordinator_state.tick`` and hands
+    it straight back as ``run_quest_tick(tick_state=…)``. ``stage`` is the
+    stage that just *completed*'s successor — i.e. where the next slice
+    will resume — and exists so the coordinator can name the phase it is
+    parked at (``tick:apply``) for an operator reading the job.
+    """
+
+    stage: str
+    state: dict[str, Any]
+
+
+def _tick_proposals(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """The payload's well-formed ``proposals`` — derived, never checkpointed
+    (the payload itself is the one parked artifact; everything shaped out of
+    it stays a pure function of it, so no two copies can disagree)."""
+    return [p for p in (payload.get("proposals") or []) if isinstance(p, dict)]
+
+
+def _tick_narrative(payload: dict[str, Any]) -> str:
+    """The payload's proposed dossier rewrite. New field name is
+    ``dossier_text`` (the old ``dossier_markdown`` name was itself the
+    strongest wrong-format signal in the prompt — chunks render plain prose,
+    not markdown); the old key is still accepted so a mid-flight response
+    lands."""
+    return str(payload.get("dossier_text") or payload.get("dossier_markdown") or "")
+
+
+@dataclass
+class _TickRun:
+    """Driver for one :func:`run_quest_tick` — the stage machine above.
+
+    ``st`` is the ONLY thing that crosses a slice boundary besides the
+    agentlog row it points at, so every value in it must stay
+    JSON-serializable (ints, strs, bools, ``None``).
+    """
+
+    store: Store
+    quest_id: int
+    tier: Any
+    dispatch_fn: Callable[[Any], Any] | None
+    by: str
+    compute: bool
+    review: bool | None
+    search_fn: Any
+    job_ref_id: int | None
+    embedder: Any
+    st: dict[str, Any]
+    #: In-process mirror of the agentlog-parked blob, so an un-sliced run
+    #: never reads back what it just wrote. A *resumed* slice starts cold
+    #: and loads it from the agentlog on first use.
+    stash: dict[str, Any] | None = None
+
+    # ── plumbing ──────────────────────────────────────────────────────
+
+    @property
+    def disp(self) -> Callable[[Any], Any]:
+        if self.dispatch_fn is not None:
+            return self.dispatch_fn
+        from precis.utils.llm.router import dispatch as _dispatch
+
+        return _dispatch
+
+    def resolved_tier(self) -> Any:
+        """The tick's tier, rebuilt from the checkpointed string.
+        ``Tier`` is a ``StrEnum``, so this round-trips exactly (and
+        ``tier_from_str`` degrades rather than raising on a stale value)."""
+        from precis.utils.llm.router import tier_from_str
+
+        return tier_from_str(str(self.st.get("tier") or ""))
+
+    def _quest_meta(self) -> dict[str, Any]:
+        """The quest's ``meta``, re-read fresh — ``{}`` if it vanished."""
+        ref = self.store.get_ref(kind="quest", id=self.quest_id)
+        return (getattr(ref, "meta", None) or {}) if ref is not None else {}
+
+    def _quest(self) -> Ref:
+        """The quest ref, re-read fresh (a stage can't hold one across a
+        slice). Raises if it vanished mid-tick — both call sites sit inside
+        a degrade-don't-crash ``try``."""
+        ref = self.store.get_ref(kind="quest", id=self.quest_id)
+        if ref is None:
+            raise RuntimeError(f"quest {self.quest_id} vanished mid-tick")
+        return ref
+
+    def _load_stash(self) -> dict[str, Any]:
+        from precis import agentlog
+
+        if self.stash is None:
+            log_id = self.st.get("agentlog_id")
+            self.stash = (
+                agentlog.read_checkpoint(self.store, log_id=int(log_id))
+                if log_id is not None
+                else {}
+            )
+        return self.stash
+
+    def _park(self, **fields: Any) -> None:
+        """Park bulky per-tick state on this tick's own agentlog row.
+
+        Best-effort in both directions: a tick with no agentlog (open
+        failed) keeps everything in memory and just can't be sliced, and a
+        failed write degrades the same way rather than aborting the tick.
+        """
+        from precis import agentlog
+
+        stash = self._load_stash()
+        stash.update(fields)
+        log_id = self.st.get("agentlog_id")
+        if log_id is None:
+            return
+        try:
+            agentlog.stash_checkpoint(
+                self.store,
+                log_id=int(log_id),
+                # ``prompt`` already has its own agentlog meta key (written
+                # at open) — read back into the stash, never re-written.
+                checkpoint={k: v for k, v in stash.items() if k != "prompt"},
+            )
+        except Exception:
+            log.warning(
+                "run_quest_tick: failed to park a stage checkpoint on agentlog %s",
+                log_id,
+                exc_info=True,
+            )
+
+    def payload(self) -> dict[str, Any]:
+        """The primary LLM call's parsed payload, from the stash."""
+        p = self._load_stash().get("payload")
+        return p if isinstance(p, dict) else {}
+
+    def _bump(self, key: str, n: int = 1) -> None:
+        self.st[key] = int(self.st.get(key) or 0) + n
+
+    def _finalize(
+        self,
+        outcome: QuestTickOutcome,
+        *,
+        res: Any = None,
+        partial: str | None = None,
+    ) -> QuestTickOutcome:
+        from precis import agentlog
+
+        agentlog_id = self.st.get("agentlog_id")
+        if agentlog_id is not None:
+            # The tick is over, so its stage checkpoint is dead weight —
+            # dropped in the same write that stamps run-end, so a live
+            # ``meta.checkpoint`` always means "a tick is mid-flight here"
+            # and a finished tick's ~50 KB payload doesn't sit on the row
+            # for the whole 30-day agentlog retention window.
+            meta_extra: dict[str, Any] = {agentlog.CHECKPOINT_KEY: {}}
+            # Non-succeeded ticks stamp WHY (the outcome note) — a bare
+            # status="failed" row is undiagnosable.
+            if outcome.status != "succeeded" and outcome.note:
+                meta_extra["error"] = outcome.note
+            try:
+                agentlog.finalize_log(
+                    self.store,
+                    log_id=int(agentlog_id),
+                    status=outcome.status,
+                    # Partial output salvaged from a mid-generation abort
+                    # (a streamed rung's StreamTimeout) — persisted so the
+                    # reasoning isn't lost with the connection; the
+                    # /agentlogs viewer shows it next to the prompt.
+                    result=partial or None,
+                    meta_extra=meta_extra,
+                )
+            except Exception:
+                log.warning(
+                    "run_quest_tick: failed to finalize agentlog", exc_info=True
+                )
+        # Job-ref transcript (gr170252 forensic gap) — distinct from the
+        # agentlog record above: this is what the sweeper's existing
+        # transcript GC + confusion-mining SQL already know how to find.
+        if self.job_ref_id is not None:
+            _persist_job_transcript(self.store, self.job_ref_id, outcome, res)
+        return outcome
+
+    def _result_stub(self) -> Any:
+        """A stand-in for the primary ``LlmResult`` on a stage that no
+        longer holds it (it died with the slice that made the call). Only
+        :func:`_persist_job_transcript` reads it, and only for its
+        ``raw_text`` no-tool-calls gate — which is why ``raw_text`` is the
+        one field parked alongside the payload."""
+        from types import SimpleNamespace
+
+        stash = self._load_stash()
+        return SimpleNamespace(
+            text="", raw_text=stash.get("raw_text"), cost_usd=self.st.get("cost")
+        )
+
+    # ── the stage machine ─────────────────────────────────────────────
+
+    def step(self) -> QuestTickOutcome | None:
+        """Run the current stage. Returns the tick's outcome when it ends
+        here, else ``None`` after advancing ``st['stage']``."""
+        stages: dict[str, Callable[[], QuestTickOutcome | None]] = {
+            "llm": self._stage_llm,
+            "apply": self._stage_apply,
+            "search": self._stage_search,
+            "compute": self._stage_compute,
+            "ladder": self._stage_ladder,
+            "finish": self._stage_finish,
+        }
+        stage = str(self.st.get("stage") or "llm")
+        fn = stages.get(stage)
+        if fn is None:
+            # A checkpoint from a future/renamed build. Restarting the tick
+            # costs one LLM call; honoring an unknown stage would silently
+            # skip work, so restart loudly.
+            log.warning("run_quest_tick: unknown stage %r — restarting the tick", stage)
+            self.st = {"stage": "llm"}
+            fn = self._stage_llm
+        return fn()
+
+    def _stage_llm(self) -> QuestTickOutcome | None:
+        """Assemble the prompt, open the run's agentlog, make **the** primary
+        LLM call, park its payload. The only stage that can end the tick
+        early (quest gone / LLM error / unparseable output)."""
+        from precis import agentlog
+        from precis.quest import cascade as cascade_mod
+        from precis.utils.llm.router import LlmRequest, Tier
+
+        store, quest_id = self.store, self.quest_id
+        qref = store.get_ref(kind="quest", id=quest_id)
+        if qref is None or qref.deleted_at is not None:
+            return QuestTickOutcome(
+                quest_id, "failed", 0, False, None, "quest not found"
+            )
+
+        # Cascade: decide local vs. frontier review (unless the caller forces it).
+        signal = cascade_mod.escalation_signal(store, quest_id)
+        is_review = signal.escalate if self.review is None else self.review
+        reason = (
+            signal.reason
+            if (self.review is None and is_review)
+            else ("forced" if is_review else "")
+        )
+        if self.tier is not None:
+            resolved_tier = _resolve_tier(self.tier)
+        elif is_review:
+            resolved_tier = Tier.FRONTIER
+        else:
+            resolved_tier = Tier.MEDIUM
+
+        prompt = build_tick_prompt(store, qref, review=is_review)
+
+        # Open a run-attribution record (kind='agentlog') carrying the full
+        # assembled prompt — the twin of ``plan_tick``'s own agentlog wiring
+        # (:mod:`precis.workers.job_types.plan_tick`) so the ``/agentlogs/<id>``
+        # web viewer can show a quest tick's prompt + session the same way it
+        # shows a planner tick's. Best-effort: a failure here must never abort
+        # the tick — it only costs this tick its ability to be sliced (the
+        # stage checkpoint has nowhere to live; see the banner above).
+        model_str = str(resolved_tier)
+        agentlog_id: int | None = None
+        try:
+            agentlog_id = agentlog.open_log(
+                store,
+                source="quest_tick",
+                title=f"quest_tick #{quest_id} ({model_str})",
+                model=model_str,
+                prompt=prompt,
+                parent_ref_id=quest_id,
+                job_ref_id=self.job_ref_id,
+            )
+        except Exception:
+            log.warning("run_quest_tick: failed to open agentlog", exc_info=True)
+
+        self.st.update(
+            {
+                "agentlog_id": agentlog_id,
+                "is_review": bool(is_review),
+                "reason": reason,
+                "tier": model_str,
+                "prompt_chars": len(prompt),
+            }
+        )
+        self.stash = {"prompt": prompt}
+
+        # Attribute the call to *this* quest (llm_call_log.ref_id) and split the
+        # lane in `source` so per-quest, local-vs-review spend is mineable from
+        # the log — neither is back-fillable, so it must be stamped at dispatch
+        # (gr162130).
+        res = self.disp(
+            LlmRequest(
+                tier=resolved_tier,
+                prompt=prompt,
+                source="quest_review" if is_review else "quest_tick",
+                ref_id=quest_id,
+                # The transport-default 600s wall cap cut big-tier reasoning off
+                # mid-thought (see _TICK_LLM_TIMEOUT_S); streaming makes the cap a
+                # hard ceiling with an idle timeout underneath, and preserves the
+                # partial output on abort instead of dropping the connection's
+                # entire generation.
+                timeout_s=_tick_llm_timeout_s(),
+                stream=True,
+            )
+        )
+        cost = getattr(res, "cost_usd", None)
+        self.st["cost"] = float(cost) if isinstance(cost, (int, float)) else None
+        if getattr(res, "error", None):
+            # Whatever the model produced before the failure (a streamed rung's
+            # partial reasoning/content rides LlmResult.text alongside the error)
+            # is persisted to the agentlog rather than lost with the connection.
+            salvage = _cap_partial((getattr(res, "text", "") or "").strip())
+            # A window-scoped breaker trip (dollar cap / claude-OAuth quota) is a
+            # pause, not a failure: report "paused" so the allocator skips it (no
+            # pick recorded, no panel "failed") and re-picks once the window
+            # clears — instead of burning a tick + a FAILED-PASSES row every
+            # worker cycle.
+            if getattr(res, "paused", False):
+                # Split the pause by *cause* for the coordinator's give-up budget
+                # (see QuestTickOutcome.pause_kind): a wall-clock timeout is not a
+                # window that will roll off — the same prompt on the same rung
+                # re-burns the same ceiling — so it must not retry for free.
+                return self._finalize(
+                    QuestTickOutcome(
+                        quest_id,
+                        "paused",
+                        0,
+                        False,
+                        cost,
+                        f"paused: {res.error}",
+                        pause_kind=(
+                            "timeout" if getattr(res, "timed_out", False) else "window"
+                        ),
+                    ),
+                    res=res,
+                    partial=salvage,
+                )
+            return self._finalize(
+                QuestTickOutcome(
+                    quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
+                ),
+                res=res,
+                partial=salvage,
+            )
+
+        payload = _payload_from_result(res)
+        if payload is None:
+            # The model completed cleanly but its text didn't parse as a tick
+            # action — persist the raw text so the malformed output can be
+            # inspected instead of vanishing with the failure (glm-5.2 has
+            # returned prose/near-empty answers here; without the text the
+            # failure mode is invisible).
+            return self._finalize(
+                QuestTickOutcome(
+                    quest_id, "failed", 0, False, cost, "unparseable model output"
+                ),
+                res=res,
+                partial=_cap_partial((getattr(res, "text", "") or "").strip()),
+            )
+
+        raw_text = getattr(res, "raw_text", None)
+        self.st["resp_chars"] = len(getattr(res, "text", "") or "")
+        self._park(
+            payload=payload,
+            raw_text=_cap_transcript_raw(str(raw_text)) if raw_text else None,
+        )
+        self.st["stage"] = "apply"
+        return None
+
+    def _stage_apply(self) -> QuestTickOutcome | None:
+        """Apply the payload's WORM writes — logbook, ledger, proposal leads,
+        review directions. No LLM call, no network."""
+        store, quest_id, by = self.store, self.quest_id, self.by
+        payload = self.payload()
+
+        # Open hypotheses to dedup fresh ones against — a spin is the same
+        # question restated, so a near-duplicate `hypothesis` is dropped rather
+        # than appended.
+        open_hyps = list(gaps_mod._open_hypotheses(store, quest_id))
+        deduped = 0
+
+        # Apply logbook entries (clamp unknown entry types rather than reject).
+        added = 0
+        for e in payload.get("logbook") or []:
+            if not isinstance(e, dict):
+                continue
+            text = str(e.get("text") or "").strip()
+            if not text:
+                continue
+            etype = clamp_entry_type(e.get("entry_type"))
+            # The model may only narrate, not measure: `result`/`milestone`/`cost`
+            # clamp to `observation`, and a stated barrier number gets flagged
+            # unverified — see :func:`_sanitize_model_entry` (gripes 171148/171149).
+            etype, text = _sanitize_model_entry(etype, text)
+            if etype == "hypothesis" and _is_near_dup(text, open_hyps):
+                deduped += 1
+                continue
+            raw_cost = e.get("cost")
+            cost_val = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
+            append_entry(
+                store, quest_id, text=text, entry_type=etype, by=by, cost=cost_val
+            )
+            if etype == "hypothesis":
+                open_hyps.append(text)
+            added += 1
+
+        # Ledger — pin any tried/ruled-out/open *directions* the model wants to
+        # survive the whole-rewrite below. Applied BEFORE `rewrite_dossier` so a
+        # same-tick rule-out is pinned even if the fresh narrative drops it
+        # (dossier-owned-by-process — the structural fix for the autocatpath
+        # dead-3-days spin).
+        ledger_added = 0
+        for e in payload.get("ledger_add") or []:
+            if not isinstance(e, dict):
+                continue
+            text = str(e.get("text") or "").strip()
+            if not text:
+                continue
+            section = str(e.get("section") or "").strip()
+            if dossier_mod.append_ledger_entry(store, quest_id, section, text):
+                ledger_added += 1
+
+        # ledger_ops (dossier-hygiene design) — the tree-capable successor to
+        # `ledger_add` above: `add` a node (optionally under `parent`) or `mark`
+        # an existing one's status. Applied in order, same BEFORE-the-rewrite
+        # placement as `ledger_add` for the same reason. Each op degrades
+        # silently on a bad shape / an ambiguous or unmatched node — that's
+        # `add_attempt`/`mark_attempt`'s own no-op contract (never a guess) — but
+        # logged here so a persistently-malformed model payload is diagnosable;
+        # a raise from either call must never crash the tick (mirrors the
+        # compute-step / commit-ladder degrade-don't-crash convention below).
+        for op in payload.get("ledger_ops") or []:
+            if not isinstance(op, dict):
+                continue
+            kind = str(op.get("op") or "").strip()
+            raw_parent = op.get("parent")
+            parent = str(raw_parent).strip() if raw_parent else None
+            try:
+                if kind == "add":
+                    text = str(op.get("text") or "").strip()
+                    status = str(op.get("status") or "open").strip() or "open"
+                    applied = dossier_mod.add_attempt(
+                        store, quest_id, text, parent=parent, status=status
+                    )
+                elif kind == "mark":
+                    node = str(op.get("node") or "").strip()
+                    status = str(op.get("status") or "").strip()
+                    applied = dossier_mod.mark_attempt(
+                        store, quest_id, node, status, parent=parent
+                    )
+                else:
+                    applied = False
+            except Exception:
+                log.exception(
+                    "run_quest_tick: ledger_ops entry raised for quest %s: %r",
+                    quest_id,
+                    op,
+                )
+                applied = False
+            if applied:
+                ledger_added += 1
+            else:
+                log.info(
+                    "run_quest_tick: ledger_ops entry for quest %s not applied "
+                    "(bad shape / ambiguous / unmatched): %r",
+                    quest_id,
+                    op,
+                )
+
+        # Proposals — log each candidate as a hypothesis (WORM). The
+        # materialise + dispatch half is the `compute` stage.
+        proposals = _tick_proposals(payload)
+        for p in proposals:
+            name = str(p.get("name") or "").strip()
+            if not name:
+                continue
+            rationale = str(p.get("rationale") or "").strip()
+            buildable = " [buildable]" if isinstance(p.get("structure"), dict) else ""
+            append_entry(
+                store,
+                quest_id,
+                text=f"candidate: {name}{buildable} — {rationale}"[:400],
+                entry_type="hypothesis",
+                by=by,
+            )
+            added += 1
+
+        # Directions — set on a frontier review; recorded as a `decision` deed.
+        if self.st.get("is_review"):
+            directions = [
+                str(d).strip()
+                for d in (payload.get("directions") or [])
+                if str(d).strip()
+            ]
+            if directions:
+                append_entry(
+                    store,
+                    quest_id,
+                    text="frontier review — next directions: " + "; ".join(directions),
+                    entry_type="decision",
+                    by=by,
+                )
+                added += 1
+
+        self.st.update(
+            {
+                "stage": "search",
+                "added": added,
+                "deduped": deduped,
+                "ledger_added": ledger_added,
+                "n_proposals": len(proposals),
+            }
+        )
+        return None
+
+    def _stage_search(self) -> QuestTickOutcome | None:
+        """Lit-search — go ground the quest in the literature (the missing half
+        of the loop). Runs in the same acting mode as compute; linking a paper
+        is external progress, so it must land BEFORE update_cascade_state
+        resets the stall clock. Its own stage because a per-DOI acquire walk is
+        minutes of network, not a fraction of the compute step."""
+        self.st["stage"] = "compute"
+        if not self.compute:
+            return None
+
+        from precis.quest.search import run_search_step
+
+        # Each entry is either the legacy plain query string, or
+        # `{"query": "...", "hypothetical": "..."}` (HyDE — dossier-hygiene
+        # design) — passed through RAW; `run_search_step` does its own
+        # per-entry parsing/blank-filtering (a plain `str(q)` coercion here
+        # would mangle a dict entry into its Python repr).
+        raw_searches = self.payload().get("searches")
+        if isinstance(raw_searches, list) and raw_searches:
+            sstep = run_search_step(
+                self.store,
+                self.quest_id,
+                raw_searches,
+                by=self.by,
+                search_fn=self.search_fn,
+                embedder=self.embedder,
+            )
+            self.st["searches_run"] = sstep.queries_run
+            self.st["papers_linked"] = sstep.papers_linked
+            self._bump("added", sstep.queries_run)
+        return None
+
+    def _stage_compute(self) -> QuestTickOutcome | None:
+        """Materialise + dispatch the capped proposals, harvest what landed,
+        and advance the stall counter — routing to the commit ladder when the
+        model has gone ``PRECIS_QUEST_FORCE_EXPERIMENT_EVERY`` ticks without
+        dispatching an experiment."""
+        if not self.compute:
+            self.st["stage"] = "finish"
+            return None
+
+        from precis.quest.compute import run_compute_step
+
+        store, quest_id, by = self.store, self.quest_id, self.by
+        proposals = _tick_proposals(self.payload())
+
+        # WIP cap — dispatch at most max_proposals_per_tick() (default 1);
+        # the rest were already logged as `hypothesis` leads by `apply`.
+        capped = proposals[: max_proposals_per_tick()]
+        if len(proposals) > len(capped):
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"WIP cap: dispatching {len(capped)} of {len(proposals)} "
+                    "proposals this tick — the rest stay leads; re-propose "
+                    "the best against the fresh frontier next tick"
+                ),
+                entry_type="observation",
+                by=MEASURED_BY,
+            )
+        # A raise here must never crash the tick (mirrors _phase_weave_tick and
+        # the commit-ladder try/except). run_compute_step's dispatch lane
+        # (dispatch_autocatpath) raises loudly on the gr172886 no-GPU null-route
+        # misconfiguration; without this guard that RuntimeError propagates out
+        # of run_quest_tick to the coordinator's blanket except, which
+        # terminalizes the WHOLE coordinator job and loses the mid-slice
+        # checkpoint. Log it loudly (the misconfig stays visible) and degrade to
+        # a zero-dispatch outcome — the stall counter then advances and the
+        # escalation ladder handles the persistent failure.
+        try:
+            step = run_compute_step(store, quest_id, capped, by=by)
+        except Exception:
+            log.exception(
+                "run_quest_tick: compute step raised for quest %s — degrading "
+                "to a backed-off (zero-dispatch) outcome",
+                quest_id,
+            )
+            step = None
+        if step is not None:
+            self.st["created"] = step.candidates_created
+            self.st["dispatched"] = step.sims_dispatched
+            self.st["harvested"] = step.results_harvested
+            self.st["ruled"] = step.ruled_out
+            self.st["graduated"] = step.graduated
+
+        # Commit re-prompt + tier-escalation ladder: a structural guarantee
+        # that the AGENT is asked to act — never a code-chosen dispatch. A
+        # model tick that dispatched a real sim resets the stall counter; one
+        # that dispatched nothing advances it, and once it reaches
+        # PRECIS_QUEST_FORCE_EXPERIMENT_EVERY consecutive dry ticks (default 2)
+        # the tick fires the ladder — one rung per slice, from `_stage_ladder`.
+        # The counter is stamped by `finish`, whichever way the ladder goes.
+        if int(self.st.get("dispatched") or 0) > 0:
+            self.st["stall"] = 0
+            self.st["stage"] = "finish"
+            return None
+        stall = int(self._quest_meta().get("ticks_since_experiment", 0) or 0) + 1
+        self.st["stall"] = stall
+        force_every = int(os.environ.get("PRECIS_QUEST_FORCE_EXPERIMENT_EVERY", "2"))
+        self.st["stage"] = "ladder" if stall >= force_every else "finish"
+        return None
+
+    def _commit_prompt(self) -> str:
+        """The ladder's "you must propose now" re-prompt — built once on the
+        first rung and parked, so the escalated rung re-asks with the
+        byte-identical context (as it did when both rungs ran inside one
+        call) instead of paying for a second full-context rebuild."""
+        stash = self._load_stash()
+        cached = stash.get("commit_prompt")
+        if isinstance(cached, str) and cached:
+            return cached
+        # Reuse the primary tick's already-built prompt when it was built in
+        # propose mode (review=False) — byte-identical to what the ladder
+        # would otherwise rebuild from scratch (another frontier +
+        # live-candidate scan). A review tick's prompt carries the review
+        # banner, so the ladder must rebuild its own propose-mode one. And if
+        # this same tick just created a candidate (created > 0), the cached
+        # prompt predates it — rebuild so the re-prompt's tried-set/frontier
+        # reflects the new candidate.
+        reuse = not self.st.get("is_review") and not int(self.st.get("created") or 0)
+        base = stash.get("prompt") if reuse else None
+        prompt = _build_commit_prompt(
+            self.store,
+            self._quest(),
+            stall=int(self.st.get("stall") or 0),
+            base_prompt=base if isinstance(base, str) else None,
+            # The narrative write is deferred past this ladder (the
+            # growth-ratchet gate needs the ladder's own harvest as progress
+            # evidence) — a rebuild must see THIS tick's just-proposed
+            # narrative, not last tick's persisted one. Irrelevant when the
+            # base prompt is reused (no rebuild happens).
+            narrative_override=_tick_narrative(self.payload()).strip() or None,
+        )
+        self._park(commit_prompt=prompt)
+        return prompt
+
+    def _ladder_gave_up(self) -> None:
+        """Log why the ladder ended without a commit — never fabricating a
+        dispatch of its own. The two reasons read differently on purpose:
+        diagnosing a stall from the logbook is the whole point of the
+        ladder's log line."""
+        if self.st.get("ladder_error"):
+            # LLM transport/breaker/quota trouble, not a genuine decline.
+            text = "agent unreachable (LLM error/paused) — backing off, will retry"
+        else:
+            text = (
+                "agent declined to propose an untried variant after commit "
+                "re-prompt + tier escalation"
+            )
+        append_entry(
+            self.store, self.quest_id, text=text, entry_type="decision", by=self.by
+        )
+        self._bump("added")
+
+    def _stage_ladder(self) -> QuestTickOutcome | None:
+        """ONE rung of the commit re-prompt ladder — one LLM call, one slice.
+
+        A rung that errors or declines advances ``ladder_rung`` and yields; a
+        rung that proposes folds its :class:`~precis.quest.compute.ComputeStep`
+        into the tick's counters and ends the ladder. A raise anywhere here
+        must never crash the tick (mirrors the weave-tick try/except
+        convention in ``workers/job_types/quest_tick.py``'s
+        ``_phase_weave_tick``) — degrade to a normal backed-off outcome, and
+        let `finish` stamp the counter either way.
+        """
+        store, quest_id, by = self.store, self.quest_id, self.by
+        tiers = _commit_ladder_tiers(self.resolved_tier())
+        rung = int(self.st.get("ladder_rung") or 0)
+        self.st["stage"] = "finish"
+
+        if rung >= len(tiers):  # a stale / foreign checkpoint — give up here
+            self._ladder_gave_up()
+            return None
+
+        try:
+            committed, rung_error = _commit_rung(
+                store,
+                quest_id,
+                tiers[rung],
+                self._commit_prompt(),
+                disp=self.disp,
+                by=by,
+            )
+        except Exception as exc:  # defensive — a ladder bug must not crash
+            # the tick; see the docstring above.
+            log.exception("tick #%s: commit re-prompt ladder raised", quest_id)
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    "commit re-prompt ladder errored "
+                    f"({type(exc).__name__}: {exc}); backing off"
+                ),
+                entry_type="observation",
+                by=by,
+            )
+            self._bump("added")
+            return None
+
+        if rung_error:
+            self.st["ladder_error"] = True
+        if committed is None:
+            if rung + 1 < len(tiers):
+                self.st["ladder_rung"] = rung + 1
+                self.st["stage"] = "ladder"  # next slice takes the next rung
+                return None
+            # Last rung: give up in THIS slice rather than burning another
+            # one on a stage that would make no LLM call at all.
+            self._ladder_gave_up()
+            return None
+
+        fstep, names = committed
+        self._bump("created", fstep.candidates_created)
+        self._bump("dispatched", fstep.sims_dispatched)
+        self._bump("harvested", fstep.results_harvested)
+        self._bump("ruled", fstep.ruled_out)
+        self._bump("graduated", fstep.graduated)
+        stall = int(self.st.get("stall") or 0)
+        if fstep.sims_dispatched > 0:
+            self._bump("proposals_committed", len(names))
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"committed after re-prompt: {', '.join(names)} — "
+                    f"model stalled {stall} tick(s) with no experiment"
+                ),
+                entry_type="decision",
+                by=by,
+            )
+            self._bump("added")
+            self.st["stall"] = 0
+        else:
+            # The ladder returned a proposal but nothing reached simulation
+            # (e.g. a candidate materialised without wiring/dispatch —
+            # gr201814). Report the truth, carrying the step notes, so the
+            # logbook is self-diagnosing rather than claiming a commit that
+            # never happened — and leave ``stall`` advanced so the next tick
+            # keeps pressing.
+            detail = "; ".join(n for n in fstep.notes if n) or "no dispatch"
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"re-prompt proposed {', '.join(names)} but 0 "
+                    f"sims dispatched ({detail}) — still stalled "
+                    f"{stall} tick(s)"
+                ),
+                entry_type="observation",
+                by=by,
+            )
+            self._bump("added")
+        return None
+
+    def _stage_finish(self) -> QuestTickOutcome | None:
+        """Stamp the stall counter, regenerate the frontier-tree chunk, run the
+        narrative growth-ratchet gate (the tick's last possible LLM call — one
+        compress re-prompt), advance the cascade, meter the spend, and return
+        the outcome."""
+        from precis.quest import cascade as cascade_mod
+
+        store, quest_id, by = self.store, self.quest_id, self.by
+        st = self.st
+        is_review = bool(st.get("is_review"))
+        added = int(st.get("added") or 0)
+        ledger_added = int(st.get("ledger_added") or 0)
+        harvested = int(st.get("harvested") or 0)
+        papers_linked = int(st.get("papers_linked") or 0)
+        created = int(st.get("created") or 0)
+        ruled = int(st.get("ruled") or 0)
+        graduated = int(st.get("graduated") or 0)
+        rewritten = False
+
+        if self.compute:
+            store.stamp_ref_meta(
+                quest_id, {"ticks_since_experiment": int(st.get("stall") or 0)}
+            )
+            # Regenerate the pinned frontier-tree dossier chunk (Slice 4c-4) now
+            # that harvest (above) has landed this tick's measures — a code-only
+            # rewrite, never surfaced to the model as something to author.
+            # Defensive: a render bug must not crash the tick (mirrors the
+            # commit-ladder / compute-step try/except convention).
+            try:
+                from precis.quest.dossier import update_frontier_tree
+
+                update_frontier_tree(store, quest_id)
+            except Exception:
+                log.exception(
+                    "run_quest_tick: frontier-tree regen failed for quest %s", quest_id
+                )
+
+        # Narrative growth-ratchet gate (dossier-hygiene design) — deferred to
+        # HERE (the payload captured it back at `apply` time) so
+        # `progress_evidence` reflects this tick's FULL outcome: an applied
+        # ledger op, a harvest (`frontier update`), or a linked paper (this
+        # loop's stand-in for "citation mint" — `precis.quest.citation_mint`
+        # itself is the paper-writing weave's own minter, not called from here).
+        # The ledger tree is never gated — see the module banner above.
+        # Defensive: a gate/rewrite bug must not crash the tick — on a raise,
+        # the previous narrative simply survives untouched.
+        narrative_md = _tick_narrative(self.payload()).strip()
+        if narrative_md:
+            try:
+                progress_evidence = (
+                    bool(ledger_added) or bool(harvested) or bool(papers_linked)
+                )
+                accepted_md = _apply_narrative_gate(
+                    store,
+                    self._quest(),
+                    quest_id,
+                    narrative_md,
+                    progress_evidence=progress_evidence,
+                    tier=self.resolved_tier(),
+                    disp=self.disp,
+                )
+                if accepted_md is not None:
+                    dossier_mod.rewrite_dossier(store, quest_id, accepted_md)
+                    rewritten = True
+            except Exception:
+                log.exception(
+                    "run_quest_tick: narrative growth-ratchet gate failed for quest %s",
+                    quest_id,
+                )
+
+        # Advance the cascade counters + recompute `promise` (rung 4d reads it).
+        cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)
+
+        did_work = (
+            added
+            or rewritten
+            or created
+            or harvested
+            or ruled
+            or graduated
+            or papers_linked
+        )
+        reason = str(st.get("reason") or "")
+        note = (
+            (f"frontier-review ({reason})" if is_review else "ok")
+            if did_work
+            else "no-op"
+        )
+        # Attribute the tick's *real* measured usage to the tote (gripe 162594).
+        # Quest ticks run on the claude_p transport at MEDIUM, where
+        # ``cost_usd`` is null/0.00 for 100% of prod rows (free/quota-bound lane)
+        # and ``total_tokens`` is never populated either — so metering the tote in
+        # dollars or tokens silently starves ``over_budget`` of any signal. Chars
+        # (prompt + response text) IS always available, so that's the unit: one
+        # terse ``cost`` deed per successful tick carries the char count into the
+        # dated ledger. ``cost`` is still recorded when a transport happens to
+        # report one (future priced lanes), but it no longer gates whether the
+        # deed is written — a paused/errored tick returns early at `llm`, so this
+        # only runs on success.
+        cost = st.get("cost")
+        chars = int(st.get("prompt_chars") or 0) + int(st.get("resp_chars") or 0)
+        cost_val = float(cost) if isinstance(cost, (int, float)) and cost > 0 else None
+        cost_note = f" (${cost_val:.4f})" if cost_val is not None else ""
+        append_entry(
+            store,
+            quest_id,
+            text=(
+                f"tick spend {chars:,} chars{cost_note} "
+                f"({'review' if is_review else 'local'})"
+            ),
+            entry_type="cost",
+            by=by,
+            cost=cost_val,
+            chars=chars,
+        )
+        return self._finalize(
+            QuestTickOutcome(
+                quest_id,
+                "succeeded",
+                added,
+                rewritten,
+                cost,
+                note,
+                proposals=(
+                    int(st.get("n_proposals") or 0)
+                    + int(st.get("proposals_committed") or 0)
+                ),
+                candidates_created=created,
+                sims_dispatched=int(st.get("dispatched") or 0),
+                results_harvested=harvested,
+                ruled_out=ruled,
+                graduated=graduated,
+                searches_run=int(st.get("searches_run") or 0),
+                papers_linked=papers_linked,
+                hypotheses_deduped=int(st.get("deduped") or 0),
+                ledger_added=ledger_added,
+                escalated=is_review,
+                mode="frontier-review" if is_review else "local",
+            ),
+            res=self._result_stub(),
+        )
+
+
+@overload
+def run_quest_tick(
+    store: Store,
+    quest_id: int,
+    *,
+    tier: Any = ...,
+    dispatch_fn: Callable[[Any], Any] | None = ...,
+    by: str = ...,
+    compute: bool = ...,
+    review: bool | None = ...,
+    search_fn: Any = ...,
+    job_ref_id: int | None = ...,
+    embedder: Any | None = ...,
+    tick_state: dict[str, Any] | None = ...,
+    sliced: Literal[False] = ...,
+) -> QuestTickOutcome: ...
+
+
+@overload
+def run_quest_tick(
+    store: Store,
+    quest_id: int,
+    *,
+    tier: Any = ...,
+    dispatch_fn: Callable[[Any], Any] | None = ...,
+    by: str = ...,
+    compute: bool = ...,
+    review: bool | None = ...,
+    search_fn: Any = ...,
+    job_ref_id: int | None = ...,
+    embedder: Any | None = ...,
+    tick_state: dict[str, Any] | None = ...,
+    sliced: Literal[True],
+) -> QuestTickOutcome | TickSlice: ...
 
 
 def run_quest_tick(
@@ -1500,7 +2537,9 @@ def run_quest_tick(
     search_fn: Any = None,
     job_ref_id: int | None = None,
     embedder: Any | None = None,
-) -> QuestTickOutcome:
+    tick_state: dict[str, Any] | None = None,
+    sliced: bool = False,
+) -> QuestTickOutcome | TickSlice:
     """Run one structured research step against ``quest_id``.
 
     ``dispatch_fn`` is injectable (defaults to the real router ``dispatch``) so
@@ -1516,618 +2555,42 @@ def run_quest_tick(
     (:func:`precis.quest.search.run_search_step` — dossier-hygiene design);
     ``None`` degrades that leg to fused-lexical-only, same as the broad
     `search()` verb with no embedder configured.
+
+    **Slicing.** By default this runs the whole tick — every stage in the
+    banner above — in one call and returns its :class:`QuestTickOutcome`.
+    ``sliced=True`` instead returns a :class:`TickSlice` at each stage
+    boundary, which the caller parks and hands back as ``tick_state`` on the
+    next slice; the tick then costs at most one LLM call per call. Only the
+    coordinator uses it (a kill between stages is the failure mode it
+    exists for). A tick that could not open its agentlog has nowhere to park
+    its checkpoint and runs to completion even under ``sliced=True``.
     """
-    from precis.quest import cascade as cascade_mod
-    from precis.utils.llm.router import Tier
-
-    qref = store.get_ref(kind="quest", id=quest_id)
-    if qref is None or qref.deleted_at is not None:
-        return QuestTickOutcome(quest_id, "failed", 0, False, None, "quest not found")
-
-    # Cascade: decide local vs. frontier review (unless the caller forces it).
-    signal = cascade_mod.escalation_signal(store, quest_id)
-    is_review = signal.escalate if review is None else review
-    reason = (
-        signal.reason
-        if (review is None and is_review)
-        else ("forced" if is_review else "")
-    )
-    if tier is not None:
-        resolved_tier = _resolve_tier(tier)
-    elif is_review:
-        resolved_tier = Tier.FRONTIER
-    else:
-        resolved_tier = Tier.MEDIUM
-
-    prompt = build_tick_prompt(store, qref, review=is_review)
-
-    # Open a run-attribution record (kind='agentlog') carrying the full
-    # assembled prompt — the twin of ``plan_tick``'s own agentlog wiring
-    # (:mod:`precis.workers.job_types.plan_tick`) so the ``/agentlogs/<id>``
-    # web viewer can show a quest tick's prompt + session the same way it
-    # shows a planner tick's. Best-effort: a failure here must never abort
-    # the tick.
-    from precis import agentlog
-
-    model_str = str(resolved_tier)
-    agentlog_id: int | None = None
-    try:
-        agentlog_id = agentlog.open_log(
-            store,
-            source="quest_tick",
-            title=f"quest_tick #{quest_id} ({model_str})",
-            model=model_str,
-            prompt=prompt,
-            parent_ref_id=quest_id,
-            job_ref_id=job_ref_id,
-        )
-    except Exception:
-        log.warning("run_quest_tick: failed to open agentlog", exc_info=True)
-
-    def _finalize(
-        outcome: QuestTickOutcome, *, partial: str | None = None
-    ) -> QuestTickOutcome:
-        if agentlog_id is not None:
-            try:
-                agentlog.finalize_log(
-                    store,
-                    log_id=agentlog_id,
-                    status=outcome.status,
-                    # Partial output salvaged from a mid-generation abort
-                    # (a streamed rung's StreamTimeout) — persisted so the
-                    # reasoning isn't lost with the connection; the
-                    # /agentlogs viewer shows it next to the prompt.
-                    result=partial or None,
-                    # Non-succeeded ticks stamp WHY (the outcome note) —
-                    # a bare status="failed" row is undiagnosable.
-                    meta_extra=(
-                        {"error": outcome.note}
-                        if outcome.status != "succeeded" and outcome.note
-                        else None
-                    ),
-                )
-            except Exception:
-                log.warning(
-                    "run_quest_tick: failed to finalize agentlog", exc_info=True
-                )
-        # Job-ref transcript (gr170252 forensic gap) — distinct from the
-        # agentlog record above: this is what the sweeper's existing
-        # transcript GC + confusion-mining SQL already know how to find.
-        if job_ref_id is not None:
-            _persist_job_transcript(store, job_ref_id, outcome, res)
-        return outcome
-
-    from precis.utils.llm.router import LlmRequest
-    from precis.utils.llm.router import dispatch as _dispatch
-
-    disp = dispatch_fn if dispatch_fn is not None else _dispatch
-    # Attribute the call to *this* quest (llm_call_log.ref_id) and split the lane
-    # in `source` so per-quest, local-vs-review spend is mineable from the log —
-    # neither is back-fillable, so it must be stamped at dispatch (gr162130).
-    res = disp(
-        LlmRequest(
-            tier=resolved_tier,
-            prompt=prompt,
-            source="quest_review" if is_review else "quest_tick",
-            ref_id=quest_id,
-            # The transport-default 600s wall cap cut big-tier reasoning off
-            # mid-thought (see _TICK_LLM_TIMEOUT_S); streaming makes the cap a
-            # hard ceiling with an idle timeout underneath, and preserves the
-            # partial output on abort instead of dropping the connection's
-            # entire generation.
-            timeout_s=_tick_llm_timeout_s(),
-            stream=True,
-        )
-    )
-    cost = getattr(res, "cost_usd", None)
-    if getattr(res, "error", None):
-        # Whatever the model produced before the failure (a streamed rung's
-        # partial reasoning/content rides LlmResult.text alongside the error)
-        # is persisted to the agentlog rather than lost with the connection.
-        salvage = _cap_partial((getattr(res, "text", "") or "").strip())
-        # A window-scoped breaker trip (dollar cap / claude-OAuth quota) is a
-        # pause, not a failure: report "paused" so the allocator skips it (no
-        # pick recorded, no panel "failed") and re-picks once the window clears —
-        # instead of burning a tick + a FAILED-PASSES row every worker cycle.
-        if getattr(res, "paused", False):
-            # Split the pause by *cause* for the coordinator's give-up budget
-            # (see QuestTickOutcome.pause_kind): a wall-clock timeout is not a
-            # window that will roll off — the same prompt on the same rung
-            # re-burns the same ceiling — so it must not retry for free.
-            return _finalize(
-                QuestTickOutcome(
-                    quest_id,
-                    "paused",
-                    0,
-                    False,
-                    cost,
-                    f"paused: {res.error}",
-                    pause_kind=(
-                        "timeout" if getattr(res, "timed_out", False) else "window"
-                    ),
-                ),
-                partial=salvage,
-            )
-        return _finalize(
-            QuestTickOutcome(
-                quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
-            ),
-            partial=salvage,
-        )
-
-    payload = _payload_from_result(res)
-    if payload is None:
-        # The model completed cleanly but its text didn't parse as a tick
-        # action — persist the raw text so the malformed output can be
-        # inspected instead of vanishing with the failure (glm-5.2 has
-        # returned prose/near-empty answers here; without the text the
-        # failure mode is invisible).
-        return _finalize(
-            QuestTickOutcome(
-                quest_id, "failed", 0, False, cost, "unparseable model output"
-            ),
-            partial=_cap_partial((getattr(res, "text", "") or "").strip()),
-        )
-
-    # Open hypotheses to dedup fresh ones against — a spin is the same question
-    # restated, so a near-duplicate `hypothesis` is dropped rather than appended.
-    open_hyps = list(gaps_mod._open_hypotheses(store, quest_id))
-    deduped = 0
-
-    # Apply logbook entries (clamp unknown entry types rather than reject).
-    added = 0
-    for e in payload.get("logbook") or []:
-        if not isinstance(e, dict):
-            continue
-        text = str(e.get("text") or "").strip()
-        if not text:
-            continue
-        etype = clamp_entry_type(e.get("entry_type"))
-        # The model may only narrate, not measure: `result`/`milestone`/`cost`
-        # clamp to `observation`, and a stated barrier number gets flagged
-        # unverified — see :func:`_sanitize_model_entry` (gripes 171148/171149).
-        etype, text = _sanitize_model_entry(etype, text)
-        if etype == "hypothesis" and _is_near_dup(text, open_hyps):
-            deduped += 1
-            continue
-        raw_cost = e.get("cost")
-        cost_val = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
-        append_entry(store, quest_id, text=text, entry_type=etype, by=by, cost=cost_val)
-        if etype == "hypothesis":
-            open_hyps.append(text)
-        added += 1
-
-    # Ledger — pin any tried/ruled-out/open *directions* the model wants to
-    # survive the whole-rewrite below. Applied BEFORE `rewrite_dossier` so a
-    # same-tick rule-out is pinned even if the fresh narrative drops it
-    # (dossier-owned-by-process — the structural fix for the autocatpath dead-3-days spin).
-    ledger_added = 0
-    for e in payload.get("ledger_add") or []:
-        if not isinstance(e, dict):
-            continue
-        text = str(e.get("text") or "").strip()
-        if not text:
-            continue
-        section = str(e.get("section") or "").strip()
-        if dossier_mod.append_ledger_entry(store, quest_id, section, text):
-            ledger_added += 1
-
-    # ledger_ops (dossier-hygiene design) — the tree-capable successor to
-    # `ledger_add` above: `add` a node (optionally under `parent`) or `mark`
-    # an existing one's status. Applied in order, same BEFORE-the-rewrite
-    # placement as `ledger_add` for the same reason. Each op degrades
-    # silently on a bad shape / an ambiguous or unmatched node — that's
-    # `add_attempt`/`mark_attempt`'s own no-op contract (never a guess) — but
-    # logged here so a persistently-malformed model payload is diagnosable;
-    # a raise from either call must never crash the tick (mirrors the
-    # compute-step / commit-ladder degrade-don't-crash convention below).
-    for op in payload.get("ledger_ops") or []:
-        if not isinstance(op, dict):
-            continue
-        kind = str(op.get("op") or "").strip()
-        raw_parent = op.get("parent")
-        parent = str(raw_parent).strip() if raw_parent else None
-        try:
-            if kind == "add":
-                text = str(op.get("text") or "").strip()
-                status = str(op.get("status") or "open").strip() or "open"
-                applied = dossier_mod.add_attempt(
-                    store, quest_id, text, parent=parent, status=status
-                )
-            elif kind == "mark":
-                node = str(op.get("node") or "").strip()
-                status = str(op.get("status") or "").strip()
-                applied = dossier_mod.mark_attempt(
-                    store, quest_id, node, status, parent=parent
-                )
-            else:
-                applied = False
-        except Exception:
-            log.exception(
-                "run_quest_tick: ledger_ops entry raised for quest %s: %r",
-                quest_id,
-                op,
-            )
-            applied = False
-        if applied:
-            ledger_added += 1
-        else:
-            log.info(
-                "run_quest_tick: ledger_ops entry for quest %s not applied "
-                "(bad shape / ambiguous / unmatched): %r",
-                quest_id,
-                op,
-            )
-
-    # The proposed narrative rewrite — captured here, but NOT yet gated or
-    # written: the growth-ratchet gate (dossier-hygiene design) needs this
-    # tick's full "progress" fact (the ledger ops already applied above, plus
-    # any harvest/paper-link the compute+search steps below still produce),
-    # so the gate+write is deferred to just before `update_cascade_state`.
-    # New field name is `dossier_text` (the old `dossier_markdown` name was
-    # itself the strongest wrong-format signal in the prompt — chunks render
-    # plain prose, not markdown); the old key is still accepted so a
-    # mid-flight response lands.
-    narrative_md = str(
-        payload.get("dossier_text") or payload.get("dossier_markdown") or ""
-    ).strip()
-    rewritten = False
-
-    # Proposals — log each candidate as a hypothesis (WORM), then optionally
-    # materialise + dispatch them as `structure` sims (rung 4b).
-    proposals = [p for p in (payload.get("proposals") or []) if isinstance(p, dict)]
-    for p in proposals:
-        name = str(p.get("name") or "").strip()
-        if not name:
-            continue
-        rationale = str(p.get("rationale") or "").strip()
-        buildable = " [buildable]" if isinstance(p.get("structure"), dict) else ""
-        append_entry(
-            store,
-            quest_id,
-            text=f"candidate: {name}{buildable} — {rationale}"[:400],
-            entry_type="hypothesis",
-            by=by,
-        )
-        added += 1
-
-    # Directions — set on a frontier review; recorded as a `decision` deed.
-    if is_review:
-        directions = [
-            str(d).strip() for d in (payload.get("directions") or []) if str(d).strip()
-        ]
-        if directions:
-            append_entry(
-                store,
-                quest_id,
-                text="frontier review — next directions: " + "; ".join(directions),
-                entry_type="decision",
-                by=by,
-            )
-            added += 1
-
-    # Lit-search — go ground the quest in the literature (the missing half of
-    # the loop). Runs in the same acting mode as compute; linking a paper is
-    # external progress, so it must land BEFORE update_cascade_state resets the
-    # stall clock. Injectable search seam lives in run_quest_tick's `search_fn`.
-    searches_run = papers_linked = 0
-    if compute:
-        from precis.quest.search import run_search_step
-
-        # Each entry is either the legacy plain query string, or
-        # `{"query": "...", "hypothetical": "..."}` (HyDE — dossier-hygiene
-        # design) — passed through RAW; `run_search_step` does its own
-        # per-entry parsing/blank-filtering (a plain `str(q)` coercion here
-        # would mangle a dict entry into its Python repr).
-        raw_searches = payload.get("searches")
-        if isinstance(raw_searches, list) and raw_searches:
-            sstep = run_search_step(
-                store,
-                quest_id,
-                raw_searches,
-                by=by,
-                search_fn=search_fn,
-                embedder=embedder,
-            )
-            searches_run = sstep.queries_run
-            papers_linked = sstep.papers_linked
-            added += sstep.queries_run
-
-    created = dispatched = harvested = ruled = graduated = 0
-    proposals_committed = 0  # extra proposals the commit ladder got dispatched
-    if compute:
-        from precis.quest.compute import run_compute_step
-
-        # A raise here must never crash the tick (mirrors _phase_weave_tick and
-        # the commit-ladder try/except). run_compute_step's dispatch lane
-        # (dispatch_autocatpath) raises loudly on the gr172886 no-GPU null-route
-        # misconfiguration; without this guard that RuntimeError propagates out
-        # of run_quest_tick to the coordinator's blanket except, which
-        # terminalizes the WHOLE coordinator job and loses the mid-slice
-        # checkpoint. Log it loudly (the misconfig stays visible) and degrade to
-        # a zero-dispatch outcome — the stall counter then advances and the
-        # escalation ladder handles the persistent failure.
-        # WIP cap — dispatch at most max_proposals_per_tick() (default 1);
-        # the rest were already logged as `hypothesis` leads above.
-        capped = proposals[: max_proposals_per_tick()]
-        if len(proposals) > len(capped):
-            append_entry(
-                store,
-                quest_id,
-                text=(
-                    f"WIP cap: dispatching {len(capped)} of {len(proposals)} "
-                    "proposals this tick — the rest stay leads; re-propose "
-                    "the best against the fresh frontier next tick"
-                ),
-                entry_type="observation",
-                by=MEASURED_BY,
-            )
-        try:
-            step = run_compute_step(store, quest_id, capped, by=by)
-        except Exception:
-            log.exception(
-                "run_quest_tick: compute step raised for quest %s — degrading "
-                "to a backed-off (zero-dispatch) outcome",
-                quest_id,
-            )
-            step = None
-        if step is not None:
-            created = step.candidates_created
-            dispatched = step.sims_dispatched
-            harvested = step.results_harvested
-            ruled = step.ruled_out
-            graduated = step.graduated
-
-        # Commit re-prompt + tier-escalation ladder: a structural guarantee
-        # that the AGENT is asked to act — never a code-chosen dispatch. A
-        # model tick that dispatched a real sim resets the stall counter;
-        # one that dispatched nothing advances it, and once it reaches
-        # PRECIS_QUEST_FORCE_EXPERIMENT_EVERY consecutive dry ticks (default
-        # 2) the tick fires the commit ladder (see above): re-prompt at the
-        # current tier, then one tier up, each asking the model to propose a
-        # composition using its own judgment. A raise anywhere in the ladder
-        # must never crash the tick (mirrors the weave-tick try/except
-        # convention in workers/job_types/quest_tick.py's
-        # _phase_weave_tick) — degrade to a normal backed-off outcome, and
-        # ALWAYS stamp the counter before returning either way.
-        prev_stall = int((qref.meta or {}).get("ticks_since_experiment", 0) or 0)
-        if dispatched > 0:
-            stall = 0
-        else:
-            stall = prev_stall + 1
-            force_every = int(
-                os.environ.get("PRECIS_QUEST_FORCE_EXPERIMENT_EVERY", "2")
-            )
-            if stall >= force_every:
-                try:
-                    # Reuse the primary tick's already-built prompt when it
-                    # was built in propose mode (review=False) — byte-
-                    # identical to what the ladder would otherwise rebuild
-                    # from scratch (another frontier + live-candidate scan).
-                    # A review tick's prompt carries the review banner, so
-                    # the ladder must rebuild its own propose-mode one. And if
-                    # this same tick just created a candidate (created > 0),
-                    # the cached prompt predates it — rebuild so the re-prompt's
-                    # tried-set/frontier reflects the new candidate.
-                    reuse_prompt = not is_review and created == 0
-                    committed, ladder_had_error = _commit_reprompt_ladder(
-                        store,
-                        qref,
-                        resolved_tier,
-                        stall=stall,
-                        disp=disp,
-                        by=by,
-                        base_prompt=prompt if reuse_prompt else None,
-                        # The narrative write is deferred past this ladder
-                        # (the growth-ratchet gate needs the ladder's own
-                        # harvest as progress evidence) — a rebuild must see
-                        # THIS tick's just-proposed narrative, not last
-                        # tick's persisted one. Irrelevant when reuse_prompt
-                        # is True (no rebuild happens).
-                        narrative_override=narrative_md or None,
-                    )
-                except Exception as exc:  # defensive — a ladder bug must not
-                    # crash the tick; see the docstring above.
-                    log.exception("tick #%s: commit re-prompt ladder raised", quest_id)
-                    append_entry(
-                        store,
-                        quest_id,
-                        text=(
-                            "commit re-prompt ladder errored "
-                            f"({type(exc).__name__}: {exc}); backing off"
-                        ),
-                        entry_type="observation",
-                        by=by,
-                    )
-                    added += 1
-                else:
-                    if committed is not None:
-                        fstep, names = committed
-                        created += fstep.candidates_created
-                        dispatched += fstep.sims_dispatched
-                        harvested += fstep.results_harvested
-                        ruled += fstep.ruled_out
-                        graduated += fstep.graduated
-                        if fstep.sims_dispatched > 0:
-                            proposals_committed += len(names)
-                            append_entry(
-                                store,
-                                quest_id,
-                                text=(
-                                    f"committed after re-prompt: {', '.join(names)} — "
-                                    f"model stalled {stall} tick(s) with no experiment"
-                                ),
-                                entry_type="decision",
-                                by=by,
-                            )
-                            added += 1
-                            stall = 0
-                        else:
-                            # The ladder returned a proposal but nothing reached
-                            # simulation (e.g. a candidate materialised without
-                            # wiring/dispatch — gr201814). Report the truth,
-                            # carrying the step notes, so the logbook is
-                            # self-diagnosing rather than claiming a commit that
-                            # never happened — and leave ``stall`` advanced so
-                            # the next tick keeps pressing.
-                            detail = (
-                                "; ".join(n for n in fstep.notes if n) or "no dispatch"
-                            )
-                            append_entry(
-                                store,
-                                quest_id,
-                                text=(
-                                    f"re-prompt proposed {', '.join(names)} but 0 "
-                                    f"sims dispatched ({detail}) — still stalled "
-                                    f"{stall} tick(s)"
-                                ),
-                                entry_type="observation",
-                                by=by,
-                            )
-                            added += 1
-                    elif ladder_had_error:
-                        # LLM transport/breaker/quota trouble, not a genuine
-                        # decline — distinct from the branch below so the
-                        # logbook (the whole point of this ladder) tells the
-                        # two apart.
-                        append_entry(
-                            store,
-                            quest_id,
-                            text=(
-                                "agent unreachable (LLM error/paused) — "
-                                "backing off, will retry"
-                            ),
-                            entry_type="decision",
-                            by=by,
-                        )
-                        added += 1
-                    else:
-                        append_entry(
-                            store,
-                            quest_id,
-                            text=(
-                                "agent declined to propose an untried variant "
-                                "after commit re-prompt + tier escalation"
-                            ),
-                            entry_type="decision",
-                            by=by,
-                        )
-                        added += 1
-        store.stamp_ref_meta(quest_id, {"ticks_since_experiment": stall})
-
-        # Regenerate the pinned frontier-tree dossier chunk (Slice 4c-4) now
-        # that harvest (above) has landed this tick's measures — a code-only
-        # rewrite, never surfaced to the model as something to author.
-        # Defensive: a render bug must not crash the tick (mirrors the
-        # commit-ladder / compute-step try/except convention above).
-        try:
-            from precis.quest.dossier import update_frontier_tree
-
-            update_frontier_tree(store, quest_id)
-        except Exception:
-            log.exception(
-                "run_quest_tick: frontier-tree regen failed for quest %s", quest_id
-            )
-
-    # Narrative growth-ratchet gate (dossier-hygiene design) — deferred to
-    # HERE (see the capture point above) so `progress_evidence` reflects this
-    # tick's FULL outcome: an applied ledger op, a harvest (`frontier
-    # update`), or a linked paper (this loop's stand-in for "citation mint" —
-    # `precis.quest.citation_mint` itself is the paper-writing weave's own
-    # minter, not called from here). The ledger tree is never gated — see
-    # the module banner above. Defensive: a gate/rewrite bug must not crash
-    # the tick (mirrors the frontier-tree regen / commit-ladder / compute-step
-    # try/except convention above) — on a raise, the previous narrative
-    # simply survives untouched.
-    if narrative_md:
-        try:
-            progress_evidence = (
-                bool(ledger_added) or bool(harvested) or bool(papers_linked)
-            )
-            accepted_md = _apply_narrative_gate(
-                store,
-                qref,
-                quest_id,
-                narrative_md,
-                progress_evidence=progress_evidence,
-                tier=resolved_tier,
-                disp=disp,
-            )
-            if accepted_md is not None:
-                dossier_mod.rewrite_dossier(store, quest_id, accepted_md)
-                rewritten = True
-        except Exception:
-            log.exception(
-                "run_quest_tick: narrative growth-ratchet gate failed for quest %s",
-                quest_id,
-            )
-
-    # Advance the cascade counters + recompute `promise` (rung 4d reads it).
-    cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)
-
-    did_work = (
-        added
-        or rewritten
-        or created
-        or harvested
-        or ruled
-        or graduated
-        or papers_linked
-    )
-    note = (
-        (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
-    )
-    # Attribute the tick's *real* measured usage to the tote (gripe 162594).
-    # Quest ticks run on the claude_p transport at MEDIUM, where
-    # ``cost_usd`` is null/0.00 for 100% of prod rows (free/quota-bound lane)
-    # and ``total_tokens`` is never populated either — so metering the tote in
-    # dollars or tokens silently starves ``over_budget`` of any signal. Chars
-    # (prompt + response text) IS always available, so that's the unit: one
-    # terse ``cost`` deed per successful tick carries the char count into the
-    # dated ledger. ``cost`` is still recorded when a transport happens to
-    # report one (future priced lanes), but it no longer gates whether the
-    # deed is written — a paused/errored tick returns early above, so this
-    # only runs on success.
-    resp_text = getattr(res, "text", "") or ""
-    chars = len(prompt) + len(resp_text)
-    cost_val = float(cost) if isinstance(cost, (int, float)) and cost > 0 else None
-    cost_note = f" (${cost_val:.4f})" if cost_val is not None else ""
-    append_entry(
-        store,
-        quest_id,
-        text=f"tick spend {chars:,} chars{cost_note} ({'review' if is_review else 'local'})",
-        entry_type="cost",
+    run = _TickRun(
+        store=store,
+        quest_id=quest_id,
+        tier=tier,
+        dispatch_fn=dispatch_fn,
         by=by,
-        cost=cost_val,
-        chars=chars,
+        compute=compute,
+        review=review,
+        search_fn=search_fn,
+        job_ref_id=job_ref_id,
+        embedder=embedder,
+        st=dict(tick_state) if tick_state else {"stage": "llm"},
     )
-    return _finalize(
-        QuestTickOutcome(
-            quest_id,
-            "succeeded",
-            added,
-            rewritten,
-            cost,
-            note,
-            proposals=len(proposals) + proposals_committed,
-            candidates_created=created,
-            sims_dispatched=dispatched,
-            results_harvested=harvested,
-            ruled_out=ruled,
-            graduated=graduated,
-            searches_run=searches_run,
-            papers_linked=papers_linked,
-            hypotheses_deduped=deduped,
-            ledger_added=ledger_added,
-            escalated=is_review,
-            mode="frontier-review" if is_review else "local",
-        )
-    )
+    while True:
+        outcome = run.step()
+        if outcome is not None:
+            return outcome
+        if sliced and run.st.get("agentlog_id") is not None:
+            return TickSlice(stage=str(run.st["stage"]), state=dict(run.st))
 
 
 __all__ = [
     "QUEST_LOOP_ENABLED_ENV",
+    "TICK_STAGES",
     "QuestTickOutcome",
+    "TickSlice",
     "build_tick_prompt",
     "quest_loop_enabled",
     "run_quest_tick",
