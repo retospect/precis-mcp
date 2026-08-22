@@ -9,6 +9,7 @@ drops a variable would still pass those.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -147,6 +148,28 @@ def test_header_offers_a_rename(meta_client: TestClient) -> None:
     html = meta_client.get("/smartdraft/sdt").text
     assert 'id="sd-title"' in html
     assert "/title`" in html  # the POST target in sdHeader().save()
+
+
+def test_rename_script_carries_its_own_ident(meta_client: TestClient) -> None:
+    """`sdHeader()` must build the POST URL from an ident rendered into its
+    OWN <script>.
+
+    The nav script's ``IDENT`` looks global but is a ``const`` inside that
+    script's IIFE. `save()` lives in a different <script>, so reaching for
+    it threw a ReferenceError — and with ``@submit.prevent`` having already
+    swallowed the native submit, the rename was a silent no-op: the box
+    stayed open, nothing was written, no error was shown. Renaming was dead
+    from the day it shipped.
+    """
+    html = meta_client.get("/smartdraft/sdt").text
+    blocks = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
+    header = [b for b in blocks if "function sdHeader" in b]
+    assert len(header) == 1, "sdHeader() should live in exactly one <script>"
+    script = header[0]
+    assert '"sdt"' in script, "the ident is not rendered into the rename script"
+    # Comments stripped: this file's own prose names `IDENT` to explain it.
+    code = re.sub(r"//.*", "", script)
+    assert "IDENT" not in code, "save() reaches for the nav IIFE's const"
 
 
 def test_a_draft_with_no_meta_still_renders(tmp_path) -> None:

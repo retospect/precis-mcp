@@ -355,6 +355,12 @@
 <script>
   function sdHeader() {
     return {
+      // The draft's ident, rendered into THIS script. The nav script below
+      // has its own `IDENT`, but it's a `const` inside that script's IIFE —
+      // invisible out here. Reaching for it threw a ReferenceError inside
+      // `save()`, and since `@submit.prevent` had already eaten the native
+      // submit, the rename was a silent no-op (nothing saved, no message).
+      ident: {{ ident | tojson }},
       // Persisted — the panel must not slam shut on every focus navigation.
       open: localStorage.getItem('sd:meta:open') === '1',
       editing: false,
@@ -378,10 +384,21 @@
         if (!next) { this.err = 'title required'; return; }
         const body = new FormData();
         body.append('title', next);
-        fetch(`/drafts/${IDENT}/title`, { method: 'POST', body })
-          .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
-          .then(({ ok, j }) => {
-            if (!ok || !j.ok) { this.err = j.error || 'rename failed'; return; }
+        fetch(`/drafts/${this.ident}/title`, { method: 'POST', body })
+          // A refusal is not JSON: the auth gate answers text/plain (a
+          // cross-site 403, a 401 from an expired login), so `r.json()`
+          // alone would reject and the catch below would blame the
+          // network. Read text, parse if it parses, report the status.
+          .then((r) => r.text().then((t) => {
+            let j = null;
+            try { j = JSON.parse(t); } catch (e) { /* not JSON — see below */ }
+            return { ok: r.ok, status: r.status, j: j || {} };
+          }))
+          .then(({ ok, status, j }) => {
+            if (!ok || !j.ok) {
+              this.err = j.error || `rename failed (HTTP ${status})`;
+              return;
+            }
             // Patch the h1 here — the header sits outside #sd-content, so
             // __sdRefresh will not repaint it. The title HEADING chunk did
             // change server-side, though, so the panes still need refreshing.
@@ -1140,6 +1157,8 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
 // listeners below stay bound; Alpine re-inits the swapped components). Nav-state
 // (order/hits/focus/q) rides inside #sd-content and is re-read after each swap.
 (function () {
+  // IIFE-scoped on purpose — nothing outside this script can read it. Code
+  // in another <script> (e.g. `sdHeader()`) needs its own copy.
   const IDENT = {{ ident | tojson }};
   let ST = readState();
   function readState() {
