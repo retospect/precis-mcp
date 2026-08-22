@@ -111,6 +111,45 @@ so the old stderr-only message rendered a bare `exited 1:` and hid this
    d828c735's `exit_detail` puts `claude -p`'s stdout in the message
    instead of a bare `exited 1:`. Read that before theorising.
 
+## Rung 2 is autonomous (2026-08-21 late) — and what now throttles it
+
+After the starvation fix (`f999baea`) + the 16-key sweep, the scanner walked
+the whole open-gripe list for the first time: seven consecutive unattended
+cycles, `claimed=3 ok=3` each (the worker log's own counter — it read
+`claimed=3 ok=0` every cycle before the fix), reaching as deep as gripe
+172390. **Converged: 0 left to mint, 22 queued — every open gripe now has
+exactly one diagnose job.** Two jobs (233206/233207, gripes 207882/207238)
+completed end-to-end with no human in the path: scanner minted, worker
+claimed, containerized agent authenticated over OAuth, diagnosis written
+back. That is the unattended proof the hand-minted 232974 could not give.
+
+**The remaining bottleneck is NOT the dark factory — it is `news_poll`.**
+The `claude_inproc` lane is serial, drains ~4 jobs per pass at roughly
+40-minute intervals (~6/hour), and claims in priority order. Queued at the
+time of writing:
+
+| job_type | prio | queued |
+|---|---|---|
+| `news_poll` | 2 | **91** |
+| card_forge / meditation / briefing / reading_brief | 2 | 16 |
+| `diagnose_gripe` | 8 | 22 |
+
+So ~107 prio-2 rows sit ahead of every diagnosis: ~18 h of lane time. The
+diagnoses are not lost (the queue is durable) — they are last in line.
+`news_poll` does drain (7 succeeded 20:43), it is simply minted faster than
+a 6/hour lane clears it, and at prio 2 it starves every lower-priority
+consumer of the lane, not just this one. **Not caused by anything shipped
+today; predates it.** Worth its own investigation: why 91 accumulate, and
+whether the mint cadence or the lane throughput is the wrong number.
+
+Diagnosis cost is bounded and OFF the dollar meter: since b87f4b20 these run
+on OAuth subscription quota, so the ~22 calls do not press the $100/day
+ceiling (which was already at $86.61 trailing-24h that night). The breaker
+gates the OAuth lane on the quota snapshot instead
+(`budget/breaker.py::_gate_quota`) — a NEW dependency the API-key lane did
+not have, and worth remembering when a diagnosis lane goes quiet: check
+`claude_quota_snapshot`, not just the dollar meter.
+
 **Backlog this uncovered:**
 - **17 burned idem-keys.** Every live `diagnose_gripe` job is
   `STATUS:failed`, one per new gripe daily 08-16→08-20. Each burned key
