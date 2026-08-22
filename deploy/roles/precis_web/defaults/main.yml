@@ -30,3 +30,11 @@ precis_web_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'
 # a fallback for any PDFs staged there before the path was unified.
 precis_web_corpus: "{{ papers_corpus_path }}:/opt/shared/corpus"
 precis_web_git_ref: main
+# Public-internet exposure via ``tailscale funnel`` instead of
+# ``tailscale serve`` (tailnet-only). **False here on purpose.** Funnel
+# publishes the whole UI — /console, /secrets, /env — to the internet
+# behind nothing but HTTP Basic, and there is no rate limiting, lockout
+# or failed-auth alerting on that gate. That is a per-host decision, so
+# it belongs in the private inventory overlay (host_vars/<host>.yml),
+# never in a repo default where a new gateway would inherit it.
+precis_web_funnel: false

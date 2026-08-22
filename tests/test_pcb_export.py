@@ -252,7 +252,7 @@ def test_route_dsn_skips_without_backend(tmp_path, monkeypatch):
     monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
     monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
     dsn = tmp_path / "x.dsn"
-    dsn.write_text(export.specctra_dsn(_MODEL, name="x"))
+    dsn.write_text(export.specctra_dsn(_MODEL, name="x"), encoding="utf-8")
     res = route.route_dsn(dsn)
     assert res.skipped and not res.ok and res.ses is None
 
@@ -268,7 +268,8 @@ def _stub_router(tmp_path: Path, *, unrouted: int) -> str:
         "  shift\n"
         "done\n"
         'echo "(session)" > "$out"\n'
-        f'echo "{unrouted} incomplete connections"\n'
+        f'echo "{unrouted} incomplete connections"\n',
+        encoding="utf-8",
     )
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IRUSR)
     return str(script)
@@ -278,7 +279,7 @@ def _stub_router(tmp_path: Path, *, unrouted: int) -> str:
 def test_route_dsn_ok_with_stub(tmp_path, monkeypatch):
     monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=0))
     dsn = tmp_path / "x.dsn"
-    dsn.write_text("(pcb x)")
+    dsn.write_text("(pcb x)", encoding="utf-8")
     res = route.route_dsn(dsn)
     assert res.ok and res.unrouted == 0 and res.ses is not None
     assert res.ses.exists()
@@ -288,7 +289,7 @@ def test_route_dsn_ok_with_stub(tmp_path, monkeypatch):
 def test_route_dsn_incomplete_with_stub(tmp_path, monkeypatch):
     monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=3))
     dsn = tmp_path / "x.dsn"
-    dsn.write_text("(pcb x)")
+    dsn.write_text("(pcb x)", encoding="utf-8")
     res = route.route_dsn(dsn)
     assert not res.ok and res.unrouted == 3
 
@@ -395,14 +396,16 @@ def test_handler_bom_and_cpl_views(pcb, tmp_path):
     assert "exported sensor → BOM" in bom.body
     assert (tmp_path / "sensor.csv").exists()
     cpl = pcb.get(id="sensor", view="cpl", args={"dir": str(tmp_path)})
-    assert "Top,270" in (tmp_path / "sensor.csv").read_text()  # U1 rot 90 → 270
+    assert "Top,270" in (tmp_path / "sensor.csv").read_text(
+        encoding="utf-8"
+    )  # U1 rot 90 → 270
     assert "exported sensor → CPL" in cpl.body
 
 
 def test_handler_dsn_and_netlist_views(pcb, tmp_path):
     pcb.put(id="sensor", args=_BOARD)
     dsn = pcb.get(id="sensor", view="dsn", args={"dir": str(tmp_path)})
-    body = (tmp_path / "sensor.dsn").read_text()
+    body = (tmp_path / "sensor.dsn").read_text(encoding="utf-8")
     # outline feature drove the boundary (reserved 'pcb' layer id, 0.1µm units)
     assert "(boundary (path pcb 0 0 0 200000 0 200000 200000 0 200000))" in body
     assert "exported sensor → DSN" in dsn.body
@@ -415,7 +418,7 @@ def test_handler_mechanical_view(pcb, tmp_path):
     pcb.get(id="sensor", view="mechanical", args={"dir": str(tmp_path)})
     import json
 
-    prof = json.loads((tmp_path / "sensor.json").read_text())
+    prof = json.loads((tmp_path / "sensor.json").read_text(encoding="utf-8"))
     assert prof["holes"][0]["diameter"] == 3.2
     assert len(prof["outline"]) == 4
     # component height must survive store → export_model → profile (the 0041

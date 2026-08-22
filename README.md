@@ -22,7 +22,7 @@ target); stores content in PostgreSQL with `pgvector`.
 
 ## What it does
 
-One tool surface — **seven verbs** discriminated by a single `kind=`
+One tool surface — **eight verbs** discriminated by a single `kind=`
 argument — over three categories of content. Ref kinds are addressed
 by slug or integer id (output hands you a compact `<2-char><id>`
 handle, e.g. `pa5` a paper, `me42` a memory); tool kinds take `q=`
@@ -65,7 +65,7 @@ snapshot; `get(kind='skill', id='precis-help')` enumerates the kinds
 wired in *your* build, and `get(kind='skill', id='precis-overview')`
 gives the design-rationale tour with an example handle per kind.
 
-## Seven verbs
+## Eight verbs
 
 | Verb     | Use when                                            |
 |----------|-----------------------------------------------------|
@@ -76,6 +76,7 @@ gives the design-rationale tour with an example handle per kind.
 | `delete` | Soft-delete a numeric ref, or delete a region from a file kind by selector. |
 | `tag`    | Add and/or remove tags. Three namespaces: closed (`STATUS:done`), flag (`pinned`), open (`topic-foo`). |
 | `link`   | Add or remove a cross-link to another ref. Vocabulary: `related-to`, `blocks`, `contradicts`, `cites`, `derived-from`, `supports`, … |
+| `more`   | Fetch the next page of a truncated response (`more(cursor='…')` — every truncation footer hands you the cursor). |
 
 Address by `id=` for names, `q=` for content. No URI selector strings
 for ids; region selectors inside files use the compact `slug~SELECTOR`
@@ -158,6 +159,27 @@ config:
 }
 ```
 
+### One-tool profile
+
+Setting `PRECIS_MCP_PROFILE=command` in the server env collapses the
+eight-tool surface into a single `precis(command=..., text=None)`
+tool. `command` takes the same one-string call syntax the docs
+already teach — e.g. `get(kind='skill', id='toc')` — parsed by
+`src/precis/tools/command_parser.py`: one call, keyword args only,
+`ast.literal_eval`-safe literal values; a bad call gets an
+actionable `[error:BadInput]`, not a crash. `text=` is the escape
+hatch for large bodies, so a caller doesn't have to quote-escape
+them inside `command`. The frozen schema is ~850 bytes vs ~22 KB for
+the typed per-verb schemas — cheaper cold-start, and a `tools/list`
+block that never changes, so prompt caches keyed on it never
+invalidate. Default profile is `typed` (unset = the per-verb tools
+above).
+
+`precis eval '<call>'` is the CLI twin: it evaluates one call string
+against the same parser (`--text` / `--text-file` for the large-body
+escape hatch) without building the multi-flag `precis tools <verb>
+--flag value` form.
+
 ### Environment variables
 
 | Var                           | Purpose                                          |
@@ -173,8 +195,11 @@ config:
 | `ORCID_CLIENT_ID` + `_SECRET` | Enables the `orcid` researcher-identity kind.    |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
 | `PERPLEXITY_API_KEY`          | Enables `websearch` / `perplexity-reasoning` / `perplexity-research`. |
+| `PRECIS_WEB_AUTH`             | `off` disables the `precis web` HTTP Basic gate (local dev only). Anything else — including unset — keeps it **on**: every route requires an account from `precis users`. |
+| `PRECIS_WEB_PASSWORD_PEPPER`  | Vault-resident pepper HMAC'd into web passwords before scrypt, so a shareable *logical* `pg_dump` carries no crackable hashes. `precis users add` mints one on first use; you rarely set this by hand. |
 | `PRECIS_CORPUS_DIR`           | Corpus root(s) for the `precis web` paper viewer. An `os.pathsep`-separated list is allowed (e.g. `/opt/a/corpus:/opt/b/corpus`); the web tries each `<root>/<letter>/<cite_key>.pdf` in order and serves the first that exists. Point it at the same path the ingest watcher writes to. |
 | `LOG_LEVEL`                   | `DEBUG` / `INFO` / `WARNING` / `ERROR`.          |
+| `PRECIS_MCP_PROFILE`          | `typed` (default, per-verb tools) or `command` (single `precis(command)` tool — see [One-tool profile](#one-tool-profile)). |
 
 This table is the getting-started subset. precis reads ~150 `PRECIS_*`
 variables in all — feature toggles, autonomy modes, budgets, model ids,
@@ -187,9 +212,9 @@ The policy for *adding* a var (the three-tier scheme) is
 
 ## Design highlights
 
-- **Seven verbs, one `kind=`**. The whole surface is
-  `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`. No per-kind
-  bespoke tools.
+- **Eight verbs, one `kind=`**. The whole surface is
+  `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`/`more`. No
+  per-kind bespoke tools.
 - **Content-anchored edits.** `edit(find=..., before=..., after=...)`
   resolves by literal content match; unique/first/all/nth policy;
   fuzzy nearest-line hint on not-found. Pure resolver in
@@ -209,7 +234,7 @@ The policy for *adding* a var (the three-tier scheme) is
   `citation` kind closes the loop: an agent's writing-thread
   workflow can persist verified `claim → source quote` records (see
   [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md)).
-- **Progressive disclosure.** Seven verbs and a `kind=` argument is
+- **Progressive disclosure.** Eight verbs and a `kind=` argument is
   the *whole* visible surface. Behind it sits a fan-out of ~25
   per-kind help skills, dozens of read views, an anchored edit
   protocol, args-dict view payloads, and a tag/link vocabulary —
@@ -280,8 +305,9 @@ precis serve-embeddings            # HTTP embedding service (server side of
                                    #   /model /embed /metrics).
 precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
                                    #   Conversations / Status tabs (needs the
-                                   #   [web] extra; binds 127.0.0.1:9100, no
-                                   #   auth — reach it over Tailscale).
+                                   #   [web] extra; binds 127.0.0.1:9100 behind
+                                   #   HTTP Basic — create an account first, or
+                                   #   every page answers 503).
 
 # Background processing
 precis worker [--profile system|agent]
@@ -293,6 +319,22 @@ precis worker [--profile system|agent]
 precis watch [PATH]                # Watch an inbox dir and ingest dropped PDFs
                                    #   (papers / books / presentations routing).
 precis add <pdf|url>               # Ingest one paper on the spot.
+
+# Web accounts (precis web logins; every account is fully authorized)
+precis users add <login> --abbrev <ab> [--name N --email E]
+                                   # Create an account; password from a no-echo
+                                   #   prompt (or --password-stdin). Never argv.
+precis users list                  # The roster.
+precis users passwd <login>        # THE recovery path — Basic auth has no
+                                   #   email reset flow, by design.
+precis users disable|enable|rm <login>
+precis users feed-token <login>    # Mint + print the private podcast feed URL
+                                   #   (?t=… , since podcast apps handle Basic
+                                   #   on enclosures inconsistently).
+                                   # Signed-in users do the self-service half —
+                                   #   password, profile, podcast link — at
+                                   #   /account in the web UI. Creating and
+                                   #   removing accounts stays here.
 
 # Database
 precis migrate                     # Run pending forward-only SQL migrations.

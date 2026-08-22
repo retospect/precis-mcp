@@ -2,6 +2,12 @@
 id: precis-delete-help
 title: precis — soft-delete a ref or remove a region of a file
 summary: the delete verb — soft-delete numeric refs, remove file regions via selectors
+answers:
+  - how do I soft-delete a memory or todo I no longer want?
+  - how do I remove one section from a markdown or tex file without rewriting the whole thing?
+  - how do I delete a Python function or class?
+  - can I undo a delete if I removed the wrong thing?
+  - why can't I delete a paper or a cached tool answer?
 applies-to: delete (every kind that supports it)
 status: active
 ---

@@ -44,7 +44,7 @@ from precis.utils.llm.router import Tier
 SKILL = (
     resources.files("precis.data")
     .joinpath("skills/precis-structure-help.md")
-    .read_text()
+    .read_text(encoding="utf-8")
 )
 
 # (display, OpenRouter slug, tier) — the tier incumbents + the scorecard's top OSS.
@@ -233,7 +233,7 @@ def main() -> None:
         "/private/tmp/claude-501/-Users-reto-work-projects-code-precis-mcp/"
         "16354f43-b0a8-449f-976b-9c6a780dfb08/scratchpad/roundtrip.json"
     )
-    scratch.write_text(json.dumps(results, indent=2))
+    scratch.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     # append a dated trend row to the tracked results log
     log = Path(__file__).resolve().parent / "ROUNDTRIP_RESULTS.md"
@@ -249,7 +249,7 @@ def main() -> None:
             f"| {display} | {mean:.3f} | {clean * 100:.0f}% | {fault * 100:.0f}% | "
             f"${cpt * 1000:.3f}m |"
         )
-    with log.open("a") as fh:
+    with log.open("a", encoding="utf-8") as fh:
         fh.write("\n".join(block) + "\n")
     print(f"\nappended trend row -> {log}\nraw -> {scratch}")
 

@@ -2,6 +2,12 @@
 id: precis-gripe-help
 title: precis — the project's bug tracker
 summary: bug tracking — file complaints, comment timeline, status workflow, resolution handoff
+answers:
+  - how do I file a bug without breaking my flow?
+  - how do I check if someone already griped about this?
+  - how do I find gripes that are open but untriaged?
+  - how do I comment on or correct a gripe thread?
+  - how do I mark a gripe ready for someone to fix?
 applies-to: get/search/put/delete/tag/link (kind='gripe')
 status: active
 ---

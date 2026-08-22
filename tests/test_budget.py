@@ -312,7 +312,9 @@ def test_dispatch_returns_error_llmresult_when_breaker_trips(
         def run(self, req: object, *, model: str) -> object:
             raise AssertionError("provider ran despite a tripped cap")
 
-    monkeypatch.setattr(router, "provider_for", lambda transport: _BoomProvider())
+    monkeypatch.setattr(
+        router, "provider_for", lambda transport, *, bare=False: _BoomProvider()
+    )
 
     out = router.dispatch(router.LlmRequest(tier=Tier.FRONTIER, prompt="hi"))
     assert out.error is not None
@@ -709,6 +711,29 @@ def test_gate_tier_claude_transport_rejected_pauses() -> None:
     )
     assert reason is not None
     assert "quota" in reason
+
+
+def test_gate_tier_bare_claude_rung_uses_dollars_not_quota() -> None:
+    # A ``bare`` rung is still transport=claude_p, but --bare authenticates with
+    # ANTHROPIC_API_KEY and bills per token. Gating it on quota would let a
+    # tripped dollar cap fail to stop the one call shape that spends dollars.
+    store = SqlStore(llm=25.0, windows={"five_hour": {"status": "allowed"}})
+    reason = breaker_mod.gate_tier(
+        Tier.FRONTIER, transport="claude_p", bare=True, store=cast("Store", store)
+    )
+    assert reason is not None
+    assert "cap" in reason
+
+
+def test_gate_tier_bare_claude_rung_ignores_spent_quota() -> None:
+    # The mirror: quota exhausted is irrelevant to a call that never spends it.
+    store = SqlStore(llm=0.0, windows={"five_hour": {"status": "rejected"}})
+    assert (
+        breaker_mod.gate_tier(
+            Tier.FRONTIER, transport="claude_p", bare=True, store=cast("Store", store)
+        )
+        is None
+    )
 
 
 def test_gate_tier_metered_transport_uses_dollars() -> None:

@@ -92,7 +92,7 @@ def _parallel_by_model() -> dict[str, int]:
     try:
         import yaml  # llama-swap config is YAML; PyYAML is a runtime dep
 
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh) or {}
     except (OSError, ImportError, ValueError):
         return {}

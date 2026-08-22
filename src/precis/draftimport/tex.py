@@ -855,7 +855,11 @@ def main(argv: list[str] | None = None) -> int:
         full = flatten_inputs(args.root) if args.root != Path("/dev/null") else ""
         macros = harvest_macros(full[: full.find(r"\begin{document}")]) if full else {}
         gloss = args.root.parent / "tex" / "glossary-entries.tex"
-        acro = harvest_acronyms(gloss.read_text()) if gloss.exists() else {}
+        acro = (
+            harvest_acronyms(gloss.read_text(encoding="utf-8"))
+            if gloss.exists()
+            else {}
+        )
         body = strip_comments(args.plan.read_text(encoding="utf-8", errors="replace"))
         chunks = plan_blocks(body)
 

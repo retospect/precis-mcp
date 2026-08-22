@@ -27,6 +27,7 @@ from precis.workers.service_config import (
     set_service_prio,
 )
 from precis_web.app import create_app
+from precis_web.config import WebConfig
 from precis_web.routes import categorizers as cz
 
 # ── fast route-shell layer (FakeStore) ──────────────────────────────
@@ -228,7 +229,9 @@ def test_categorizers_progress_fragment_renders(client: TestClient) -> None:
 
 @pytest.fixture
 def real_client(runtime_with_store) -> TestClient:
-    return TestClient(create_app(runtime=runtime_with_store))
+    return TestClient(
+        create_app(runtime=runtime_with_store, web_config=WebConfig(corpus_dir=None))
+    )
 
 
 def test_chunk_axis_progress_counts_tagged_over_eligible(store: Store) -> None:

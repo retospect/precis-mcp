@@ -93,7 +93,7 @@ def test_container_runtime_explicit_abspath_off_path(
     """OrbStack's docker often isn't on a daemon's PATH — a full path in
     PRECIS_CONTAINER_BIN is found via existence, not ``which``."""
     binp = tmp_path / "docker"
-    binp.write_text("#!/bin/sh\n")
+    binp.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("PRECIS_CONTAINER_BIN", str(binp))
     monkeypatch.setattr(cap.shutil, "which", _which(set()))  # not on PATH
     assert cap.container_runtime() == str(binp)
@@ -326,7 +326,7 @@ def test_probe_claude_bin_env_abspath_off_path(
     """A daemon PATH often misses claude — an absolute PRECIS_CLAUDE_BIN
     is found via existence, mirroring container_runtime."""
     binp = tmp_path / "claude"
-    binp.write_text("#!/bin/sh\n")
+    binp.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", str(binp))
     monkeypatch.setattr(cap.shutil, "which", _which(set()))
     assert cap._probe_claude_bin() == 1

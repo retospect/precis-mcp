@@ -604,7 +604,7 @@ def test_precis_overview_skill_no_dead_kinds() -> None:
     text = (
         resources.files("precis.data.skills")
         .joinpath("precis-overview.md")
-        .read_text("utf-8")
+        .read_text(encoding="utf-8")
     )
     # Never-wired kinds (flagged by the original critic pass).
     for dead in ("`clock`", "`rng`", "`plot`", "`ask`"):
@@ -626,7 +626,7 @@ def test_precis_overview_skill_has_no_wang2020state_example() -> None:
     text = (
         resources.files("precis.data.skills")
         .joinpath("precis-overview.md")
-        .read_text("utf-8")
+        .read_text(encoding="utf-8")
     )
     assert "wang2020state" not in text
 

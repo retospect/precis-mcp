@@ -43,7 +43,7 @@ class TestDeps:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         (tmp_path / "a.py").write_text(
-            "def a():\n    return b()\n\n\ndef b():\n    return 1\n"
+            "def a():\n    return b()\n\n\ndef b():\n    return 1\n", encoding="utf-8"
         )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "a.py::a")
         assert "a.py::b" in out
@@ -52,9 +52,12 @@ class TestDeps:
     def test_imported_name_across_files(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        (tmp_path / "helper.py").write_text("def helper():\n    return 1\n")
+        (tmp_path / "helper.py").write_text(
+            "def helper():\n    return 1\n", encoding="utf-8"
+        )
         (tmp_path / "a.py").write_text(
-            "from helper import helper\n\n\ndef a():\n    return helper()\n"
+            "from helper import helper\n\n\ndef a():\n    return helper()\n",
+            encoding="utf-8",
         )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "a.py::a")
         assert "helper.py::helper" in out
@@ -63,7 +66,7 @@ class TestDeps:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         (tmp_path / "a.py").write_text(
-            "import os\n\n\ndef a():\n    return os.getcwd()\n"
+            "import os\n\n\ndef a():\n    return os.getcwd()\n", encoding="utf-8"
         )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "a.py::a")
         assert "external/unresolved" in out
@@ -72,7 +75,9 @@ class TestDeps:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # a local var read (Load ctx) must not be mistaken for an external dep.
-        (tmp_path / "a.py").write_text("def a():\n    x = 1\n    return x\n")
+        (tmp_path / "a.py").write_text(
+            "def a():\n    x = 1\n    return x\n", encoding="utf-8"
+        )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "a.py::a")
         assert "0 dependenc" in out
         assert "0 external/unresolved" in out
@@ -86,7 +91,8 @@ class TestDeps:
             "        return self.method_b()\n"
             "\n"
             "    def method_b(self):\n"
-            "        return 1\n"
+            "        return 1\n",
+            encoding="utf-8",
         )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "a.py::Widget.method_a")
         assert "a.py::Widget.method_b" in out
@@ -97,7 +103,8 @@ class TestDeps:
         (tmp_path / "a.py").write_text(
             "class Widget:\n"
             "    def method_a(self):\n"
-            "        return self.inherited_method()\n"
+            "        return self.inherited_method()\n",
+            encoding="utf-8",
         )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "a.py::Widget.method_a")
         assert "self.inherited_method" in out
@@ -114,7 +121,8 @@ class TestDeps:
             "    return c()\n"
             "\n\n"
             "def c():\n"
-            "    return 1\n"
+            "    return 1\n",
+            encoding="utf-8",
         )
         out = _run(capsys, coderef.cmd_deps, tmp_path, "--depth", "2", "a.py::a")
         assert "a.py::b" in out
@@ -129,9 +137,9 @@ class TestCallers:
     def test_confirmed_caller_found(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n")
+        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
         (tmp_path / "user.py").write_text(
-            "from lib import foo\n\n\ndef use():\n    return foo()\n"
+            "from lib import foo\n\n\ndef use():\n    return foo()\n", encoding="utf-8"
         )
         out = _run(capsys, coderef.cmd_callers, tmp_path, "lib.py::foo")
         assert "user.py:" in out
@@ -139,13 +147,14 @@ class TestCallers:
     def test_unrelated_same_named_symbol_not_reported(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n")
+        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
         (tmp_path / "user.py").write_text(
-            "from lib import foo\n\n\ndef use():\n    return foo()\n"
+            "from lib import foo\n\n\ndef use():\n    return foo()\n", encoding="utf-8"
         )
         # a same-named foo elsewhere that never imports lib's foo — not a caller.
         (tmp_path / "other.py").write_text(
-            "def foo():\n    return 2\n\n\ndef use2():\n    return foo()\n"
+            "def foo():\n    return 2\n\n\ndef use2():\n    return foo()\n",
+            encoding="utf-8",
         )
         out = _run(capsys, coderef.cmd_callers, tmp_path, "lib.py::foo")
         assert "user.py:" in out
@@ -161,16 +170,16 @@ class TestCallers:
             ["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True
         )
         subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
-        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n")
+        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
         (tmp_path / "tracked_user.py").write_text(
-            "from lib import foo\n\n\ndef use():\n    return foo()\n"
+            "from lib import foo\n\n\ndef use():\n    return foo()\n", encoding="utf-8"
         )
         subprocess.run(
             ["git", "add", "lib.py", "tracked_user.py"], cwd=tmp_path, check=True
         )
         # a second caller left UNTRACKED (never `git add`ed) — must still be found.
         (tmp_path / "untracked_user.py").write_text(
-            "from lib import foo\n\n\ndef use2():\n    return foo()\n"
+            "from lib import foo\n\n\ndef use2():\n    return foo()\n", encoding="utf-8"
         )
         out = _run(capsys, coderef.cmd_callers, tmp_path, "lib.py::foo")
         assert "tracked_user.py:" in out
@@ -182,9 +191,9 @@ class TestCallers:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n")
+        (tmp_path / "lib.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
         (tmp_path / "user.py").write_text(
-            "from lib import foo\n\n\ndef use():\n    return foo()\n"
+            "from lib import foo\n\n\ndef use():\n    return foo()\n", encoding="utf-8"
         )
         monkeypatch.setattr(coderef, "repo_root", lambda: tmp_path)
         rc = coderef.main(["coderef", "refs", "lib.py::foo"])
@@ -202,9 +211,9 @@ class TestGrimpVerbs:
         pytest.importorskip("grimp")
         pkg = tmp_path / "src" / "pkgx"
         pkg.mkdir(parents=True)
-        (pkg / "__init__.py").write_text("")
-        (pkg / "a.py").write_text("from pkgx import b\n")
-        (pkg / "b.py").write_text("x = 1\n")
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "a.py").write_text("from pkgx import b\n", encoding="utf-8")
+        (pkg / "b.py").write_text("x = 1\n", encoding="utf-8")
         monkeypatch.syspath_prepend(str(tmp_path / "src"))
         out = _run(capsys, coderef.cmd_imports, tmp_path, "pkgx.a")
         assert "pkgx.b" in out
@@ -218,9 +227,9 @@ class TestGrimpVerbs:
         pytest.importorskip("grimp")
         pkg = tmp_path / "src" / "pkgy"
         pkg.mkdir(parents=True)
-        (pkg / "__init__.py").write_text("")
-        (pkg / "a.py").write_text("from pkgy import b\n")
-        (pkg / "b.py").write_text("x = 1\n")
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "a.py").write_text("from pkgy import b\n", encoding="utf-8")
+        (pkg / "b.py").write_text("x = 1\n", encoding="utf-8")
         monkeypatch.syspath_prepend(str(tmp_path / "src"))
         out = _run(capsys, coderef.cmd_importers, tmp_path, "pkgy.b")
         assert "pkgy.a" in out

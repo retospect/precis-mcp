@@ -64,7 +64,7 @@ def main() -> None:
         sys.exit(1)
 
     by_cluster: dict[int, list[dict]] = defaultdict(list)
-    with args.clusters.open() as f:
+    with args.clusters.open(encoding="utf-8") as f:
         for row in csv.DictReader(f):
             by_cluster[int(row["cluster"])].append(row)
 
@@ -130,7 +130,7 @@ def main() -> None:
         store.close()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w") as f:
+    with args.output.open("w", encoding="utf-8") as f:
         f.write("# gold_set — hand-labeled papers for classifier eval.\n")
         f.write(f"# {len(picked)} papers stratified across {len(clusters)} clusters.\n")
         f.write("# Replace each `?` with the correct value from the axis vocabulary.\n")

@@ -2,6 +2,10 @@
 id: precis-net-class-help
 title: precis — naming & classifying PCB nets
 summary: name every net for its meaning and give it a class so precis can size the trace, pour it as a plane, and pick measure defaults — power/gnd/i2c/spi/analog/diff/clock. Covers trace width from current, copper planes, ratsnest exclusion, signal integrity intent.
+answers:
+  - how do I name and classify a net so precis can size its trace width?
+  - how is trace width derived from current?
+  - where do net classes come from in a PCB design?
 applies-to: put (kind='pcb') nets[]; drives width / planes / measures
 status: active
 ---

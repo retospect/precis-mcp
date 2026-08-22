@@ -2,6 +2,10 @@
 id: precis-health-digest-help
 title: precis — health_digest liveness-net worker pass
 summary: hourly outcome-based liveness digest — curated Layer-1 outcome checks + derived cadence-staleness + derived registry coherence, pushed daily/on-degradation as kind='alert' + a Discord digest; persistent findings route to auto-closing gripes
+answers:
+  - what does the hourly health digest actually check?
+  - how does a health-digest finding turn into an alert?
+  - when does a health-digest result get pushed to me vs stay quiet?
 applies-to: precis worker --only health_digest; kind='alert' (alert-source:watchdog:*); kind='gripe' (origin:health-digest-router)
 status: active
 ---

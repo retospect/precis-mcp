@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 import pytest
 
 from precis.utils.utc_logging import force_utc_timestamps
+
+#: Both tests pin the process TZ, which only takes effect via ``time.tzset``
+#: — POSIX-only, absent on Windows. The behaviour under test (asctime in UTC)
+#: is what the Linux daemons emit; there's no Windows deployment to guard.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only time.tzset (TZ pinning)"
+)
 
 
 @pytest.fixture()

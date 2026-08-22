@@ -2,6 +2,9 @@
 id: sci-abstract
 title: precis — research-paper abstract (section style)
 summary: write the abstract — one ≤250-word self-contained paragraph (problem / approach / key result / significance), no citations
+answers:
+  - how do I write a research-paper abstract?
+  - when should I write the abstract relative to the rest of the paper?
 status: active
 style: sci-abstract
 role: section

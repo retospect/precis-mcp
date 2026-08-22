@@ -1,11 +1,29 @@
 """precis_web — the cluster web surface for precis-mcp.
 
 A FastAPI service that imports the ``precis`` package directly and renders
-server-side (Jinja + HTMX + Alpine), served over the Tailscale LAN (no
-auth). :func:`create_app` (``app.py``) wires one router per page plus error
-handlers and a lifespan that builds the single
-:class:`precis.runtime.PrecisRuntime`. Optional install extra
+server-side (Jinja + HTMX + Alpine), served over the Tailscale LAN behind
+**HTTP Basic auth** (``auth.py``). :func:`create_app` (``app.py``) wires
+one router per page plus error handlers and a lifespan that builds the
+single :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); the ``precis web`` CLI subcommand imports it lazily.
+
+**Auth.** Every route and mount is gated by
+``auth.py::BasicAuthMiddleware`` against the ``web_users`` table
+(migration 0131, roster managed by ``precis users``). Each account is
+fully authorized — there are no roles; per-route ACLs and ask-routing are
+a separate deferred design. Exemptions: ``/healthz`` (supervisor probe)
+and ``/podcast`` (authenticates itself, additionally accepting a per-user
+``?t=`` feed token because podcast clients handle Basic inconsistently on
+enclosure URLs). An empty roster fails *closed* with a 503 naming the
+``precis users add`` line to run. A cross-site state-changing request is
+refused 403 (``Origin``/``Referer`` must match) — Basic auth makes every
+mutating route a CSRF target, with no cookie to mark ``SameSite``.
+``PRECIS_WEB_AUTH=off`` disables the gate for local development only.
+``/account``
+(``routes/account.py``) is the signed-in user's own page — password,
+profile, and the podcast subscribe URL (shown whole, copyable: the row
+holds only the token's digest, so the readable copy comes from the
+vault); roster management stays in the CLI.
 
 Nav (template ``templates/base.html.j2``; badge counts
 ``nav.py::nav_badges``):
@@ -15,8 +33,13 @@ Nav (template ``templates/base.html.j2``; badge counts
   kind-specific readers Drive's generic rows can't reproduce: Clusters,
   Structures, CAD, Figures, Mermaid.
 * **Attention** (right, badged) — Needs you, Gripes, Alerts.
+* **Manual** (``/manual``) — the user-facing how-to. Top-level and
+  unbadged: it is what you reach for when you don't know which tab you
+  need, so it is never inside a dropdown.
 * **Ops ▾** — System, Categorizers, Agent Logs, Console, Env, Secrets.
 * 🔍 loupe — global search, submits to ``/drive``.
+* **Account** (far right) — the signed-in user's ``abbrev`` as a chip,
+  linking to ``/account``; a plain "Account" label when the gate is off.
 
 **Drive (`/drive`)** is the unified seek+manage surface:
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag
@@ -50,6 +73,19 @@ unchanged.
 ``STATUS`` (closed vocab ``open → triaged → ready_for_fix → in_review →
 wontfix``), detail + comment timeline, and ``retire`` (soft-delete, the
 "fix landed" resolution, distinct from ``wontfix``).
+
+**Manual (`/manual`)** — ``routes/manual.py``: the *user*-facing manual
+(how to write a paper, publish a claim, clear a figure, watch a quest
+loop), rendered from markdown chapters in ``src/precis_web/manual/``.
+Deliberately inside the package, not ``docs/``: the wheel ships only
+``src/`` (``docs/`` is sdist-only, so a chapter there is absent on a
+deployed node), and a chapter describing a button belongs in the same
+diff as the button. Filename carries order + slug
+(``01-writing-a-paper.md`` → chapter 1 at ``/manual/writing-a-paper``);
+title and index blurb are parsed from the first heading + paragraph, so
+there is no second table of contents to drift. Distinct from
+``precis/data/skills/`` (agent-facing runtime docs) and ``docs/``
+(repo-dev docs).
 
 **Categorizers console (`/categorizers`)** — ``routes/categorizers.py``:
 every axis/topic with coverage + last-run (deferred htmx OOB swaps via

@@ -2,6 +2,8 @@
 id: precis-mermaid-er
 title: precis — ER diagram / entity-relationship / database schema / data model
 summary: a mermaid ER diagram — entities, attributes, and their relationships
+answers:
+  - how do I draw a database schema / entity-relationship diagram?
 applies-to: kind='mermaid'
 status: active
 ---

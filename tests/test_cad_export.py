@@ -178,7 +178,7 @@ def test_export_mesh_without_backend_raises(tmp_path) -> None:
 def test_export_step_real(tmp_path) -> None:
     out = export_step(parse_source(_FLANGE), tmp_path / "flange.step")
     assert out.exists() and out.stat().st_size > 0
-    head = out.read_text(errors="replace")[:200]
+    head = out.read_text(errors="replace", encoding="utf-8")[:200]
     assert "ISO-10303" in head  # STEP file header
 
 
@@ -220,6 +220,6 @@ def test_stl_assembly_is_one_welded_body(tmp_path) -> None:
 @pytest.mark.skipif(not _HAS_STEP, reason="OpenCASCADE (cad-step) not installed")
 def test_step_assembly_named_solids(tmp_path) -> None:
     out = export_step(parse_source(_ASM), tmp_path / "asm.step")
-    data = out.read_text(errors="replace")
+    data = out.read_text(errors="replace", encoding="utf-8")
     assert data.count("MANIFOLD_SOLID_BREP") == 2  # two distinct bodies
     assert "'alpha'" in data and "'beta'" in data  # carried as named solids

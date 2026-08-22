@@ -64,13 +64,35 @@ def approve(
     surface a person is driving right now; a worker, job, or scheduled
     pass calling it is a defect by definition.
 
-    ``title`` defaults to the hub's live ``finding.title``; the frozen
-    copy is the duplication the crypto requires (the signature covers
-    those exact bytes, underivable from a hub that later drifts).
-    ``payload`` is the grounding envelope (``passages`` / ``fields`` /
-    ``motivation`` / ``testable_by`` / ``hanging`` / ``hypothesis`` /
-    ``motivated_by_refs``) — every Layer-A gate runs NOW, so the review
-    queue only ever holds strings that can actually mint."""
+    ``title`` defaults to the hub's live ``finding.title``; a different
+    string is a **review-time reword**, applied to the hub through
+    :func:`precis.taproot.hub.refine_claim_sentence` *before* anything is
+    gated or frozen (see below) — approve itself only ever attests to
+    what the hub already says. The frozen copy is the duplication the
+    crypto requires (the signature covers those exact bytes, underivable
+    from a hub that later drifts). ``payload`` is the grounding envelope
+    (``passages`` / ``fields`` / ``motivation`` / ``testable_by`` /
+    ``hanging`` / ``hypothesis`` / ``motivated_by_refs``) — every Layer-A
+    gate runs NOW, against the post-reword sentence, so the review queue
+    only ever holds strings that can actually mint. One exception, and it
+    is deliberate: the acquisition gate
+    (:func:`precis.nanopub.gates.check_primary_source`) runs FIRST, before
+    the reword, and reads the hub's PRE-reword body — that check is about
+    whether the primary source is in the corpus, not about the wording,
+    and its prose arm lives in the very ``finding_body`` the reword
+    replaces. Refusing before the rewrite (rather than merely snapshotting
+    it) is what makes a retry idempotent: a laundered body cannot make the
+    same call succeed on the second try.
+
+    **Any other gate refusal leaves the hub reworded.** That is intended,
+    not a leak to be tidied back: the ordering contract below requires the
+    sync to precede the flip, the reword door itself only ADVISES on lint
+    (only approve blocks), and the review surface re-renders with the
+    reviewer's text intact for another pass. A retitled still-candidate
+    hub is the benign failure state; do not "fix" this by moving the
+    sentence-shaped gates before the reword — that is exactly the defect
+    this shape replaced (gates would then check a sentence nobody
+    publishes)."""
     if not interactive:
         raise PermissionError(
             "approve() is the human review act — invocable only from an "
@@ -78,42 +100,107 @@ def approve(
             "is driving); publication throughput equals human review "
             "throughput, by design"
         )
-    bundle = evidence.load_bundle(store, hub_ref_id)
-    hub_ref = store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
+    hub_ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
+    if hub_ref is None:
+        raise BadInput(f"no live ref {hub_ref_id}")
+    # An empty/whitespace override is "no override" (the web form posts
+    # ""), never a request to freeze a blank sentence.
+    requested = title.strip() if title is not None else None
 
-    violations = gates.run_mint_gates(
-        store, bundle, payload, hub_meta=hub_ref.meta or {}
-    )
-    if violations:
-        raise MintGateError(violations)
-
-    approved = (title if title is not None else bundle.sentence).strip()
-    from precis.taproot.canon import claim_sha
-
+    # Resolve the publish row FIRST — not to flip it, but because a row
+    # that already left 'candidate' must not be reworded at all: its sha
+    # is frozen, so a wording change there is a re-review (reopen) or a
+    # supersede, never an approve.
     row = store.nanopub_publish_row(hub_ref_id)
-    if row is None:
-        artifact_type = (
-            "hypothesis" if payload.get("hypothesis") else bundle.artifact_type
-        )
-        row = store.nanopub_create_publish_row(hub_ref_id, artifact_type=artifact_type)
-    if row.state != "candidate":
+    if row is not None and row.state != "candidate":
         raise BadInput(
             f"publish row {row.id} is {row.state!r}, not candidate — "
             "reopen it first (an approved string is frozen; a change is a "
             "re-review, post-publication a supersede)"
         )
-    # Sync the live hub title to the approved string BEFORE flipping the
-    # row, so gate #14 (drift, computed off refs.title) fires only on
-    # post-approval edits — not on the review-time rewording that just
-    # happened. Sync-first makes the two independent commits safe: if the
-    # approve below fails, a retitled still-candidate hub is benign (no
-    # frozen sha exists yet), whereas approve-then-sync would leave a
-    # reviewed row whose frozen sha spuriously drift-fails at sign.
-    # Title-only on purpose: refine_claim_sentence also replaces
-    # finding_body, which for chase-born findings is prose, not a
-    # sentence copy.
-    if approved != (hub_ref.title or "").strip():
-        store.blocks.set_ref_title(hub_ref_id, approved, source="reviewer")
+
+    # Reword through the single retitle door BEFORE gating and BEFORE the
+    # row flips. Two guarantees ride on this order:
+    #
+    #   * gates validate exactly the bytes that get frozen and signed —
+    #     the reviewer's override is Layer-A-checked like any other
+    #     sentence, not waved through behind a gate run on the old text;
+    #   * the live hub is synced before the row flips, so gate #14
+    #     (drift, computed off refs.title) fires only on post-approval
+    #     edits, not on the reword that just happened. Sync-first makes
+    #     the independent commits safe: a failure below leaves a retitled
+    #     still-candidate hub, which is benign (no frozen sha exists yet),
+    #     whereas approve-then-sync would leave a reviewed row whose
+    #     frozen sha spuriously drift-fails at sign.
+    #
+    # refine_claim_sentence (never a hand-written set_ref_title) is what
+    # keeps refs.title, the finding_body chunk, and the content-derived
+    # pub_id in sync — the dedup index ANN-retrieves over finding_body, so
+    # a title-only write leaves it searching the pre-review wording. It
+    # refuses anything that is not a live TAPROOT:claim hub, which is the
+    # same precondition load_bundle already enforces.
+    # Snapshot the body BEFORE the reword. The acquisition-marker gate is
+    # the one check that reads a state of the world (is this claim's
+    # primary source in the corpus?) rather than the text being published,
+    # and the harvester writes that note into finding_body, which the
+    # reword replaces. Gating the post-reword body would let a reviewer
+    # launder "Paper not in corpus — needs acquisition." out of a hub on
+    # the very call that approves it, publishing a claim grounded only in
+    # a citing paper. Cheap when no reword happens: identical to
+    # bundle.body, so the gate is unchanged on that path.
+    provenance_body = evidence.hub_body(store, hub_ref_id)
+
+    if requested and requested != (hub_ref.title or "").strip():
+        # Refuse an unacquired primary BEFORE the reword, not just with a
+        # pre-reword snapshot. The snapshot alone survives exactly one
+        # call: the reword still lands (a gate refusal leaves the hub
+        # reworded, by design), so the SECOND identical approve —
+        # requested == title now, no reword, marker already hard-deleted
+        # from finding_body — would re-read a laundered body and mint.
+        # Short-circuiting here is not "gating before the reword" in the
+        # sense the ordering contract forbids: this is the one check that
+        # reads the world rather than the sentence, its inputs (evidence
+        # edges + pre-reword body) are the same either side of the
+        # retitle, and the full gate run below still validates the
+        # post-reword sentence.
+        blocking = gates.check_primary_source(
+            evidence.load_bundle(store, hub_ref_id),
+            payload,
+            provenance_body=provenance_body,
+        )
+        if blocking:
+            raise MintGateError(blocking)
+
+        from precis.taproot.hub import refine_claim_sentence
+
+        try:
+            refine_claim_sentence(store, hub_ref_id, requested, set_by="reviewer")
+        except ValueError as exc:
+            # pub_id collision with a different live hub (a dedup/merge
+            # candidate) is reviewer-actionable feedback on a draft, not
+            # a server fault — the review surface renders BadInput inline.
+            raise BadInput(str(exc)) from exc
+        hub_ref = store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
+
+    bundle = evidence.load_bundle(store, hub_ref_id)
+    violations = gates.run_mint_gates(
+        store,
+        bundle,
+        payload,
+        hub_meta=hub_ref.meta or {},
+        provenance_body=provenance_body,
+    )
+    if violations:
+        raise MintGateError(violations)
+
+    approved = bundle.sentence.strip()
+    from precis.taproot.canon import claim_sha
+
+    if row is None:
+        artifact_type = (
+            "hypothesis" if payload.get("hypothesis") else bundle.artifact_type
+        )
+        row = store.nanopub_create_publish_row(hub_ref_id, artifact_type=artifact_type)
     ok = store.nanopub_approve(
         row.id,
         approved_title=approved,

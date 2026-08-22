@@ -2,6 +2,12 @@
 id: precis-draft-help
 title: precis — the editable document kind
 summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] links (any handle) and bare [pc…] paper-chunk citations
+answers:
+  - how do I create a new draft, or fork/scaffold one from an existing document?
+  - how do I add a paragraph, figure, or table to a draft?
+  - how do I search inside a draft — lexical, semantic, or regex?
+  - how do I export a draft to LaTeX, PDF, or Word?
+  - how do I cite a paper I don't have yet without faking the reference?
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
 ---
@@ -485,6 +491,7 @@ edit(
 delete(id="dc12")  # retire a chunk (un-delete restores)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
 delete(id="dc20", mode="cascade")  # delete heading AND its contents
+delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
 ```
 
 `find=` is located **literally**; every occurrence is swapped for
@@ -511,6 +518,12 @@ contents) or `cascade` (delete the section) — no default for that
 destructive choice. Retired chunks drop out of the document but their
 history (and any anchor to them) survives; you cannot delete the last
 live chunk — a draft is never empty.
+
+`delete` reads its granularity off the id: a chunk address (`dc<id>` /
+`¶<base58>`) retires that chunk, a **ref-level** id (the slug, or the
+numeric ref id) soft-deletes the **whole document** — ref plus every
+chunk, one transaction, recoverable. The owning project todo is left
+intact: that deletes the document, not the project.
 
 ## References in prose — handles route by what they name
 

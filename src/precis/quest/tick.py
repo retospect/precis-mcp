@@ -444,6 +444,32 @@ def _literature_section(store: Store, quest_id: int) -> str:
     )
 
 
+def _skill_injection_section(stmt: str) -> str:
+    """Bimodal skill injection (docs/backlog/skill-question-targets-and-
+    injection.md §2): embed the quest's striving statement against the
+    skill corpus's question-shaped retrieval targets; on a high-confidence
+    match, inject the WHOLE matched skill body. Returns ``""`` (no section
+    at all) when nothing clears threshold — no cue/snippet tier, see
+    :mod:`precis.skill_index.injection`.
+
+    injection.py's module docstring promises a harness-controlled tick can
+    never fail because injection couldn't run; unlike the planner-prompt
+    path (guarded by the module-level assembler's try/except), this is the
+    only call site in the tick path, so the guard lives here — any
+    exception from ``match_skill``/``render_injection`` degrades to no
+    injection rather than aborting the tick."""
+    try:
+        from precis.skill_index.injection import match_skill, render_injection
+
+        match = match_skill(stmt)
+        if match is None:
+            return ""
+        return "\n" + render_injection(match) + "\n"
+    except Exception:
+        log.warning("run_quest_tick: skill injection failed", exc_info=True)
+        return ""
+
+
 def _ruled_out_handles(
     store: Store, quest_id: int, *, fr: Any | None = None
 ) -> list[str]:
@@ -884,6 +910,7 @@ def build_tick_prompt(
         frontier=frontier_text,
         literature=literature,
         reaction_context=_reaction_context(store, quest, fr=fr),
+        skill_injection=_skill_injection_section(stmt),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
         proposal_cap=max_proposals_per_tick(),
         narrative_word_target=narrative_budget.config_from_meta(
@@ -936,7 +963,7 @@ conflicts with this table, the table wins and you must correct the dossier. \
 You do not emit `result`/`milestone` entries — the system stamps those from \
 simulations; you close a lead with a `dead-end` when the table shows it \
 beaten.)
-{literature}{reaction_context}
+{literature}{reaction_context}{skill_injection}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \

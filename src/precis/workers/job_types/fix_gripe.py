@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis.utils import claude_oauth as _oauth
 from precis.utils.claude_agent import ClaudeAgentError, ContainerRequiredError
 from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
 
@@ -728,13 +729,23 @@ def _spawn_claude(cfg: FixGripeConfig, clone_dir: Path, prompt: str) -> Any:
     )
 
 
-def _restricted_env(cwd: Path) -> dict[str, str]:
+def _restricted_env(cwd: Path, *, prefer_oauth: bool = False) -> dict[str, str]:
     """Build the subprocess env: minimal vars, no DB creds.
 
     Strips every ``PG*`` and ``PRECIS_DATABASE_URL`` so claude can't
     reach the postgres backing the precis runtime even if it tries.
     Keeps ``HOME`` (so claude can read ``~/.claude``), ``PATH``,
     ``TERM``, and a small allowlist of safe vars.
+
+    Both auth credentials are carried through and back-filled from the
+    secrets vault: ``ANTHROPIC_API_KEY`` (what ``claude -p --bare`` reads)
+    and ``CLAUDE_CODE_OAUTH_TOKEN`` (the subscription token the container's
+    oauth mode passes by key). ``prefer_oauth=True`` additionally drops the
+    API key whenever a token is present, so the caller can key ``bare`` off
+    "is there a token in here" and the CLI cannot fall back to the billed
+    path. It defaults to False because ``--bare`` auth is *strictly*
+    ``ANTHROPIC_API_KEY`` (``claude --help``): scrubbing the key out from
+    under a ``bare=True`` caller would leave it with no credential at all.
     """
     src = os.environ
     allowed_prefixes = ("ANTHROPIC_",)
@@ -748,6 +759,7 @@ def _restricted_env(cwd: Path) -> dict[str, str]:
         "LOGNAME",
         "SHELL",
         "TMPDIR",
+        _oauth.ENV_VAR,
     }
     out: dict[str, str] = {}
     for k, v in src.items():
@@ -762,18 +774,29 @@ def _restricted_env(cwd: Path) -> dict[str, str]:
         if k in allowed_keys or any(k.startswith(p) for p in allowed_prefixes):
             out[k] = v
     out["PWD"] = str(cwd)
-    # Inject ANTHROPIC_API_KEY from the vault when it isn't in the env (secrets
-    # vault) so the in-container `claude -p --bare` still authenticates
-    # once the key is pulled from the environment. Best-effort.
-    if "ANTHROPIC_API_KEY" not in out:
+    # Inject the auth credentials from the secrets vault when the worker env
+    # doesn't already carry them, so the in-container ``claude -p`` still
+    # authenticates once the ambient env has been stripped. Best-effort: a
+    # vault miss just leaves the var absent and the caller's own guard fires.
+    # Only an ``prefer_oauth`` caller gets the token back-filled — a
+    # ``bare=True`` run can't read it (auth is strictly the API key), so
+    # handing it one would widen the credential's blast radius for nothing.
+    wanted = (
+        (_oauth.ENV_VAR, _oauth.API_KEY_VAR) if prefer_oauth else (_oauth.API_KEY_VAR,)
+    )
+    for var in wanted:
+        if var in out:
+            continue
         try:
             from precis import secrets as _secrets
 
-            tok = _secrets.get_secret("ANTHROPIC_API_KEY")
+            tok = _secrets.get_secret(var)
             if tok:
-                out["ANTHROPIC_API_KEY"] = tok
+                out[var] = tok
         except Exception:
             pass
+    if prefer_oauth:
+        _oauth.prefer_oauth_over_api_key(out)
     return out
 
 

@@ -2,6 +2,8 @@
 id: precis-mermaid-timeline
 title: precis — timeline / chronology / history / roadmap of events
 summary: a mermaid timeline — dated events in chronological order
+answers:
+  - how do I diagram a chronology of dated events?
 applies-to: kind='mermaid'
 status: active
 ---

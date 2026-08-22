@@ -2,6 +2,11 @@
 id: precis-llm-help
 title: precis — the model catalog (choose the right LLM)
 summary: model choice as a queryable resource — read a model's facts + capability, express a requirement, let the policy pick
+answers:
+  - what model should I use for a given task?
+  - how do I see whether a model has actually been good, cheap, or reliable here?
+  - how do I leave a note about how a model performed?
+  - what's the difference between meta.llm_tier and a specific model?
 applies-to: get/search (kind='llm')
 status: active
 ---

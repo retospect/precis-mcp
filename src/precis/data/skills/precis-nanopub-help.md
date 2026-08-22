@@ -2,6 +2,12 @@
 id: precis-nanopub-help
 title: precis — publishing claims as signed nanopubs (view='nanopub' + mint pipeline)
 summary: get(kind='finding', view='nanopub') renders a claim hub as TriG — a draft pre-mint, the exact signed bytes post-mint; the mint pipeline (approve → sign → OTS anchor) is CLI/human-driven, not an agent verb
+answers:
+  - how do I check whether my claim has been published as a nanopub?
+  - what publish state is this claim hub in?
+  - can I mint or sign a nanopub myself as an agent?
+  - why can't I edit a hub that's already reviewed or published?
+  - why does a claim hub show as unmintable?
 applies-to: get (kind='finding', view='nanopub'); precis nanopub CLI (human-run); reading publish state
 status: active
 ---

@@ -2,6 +2,10 @@
 id: precis-datasheet-help
 title: precis — reading datasheets for PCB design
 summary: read a component datasheet as searchable chunks to pull pinouts, supply ranges, decoupling guidance and application circuits, then turn that into net classes and measures. The electronics sibling of the paper kind; ingested by the same Marker→chunks pipeline.
+answers:
+  - how do I read a component datasheet as searchable chunks?
+  - where does a datasheet ref come from — do I have to upload it myself?
+  - what should I pull out of a datasheet and where does it go?
 applies-to: get/search (kind='datasheet'); feeds pcb net-class + measures
 status: active
 ---

@@ -2,6 +2,10 @@
 id: precis-mermaid
 title: precis — authoring mermaid for the mermaid kind
 summary: how to write good, bindable mermaid for a diagram you draw with the model — one diagram per source, a type on the first line, short stable node ids, structure-not-coordinates, and how to bind nodes to the chunks they depict
+answers:
+  - how do I write mermaid source that's bindable to the chunks it depicts?
+  - how do I name nodes so they're addressable?
+  - what should I never author directly in mermaid source?
 applies-to: kind='mermaid' (the source you author via put/edit or the web turn loop)
 status: active
 ---

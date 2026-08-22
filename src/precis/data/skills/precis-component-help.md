@@ -2,6 +2,11 @@
 id: precis-component-help
 title: precis — the component kind (general procurable-part store)
 summary: bolts/hoses/pipes/bearings/... with per-value sources — entity vs value writes, category + spec registries, the canonical-unit rule, made_of, and the range-filter search
+answers:
+  - how do I register a procurable part like a bolt or hose with sourced spec values?
+  - why did put(kind='component', spec=..., unit=...) reject my unit?
+  - how do I search components by a spec range, like 'hoses rated above 20 MPa'?
+  - what's the difference between the category registry and the spec registry?
 applies-to: get/put/search (kind='component')
 status: active
 ---

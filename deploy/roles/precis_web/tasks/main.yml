@@ -195,15 +195,46 @@
   changed_when: false
   failed_when: false
 
-- name: Tailscale-serve precis-web on tailnet
+- name: Expose precis-web over Tailscale (serve = tailnet, funnel = public)
   when: os_family == "darwin"
-  # ``tailscale serve --bg`` writes config that persists across
-  # reboots. Re-running it with the same target is idempotent;
-  # Tailscale's API treats it as "set this mapping" rather than
-  # "spawn another listener." ``changed_when: false`` because the
-  # output is "serving" both on the first and subsequent runs.
+  # ``--bg`` writes config that persists across reboots. Re-running with
+  # the same target is idempotent; Tailscale treats it as "set this
+  # mapping" rather than "spawn another listener." ``changed_when:
+  # false`` because the output is "serving" on the first run and every
+  # one after.
+  #
+  # The verb has to be chosen, not hardcoded: ``serve`` on a port that is
+  # currently funnelled REVERTS it to tailnet-only. This task used to run
+  # ``serve`` unconditionally, so a funnel enabled by hand was silently
+  # un-published by the next redeploy — and with ``failed_when: false``,
+  # without a line in the play recap.
+  #
+  # Bounded with async/poll because the failure mode here is a *hang*,
+  # not an error: when the node lacks the ``funnel`` nodeAttr the CLI
+  # prints an enablement URL and blocks waiting for someone to click it.
   ansible.builtin.shell: |
-    tailscale serve --bg --https=443 http://127.0.0.1:{{ precis_web_port }}
+    tailscale {{ 'funnel' if precis_web_funnel | bool else 'serve' }} \
+      --bg --yes --https=443 http://127.0.0.1:{{ precis_web_port }}
   become: true
+  async: 60
+  poll: 5
   changed_when: false
   failed_when: false
+  tags: [tailscale]
+
+- name: Verify the Tailscale exposure matches precis_web_funnel
+  when: os_family == "darwin"
+  # Assert the end state rather than trusting the command above, which
+  # keeps failed_when: false so a transient CLI hiccup doesn't abort a
+  # deploy. "(tailnet only)" in the status output means this host is NOT
+  # published publicly — so that substring must be present exactly when
+  # precis_web_funnel is false. Equality of the two booleans is the
+  # mismatch: same value => intent and reality disagree.
+  ansible.builtin.command: tailscale funnel status
+  become: true
+  register: _precis_web_ts_status
+  changed_when: false
+  failed_when: >-
+    (precis_web_funnel | bool)
+    == ('(tailnet only)' in _precis_web_ts_status.stdout)
+  tags: [tailscale]

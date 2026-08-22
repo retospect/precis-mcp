@@ -2,6 +2,8 @@
 id: precis-mermaid-journey
 title: precis — user journey map / customer journey / experience map
 summary: a mermaid user-journey diagram — steps of an experience scored by sentiment
+answers:
+  - how do I diagram a user or customer journey scored by sentiment?
 applies-to: kind='mermaid'
 status: active
 ---

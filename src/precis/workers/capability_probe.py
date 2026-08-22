@@ -418,7 +418,7 @@ def _mem_free_bucket() -> int | None:
 def _linux_mem_avail_pct() -> float | None:
     """``MemAvailable / MemTotal`` as a percent from ``/proc/meminfo`` (Linux)."""
     try:
-        with open("/proc/meminfo") as fh:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
             fields: dict[str, float] = {}
             for line in fh:
                 key, _, rest = line.partition(":")

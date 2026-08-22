@@ -81,7 +81,7 @@ def test_construction_fails_on_missing_root(store: Store, tmp_path: Path) -> Non
 
 def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
     f = tmp_path / "f.txt"
-    f.write_text("hi")
+    f.write_text("hi", encoding="utf-8")
     with pytest.raises(ValueError, match="not a directory"):
         PlaintextHandler(hub=Hub(store=store), root=f)
 
@@ -232,7 +232,7 @@ def test_put_append(handler: PlaintextHandler, pt_root: Path) -> None:
     assert out.body.startswith("appended block ")
     assert "'foo'" in out.body
     assert " (L" in out.body
-    content = (pt_root / "foo.txt").read_text()
+    content = (pt_root / "foo.txt").read_text(encoding="utf-8")
     assert "original paragraph" in content
     assert "new paragraph" in content
 
@@ -250,7 +250,7 @@ def test_put_replace_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     out = handler.edit(id="doc~0", text="FIRST (edited) paragraph.", mode="replace")
     assert out.body.startswith("replaced block ")
     assert "'doc'" in out.body
-    content = (pt_root / "doc.txt").read_text()
+    content = (pt_root / "doc.txt").read_text(encoding="utf-8")
     assert "FIRST (edited)" in content
     assert "second paragraph" in content
 
@@ -261,7 +261,7 @@ def test_put_delete_by_pos(handler: PlaintextHandler, pt_root: Path) -> None:
     out = handler.delete(id="doc~1")
     assert out.body.startswith("deleted block ")
     assert "'doc'" in out.body
-    content = (pt_root / "doc.txt").read_text()
+    content = (pt_root / "doc.txt").read_text(encoding="utf-8")
     assert "keep me" in content
     assert "drop me" not in content
 
@@ -292,7 +292,7 @@ def test_put_edit_surgical(handler: PlaintextHandler, pt_root: Path) -> None:
     assert out.body.startswith("edited block ")
     assert "'log'" in out.body
     assert " (L" in out.body
-    content = (pt_root / "log.txt").read_text()
+    content = (pt_root / "log.txt").read_text(encoding="utf-8")
     assert "09:20" in content
     assert "09:15" not in content
 
@@ -399,7 +399,7 @@ def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> N
     )
     assert out.body.startswith("inserted block ")
     assert "'log'" in out.body
-    assert "PREFIX: end of story" in (pt_root / "log.txt").read_text()
+    assert "PREFIX: end of story" in (pt_root / "log.txt").read_text(encoding="utf-8")
 
 
 def test_put_insert_after_anchor(handler: PlaintextHandler, pt_root: Path) -> None:
@@ -415,7 +415,7 @@ def test_put_insert_after_anchor(handler: PlaintextHandler, pt_root: Path) -> No
         text=" the",
     )
     assert out.body.startswith("inserted block ")
-    assert "start of the story" in (pt_root / "log.txt").read_text()
+    assert "start of the story" in (pt_root / "log.txt").read_text(encoding="utf-8")
 
 
 def test_put_edit_match_all_replaces_every_occurrence(
@@ -423,7 +423,7 @@ def test_put_edit_match_all_replaces_every_occurrence(
 ) -> None:
     _write(pt_root, "doc.txt", "x is x and x.\n")
     handler.edit(id="doc", mode="find-replace", find="x", text="Y", match="all")
-    assert "Y is Y and Y." in (pt_root / "doc.txt").read_text()
+    assert "Y is Y and Y." in (pt_root / "doc.txt").read_text(encoding="utf-8")
 
 
 def test_put_edit_match_nth_picks_specified(
@@ -431,7 +431,7 @@ def test_put_edit_match_nth_picks_specified(
 ) -> None:
     _write(pt_root, "doc.txt", "x is x and x.\n")
     handler.edit(id="doc", mode="find-replace", find="x", text="Y", match="nth", nth=2)
-    assert "x is Y and x." in (pt_root / "doc.txt").read_text()
+    assert "x is Y and x." in (pt_root / "doc.txt").read_text(encoding="utf-8")
 
 
 def test_put_edit_ambiguous_match_unique_errors(
@@ -466,7 +466,7 @@ def test_edit_dry_run_diff(handler: PlaintextHandler, pt_root: Path) -> None:
         dry_run=True,
     )
     # Dry-run must not touch disk.
-    assert "foo" in (pt_root / "doc.txt").read_text()
+    assert "foo" in (pt_root / "doc.txt").read_text(encoding="utf-8")
     # The body should be a unified diff.
     assert "---" in out.body or "+++" in out.body or "no diff" in out.body
 
@@ -521,7 +521,7 @@ def test_symlink_inside_root_targeting_outside_is_invisible(
     outside = tmp_path / "outside"
     outside.mkdir()
     secret = outside / "secret.txt"
-    secret.write_text("SECRET DATA")
+    secret.write_text("SECRET DATA", encoding="utf-8")
 
     # Plant a symlink inside the root pointing at the outside file.
     link = pt_root / "leak.txt"
@@ -547,7 +547,7 @@ def test_symlinked_subdirectory_inside_root_is_walked(
     only escapes that leave the root."""
     real = pt_root / "real-subdir"
     real.mkdir()
-    (real / "note.txt").write_text("inside content")
+    (real / "note.txt").write_text("inside content", encoding="utf-8")
     link = pt_root / "via-link"
     link.symlink_to(real)
 
@@ -680,7 +680,7 @@ def test_workspace_flag_survives_mtime_bump(
     import time
 
     time.sleep(0.01)
-    path.write_text("body.\n")  # same content
+    path.write_text("body.\n", encoding="utf-8")  # same content
     now = time.time()
     os.utime(path, (now, now))
     handler.get(id="note")  # triggers sha-match fast path

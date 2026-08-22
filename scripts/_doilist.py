@@ -334,7 +334,7 @@ def read_queue() -> list[str]:
     if not QUEUE.exists():
         return []
     out = []
-    for line in QUEUE.read_text().splitlines():
+    for line in QUEUE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith("- https://doi.org/"):
             tok = line[len("- https://doi.org/") :].split(None, 1)[0]
@@ -378,7 +378,7 @@ def read_queue_annotations() -> dict[str, str]:
     if not QUEUE.exists():
         return {}
     out: dict[str, str] = {}
-    for line in QUEUE.read_text().splitlines():
+    for line in QUEUE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line.startswith("- https://doi.org/"):
             continue
@@ -399,7 +399,7 @@ def write_queue(dois: list[str]) -> None:
         + "\n".join(f"- https://doi.org/{d}" for d in sorted(set(dois)))
         + "\n"
     )
-    QUEUE.write_text(body)
+    QUEUE.write_text(body, encoding="utf-8")
 
 
 STATE_HEADER = (
@@ -413,7 +413,7 @@ def read_state() -> dict[str, str]:
     """Load the machine-readable state. Migrate legacy files on first run."""
     if STATE_FILE.exists():
         try:
-            data = json.loads(STATE_FILE.read_text())
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
             log(f"  ! state file corrupt ({e}); starting fresh")
             return {}
@@ -426,7 +426,7 @@ def read_state() -> dict[str, str]:
     # Legacy migration
     state: dict[str, str] = {}
     if LEGACY_VALID.exists():
-        for line in LEGACY_VALID.read_text().splitlines():
+        for line in LEGACY_VALID.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line.startswith("- "):
                 tok = line[2:].split(" ", 1)[0]
@@ -435,7 +435,7 @@ def read_state() -> dict[str, str]:
                 if DOI_RE.fullmatch(tok):
                     state[tok.lower()] = "valid"
     if LEGACY_INVALID.exists():
-        for line in LEGACY_INVALID.read_text().splitlines():
+        for line in LEGACY_INVALID.read_text(encoding="utf-8").splitlines():
             m = re.match(r"^- `([^`]+)`", line)
             if m:
                 state[m.group(1).lower()] = "invalid"
@@ -455,7 +455,7 @@ def write_state(state: dict[str, str]) -> None:
         },
         "dois": dict(sorted(state.items())),
     }
-    STATE_FILE.write_text(json.dumps(payload, indent=2) + "\n")
+    STATE_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------- download ----------

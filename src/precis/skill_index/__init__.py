@@ -12,7 +12,9 @@ Three pieces:
 
 - :mod:`precis.skill_index.chunker` — split a markdown file into
   one chunk per H2 section (head + body), preserving the heading
-  for display.
+  for display; the index adds non-structural twin variants
+  (``body_only``, ``heading_only``, front-matter ``question_only``)
+  as extra embedding surface — see :class:`~.chunker.Chunk`.
 - :mod:`precis.skill_index.cache` — read/write per-slug embedding
   cache files keyed by ``(cache_namespace, embedder_model,
   chunker_version, file_sha256)``. JSON on disk so the cache is
@@ -35,6 +37,12 @@ Design notes:
   without the ``[paper]`` extra), the index advertises
   ``available=False`` and the caller drops back to its existing
   substring search. No silent quality loss.
+
+:mod:`precis.skill_index.injection` layers **bimodal harness-side
+injection** on top of this index (docs/backlog/skill-question-targets-
+and-injection.md §2): at a handful of harness-controlled prompt-assembly
+points, embed the task text once and either inject the WHOLE matched
+skill (score above threshold) or nothing at all — no cue/snippet tier.
 """
 
 from precis.skill_index.chunker import Chunk, chunk_by_h2

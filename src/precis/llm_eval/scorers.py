@@ -157,7 +157,7 @@ def score_code(
     timeout = int(expect.get("timeout") or 10)
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "cand.py")
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(code + "\n\n" + test + "\n")
         try:
             proc = subprocess.run(

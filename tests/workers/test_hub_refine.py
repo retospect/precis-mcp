@@ -481,6 +481,193 @@ def test_edge_exists_precheck_skips_verify_for_a_pre_attached_paper(store: Any) 
     assert len(_edges_from(store, paper)) == 1  # still exactly one edge
 
 
+# ── widening budget: settled sources never occupy a topk slot ────────
+#
+# The precheck above skips settled sources *after* the ANN truncation, so
+# on its own it protects LLM spend but not the discovery budget: a hub
+# whose nearest neighbours are all sources it already holds would widen by
+# nothing. These tests pin the exclusion being pushed INTO the query
+# (``exclude_ref_ids``) with a ``topk`` small enough that the settled
+# source would otherwise eat the whole budget.
+
+
+def _search_spy(store: Any) -> Any:
+    """Patch ``store.blocks.search_blocks`` with a pass-through spy, so a
+    test can read the kwargs the widening legs were called with.
+    ``Store.blocks`` is a ``cached_property``, so the instance patched here
+    is the one hub-refine reaches."""
+    return patch.object(store.blocks, "search_blocks", wraps=store.blocks.search_blocks)
+
+
+def _semantic_exclusions(spy: Any) -> list[Any]:
+    """``exclude_ref_ids`` per corpus-wide widening leg (the paper + patent
+    legs; the citation leg is scoped to one cited paper and skipped here).
+    Raw kwarg values -- an unfiltered leg must read ``[]``, not ``None``, so
+    "we passed nothing" can't masquerade as "nothing to exclude"."""
+    return [
+        call.kwargs.get("exclude_ref_ids")
+        for call in spy.call_args_list
+        if call.kwargs.get("scope_ref_id") is None
+    ]
+
+
+def test_attached_source_never_occupies_a_widening_slot(store: Any) -> None:
+    """The ``topk`` discovery slots belong to sources the hub does NOT have.
+    Its attached supporter embeds the claim verbatim (cosine distance 0 —
+    the unbeatable top hit), so with a one-slot budget the newcomer is only
+    reachable if the attached source is filtered inside the query."""
+    embedder = make_mock_bge_m3()
+    claim = "Ni foam electrodes sustain 500 mA/cm2 for 100 h."
+    hub = _seed_hub(store, sentence=claim)
+    held, held_chunk = _seed_paper_chunk(store, embedder, cite_key="held", text=claim)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=held,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"pc{held_chunk}"},
+        set_by="agent",
+    )
+    newcomer, _chunk_id = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="newcomer",
+        text="An independent 100 h durability measurement.",
+    )
+
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        _search_spy(store) as spy,
+    ):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert all(excl == [held] for excl in _semantic_exclusions(spy))
+    assert mock_verify.call_count == 1
+    assert len(_edges_from(store, newcomer)) == 1
+    assert len(_edges_from(store, held)) == 1  # still exactly one edge
+
+
+def test_rejected_source_never_occupies_a_widening_slot(store: Any) -> None:
+    """Same budget guarantee for the rejection memo: a source judged ``no``
+    on an earlier pass is never re-verified, so letting it hold a slot would
+    stall widening just as an attached source would."""
+    embedder = make_mock_bge_m3()
+    claim = "Perovskite cells retain 90% PCE after 1000 h damp heat."
+    hub = _seed_hub(store, sentence=claim)
+    judged, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="judged", text=claim
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
+    assert mock_verify.call_count == 1
+    assert str(judged) in (_hub_meta(store, hub).get("taproot_rejected") or {})
+
+    newcomer, _newcomer_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="late-arrival", text="A damp-heat retention result."
+    )
+    store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        _search_spy(store) as spy,
+    ):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
+
+    assert all(excl == [judged] for excl in _semantic_exclusions(spy))
+    assert mock_verify.call_count == 1
+    assert len(_edges_from(store, newcomer)) == 1
+    assert _edges_from(store, judged) == []
+
+
+def test_exclusion_is_ref_grained_so_a_sibling_chunk_is_excluded_too(
+    store: Any,
+) -> None:
+    """Deliberate granularity check. Hub-refine dedups at the **source-ref**
+    level (``_attached_source_ids``) -- a supporter is a paper, not a
+    passage -- so a *different* chunk of an attached source is excluded from
+    discovery as well. That matches the precheck, which would skip it after
+    the ANN anyway; chunk-grained exclusion would only re-import the
+    crowd-out. The newcomer attaching is what proves the sibling chunk gave
+    up its slot rather than being dropped post-truncation."""
+    embedder = make_mock_bge_m3()
+    claim = "Sputtered AlN films show c-axis texture below 300 C."
+    hub = _seed_hub(store, sentence=claim)
+    held = store.insert_ref(
+        kind="paper", slug="two-chunk", title="Test paper two-chunk", meta={}
+    )
+    store.blocks.insert_blocks(
+        held.id,
+        [
+            BlockInsert(
+                pos=0, text="The passage the evidence edge is grounded at.", meta={}
+            ),
+            # Sibling chunk, unattached and verbatim-nearest: without the
+            # ref-grained exclusion it wins the single discovery slot.
+            BlockInsert(pos=1, text=claim, meta={}),
+        ],
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, text FROM chunks WHERE ref_id = %s ORDER BY ord",
+            (held.id,),
+        ).fetchall()
+        for chunk_id, text in rows:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+                "VALUES (%s, %s, %s, 'ok')",
+                (int(chunk_id), embedder.model, embedder.embed_one(str(text))),
+            )
+        conn.commit()
+    grounding_chunk = int(rows[0][0])
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=held.id,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"pc{grounding_chunk}"},
+        set_by="agent",
+    )
+    newcomer, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="aln-newcomer", text="A c-axis texture measurement."
+    )
+
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        _search_spy(store) as spy,
+    ):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
+
+    assert all(excl == [held.id] for excl in _semantic_exclusions(spy))
+    # The sibling chunk never became a candidate: one verify, and it was the
+    # newcomer's -- the held paper still carries exactly its original edge.
+    assert mock_verify.call_count == 1
+    assert len(_edges_from(store, held.id)) == 1
+    assert len(_edges_from(store, newcomer)) == 1
+
+
+def test_hub_without_evidence_excludes_nothing(store: Any) -> None:
+    """The unsettled hub is unaffected: an empty exclusion list, and the
+    single nearest source is still discovered on a one-slot budget."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Bulk Si has an indirect bandgap of 1.12 eV.")
+    paper, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="unsettled", text="A direct measurement statement."
+    )
+
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        _search_spy(store) as spy,
+    ):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _semantic_exclusions(spy) == [[], []]  # paper leg + patent leg
+    assert mock_verify.call_count == 1
+    assert len(_edges_from(store, paper)) == 1
+    assert _hub_meta(store, hub).get("last_refined_at") is not None
+
+
 # ── verifier error -> candidate simply retried later, no crash ───────
 
 

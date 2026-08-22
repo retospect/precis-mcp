@@ -2,6 +2,12 @@
 id: precis-doi-resolution
 title: precis — resolve a DOI to a paper at the agent boundary
 summary: DOI handling — bare DOIs as paper identifiers, slug fallback, view-kwarg discipline
+answers:
+  - how do I open a paper when all I have is a DOI?
+  - why does view= have to be a kwarg when I address by DOI?
+  - does a pasted doi.org URL work as an id?
+  - what do I do when get(kind='paper', id='<DOI>') raises NotFound?
+  - how do I find which ingested papers cite a given DOI?
 applies-to: get(kind='paper', id='<DOI>')
 status: active
 ---

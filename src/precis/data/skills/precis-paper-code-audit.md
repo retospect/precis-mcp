@@ -2,6 +2,9 @@
 id: precis-paper-code-audit
 title: precis — audit a paper's claims against its public code
 summary: claims-vs-code audit runbook — compare methods/defaults/metrics against the fetched repo, file a finding per mismatch, one consolidated draft
+answers:
+  - how do I audit whether a paper's code matches its claimed methods and metrics?
+  - how do I file a finding for a claims-vs-code mismatch?
 flavor: runbook
 status: active
 applies-to: search/get (kind='paper','web'); put (kind='finding','draft'); link (rel='contradicts')

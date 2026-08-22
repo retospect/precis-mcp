@@ -74,9 +74,9 @@ class TestArtifactStore:
     def test_build_tarball_round_trips_and_verifies(self, tmp_path: Path) -> None:
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (out_dir / "nested").mkdir()
-        (out_dir / "nested" / "data.txt").write_text("hello\n")
+        (out_dir / "nested" / "data.txt").write_text("hello\n", encoding="utf-8")
 
         art_root = tmp_path / "artifacts"
         artifact = harvest.build_tarball(out_dir, root=art_root)
@@ -113,11 +113,11 @@ class TestArtifactStore:
 
         secret = tmp_path / "outside" / "secret.txt"
         secret.parent.mkdir(parents=True)
-        secret.write_text("TOP SECRET HOST CONTENT\n")
+        secret.write_text("TOP SECRET HOST CONTENT\n", encoding="utf-8")
 
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (out_dir / "leak").symlink_to(secret)
 
         art_root = tmp_path / "artifacts"
@@ -149,18 +149,19 @@ class TestRunJson:
     def test_valid_object_parsed(self, tmp_path: Path) -> None:
         (tmp_path / "RUN.json").write_text(
             '{"cmd": "python main.py", "inputs": [], "outputs": [], '
-            '"image": "code-task:abc"}'
+            '"image": "code-task:abc"}',
+            encoding="utf-8",
         )
         recipe = harvest.parse_run_json(tmp_path)
         assert recipe is not None
         assert recipe["cmd"] == "python main.py"
 
     def test_invalid_json_returns_none(self, tmp_path: Path) -> None:
-        (tmp_path / "RUN.json").write_text("{not json")
+        (tmp_path / "RUN.json").write_text("{not json", encoding="utf-8")
         assert harvest.parse_run_json(tmp_path) is None
 
     def test_non_object_json_returns_none(self, tmp_path: Path) -> None:
-        (tmp_path / "RUN.json").write_text("[1, 2, 3]")
+        (tmp_path / "RUN.json").write_text("[1, 2, 3]", encoding="utf-8")
         assert harvest.parse_run_json(tmp_path) is None
 
 
@@ -173,11 +174,11 @@ class TestProjectOut:
     ) -> None:
         out_dir = tmp_path / "work" / "out"
         out_dir.mkdir(parents=True)
-        (out_dir / "main.py").write_text("print('hi')\n")
-        (out_dir / "README.txt").write_text("hello\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
+        (out_dir / "README.txt").write_text("hello\n", encoding="utf-8")
         nested = out_dir / "tests"
         nested.mkdir()
-        (nested / "test_main.py").write_text("def test_x(): pass\n")
+        (nested / "test_main.py").write_text("def test_x(): pass\n", encoding="utf-8")
         (out_dir / "blob.bin").write_bytes(b"\x00\x01\x02binary")
         big = out_dir / "huge.txt"
         big.write_bytes(b"x" * (harvest.MAX_HARVEST_FILE_BYTES + 1))
@@ -230,11 +231,11 @@ class TestProjectOut:
         # contents dereferenced and projected into a DB-visible ref.
         secret = tmp_path / "outside" / "secret.txt"
         secret.parent.mkdir(parents=True)
-        secret.write_text("TOP SECRET HOST CONTENT\n")
+        secret.write_text("TOP SECRET HOST CONTENT\n", encoding="utf-8")
 
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (out_dir / "leak").symlink_to(secret)
 
         dest_root = tmp_path / "root"
@@ -254,18 +255,20 @@ class TestProjectOut:
         # No file anywhere under dest_root contains the secret content.
         for p in dest_root.rglob("*"):
             if p.is_file():
-                assert "TOP SECRET" not in p.read_text(errors="ignore")
+                assert "TOP SECRET" not in p.read_text(
+                    errors="ignore", encoding="utf-8"
+                )
 
     def test_symlinked_directory_is_not_descended(
         self, hub_no_embedder: Hub, tmp_path: Path
     ) -> None:
         real_dir = tmp_path / "real_elsewhere"
         real_dir.mkdir()
-        (real_dir / "host_only.txt").write_text("host-only content\n")
+        (real_dir / "host_only.txt").write_text("host-only content\n", encoding="utf-8")
 
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (out_dir / "linked_dir").symlink_to(real_dir, target_is_directory=True)
 
         dest_root = tmp_path / "root"
@@ -284,14 +287,14 @@ class TestProjectOut:
         # dest_root.
         for p in dest_root.rglob("*"):
             if p.is_file():
-                assert "host-only" not in p.read_text(errors="ignore")
+                assert "host-only" not in p.read_text(errors="ignore", encoding="utf-8")
 
     def test_regular_file_still_projects(
         self, hub_no_embedder: Hub, tmp_path: Path
     ) -> None:
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
 
         dest_root = tmp_path / "root"
         dest_root.mkdir()
@@ -311,8 +314,8 @@ class TestProjectOut:
         # collapse onto the same slug (see _slugify_dest_path docstring).
         out_dir = tmp_path / "out"
         out_dir.mkdir()
-        (out_dir / "main.py").write_text("a = 1\n")
-        (out_dir / "main.json").write_text("{}\n")
+        (out_dir / "main.py").write_text("a = 1\n", encoding="utf-8")
+        (out_dir / "main.json").write_text("{}\n", encoding="utf-8")
 
         dest_root = tmp_path / "root"
         dest_root.mkdir()
@@ -363,10 +366,11 @@ class TestHarvestOut:
         work_dir = tmp_path / "work" / "sandbox-1"
         out_dir = work_dir / "out"
         out_dir.mkdir(parents=True)
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (out_dir / "RUN.json").write_text(
             '{"cmd": "python main.py", "inputs": [], "outputs": [], '
-            '"image": "code-task:abc"}'
+            '"image": "code-task:abc"}',
+            encoding="utf-8",
         )
 
         result = harvest.harvest_out(
@@ -434,7 +438,9 @@ class TestHarvestOut:
             work_dir = tmp_path / "work" / container
             out_dir = work_dir / "out"
             out_dir.mkdir(parents=True)
-            (out_dir / "main.py").write_text(f"print({container!r})\n")
+            (out_dir / "main.py").write_text(
+                f"print({container!r})\n", encoding="utf-8"
+            )
             return harvest.harvest_out(
                 store,
                 job_ref_id=jid,
@@ -466,7 +472,7 @@ class TestHarvestOut:
         work_dir = tmp_path / "work"
         out_dir = work_dir / "out"
         out_dir.mkdir(parents=True)
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
 
         result = harvest.harvest_out(
             store,
@@ -493,7 +499,7 @@ class TestHarvestOut:
         build_jid = _mk_job(store)
         build_work = tmp_path / "work" / "sandbox-build"
         (build_work / "out").mkdir(parents=True)
-        (build_work / "out" / "main.py").write_text("print('hi')\n")
+        (build_work / "out" / "main.py").write_text("print('hi')\n", encoding="utf-8")
         build_result = harvest.harvest_out(
             store,
             job_ref_id=build_jid,
@@ -509,7 +515,7 @@ class TestHarvestOut:
         run_jid = _mk_job(store)
         run_work = tmp_path / "work" / "sandbox-run"
         (run_work / "out").mkdir(parents=True)
-        (run_work / "out" / "RESULT.md").write_text("42\n")
+        (run_work / "out" / "RESULT.md").write_text("42\n", encoding="utf-8")
         run_result = harvest.harvest_out(
             store,
             job_ref_id=run_jid,
@@ -549,10 +555,11 @@ class TestStageRunArtifact:
         work_dir = tmp_path / "work" / "sandbox-build"
         out_dir = work_dir / "out"
         out_dir.mkdir(parents=True)
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (out_dir / "RUN.json").write_text(
             '{"cmd": "python main.py", "inputs": [], "outputs": [], '
-            '"image": "code-task:abc"}'
+            '"image": "code-task:abc"}',
+            encoding="utf-8",
         )
         result = harvest.harvest_out(
             store,
@@ -573,7 +580,7 @@ class TestStageRunArtifact:
             dest_dir=dest_dir,
             artifact_store_root=art_root,
         )
-        assert (dest_dir / "main.py").read_text() == "print('hi')\n"
+        assert (dest_dir / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
         assert (dest_dir / "RUN.json").is_file()
         assert folder_meta["run_recipe"]["cmd"] == "python main.py"
 
@@ -594,7 +601,7 @@ class TestStageRunArtifact:
         work_dir = tmp_path / "work" / "sandbox-build"
         out_dir = work_dir / "out"
         out_dir.mkdir(parents=True)
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         result = harvest.harvest_out(
             store,
             job_ref_id=jid,
@@ -624,7 +631,7 @@ class TestStageRunArtifact:
         # Reconstructed from the plaintext ref's stamped harvest_orig_path
         # — the ORIGINAL name, not the on-disk projection rewrite
         # (main.py, not main-py.txt).
-        assert (dest_dir / "main.py").read_text() == "print('hi')\n"
+        assert (dest_dir / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
 
     def test_no_tarball_and_no_plaintext_refs_raises(
         self, store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -634,7 +641,7 @@ class TestStageRunArtifact:
         work_dir = tmp_path / "work"
         out_dir = work_dir / "out"
         out_dir.mkdir(parents=True)
-        (out_dir / "main.py").write_text("print('hi')\n")
+        (out_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
         # No PRECIS_ROOT (root=None) → no plaintext projection at all,
         # only the tarball.
         result = harvest.harvest_out(

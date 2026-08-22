@@ -45,7 +45,7 @@ def test_eligible_true_when_gate_on_and_soul_readable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     soul = tmp_path / "SOUL.md"
-    soul.write_text("# persona")
+    soul.write_text("# persona", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(soul))
     assert eligible() is True
@@ -238,7 +238,7 @@ def test_override_prompt_wins_over_packaged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     override = tmp_path / "site-dream.md"
-    override.write_text("SITE-SPECIFIC DREAM PROMPT")
+    override.write_text("SITE-SPECIFIC DREAM PROMPT", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(override))
     assert _load_prompt() == "SITE-SPECIFIC DREAM PROMPT"
 
@@ -271,11 +271,11 @@ def test_happy_path_dispatches_with_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt = tmp_path / "dream-prompt.md"
-    prompt.write_text("DREAM CYCLE — do dream things.")
+    prompt.write_text("DREAM CYCLE — do dream things.", encoding="utf-8")
     soul = tmp_path / "soul.md"
-    soul.write_text("you are asa.")
+    soul.write_text("you are asa.", encoding="utf-8")
     mcp = tmp_path / "mcp.json"
-    mcp.write_text("{}")
+    mcp.write_text("{}", encoding="utf-8")
 
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt))
@@ -325,7 +325,7 @@ def test_pass_counts_failure_on_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt = tmp_path / "dream-prompt.md"
-    prompt.write_text("dream.")
+    prompt.write_text("dream.", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt))
 
@@ -351,7 +351,7 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
     from precis.workers import dream_agent as da
 
     prompt_path = tmp_path / "dream-prompt.md"
-    prompt_path.write_text("DREAM CYCLE.")
+    prompt_path.write_text("DREAM CYCLE.", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt_path))
     monkeypatch.delenv("PRECIS_DREAM_AGENT_MODEL", raising=False)
@@ -436,7 +436,7 @@ def test_run_dream_pass_finalizes_agentlog_on_dispatch_error(
     from precis import agentlog
 
     prompt_path = tmp_path / "dream-prompt.md"
-    prompt_path.write_text("dream.")
+    prompt_path.write_text("dream.", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt_path))
 

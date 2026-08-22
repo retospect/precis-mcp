@@ -13,7 +13,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "catalysis" / "pd111_no.json"
 
 
 def _load_raw() -> dict:
-    return json.loads(FIXTURE.read_text())
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 def test_adapter_builds_scene_with_right_atoms_and_cell() -> None:

@@ -88,12 +88,16 @@ def _process_one(
         text = md.read_text(encoding="utf-8")
     except Exception as exc:
         _move(md, errors)
-        (errors / f"{md.stem}.error.log").write_text(traceback.format_exc())
+        (errors / f"{md.stem}.error.log").write_text(
+            traceback.format_exc(), encoding="utf-8"
+        )
         return "error", f"read failed: {exc}"
 
     if not text.strip():
         _move(md, errors)
-        (errors / f"{md.stem}.error.log").write_text("file body is empty\n")
+        (errors / f"{md.stem}.error.log").write_text(
+            "file body is empty\n", encoding="utf-8"
+        )
         return "error", "empty body"
 
     query = _id_for(md)
@@ -108,7 +112,7 @@ def _process_one(
     )
     if is_error:
         _move(md, errors)
-        (errors / f"{md.stem}.error.log").write_text(body + "\n")
+        (errors / f"{md.stem}.error.log").write_text(body + "\n", encoding="utf-8")
         # Show only the first line in the console summary.
         first_line = body.splitlines()[0] if body else "import failed"
         return "error", f"import failed: {first_line}"

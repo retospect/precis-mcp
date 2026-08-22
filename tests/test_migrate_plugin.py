@@ -131,7 +131,8 @@ class TestApplyWithPluginMigrations:
         plugin_dir = tmp_path / "plugin_migs"
         plugin_dir.mkdir()
         (plugin_dir / "0001_plugin_test.sql").write_text(
-            "CREATE TABLE precis_dft_smoketest (id int PRIMARY KEY);\n"
+            "CREATE TABLE precis_dft_smoketest (id int PRIMARY KEY);\n",
+            encoding="utf-8",
         )
 
         _patch_eps(
@@ -168,7 +169,9 @@ class TestApplyWithPluginMigrations:
     ) -> None:
         plugin_dir = tmp_path / "plugin_migs"
         plugin_dir.mkdir()
-        (plugin_dir / "0001_smoke.sql").write_text("CREATE TABLE smoke_a (id int);\n")
+        (plugin_dir / "0001_smoke.sql").write_text(
+            "CREATE TABLE smoke_a (id int);\n", encoding="utf-8"
+        )
         _patch_eps(monkeypatch, [_fake_ep("p", str(plugin_dir))])
 
         sources = Migrator.discover_sources(MIGRATIONS_DIR)
@@ -189,7 +192,7 @@ class TestApplyWithPluginMigrations:
         plugin_dir = tmp_path / "plugin_migs"
         plugin_dir.mkdir()
         (plugin_dir / "0001_initial.sql").write_text(
-            "CREATE TABLE plugin_clash_check (id int);\n"
+            "CREATE TABLE plugin_clash_check (id int);\n", encoding="utf-8"
         )
         _patch_eps(monkeypatch, [_fake_ep("clashy_plugin", str(plugin_dir))])
 

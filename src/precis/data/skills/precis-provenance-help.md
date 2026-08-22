@@ -2,6 +2,11 @@
 id: precis-provenance-help
 title: precis — retraction and amendment checks for DOIs
 summary: publication health checks — retractions, expressions of concern, corrections by DOI
+answers:
+  - how do I check whether a single DOI has been retracted before citing it?
+  - how do I check a whole manuscript's bibliography for retractions at once?
+  - how do I verify a DOI actually matches the bib entry I have for it?
+  - how do I chase retractions one citation-hop deep?
 applies-to: get (kind='provenance')
 status: active
 ---

@@ -1,7 +1,7 @@
 ---
 name: navigator
-description: "Read-only orientation specialist for the precis-mcp codebase (not the product) — answers where/how via docs + code search, cites file:line."
-tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
+description: "Read-only orientation specialist for this repo's code (not the product) — answers where/how, cites file:line."
+tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__precis
 model: haiku
 ---
 

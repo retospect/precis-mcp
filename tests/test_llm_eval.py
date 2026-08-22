@@ -67,7 +67,9 @@ def test_seed_gold_set_loads_and_validates() -> None:
 
 def test_unknown_axis_rejected(tmp_path: Any) -> None:
     bad = tmp_path / "bad.json"
-    bad.write_text('[{"task_id": "x", "axis": "vibes", "scorer": "needle"}]')
+    bad.write_text(
+        '[{"task_id": "x", "axis": "vibes", "scorer": "needle"}]', encoding="utf-8"
+    )
     with pytest.raises(BadInput):
         load_gold_set(bad)
 

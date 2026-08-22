@@ -434,7 +434,7 @@ class TestPhaseTriage:
 
 
 def _write_stub(path: Path, body: str) -> None:
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -533,7 +533,7 @@ class TestTriageChild:
 
         assert len(ctx.failures) == 1
         assert "after retry" in ctx.failures[0]
-        assert count.read_text().count("x") == 2  # exactly one retry
+        assert count.read_text(encoding="utf-8").count("x") == 2  # exactly one retry
         assert [t for k, t in ctx.chunks if k == "job_result"] == []
 
     def test_malformed_then_valid_recovers_on_retry(

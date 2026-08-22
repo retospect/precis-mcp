@@ -1,8 +1,11 @@
 {
+  "disableWorkflows": true,
   "env": {
     "ENABLE_TOOL_SEARCH": "auto:20"
   },
-  "enabledMcpjsonServers": ["claude-context"],
+  "enabledMcpjsonServers": [
+    "claude-context"
+  ],
   "permissions": {
     "defaultMode": "auto",
     "allow": [
@@ -32,6 +35,10 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/reap-worktrees\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/reap-test-dbs\""
           },
           {
             "type": "command",
@@ -171,5 +178,6 @@
         ]
       }
     ]
-  }
+  },
+  "disableArtifact": true
 }

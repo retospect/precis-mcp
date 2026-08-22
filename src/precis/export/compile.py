@@ -77,7 +77,9 @@ def _log_tail(project_dir: Path, entrypoint: str, proc_out: str, n: int = 40) ->
     log_path = project_dir / (Path(entrypoint).stem + ".log")
     if log_path.exists():
         try:
-            return "\n".join(log_path.read_text(errors="replace").splitlines()[-n:])
+            return "\n".join(
+                log_path.read_text(errors="replace", encoding="utf-8").splitlines()[-n:]
+            )
         except OSError:
             pass
     return (proc_out or "")[-2000:]

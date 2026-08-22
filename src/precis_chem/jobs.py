@@ -150,7 +150,7 @@ def _default_normalizer(
     emitted ``route.json`` text (``None`` on any failure). Tests swap
     :data:`NORMALIZER` for a stub that returns a canned ``route.json``."""
     in_dir, out_dir = STAGER(ref_id)
-    Path(in_dir, RAW_FILE).write_text(raw_json)
+    Path(in_dir, RAW_FILE).write_text(raw_json, encoding="utf-8")
     argv = _build_normalizer_argv(
         ref_id=ref_id,
         in_dir=in_dir,
@@ -165,7 +165,7 @@ def _default_normalizer(
     route = Path(out_dir) / ROUTE_FILE
     if rc != 0 or not route.exists():
         return None
-    return route.read_text()
+    return route.read_text(encoding="utf-8")
 
 
 #: Overridable hooks (tests monkeypatch these). Runner = cluster boundary,
@@ -244,7 +244,7 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
         return None
 
     in_dir, out_dir = STAGER(ref_id)
-    Path(in_dir, "target.smi").write_text(smiles)
+    Path(in_dir, "target.smi").write_text(smiles, encoding="utf-8")
     argv = engine.run_argv(
         ref_id=ref_id,
         in_dir=in_dir,
@@ -275,7 +275,9 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
     if route.exists():
         try:
             return parse_syngraph(
-                route.read_text(), target=smiles, engine_version=engine.version
+                route.read_text(encoding="utf-8"),
+                target=smiles,
+                engine_version=engine.version,
             )
         except Exception as exc:
             # A garbled route.json still lets us fall back to the native output.
@@ -286,7 +288,9 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
     if native is not None and native.exists() and hasattr(engine, "native_parser"):
         try:
             return engine.native_parser(
-                native.read_text(), target=smiles, engine_version=engine.version
+                native.read_text(encoding="utf-8"),
+                target=smiles,
+                engine_version=engine.version,
             )
         except Exception as exc:
             ctx.record_failure(f"retrosynth: malformed {native_name}: {exc}")

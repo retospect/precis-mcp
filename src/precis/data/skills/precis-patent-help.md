@@ -2,6 +2,12 @@
 id: precis-patent-help
 title: precis — find, read, cite patents
 summary: patent reading — DOCDB ids, EPO OPS fetch, biblio/claims/description/abstract views
+answers:
+  - how do I open a patent by handle or DOCDB id?
+  - how do I find a patent by topic when I don't know its id?
+  - how do I list patents already in my local store?
+  - how do I get a BibTeX entry for a patent?
+  - how do I tag or cross-link a patent to a paper?
 applies-to: get/search/tag/link (kind='patent')
 status: active
 ---

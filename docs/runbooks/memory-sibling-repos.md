@@ -53,4 +53,6 @@ into a durable doc and delete the memory).
 
 **2026-08-10** — ✓ clean
 
-**2026-08-18** — ✓ clean
+**2026-08-18** — 1 stale path(s): caspar-embedder-worker-disabled.md: ~/work/cluster — no longer on disk (repo retired/renamed? fix or drop the ref); resolved same day: false positive — the memory *correctly* states that checkout is gone; reworded to drop the path literal.
+
+**2026-08-18** — ✓ clean (later sibling run, after the rewording above).

@@ -339,7 +339,7 @@ class TestRunLoopDrain:
         loop just idle-sleeps each cycle until ``should_stop`` fires."""
         _ref_id, chunk_ids = seed_chunks(store, ["alpha", "beta", "gamma"])
         drain_file = tmp_path / "worker.drain"
-        drain_file.write_text("")
+        drain_file.write_text("", encoding="utf-8")
         monkeypatch.setenv(DRAIN_FILE_ENV, str(drain_file))
 
         h = EmbedHandler(make_mock_bge_m3())
@@ -373,7 +373,7 @@ class TestRunLoopDrain:
         (e.g. one stranded by a crashed bounce play)."""
         seed_chunks(store, ["alpha"])
         drain_file = tmp_path / "worker.drain"
-        drain_file.write_text("")
+        drain_file.write_text("", encoding="utf-8")
         monkeypatch.setenv(DRAIN_FILE_ENV, str(drain_file))
 
         h = EmbedHandler(make_mock_bge_m3())
@@ -393,7 +393,7 @@ class TestRunLoopDrain:
 
         seed_chunks(store, ["alpha", "beta"])
         drain_file = tmp_path / "worker.drain"
-        drain_file.write_text("")
+        drain_file.write_text("", encoding="utf-8")
         stale = time.time() - (runner_mod.DRAIN_TTL_S + 60)
         _os.utime(drain_file, (stale, stale))
         monkeypatch.setenv(DRAIN_FILE_ENV, str(drain_file))

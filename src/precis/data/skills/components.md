@@ -2,6 +2,10 @@
 id: components
 title: precis — components / BOM registry (section style)
 summary: the manufacturing components registry — register each part as a term leaf (short name, description, MPN, manufacturer, datasheet link) referenced from prose by name/number/[dc…]
+answers:
+  - how do I register a BOM component in a manufacturing draft?
+  - how do component callout numbers get assigned?
+  - how do I reference a registered component from prose?
 status: active
 style: components
 role: section

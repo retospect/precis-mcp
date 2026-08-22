@@ -2,6 +2,9 @@
 id: precis-spi-help
 title: precis — wiring a SPI bus on a PCB
 summary: wire a SPI bus on a pcb design — shared SCK/MOSI/MISO plus one chip-select per device, master-out/master-in direction, length-similar lines. Covers SPI, SCK, MOSI, MISO, CS/SS chip select, bus topology.
+answers:
+  - how do I wire an SPI bus with one chip-select per device on a PCB design?
+  - how do I check that an SPI bus is wired correctly?
 applies-to: put (kind='pcb'); pattern playbook
 status: active
 ---

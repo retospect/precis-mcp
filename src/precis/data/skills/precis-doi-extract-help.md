@@ -2,6 +2,10 @@
 id: precis-doi-extract-help
 title: precis — extract DOIs from research output, queue paper stubs
 summary: LLM-extract DOIs and arXiv IDs from perplexity/search results, mint kind=paper stubs for the fetch_oa worker
+answers:
+  - how do I pull DOIs or arXiv ids out of a Perplexity/search result and mint stubs?
+  - why does DOI extraction use an LLM instead of a regex?
+  - when should I skip DOI extraction entirely?
 applies-to: planner step after perplexity-research / web search; put (kind=paper via acquire)
 status: active
 ---

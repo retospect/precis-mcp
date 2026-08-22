@@ -372,6 +372,11 @@ def extract_paper(
         year=metadata.year,
     )
 
+    # gr236139 — mutated by extract_blocks_marker iff it took the fitz
+    # fallback branch; that's the only signal that survives a fallback
+    # run producing zero blocks (see extract_blocks_marker's docstring).
+    fallback_info: dict[str, Any] = {}
+
     if printable_only:
         blocks: list[dict[str, Any]] = []
         body_chunks: list[Any] = []
@@ -379,7 +384,12 @@ def extract_paper(
         pdf_pages_first = pdf_pages_last = None
         page_count = _pdf_page_count(pdf_bytes) or 0
     else:
-        blocks = extract_blocks_marker(pdf_path, paper_id, timeout_s=marker_timeout_s)
+        blocks = extract_blocks_marker(
+            pdf_path,
+            paper_id,
+            timeout_s=marker_timeout_s,
+            fallback_info=fallback_info,
+        )
         blocks = _repair_mojibake(blocks)
         body_chunks = _blocks_to_chunks(blocks)
         body_chunks = _retag_references(body_chunks)
@@ -410,6 +420,25 @@ def extract_paper(
         extra["keywords"] = metadata.keywords
     if metadata.verify_warnings:
         extra["verify_warnings"] = metadata.verify_warnings
+    if fallback_info.get("used_fallback"):
+        # gr236139 — surfaced to precis.ingest.add._ingest_pdf (which has
+        # a Store) via PaperToWrite.meta, then onto IngestResult so the
+        # watcher can raise a rate-limited ops alert and, for the
+        # zero-body-chunk case below, route to errors/ instead of
+        # reporting success.
+        extra["extract_used_fallback"] = True
+        reason = fallback_info.get("reason")
+        if reason:
+            extra["extract_fallback_reason"] = reason
+        if not body_chunks:
+            # A ≥1-page PDF that the fitz fallback couldn't extract any
+            # text from (typically image-only/scanned) — the silent
+            # data-loss signature this hardening exists to catch. Reuse
+            # the already-read bytes; only paid on this rare, already-
+            # degraded path.
+            total_pages = _pdf_page_count(pdf_bytes) or 0
+            if total_pages >= 1:
+                extra["extract_fallback_empty"] = True
 
     return PaperToWrite(
         title=metadata.title,

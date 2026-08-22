@@ -28,7 +28,7 @@ def test_trusted_latexmkrc_is_the_packaged_template() -> None:
     with trusted_latexmkrc() as rc:
         p = Path(rc)
         assert p.is_file()
-        txt = p.read_text()
+        txt = p.read_text(encoding="utf-8")
         assert "run_makeglossaries" in txt  # the relied-upon cus-dep
         assert "$pdf_mode = 4" in txt
 
@@ -68,7 +68,7 @@ def test_export_compile_passes_hardened_env(monkeypatch, tmp_path: Path) -> None
     from precis.export import compile as export_compile
 
     (tmp_path / "main.tex").write_text(
-        r"\documentclass{article}\begin{document}x\end{document}"
+        r"\documentclass{article}\begin{document}x\end{document}", encoding="utf-8"
     )
     captured: dict[str, object] = {}
 
@@ -93,7 +93,9 @@ def test_export_compile_passes_hardened_env(monkeypatch, tmp_path: Path) -> None
     assert isinstance(cmd, list)
     assert "-norc" in cmd
     rc = cmd[cmd.index("-r") + 1]
-    assert Path(rc).is_file() and "run_makeglossaries" in Path(rc).read_text()
+    assert Path(rc).is_file() and "run_makeglossaries" in Path(rc).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_compile_guard_injects_trusted_rc(monkeypatch, tmp_path: Path) -> None:
@@ -108,7 +110,7 @@ def test_compile_guard_injects_trusted_rc(monkeypatch, tmp_path: Path) -> None:
         def absolute_root(self, _root: Path) -> Path:
             return tmp_path
 
-    (tmp_path / "main.tex").write_text(r"\documentclass{article}")
+    (tmp_path / "main.tex").write_text(r"\documentclass{article}", encoding="utf-8")
     monkeypatch.setattr(cg, "_load_workspace", lambda store, ref_id: _WS())
     monkeypatch.setattr(cg, "_has_live_child_todos", lambda store, ref_id: False)
     monkeypatch.setattr(cg, "_have_latexmk", lambda: True)
@@ -127,5 +129,7 @@ def test_compile_guard_injects_trusted_rc(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(cmd, list)
     assert "-norc" in cmd
     rc = cmd[cmd.index("-r") + 1]
-    assert Path(rc).is_file() and "run_makeglossaries" in Path(rc).read_text()
+    assert Path(rc).is_file() and "run_makeglossaries" in Path(rc).read_text(
+        encoding="utf-8"
+    )
     assert cmd[-1] == "main.tex"

@@ -2,6 +2,11 @@
 id: precis-quest-writing-help
 title: precis — writing a quest that stays a quest
 summary: judgment for authoring a striving — vision vs BHAG vs SMART, one-sentence + plain-language + no-jargon checklist, why technique/paper content belongs in the dossier not the statement, and why quests must stay few
+answers:
+  - how do I tell a vision apart from a BHAG or a SMART goal when writing a quest?
+  - what's the one-sentence test for a well-written quest?
+  - where does the technical detail go if not in the quest itself?
+  - why should quests stay few in number?
 applies-to: put (kind='quest') — the judgment call before you call it
 status: active
 ---

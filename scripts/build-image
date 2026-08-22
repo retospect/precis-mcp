@@ -29,6 +29,33 @@ fi
 
 SERVICE="${1:-precis}"
 
+# The compose build's models stage COPYs from the `premodels` context
+# (additional_contexts in compose.yaml) — ensure the tag exists first:
+# seed-bootstrap from any model-bearing local image, else build the models
+# stage once. Mirrors scripts/precis-shell's guard; without it a fresh
+# machine gets a confusing docker-image:// resolve error.
+BASE_IMAGE="precis-mcp:premodels"
+have_image() { docker image inspect "$1" >/dev/null 2>&1; }
+if ! have_image "${BASE_IMAGE}"; then
+    for seed in precis-mcp:latest precis-mcp:dev precis-dev; do
+        if have_image "${seed}"; then
+            echo "[build-image] tagging ${seed} as ${BASE_IMAGE} (seed bootstrap)" >&2
+            docker tag "${seed}" "${BASE_IMAGE}"
+            break
+        fi
+    done
+fi
+if ! have_image "${BASE_IMAGE}"; then
+    echo "[build-image] building ${BASE_IMAGE} (target=models — slow, one-time)" >&2
+    docker build \
+        --target models \
+        --build-arg "UID=$(id -u)" \
+        --build-arg "GID=$(id -g)" \
+        -t "${BASE_IMAGE}" \
+        -f docker/Dockerfile \
+        .
+fi
+
 GIT_SHA="$(git rev-parse HEAD)"
 GIT_SHA_SHORT="$(git rev-parse --short=12 HEAD)"
 if [[ -z "$(git status --porcelain)" ]]; then

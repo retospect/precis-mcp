@@ -13,6 +13,20 @@ attach (no 502 double-write hazard, unlike the web `evidence/add`
 door), `edit(title=)` reword with dup detection, `view='nanopub'`/
 `view='evidence'` reads. What was missing:
 
+## 0. Mirror/publish status read view (measured; merged from
+## nanopub-status-read-kind, 2026-08-21)
+
+62h of local session mining found **1,063** Bash `psql`/`scripts/prod-psql`
+calls concentrated in nanopub-mint verification workflows polling
+`nanopub_mirror` / `nanopub_publish` — tables with no precis-kind read path.
+Agents aren't routing around MCP friction; the surface has a hole. Add a read
+view (a `view=` on the nanopub-adjacent kind, or a thin `nanopub-status` kind)
+covering the polled questions: mirror/publish state per claim, counts by
+status, recent failures. Test: the mint-verification recipe (see the
+`precis.nanopub` package docstring) completes via MCP reads only. Pattern to
+institutionalize: measured detour → kind/view, not new verbs (general form:
+`mcp-aggregate-surface-gaps.md`).
+
 ## 1. Read-only mint-gate preflight (do this one)
 
 `nanopub/gates.py::run_mint_gates` is callable only from

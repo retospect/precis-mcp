@@ -1297,13 +1297,20 @@ class ClaudeAgentProvider:
     Wraps :func:`~precis.utils.claude_agent.call_claude_agent` via the
     module global so a test that monkeypatches ``router.call_claude_agent``
     still intercepts it.
+
+    ``bare`` comes from the chain rung (see :class:`Rung`) and forces
+    API-key auth for this rung's calls.
     """
+
+    def __init__(self, *, bare: bool = False) -> None:
+        self._bare = bare
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         try:
             res = call_claude_agent(
                 req.prompt,
                 model=model,
+                bare=self._bare,
                 system_prompt=req.system_prompt,
                 mcp_config=req.mcp_config,
                 max_turns=req.max_turns,
@@ -1332,7 +1339,14 @@ class ClaudeAgentProvider:
 
 
 class ClaudePProvider:
-    """``claude -p`` one-shot JSON judge (no tools, last-JSON-block)."""
+    """``claude -p`` one-shot JSON judge (no tools, last-JSON-block).
+
+    ``bare`` comes from the chain rung (see :class:`Rung`) and forces
+    API-key auth for this rung's calls.
+    """
+
+    def __init__(self, *, bare: bool = False) -> None:
+        self._bare = bare
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         try:
@@ -1342,6 +1356,7 @@ class ClaudePProvider:
                 max_usd=req.max_usd,
                 timeout_s=req.timeout_s,
                 extra_args=req.extra_args,
+                bare=self._bare,
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
@@ -1406,9 +1421,29 @@ _PROVIDERS: dict[Transport, LlmProvider] = {
 assert set(_PROVIDERS) == set(Transport), "dispatch: provider registry is not total"
 
 
-def provider_for(transport: Transport) -> LlmProvider:
+def provider_for(transport: Transport, *, bare: bool = False) -> LlmProvider:
     """The provider bound to ``transport`` — the registry accessor a
-    future config layer overrides to reroute a transport."""
+    future config layer overrides to reroute a transport.
+
+    ``bare=True`` (a rung's API-key opt-in) can't come from the shared
+    registry, because the registry holds one stateless singleton per
+    transport and flipping auth on it would leak onto every other caller of
+    that transport. Build a per-rung instance instead; only the two claude
+    transports carry the flag, so anything else ignores it and keeps the
+    singleton.
+    """
+    if not bare:
+        return _PROVIDERS[transport]
+    if transport is Transport.CLAUDE_P:
+        return ClaudePProvider(bare=True)
+    if transport is Transport.CLAUDE_AGENT:
+        return ClaudeAgentProvider(bare=True)
+    log.warning(
+        "llm-chain: bare=true on a %s rung has no effect — API-key auth is a "
+        "claude-transport concept (claude_p / claude_agent); the OSS wires "
+        "authenticate with their own vault-resolved keys.",
+        transport.value,
+    )
     return _PROVIDERS[transport]
 
 
@@ -1423,11 +1458,19 @@ class Rung:
     (the primary, tier-resolved one); a fallback rung pins its own — e.g. the
     claude safety net pins the tier's compiled-in claude id so a PRECIS_MODEL_*
     override pointing at an OSS id doesn't leak onto ``claude -p``.
+
+    ``bare`` opts this rung into **API-key** auth (``ANTHROPIC_API_KEY``,
+    billed per token) instead of the Max subscription's OAuth token. Only
+    the two claude transports honor it; it is inert elsewhere. Default
+    ``False`` everywhere, including both default ladders — moving spend onto
+    the key is always an explicit per-rung decision, never a side effect of
+    a chain edit that forgot the field.
     """
 
     transport: Transport
     model: str | None = None
     label: str = ""
+    bare: bool = False
 
 
 #: A quality gate on an error-free result: return ``True`` to accept, ``False``
@@ -1461,7 +1504,9 @@ class FailoverProvider:
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
         last: LlmResult | None = None
         for i, rung in enumerate(self._rungs):
-            last = provider_for(rung.transport).run(req, model=rung.model or model)
+            last = provider_for(rung.transport, bare=rung.bare).run(
+                req, model=rung.model or model
+            )
             # Stamp the rung that actually ran. Done per-iteration (not once at
             # the end) so a fall-through to a cloud rung is recorded as cloud —
             # the accounting must follow the money, not the operator's intent.
@@ -1573,7 +1618,11 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     byte-for-byte as it does today.
 
     A configured override is a list of rung dicts (``{"placement":
-    "cloud"|"local", "model": <str>, "transport": <str>}``,
+    "cloud"|"local", "model": <str>, "transport": <str>, "bare": <bool>}``,
+    ``bare`` optional and defaulting to ``False`` — see :class:`Rung`;
+    a non-boolean value degrades the whole chain like any other malformed
+    field, because silently coercing ``"true"`` would decide a billing
+    question on a typo),
     :func:`~precis.utils.llm.live_config.chain_override`) mapped onto
     :class:`Rung` in order, with ``placement`` carried through as the label.
     Any malformed rung — an unrecognized ``transport`` string, a
@@ -1631,8 +1680,16 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
         except ValueError:
             return _fallback("has an unknown transport", i, transport_raw)
         placement = raw.get("placement")
+        bare_raw = raw.get("bare", False)
+        if not isinstance(bare_raw, bool):
+            return _fallback("has a non-boolean bare", i, bare_raw)
         rungs.append(
-            Rung(transport, model=model, label=placement if placement else "chain")
+            Rung(
+                transport,
+                model=model,
+                label=placement if placement else "chain",
+                bare=bare_raw,
+            )
         )
 
     if tools_needed:
@@ -2034,7 +2091,12 @@ def dispatch(req: LlmRequest) -> LlmResult:
     if _failover_enabled() or len(ladder) > 1 or ladder[0].model is not None:
         provider: LlmProvider = FailoverProvider(ladder)
     else:
-        provider = provider_for(transport)
+        # Carry the rung's auth opt-in here too. Unreachable for an operator
+        # override (resolve_chain always pins a rung model, so those take the
+        # FailoverProvider branch above) and no default chain sets it — but a
+        # path that silently drops `bare` would decide a billing question by
+        # omission the first time that changes.
+        provider = provider_for(transport, bare=ladder[0].bare)
     # Global circuit breaker: refuse a *new paid* call once its resource is
     # exhausted (only free local tiers pass; dark when no store is bound).
     # Folds into the normalized error result so callers degrade gracefully.
@@ -2045,8 +2107,12 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # a placement:"local" chain rung) spends nothing, so a tripped $ cap must
     # not starve it. ``_rung_is_cloud`` is the authoritative local/cloud
     # classifier (same one the cloud-throttle uses).
+    # ``bare`` moves the resource from OAuth quota to dollars — see gate_tier.
     trip = _breaker.gate_tier(
-        req.tier, transport=transport.value, local=not _rung_is_cloud(ladder[0])
+        req.tier,
+        transport=transport.value,
+        local=not _rung_is_cloud(ladder[0]),
+        bare=ladder[0].bare,
     )
     if trip is not None:
         # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
@@ -2318,7 +2384,10 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # delegated to sync dispatch above), so ``local`` is False here; passed for
     # symmetry with the sync gate and to stay correct if the guard ever widens.
     trip = _breaker.gate_tier(
-        req.tier, transport=transport.value, local=not _rung_is_cloud(ladder[0])
+        req.tier,
+        transport=transport.value,
+        local=not _rung_is_cloud(ladder[0]),
+        bare=ladder[0].bare,
     )
     if trip is not None:
         return LlmResult(
@@ -2921,7 +2990,7 @@ def _read_system_prompt(sp: str | Path | None) -> str | None:
         return None
     if isinstance(sp, Path):
         try:
-            return sp.read_text()
+            return sp.read_text(encoding="utf-8")
         except OSError:
             return None
     return sp

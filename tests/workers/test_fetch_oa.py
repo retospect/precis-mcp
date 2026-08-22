@@ -1040,7 +1040,7 @@ class TestSweepStaleStaging:
         stale_content = staging_dir / "old_stub2024.xml"
         stale_content.write_bytes(b"<article/>")
         stale_sidecar = staging_dir / "old_stub2024.xml.precis-fetch.json"
-        stale_sidecar.write_text('{"ref_id": 1}')
+        stale_sidecar.write_text('{"ref_id": 1}', encoding="utf-8")
         self._age(stale_content, hours_ago=fetch_oa._STAGING_GC_MAX_AGE_HOURS + 1)
         self._age(stale_sidecar, hours_ago=fetch_oa._STAGING_GC_MAX_AGE_HOURS + 1)
 
@@ -1049,7 +1049,7 @@ class TestSweepStaleStaging:
         fresh_content = staging_dir / "new_stub2025.xml"
         fresh_content.write_bytes(b"<article/>")
         fresh_sidecar = staging_dir / "new_stub2025.xml.precis-fetch.json"
-        fresh_sidecar.write_text('{"ref_id": 2}')
+        fresh_sidecar.write_text('{"ref_id": 2}', encoding="utf-8")
 
         removed = fetch_oa._sweep_stale_staging(tmp_path)
 

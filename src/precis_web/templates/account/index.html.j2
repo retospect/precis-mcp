@@ -1,0 +1,192 @@
+{% extends "base.html.j2" %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">Account</h1>
+<p class="text-sm text-slate-500 mb-5 max-w-2xl">
+  Your own login. Creating, disabling and deleting accounts stays on the host
+  (<code>precis users</code>) — every account here is fully authorized, so
+  minting one from the browser would let a single stolen credential become
+  several.
+</p>
+
+{% if error %}
+<div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+  {{ error }}
+</div>
+{% endif %}
+{% if notice %}
+<div class="mb-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700">
+  {{ notice }}
+</div>
+{% endif %}
+
+{% if not user %}
+<div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 max-w-2xl">
+  <strong>No signed-in user.</strong>
+  {% if auth_on %}
+  The gate is on but this request carried no identity — that shouldn't happen;
+  check the precis-web log.
+  {% else %}
+  HTTP auth is disabled on this server (<code>PRECIS_WEB_AUTH</code>), so
+  everything is open to anything that can reach the port and there is no
+  account to show. Manage the roster with <code>precis users</code> on the host.
+  {% endif %}
+</div>
+{% else %}
+
+{# ── who you are ─────────────────────────────────────────────────── #}
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-3 mb-6 max-w-2xl">
+  <div class="flex items-center gap-3">
+    <span class="inline-flex items-center justify-center h-9 w-9 rounded-full
+                 bg-slate-800 text-white text-xs font-semibold tracking-wide">
+      {{ user.abbrev | upper }}
+    </span>
+    <div class="min-w-0">
+      <div class="text-sm font-medium text-slate-800">
+        {{ user.full_name or user.login }}
+      </div>
+      <div class="text-xs text-slate-500 font-mono">
+        {{ user.login }}{% if user.email %} · {{ user.email }}{% endif %}
+      </div>
+    </div>
+    <div class="ml-auto text-right text-[11px] text-slate-400">
+      {% if user.last_login_at %}last seen {{ user.last_login_at | ago }}{% endif %}
+      {% if not user.enabled %}
+      <div class="text-rose-600 font-medium">disabled</div>
+      {% endif %}
+    </div>
+  </div>
+  <p class="mt-3 text-[11px] text-slate-400">
+    <strong class="text-slate-500">{{ user.abbrev }}</strong> is your display
+    handle — the short tag that will mark your edits. It's separate from your
+    login on purpose, so either can change without the other.
+  </p>
+</div>
+
+{# ── password ────────────────────────────────────────────────────── #}
+<h2 class="text-sm font-semibold text-slate-700 mb-2">Change password</h2>
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
+  <p class="text-xs text-slate-500 mb-3">
+    Saving signs you out: HTTP Basic keeps no session, so your browser is
+    holding the old password and will ask for the new one on the next page.
+    That's expected. Minimum {{ min_password_length }} characters — length is
+    the only rule, so use a long one.
+  </p>
+  <form method="post" action="/account/password" class="space-y-2">
+    <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
+      <label for="current_password" class="text-xs text-slate-600">Current password</label>
+      <input id="current_password" name="current_password" type="password"
+             required autocomplete="current-password"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+      <label for="new_password" class="text-xs text-slate-600">New password</label>
+      <input id="new_password" name="new_password" type="password"
+             required autocomplete="new-password"
+             minlength="{{ min_password_length }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+      <label for="confirm_password" class="text-xs text-slate-600">Repeat new password</label>
+      <input id="confirm_password" name="confirm_password" type="password"
+             required autocomplete="new-password"
+             minlength="{{ min_password_length }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+    </div>
+    <button type="submit"
+            class="rounded bg-sky-600 text-white text-xs px-3 py-1.5
+                   hover:bg-sky-700 transition">Change password</button>
+  </form>
+  <p class="mt-3 text-[11px] text-slate-400">
+    Forgot it? There is no email reset — Basic auth has no flow to hang one on,
+    and adding a public route that mints credentials would undo the point of
+    the lock. Someone with shell access runs
+    <code>precis users passwd {{ user.login }}</code>.
+  </p>
+</div>
+
+{# ── profile ─────────────────────────────────────────────────────── #}
+<h2 class="text-sm font-semibold text-slate-700 mb-2">Profile</h2>
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
+  <form method="post" action="/account/profile" class="space-y-2">
+    <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
+      <label for="full_name" class="text-xs text-slate-600">Full name</label>
+      <input id="full_name" name="full_name" type="text"
+             value="{{ user.full_name or '' }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+      <label for="email" class="text-xs text-slate-600">Email</label>
+      <input id="email" name="email" type="email" value="{{ user.email or '' }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+    </div>
+    <button type="submit"
+            class="rounded bg-slate-700 text-white text-xs px-3 py-1.5
+                   hover:bg-slate-800 transition">Save</button>
+  </form>
+  <p class="mt-3 text-[11px] text-slate-400">
+    Display and notification only — neither field authenticates anything.
+    Leave one empty to clear it.
+  </p>
+</div>
+
+{# ── podcast ─────────────────────────────────────────────────────── #}
+<h2 class="text-sm font-semibold text-slate-700 mb-2">Private podcast link</h2>
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 max-w-2xl">
+  {% if feed_url %}
+  <p class="text-xs text-slate-600 mb-2">
+    Paste this into your podcast app — it's your personal subscribe URL, and the
+    episode downloads carry the same token so they work off the phone.
+  </p>
+  <div class="flex items-center gap-2 mb-3">
+    <input id="feed-url" readonly value="{{ feed_url }}" onclick="this.select()"
+           class="flex-1 min-w-0 rounded border border-emerald-300 bg-emerald-50
+                  px-2 py-1 text-xs font-mono text-slate-700" />
+    <button type="button"
+            onclick="const i=document.getElementById('feed-url');
+                     i.select();
+                     (navigator.clipboard?navigator.clipboard.writeText(i.value)
+                      :Promise.reject()).catch(()=>document.execCommand('copy'));
+                     this.textContent='copied';
+                     setTimeout(()=>this.textContent='copy',1500);"
+            class="shrink-0 rounded border border-slate-300 text-xs px-2 py-1
+                   text-slate-600 hover:bg-slate-50 transition">copy</button>
+  </div>
+  <p class="text-[11px] text-slate-400 mb-3">
+    Anyone holding this URL can hear your episodes — it authenticates on its own,
+    which is the point (podcast apps handle HTTP Basic on enclosure downloads
+    inconsistently). Generate a new one to cut off a link you've shared or lost.
+  </p>
+  {% elif user.has_feed_token %}
+  <p class="text-xs text-amber-700 mb-3">
+    You have a live feed link, but this server can't read it back to show you —
+    it's stored hashed and the vault has no copy (minted before the vault
+    existed, or the vault isn't configured here). Generate a new one to get a
+    URL you can copy; the old link stops working when you do.
+  </p>
+  {% else %}
+  <p class="text-xs text-slate-500 mb-3">
+    A personal feed URL carrying a token, because podcast apps handle HTTP Basic
+    on enclosure downloads inconsistently. Generate one and it stays here for you
+    to copy.
+  </p>
+  {% endif %}
+  <div class="flex items-center gap-2">
+    <form method="post" action="/account/feed-token">
+      <input type="hidden" name="action" value="rotate" />
+      <button type="submit"
+              class="rounded bg-emerald-600 text-white text-xs px-3 py-1.5
+                     hover:bg-emerald-700 transition">
+        {% if user.has_feed_token %}Generate new link{% else %}Generate link{% endif %}
+      </button>
+    </form>
+    {% if user.has_feed_token %}
+    <form method="post" action="/account/feed-token">
+      <input type="hidden" name="action" value="revoke" />
+      <button type="submit"
+              class="text-xs text-slate-400 hover:text-rose-600 transition">revoke</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

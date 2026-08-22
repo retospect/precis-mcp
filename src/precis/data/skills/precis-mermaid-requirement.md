@@ -2,6 +2,8 @@
 id: precis-mermaid-requirement
 title: precis — requirement diagram / requirements traceability / verification matrix
 summary: a mermaid requirement diagram — requirements and what satisfies/verifies them
+answers:
+  - how do I diagram requirements and what verifies or satisfies them?
 applies-to: kind='mermaid'
 status: active
 ---

@@ -2,6 +2,12 @@
 id: precis-finding-help
 title: precis — register a citation target so the worker can chase it
 summary: citation chasing — register a claim for the worker to source via Unpaywall/arXiv/S2/OPS
+answers:
+  - how do I register a claim so the worker chases down its source?
+  - how do I check if someone already created a finding for this claim?
+  - how do I search for claim hubs before minting a new one?
+  - how do I resolve a finding with multiple candidate sources?
+  - how do I use a finding's handle in my draft?
 applies-to: put / get / search (kind='finding')
 status: active
 ---

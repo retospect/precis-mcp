@@ -78,7 +78,7 @@ def test_reveal_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_file_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.delenv("FILE_KEY", raising=False)
     monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
-    (tmp_path / "FILE_KEY").write_text("from-file\n")
+    (tmp_path / "FILE_KEY").write_text("from-file\n", encoding="utf-8")
     assert vault.get_secret("FILE_KEY") == "from-file"  # no store bound
 
 
@@ -130,7 +130,9 @@ def pgpass(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
 
 
 def test_complete_dsn_fills_password_from_pgpass(pgpass: Any) -> None:
-    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:s3cret\n")
+    pgpass.write_text(
+        "db.example.com:6432:precis_prod:agent_rw:s3cret\n", encoding="utf-8"
+    )
     dsn = "postgresql://agent_rw@db.example.com:6432/precis_prod"
     out = vault.complete_dsn_password(dsn)
     assert out == "postgresql://agent_rw:s3cret@db.example.com:6432/precis_prod"
@@ -141,7 +143,8 @@ def test_complete_dsn_wildcard_entry_matches(pgpass: Any) -> None:
         "# comment\n"
         "\n"
         "other:5432:*:someone:nope\n"
-        "db.example.com:6432:*:agent_rw:wildpw\n"
+        "db.example.com:6432:*:agent_rw:wildpw\n",
+        encoding="utf-8",
     )
     out = vault.complete_dsn_password(
         "postgresql://agent_rw@db.example.com:6432/precis_prod"
@@ -150,13 +153,15 @@ def test_complete_dsn_wildcard_entry_matches(pgpass: Any) -> None:
 
 
 def test_complete_dsn_existing_password_unchanged(pgpass: Any) -> None:
-    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:other\n")
+    pgpass.write_text(
+        "db.example.com:6432:precis_prod:agent_rw:other\n", encoding="utf-8"
+    )
     dsn = "postgresql://agent_rw:mine@db.example.com:6432/precis_prod"
     assert vault.complete_dsn_password(dsn) == dsn
 
 
 def test_complete_dsn_no_entry_unchanged(pgpass: Any) -> None:
-    pgpass.write_text("elsewhere:5432:db:user:pw\n")
+    pgpass.write_text("elsewhere:5432:db:user:pw\n", encoding="utf-8")
     dsn = "postgresql://agent_rw@db.example.com:6432/precis_prod"
     assert vault.complete_dsn_password(dsn) == dsn
 
@@ -170,7 +175,9 @@ def test_complete_dsn_missing_pgpass_unchanged(
 
 
 def test_complete_dsn_password_is_url_quoted(pgpass: Any) -> None:
-    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:p@ss/w:rd\n")
+    pgpass.write_text(
+        "db.example.com:6432:precis_prod:agent_rw:p@ss/w:rd\n", encoding="utf-8"
+    )
     out = vault.complete_dsn_password(
         "postgresql://agent_rw@db.example.com:6432/precis_prod"
     )
@@ -182,7 +189,9 @@ def test_complete_dsn_password_is_url_quoted(pgpass: Any) -> None:
 
 
 def test_complete_dsn_pgpass_escaped_colon(pgpass: Any) -> None:
-    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:a\\:b\\\\c\n")
+    pgpass.write_text(
+        "db.example.com:6432:precis_prod:agent_rw:a\\:b\\\\c\n", encoding="utf-8"
+    )
     out = vault.complete_dsn_password(
         "postgresql://agent_rw@db.example.com:6432/precis_prod"
     )
@@ -192,7 +201,9 @@ def test_complete_dsn_pgpass_escaped_colon(pgpass: Any) -> None:
 
 
 def test_complete_dsn_keyword_conninfo(pgpass: Any) -> None:
-    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:kwpw\n")
+    pgpass.write_text(
+        "db.example.com:6432:precis_prod:agent_rw:kwpw\n", encoding="utf-8"
+    )
     out = vault.complete_dsn_password(
         "host=db.example.com port=6432 dbname=precis_prod user=agent_rw"
     )
@@ -208,7 +219,9 @@ def test_complete_dsn_garbage_unchanged(pgpass: Any) -> None:
 def test_complete_dsn_empty_password_userinfo_completed_cleanly(pgpass: Any) -> None:
     """``user:@host`` (explicit empty password) parses as password="" and must
     complete without doubling the ``:`` separator (``user::pw@host``)."""
-    pgpass.write_text("db.example.com:6432:precis_prod:agent_rw:filled\n")
+    pgpass.write_text(
+        "db.example.com:6432:precis_prod:agent_rw:filled\n", encoding="utf-8"
+    )
     out = vault.complete_dsn_password(
         "postgresql://agent_rw:@db.example.com:6432/precis_prod"
     )

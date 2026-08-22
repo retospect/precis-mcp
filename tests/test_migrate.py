@@ -162,11 +162,14 @@ def test_checksum_drift_refuses(
     snapshot_dir = tmp_path / "migrations"
     snapshot_dir.mkdir()
     (snapshot_dir / "0001_initial.sql").write_text(
-        (MIGRATIONS_DIR / "0001_initial.sql").read_text()
+        (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8"),
+        encoding="utf-8",
     )
     Migrator(fresh_db, snapshot_dir).apply_all()
 
     # Stage 2: mutate the file and try to apply again
-    (snapshot_dir / "0001_initial.sql").write_text("-- mutated content\nSELECT 1;\n")
+    (snapshot_dir / "0001_initial.sql").write_text(
+        "-- mutated content\nSELECT 1;\n", encoding="utf-8"
+    )
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         Migrator(fresh_db, snapshot_dir).apply_all()

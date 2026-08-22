@@ -99,6 +99,72 @@ class TestExtractBlocksMarkerTimeoutFallback:
         assert result == []
         assert fitz_calls == [(pdf_path, "paper123")]
 
+    def test_fallback_info_set_on_subprocess_timeout(self, monkeypatch, tmp_path):
+        """gr236139: ``fallback_info`` records the fallback even when the
+        fitz fallback itself returns zero blocks — the only signal that
+        survives an empty-output fallback run."""
+        pdf_path = tmp_path / "wedged.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        monkeypatch.setattr(
+            "precis.ingest.marker._marker_extract_subprocess",
+            lambda pdf_path, paper_id, timeout_s: (_ for _ in ()).throw(
+                TimeoutError(f"Marker extraction of {pdf_path.name} timed out")
+            ),
+        )
+        monkeypatch.setattr(
+            "precis.ingest.marker._fitz_fallback",
+            lambda pdf_path, paper_id: [],
+        )
+        monkeypatch.setattr("precis.ingest.marker._release_marker_caches", lambda: None)
+
+        fallback_info: dict = {}
+        result = extract_blocks_marker(
+            pdf_path, "paper123", timeout_s=5.0, fallback_info=fallback_info
+        )
+
+        assert result == []
+        assert fallback_info["used_fallback"] is True
+        assert "timed out" in fallback_info["reason"]
+
+    def test_fallback_info_set_on_marker_exception(self, monkeypatch, tmp_path):
+        pdf_path = tmp_path / "corrupt.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def _raise(pdf_path, paper_id):
+            raise RuntimeError("llama-server binary not found")
+
+        monkeypatch.setattr("precis.ingest.marker._marker_extract", _raise)
+        monkeypatch.setattr(
+            "precis.ingest.marker._fitz_fallback",
+            lambda pdf_path, paper_id: [],
+        )
+        monkeypatch.setattr("precis.ingest.marker._release_marker_caches", lambda: None)
+
+        fallback_info: dict = {}
+        result = extract_blocks_marker(
+            pdf_path, "paper123", fallback_info=fallback_info
+        )
+
+        assert result == []
+        assert fallback_info["used_fallback"] is True
+        assert "llama-server binary not found" in fallback_info["reason"]
+
+    def test_fallback_info_untouched_on_success(self, monkeypatch, tmp_path):
+        pdf_path = tmp_path / "normal.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        monkeypatch.setattr(
+            "precis.ingest.marker._marker_extract",
+            lambda pdf_path, paper_id: [],
+        )
+        monkeypatch.setattr("precis.ingest.marker._release_marker_caches", lambda: None)
+
+        fallback_info: dict = {}
+        extract_blocks_marker(pdf_path, "paper123", fallback_info=fallback_info)
+
+        assert fallback_info == {}
+
     def test_timeout_s_none_stays_in_process_unguarded(self, monkeypatch, tmp_path):
         """Unset ``timeout_s`` must never touch the subprocess path —
         byte-identical to pre-P2-3 behavior."""

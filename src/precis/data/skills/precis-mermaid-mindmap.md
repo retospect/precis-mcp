@@ -2,6 +2,8 @@
 id: precis-mermaid-mindmap
 title: precis — mind map / mindmap / concept map / idea tree / brainstorm
 summary: a mermaid mindmap — a central idea branching into a tree of sub-topics
+answers:
+  - how do I draw a mind map / concept map for brainstorming?
 applies-to: kind='mermaid'
 status: active
 ---

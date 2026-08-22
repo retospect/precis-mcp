@@ -74,6 +74,15 @@ class SkillFrontmatter:
     #: :mod:`precis.workers.planner_prompt`.
     summary: str | None = None
 
+    #: The how-do-I questions this skill answers, hand-authored in
+    #: task language ("how do I check whether my nanopub published?"),
+    #: not capability language. Feeds the ``question_only`` embedding
+    #: variant (:mod:`precis.skill_index.chunker`) alongside
+    #: ``summary`` — embedded standalone so an agent's intent query
+    #: matches question-to-question instead of question-to-prose. See
+    #: ``docs/backlog/skill-question-targets-and-injection.md`` §1.
+    answers: tuple[str, ...] = ()
+
     #: ISO-ish date the skill was last edited. Authored manually.
     last_updated: str | None = None
 
@@ -119,6 +128,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "floor",
         "applies_to",
         "summary",
+        "answers",
         "last_updated",
         "flavor",
         "invokes_personas",
@@ -204,7 +214,7 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
             continue
 
         # Inline comma-separated list, only for keys we know take lists.
-        list_keys = {"invokes-personas", "invokes_personas"}
+        list_keys = {"invokes-personas", "invokes_personas", "answers"}
         if key in list_keys and "," in val:
             items = [v.strip().strip("\"'") for v in val.split(",")]
             raw[key] = tuple(v for v in items if v)
@@ -241,6 +251,15 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     elif isinstance(ip, str):
         # A bare scalar (no commas, no block) — single-item list.
         fields_in["invokes_personas"] = (ip,) if ip else ()
+    # else already tuple from the parser
+
+    # answers: always tuple[str, ...] regardless of input shape — same
+    # normalisation as invokes_personas above.
+    ans = fields_in.get("answers")
+    if ans is None:
+        fields_in["answers"] = ()
+    elif isinstance(ans, str):
+        fields_in["answers"] = (ans,) if ans else ()
     # else already tuple from the parser
 
     # fields_in is dict[str, object] (frontmatter is parsed dynamically);

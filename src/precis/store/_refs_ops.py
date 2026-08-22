@@ -2432,6 +2432,16 @@ class RefsMixin:
         fusion happen at the block level; title-level stays
         lexical-only.
 
+        This is a **leg**, not a search. ``websearch_to_tsquery`` ANDs every
+        stemmed term, so one word the title lacks returns nothing, and there
+        is no semantic recall here by construction. Ref-level callers should
+        go through :func:`precis.utils.ref_hybrid.fused_ref_hits`, which fuses
+        this with a hybrid block leg and a notation-canonicalized leg. Call
+        this directly only when you want exactly the deterministic title-AND
+        (and note it stays the *only* signal for chunk-less kinds like
+        ``todo``, which is why the fused path keeps it rather than replacing
+        it).
+
         v2: ``refs.title_tsv`` was dropped; compute it inline via
         ``to_tsvector('english', r.title)``. Phase 3 will switch this
         to the precomputed ``chunks.tsv`` on the ``card_title`` chunk

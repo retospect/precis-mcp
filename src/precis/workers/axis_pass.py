@@ -108,7 +108,7 @@ def discover_axis_ids() -> list[str]:
     ids: list[str] = []
     for path in sorted(_AXES_DIR.glob("*.yaml")):
         try:
-            data = yaml.safe_load(path.read_text())
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         if isinstance(data, dict) and data.get("id"):
@@ -125,7 +125,7 @@ _SYS = (
 
 
 def _load_axis(axis_id: str) -> dict[str, Any]:
-    return yaml.safe_load((_AXES_DIR / f"{axis_id}.yaml").read_text())
+    return yaml.safe_load((_AXES_DIR / f"{axis_id}.yaml").read_text(encoding="utf-8"))
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:

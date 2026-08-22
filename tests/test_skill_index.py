@@ -17,7 +17,7 @@ import pytest
 from precis.embedder import MockEmbedder
 from precis.skill_index import FileCorpusIndex, chunk_by_h2
 from precis.skill_index.cache import EmbeddingCache, default_cache_dir
-from precis.skill_index.chunker import CHUNKER_VERSION
+from precis.skill_index.chunker import CHUNK_VARIANTS, CHUNKER_VERSION
 
 
 def json_load(path: Path) -> dict[str, Any]:
@@ -144,10 +144,22 @@ def test_chunker_mixes_standalone_and_alias_group() -> None:
 
 def test_chunker_default_emits_no_body_only_twins() -> None:
     # The structural default (used by ``slug~N`` and the TOC adapter)
-    # never produces body-only twins.
+    # never produces any twin variant.
     text = "## A\n## B\n\nshared body.\n## C\nc body.\n"
     chunks = chunk_by_h2(text)
     assert all(not c.body_only for c in chunks)
+    assert all(c.variant == "structural" for c in chunks)
+
+
+def test_chunker_default_with_answers_matches_default_without() -> None:
+    # ``with_body_aliases=False`` output must be byte-identical whether
+    # or not the file carries front-matter question fields — the
+    # structural prefix a positional caller sees never changes shape.
+    plain = "## Only\n\nbody.\n"
+    with_fm = (
+        "---\nsummary: a summary\nanswers:\n  - a question?\n---\n## Only\n\nbody.\n"
+    )
+    assert chunk_by_h2(plain) == chunk_by_h2(with_fm)
 
 
 def test_chunker_with_body_aliases_appends_one_twin_per_group() -> None:
@@ -159,8 +171,8 @@ def test_chunker_with_body_aliases_appends_one_twin_per_group() -> None:
         "## Standalone last\nlast body.\n"
     )
     chunks = chunk_by_h2(text, with_body_aliases=True)
-    structural = [c for c in chunks if not c.body_only]
-    twins = [c for c in chunks if c.body_only]
+    structural = [c for c in chunks if c.variant == "structural"]
+    twins = [c for c in chunks if c.variant == "body_only"]
 
     # Structural chunks are identical to the default chunking and
     # come first; twins are appended after.
@@ -185,17 +197,123 @@ def test_chunker_with_body_aliases_appends_one_twin_per_group() -> None:
     assert twins[2].text == "last body."
     for c in twins:
         assert not c.text.startswith("#")
+        assert c.body_only is True
 
 
 def test_chunker_body_only_twin_for_single_section() -> None:
     text = "## Gotchas\n\nrevalidate every SSRF redirect.\n"
     chunks = chunk_by_h2(text, with_body_aliases=True)
-    fused = [c for c in chunks if not c.body_only]
-    twins = [c for c in chunks if c.body_only]
+    fused = [c for c in chunks if c.variant == "structural"]
+    twins = [c for c in chunks if c.variant == "body_only"]
     assert len(fused) == 1 and len(twins) == 1
     assert fused[0].text == "## Gotchas\nrevalidate every SSRF redirect."
     assert twins[0].text == "revalidate every SSRF redirect."
     assert twins[0].heading == "Gotchas"
+
+
+# ── heading_only twins (v4) ─────────────────────────────────────────
+
+
+def test_chunker_heading_only_one_per_alias() -> None:
+    # Unlike body_only (one per group), heading_only is one per alias
+    # heading — three aliases in the group below → three heading_only
+    # twins, not one.
+    text = (
+        "## Alias A\n## Alias B\n## Alias C\nshared body.\n## Standalone\nsolo body.\n"
+    )
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    heading_twins = [c for c in chunks if c.variant == "heading_only"]
+    assert [c.heading for c in heading_twins] == [
+        "Alias A",
+        "Alias B",
+        "Alias C",
+        "Standalone",
+    ]
+    # Bare heading text, no body, no "## " prefix.
+    for c in heading_twins:
+        assert c.text == c.heading
+        assert not c.text.startswith("#")
+        assert c.body_only is True
+
+
+def test_chunker_heading_only_absent_by_default() -> None:
+    text = "## A\nbody.\n"
+    chunks = chunk_by_h2(text)
+    assert not any(c.variant == "heading_only" for c in chunks)
+
+
+def test_chunker_drops_alias_group_at_eof_drops_heading_only_too() -> None:
+    # A bodyless alias group is dropped entirely — including any
+    # heading_only twin it would otherwise have produced.
+    text = "## A\n## B\n## C\n"
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    assert chunks == []
+
+
+# ── question_only twins (v4) ────────────────────────────────────────
+
+
+def test_chunker_question_only_from_summary_and_answers() -> None:
+    text = (
+        "---\n"
+        "summary: top-level orientation\n"
+        "answers:\n"
+        "  - how do I check my build?\n"
+        "  - how do I file a bug?\n"
+        "---\n"
+        "## A\nbody.\n"
+    )
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    questions = [c for c in chunks if c.variant == "question_only"]
+    assert [c.text for c in questions] == [
+        "top-level orientation",
+        "how do I check my build?",
+        "how do I file a bug?",
+    ]
+    for c in questions:
+        assert c.heading == ""
+        assert c.body_only is True
+
+
+def test_chunker_question_only_inline_answers() -> None:
+    text = "---\nanswers: first question?, second question?\n---\n## A\nbody.\n"
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    questions = [c.text for c in chunks if c.variant == "question_only"]
+    assert questions == ["first question?", "second question?"]
+
+
+def test_chunker_question_only_absent_when_no_front_matter_fields() -> None:
+    text = "---\nid: foo\nstatus: active\n---\n## A\nbody.\n"
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    assert not any(c.variant == "question_only" for c in chunks)
+
+
+def test_chunker_question_only_absent_by_default() -> None:
+    text = "---\nsummary: a summary\n---\n## A\nbody.\n"
+    chunks = chunk_by_h2(text)
+    assert not any(c.variant == "question_only" for c in chunks)
+
+
+def test_chunker_question_only_no_h2_sections_still_applies() -> None:
+    text = "---\nsummary: a summary\n---\n# H1 only\n\nbody.\n"
+    chunks = chunk_by_h2(text, with_body_aliases=True)
+    assert len(chunks) == 2
+    assert chunks[0].variant == "structural"
+    assert chunks[1].variant == "question_only"
+    assert chunks[1].text == "a summary"
+
+
+def test_extract_front_matter_questions_no_front_matter() -> None:
+    from precis.skill_index.chunker import _extract_front_matter_questions
+
+    assert _extract_front_matter_questions("# no front matter\n") == (None, [])
+
+
+def test_extract_front_matter_questions_summary_only() -> None:
+    from precis.skill_index.chunker import _extract_front_matter_questions
+
+    text = "---\nsummary: the summary\n---\nbody\n"
+    assert _extract_front_matter_questions(text) == ("the summary", [])
 
 
 # ── cache ────────────────────────────────────────────────────────────
@@ -241,20 +359,60 @@ def test_cache_round_trip_preserves_body_only(tmp_path: Path) -> None:
             chunker_version=CHUNKER_VERSION,
             chunks=[
                 CachedChunk(heading="H", text="## H\nbody", embedding=[0.1]),
-                CachedChunk(heading="H", text="body", embedding=[0.2], body_only=True),
+                CachedChunk(
+                    heading="H", text="body", embedding=[0.2], variant="body_only"
+                ),
             ],
         )
     )
     out = cache.load("hello", "abc")
     assert out is not None
+    assert [c.variant for c in out.chunks] == ["structural", "body_only"]
     assert [c.body_only for c in out.chunks] == [False, True]
 
 
-def test_cache_loads_legacy_file_without_body_only_key(tmp_path: Path) -> None:
-    # Files written before v3 have no ``body_only`` key; they must
-    # still load (defaulting to False) rather than failing the shape
-    # check. (The chunker_version bump invalidates them on read for
-    # the embedding path, but the loader itself must be tolerant.)
+def test_cache_round_trip_preserves_heading_only_and_question_only(
+    tmp_path: Path,
+) -> None:
+    from precis.skill_index.cache import CachedChunk, CacheEntry
+
+    cache = EmbeddingCache(
+        cache_dir=tmp_path,
+        namespace="test",
+        embedder_model="mock",
+        chunker_version=CHUNKER_VERSION,
+    )
+    cache.save(
+        CacheEntry(
+            slug="hello",
+            file_sha256="abc",
+            embedder_model="mock",
+            chunker_version=CHUNKER_VERSION,
+            chunks=[
+                CachedChunk(
+                    heading="H", text="H", embedding=[0.1], variant="heading_only"
+                ),
+                CachedChunk(
+                    heading="",
+                    text="how do I do X?",
+                    embedding=[0.2],
+                    variant="question_only",
+                ),
+            ],
+        )
+    )
+    out = cache.load("hello", "abc")
+    assert out is not None
+    assert [c.variant for c in out.chunks] == ["heading_only", "question_only"]
+    assert [c.body_only for c in out.chunks] == [True, True]
+
+
+def test_cache_loads_legacy_file_without_variant_key(tmp_path: Path) -> None:
+    # Files written before v4 have no ``variant`` key (or the old v3
+    # ``body_only`` key); they must still load (defaulting to
+    # "structural") rather than failing the shape check. (The
+    # chunker_version bump invalidates them on read for the embedding
+    # path, but the loader itself must be tolerant.)
     cache = EmbeddingCache(
         cache_dir=tmp_path,
         namespace="test",
@@ -278,6 +436,7 @@ def test_cache_loads_legacy_file_without_body_only_key(tmp_path: Path) -> None:
     )
     out = cache.load("legacy", "s")
     assert out is not None
+    assert out.chunks[0].variant == "structural"
     assert out.chunks[0].body_only is False
 
 
@@ -340,7 +499,7 @@ def test_cache_corrupt_file_returns_none(tmp_path: Path) -> None:
     # Manually plant a junk file at the expected path.
     path = cache.path_for("broken")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("not json {{{")
+    path.write_text("not json {{{", encoding="utf-8")
     assert cache.load("broken", "any-sha") is None
 
 
@@ -530,11 +689,50 @@ def test_index_embeds_body_only_twins(tmp_path: Path) -> None:
     idx.search("anything")  # forces build
     entry = (idx._entries or {})["beta"]
     structural = [c for c in entry.chunks if not c.body_only]
-    twins = [c for c in entry.chunks if c.body_only]
-    # head chunk + one section = 2 structural; one section body = 1 twin.
+    twins = [c for c in entry.chunks if c.variant == "body_only"]
+    # head chunk + one section = 2 structural; one section body = 1 twin
+    # (a heading_only twin is also emitted alongside it — covered by
+    # test_index_embeds_heading_only_and_question_only_twins).
     assert len(structural) == len(chunk_by_h2(files["beta"]))
     assert len(twins) == 1
     assert twins[0].text == "Second content."
+
+
+def test_index_embeds_heading_only_and_question_only_twins(tmp_path: Path) -> None:
+    # A skill with front-matter ``summary:``/``answers:`` also caches
+    # heading_only + question_only twins alongside the body_only twin.
+    files = {
+        "beta": (
+            "---\n"
+            "summary: covers beta things\n"
+            "answers:\n"
+            "  - how do I do the beta thing?\n"
+            "---\n"
+            "# Beta\n\n## Section\n\nSecond content.\n"
+        ),
+    }
+    idx = FileCorpusIndex(
+        files=files,
+        embedder=MockEmbedder(dim=32),
+        cache_dir=tmp_path,
+        cache_namespace="test",
+    )
+    idx.search("anything")  # forces build
+    entry = (idx._entries or {})["beta"]
+    by_variant = {
+        v: [c for c in entry.chunks if c.variant == v] for v in CHUNK_VARIANTS
+    }
+    assert len(by_variant["structural"]) == 2  # head chunk + one section
+    assert [c.text for c in by_variant["body_only"]] == ["Second content."]
+    assert [c.text for c in by_variant["heading_only"]] == ["Section"]
+    assert [c.text for c in by_variant["question_only"]] == [
+        "covers beta things",
+        "how do I do the beta thing?",
+    ]
+    # Every embedded chunk carries a real vector (via MockEmbedder).
+    for chunks in by_variant.values():
+        for c in chunks:
+            assert len(c.embedding) == 32
 
 
 def test_index_invalidates_on_file_change(

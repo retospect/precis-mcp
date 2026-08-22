@@ -49,7 +49,7 @@ def test_shared_worker_provisioning_installs_the_anki_pylib() -> None:
     role, 20b imports only this file — so putting the install here is what makes
     it reach the collapsed unit that actually renders the env.
     """
-    assert _INSTALL_RE.search(_PROVISION.read_text()), (
+    assert _INSTALL_RE.search(_PROVISION.read_text(encoding="utf-8")), (
         "precis_worker/tasks/provision.yml no longer installs the `anki` pylib "
         "— _anki_sync_eligible() goes false and the cadence stalls silently"
     )
@@ -62,7 +62,7 @@ def test_the_unit_that_enables_anki_is_provisioned_by_that_half() -> None:
     collapsed playbook enabled anki while importing a provisioning half with no
     anki install, and nothing anywhere objected.
     """
-    collapsed = _uncommented(_COLLAPSED.read_text())
+    collapsed = _uncommented(_COLLAPSED.read_text(encoding="utf-8"))
     if "PRECIS_ANKI_ENABLED" not in collapsed:
         # The collapsed unit stopped enabling anki — then it needs no pylib, and
         # whatever unit took over is covered by its own role's tasks.
@@ -84,14 +84,16 @@ def test_anki_is_not_treated_as_a_precis_extra() -> None:
     extra, so uv rejects it and the whole worker venv install (and the deploy)
     fails. Guard the tempting fix, not just the real one.
     """
-    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
     assert "\nanki = [" not in pyproject, (
         "an `anki` extra now exists — if deliberate, the worker role may use it "
         "and this guard should be retired"
     )
 
     for path in sorted((_DEPLOY / "roles").rglob("*.yml")):
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             if "precis-mcp[" in line and not line.lstrip().startswith("#"):
                 extras = line.split("precis-mcp[", 1)[1].split("]", 1)[0]
                 assert "anki" not in extras, (

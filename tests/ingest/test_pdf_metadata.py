@@ -90,7 +90,9 @@ class TestSidecarReading:
     def test_read_existing_sidecar(self, tmp_path: Path):
         pdf = tmp_path / "test.pdf"
         sidecar = tmp_path / "test.meta.json"
-        sidecar.write_text('{"doi": "10.1000/abc", "title": "Test Paper"}')
+        sidecar.write_text(
+            '{"doi": "10.1000/abc", "title": "Test Paper"}', encoding="utf-8"
+        )
 
         result = _read_sidecar_meta(pdf)
         assert result == {"doi": "10.1000/abc", "title": "Test Paper"}
@@ -103,7 +105,7 @@ class TestSidecarReading:
     def test_read_invalid_sidecar(self, tmp_path: Path):
         pdf = tmp_path / "test.pdf"
         sidecar = tmp_path / "test.meta.json"
-        sidecar.write_text("not valid json {")
+        sidecar.write_text("not valid json {", encoding="utf-8")
 
         result = _read_sidecar_meta(pdf)
         assert result == {}

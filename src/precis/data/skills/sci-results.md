@@ -2,6 +2,9 @@
 id: sci-results
 title: precis — research-paper results (section style)
 summary: write results — findings tied to figures/tables by [dc…], numbers with units/uncertainty; report, don't interpret
+answers:
+  - how do I write a results section without interpreting the findings?
+  - how do I report numbers with proper units and uncertainty?
 status: active
 style: sci-results
 role: section

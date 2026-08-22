@@ -110,9 +110,10 @@ def _fake_af3_output(
         + f"ATOM 1 C CA GLY A 1 0.000 0.000 0.000 {plddt:.2f}\n"
         + f"ATOM 2 C CA ILE A 2 3.800 0.000 0.000 {plddt:.2f}\n"
     )
-    (sub / f"{name}_model.cif").write_text(cif)
+    (sub / f"{name}_model.cif").write_text(cif, encoding="utf-8")
     (sub / f"{name}_summary_confidences.json").write_text(
-        json.dumps({"ptm": 0.82, "iptm": 0.0, "ranking_score": 0.9, "has_clash": 0.0})
+        json.dumps({"ptm": 0.82, "iptm": 0.0, "ranking_score": 0.9, "has_clash": 0.0}),
+        encoding="utf-8",
     )
 
 
@@ -485,7 +486,7 @@ def test_container_dispatch_round_trip(
 
     def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
         # The input JSON was staged for the container.
-        seen["input"] = json.loads((in_dir / INPUT_FILE).read_text())
+        seen["input"] = json.loads((in_dir / INPUT_FILE).read_text(encoding="utf-8"))
         # Simulate AF3: drop an output tree into the bound out-dir.
         _fake_af3_output(out_dir, name="myprot", plddt=91.0)
         return 0, "af3 ok"

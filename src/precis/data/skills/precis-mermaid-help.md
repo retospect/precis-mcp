@@ -2,6 +2,11 @@
 id: precis-mermaid-help
 title: precis — the mermaid diagram kind
 summary: mermaid diagrams you draw with the model — put/get/edit/delete/link, the three model-owned docs, node→chunk bindings, the /mermaid web editor, and the pure-Python mermaidx render/validate/export
+answers:
+  - which mermaid diagram types can precis actually render?
+  - how do I bind a mermaid node to the chunk it depicts?
+  - how do I validate, render, or export a mermaid diagram?
+  - how do I draw a mermaid diagram together with the model in the browser?
 applies-to: kind='mermaid'
 status: active
 ---

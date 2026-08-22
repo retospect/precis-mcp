@@ -1,7 +1,7 @@
 ---
 name: reviewer
-description: "Sonnet pre-ship reviewer — reads the diff, ranks correctness/cleanup findings most-severe first. Read-only, lighter than /code-review ultra."
-tools: Read, Grep, Glob, Bash, mcp__precis__search, mcp__precis__put
+description: "Sonnet pre-ship reviewer — reads the diff, ranks correctness/cleanup findings most-severe first; read-only."
+tools: Read, Grep, Glob, Bash, mcp__precis__precis
 model: sonnet
 ---
 

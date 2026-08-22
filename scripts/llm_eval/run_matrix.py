@@ -39,7 +39,7 @@ os.environ.setdefault("PRECIS_SUMMARIZE_MAX_TOKENS", "4096")  # reasoning headro
 if not os.environ.get("PRECIS_LLM_API_KEY"):
     _keyfile = Path.home() / ".secrets" / "pw" / "openrouter_api_key"
     if _keyfile.exists():
-        os.environ["PRECIS_LLM_API_KEY"] = _keyfile.read_text().strip()
+        os.environ["PRECIS_LLM_API_KEY"] = _keyfile.read_text(encoding="utf-8").strip()
 
 from precis.llm_eval.harness import run_eval
 from precis.llm_eval.tasks import load_gold_set
@@ -166,9 +166,9 @@ def main() -> int:
         "incumbents": sorted(incumbents),
     }
     out = Path(args.out)
-    (out / "results.json").write_text(json.dumps(payload, indent=2))
+    (out / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     scorecard = render(payload)
-    (out / "scorecard.md").write_text(scorecard)
+    (out / "scorecard.md").write_text(scorecard, encoding="utf-8")
     print("\n" + scorecard)
     print(f"\nwrote {out / 'scorecard.md'} and {out / 'results.json'}")
     return 0

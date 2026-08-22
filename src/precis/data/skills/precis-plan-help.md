@@ -2,6 +2,11 @@
 id: precis-plan-help
 title: precis — the plan kind (a thread's reasoning outline)
 summary: a hierarchical todo-list + notes on the draft chunk-tree; create vs. add-node, whole-tree render, status/belief markers, the ▸ cursor, pe<id> node addressing
+answers:
+  - how do I start a plan and add nodes to its outline?
+  - how do I render a plan's tree or read one node?
+  - how do I move a plan node, or mark it open/wip/done?
+  - how is a plan different from a draft or a todo?
 applies-to: put / get / edit / delete / link (kind='plan')
 status: active
 ---

@@ -131,7 +131,7 @@ def _import(args: argparse.Namespace, store: object, vault: object) -> None:
         print(f"secret: no files under {src}")
         return
     for p in files:
-        value = p.read_text().strip()
+        value = p.read_text(encoding="utf-8").strip()
         if not value:
             print(f"  skip {p.name} (empty)")
             continue

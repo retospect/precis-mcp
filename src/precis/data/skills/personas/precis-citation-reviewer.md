@@ -1,6 +1,11 @@
 ---
 id: precis-citation-reviewer
 title: precis — citation-discipline reviewer persona
+summary: citation-discipline reviewer persona — audit a paper's bibliography for retractions, claim/source mismatches, and single-source dependency
+answers:
+  - which persona should I adopt to audit a paper's citations for integrity?
+  - what pre-pass should a citation reviewer run before reading the manuscript?
+  - what counts as a claim/source mismatch in a citation review?
 flavor: persona
 status: active
 applies-to: paper review via scripts/review-paper/run.sh

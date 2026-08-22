@@ -404,7 +404,11 @@ def _marker_extract_subprocess(
 
 
 def extract_blocks_marker(
-    pdf_path: Path, paper_id: str, *, timeout_s: float | None = None
+    pdf_path: Path,
+    paper_id: str,
+    *,
+    timeout_s: float | None = None,
+    fallback_info: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
@@ -418,6 +422,18 @@ def extract_blocks_marker(
     in-process, so a wedged torch call can be killed rather than
     hanging the caller forever (P2-3). ``None``/``0`` (the default)
     preserves the original in-process behavior exactly.
+
+    ``fallback_info`` (gr236139), when given, is mutated in place with
+    ``{"used_fallback": True, "reason": <str>}`` iff this call took the
+    fitz-fallback branch — the only signal that survives a fallback run
+    that itself extracts zero blocks (an image-only/scanned PDF), so a
+    caller can't infer "fallback happened" from the returned list alone.
+    This module has no :class:`~precis.store.Store` handy at this seam
+    to raise an ops alert directly; the caller
+    (:func:`precis.ingest.pipeline.extract_paper`) threads the flag
+    through ``PaperToWrite.meta`` to the watcher, which does have one —
+    see :func:`precis.cli.watch._check_marker_fallback`. ``None`` (the
+    default) preserves the original signature/behavior exactly.
     """
     try:
         if timeout_s and timeout_s > 0:
@@ -432,9 +448,15 @@ def extract_blocks_marker(
             exc,
         )
         blocks = _fitz_fallback(pdf_path, paper_id)
+        if fallback_info is not None:
+            fallback_info["used_fallback"] = True
+            fallback_info["reason"] = f"timed out after {timeout_s}s: {exc}"
     except Exception as exc:
         log.warning("Marker failed on %s (%s), using fitz fallback", pdf_path.name, exc)
         blocks = _fitz_fallback(pdf_path, paper_id)
+        if fallback_info is not None:
+            fallback_info["used_fallback"] = True
+            fallback_info["reason"] = str(exc)
     merged = _merge_small_blocks(blocks, paper_id=paper_id)
     # Best-effort cleanup after every ingest. The long-running watcher
     # accumulates tensor refs across consecutive PDFs (Surya layout

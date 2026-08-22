@@ -298,24 +298,40 @@ def test_probe_treats_lock_contention_as_healthy_not_a_failure() -> None:
         max_inflight=4,
         warm=True,
         probe_interval_s=1000.0,
-        probe_timeout_s=0.2,
+        # NOT a token budget: _run_probe_once waits `probe_timeout_s * 1.5`
+        # for a probe thread that spends the first `probe_timeout_s` blocked
+        # in acquire() before it can record "contended" — so the slack for
+        # thread scheduling is only half this value. At 0.2s that left 0.1s,
+        # under macOS CI jitter, and a late thread reads as a hung wedge and
+        # flips `ready` (the failure this test then reports). The production
+        # default is 20.0s, i.e. 10s of slack, so this margin is a test-config
+        # artifact rather than anything the service gets wrong.
+        probe_timeout_s=1.0,
         probe_fail_threshold=1,  # even 1 tick would flip it if miscounted
     )
     try:
-        assert service._ready.wait(timeout=2.0)
+        assert service._ready.wait(timeout=10.0)
 
         # Simulate a legitimate slow real embed holding the lock —
         # not calling embedder.embed() at all, just holding the lock
         # the way EmbedderService.embed() would while encoding.
+        #
+        # Hand off via an event rather than a sleep, and hold well past the
+        # probe ticks below: a loaded runner can leave the holder unscheduled
+        # for longer than a fixed 0.05s nap, and a hold that expires mid-test
+        # lets the probe take the lock and run for real — either way the
+        # contention this test is about never happens (a macOS CI flake).
+        acquired = threading.Event()
         release = threading.Event()
 
         def _hold_lock() -> None:
             with service._encode_lock:
-                release.wait(timeout=2.0)
+                acquired.set()
+                release.wait(timeout=60.0)
 
         holder = threading.Thread(target=_hold_lock, daemon=True)
         holder.start()
-        time.sleep(0.05)  # let the holder grab the lock first
+        assert acquired.wait(timeout=10.0), "holder never took the encode lock"
 
         try:
             service._run_probe_once()

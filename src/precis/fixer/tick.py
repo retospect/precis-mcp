@@ -479,7 +479,7 @@ def _acquire_lock(lock_path: Path) -> object | None:
     import fcntl
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "w")  # noqa: SIM115 — held for the process lifetime
+    fh = open(lock_path, "w", encoding="utf-8")  # noqa: SIM115 — held for the process lifetime
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

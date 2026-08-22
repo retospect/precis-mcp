@@ -13,6 +13,7 @@ missing the required vars.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,49 @@ class TestRestrictedEnv:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-XXX")
         env = _restricted_env(cwd_for_test())
         assert env["ANTHROPIC_API_KEY"] == "sk-ant-XXX"
+
+    def test_keeps_oauth_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The subscription token is the preferred credential: the container's
+        oauth mode passes ``CLAUDE_CODE_OAUTH_TOKEN`` by KEY, so the value has
+        to survive the strip or the container asks for a secret the executor
+        process doesn't carry."""
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-XXX")
+        env = _restricted_env(cwd_for_test())
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-XXX"
+
+    def test_default_keeps_both_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default (``prefer_oauth=False``) must NOT scrub the API key: a
+        ``bare=True`` caller authenticates strictly off it, so dropping it
+        would leave that caller with no credential at all."""
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-XXX")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-XXX")
+        env = _restricted_env(cwd_for_test())
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-XXX"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-XXX"
+
+    def test_prefer_oauth_scrubs_the_billed_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With a token available, an opted-in caller drops the key so the CLI
+        can't pick the per-token-billed path."""
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-XXX")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-XXX")
+        env = _restricted_env(cwd_for_test(), prefer_oauth=True)
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-XXX"
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_prefer_oauth_keeps_the_key_when_there_is_no_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-XXX")
+        monkeypatch.setattr(
+            "precis.secrets.get_secret", lambda name, **kw: None, raising=True
+        )
+        env = _restricted_env(cwd_for_test(), prefer_oauth=True)
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-XXX"
 
     def test_sets_pwd_to_cwd(self) -> None:
         env = _restricted_env(cwd_for_test())
@@ -532,6 +576,11 @@ class TestUnsandboxedAckGate:
         with pytest.raises(ContainerRequiredError, match="refusing"):
             fix_gripe._spawn_claude(self._cfg(), Path("/tmp/x"), "prompt")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="agent containers bind the host clone at its own path inside a "
+        "Linux image — a POSIX-host-only arrangement",
+    )
     def test_spawn_claude_containerizes_without_ack(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -730,7 +779,7 @@ class TestRunExceptionMapping:
         )
         _run("git", "config", "user.email", "t@t")
         _run("git", "config", "user.name", "t")
-        (repo / "f.txt").write_text("x")
+        (repo / "f.txt").write_text("x", encoding="utf-8")
         _run("git", "add", ".")
         _run("git", "commit", "-q", "-m", "init")
         return repo
@@ -907,7 +956,7 @@ class TestRunPerformsTrustedSidePush:
             # Simulate the agent's ONLY allowed action: committing locally
             # inside the (already-cloned) sandbox working tree. No push —
             # the agent has no origin mount and no push creds.
-            (clone_dir / "fix.txt").write_text("fixed")
+            (clone_dir / "fix.txt").write_text("fixed", encoding="utf-8")
             env = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": "agent",

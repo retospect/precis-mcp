@@ -2,7 +2,7 @@
   "mcpServers": {
     "claude-context": {
       "command": "npx",
-      "args": ["-y", "@zilliz/claude-context-mcp@latest"],
+      "args": ["-y", "@zilliz/claude-context-mcp@0.1.15"],
       "env": {
         "EMBEDDING_PROVIDER": "OpenAI",
         "EMBEDDING_MODEL": "bge-m3",

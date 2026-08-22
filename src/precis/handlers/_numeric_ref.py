@@ -47,7 +47,9 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Link, Ref, Tag
 from precis.utils import handle_registry
+from precis.utils.embed_query import query_vec_for
 from precis.utils.next_block import render_next_section
+from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 
@@ -374,6 +376,7 @@ class NumericRefHandler(Handler):
         tags: list[str] | None = None,
         page_size: int = 10,
         page: int = 1,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
@@ -425,12 +428,24 @@ class NumericRefHandler(Handler):
                 page_size=page_size,
                 status_note=status_note,
                 page=page,
+                mode=mode,
             )
 
-        hits = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=page_size
+        # Title lexical fused with a hybrid block leg (see
+        # ``utils/ref_hybrid``). The title leg is retained rather than
+        # replaced: kinds like ``todo`` are almost entirely chunk-less
+        # (~2.7k refs, ~37 body chunks), so a block-only search would find
+        # nearly nothing there.
+        hit_refs = fused_ref_hits(
+            self.store,
+            getattr(self.hub, "embedder", None),
+            q=q,
+            kind=self.kind,
+            tags=normalized_tags,
+            limit=page_size,
+            mode=mode,
         )
-        if not hits:
+        if not hit_refs:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
             # Surface the implicit status default so "no matches" can't be
@@ -470,7 +485,7 @@ class NumericRefHandler(Handler):
         # carry their salience on the card_combined chunk (ord=-1); kinds
         # without a card contribute nothing. No-op for dream-actor reads.
         self.store.blocks.bump_salience(
-            self.store.blocks.card_chunk_ids([r.id for r, _ in hits])
+            self.store.blocks.card_chunk_ids([r.id for r in hit_refs])
         )
 
         # Total-hits header: a second COUNT(*) with the same WHERE
@@ -478,14 +493,21 @@ class NumericRefHandler(Handler):
         # capped by page_size. The MCP critic flagged the missing "of K"
         # readout as a pagination footgun (the agent couldn't tell
         # whether it had everything or just the first page).
-        total = self.store.count_refs_lexical(q=q, kind=self.kind, tags=normalized_tags)
+        # ``count_refs_lexical`` counts the *lexical* population only. The
+        # fused search can return rows it never saw (a semantic-only or
+        # notation-leg hit), which would render the nonsense "3 of 0
+        # matches" — so the floor is what we actually returned.
+        total = max(
+            self.store.count_refs_lexical(q=q, kind=self.kind, tags=normalized_tags),
+            len(hit_refs),
+        )
         header = format_search_headline(
-            n_returned=len(hits),
+            n_returned=len(hit_refs),
             total=total,
             noun=f"{self._sense()} match",
             query=q,
         )
-        table = self._render_hits_table([ref for ref, _ in hits])
+        table = self._render_hits_table(hit_refs)
         trunc = self._tag_truncation_note(normalized_tags, matched_total=total, q=q)
         parts = [header]
         if status_note:
@@ -657,26 +679,41 @@ class NumericRefHandler(Handler):
         page_size: int = 10,
         **_kw: Any,
     ) -> list[SearchHit]:
-        """Ref-level lexical search returned as ``SearchHit``s.
+        """Ref-level hybrid search returned as ``SearchHit``s.
 
-        Numeric-ref kinds search the ref title only — bodies tend
-        to be short enough that one row per ref is the right
-        granularity for cross-kind merge.  Kinds whose prose lives
-        in chunks opt in via ``search_body_chunks`` and get the
-        ref-grouped chunk-level shape from :meth:`_body_search_hits`.
+        Numeric-ref kinds return one row per ref — bodies tend to be short
+        enough that ref granularity is right for the cross-kind merge. Kinds
+        whose prose lives in chunks opt in via ``search_body_chunks`` and get
+        the ref-grouped chunk-level shape from :meth:`_body_search_hits`.
+
+        Goes through the fused path (2026-08-22) so the cross-kind fan-out
+        gets the same recall as a single-kind search — otherwise a query that
+        worked against ``kind='memory'`` would silently find nothing in the
+        same corpus when fanned out.
         """
         if not (q and q.strip()):
             return []
         if self.search_body_chunks:
             return self._body_search_hits(q=q, tags=tags, page_size=page_size)
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        pairs = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=normalized_tags, limit=page_size
+        refs = fused_ref_hits(
+            self.store,
+            getattr(self.hub, "embedder", None),
+            q=q,
+            kind=self.kind,
+            tags=normalized_tags,
+            limit=page_size,
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.blocks.bump_salience(
-            self.store.blocks.card_chunk_ids([r.id for r, _ in pairs])
+            self.store.blocks.card_chunk_ids([r.id for r in refs])
         )
+        # Synthesised descending ranks: the fused order *is* the ranking, and
+        # SearchHit.score is documented as intra-stream ordering only — the
+        # cross-kind merge fuses on rank position, not on this number.
+        pairs: list[tuple[Any, float]] = [
+            (ref, float(len(refs) - i)) for i, ref in enumerate(refs)
+        ]
         return ref_hits_to_search_hits(pairs, kind=self.kind)
 
     # ── shared body-chunk search (opt-in via search_body_chunks) ────
@@ -690,9 +727,19 @@ class NumericRefHandler(Handler):
         return flat[:max_chars].rstrip() + "…"
 
     def _best_body_hits(
-        self, q: str, tags: list[str] | None, page_size: int, page: int = 1
+        self,
+        q: str,
+        tags: list[str] | None,
+        page_size: int,
+        page: int = 1,
+        mode: str | None = None,
     ) -> tuple[list[tuple[Any, Ref, float]], int]:
-        """Best-ranked chunk per ref for a lexical body-chunk query.
+        """Best-ranked chunk per ref for a hybrid body-chunk query.
+
+        Hybrid (lexical + semantic RRF) since 2026-08-22 — this was
+        ``search_blocks_lexical``, so ``memory`` and ``gripe`` searched 9.8k
+        embedded chunks with a pure term-AND and no semantic recall. The
+        vectors were already there; nothing queried them.
 
         Over-fetches ~5× ``page_size`` so a ref with several matching
         chunks still leaves room for distinct refs, dedupes to the
@@ -715,8 +762,12 @@ class NumericRefHandler(Handler):
         one. The over-fetch pool grows with ``page`` so later pages
         still have enough distinct refs to dedupe from.
         """
-        raw = self.store.blocks.search_blocks_lexical(
-            q=q, kind=self.kind, tags=tags, limit=page_size * 5 * max(1, page)
+        raw = self.store.blocks.search_blocks_fused(
+            q=q,
+            query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
+            kind=self.kind,
+            tags=tags,
+            limit=page_size * 5 * max(1, page),
         )
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
@@ -727,8 +778,16 @@ class NumericRefHandler(Handler):
         ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
             window_start : window_start + page_size
         ]
-        total = self.store.blocks.count_blocks_lexical(
-            q=q, kind=self.kind, tags=tags, distinct_refs=True
+        # The count is lexical-only while the hits are now fused, so a
+        # semantic-only match would render "3 of 0 matches". Floor the total
+        # at what we actually return. (It stays an undercount when semantic
+        # adds refs beyond this page — an exact fused count would mean
+        # running the whole fusion again just for a headline.)
+        total = max(
+            self.store.blocks.count_blocks_lexical(
+                q=q, kind=self.kind, tags=tags, distinct_refs=True
+            ),
+            len(ordered),
         )
         return ordered, total
 
@@ -740,9 +799,10 @@ class NumericRefHandler(Handler):
         page_size: int,
         status_note: str = "",
         page: int = 1,
+        mode: str | None = None,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
-        hits, total = self._best_body_hits(q, tags, page_size, page=page)
+        hits, total = self._best_body_hits(q, tags, page_size, page=page, mode=mode)
         if self.heat_salience_on_body_search:
             self.store.blocks.bump_salience(
                 self.store.blocks.card_chunk_ids([ref.id for _, ref, _ in hits])

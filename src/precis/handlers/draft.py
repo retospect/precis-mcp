@@ -18,7 +18,8 @@ behind the existing seven verbs — **no new verbs**:
   a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
 - ``edit``  — change a chunk's text (`text=`) or move it (`move=`).
 - ``delete``— soft-retire a chunk (`mode='cascade'|'promote'` for a
-  heading with children).
+  heading with children), or the whole document when `id=` is
+  ref-level (slug / ref id).
 
 Chunks are addressed by the computed ``dc<chunk_id>`` handle (the legacy ``¶<base58>`` still resolves during the transition); the draft
 itself by its slug (the universal ``id=``). See ``precis-draft-help``.
@@ -295,7 +296,8 @@ class DraftHandler(Handler):
             "(title=, syncs refs.title + the title heading), sets a heading's "
             "section style (style=<skill>), or regex-substitutes across a "
             "draft/section (sub={find,replace}, dry-run unless apply=True); "
-            "delete soft-retires (mode=cascade|promote). Chunks "
+            "delete soft-retires a chunk (mode=cascade|promote), or the "
+            "whole draft when id= is the slug. Chunks "
             "addressed by dc<chunk_id> (legacy ¶handle still resolves). "
             "See precis-draft-help."
         ),
@@ -1772,7 +1774,38 @@ class DraftHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
-        handle = self._require_chunk_id(id, verb="delete")
+        """Soft-delete, at whichever granularity ``id`` addresses.
+
+        A **chunk** address (``dc<id>`` / ``¶<base58>``) retires that one
+        chunk (``mode='promote'|'cascade'`` for a heading with children).
+        A **ref-level** address (the draft's slug, or its numeric ref id)
+        retires the whole document — ref ``deleted_at`` plus every chunk,
+        in one transaction (``store.drafts.soft_delete_draft``), the same
+        atomic op behind the reader's type-the-name delete button. The
+        owning project todo is left intact: this deletes the document, not
+        the project. Both granularities refuse a machine-owned body
+        (:meth:`_refuse_if_machine_owned`).
+
+        Ref-level delete is what makes the generic per-row delete on
+        ``/drive`` work for drafts — that route dispatches this verb with
+        the row's slug, and used to bounce off the chunk-only guard.
+        """
+        raw = str(id).strip() if id is not None else ""
+        if not raw:
+            raise BadInput(
+                "delete(kind='draft') needs a target — a chunk "
+                "(id='dc<chunk_id>') or the whole draft (id='<slug>')",
+                next="delete(kind='draft', id='dc42')",
+            )
+        if not _is_draft_chunk_addr(raw):
+            ref = self._resolve_draft_any(raw)  # refuses a machine-owned body
+            retired = self.store.drafts.soft_delete_draft(ref.id)
+            label = ref.slug or ref.id
+            return Response(
+                body=f"deleted draft {label} ({retired} chunks retired) — "
+                "recoverable; the owning project todo is untouched"
+            )
+        handle = raw
         chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
             raise NotFound(f"draft chunk {handle!r} not found")
@@ -1784,11 +1817,12 @@ class DraftHandler(Handler):
     # ── helpers ──────────────────────────────────────────────────────
 
     def _resolve_draft_any(self, id: str | int | None) -> Any:
-        """Resolve a draft ref from either its slug or a ¶handle (a chunk
-        in it), refusing a machine-owned target (:meth:`_refuse_if_machine_owned`).
-        Used by every draft-level edit op (``title=``/``authors=``/
-        ``not_abbrev=``/``authoring=``/``scaffold=``) — all mutating, so
-        every caller wants the guard."""
+        """Resolve a draft ref from its slug, its numeric ref id, or a
+        ¶handle (a chunk in it), refusing a machine-owned target
+        (:meth:`_refuse_if_machine_owned`). Used by every draft-level
+        mutating op (``title=``/``authors=``/``not_abbrev=``/
+        ``authoring=``/``scaffold=``, and whole-draft :meth:`delete`) —
+        all mutating, so every caller wants the guard."""
         s = str(id or "").strip()
         if _is_draft_chunk_addr(s):
             chunk = self.store.drafts.get_draft_chunk(s)
@@ -1797,6 +1831,13 @@ class DraftHandler(Handler):
             ref = self.store.get_ref(kind="draft", id=int(chunk.ref_id))
             if ref is None:
                 raise NotFound(f"draft for chunk {s} not found")
+        elif s.isdigit():
+            # Numeric ref id — the reader addresses drafts this way too
+            # (``routes/drafts.py`` ``_draft_ref``), and it's the only
+            # handle a slugless draft has.
+            ref = self.store.get_ref(kind="draft", id=int(s))
+            if ref is None:
+                raise NotFound(f"draft ref id {s} not found")
         else:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
         self._refuse_if_machine_owned(ref.id)

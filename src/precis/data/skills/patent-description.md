@@ -2,6 +2,10 @@
 id: patent-description
 title: precis — patent descriptive section (section style)
 summary: write a patent Field/Background/Summary/Detailed Description — formal patent voice, parts by [dc…]+noun, [0001] paragraph numbering
+answers:
+  - how do I write the Field/Background/Summary/Detailed Description of a patent?
+  - how do I number paragraphs in a patent description?
+  - how do I refer to a drawing part from the detailed description?
 status: active
 style: patent-description
 role: section

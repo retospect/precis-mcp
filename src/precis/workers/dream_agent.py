@@ -324,7 +324,7 @@ def _load_prompt() -> str | None:
     both are unavailable (the packaged resource should always exist)."""
     override = _env_path("PRECIS_DREAM_PROMPT_PATH")
     if override is not None:
-        return override.read_text()
+        return override.read_text(encoding="utf-8")
     try:
         from importlib import resources
 

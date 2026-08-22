@@ -2,6 +2,11 @@
 id: precis-kinds-disabled-help
 title: precis — recognize and enable disabled kinds
 summary: disabled-kind diagnostics — Unsupported errors, env var gating, operator prohibition
+answers:
+  - I got an Unsupported error on a kind I expected to work — what does that mean?
+  - what env var enables a specific kind?
+  - how do I check what's actually live in this build?
+  - what does reason='prohibited' mean on a kind?
 applies-to: all kinds (boot-time enablement)
 status: active
 ---

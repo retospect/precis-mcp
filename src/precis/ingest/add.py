@@ -202,6 +202,20 @@ class IngestResult:
     chunks_written: int
     identifiers: dict[str, str]
     kind: str = "paper"
+    #: gr236139 — ``True`` when :func:`precis.ingest.pipeline.extract_paper`
+    #: fell back from Marker to fitz page-level extraction for this PDF
+    #: (Marker raised or timed out). Only ever set on a fresh insert — the
+    #: dedup-hit branches never re-extract, so they default ``False``. The
+    #: watcher uses this to raise a rate-limited ops alert (see
+    #: :func:`precis.cli.watch._check_marker_fallback`).
+    used_marker_fallback: bool = False
+    #: gr236139 — ``True`` when the fitz fallback above produced *zero*
+    #: body chunks on a PDF with at least one page — the silent-data-loss
+    #: signature (an image-only/scanned PDF the fallback can't OCR).
+    #: ``False`` whenever ``used_marker_fallback`` is ``False``. The
+    #: watcher routes this case to ``errors/`` instead of reporting
+    #: success and leaves the fetch sidecar unconsumed.
+    fallback_empty_body: bool = False
 
 
 class MarkupTriggerSpent(Exception):
@@ -480,6 +494,11 @@ def _ingest_pdf(
         chunks_written=result.chunks_written,
         identifiers=result.identifiers_written,
         kind=paper.kind,
+        # gr236139 — surfaced by extract_paper via paper.meta so the
+        # watcher can raise a fallback alert / route an empty-body
+        # degraded extraction to errors/ without re-deriving it here.
+        used_marker_fallback=bool(paper.meta.get("extract_used_fallback")),
+        fallback_empty_body=bool(paper.meta.get("extract_fallback_empty")),
     )
 
 

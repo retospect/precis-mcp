@@ -33,6 +33,30 @@ if TYPE_CHECKING:
 
 _PC_HANDLE = re.compile(r"^pc(\d+)$")
 
+#: The acquisition-mode edge ``put(kind='finding', wants=...)`` writes:
+#: ``finding --awaits-evidence--> DREAM:acquire stub`` (migration 0105,
+#: no inverse). Deliberately NOT an evidence relation — the stub supports
+#: nothing yet — so :func:`precis.taproot.seniority.derive_evidence` never
+#: sees it and the hub's ``sources`` stay clean; it reaches the bundle as
+#: :attr:`HubBundle.awaiting_sources` instead.
+_AWAITS_EVIDENCE = "awaits-evidence"
+_STATUS_NAMESPACE = "STATUS"
+_STATUS_ACQUIRING = "acquiring"
+_EVIDENCE_KINDS = ("paper", "patent")
+
+#: ``refs.meta`` key declaring "this hub's primary source is not in the
+#: corpus" for the shapes no edge can express: a primary known only by
+#: DOI/title that never got a ``refs`` row, a hub whose only evidence edge
+#: points at the *citing* paper (which we do hold), or a hub with no
+#: evidence edge at all. Written by ``precis nanopub backfill-unheld``
+#: (:func:`prose_marked_hubs` / :func:`declare_primary_source_unheld` — the
+#: six legacy prose-marked hubs) — the live door for a new claim of this shape
+#: is ``wants=``, which records the state as structure
+#: (:data:`_AWAITS_EVIDENCE`) and needs no flag. ``refs.meta`` and not the
+#: body: a reword rewrites ``finding_body``, and that is exactly the bug
+#: this key exists to close.
+PRIMARY_UNHELD_META_KEY = "primary_source_unheld"
+
 #: Chunk `section_path` patterns that mark secondhand grounding — a
 #: references list, related-work / prior-art survey, or background recap
 #: cites the doers instead of being them. Layer-A hearsay gate
@@ -48,6 +72,21 @@ HEARSAY_SECTION = re.compile(
 #: chunk sits in — the intro-gap fix (fi19981/fi19987 precedent):
 #: section-path matching alone misses intros, where papers cite prior
 #: work most.
+#:
+#: **Prose is the weak arm of this check, not the primary one.** Nothing
+#: in this codebase writes the marker: it is agent prose, authored in a
+#: finding body during a lit-hunt/acquisition tick and carried into the
+#: hub, so its wording is a convention rather than a contract and any
+#: door that legitimately rewrites the body (``refine_claim_sentence``)
+#: destroys it. The structural twins are what the gate leads with —
+#: :func:`refs_without_body_chunks` ("we hold this source's metadata but
+#: not its text"), :attr:`HubBundle.awaiting_sources` /
+#: :attr:`HubBundle.acquiring` (the acquisition-mode mint's own edges and
+#: status), and :data:`PRIMARY_UNHELD_META_KEY` (the declared flag for the
+#: shapes no edge expresses). The prose stays a fallback only until the six
+#: legacy hubs are stamped;
+#: ``docs/backlog/acquisition-marker-lives-in-the-wrong-place.md`` tracks
+#: retiring it entirely.
 ACQUISITION_MARKER = re.compile(
     r"not (?:yet )?in (?:the )?corpus|needs? acquisition", re.IGNORECASE
 )
@@ -180,6 +219,26 @@ class HubBundle:
     #: acquisition-marker gate reads it (title alone misses the
     #: harvester's "not in corpus" note).
     body: str = ""
+    #: Evidence sources we do NOT hold: a ``refs`` row (title, DOI, maybe
+    #: a sha) with zero live body chunks — a stub, or a paper whose fetch
+    #: never landed. The acquisition gate's derived arm: this is the same
+    #: state the harvester's "not in corpus" prose describes, read off the
+    #: world instead of out of a rewritable text field.
+    unheld_sources: list[EvidenceSource] = field(default_factory=list)
+    #: ``DREAM:acquire`` stubs this hub still awaits, read off its outbound
+    #: ``awaits-evidence`` edges and filtered to the ones with no live body
+    #: chunk (a stub whose text landed is no longer a missing primary, so
+    #: this list self-clears without a cleanup pass). The acquisition-mode
+    #: mint has always written those edges; nothing read them here until
+    #: 2026-08-20.
+    awaiting_sources: list[EvidenceSource] = field(default_factory=list)
+    #: Hub carries ``STATUS:acquiring`` — the acquisition-mode lifecycle
+    #: state, live until ``chase`` grounds it (→ ``tracing``) or gives up
+    #: (→ ``dead_chain``). Catches the hub whose awaited stub was since
+    #: soft-deleted, where the edge resolves to nothing.
+    acquiring: bool = False
+    #: Hub declares :data:`PRIMARY_UNHELD_META_KEY` in ``refs.meta``.
+    primary_source_unheld: bool = False
 
 
 def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
@@ -267,13 +326,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
     ]
     grounding_chunks += fetch_chunks(store, lineage_pins)
 
-    with store.pool.connection() as conn:
-        body_row = conn.execute(
-            "SELECT text FROM chunks "
-            "WHERE ref_id = %s AND chunk_kind = 'finding_body' "
-            "ORDER BY ord LIMIT 1",
-            (hub_ref_id,),
-        ).fetchone()
+    unheld = refs_without_body_chunks(store, [s.ref_id for s in sources])
 
     return HubBundle(
         hub_ref_id=hub_ref_id,
@@ -283,8 +336,166 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
         grounding_chunks=grounding_chunks,
         conjunct_atoms=atoms,
         contradicts=contradicts,
-        body=str(body_row[0]) if body_row is not None else "",
+        body=hub_body(store, hub_ref_id),
+        unheld_sources=[s for s in sources if s.ref_id in unheld],
+        awaiting_sources=_awaiting_sources(store, hub_ref_id),
+        acquiring=store.has_tag(hub_ref_id, _STATUS_NAMESPACE, _STATUS_ACQUIRING),
+        primary_source_unheld=bool((hub_ref.meta or {}).get(PRIMARY_UNHELD_META_KEY)),
     )
+
+
+def _awaiting_sources(store: Store, hub_ref_id: int) -> list[EvidenceSource]:
+    """The acquisition-mode stubs a hub is still waiting on — outbound
+    :data:`_AWAITS_EVIDENCE` targets, live, paper/patent, with no body
+    chunk of their own.
+
+    Pure plumbing: ``put(kind='finding', wants=...)`` has written this edge
+    (and a ``DREAM:acquire`` stub per ``wants=`` descriptor) since
+    migration 0105, and ``chase``'s acquiring arm polls it — the mint path
+    simply never looked. A soft-deleted stub is dropped rather than
+    counted: with nothing left to acquire the edge says nothing, and
+    :attr:`HubBundle.acquiring` is the arm that still covers that hub.
+    """
+    links = [
+        link
+        for link in store.links_for(
+            hub_ref_id, direction="out", relation=_AWAITS_EVIDENCE
+        )
+        if link.src_ref_id == hub_ref_id
+    ]
+    if not links:
+        return []
+    stubs = store.fetch_refs_by_ids(
+        {link.dst_ref_id for link in links}, include_deleted=False
+    )
+    unheld = refs_without_body_chunks(store, list(stubs))
+    return [
+        EvidenceSource(
+            ref_id=ref.id,
+            kind=ref.kind,
+            title=ref.title,
+            year=ref.year,
+            doi=(ref.meta or {}).get("doi"),
+            pdf_sha256=ref.pdf_sha256,
+            role=_AWAITS_EVIDENCE,
+            via="outbound",
+        )
+        for ref_id, ref in sorted(stubs.items())
+        if ref_id in unheld and ref.kind in _EVIDENCE_KINDS
+    ]
+
+
+def refs_without_body_chunks(store: Store, ref_ids: list[int]) -> set[int]:
+    """Of ``ref_ids``, the ones with **no live body chunk** (``ord >= 0``
+    and ``retired_at IS NULL``) — i.e. sources we know of but do not hold
+    the text of: ``DREAM:acquire`` stubs, refs whose PDF fetch never
+    landed, papers whose chunks were retired.
+
+    This is the acquisition state read structurally. "Is this claim's
+    primary source in the corpus?" is a fact about the world, and asking
+    the world is the only phrasing a reword cannot launder — the prose
+    marker lives in ``finding_body``, which the retitle door legitimately
+    replaces (see :data:`ACQUISITION_MARKER`).
+
+    ``ord < 0`` card variants are deliberately excluded: a synthesized
+    summary card is not the paper's text, and a stub that gained one is
+    still unheld."""
+    if not ref_ids:
+        return set()
+    ids = list(dict.fromkeys(int(r) for r in ref_ids))
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ref_id FROM chunks "
+            "WHERE ref_id = ANY(%s) AND ord >= 0 AND retired_at IS NULL",
+            (ids,),
+        ).fetchall()
+    return set(ids) - {int(r[0]) for r in rows}
+
+
+def hub_body(store: Store, hub_ref_id: int) -> str:
+    """One hub's ``finding_body`` chunk text ('' when absent) —
+    :attr:`HubBundle.body` on its own, for a caller that needs to read it
+    at a moment other than bundle-load time.
+
+    That caller is :func:`precis.nanopub.mint.approve`, which snapshots
+    the body BEFORE a review-time reword: the reword replaces
+    ``finding_body`` with the new sentence, so the acquisition-marker gate
+    would otherwise lose the harvester's "not in corpus" note on the very
+    call that approves the claim."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks "
+            "WHERE ref_id = %s AND chunk_kind = 'finding_body' "
+            "ORDER BY ord LIMIT 1",
+            (hub_ref_id,),
+        ).fetchone()
+    return str(row[0]) if row is not None else ""
+
+
+def prose_marked_hubs(store: Store) -> list[tuple[int, str, str]]:
+    """Every live ``finding`` whose ``finding_body`` still carries the
+    legacy :data:`ACQUISITION_MARKER` prose, as ``(ref_id, title,
+    matched marker)`` — the backfill's dry run, and the standing answer
+    to "can the prose arm go yet?" (empty = yes).
+
+    **Deliberately not scoped to canonical claim hubs.** This asked
+    :func:`~precis.taproot.canon.claim_hub_predicate_sql` until
+    2026-08-21, which made the answer wrong in the dangerous direction:
+    ``mint``/``approve`` apply no such predicate, so the gate runs on any
+    ``finding`` handed to them, and all six of prod's prose-marked rows
+    carry ``TAPROOT:claim`` *without* ``STATUS:canonical`` — chase-tree
+    findings, invisible to the strict query. Unstamped, they would have
+    reported "retirable" while the prose was still the only record of
+    their acquisition state. The two errors are not symmetric: a false
+    positive delays retiring a paragraph, a false negative silently
+    deletes a live provenance gate, so this matches the gate's reach
+    rather than the corpus's tidier definition of a hub.
+
+    The one regex serves both dialects: PostgreSQL's ARE understands
+    ``(?:…)`` non-capturing groups, so :data:`ACQUISITION_MARKER`'s
+    pattern goes straight into ``~*`` and there is no second copy to
+    drift. Refs already carrying :data:`PRIMARY_UNHELD_META_KEY` are
+    excluded — that is what makes the backfill idempotent and this list
+    a shrinking work queue rather than a census."""
+    params: dict[str, object] = {
+        "marker": ACQUISITION_MARKER.pattern,
+        "flag": PRIMARY_UNHELD_META_KEY,
+    }
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   substring(c.text from %(marker)s)
+              FROM refs r
+              JOIN chunks c ON c.ref_id = r.ref_id
+             WHERE r.kind = 'finding'
+               AND r.deleted_at IS NULL
+               AND c.chunk_kind = 'finding_body'
+               AND c.ord >= 0
+               AND c.retired_at IS NULL
+               AND c.text ~* %(marker)s
+               AND (r.meta ->> %(flag)s)::boolean IS NOT TRUE
+             ORDER BY r.ref_id
+            """,
+            params,
+        ).fetchall()
+    return [(int(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
+
+
+def declare_primary_source_unheld(store: Store, ref_ids: list[int]) -> int:
+    """Stamp :data:`PRIMARY_UNHELD_META_KEY` onto each ref; returns how
+    many were written.
+
+    The prose is deliberately left in place: ``chunks`` is append-only for
+    ``ord >= 0``, so rewriting a body means DELETE + INSERT through a
+    registered synthesis pass and would re-run the embedding/summary
+    cascade to remove a sentence that harms nothing. Moving the *state*
+    is the point, not tidying the text."""
+    written = 0
+    for ref_id in ref_ids:
+        store.update_ref(ref_id, meta_patch={PRIMARY_UNHELD_META_KEY: True})
+        written += 1
+    return written
 
 
 def _resolve_grounding(

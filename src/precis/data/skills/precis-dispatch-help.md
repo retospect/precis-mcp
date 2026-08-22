@@ -2,6 +2,11 @@
 id: precis-dispatch-help
 title: precis — the dispatch worker (todo intent → kind='job' execution)
 summary: bridging intent to execution — meta.executor markers, dispatch worker, auto-injected resolution
+answers:
+  - how do I get a todo turned into a running job automatically?
+  - when should I set meta.executor on a todo?
+  - how does a parent todo know its child job succeeded?
+  - what's the difference between the dispatch worker and putting a job directly?
 applies-to: put (kind='todo' with meta.executor); the precis worker --only dispatch pass
 status: active
 ---

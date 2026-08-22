@@ -56,7 +56,7 @@ def test_construction_fails_on_missing_root(store: Store, tmp_path: Path) -> Non
 
 def test_construction_fails_on_file_root(store: Store, tmp_path: Path) -> None:
     f = tmp_path / "f.tex"
-    f.write_text(r"\section{intro}")
+    f.write_text(r"\section{intro}", encoding="utf-8")
     with pytest.raises(ValueError, match="not a directory"):
         TexHandler(hub=Hub(store=store), root=f)
 
@@ -169,7 +169,7 @@ def test_edit_find_replace(handler: TexHandler, tex_root: Path) -> None:
     assert out.body.startswith("edited block ")
     assert "'paper'" in out.body
     assert " (L" in out.body
-    content = (tex_root / "paper.tex").read_text()
+    content = (tex_root / "paper.tex").read_text(encoding="utf-8")
     assert "New Title" in content
     assert "Old Title" not in content
 
@@ -183,7 +183,7 @@ def test_edit_append(handler: TexHandler, tex_root: Path) -> None:
     )
     assert out.body.startswith("appended block ")
     assert "'doc'" in out.body
-    assert r"\section{Two}" in (tex_root / "doc.tex").read_text()
+    assert r"\section{Two}" in (tex_root / "doc.tex").read_text(encoding="utf-8")
 
 
 def test_search_routes_via_tex_kind(handler: TexHandler, tex_root: Path) -> None:
@@ -462,7 +462,9 @@ def test_input_outside_root_silently_dropped(
     # Put a fake target outside the root the handler walks.
     outside = tmp_path / "outside-root"
     outside.mkdir()
-    (outside / "secret.tex").write_text(r"\section{SECRET DATA}" + "\n")
+    (outside / "secret.tex").write_text(
+        r"\section{SECRET DATA}" + "\n", encoding="utf-8"
+    )
 
     _write(tex_root, "main.tex", r"\input{../outside-root/secret}" + "\n")
     out = handler.get(id="main", view="toc")
@@ -480,7 +482,7 @@ def test_existing_blocks_stay_in_root_scope(
     a follow-up ``put`` to a normal slug still works inside root."""
     outside = tmp_path / "ext"
     outside.mkdir()
-    (outside / "x.tex").write_text("X")
+    (outside / "x.tex").write_text("X", encoding="utf-8")
 
     _write(tex_root, "a.tex", r"\input{../ext/x}" + "\n")
     handler.get(id="a", view="toc")  # should not crash

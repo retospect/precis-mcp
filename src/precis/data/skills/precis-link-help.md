@@ -2,6 +2,11 @@
 id: precis-link-help
 title: precis — the link verb (typed edges between refs)
 summary: the link verb — typed directional edges between refs, target addressing, idempotency
+answers:
+  - how do I record that one ref cites, supports, or blocks another?
+  - how do I point target= at a specific block of a paper instead of the whole ref?
+  - how do I remove a link I added earlier?
+  - how do I link two refs at creation time instead of with a separate call?
 applies-to: link (every kind that supports it)
 status: active
 ---

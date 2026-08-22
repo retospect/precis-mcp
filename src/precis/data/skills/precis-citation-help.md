@@ -2,6 +2,11 @@
 id: precis-citation-help
 title: precis — cite a paper inline with its chunk handle
 summary: the inline [pc<id>] cite — write the supporting paper-chunk handle in prose; kind='citation' is an optional verification record, not how you cite
+answers:
+  - how do I cite a claim in my prose — do I write a [pc<id>] or create a kind='citation' record?
+  - when should I bother creating a verification record for a citation?
+  - how do I read back a stored citation by id?
+  - what happens to a paper's own inline [N] reference markers?
 applies-to: drafting prose; put (kind='citation'), get (kind='citation')
 status: active
 ---

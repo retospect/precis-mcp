@@ -21,14 +21,14 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "seed.txt").write_text("seed\n")
+    (path / "seed.txt").write_text("seed\n", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-qm", "seed"], cwd=path, check=True)
 
 
 def test_commit_if_dirty_commits_and_reports(tmp_path: Path) -> None:
     _init_repo(tmp_path)
-    (tmp_path / "new.py").write_text("x = 1\n")
+    (tmp_path / "new.py").write_text("x = 1\n", encoding="utf-8")
 
     assert _commit_if_dirty(tmp_path, "style: ruff autofix (fixer)") is True
 

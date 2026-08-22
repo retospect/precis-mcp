@@ -1,6 +1,11 @@
 ---
 id: precis-adversarial-reviewer
 title: precis — adversarial paper reviewer persona
+summary: adversarial reviewer persona — audit a paper for unsupported claims, missing controls, overgeneralisation, and statistical sloppiness
+answers:
+  - which persona should I adopt to give a paper a ruthlessly skeptical review?
+  - what should an adversarial reviewer look for in a paper's methods and results?
+  - what categories does the adversarial-reviewer pass file findings under?
 flavor: persona
 status: active
 applies-to: paper review via scripts/review-paper/run.sh

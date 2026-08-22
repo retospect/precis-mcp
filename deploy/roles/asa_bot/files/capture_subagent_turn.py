@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 
 def main() -> int:
     try:
-        with open("/tmp/asa-subagent-fired.log", "a") as fh:
+        with open("/tmp/asa-subagent-fired.log", "a", encoding="utf-8") as fh:
             slug = os.environ.get("ASA_CONV_SLUG", "UNSET")
             fh.write(f"{datetime.now(tz=UTC).isoformat()} fired conv_slug={slug}\n")
     except Exception:
@@ -36,7 +36,7 @@ def main() -> int:
 
     raw_stdin = sys.stdin.read()
     try:
-        with open("/tmp/asa-subagent-payload.json", "w") as fh:
+        with open("/tmp/asa-subagent-payload.json", "w", encoding="utf-8") as fh:
             fh.write(raw_stdin)
     except Exception:
         pass
@@ -121,7 +121,7 @@ def _write_fallback(body: dict) -> None:
     try:
         record = dict(body)
         record["fallback_ts"] = datetime.now(tz=UTC).isoformat()
-        with open(fallback_path, "a") as fh:
+        with open(fallback_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception:
         pass

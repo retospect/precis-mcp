@@ -57,8 +57,10 @@
              • Browse ▾ — the corpus look-up long tail (Drive's five
                standalone kind-specific readers), behind a dropdown.
              • Attention (right, badged) — Needs you, Gripes, Alerts.
+             • Manual — the user-facing how-to, top-level and unbadged.
              • Ops ▾ — System + the admin/dev surfaces, right dropdown.
-             • 🔍 loupe — global search, submits to Drive. #}
+             • 🔍 loupe — global search, submits to Drive.
+             • Account — your own login (abbrev chip), far right. #}
         <nav class="flex flex-wrap items-center gap-0.5 py-1.5 text-xs">
           <span class="font-semibold tracking-tight text-emerald-400 mr-2">precis</span>
           {% set _tab_on = 'bg-slate-700 text-white' %}
@@ -135,6 +137,14 @@
               {% endif %}
             </a>
             <span class="mx-1 h-4 w-px bg-slate-700"></span>
+            {# Manual — the user-facing how-to (routes/manual.py). Top-level
+               and unbadged: it is the thing you go looking for when you do
+               NOT know which tab you need, so it must not be inside a
+               dropdown. #}
+            <a href="/manual"
+               class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'manual' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
+              Manual
+            </a>
             {# Ops ▾ — System (merged Status+Factory+Budget, WS3) + the
                admin/dev surfaces. #}
             <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
@@ -161,6 +171,15 @@
               <input name="q" placeholder="🔍 search everything…"
                      class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
             </form>
+            {# Account — your own login: password, profile, podcast link.
+               Signed in, this is the abbrev chip (the same short handle
+               that will tag your edits); with PRECIS_WEB_AUTH off there
+               is no identity to abbreviate, so it degrades to a word.
+               Roster management stays in `precis users` on the host. #}
+            <a href="/account" title="{{ nav_user.login if nav_user else 'Account' }}"
+               class="ml-1 rounded transition {% if nav_user %}inline-flex items-center justify-center h-6 w-6 text-[10px] font-semibold {% if active_tab == 'account' %}bg-emerald-500 text-slate-900{% else %}bg-slate-700 text-slate-200 hover:bg-slate-600 hover:text-white{% endif %}{% else %}px-2 py-1 text-xs font-medium {% if active_tab == 'account' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}{% endif %}">
+              {{ nav_user.abbrev | upper if nav_user else 'Account' }}
+            </a>
           </div>
         </nav>
       </div>

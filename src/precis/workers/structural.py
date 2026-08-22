@@ -48,17 +48,14 @@ MIN_INTERVAL_HOURS = 5
 
 
 def _strategic_layer_snapshot(store: Store) -> str:
-    """Render strategic roots + their tactical children with leaf counts."""
+    """Render strategic roots + their tactical children."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
             SELECT s.ref_id AS strategic_id,
                    s.title AS strategic_title,
                    t.ref_id AS tactical_id,
-                   t.title AS tactical_title,
-                   (SELECT count(*) FROM refs c
-                     WHERE c.parent_id = t.ref_id
-                       AND c.deleted_at IS NULL) AS direct_children
+                   t.title AS tactical_title
               FROM refs s
               LEFT JOIN refs t ON t.parent_id = s.ref_id
                               AND t.kind = 'todo'
@@ -73,7 +70,7 @@ def _strategic_layer_snapshot(store: Store) -> str:
         return "(no strategic todos yet)"
     lines: list[str] = []
     last_strategic_id: int | None = None
-    for s_id, s_title, t_id, t_title, t_children in rows:
+    for s_id, s_title, t_id, t_title in rows:
         s_id = int(s_id)
         if s_id != last_strategic_id:
             lines.append("")
@@ -82,10 +79,7 @@ def _strategic_layer_snapshot(store: Store) -> str:
             last_strategic_id = s_id
         if t_id is not None:
             t_handle = handle_registry.format_handle("todo", int(t_id))
-            lines.append(
-                f"  └─ [{t_handle}] {(t_title or '').splitlines()[0]} "
-                f"({int(t_children or 0)} direct children)"
-            )
+            lines.append(f"  └─ [{t_handle}] {(t_title or '').splitlines()[0]}")
     return "\n".join(lines).lstrip("\n")
 
 

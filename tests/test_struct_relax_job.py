@@ -107,7 +107,7 @@ def _stub_runner(relaxed_poscar: str, *, ok: bool = True, e_tot: float = -3.21):
             "relaxed_poscar": relaxed_poscar,
             "curve": [0.5, 0.1, 0.04],
         }
-        Path(out_dir, "result.json").write_text(json.dumps(result))
+        Path(out_dir, "result.json").write_text(json.dumps(result), encoding="utf-8")
         return 0, "SCF converged\n"
 
     return runner

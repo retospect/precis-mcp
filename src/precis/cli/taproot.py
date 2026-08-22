@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 
 def add_parser(subparsers: Any) -> None:
     """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
-    ``merge`` / ``backfill`` / ``backfill-grounding`` / ``direct-mint`` /
-    ``lint``)."""
+    ``merge`` / ``backfill`` / ``backfill-grounding`` / ``repair-evidence`` /
+    ``direct-mint`` / ``lint``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -181,6 +181,67 @@ def add_parser(subparsers: Any) -> None:
         help="Output format (default: text).",
     )
     bg.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    re_ = tsub.add_parser(
+        "repair-evidence",
+        help="Re-ground evidence edges that assert support while anchoring "
+        "no passage (meta.source_handle = jsonb null, src_chunk_id NULL) -- "
+        "docs/backlog/evidence-edges-assert-support-with-no-passage.md. "
+        "DRY-RUN BY DEFAULT: writes a JSONL proposal and makes zero DB "
+        "writes unless --apply is given. A source with no supporting "
+        "passage is recorded as verify-rejected; the claim is NEVER edited.",
+    )
+    re_mode = re_.add_mutually_exclusive_group()
+    re_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default: propose repairs, write nothing.",
+    )
+    re_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the grounding in place (UPDATE links SET src_chunk_id + "
+        "meta.source_handle on the ORIGINAL row -- never a second edge). "
+        "Default (omitted) is a read-only dry-run.",
+    )
+    re_.add_argument(
+        "--draft",
+        default=None,
+        help="Restrict to hubs this draft cites (dr<id> handle, draft slug, "
+        "or bare ref_id) -- the broken batch is concentrated in one draft's "
+        "cohort. Default: every repairable edge in the corpus.",
+    )
+    re_.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Repair at most this many edges (link_id order, so a limited "
+        "run is a stable prefix). Default: the whole cohort.",
+    )
+    re_.add_argument(
+        "--tier",
+        choices=("small", "medium", "big", "frontier"),
+        default="medium",
+        help="LLM tier for the support re-verification (default: medium, "
+        "re-grounding's own tier). These verdicts were written by something "
+        "that read no passage -- 'big' is a defensible re-audit.",
+    )
+    re_.add_argument(
+        "--top-k",
+        type=int,
+        default=6,
+        help="Candidate passages ranked per edge (default: 6).",
+    )
+    re_.add_argument(
+        "--out",
+        default=None,
+        help="Write the JSONL rows (link_id, hub, source_ref, chunk_id, "
+        "quote, reason) here. Default: stdout (the run summary goes to "
+        "stderr either way, so stdout stays pipeable).",
+    )
+    re_.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -912,6 +973,148 @@ def _run_backfill_grounding(args: argparse.Namespace) -> None:
     _print_backfill_grounding(result, args.format)
 
 
+def _resolve_draft_ref_id(store: Store, token: str) -> int:
+    """``--draft`` -> a live ``draft`` ref_id. Accepts a ``dr<id>``
+    universal handle, a draft slug (cite_key/pub_id), or a bare ref_id --
+    the same two-step every other CLI resolver uses
+    (:func:`~precis.taproot.authoring.resolve_hub_ref_id`), gated on the
+    resolved ref actually being a draft so a typo'd handle fails here
+    rather than silently selecting an empty cohort.
+    """
+    from precis.errors import BadInput
+    from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
+
+    ident = token.strip()
+    target = resolve_handle_target(store, ident)
+    ref_id: int | None = target.dst_ref_id if target is not None else None
+    if ref_id is None:
+        ref = resolve_handle_ref(store, ident, include_deleted=False)
+        ref_id = int(ref.id) if ref is not None else None
+    kind: str | None = None
+    if ref_id is not None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT kind FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+        kind = str(row[0]) if row is not None else None
+    if ref_id is None or kind != "draft":
+        raise BadInput(
+            f"cannot resolve draft: {token!r}",
+            next=(
+                "pass a live draft's 'dr<id>' handle, its slug, or its bare "
+                "ref_id -- --draft scopes the cohort to hubs that draft cites"
+            ),
+        )
+    return ref_id
+
+
+def _write_repair_rows(rows: list[dict[str, Any]], out_path: str | None) -> None:
+    """The run artifact: one JSON object per line, to ``--out`` or stdout.
+    Written in BOTH modes -- a dry-run's rows are the proposal to review,
+    an ``--apply`` run's rows are the record of what changed."""
+    payload = "\n".join(json.dumps(r) for r in rows)
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(f"{payload}\n" if payload else "")
+        return
+    if payload:
+        print(payload)
+
+
+def _run_repair_evidence(args: argparse.Namespace) -> None:
+    """``precis taproot repair-evidence`` -- re-ground the passage-less
+    evidence edges (docs/backlog/evidence-edges-assert-support-with-no-
+    passage.md).
+
+    Dry-run is the default and the ONLY mode that needs no flag: without
+    ``--apply`` this makes zero DB writes (the LLM verify calls still run,
+    budget-metered). A per-edge failure -- most importantly
+    :class:`~precis.taproot.reground.RegroundingUnavailable`, "the model
+    never ran" -- is caught, written to the artifact as an ``error`` row
+    (never as a grounding reason: conflating a dead dispatch with "no
+    passage supports this" is exactly the silent failure the strict
+    posture exists to prevent), and exits nonzero at the end.
+    """
+    from precis.budget import meter
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.repair_evidence import (
+        repair_edge,
+        select_broken_evidence_edges,
+    )
+    from precis.utils.llm.router import Tier
+
+    apply = bool(args.apply)
+    tier = Tier(args.tier)
+    rows: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    n_errors = 0
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    # The verify dispatch resolves its endpoint through the budget meter
+    # and this run's spend is gated by the breaker -- same bind as
+    # `taproot-migrate reground`. Telemetry only; the claim-data writes
+    # here are the two link columns, and only under --apply.
+    meter.bind_store(store)
+    try:
+        draft_ref_id = _resolve_draft_ref_id(store, args.draft) if args.draft else None
+        edges = select_broken_evidence_edges(
+            store, draft_ref_id=draft_ref_id, limit=args.limit
+        )
+        for edge in edges:
+            try:
+                result = repair_edge(
+                    store,
+                    edge.hub_ref_id,
+                    edge.source_ref_id,
+                    edge.link_id,
+                    source_kind=edge.source_kind,
+                    apply=apply,
+                    tier=tier,
+                    top_k=args.top_k,
+                )
+            except Exception as exc:
+                n_errors += 1
+                print(
+                    f"taproot repair-evidence: link {edge.link_id} "
+                    f"(hub fi{edge.hub_ref_id}) failed: {exc}",
+                    file=sys.stderr,
+                )
+                rows.append(
+                    {
+                        "link_id": edge.link_id,
+                        "hub": edge.hub_ref_id,
+                        "source_ref": edge.source_ref_id,
+                        "chunk_id": None,
+                        "source_handle": None,
+                        "quote": None,
+                        "reason": None,
+                        "applied": False,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            counts[result.status] = counts.get(result.status, 0) + 1
+            rows.append(result.to_row())
+    except BadInput as exc:
+        print(f"taproot repair-evidence: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    _write_repair_rows(rows, args.out)
+    suffix = "" if apply else "  [DRY-RUN -- nothing written]"
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+    print(
+        f"taproot repair-evidence: {len(rows)} edge(s) processed -- "
+        f"{breakdown}, errors={n_errors}{suffix}",
+        file=sys.stderr,
+    )
+    if n_errors > 0:
+        sys.exit(1)
+
+
 def _run_direct_mint(args: argparse.Namespace) -> None:
     from precis.budget import meter
     from precis.config import load_config
@@ -1340,6 +1543,8 @@ def run(args: argparse.Namespace) -> None:
         _run_backfill(args)
     elif args.taproot_cmd == "backfill-grounding":
         _run_backfill_grounding(args)
+    elif args.taproot_cmd == "repair-evidence":
+        _run_repair_evidence(args)
     elif args.taproot_cmd == "direct-mint":
         _run_direct_mint(args)
     elif args.taproot_cmd == "lint":

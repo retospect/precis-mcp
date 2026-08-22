@@ -824,7 +824,7 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
     )
 
     result = latex.export_draft(store, ref, target_dir=tmp_path / "out")
-    main = result.main_tex.read_text()
+    main = result.main_tex.read_text(encoding="utf-8")
 
     assert (tmp_path / "out" / "preamble.tex").exists()
     assert r"\documentclass" in main and r"\begin{document}" in main
@@ -859,7 +859,7 @@ def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:
 
     out = tmp_path / "out"
     result = latex.export_draft(store, ref, target_dir=out)
-    main = result.main_tex.read_text()
+    main = result.main_tex.read_text(encoding="utf-8")
     assert r"\includegraphics" in main and "pics/" in main
     assert r"\caption{Fig 1. A widget.}" in main
     pics = list((out / "pics").glob("*.png"))
@@ -894,7 +894,7 @@ def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatc
     result = latex.export_draft(store, ref, target_dir=out, include_sources=True)
 
     assert (out / "sources" / "smith2020.pdf").read_bytes() == b"%PDF-source"
-    main = result.main_tex.read_text()
+    main = result.main_tex.read_text(encoding="utf-8")
     assert r"\includepdf[pages=-]{sources/smith2020.pdf}" in main
     assert result.source_bundle is bundle
 
@@ -930,7 +930,7 @@ def test_export_draft_records_retraction_override_in_appendix(
         include_sources=True,
         retraction_override=override,
     )
-    main = result.main_tex.read_text()
+    main = result.main_tex.read_text(encoding="utf-8")
     assert "Retraction override" in main
     assert "smith2024" in main
 
@@ -955,7 +955,7 @@ def _stub_latexmk(tmp_path, *, succeed=True):
     body += (
         "touch main.pdf\nexit 0\n" if succeed else "echo '! Undefined.' >&2\nexit 1\n"
     )
-    script.write_text(body)
+    script.write_text(body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return script
 
@@ -968,7 +968,7 @@ def test_compile_pdf_success(tmp_path, monkeypatch) -> None:
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "main.tex").write_text(
-        "\\documentclass{article}\\begin{document}x\\end{document}"
+        "\\documentclass{article}\\begin{document}x\\end{document}", encoding="utf-8"
     )
     res = cmpl.compile_pdf(proj)
     assert res.ok
@@ -985,7 +985,7 @@ def test_compile_pdf_failure_returns_log(tmp_path, monkeypatch) -> None:
     )
     proj = tmp_path / "proj"
     proj.mkdir()
-    (proj / "main.tex").write_text("broken")
+    (proj / "main.tex").write_text("broken", encoding="utf-8")
     res = cmpl.compile_pdf(proj)
     assert not res.ok and res.pdf is None and not res.skipped
 
@@ -1008,7 +1008,7 @@ def test_export_writes_latexmkrc(hub, tmp_path) -> None:
     ref = store.get_ref(kind="draft", id="nt")
     result = latex.export_draft(store, ref, target_dir=tmp_path / "o")
     assert result.latexmkrc.exists()
-    assert "makeglossaries" in result.latexmkrc.read_text()
+    assert "makeglossaries" in result.latexmkrc.read_text(encoding="utf-8")
 
 
 def test_export_renders_itemize_and_enumerate(hub, tmp_path) -> None:

@@ -291,7 +291,7 @@ class TestRunInProcessGroup:
         returncode = _run_in_process_group(cmd, env=os.environ.copy())
         assert returncode == 0
 
-        grandchild_pid = int(pidfile.read_text().strip())
+        grandchild_pid = int(pidfile.read_text(encoding="utf-8").strip())
 
         deadline = time.monotonic() + 5.0
         dead = False
@@ -564,7 +564,7 @@ class TestWriteError:
 
         assert err_path.exists()
         assert err_path.name == "bad.error.txt"
-        text = err_path.read_text()
+        text = err_path.read_text(encoding="utf-8")
         assert "bad.pdf" in text
         assert "ingest blew up" in text
         assert "Traceback" in text
@@ -629,7 +629,7 @@ class TestProcessPdf:
         store.set_pdf_storage_path.assert_called_once_with("a" * 64, str(dest))
 
         # ingest.log written with correct columns.
-        log_lines = (corpus_dir / "ingest.log").read_text().splitlines()
+        log_lines = (corpus_dir / "ingest.log").read_text(encoding="utf-8").splitlines()
         assert len(log_lines) == 1
         cols = log_lines[0].split("\t")
         assert cols[1] == "owner"
@@ -680,7 +680,7 @@ class TestProcessPdf:
         # The pre-existing corpus copy is untouched.
         assert existing.read_bytes() == b"%PDF original"
         # Log line records ``existed`` not ``inserted``.
-        log_text = (corpus_dir / "ingest.log").read_text()
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
         assert "\texisted\t" in log_text
 
     def test_existed_but_missing_recovers_to_corpus(self, tmp_path: Path):
@@ -725,7 +725,7 @@ class TestProcessPdf:
         assert not pdf.exists()  # moved out of inbox
         assert dest.parent != duplicates_dir
         # Log line records ``recovered``.
-        log_text = (corpus_dir / "ingest.log").read_text()
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
         assert "\trecovered\t" in log_text
         # Recovery is a corpus placement → storage_path is rewritten to it.
         store.set_pdf_storage_path.assert_called_once_with("c" * 64, str(dest))
@@ -764,7 +764,7 @@ class TestProcessPdf:
         # Sibling .error.txt with traceback.
         err_files = list(bucket.glob("*.error.txt"))
         assert len(err_files) == 1
-        assert "marker exploded" in err_files[0].read_text()
+        assert "marker exploded" in err_files[0].read_text(encoding="utf-8")
         # Failure does NOT write to ingest.log.
         assert not (corpus_dir / "ingest.log").exists()
 
@@ -970,7 +970,109 @@ class TestProcessPdf:
         assert len(ts_buckets) == 1
         err_files = list(ts_buckets[0].glob("*.error.txt"))
         assert len(err_files) == 1
-        assert "no <body>" in err_files[0].read_text()
+        assert "no <body>" in err_files[0].read_text(encoding="utf-8")
+
+    def test_fallback_empty_body_goes_to_errors_sidecar_preserved(self, tmp_path: Path):
+        """gr236139: a fresh insert whose extraction fell back to fitz and
+        produced zero body chunks (image-only/scanned PDF) must NOT be
+        reported as a success — route to errors/ and leave the one-shot
+        OA-fetch sidecar unconsumed rather than burning it on a paper with
+        no usable body text."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "scanned.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nscanned image-only")
+        write_sidecar(
+            pdf,
+            ref_id=123,
+            identifiers={"doi": "10.1/z"},
+            source="fetcher:unpaywall",
+        )
+        assert sidecar_path(pdf).exists()
+
+        fake_result = IngestResult(
+            ref_id=123,
+            inserted=True,
+            paper_id="ffeeddcc",
+            pub_id="doi:10.1/z",
+            cite_key="scan24",
+            pdf_sha256="e" * 64,
+            content_hash="f" * 64,
+            chunks_written=1,  # just the card_combined; 0 body chunks
+            identifiers={"doi": "10.1/z", "cite_key": "scan24"},
+            used_marker_fallback=True,
+            fallback_empty_body=True,
+        )
+
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=cast(Store, object()),
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is None
+        assert not pdf.exists()  # moved out of the inbox
+        assert not (corpus_dir / "s" / "scan24.pdf").exists()  # never reaches corpus
+        # Sidecar is NOT cleared — the fold is retryable, not consumed.
+        assert sidecar_path(pdf).exists()
+        # Routed to errors/<ts>/ with a traceback, like any other failure.
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert len(ts_buckets) == 1
+        err_files = list(ts_buckets[0].glob("*.error.txt"))
+        assert len(err_files) == 1
+        assert "0 body chunks" in err_files[0].read_text(encoding="utf-8")
+        # Not logged as a successful ingest.
+        ingest_log = corpus_dir / "ingest.log"
+        assert not ingest_log.exists()
+
+    def test_fallback_with_body_chunks_reports_success(self, tmp_path: Path):
+        """The fitz fallback producing real chunks is correct defense-in-
+        depth (unchanged behavior) — only the zero-body-chunk case routes
+        to errors/."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "fallback_ok.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nfallback but readable")
+
+        fake_result = IngestResult(
+            ref_id=124,
+            inserted=True,
+            paper_id="aa11bb22",
+            pub_id="doi:10.1/w",
+            cite_key="fbok24",
+            pdf_sha256="1" * 64,
+            content_hash="2" * 64,
+            chunks_written=8,
+            identifiers={"doi": "10.1/w", "cite_key": "fbok24"},
+            used_marker_fallback=True,
+            fallback_empty_body=False,
+        )
+
+        store = MagicMock()
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=store,
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest == corpus_dir / "f" / "fbok24.pdf"
+        assert dest.exists()
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
+        assert "\tinserted\t" in log_text
 
 
 # ---------------------------------------------------------------------------

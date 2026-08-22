@@ -2,6 +2,12 @@
 id: precis-taproot-mint-help
 title: precis — author, mint, sharpen, and merge Taproot claim hubs
 summary: mint a claim hub from a sourced claim, pass the admissibility test before tagging, search before minting to avoid duplicates, then attach evidence, reword, sharpen, or merge an existing hub
+answers:
+  - how do I turn a sourced claim into a citable hub?
+  - why isn't my sentence admissible as a claim?
+  - how do I check for a near-duplicate hub before minting a new one?
+  - how do I attach more evidence to an existing claim hub?
+  - how do I merge two claim hubs that say the same thing?
 applies-to: put/link/edit(kind='finding') hub-authoring doors; precis taproot mint / refine (CLI equivalents)
 status: active
 ---

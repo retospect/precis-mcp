@@ -20,7 +20,7 @@ from precis.workers.review import _mcp_config_path
 
 def test_host_path_when_set_and_exists(monkeypatch, tmp_path) -> None:
     cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}")
+    cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
     assert _mcp_config_path() == cfg

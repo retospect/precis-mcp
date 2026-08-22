@@ -2,6 +2,11 @@
 id: precis-research-help
 title: precis — corpus-grounded research with primary-source discipline
 summary: corpus searches, primary-source rule, contradiction flagging, quantification targets
+answers:
+  - what's the quality bar I should apply on every research pass?
+  - how do I cast a wide retrieval net before I start reading?
+  - what do I do when the corpus is thin on a topic?
+  - when should I split a research task into sibling subtasks?
 applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
 status: active
 ---

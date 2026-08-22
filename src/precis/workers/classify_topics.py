@@ -88,7 +88,8 @@ _SYS = (
 
 def _load_topics() -> list[dict[str, Any]]:
     return [
-        yaml.safe_load(path.read_text()) for path in sorted(_TOPICS_DIR.glob("*.yaml"))
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in sorted(_TOPICS_DIR.glob("*.yaml"))
     ]
 
 

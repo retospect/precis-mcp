@@ -2,6 +2,10 @@
 id: precis-folder-help
 title: precis — the folder kind (placement for authored artifacts)
 summary: kind='folder' — single-parent containers for what you MAKE (draft, structure, cad, todo roots); place via link(rel='parent'); search(folder=...) scopes to a subtree; papers/memories stay out
+answers:
+  - how do I organize drafts, structures, and CADs into folders?
+  - how do I scope a search to just one folder's subtree?
+  - what's the reserved 'parent' relation for placing something into a folder?
 applies-to: kind='folder'; link(rel='parent') on draft/structure/cad/todo; search(folder=...)
 status: active
 ---

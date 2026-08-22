@@ -480,7 +480,7 @@ def _run(
                     f"<!-- source_call: {result.source_call} -->\n"
                     f"<!-- ref_handle: {result.ref_handle or '(none)'} -->\n\n"
                 )
-                (out_dir / fname).write_text(header + result.text)
+                (out_dir / fname).write_text(header + result.text, encoding="utf-8")
                 entry.update(
                     {
                         "source_call": result.source_call,
@@ -561,7 +561,9 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     manifest_doc = {"kind_roster": kind_roster, "rows": manifest}
-    (out_dir / "manifest.json").write_text(json.dumps(manifest_doc, indent=2) + "\n")
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest_doc, indent=2) + "\n", encoding="utf-8"
+    )
 
     n_ok = sum(1 for e in manifest if not e["skipped"])
     n_skipped = len(manifest) - n_ok

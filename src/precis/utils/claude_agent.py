@@ -645,7 +645,7 @@ def _resolve_agent_args(
     # ``system_prompt`` accepts a literal or a path; resolve to a
     # string here so the subprocess sees only one shape.
     if isinstance(system_prompt, Path):
-        system_prompt_text: str | None = system_prompt.read_text()
+        system_prompt_text: str | None = system_prompt.read_text(encoding="utf-8")
     else:
         system_prompt_text = system_prompt
 

@@ -47,9 +47,10 @@ def _write_stream_stub(path: Path, *, stdout: str, exit_code: int = 0) -> None:
     import shlex
 
     payload = path.parent / (path.name + ".out")
-    payload.write_text(stdout)
+    payload.write_text(stdout, encoding="utf-8")
     path.write_text(
-        f"#!/usr/bin/env bash\ncat {shlex.quote(str(payload))}\nexit {exit_code}\n"
+        f"#!/usr/bin/env bash\ncat {shlex.quote(str(payload))}\nexit {exit_code}\n",
+        encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
@@ -70,7 +71,7 @@ def _write_stub(
         exit {exit_code}
         """
     )
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
 
@@ -277,7 +278,8 @@ def test_timeout_raises(stub_bin: Path) -> None:
             #!/usr/bin/env bash
             sleep 5
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     with pytest.raises(ClaudeAgentError, match="timed out"):
@@ -290,7 +292,7 @@ def test_timeout_raises(stub_bin: Path) -> None:
 def test_system_prompt_path_is_read(stub_bin: Path, tmp_path: Path) -> None:
     """Pass a Path; the wrapper reads it and forwards as text."""
     soul = tmp_path / "soul.md"
-    soul.write_text("you are asa")
+    soul.write_text("you are asa", encoding="utf-8")
 
     # Stub echoes its argv to stdout so we can check the flag landed.
     stub_bin.write_text(
@@ -299,7 +301,8 @@ def test_system_prompt_path_is_read(stub_bin: Path, tmp_path: Path) -> None:
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
 
@@ -310,14 +313,15 @@ def test_system_prompt_path_is_read(stub_bin: Path, tmp_path: Path) -> None:
 
 def test_mcp_config_adds_flag_and_strict(stub_bin: Path, tmp_path: Path) -> None:
     mcp = tmp_path / "mcp.json"
-    mcp.write_text("{}")
+    mcp.write_text("{}", encoding="utf-8")
     stub_bin.write_text(
         textwrap.dedent(
             """\
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
 
@@ -411,7 +415,8 @@ def test_bare_flag_emitted_when_requested(stub_bin: Path) -> None:
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do", bare=True)
@@ -425,7 +430,8 @@ def test_disallowed_tools_joined(stub_bin: Path) -> None:
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do", disallowed_tools=("WebFetch", "WebSearch"))
@@ -447,7 +453,8 @@ def _write_argv_env_stub(path: Path) -> None:
             printf '%s\\n' "$@"
             printf 'DB_ROLE=%s\\n' "${PRECIS_MCP_DB_ROLE:-unset}"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
@@ -613,7 +620,7 @@ def test_container_dsn_password_completed_from_pgpass(
     monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
     monkeypatch.setattr(_secrets, "_ADOPTED_DSN", "postgresql://rw@h:6432/db")
     pgpass = tmp_path / "pgpass"
-    pgpass.write_text("h:6432:db:rw:hostpw\n")
+    pgpass.write_text("h:6432:db:rw:hostpw\n", encoding="utf-8")
     monkeypatch.setenv("PGPASSFILE", str(pgpass))
 
     captured: dict[str, object] = {}
@@ -641,7 +648,8 @@ def test_model_override(stub_bin: Path) -> None:
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do", model="claude-opus-4-7")
@@ -655,7 +663,8 @@ def test_extra_args_passthrough(stub_bin: Path) -> None:
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do", extra_args=("--custom-flag", "v"))
@@ -676,7 +685,8 @@ def test_env_model_default_honoured(
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do")
@@ -693,7 +703,8 @@ def test_env_max_usd_default_honoured(
             #!/usr/bin/env bash
             printf '%s\\n' "$@"
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do")
@@ -1610,7 +1621,8 @@ def test_call_claude_agent_async_timeout_raises(stub_bin: Path) -> None:
             #!/usr/bin/env bash
             sleep 5
             """
-        )
+        ),
+        encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
 

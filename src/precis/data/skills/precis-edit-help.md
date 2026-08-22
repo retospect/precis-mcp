@@ -2,6 +2,12 @@
 id: precis-edit-help
 title: precis — anchored region edits across file kinds
 summary: anchored region edits — find-replace grammar, before/after anchors, per-kind validation
+answers:
+  - how do I replace one string in a file without rewriting the whole block?
+  - how do I rewrite an entire section or function by its handle?
+  - what do I do when find= matches more than one place?
+  - how do I preview an edit without committing it?
+  - how do I edit a Python function by its qualname?
 applies-to: edit (kind='markdown'|'plaintext'|'tex'|'python')
 status: active
 ---

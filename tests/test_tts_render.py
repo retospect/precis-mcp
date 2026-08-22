@@ -39,10 +39,12 @@ def _fake_podman(cmd, **kwargs):
     outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
     indir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro"))
     # the worker staged the voice-score for the container to read
-    payload = json.loads((indir / "segments.json").read_text())
+    payload = json.loads((indir / "segments.json").read_text(encoding="utf-8"))
     assert [s["lang"] for s in payload["segments"]] == ["en-us", "cmn"]
     (outdir / "out.mp3").write_bytes(b"mp3-bytes")
-    (outdir / "result.json").write_text(json.dumps({"segments": 2, "duration_s": 3.2}))
+    (outdir / "result.json").write_text(
+        json.dumps({"segments": 2, "duration_s": 3.2}), encoding="utf-8"
+    )
 
 
 @_needs_posix_mount_paths
@@ -86,7 +88,9 @@ def test_render_via_container_serializes_gap_after_per_segment(tmp_path):
             Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro")
         )
         outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
-        captured_payload.update(json.loads((indir / "segments.json").read_text()))
+        captured_payload.update(
+            json.loads((indir / "segments.json").read_text(encoding="utf-8"))
+        )
         (outdir / "out.mp3").write_bytes(b"mp3-bytes")
 
     render_via_container(
@@ -110,7 +114,9 @@ def test_render_episode_forwards_gap_after_to_container(tmp_path):
             Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro")
         )
         outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
-        captured.update(json.loads((indir / "segments.json").read_text()))
+        captured.update(
+            json.loads((indir / "segments.json").read_text(encoding="utf-8"))
+        )
         (outdir / "out.mp3").write_bytes(b"mp3-bytes")
 
     render_episode(_SEGS_WITH_GAP, tmp_path / "ep.mp3", image="x", run=_run)

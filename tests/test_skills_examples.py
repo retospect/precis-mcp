@@ -277,7 +277,7 @@ def test_skills_directory_exists_and_has_content() -> None:
     # And every skill should have at least *something* fenced.
     has_any_python = False
     for path in paths:
-        if _extract_python_blocks(path.read_text()):
+        if _extract_python_blocks(path.read_text(encoding="utf-8")):
             has_any_python = True
             break
     assert has_any_python, "no python-fenced examples found in any skill"

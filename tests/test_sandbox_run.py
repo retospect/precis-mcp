@@ -564,7 +564,9 @@ def test_epoch_reclaim_re_adopts_live_container_without_relaunch(
         lease_host="spark-docker-epoch",
     )
     # Seed the stub container as still running under this job's name.
-    (sandbox_env / f"{claude_docker.container_name(jid)}.state").write_text("running 0")
+    (sandbox_env / f"{claude_docker.container_name(jid)}.state").write_text(
+        "running 0", encoding="utf-8"
+    )
     monkeypatch.setenv("PRECIS_NODE", "spark")
 
     launch_calls: list[int] = []
@@ -714,7 +716,7 @@ def test_poll_exit_zero_succeeds(store: Store, sandbox_env: Path) -> None:
     jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)
     claude_docker.run_claude_docker_pass(store, limit=4)  # launch
     # Container reports a clean exit.
-    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0")
+    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0", encoding="utf-8")
     claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap
     assert _status(store, jid) == "succeeded"
     # Parent not bubbled.
@@ -748,9 +750,9 @@ def test_custom_image_lands_in_argv_meta_summary_and_harvest_folder(
 
     # Leave a file in out/ so harvest actually mints a folder.
     work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
-    (work / "out" / "main.py").write_text("print('hi')\n")
+    (work / "out" / "main.py").write_text("print('hi')\n", encoding="utf-8")
 
-    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0")
+    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0", encoding="utf-8")
     claude_docker.run_claude_docker_pass(store, limit=4)  # poll → harvest → reap
 
     assert _status(store, jid) == "succeeded"
@@ -765,7 +767,7 @@ def test_poll_exit_one_fails_and_bubbles(store: Store, sandbox_env: Path) -> Non
     parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
     jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)
     claude_docker.run_claude_docker_pass(store, limit=4)  # launch
-    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 1")
+    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 1", encoding="utf-8")
     claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap
     assert _status(store, jid) == "failed"
     assert any(t.startswith("child-failed:") for t in _tags(store, parent.id))
@@ -865,7 +867,7 @@ def test_reap_bin_prefers_podman_when_both_present(
 
 def test_reconcile_reaps_orphan(store: Store, sandbox_env: Path) -> None:
     # A sandbox-* container with no owning job at all.
-    (sandbox_env / "sandbox-999999.state").write_text("running 0")
+    (sandbox_env / "sandbox-999999.state").write_text("running 0", encoding="utf-8")
     reaped = claude_docker.reconcile_orphans(store)
     assert reaped == 1
     assert not (sandbox_env / "sandbox-999999.state").exists()
@@ -873,7 +875,7 @@ def test_reconcile_reaps_orphan(store: Store, sandbox_env: Path) -> None:
 
 def test_reconcile_keeps_live_job(store: Store, sandbox_env: Path) -> None:
     jid = _mk_queued_job(store, params=_valid_params())
-    (sandbox_env / f"sandbox-{jid}.state").write_text("running 0")
+    (sandbox_env / f"sandbox-{jid}.state").write_text("running 0", encoding="utf-8")
     reaped = claude_docker.reconcile_orphans(store)
     assert reaped == 0
     assert (sandbox_env / f"sandbox-{jid}.state").exists()
@@ -931,11 +933,14 @@ def _mk_build_folder(store: Store, *, with_run_json: bool = True) -> int:
     work_dir = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / "sandbox-build-1"
     out_dir = work_dir / "out"
     out_dir.mkdir(parents=True)
-    (out_dir / "main.py").write_text("print('hello from the build')\n")
+    (out_dir / "main.py").write_text(
+        "print('hello from the build')\n", encoding="utf-8"
+    )
     if with_run_json:
         (out_dir / "RUN.json").write_text(
             '{"cmd": "python main.py", "inputs": [], "outputs": [], '
-            '"image": "code-task:abc"}'
+            '"image": "code-task:abc"}',
+            encoding="utf-8",
         )
     result = harvest.harvest_out(
         store,
@@ -966,7 +971,9 @@ def test_launch_run_stages_artifact_no_prompt_no_oauth_env(
     assert not (work / "PROMPT.md").exists()
     # The staged tree is the FAITHFUL tarball copy (original names) at
     # the /work root, not the renamed plaintext projection.
-    assert (work / "main.py").read_text() == "print('hello from the build')\n"
+    assert (work / "main.py").read_text(
+        encoding="utf-8"
+    ) == "print('hello from the build')\n"
     assert (work / "RUN.json").is_file()
 
 
@@ -995,8 +1002,8 @@ def test_poll_run_exit_zero_harvests_result_and_links_run_of(
     claude_docker.run_claude_docker_pass(store, limit=4)  # launch
 
     work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
-    (work / "out" / "RESULT.md").write_text("42\n")
-    (sandbox_run_env / f"sandbox-{jid}.state").write_text("exited 0")
+    (work / "out" / "RESULT.md").write_text("42\n", encoding="utf-8")
+    (sandbox_run_env / f"sandbox-{jid}.state").write_text("exited 0", encoding="utf-8")
     claude_docker.run_claude_docker_pass(store, limit=4)  # poll -> harvest -> reap
 
     assert _status(store, jid) == "succeeded"
@@ -1192,7 +1199,7 @@ def test_poll_exit_zero_read_access_reaps_mcp_child(
         claude_docker.run_claude_docker_pass(store, limit=4)  # launch
         assert _is_alive(calls["proc"].pid)
 
-        (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0")
+        (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0", encoding="utf-8")
         claude_docker.run_claude_docker_pass(store, limit=4)  # poll -> terminate
 
         assert _status(store, jid) == "succeeded"

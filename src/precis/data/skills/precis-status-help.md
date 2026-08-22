@@ -2,6 +2,12 @@
 id: precis-status-help
 title: precis — what version am I, what DB, what build?
 summary: runtime introspection — build version, container, DB connection, migration state, dependencies
+answers:
+  - how do I check what version this build is running?
+  - what git commit is this server actually on?
+  - how do I check what database precis is connected to?
+  - how do I tell if my build is out of date and needs a restart?
+  - is the running server the same code as the checkout in front of me?
 applies-to: precis-status (synthesised skill)
 status: active
 ---

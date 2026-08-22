@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "precis-mcp"
-version = "8.30.2"
+version = "8.31.0"
 description = "MCP server giving LLM agents a seven-verb API over papers, documents, code, personal state, patents, and cached web/Wolfram/YouTube tool calls — backed by PostgreSQL + pgvector"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -55,7 +55,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp[cli]>=1.0,<2",
+    "mcp[cli]>=1.0,<3",
     "psycopg[binary,pool]>=3.2",
     # pgvector-python >=0.5 returns fetched vector columns as a non-iterable
     # ``Vector`` object (was a numpy array). Every raw-vector read now routes
@@ -333,6 +333,11 @@ web = [
     "uvicorn[standard]>=0.29",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
+    # /manual renders its markdown chapters (routes/manual.py). Already in
+    # the resolved tree as a transitive of rich, so this adds no install
+    # weight — declared because a route importing it must not depend on
+    # another package's dependency choices.
+    "markdown-it-py>=3.0",
 ]
 # CAD STEP interchange (ADR 0041 §10). The lightweight printable path
 # (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,
@@ -510,7 +515,14 @@ line-length = 88
 extend-exclude = [".claude"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW1514"]
+# PLW1514 (unspecified-encoding) is still a preview rule in ruff 0.16, so it
+# needs `preview` on to fire at all. `explicit-preview-rules` keeps that from
+# being a blanket opt-in: preview rules arrive only when named by their exact
+# code, so the prefix selectors above (E/F/I/UP/B/SIM/RUF) stay stable-only and
+# a ruff upgrade can't silently redden the gate with unrelated preview rules.
+preview = true
+explicit-preview-rules = true
 ignore = [
     "B008",    # function-call-in-default-argument (typer pattern)
     "E501",    # line-too-long (formatter handles what it can)

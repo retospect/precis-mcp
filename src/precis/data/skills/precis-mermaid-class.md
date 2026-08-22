@@ -2,6 +2,9 @@
 id: precis-mermaid-class
 title: precis — class diagram / UML / object model / type hierarchy / inheritance
 summary: a mermaid class diagram — UML classes, fields, methods, and inheritance
+answers:
+  - how do I draw a UML class diagram or object model?
+  - how do I show inheritance between classes in mermaid?
 applies-to: kind='mermaid'
 status: active
 ---

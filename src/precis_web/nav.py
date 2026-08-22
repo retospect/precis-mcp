@@ -112,23 +112,43 @@ def _gripes_count(store: Any) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def nav_badges(request: Request) -> dict[str, Any]:
-    """Context processor: live counts for the top-bar attention badges.
+def _nav_user(request: Request) -> Any:
+    """The signed-in :class:`precis.users.WebUser`, or ``None``.
 
-    Returns ``{nav_needs_you, nav_gripes, nav_alerts}`` — all default to
-    0 so a template's ``{% if nav_alerts %}`` simply hides the badge
-    when there's nothing waiting (or when the app is running stateless).
+    Parked on the request by :class:`precis_web.auth.BasicAuthMiddleware`.
+    ``None`` when the gate is off — the top bar then shows a plain
+    "Account" link rather than an abbrev chip, because there is no
+    identity to abbreviate.
+    """
+    state = request.scope.get("state") or {}
+    return state.get("web_user")
+
+
+def nav_badges(request: Request) -> dict[str, Any]:
+    """Context processor: live counts for the top-bar attention badges,
+    plus the signed-in user behind the Account chip.
+
+    Returns ``{nav_needs_you, nav_gripes, nav_alerts, nav_user}`` — the
+    counts default to 0 so a template's ``{% if nav_alerts %}`` simply
+    hides the badge when there's nothing waiting (or when the app is
+    running stateless).
     """
     needs_you = 0
     gripes = 0
     alerts = 0
+    user = _nav_user(request)
     try:
         from precis_web.deps import get_store
 
         store = get_store(request)
     except Exception:
         # No runtime / stateless app (e.g. /healthz before boot) — no badges.
-        return {"nav_needs_you": 0, "nav_gripes": 0, "nav_alerts": 0}
+        return {
+            "nav_needs_you": 0,
+            "nav_gripes": 0,
+            "nav_alerts": 0,
+            "nav_user": user,
+        }
 
     try:
         needs_you += _asks_count(store)
@@ -149,4 +169,9 @@ def nav_badges(request: Request) -> dict[str, Any]:
     except Exception:
         log.debug("nav: alerts count failed", exc_info=True)
 
-    return {"nav_needs_you": needs_you, "nav_gripes": gripes, "nav_alerts": alerts}
+    return {
+        "nav_needs_you": needs_you,
+        "nav_gripes": gripes,
+        "nav_alerts": alerts,
+        "nav_user": user,
+    }

@@ -2,6 +2,10 @@
 id: precis-startup-skills-help
 title: precis — pin skills into the cold-start banner
 summary: operator skill pinning — surface chosen skills on cold-start banner via env var
+answers:
+  - how do I pin skills so every connecting agent sees them at cold start?
+  - how do I cap how much context pinned skills consume?
+  - what happens if I pin a slug that doesn't exist?
 applies-to: PRECIS_STARTUP_SKILLS env var
 status: active
 ---

@@ -17,6 +17,11 @@ The MCP today is a per-ref retrieval API: `get` one, `search` top-N. That is
 the right shape for reading. It is the wrong shape for *operating on a
 cohort*, which is what every batch pass does.
 
+> Corroborating measurement (2026-08-21, 62h local transcript mining): 1,063
+> Bash psql calls in dev sessions, dominated by nanopub status polling (that
+> slice → `nanopub-mcp-surface-gaps.md` §0) with corpus-audit GROUP BYs the
+> rest. `mcp-tool-ledger.md` will make future detours continuously visible.
+
 ## Gaps, most valuable first
 
 1. **Similarity scores on search results.** Sharpest gap, because a shipped

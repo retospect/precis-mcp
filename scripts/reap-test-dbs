@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# scripts/reap-test-dbs — SessionStart sweep that removes per-worktree
+# `precis-test-*` compose projects whose worktree no longer exists.
+#
+# The leak this closes: teardown already exists and is correct —
+# scripts/hooks/session-end-reap.sh (the primary) and scripts/reap-worktrees
+# (its SessionStart backstop) both `down -v` the project as they remove a
+# tree. But both are COUPLED TO A REMOVAL PATH they control. Every other way
+# a worktree dies — the ExitWorktree tool, the housekeeper agent, a hand-run
+# `git worktree remove`, an `rm -rf` + prune, or either reaper's own
+# best-effort `docker compose down` failing transiently
+# (it is `|| true`) — takes the tree and strands the Postgres. And because the
+# teardown only ever fires at the instant of removal, a miss is PERMANENT:
+# nothing reconciles afterwards. Stranded test DBs are not free — each is a
+# live postgres on the 8GB colima VM, and that contention is the documented
+# cause of the silent gate OOM-137 reds (see auto-memory `gate-oom-silent-death`,
+# gr176231).
+#
+# Chasing each removal path with its own hook is open-ended. This is
+# state-based instead: it asks "does this project's worktree still exist?" and
+# converges, whatever removed the tree.
+#
+# How orphan-ness is decided: compose already stamps every container with
+#     com.docker.compose.project.config_files
+#       = <worktree>/docker/dev/compose.yaml
+# so the worktree path is a FACT READ OFF THE CONTAINER, not inferred from the
+# project name. That matters — `compose_project_for` (scripts/lib/
+# compose-project.sh) sanitises the basename and is deliberately not
+# injective, so a project name cannot be mapped back to a path at all.
+# Reading the label also makes this robust across clones: a second checkout's
+# projects carry their own root and are judged on their own terms.
+#
+# Safety: a tree that still EXISTS is never touched, so this cannot race a
+# parked session or an in-flight gate — the criterion is absence of the
+# bind-mount source, and a gate cannot run without it. Idle-but-live DBs are
+# deliberately out of scope; stopping those needs a liveness judgment
+# (scripts/inflight), not a file test.
+#
+# Note on volumes: docker/dev/compose.yaml declares no named volumes (pgdata
+# lives on the container overlay), so `down -v` is belt-and-braces — there is
+# no dangling-volume population for this to miss.
+#
+# Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (shared with reap-worktrees).
+# Usage: scripts/reap-test-dbs [--dry-run]
+#
+# Wired in .claude/settings.json (SessionStart), after `reap-worktrees` — so
+# the eager teardown gets first refusal and this only sees what it missed.
+set -uo pipefail
+
+[ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
+
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+command -v docker >/dev/null 2>&1 || exit 0
+# A stopped colima / unreachable daemon must never make a SessionStart hook
+# noisy or slow — `docker ps` blocks on the socket, so bail on any failure.
+docker ps -a --format '{{.Names}}' >/dev/null 2>&1 || exit 0
+
+REAPED=()
+SEEN=""
+
+while IFS='|' read -r proj cfg; do
+    [ -z "$proj" ] && continue
+    case "$proj" in
+        precis-test-*) ;;
+        *) continue ;;
+    esac
+    # One project has many containers (db + each `run --rm` that outlived its
+    # exit); judge each project once.
+    case " $SEEN " in *" $proj "*) continue ;; esac
+    SEEN="$SEEN $proj"
+
+    # config_files is comma-separated when compose was given several -f flags;
+    # the dev loop passes exactly one, and the first is the anchor either way.
+    cfg="${cfg%%,*}"
+    [ -z "$cfg" ] && continue
+
+    # Derive the worktree root by stripping the known suffix. If the label does
+    # not end in it, the project came from some other layout — leave it alone
+    # rather than guess at a path we would then delete on.
+    root="${cfg%/docker/dev/compose.yaml}"
+    [ "$root" = "$cfg" ] && continue
+    # Refuse to act on a degenerate root: `[ -d / ]` is true so it would be
+    # kept, but an empty one would test false and reap. Guard explicitly.
+    [ -z "$root" ] && continue
+
+    [ -d "$root" ] && continue   # tree still there — not our business
+
+    if [ "$DRY_RUN" = 1 ]; then
+        REAPED+=("$proj")
+        continue
+    fi
+    # `down -p <name>` finds the project by label, so no compose file is
+    # needed — which is the point, the file went with the tree. Best-effort:
+    # a concurrent session reaping the same project, or a half-removed one,
+    # must never fail the hook.
+    if env UID="$(id -u)" GID="$(id -g)" \
+        docker compose -p "$proj" down -v >/dev/null 2>&1; then
+        REAPED+=("$proj")
+    fi
+done < <(docker ps -a --format \
+    '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.config_files"}}' \
+    2>/dev/null)
+
+if [ "${#REAPED[@]}" -eq 0 ]; then
+    echo "reap-test-dbs: nothing to reap"
+elif [ "$DRY_RUN" = 1 ]; then
+    echo "reap-test-dbs --dry-run: would reap ${#REAPED[@]}: ${REAPED[*]}"
+else
+    echo "reap-test-dbs: reaped ${#REAPED[@]}: ${REAPED[*]}"
+fi
+exit 0

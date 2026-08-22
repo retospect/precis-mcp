@@ -147,7 +147,7 @@ class Config:
         for c in candidates:
             p = Path(c)
             if p.exists():
-                data = yaml.safe_load(p.read_text()) or {}
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
                 break
 
         # Env-var overrides for fields that change between deploys.
@@ -192,7 +192,7 @@ def load_discord_token(cfg: DiscordConfig) -> str:
         return vault_val.strip()
     p = Path(cfg.token_file)
     if p.exists():
-        return p.read_text().strip()
+        return p.read_text(encoding="utf-8").strip()
     raise RuntimeError(
         f"Discord token not found at ${cfg.token_env}, the precis vault, "
         f"or {cfg.token_file}"

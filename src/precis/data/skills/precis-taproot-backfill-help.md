@@ -2,6 +2,8 @@
 id: precis-taproot-backfill-help
 title: precis-taproot-backfill-help — convert a draft's [pc]/[pa] cites into hub cites
 summary: batch-convert a draft's legacy [pc<id>]/[pa<id>] cites into hub [fi<id>] cites via the taproot_backfill job — scope, chunk-grounding, and the whole-paper [pa] re-ground arm
+answers:
+  - how do I convert a draft's legacy [pc<id>] cites into hub [fi<id>] cites?
 applies-to: put(kind='job', job_type='taproot_backfill') for draft backfill; precis taproot backfill (CLI equivalent)
 status: active
 ---

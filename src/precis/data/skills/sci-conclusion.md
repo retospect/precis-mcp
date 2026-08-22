@@ -2,6 +2,8 @@
 id: sci-conclusion
 title: precis — research-paper conclusion (section style)
 summary: write the conclusion — restate problem + contribution, name the principal limitation, one future direction; no new results/cites
+answers:
+  - how do I write a research-paper conclusion without repeating every result?
 status: active
 style: sci-conclusion
 role: section

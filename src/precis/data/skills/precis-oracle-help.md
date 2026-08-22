@@ -2,6 +2,12 @@
 id: precis-oracle-help
 title: precis — consult an oracle for a perspective shift
 summary: wisdom-tradition consultation — stoic, zen, iching collections; random or numbered entries
+answers:
+  - what wisdom traditions are available to consult?
+  - how do I pull a random Stoic / Zen / I-Ching passage?
+  - how do I consult an oracle through a persona, like a scientist or a leader?
+  - how do I cite an oracle entry with provenance in my writing?
+  - how do I look up a specific oracle entry, like I-Ching hexagram 49?
 applies-to: get/search/tag/link (kind='oracle')
 status: active
 ---

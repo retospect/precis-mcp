@@ -109,6 +109,20 @@ Module map (each module's docstring carries its own detail):
   review rather than applied), JSONL persistence for A/B runs against
   ``tests/fixtures/taproot/migration_pilot_25.jsonl``, seeded random
   controls. Phase-2 apply mode not built; dry-run writes nothing.
+- :mod:`.reground` / :mod:`.repair_evidence` — "no source, no atom".
+  ``reground`` ranks a source's body chunks against a claim (lexical
+  overlap + notation folding), excludes hearsay sections, verifies support
+  by LLM and then **post-validates the quote in code** (verbatim in the
+  claimed chunk, unique across the paper), yielding a grounding record or
+  one of four named reasons (``no-passage``/``hearsay-only``/
+  ``verify-rejected``/``quote-validation-failed``). ``repair_evidence``
+  points that at the July batch of edges that assert ``support: "yes"``
+  with ``meta.source_handle`` jsonb-null and no ``src_chunk_id``
+  (``precis taproot repair-evidence``, dry-run default): re-ground against
+  ONLY the source the edge already names, then repair **in place**
+  (``UPDATE links``) — ``attach_evidence`` would insert a second row and
+  leave the broken one live. An empty verdict is recorded, never patched:
+  no path here writes ``refs.title`` or a ``finding_body`` chunk.
 - :mod:`.directed` — demand-driven claim minting (``precis taproot
   direct-mint``, dry-run default): ``qualify_claim`` (BIG; one-way fit
   claim→evidence + verbatim-quote anti-hallucination) then the same

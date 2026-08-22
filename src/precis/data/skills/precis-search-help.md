@@ -2,6 +2,14 @@
 id: precis-search-help
 title: precis — the search verb (mechanics, pagination, filters)
 summary: hybrid lexical and semantic search — pagination, tag filters, scope, exclude, cross-kind fan-out
+answers:
+  - how do I search for exact text instead of a fuzzy match?
+  - how do I filter search results by tag?
+  - how do I search inside just one ref instead of the whole corpus?
+  - how do I run a broad, high-recall search across many papers?
+  - how do I paginate through search results?
+  - why doesn't my query find a claim I know exists?
+  - do I have to type kΩ / µ / Å, or will ASCII work?
 applies-to: search (every kind that supports it)
 status: active
 ---
@@ -63,6 +71,28 @@ search(
 Scores are never comparable *across* modes (RRF score vs. cosine
 distance vs. lexical rank) — within a result list, more-relevant is
 always first.
+
+## Notation — the corpus stores one spelling per quantity
+
+Claim sentences (`kind='finding'`) are normalized to a **UTF-8 notation
+canon**: `kΩ` not `kOhm`, `µ` not `u`/`mu`, `Å`, `±`, spaced `63 °C` but tight
+`85°`. Full rules: **`precis-notation-canon`**.
+
+This matters to you as a searcher because the lexical leg matches *tokens*, not
+meanings — `kOhm` and `kΩ` are simply different strings. Search compensates: an
+ASCII query is auto-canonicalized and run as an **extra** leg, so `40 kOhm`
+finds a claim written `40 kΩ`. You don't have to type the symbols.
+
+Two limits worth knowing:
+
+- The compensation runs **ASCII → canon**, the direction agents actually type.
+  The reverse (a `kΩ` query against a row not yet normalized) leans on the
+  semantic leg — so prefer ASCII in queries, or `mode='semantic'`.
+- Letter sub/superscripts stay ASCII by canon (`E_g`, `E_F`, `K_d`, `2^N`).
+  Search for `E_F`, not `E_F` with a subscript glyph.
+
+When you need an exact quantity, `mode='lexical'` plus the canonical spelling
+is the precise tool; embeddings blur numerals.
 
 There is no `mode='regex'` here — that only exists on `kind='draft'`
 (`precis-draft-help`, "Search a draft") and errors with `unknown search

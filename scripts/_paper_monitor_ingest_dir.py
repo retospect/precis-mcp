@@ -204,7 +204,9 @@ def _process_one(
         bundle_path = extract(pdf, doc_type=doc_type, verify=verify)
     except Exception as exc:
         _move(pdf, errors)
-        (errors / f"{pdf.stem}.error.log").write_text(traceback.format_exc())
+        (errors / f"{pdf.stem}.error.log").write_text(
+            traceback.format_exc(), encoding="utf-8"
+        )
         return "error", f"extract failed: {exc}"
 
     try:
@@ -213,7 +215,9 @@ def _process_one(
         _move(pdf, errors)
         if bundle_path is not None:
             _move(bundle_path, errors)
-        (errors / f"{pdf.stem}.error.log").write_text(traceback.format_exc())
+        (errors / f"{pdf.stem}.error.log").write_text(
+            traceback.format_exc(), encoding="utf-8"
+        )
         return "error", f"ingest failed: {exc}"
 
     # Apply user-supplied open tags (best-effort; failure shouldn't

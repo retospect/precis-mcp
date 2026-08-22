@@ -2,6 +2,11 @@
 id: precis-agentlog-help
 title: precis — the agentlog kind (run attribution + touch graph)
 summary: kind='agentlog' — one record per agentic run; carries the assembled prompt and `touched` links to every chunk it wrote; walk a suspicious chunk back to the run that produced it
+answers:
+  - how do I find out which agent run wrote or touched a specific chunk?
+  - what does an agentlog record actually carry?
+  - can I create an agentlog myself, or is it machine-only?
+  - how long do agentlog records stick around?
 applies-to: kind='agentlog'; precis.agentlog.open_log / touch_from_env / finalize_log / gc_stale_logs; PRECIS_CURRENT_AGENTLOG; /agentlogs web tab
 status: active
 ---

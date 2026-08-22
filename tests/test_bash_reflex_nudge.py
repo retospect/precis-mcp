@@ -12,7 +12,19 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sys
 from pathlib import Path
+
+import pytest
+
+#: Rule C decides "is this cd redundant?" with ``os.path.isabs`` on the host's
+#: own semantics. The fixtures below are POSIX worktree paths (what the hook
+#: actually sees — it only ever runs on this repo's macOS/Linux dev boxes), and
+#: py3.13's ntpath no longer calls a lone leading slash absolute, so on Windows
+#: the positive cases can't fire. The negative cases stay meaningful there.
+_posix_paths_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX worktree paths (ntpath.isabs('/x') is False)"
+)
 
 _HOOKS_DIR = Path(__file__).resolve().parents[1] / "scripts" / "hooks"
 
@@ -140,12 +152,14 @@ def test_unrelated_command_does_not_fire_rule_b() -> None:
 # ── Rule C: redundant `cd <own-worktree>; …` prefix -> run bare ─────────────
 
 
+@_posix_paths_only
 def test_redundant_cd_into_own_worktree_fires_rule_c() -> None:
     note = _rule_c(f"cd {_WT} && git status", _WT)
     assert note is not None
     assert "[cwd]" in note
 
 
+@_posix_paths_only
 def test_redundant_cd_subdir_with_semicolon_and_redirect_fires() -> None:
     note = _rule_c(f"cd {_WT}/src 2>/dev/null; ls", _WT)
     assert note is not None
@@ -168,6 +182,7 @@ def test_rule_c_silent_without_cwd() -> None:
     assert _rule_c(f"cd {_WT} && ls", "") is None
 
 
+@_posix_paths_only
 def test_main_fires_rule_c_on_redundant_cd(monkeypatch, capsys) -> None:
     payload = {
         "tool_name": "Bash",

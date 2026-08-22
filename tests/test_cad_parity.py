@@ -95,7 +95,7 @@ def _build_cases() -> dict[str, object]:
 )
 def test_browser_tessellator_matches_server(tmp_path: Path) -> None:
     cases_file = tmp_path / "cases.json"
-    cases_file.write_text(json.dumps(_build_cases()))
+    cases_file.write_text(json.dumps(_build_cases()), encoding="utf-8")
     result = subprocess.run(
         ["node", str(_SCRIPT), str(cases_file)],
         capture_output=True,

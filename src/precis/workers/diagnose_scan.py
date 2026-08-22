@@ -13,12 +13,26 @@ no owning todo/build-subject exists for a scanner-minted diagnosis) and
 existence check under the same connection as the insert (dedup on
 existence, "any status" blocks a re-mint).
 
-A gripe is skipped when it already carries a ``DIAGNOSIS (auto`` comment
-(the write-back diagnose_gripe leaves — see
-:data:`precis.workers.job_types.diagnose_gripe._DIAGNOSIS_PREFIX`), or the
-``backlog_groom`` opt-out tag (``no-groom`` — a human who doesn't want the
-autonomous-fixer substrate touching a gripe presumably doesn't want it
-auto-diagnosed either; reused rather than inventing a second opt-out tag).
+A gripe is skipped when its ``idem_key`` is already held (see below), when
+it already carries a ``DIAGNOSIS (auto`` comment (the write-back
+diagnose_gripe leaves — see
+:data:`precis.workers.job_types.diagnose_gripe._DIAGNOSIS_PREFIX`), or when
+it has the ``backlog_groom`` opt-out tag (``no-groom`` — a human who doesn't
+want the autonomous-fixer substrate touching a gripe presumably doesn't want
+it auto-diagnosed either; reused rather than inventing a second opt-out tag).
+
+**The idem-key skip is load-bearing, not an optimization.** Selection and
+dedup ask different questions: :func:`_already_diagnosed` looks for a
+*comment*, :func:`_mint` keys on the *idem_key*. A gripe whose diagnose job
+**failed** has neither — no comment, but a burned key — so it reads as
+"undiagnosed" to selection and "already handled" to minting, forever. Since
+:data:`_CAP` bounds *candidates selected* rather than jobs minted, three such
+gripes at the head of the ``updated_desc`` window wedge the scanner
+permanently: every pass re-selects the same three, mints nothing, and never
+looks further down the list. That is exactly what happened 2026-08-16→21 —
+17 failed jobs, and gripe 209915 (≈16th) was unreachable until hand-minted.
+Filtering held keys out of *selection* means one failed job costs its own
+gripe a re-diagnosis, not the whole queue behind it.
 
 ``PRECIS_DIAGNOSE_SCAN_ENABLED`` only registers this pass in ``cli/worker.py``
 (structural, like ``backlog_groom``'s flag) — whether it actually *fires*
@@ -73,6 +87,33 @@ def _already_diagnosed(store: Store, gripe_id: int) -> bool:
     return row is not None
 
 
+def _keys_held(store: Store, gripe_ids: list[int]) -> set[int]:
+    """The subset of ``gripe_ids`` whose ``diagnose:<id>`` idem-key is already
+    held by a live job, in ONE round-trip.
+
+    "Held" is status-blind, matching :func:`_mint`'s dedup: queued, running,
+    succeeded and failed all count. Callers use this to keep a held gripe out
+    of the candidate set entirely — see the module docstring on why spending a
+    cap slot on one starves the rest of the queue.
+    """
+    if not gripe_ids:
+        return set()
+    keys = [f"diagnose:{gid}" for gid in gripe_ids]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta->>'idem_key' FROM refs "
+            "WHERE kind = 'job' AND deleted_at IS NULL "
+            "AND meta->>'idem_key' = ANY(%s)",
+            (keys,),
+        ).fetchall()
+    held: set[int] = set()
+    for row in rows:
+        raw = str(row[0] or "").split(":", 1)
+        if len(raw) == 2 and raw[1].isdigit():
+            held.add(int(raw[1]))
+    return held
+
+
 def _mint(store: Store, *, gripe_id: int, prio: int | None) -> bool:
     """Mint ONE ``diagnose_gripe`` job for ``gripe_id``. Returns ``True``
     iff a new job was inserted, ``False`` when its ``idem_key`` already
@@ -122,9 +163,11 @@ def run_diagnose_scan_pass(store: Store, batch_size: int = _CAP) -> BatchResult:
 
     Counters mirror the other folded cadences (``backlog_groom`` /
     ``draft_refresh_scan``): ``claimed`` = candidates selected this pass,
-    ``ok`` = jobs actually minted (a candidate whose idem_key already
-    exists is claimed-but-not-ok, the dedup working as intended),
-    ``failed`` = mints that raised (logged, skipped).
+    ``ok`` = jobs actually minted, ``failed`` = mints that raised (logged,
+    skipped). Gripes whose idem_key is already held are filtered out before
+    selection, so ``claimed`` no longer counts them and ``claimed > ok`` now
+    means a genuine race (a concurrent pass minted between our key sweep and
+    our insert), not the routine dedup it used to mean.
     """
     cap = min(batch_size, _CAP) if batch_size and batch_size > 0 else _CAP
     open_gripes = store.list_refs(
@@ -134,15 +177,22 @@ def run_diagnose_scan_pass(store: Store, batch_size: int = _CAP) -> BatchResult:
         limit=200,
     )
 
+    # Held keys first: it is an in-memory set lookup, so it also spares the
+    # two per-gripe round-trips below for every already-handled candidate.
+    held = _keys_held(store, [int(g.id) for g in open_gripes])
+
     selected: list[tuple[int, int | None]] = []
     for g in open_gripes:
         if len(selected) >= cap:
             break
-        if store.has_tag(int(g.id), "OPEN", _OPT_OUT_TAG):
+        gid = int(g.id)
+        if gid in held:
             continue
-        if _already_diagnosed(store, int(g.id)):
+        if store.has_tag(gid, "OPEN", _OPT_OUT_TAG):
             continue
-        selected.append((int(g.id), g.prio))
+        if _already_diagnosed(store, gid):
+            continue
+        selected.append((gid, g.prio))
 
     if not selected:
         return BatchResult(handler=_HANDLER_NAME, claimed=0, ok=0, failed=0)

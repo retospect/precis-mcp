@@ -2,6 +2,8 @@
 id: precis-mermaid-quadrant
 title: precis — quadrant chart / 2x2 matrix / prioritization matrix / effort-impact
 summary: a mermaid quadrant chart — items plotted on a 2x2 of two axes
+answers:
+  - how do I plot items on a 2x2 prioritization / effort-impact matrix?
 applies-to: kind='mermaid'
 status: active
 ---

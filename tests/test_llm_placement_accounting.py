@@ -111,7 +111,7 @@ def test_failover_to_cloud_is_recorded_as_cloud(monkeypatch: Any) -> None:
                 error="endpoint down" if self.fail else None,
             )
 
-    def _provider_for(transport: Transport) -> Any:
+    def _provider_for(transport: Transport, *, bare: bool = False) -> Any:
         # rung 0 (local) fails, rung 1 (cloud) succeeds
         return _Provider(fail=len(calls) == 0)
 
@@ -138,7 +138,7 @@ def test_local_primary_that_succeeds_is_recorded_as_local(monkeypatch: Any) -> N
                 text="", cost_usd=0.35, turns_used=None, model=model, tier=Tier.BIG
             )
 
-    monkeypatch.setattr(R, "provider_for", lambda t: _Ok(), raising=True)
+    monkeypatch.setattr(R, "provider_for", lambda t, *, bare=False: _Ok(), raising=True)
 
     ladder = [Rung(transport=Transport.OPENAI_TOOLS, model="qwen3-235b", label="local")]
     res = R.FailoverProvider(ladder).run(

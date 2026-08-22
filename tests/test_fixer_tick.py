@@ -123,7 +123,7 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "seed.txt").write_text("seed\n")
+    (path / "seed.txt").write_text("seed\n", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-qm", "seed"], cwd=path, check=True)
     subprocess.run(["git", "branch", "-m", "main"], cwd=path, check=True)
@@ -143,7 +143,7 @@ def _fake_spawn_claude(
     cfg: FixerConfig, cwd: Path, prompt: str, item: WorkItem
 ) -> types.SimpleNamespace:
     """Stand in for a builder that commits one change (no real `claude`)."""
-    (cwd / "change.txt").write_text("changed\n")
+    (cwd / "change.txt").write_text("changed\n", encoding="utf-8")
     tick_mod._commit_if_dirty(cwd, "test: fake build commit")
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 

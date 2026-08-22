@@ -2,6 +2,9 @@
 id: precis-mermaid-unsupported
 title: precis — gantt chart / pie chart / sankey / C4 diagram / block diagram (not yet renderable)
 summary: mermaid diagram types the in-process engine cannot render yet — and what to use instead
+answers:
+  - can precis render a gantt chart, pie chart, or sankey diagram?
+  - what should I use instead of an unsupported mermaid diagram type?
 applies-to: kind='mermaid'
 status: active
 ---

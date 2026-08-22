@@ -2,6 +2,10 @@
 id: precis-write-paper-help
 title: precis — drafting scientific writing with claim-level evidence
 summary: drafting scientific writing — claim-level citation density, evidence threading, voice
+answers:
+  - what's the quality bar for drafting scientific prose with proper citation density?
+  - what output format should a paper-writing pass produce?
+  - how does the verifier loop hand off after I finish a writing pass?
 applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
 status: active
 ---

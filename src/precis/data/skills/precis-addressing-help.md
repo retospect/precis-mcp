@@ -2,6 +2,11 @@
 id: precis-addressing-help
 title: precis — universal handles (the one address scheme)
 summary: the type-prefixed handle (2-char code + decimal id), the relative grammar, the 2-char type codes, address-vs-metadata
+answers:
+  - what does a precis handle like pa5 or pc40 mean?
+  - how do I move to the next sibling or the parent of a chunk without knowing its handle?
+  - what are the 2-char type-code prefixes for each kind?
+  - a ref got merged or superseded — do I need to update the handle I saved?
 applies-to: get / edit / delete / tag / link (any verb that addresses an existing ref)
 status: stable
 ---

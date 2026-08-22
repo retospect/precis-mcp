@@ -89,6 +89,7 @@ from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
 from precis.taproot import authoring, hub
 from precis.utils import handle_registry
+from precis.utils.ref_hybrid import fused_ref_hits
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
@@ -754,6 +755,33 @@ class FindingHandler(NumericRefHandler):
     # search — status-filtered TOON table
     # ──────────────────────────────────────────────────────────────────
 
+    def _hybrid_hits(
+        self,
+        *,
+        q: str,
+        tags: list[str] | None,
+        limit: int,
+        mode: str | None,
+    ) -> list[Ref]:
+        """Ref hits for ``q``, fusing the title leg with the claim-body leg.
+
+        Scoped to ``finding_body`` — a hub's claim sentence lives there
+        (``ord=0``), and it is the chunk the embedder fills, so this is what a
+        "do we already have a claim like this?" query must match. The
+        ``card_combined`` cards on chase-tree rows are chain snapshots, not
+        claims, and would only add noise.
+        """
+        return fused_ref_hits(
+            self.store,
+            getattr(self.hub, "embedder", None),
+            q=q,
+            kind=self.kind,
+            tags=tags,
+            limit=limit,
+            mode=mode,
+            chunk_kinds=["finding_body"],
+        )
+
     def search(
         self,
         *,
@@ -761,9 +789,17 @@ class FindingHandler(NumericRefHandler):
         status: str | None = None,
         tags: list[str] | None = None,
         page_size: int = 10,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Lexical search across findings with a status-axis default.
+        """Hybrid search across findings with a status-axis default.
+
+        Fuses a ``refs.title`` lexical leg with a hybrid (lexical + semantic)
+        leg over the ``finding_body`` chunk, plus a notation-canonicalized
+        leg — see :mod:`precis.utils.ref_hybrid`. Before that fusion this was
+        title-lexical only, which ANDed every query term and had no semantic
+        recall at all, so a paraphrase of an existing claim found nothing.
+        ``mode='lexical'``/``'verbatim'`` skip the embed.
 
         ``status=`` is a finding-specific shorthand for filtering by
         the ``STATUS:`` closed-vocab tag. Pass ``status='acquiring'`` /
@@ -796,7 +832,7 @@ class FindingHandler(NumericRefHandler):
 
         if status is None:
             return self._search_default_cohort(
-                q=q, base_tags=base_tags, page_size=page_size
+                q=q, base_tags=base_tags, page_size=page_size, mode=mode
             )
 
         # Explicit status= (including '*') — exact single-status filter,
@@ -829,10 +865,8 @@ class FindingHandler(NumericRefHandler):
                 ),
             )
 
-        hits = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=normalized, limit=page_size
-        )
-        if not hits:
+        refs = self._hybrid_hits(q=q, tags=normalized, limit=page_size, mode=mode)
+        if not refs:
             tag_suffix = (
                 f" with status={resolved_status!r}" if resolved_status != "*" else ""
             )
@@ -852,11 +886,15 @@ class FindingHandler(NumericRefHandler):
             body += render_next_section(nav)
             return Response(body=body)
 
-        refs = [r for r, _rank in hits]
         return self._render_finding_table(refs, query=q)
 
     def _search_default_cohort(
-        self, *, q: str | None, base_tags: list[str], page_size: int
+        self,
+        *,
+        q: str | None,
+        base_tags: list[str],
+        page_size: int,
+        mode: str | None = None,
     ) -> Response:
         """The defaulted (``status is None``) search cohort: union of
         ``STATUS:established`` rows and ``TAPROOT:claim`` hubs.
@@ -887,15 +925,9 @@ class FindingHandler(NumericRefHandler):
             refs = _merge_dedup(established_refs, hub_refs)[:page_size]
             return self._render_finding_table(refs, query=None)
 
-        established_hits = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=established_tags, limit=page_size
-        )
-        hub_hits = self.store.search_refs_lexical(
-            q=q, kind=self.kind, tags=hub_tags, limit=page_size
-        )
         refs = _merge_dedup(
-            [r for r, _rank in established_hits],
-            [r for r, _rank in hub_hits],
+            self._hybrid_hits(q=q, tags=established_tags, limit=page_size, mode=mode),
+            self._hybrid_hits(q=q, tags=hub_tags, limit=page_size, mode=mode),
         )[:page_size]
         if not refs:
             body = f"no finding matches {q!r} with status='established'"

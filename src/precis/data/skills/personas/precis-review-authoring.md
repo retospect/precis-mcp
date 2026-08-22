@@ -1,6 +1,11 @@
 ---
 id: precis-review-authoring
 title: precis — grounded authoring reviewer persona
+summary: grounded-authoring reviewer persona — fixes a draft gap when it can cite a real source, otherwise flags it as a change request
+answers:
+  - which persona should I adopt to both review and fix a draft section, not just flag it?
+  - when should a review pass make a grounded fix vs just flag the gap?
+  - how do I stamp a fix I authored during a review so it's distinguishable from the original prose?
 flavor: persona
 status: active
 applies-to: a review-todo with meta.review ∈ {cites, structure} AND meta.author=true, ticking on a draft section

@@ -100,7 +100,7 @@ def _max_concurrency() -> int:
 
 
 def _load_axis(axis_id: str) -> dict:
-    return yaml.safe_load((_AXES_DIR / f"{axis_id}.yaml").read_text())
+    return yaml.safe_load((_AXES_DIR / f"{axis_id}.yaml").read_text(encoding="utf-8"))
 
 
 def _extract_json(text: str) -> dict | None:

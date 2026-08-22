@@ -68,9 +68,10 @@ def server_runtime(tmp_path: Path, runtime: PrecisRuntime) -> Iterator[PrecisRun
     # Build a tiny indexable repo.
     pkg = tmp_path / "demo" / "demopkg"
     pkg.mkdir(parents=True)
-    (pkg / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "m.py").write_text(
-        "def helper():\n    return 1\n\n\ndef main():\n    return helper()\n"
+        "def helper():\n    return 1\n\n\ndef main():\n    return helper()\n",
+        encoding="utf-8",
     )
 
     # Splice a python handler into the runtime's registry by

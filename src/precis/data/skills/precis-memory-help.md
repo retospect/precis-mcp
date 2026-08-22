@@ -2,6 +2,12 @@
 id: precis-memory-help
 title: precis — capture notes, decisions, ideas, questions
 summary: scratchpad for notes, decisions, ideas, questions — open tags, no enforced sub-kind
+answers:
+  - how do I jot down a quick note before I forget it?
+  - how do I record a decision I just made, with its rationale?
+  - how do I flag an open question to come back to later?
+  - how do I attach a memory to the paper section it came from?
+  - how do I distil an expensive research-cache answer into a durable memory?
 applies-to: get/search (kind='memory'), put (kind='memory')
 status: active
 ---

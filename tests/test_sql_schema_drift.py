@@ -158,7 +158,7 @@ def _module_consts(tree: ast.Module, consts: dict[str, str]) -> None:
 
 def _collect_file(path: Path, ext: Extraction, consts: dict[str, str]) -> None:
     try:
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError):
         return
 
@@ -208,7 +208,7 @@ def _extract_all() -> Extraction:
     consts: dict[str, str] = {}
     for path in paths:
         try:
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
         _module_consts(tree, consts)

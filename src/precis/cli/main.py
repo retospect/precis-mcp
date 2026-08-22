@@ -34,6 +34,7 @@ from precis.cli import (
     draft,
     email,
     enrich_openalex,
+    eval_cmd,
     fetch_openalex,
     fix_metadata,
     gripe,
@@ -67,6 +68,7 @@ from precis.cli import (
     taproot,
     taproot_migrate,
     tools,
+    users,
     verify,
     watch,
     web,
@@ -127,6 +129,10 @@ def main() -> None:
 
     if args.cmd == "settings":
         settings.run(args)
+        return
+
+    if args.cmd == "users":
+        users.run(args)
         return
 
     if args.cmd == "db":
@@ -279,6 +285,10 @@ def main() -> None:
         sim.run(args)
         return
 
+    if args.cmd == "eval":
+        eval_cmd.run(args)
+        return
+
     parser.error(f"unknown command: {args.cmd!r}")
 
 
@@ -331,6 +341,7 @@ def _build_parser() -> argparse.ArgumentParser:
     secret.add_parser(sub)
     nanopub.add_parser(sub)
     settings.add_parser(sub)
+    users.add_parser(sub)
     db.add_parser(sub)
     maintenance.add_parser(sub)
     enrich_openalex.add_parser(sub)
@@ -367,6 +378,7 @@ def _build_parser() -> argparse.ArgumentParser:
     taproot_migrate.add_parser(sub)
     email.add_parser(sub)
     sim.add_parser(sub)
+    eval_cmd.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
     jobs_sub = jobs.add_subparsers(dest="job", required=True)

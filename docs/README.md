@@ -18,6 +18,7 @@ glossary terms, and prefer deleting to archiving — git is the history,
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
 | Operational procedures | `docs/runbooks/` |
 | Generated reference (schema, config catalog) | `docs/reference/` |
+| **User**-facing how-to (not dev docs) | `src/precis_web/manual/*.md`, served at `/manual` — in the package because the wheel ships only `src/`, and a chapter must change in the same diff as the button it describes |
 | Mission / pitch narrative | `docs/mission.md` (positioning, not architecture) |
 | History, shipped plans, old decisions | `git log` — nothing else; no CHANGELOG, no archive dirs |
 

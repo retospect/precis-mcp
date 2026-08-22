@@ -2,6 +2,10 @@
 id: precis-toon
 title: precis — TOON tabular output format
 summary: tabular output format — header in braces, tab-separated rows, used across search and TOC views
+answers:
+  - what does a TOON-formatted tool response look like?
+  - how do I parse a TOON table programmatically?
+  - when does a TOON cell get quoted?
 applies-to: tabular responses from search, get(view='toc'), and list views
 status: active
 ---

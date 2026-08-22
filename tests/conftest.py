@@ -623,7 +623,7 @@ def store() -> Iterator[Store]:
                     )
                 logpath = os.environ.get("PRECIS_TEST_LEAK_LOG")
                 if logpath:
-                    with open(logpath, "a") as fh:
+                    with open(logpath, "a", encoding="utf-8") as fh:
                         fh.write(f"{len(leaked)}\t{nodeid}\n")
 
 

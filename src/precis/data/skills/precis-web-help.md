@@ -2,6 +2,11 @@
 id: precis-web-help
 title: precis — fetch, bookmark, and search web pages
 summary: URL fetching and bookmarking — readable article extraction, cache-backed, link preservation
+answers:
+  - how do I fetch and read a URL?
+  - why did the same URL produce two different cache entries?
+  - how do I search across pages I've already fetched?
+  - how do I bookmark a fetched page with tags?
 applies-to: get/search/tag/link (kind='web')
 status: active
 ---

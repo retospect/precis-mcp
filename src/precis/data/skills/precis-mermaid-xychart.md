@@ -2,6 +2,8 @@
 id: precis-mermaid-xychart
 title: precis — xy chart / bar chart / line chart / plot / graph of values
 summary: a mermaid xychart — a bar and/or line chart over an x-axis
+answers:
+  - how do I draw a bar or line chart of values over an x-axis?
 applies-to: kind='mermaid'
 status: active
 ---

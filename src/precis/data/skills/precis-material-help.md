@@ -2,6 +2,11 @@
 id: precis-material-help
 title: precis — the material kind (CRC-handbook-style properties store)
 summary: engineering material properties with per-value sources — entity vs value writes, the canonical-unit rule, the property registry (core/proposed), and the range-filter search
+answers:
+  - how do I record an engineering material property with its source?
+  - why did put(kind='material', property=..., unit=...) reject my unit?
+  - how do I search materials by a property range, like thermal conductivity under 0.05?
+  - how do I record an uncertainty band on a property value?
 applies-to: get/put/search (kind='material')
 status: active
 ---

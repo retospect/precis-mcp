@@ -2,6 +2,9 @@
 id: patent-abstract
 title: precis — patent abstract (section style)
 summary: write the patent abstract — one ≤150-word paragraph, broadest embodiment, no numerals or citations
+answers:
+  - how do I write a patent abstract section?
+  - how long can a patent abstract be and what should it avoid?
 status: active
 style: patent-abstract
 role: section

@@ -723,6 +723,104 @@ def test_halt_plus_ask_user_child_never_bypassed_by_cooldown(
     assert len(_child_jobs_under(store, pid)) == 1
 
 
+# ── auto-timeout child is terminal, not live (gr236586) ─────────────
+#
+# ``workers/auto_check.py`` resolves a parked child todo to
+# ``STATUS:auto-timeout`` when its own wait condition times out. Before the
+# fix, the child-liveness ``NOT IN (...)`` clause in both
+# ``_candidate_parent_ids`` and ``_claim_and_dispatch`` only excluded
+# ``done`` / ``won't-do`` from "live" — an auto-timed-out child kept
+# counting as live forever, permanently wedging the parent (and the whole
+# plan_tick coroutine) out of dispatch candidacy with no alert.
+
+
+def test_auto_timeout_child_does_not_block_redispatch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A parent whose only child todo is STATUS:auto-timeout (no ask-user /
+    waiting-for tags) IS a dispatch candidate — auto-timeout is a terminal
+    status, same as done/won't-do. This is the exact case that was broken
+    before the fix (the child used to still read as "live")."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(text="planner with timed-out child", meta={"llm_tier": "opus"})
+    pid = id_of(parent.body)
+    child = store.insert_ref(
+        kind="todo", slug=None, title="timed-out leaf", meta={}, parent_id=pid
+    )
+    store.add_tag(
+        child.id,
+        Tag.closed("STATUS", "auto-timeout"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
+def test_done_child_does_not_block_redispatch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Control / regression guard: a STATUS:done child already didn't block
+    before this fix — must keep not blocking after it. Guards against a
+    regressive fix that accidentally tightened the terminal-status set
+    instead of widening it."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(
+        text="planner with a finished child", meta={"llm_tier": "opus"}
+    )
+    pid = id_of(parent.body)
+    child = store.insert_ref(
+        kind="todo", slug=None, title="finished leaf", meta={}, parent_id=pid
+    )
+    store.add_tag(
+        child.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
+def test_auto_timeout_child_with_ask_user_tag_still_does_not_block(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A child carrying BOTH ``STATUS:auto-timeout`` and a leftover
+    ``OPEN:ask-user:`` tag (the auto-check resolved the wait but the
+    original park tag was never cleaned up) still does NOT block the
+    parent.
+
+    The terminal-status filter (``STATUS NOT IN ('done', "won't-do",
+    'auto-timeout')``) is ANDed *before* ``_parked_child_still_blocks_sql``
+    runs — so once a child's STATUS is itself terminal, the EXISTS
+    subquery's first predicate is already false and the parked/hard-block
+    tag logic in ``_parked_child_still_blocks_sql`` (whose docstring's
+    "hard block always wins" is about the *open*-child, non-terminal-status
+    case) never even gets evaluated for this row. Terminal STATUS wins
+    outright over any OPEN:* tag still attached to the child."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(
+        text="planner with timed-out-but-still-tagged child", meta={"llm_tier": "opus"}
+    )
+    pid = id_of(parent.body)
+    child = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="timed-out leaf, stale tag",
+        meta={},
+        parent_id=pid,
+    )
+    store.add_tag(
+        child.id,
+        Tag.closed("STATUS", "auto-timeout"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    store.add_tag(child.id, Tag.open("ask-user:please read this paper"), set_by="agent")
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
 def test_unknown_executor_halts_parent_and_stops_re_dispatch(
     handler: TodoHandler, store: Store
 ) -> None:

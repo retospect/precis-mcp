@@ -200,10 +200,10 @@ def main(argv: list[str]) -> int:
         else os.environ.get("PRECIS_AIZYNTH_VERSION", "aizynth")
     )
     try:
-        with open(trees_path) as fh:
+        with open(trees_path, encoding="utf-8") as fh:
             content = fh.read()
         route = build_route(content, engine_version=version)
-        with open(route_path, "w") as fh:
+        with open(route_path, "w", encoding="utf-8") as fh:
             json.dump(route, fh)
         print(
             f"az_to_route: wrote {route_path} "

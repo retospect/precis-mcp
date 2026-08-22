@@ -2,6 +2,11 @@
 id: precis-paper-tag-axes
 title: precis — paper auto-tagging taxonomy
 summary: paper auto-tag taxonomy — domain, scale, dim, transport, studytype, material, property axes
+answers:
+  - how do I filter search results to papers tagged scale:nano or a similar axis?
+  - which tags does ingest auto-apply to a paper?
+  - how should I shape a topic: tag on a paper?
+  - what chunk-level tag axes exist?
 applies-to: tag (kind='paper'), search (tags=, kind='paper')
 status: active
 ---

@@ -462,13 +462,22 @@ def _parse_verify_payload(data: Any, n_atoms: int) -> list[AtomVerifyResult] | N
 
 
 def verify_atoms_batch(
-    atoms: Sequence[CanonicalClaim], passages: Sequence[PaperChunk]
+    atoms: Sequence[CanonicalClaim],
+    passages: Sequence[PaperChunk],
+    *,
+    tier: Tier = Tier.MEDIUM,
 ) -> list[AtomVerifyResult]:
     """One (hub, paper) verify dispatch: every atom against every one of
     ``passages`` (already the union of each atom's own
     :func:`candidate_passages` top-``k`` for this paper), batched into a
-    single MEDIUM-tier call -- the design doc's cost-shape requirement
+    single call at ``tier`` -- the design doc's cost-shape requirement
     (one call per hub x paper, not per atom).
+
+    ``tier`` defaults to MEDIUM (the chase-verifier shape every migration
+    caller runs at); a caller that wants a cohort re-verified higher binds
+    it and passes the result as ``verify_atoms``' ``verify_batch_fn`` --
+    the per-call tier seam :mod:`precis.taproot.repair_evidence` uses to
+    re-audit edges whose original verdict anchored no passage.
 
     Same format-flake guard as
     :func:`~precis.taproot.canon.extract_claim_strict_medium`: a dispatch
@@ -488,7 +497,7 @@ def verify_atoms_batch(
     for attempt in range(2):
         res = dispatch(
             LlmRequest(
-                tier=Tier.MEDIUM,
+                tier=tier,
                 messages=[
                     {"role": "system", "content": _VERIFY_SYS},
                     {"role": "user", "content": prompt},

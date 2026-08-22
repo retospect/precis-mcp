@@ -151,7 +151,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("engine_version", nargs="?", default="unknown")
     args = ap.parse_args(argv[1:])
     try:
-        with open(args.raw) as fh:
+        with open(args.raw, encoding="utf-8") as fh:
             content = fh.read()
         route = build_route(
             content,
@@ -159,7 +159,7 @@ def main(argv: list[str]) -> int:
             engine=args.engine,
             engine_version=args.engine_version,
         )
-        with open(args.route, "w") as fh:
+        with open(args.route, "w", encoding="utf-8") as fh:
             json.dump(route, fh)
         print(
             f"to_route: wrote {args.route} ({len(route['steps'])} step(s))",

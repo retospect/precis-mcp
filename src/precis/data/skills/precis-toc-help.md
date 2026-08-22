@@ -2,6 +2,10 @@
 id: precis-toc-help
 title: precis — table of contents for any TOC-capable kind
 summary: TOC views — drillable handles for long documents, keyword-labelled ranges, reading entry point
+answers:
+  - how do I see what's inside a long paper or skill before reading the whole thing?
+  - what do the columns in a TOC table mean?
+  - I picked a TOC row — how do I drill into it?
 applies-to: get(view='toc'), slug~N / slug~A..B / slug/toc
 status: active
 ---

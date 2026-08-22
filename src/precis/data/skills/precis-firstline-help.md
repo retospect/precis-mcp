@@ -2,6 +2,9 @@
 id: precis-firstline-help
 title: precis — first-line discipline for numeric-ref kinds
 summary: the first line of a memory/todo/gripe is its entire scannable surface — lead with the conclusion, per-shape patterns inside
+answers:
+  - why does the first line of a memory or todo matter so much?
+  - what's the actionable-axis pattern for something that points forward?
 applies-to: put (kind='memory'/'todo'/'gripe')
 status: active
 ---

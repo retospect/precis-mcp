@@ -84,13 +84,13 @@ def test_bib_paths_in_reads_declared_bibs(tmp_path) -> None:
 
     (tmp_path / "references").mkdir()
     real = tmp_path / "references" / "references.bib"
-    real.write_text("@article{k, title={T}}")
+    real.write_text("@article{k, title={T}}", encoding="utf-8")
     (tmp_path / "docs").mkdir()
     # \bibliography path is relative to the master dir (here tmp_path)
     body = r"text \cite{k}. \bibliography{references/references}"
     assert bib_paths_in(body, tmp_path) == [real.resolve()]
     # bare name + comma list + addbibresource all resolve; missing ones drop
-    (tmp_path / "extra.bib").write_text("@book{b,}")
+    (tmp_path / "extra.bib").write_text("@book{b,}", encoding="utf-8")
     body2 = r"\addbibresource{extra.bib}\bibliography{references/references,missing}"
     assert bib_paths_in(body2, tmp_path) == [
         (tmp_path / "extra.bib").resolve(),

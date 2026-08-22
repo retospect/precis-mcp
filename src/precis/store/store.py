@@ -9,6 +9,7 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._links_ops.LinksMixin`             — link graph
 * :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
+* :class:`precis.store._users_ops.WebUsersMixin`          — ``web_users`` (precis-web Basic auth)
 
 ``drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the first
 domain carved *out* of the mixin stack into a composed sub-store —
@@ -87,6 +88,7 @@ from precis.store._resource_slots_ops import ResourceSlotsMixin
 from precis.store._scheduler_ops import SchedulerLeasesMixin
 from precis.store._structure_ops import StructureMixin
 from precis.store._tags_ops import TagsMixin
+from precis.store._users_ops import WebUsersMixin
 from precis.store.core import StoreCore
 from precis.store.pool import create_pool
 
@@ -117,6 +119,7 @@ class Store(
     SchedulerLeasesMixin,
     ClaudeQuotaMixin,
     EmailAccountMixin,
+    WebUsersMixin,
     KindsMixin,
     PdfMixin,
 ):

@@ -190,10 +190,14 @@ def test_import_perplexity_dry_run_derives_query_from_h1(
 ) -> None:
     """Dry-run should print the derived query (from H1) per file and
     not touch any database."""
-    (tmp_path / "a.md").write_text("# How does DAC work\n\nbody a\n")
-    (tmp_path / "b.md").write_text("# Compare BECCS vs DAC\n\nbody b\n")
+    (tmp_path / "a.md").write_text("# How does DAC work\n\nbody a\n", encoding="utf-8")
+    (tmp_path / "b.md").write_text(
+        "# Compare BECCS vs DAC\n\nbody b\n", encoding="utf-8"
+    )
     # Headingless file — should fall back to filename.
-    (tmp_path / "headingless-report.md").write_text("just a paragraph\n")
+    (tmp_path / "headingless-report.md").write_text(
+        "just a paragraph\n", encoding="utf-8"
+    )
 
     monkeypatch.setattr(
         sys,
@@ -220,7 +224,9 @@ def test_import_perplexity_filename_strategy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--query-from filename`` ignores the H1 and uses the stem."""
-    (tmp_path / "some-topic.md").write_text("# Unused Heading\n\nbody\n")
+    (tmp_path / "some-topic.md").write_text(
+        "# Unused Heading\n\nbody\n", encoding="utf-8"
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -248,8 +254,8 @@ def test_import_perplexity_writes_to_db(
 ) -> None:
     """End-to-end: import two reports and verify both refs land in the
     DB under the requested kind with ``source=imported`` provenance."""
-    (tmp_path / "r1.md").write_text("# Query one\n\nbody one\n")
-    (tmp_path / "r2.md").write_text("# Query two\n\nbody two\n")
+    (tmp_path / "r1.md").write_text("# Query one\n\nbody one\n", encoding="utf-8")
+    (tmp_path / "r2.md").write_text("# Query two\n\nbody two\n", encoding="utf-8")
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(
         sys,
@@ -286,8 +292,8 @@ def test_import_perplexity_skips_empty_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty files are reported as failures but don't abort the batch."""
-    (tmp_path / "ok.md").write_text("# Real query\n\nbody\n")
-    (tmp_path / "empty.md").write_text("")
+    (tmp_path / "ok.md").write_text("# Real query\n\nbody\n", encoding="utf-8")
+    (tmp_path / "empty.md").write_text("", encoding="utf-8")
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(
         sys,
@@ -336,9 +342,13 @@ def test_ingest_covers_all_three_prose_kinds(
 ) -> None:
     """A single ``precis jobs ingest`` call under PRECIS_ROOT must
     ingest every .md / .txt / .tex file under that root."""
-    (tmp_path / "notes.md").write_text("# Notes\n\nbody.\n")
-    (tmp_path / "log.txt").write_text("stdout line 1.\nstdout line 2.\n")
-    (tmp_path / "paper.tex").write_text(r"\section{Intro}" + "\n\nbody.\n")
+    (tmp_path / "notes.md").write_text("# Notes\n\nbody.\n", encoding="utf-8")
+    (tmp_path / "log.txt").write_text(
+        "stdout line 1.\nstdout line 2.\n", encoding="utf-8"
+    )
+    (tmp_path / "paper.tex").write_text(
+        r"\section{Intro}" + "\n\nbody.\n", encoding="utf-8"
+    )
 
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(
@@ -366,8 +376,8 @@ def test_ingest_mtime_gate_skips_unchanged_on_second_run(
 ) -> None:
     """Running ``ingest`` twice against an unchanged tree must skip
     every file on the second run."""
-    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
-    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n")
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n", encoding="utf-8")
+    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n", encoding="utf-8")
 
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(
@@ -393,8 +403,8 @@ def test_ingest_scope_to_one_kind(
 ) -> None:
     """``--kinds tex`` restricts the walk so other extensions are
     untouched even when present on disk."""
-    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
-    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n")
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n", encoding="utf-8")
+    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n", encoding="utf-8")
 
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(
@@ -466,9 +476,9 @@ def test_ingest_auto_applies_workspace_tag(
 ) -> None:
     """Every ref ingested via the CLI must carry the ``workspace``
     flag (handler contract surfaces through the CLI path too)."""
-    (tmp_path / "note.md").write_text("# N\n\nbody.\n")
-    (tmp_path / "log.txt").write_text("line.\n")
-    (tmp_path / "p.tex").write_text(r"\section{P}" + "\n")
+    (tmp_path / "note.md").write_text("# N\n\nbody.\n", encoding="utf-8")
+    (tmp_path / "log.txt").write_text("line.\n", encoding="utf-8")
+    (tmp_path / "p.tex").write_text(r"\section{P}" + "\n", encoding="utf-8")
 
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(
@@ -494,8 +504,10 @@ def test_ingest_md_deprecation_alias_still_works(
 ) -> None:
     """``precis jobs ingest-md`` keeps working for one release cycle
     but prints a deprecation notice on stderr."""
-    (tmp_path / "a.md").write_text("# A\n\nbody.\n")
-    (tmp_path / "b.tex").write_text(r"\section{B}" + "\n")  # must NOT ingest
+    (tmp_path / "a.md").write_text("# A\n\nbody.\n", encoding="utf-8")
+    (tmp_path / "b.tex").write_text(
+        r"\section{B}" + "\n", encoding="utf-8"
+    )  # must NOT ingest
 
     dsn = _store_dsn_from(store)
     monkeypatch.setattr(

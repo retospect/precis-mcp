@@ -32,6 +32,16 @@ crash your gate into recovery mode (gr176375). The per-worktree project is torn
 down (`docker compose -p … down -v`) when the worktree is reaped
 (`scripts/hooks/session-end-reap.sh`, backstopped by `scripts/reap-worktrees`).
 
+Both of those are coupled to a removal path, so a tree removed any other way
+(the `ExitWorktree` tool, the housekeeper agent, a hand-run `git worktree
+remove`, a transient `docker compose down` failure) strands its Postgres
+forever. `scripts/reap-test-dbs` (SessionStart, after `reap-worktrees`) is the
+state-based backstop: it walks every `precis-test-*` project, reads the
+worktree path off compose's own `project.config_files` label — the project
+name can't be inverted, `compose_project_for` is not injective — and tears
+down the ones whose tree is gone. A tree that still exists is never touched,
+so it can't race a parked session or an in-flight gate. First run reaped 13.
+
 All gate/test containers still share **one Docker VM memory ceiling**, so
 `scripts/test` and the `scripts/ship` gate take a fleet-wide **gate slot**
 (`scripts/lib/gate-slot.sh`, default 2 concurrent, `PRECIS_GATE_SLOTS`

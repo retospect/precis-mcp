@@ -190,7 +190,7 @@ def place_route_round_trip(
         placed = place_fn(iters, p)
         model = model_fn()
         dsn_path = out_dir / f"{name}.dsn"
-        dsn_path.write_text(dsn_fn(model))
+        dsn_path.write_text(dsn_fn(model), encoding="utf-8")
         route = route_dsn(dsn_path, ses=out_dir / f"{name}.ses")
         last_route = route
         history.append(

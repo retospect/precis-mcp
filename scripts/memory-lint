@@ -92,10 +92,33 @@ if (( bytes > HIGH_WATER )); then
     problems=$((problems+1))
 fi
 
+# 3b. payload-smell — a topic file carrying fenced code blocks is holding a
+# PAYLOAD (recipe body) where memory should hold a trigger + pointer
+# (docs/runbooks/ owns recipe bodies — dev-context-diet). Advisory.
+for tf in "$MEMDIR"/*.md; do
+    b=$(basename "$tf"); [[ "$b" == MEMORY.md || "$b" == memory_consolidation_log.md ]] && continue
+    fences=$(grep -c '^```' "$tf" 2>/dev/null || true); fences=${fences:-0}
+    if (( fences >= 2 )); then
+        echo "  payload-smell → $b ($((fences / 2)) code fence(s) — recipe body? move to docs/runbooks/, keep a symptom→pointer line)"
+        problems=$((problems+1))
+    fi
+done
+
 if (( problems == 0 )); then
     echo "memory-lint: ✓ clean ($bytes B, links resolve, no landed threads lingering)"
 else
     echo "memory-lint: $problems hygiene issue(s) above"
+fi
+
+# 3c. dev-session preamble budget — CLAUDE.md + MEMORY.md load into every
+# session; keep their combined weight visible (dev-context-diet). ~4 B/token.
+claude_b=$(wc -c < CLAUDE.md 2>/dev/null | tr -d ' ' || echo 0)
+pre_tok=$(( (bytes + claude_b) / 4 ))
+PRE_BUDGET_TOK=4000
+if (( pre_tok > PRE_BUDGET_TOK )); then
+    echo "preamble OVER budget: CLAUDE.md+MEMORY.md ≈ ${pre_tok} tok > ${PRE_BUDGET_TOK} — diet per docs/backlog/dev-context-diet.md"
+else
+    echo "preamble: CLAUDE.md+MEMORY.md ≈ ${pre_tok} tok (budget ${PRE_BUDGET_TOK})"
 fi
 
 # 5. per-claim currency ledger (--currency) — the cheap, deterministic half of

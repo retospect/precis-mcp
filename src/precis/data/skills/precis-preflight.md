@@ -2,6 +2,11 @@
 id: precis-preflight
 title: precis — manuscript preflight (retraction + citation audit)
 summary: manuscript preflight — retraction checks, citation audit, severity reporting before submission
+answers:
+  - how do I check my references for retractions before submitting a manuscript?
+  - what do the severity emojis in a preflight report mean?
+  - how do I verify a DOI's metadata actually matches the paper I think I'm citing?
+  - how do I check whether my own sources cite retracted work?
 applies-to: get (kind='provenance'), jobs check-provenance
 status: active
 ---

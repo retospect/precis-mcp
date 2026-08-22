@@ -473,7 +473,7 @@ class PcbHandler(Handler):
         content = build()
 
         path = out_dir / f"{slug}.{ext}"
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
         warns = self._export_warnings(model, view)
         head = f"# exported {slug} → {view.upper()}\n{path}  ({len(content):,} bytes)"
         if warns:

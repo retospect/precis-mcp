@@ -2,6 +2,11 @@
 id: precis-pcb-help
 title: precis — the PCB kind (electronics design you read as a graph)
 summary: design a circuit board the LLM authors in batch and reads as a traversable netlist graph — components/pins/nets/placement, never pixels; pick JLCPCB-assemblable parts, place to minimise crossed wires, then export BOM/CPL/DSN and route with Freerouting. Covers schematic capture, netlist, footprints, ratsnest, autoplace, gerbers, EDA/CAD for circuits.
+answers:
+  - how do I author a PCB design from a netlist and placement graph?
+  - how do I autoplace components to minimise crossed wires?
+  - how do I export a BOM/CPL/DSN or route the board?
+  - how do I read a PCB design as a graph — pins, nets, neighbours?
 applies-to: get/search/put/delete (kind='pcb'); see also kind='part', kind='datasheet'
 status: active
 ---

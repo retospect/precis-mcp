@@ -2,6 +2,12 @@
 id: precis-job-help
 title: precis — offline work, addressable
 summary: offline-work substrate — submit, poll, cancel; parent-todo contract, status, event timeline
+answers:
+  - how do I submit an offline job tied to a todo?
+  - how do jobs differ from a regular synchronous tool call?
+  - how do I check what jobs are currently running or queued?
+  - how do I cancel a job that's taking too long?
+  - how do I submit a job idempotently so a retry doesn't double-run it?
 applies-to: get/search/put/tag (kind='job')
 status: active
 ---

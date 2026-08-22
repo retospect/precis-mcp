@@ -2,6 +2,11 @@
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s) — find a hub, read its evidence, cite it
+answers:
+  - how do I search for an existing claim hub before minting a new one?
+  - what does a bare [fi<id>] cite resolve to?
+  - what's the evidence model behind a claim hub — how is it graded?
+  - which taproot features are live vs still dark?
 applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose
 status: active
 ---

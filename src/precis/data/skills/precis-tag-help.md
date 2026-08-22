@@ -2,6 +2,11 @@
 id: precis-tag-help
 title: precis — the tag verb (add and remove tags)
 summary: the tag verb mechanics — atomic add/remove, axis replacement, state transitions
+answers:
+  - how do I add or remove tags on a ref that already exists?
+  - how do I move a todo from open to done without leaving a stale STATUS tag?
+  - what's the difference between an UPPERCASE axis tag and a lowercase open tag?
+  - how do I toggle a bare flag tag like pinned?
 applies-to: tag (every kind that supports it)
 status: active
 ---

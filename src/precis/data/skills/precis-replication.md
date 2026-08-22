@@ -2,6 +2,10 @@
 id: precis-replication
 title: precis — plan a replication check for a paper's claim
 summary: replication-planning runbook — extract the exact setup behind a claimed result, choose plan-only vs dispatched execution, never call it replicated until the checks pass
+answers:
+  - how do I plan a replication of a paper's claimed result?
+  - how do I decide between a plan-only replication and one that actually dispatches execution?
+  - when can I call a result replicated?
 flavor: runbook
 status: active
 applies-to: search/get (kind='paper','web'); put (kind='plan','todo','finding','memory')

@@ -2,6 +2,11 @@
 id: precis-patent-search-help
 title: precis — search patents (local + EPO OPS)
 summary: patent discovery — merge local hits with EPO OPS, source selection, deduped by DOCDB id
+answers:
+  - when do I use source='local' vs source='remote' for patent search?
+  - how do I filter patent search by CPC code, applicant, or country?
+  - how do I look up a specific patent that a search didn't return?
+  - what's the difference between local and remote patent search hits?
 applies-to: search (kind='patent')
 status: active
 ---
