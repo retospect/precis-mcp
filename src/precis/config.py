@@ -169,6 +169,21 @@ class PrecisConfig(BaseSettings):
     hidden. Set via ``PRECIS_PYTHON_ROOTS`` in the env.
     """
 
+    md_roots: str | None = None
+    """Markdown trees exposed to the DB-free ``md`` kind.
+
+    Same ``alias1:/abs/path1,alias2:/abs/path2`` format as
+    ``python_roots``, parsed by the same
+    ``precis.handlers._roots.parse_alias_roots``. Each alias is the
+    root's short identifier used in addresses (e.g.
+    ``docs/backlog/foo.md``); each path is an absolute directory
+    walked for ``.md``/``.markdown`` files. Unparseable entries are
+    dropped with a warning, same rules as ``python_roots``. When
+    unset (or zero valid entries), the ``md`` kind is hidden. Set via
+    ``PRECIS_MD_ROOTS`` in the env. See the ``precis.md_index``
+    package docstring for the DB-free design this kind is built on.
+    """
+
     startup_skills: str | None = None
     """Comma-separated list of skill ids to pin at cold-start.
 

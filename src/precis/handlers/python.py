@@ -34,6 +34,7 @@ from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_render as render
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
+from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
@@ -84,40 +85,11 @@ def parse_python_roots(raw: str | None) -> dict[str, Path]:
     resolved absolute paths (``~`` expanded). The handler validates
     these again at construction time, so a transient race between
     parse and construct still produces a clean error.
+
+    Thin wrapper over the shared :func:`precis.handlers._roots.parse_alias_roots`
+    — see that module for the parser the ``md`` kind also uses.
     """
-    if not raw:
-        return {}
-
-    out: dict[str, Path] = {}
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if ":" not in entry:
-            log.warning(
-                "PRECIS_PYTHON_ROOTS: skipping %r - missing ':' separator", entry
-            )
-            continue
-        alias, _, path_str = entry.partition(":")
-        alias = alias.strip()
-        path_str = path_str.strip()
-        if not alias or not path_str:
-            log.warning("PRECIS_PYTHON_ROOTS: skipping %r - empty alias or path", entry)
-            continue
-        if alias in out:
-            log.warning("PRECIS_PYTHON_ROOTS: duplicate alias %r - first wins", alias)
-            continue
-        path = Path(path_str).expanduser().resolve()
-        if not path.is_dir():
-            log.warning(
-                "PRECIS_PYTHON_ROOTS: skipping %r - not a directory: %s",
-                alias,
-                path,
-            )
-            continue
-        out[alias] = path
-
-    return out
+    return parse_alias_roots(raw, env_var="PRECIS_PYTHON_ROOTS")
 
 
 # ---------------------------------------------------------------------------
@@ -1491,6 +1463,20 @@ def _split_scope(scope: str | None) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _is_test_path(file: str) -> bool:
+    """True when `file` (repo-relative, posix) looks like a test module.
+
+    Covers both a `tests/` root directory and the `test_*.py` /
+    `*_test.py` filename conventions, so a file like `src/foo/test_helper.py`
+    (no `tests/` root) still counts on the basename rule.
+    """
+    parts = file.split("/")
+    if parts and parts[0] == "tests":
+        return True
+    basename = parts[-1] if parts else file
+    return basename.startswith("test_") or basename.endswith("_test.py")
+
+
 def _score_symbol(sym: Symbol, needle: str) -> float:
     """Lexical match score for a symbol against a lowercased query.
 
@@ -1499,6 +1485,7 @@ def _score_symbol(sym: Symbol, needle: str) -> float:
     - qualname contains needle       → 5  (+ short-name bonus)
     - signature contains needle      → 2
     - docstring contains needle      → 1
+    - test-file symbol               → ×0.5 (implementation ranks above tests)
     """
     score = 0.0
     qn = sym.qualname.lower()
@@ -1513,6 +1500,8 @@ def _score_symbol(sym: Symbol, needle: str) -> float:
         score += 2
     if sym.docstring and needle in sym.docstring.lower():
         score += 1
+    if _is_test_path(sym.file):
+        score *= 0.5
     return score
 
 

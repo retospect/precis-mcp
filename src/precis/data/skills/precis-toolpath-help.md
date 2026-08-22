@@ -48,6 +48,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Goal | Toolpath | Depth |
 |---|---|---|
 | Find content by topic | `search(q='...')` (cross-kind) or `search(kind='paper', q='...')` | `precis-search-help` |
+| Search this repo's own docs/backlog/skills prose | `search(kind='md', q='...')` | `precis-md-help` |
 | Read a thing you can name | `get(kind='paper', id='wang2020state')` / `get(kind='todo', id=122)` | `precis-get-help` |
 | Read one section / chunk | `get(id='pa5~40')` or a chunk handle `get(id='pc890282')` | `precis-addressing-help` |
 | Read a chunk + its neighborhood | `get(kind='draft', id='dc41', view='fisheye')` | `precis-fisheye-help` |
@@ -64,8 +65,8 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 kinds** (`todo`, `memory`, `gripe`, `finding`, `job`, `anki`,
 `citation`, `folder`, `alert`, `agentlog`, `message`).
 Slug/file/compute kinds (`paper`, `draft`, `cad`, `structure`, `pcb`,
-`tex`, `markdown`, …) each expose their own view set instead — a bad
-`view=` returns that kind's option list.
+`tex`, `markdown`, `python`, `md`, …) each expose their own view set
+instead — a bad `view=` returns that kind's option list.
 
 ## Capture and edit
 

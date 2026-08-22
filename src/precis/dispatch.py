@@ -601,6 +601,7 @@ def boot(
     embedder: Embedder | None = None,
     precis_root: str | None = None,
     python_roots: str | None = None,
+    md_roots: str | None = None,
     kinds_disabled: frozenset[str] = frozenset(),
     kinds_disabled_reasons: dict[str, str] | None = None,
 ) -> Hub:
@@ -695,6 +696,31 @@ def boot(
 
         hub.loadabilities["python"] = Loadability(
             kind="python", loaded=False, reason="missing PRECIS_PYTHON_ROOTS"
+        )
+
+    # md — DB-free in-memory markdown index (hybrid lexical + semantic
+    # search over workspace prose). Same env-gated / deferred-kind
+    # shape as python above; see the precis.md_index package
+    # docstring for the design.
+    if md_roots:
+        from precis.handlers.md import MdHandler, parse_md_roots
+
+        roots = parse_md_roots(md_roots)
+        if roots:
+            _gated(MdHandler, roots=roots)
+        else:
+            from precis.kind_gate import Loadability
+
+            hub.loadabilities["md"] = Loadability(
+                kind="md",
+                loaded=False,
+                reason="PRECIS_MD_ROOTS parsed empty",
+            )
+    else:
+        from precis.kind_gate import Loadability
+
+        hub.loadabilities["md"] = Loadability(
+            kind="md", loaded=False, reason="missing PRECIS_MD_ROOTS"
         )
 
     # --- Store-backed handlers ------------------------------------------

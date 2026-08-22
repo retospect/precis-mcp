@@ -38,6 +38,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "plaintext",
         "tex",
         "python",
+        "md",
         "orcid",
         "memory",
         "oracle",

@@ -186,3 +186,115 @@ def test_main_rejects_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> None
 
     with pytest.raises(ValueError, match="unknown --transport"):
         server.main(transport="carrier-pigeon", token="tok")
+
+
+# ── md index background warmup (see precis.md_index package docstring) ──
+
+
+def _join_warmup_threads() -> None:
+    """Wait for any live ``precis-md-index-warmup`` daemon thread.
+
+    The function under test only *starts* a background thread and
+    returns immediately (mirrors ``_warm_embedder_background``); tests
+    need the work actually done before asserting on its effects.
+    """
+    import threading
+
+    for t in threading.enumerate():
+        if t.name == "precis-md-index-warmup":
+            t.join(timeout=5)
+
+
+def test_warm_md_index_background_noop_on_bare_object() -> None:
+    """A runtime double with no ``hub`` attribute (matches the
+    ``_init_runtime`` monkeypatch other tests in this module use)
+    must not raise — mirrors ``_warm_embedder_background``'s
+    defensive ``getattr`` style."""
+    server._warm_md_index_background(object())  # type: ignore[arg-type]
+
+
+def test_warm_md_index_background_noop_when_md_not_registered() -> None:
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.runtime import PrecisRuntime
+
+    rt = PrecisRuntime(config=PrecisConfig(), hub=boot())
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+
+
+def test_warm_md_index_background_noop_without_embedder(tmp_path: Any) -> None:
+    """Storeless boot has no embedder; ``vector_cache`` is ``None`` on
+    the handler and the warmup must no-op rather than error."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.runtime import PrecisRuntime
+
+    rt = PrecisRuntime(config=PrecisConfig(), hub=boot(md_roots=f"r:{tmp_path}"))
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+
+
+def test_warm_md_index_background_embeds_missing_and_flushes(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With an embedder wired, warmup embeds every block missing from
+    the vector cache and persists the cache to disk (flush)."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=MockEmbedder(), md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None
+    assert handler.vector_cache is not None
+    assert len(handler.vector_cache) == 0
+
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+
+    assert len(handler.vector_cache) > 0
+    assert handler.vector_cache.npz_path.is_file()
+    assert handler.vector_cache.manifest_path.is_file()
+
+
+# ── md vector cache flush at shutdown ────────────────────────────────
+
+
+def test_shutdown_runtime_flushes_md_vector_cache(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=MockEmbedder(), md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None and handler.vector_cache is not None
+    blocks = [b for _, b in handler.cache.get(root.resolve()).all_blocks()]
+    handler.vector_cache.embed_missing(blocks, handler.embedder)
+    assert len(handler.vector_cache) > 0
+    assert not handler.vector_cache.npz_path.is_file()
+
+    monkeypatch.setattr(server, "_runtime", rt)
+    server._shutdown_runtime()
+
+    assert handler.vector_cache.npz_path.is_file()
+    assert handler.vector_cache.manifest_path.is_file()
+    assert server._runtime is None

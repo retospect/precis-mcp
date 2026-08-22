@@ -41,7 +41,7 @@ For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 The **Example id** column shows the canonical **handle** (`<2-char type
 code><decimal id>`) for store-backed kinds — what get/search output hands you to
 paste back. File-backed kinds
-(`skill`, `python`, and the `markdown`/`plaintext`/`tex` file mirror) address by
+(`skill`, `python`, `md`, and the `markdown`/`plaintext`/`tex` file mirror) address by
 name/path.
 
 | Kind | Example id | What | Needs |
@@ -66,6 +66,7 @@ name/path.
 | `material` | `ma7` | CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property **sourced** values in a typed, growable property registry (`core` curated + `proposed` mintable at write time). **v1 is canonical-units-only**: `put(property=, value=, unit=)` rejects a unit that isn't the property's canonical one (named, no conversion). `get(id=)` is the handbook page grouped by property; `view='properties'` lists the registry. `search(property=, min=, max=, maturity=)` is the range-filter read ("materials with thermal_conductivity < 0.05"). See `precis-material-help`. | store |
 | `component` | `cp7` | General procurable-part store (bolt/hose/pipe/beam/gasket/bearing/adhesive/electronic part) — a slug entity (name/**category**/mpn/manufacturer) plus per-spec **sourced** values in a typed, growable, category-scoped spec registry (universal specs like `unit_cost`/`mass` apply to any component; category-scoped ones like `bore_diameter` don't). `category=` required on create (mints a `proposed` category if unknown). `put(spec=, value=, unit=)` is canonical-units-only, same rule as `material`; `made_of='material:<slug>'` links the material it's made of. `get(id=)` is the component page; `view='specs'`/`'categories'` list the registries. `search(spec=, min=, max=, maturity=, category=)` is the range-filter read ("hoses with max_working_pressure >= 20 MPa"). Deliberately distinct from `part` (the JLCPCB/LCSC ingest-only catalog). See `precis-component-help`. | store |
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
+| `md` | `docs/backlog/some-item.md~Motivation` | Read-only, DB-free hybrid search over configured markdown roots (docs, backlog, skills prose) | `PRECIS_MD_ROOTS` |
 | `folder` | `fo12` | Organizational container for authored artifacts (draft / structure / cad / todo roots / folders) — single-parent placement via `link(rel='parent')`; `search(folder=...)` scopes to the subtree. Folders organize what you MAKE; papers / memories / alerts stay out. See `precis-folder-help`, ADR 0045. | store |
 | `todo` | `td122` | A task in the hierarchical tree (Slice 1–5). Branches read as outcomes; leaves as next actions. See `precis-tasks-help`. | store |
 | `memory` | `me47` | Agent note / scratchpad | store |

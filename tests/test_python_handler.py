@@ -14,7 +14,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers.python import PythonHandler, _parse_id
+from precis.handlers.python import PythonHandler, _is_test_path, _parse_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -241,6 +241,38 @@ def test_imports_render_skips_future_and_redundant_aliases(
     assert "as join" not in out.body
 
 
+def test_outline_elides_giant_top_level_function_signature(tmp_path: Path) -> None:
+    """A `put`-shaped 70-param function shouldn't dominate the outline's
+    token cost — module FUNCTIONS section elides it, class METHODS
+    section elides it too."""
+    params = ", ".join(f"p{i}: int" for i in range(1, 71))  # 70 params
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/big.py",
+        f"""
+        def put({params}) -> None:
+            pass
+
+
+        class C:
+            def m(self, {params}) -> None:
+                pass
+        """,
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    out = handler.get(id="r/pkg/big.py")
+    assert "… +64 more" in out.body
+    assert "p70" not in out.body
+    assert "-> None" in out.body
+
+
+def test_outline_short_signature_unchanged(handler: PythonHandler) -> None:
+    """A signature under the param/length budget renders verbatim."""
+    out = handler.get(id="r/pkg/m.py")
+    assert "def helper(x: int) -> int" in out.body
+
+
 # ---------------------------------------------------------------------------
 # get — file source
 # ---------------------------------------------------------------------------
@@ -302,6 +334,18 @@ def test_get_symbol_source(handler: PythonHandler) -> None:
     # Header carries the symbol's actual line range (start 6 in the dedented
     # fixture: docstring + blank + import + blank + def helper).
     assert "pkg/m.py:" in out.body
+
+
+def test_get_symbol_keeps_full_giant_signature(tmp_path: Path) -> None:
+    """Symbol drill-down is the "show me everything" view — unlike the
+    outline, the header signature is never elided."""
+    params = ", ".join(f"p{i}: int" for i in range(1, 71))  # 70 params
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/big.py", f"def put({params}) -> None:\n    pass\n")
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    out = handler.get(id="r::pkg.big.put")
+    assert "p70: int" in out.body
+    assert "… +" not in out.body
 
 
 def test_get_unknown_symbol_raises(handler: PythonHandler) -> None:
@@ -467,3 +511,40 @@ def test_search_across_repos(tmp_path: Path) -> None:
     out = handler.search(q="special_thing")
     assert "r1::pkg.a.special_thing_one" in out.body
     assert "r2::pkg.b.special_thing_two" in out.body
+
+
+# ---------------------------------------------------------------------------
+# search — test-symbol down-weighting
+# ---------------------------------------------------------------------------
+
+
+def test_search_ranks_implementation_above_test_symbol(tmp_path: Path) -> None:
+    """An implementation symbol outranks a test symbol with the same
+    substring match, but the test symbol is still returned."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/core.py", "def command(): pass\n")
+    _write(tmp_path, "tests/test_core.py", "def test_command(): pass\n")
+
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    out = handler.search(q="command")
+    lines = out.body.splitlines()
+    impl_line = next(i for i, ln in enumerate(lines) if "pkg.core.command" in ln)
+    # `tests/` has no `__init__.py`, so it's a package boundary itself —
+    # the qualname drops the `tests.` prefix (see `_qualname_for_file`).
+    test_line = next(i for i, ln in enumerate(lines) if "test_core.test_command" in ln)
+    # Results are ranked best-first, so the implementation hit must
+    # appear before the test hit — not filtered out, just down-weighted.
+    assert impl_line < test_line
+
+
+def test_is_test_path_tests_dir() -> None:
+    assert _is_test_path("tests/test_x.py") is True
+
+
+def test_is_test_path_implementation_file() -> None:
+    assert _is_test_path("src/precis/handlers/python.py") is False
+
+
+def test_is_test_path_basename_rule_without_tests_dir() -> None:
+    """A `test_*.py` basename counts even without a `tests/` root dir."""
+    assert _is_test_path("src/foo/test_helper.py") is True

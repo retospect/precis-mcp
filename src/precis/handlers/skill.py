@@ -178,6 +178,7 @@ _SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "precis-plaintext-help",
             "precis-tex-help",
             "precis-python-help",
+            "precis-md-help",
             "precis-paper-help",
             "precis-paper-tag-axes",
             "precis-patent-help",

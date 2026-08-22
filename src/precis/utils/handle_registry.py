@@ -14,7 +14,8 @@ prefix against the row's kind (typo guard). This replaced a zoo of
 per-kind address forms (cite_key, ``pub_id``, ``slug~pos``, bare
 numeric ids) with one grammar an agent can recognise on sight.
 
-Two kinds are *file-backed* (``skill`` → ``sk``, ``python`` → ``py``) and
+Three kinds are *file-backed* (``skill`` → ``sk``, ``python`` → ``py``,
+``md`` → ``mi``) and
 one lives in its own table (``tag`` → ``tg``); they carry codes for
 registry completeness but keep their existing ``kind`` + slug/id
 addressing — folding them into ``resolve_handle`` is a later slice, so
@@ -68,6 +69,7 @@ KIND_CODES: dict[str, str] = {
     "plaintext": "pl",
     "tex": "tx",
     "python": "py",
+    "md": "mi",  # in-memory md index ("md" itself is markdown's code)
     # identities (resolved external records, refs-backed + embedded)
     "orcid": "oi",
     # thoughts / generated
@@ -175,7 +177,7 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
 # ``resolve_handle`` / :func:`parse` don't treat them as decimal handles
 # (yet). The codes still exist for registry completeness + the totality
 # test.
-_FILE_BACKED_KINDS = frozenset({"skill", "python"})
+_FILE_BACKED_KINDS = frozenset({"skill", "python", "md"})
 # ``part`` lives in the ``parts`` catalog table, addressed by its
 # LCSC C-number — not a refs-backed decimal handle. ``pcb`` / ``datasheet``
 # are refs-backed and resolve normally.

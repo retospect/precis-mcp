@@ -319,11 +319,21 @@ def _wire_modalities(runtime: PrecisRuntime) -> None:
 
 def _shutdown_runtime() -> None:
     global _runtime
-    if _runtime is not None and _runtime.store is not None:
-        try:
-            _runtime.store.close()
-        except Exception:
-            log.exception("error closing store")
+    if _runtime is not None:
+        hub = getattr(_runtime, "hub", None)
+        handler_for = getattr(hub, "handler_for", None)
+        md_handler = handler_for("md") if handler_for is not None else None
+        vector_cache = getattr(md_handler, "vector_cache", None)
+        if vector_cache is not None:
+            try:
+                vector_cache.flush()
+            except Exception:
+                log.exception("error flushing md index vector cache")
+        if _runtime.store is not None:
+            try:
+                _runtime.store.close()
+            except Exception:
+                log.exception("error closing store")
     _runtime = None
 
 
@@ -585,6 +595,57 @@ def _warm_embedder_background(runtime: PrecisRuntime) -> None:
     thread.start()
 
 
+def _warm_md_index_background(runtime: PrecisRuntime) -> None:
+    """Best-effort: fill the `md` kind's vector cache in a background thread.
+
+    Mirrors :func:`_warm_embedder_background`'s pattern — see the
+    `precis.md_index` package docstring for the design this warm pass
+    completes: the handler already serves lexical search immediately
+    from a cold or partially-warm vector cache (`MdHandler.search`'s
+    coverage-percent fallback), so this thread's only job is to close
+    the gap without blocking boot or any tool call. No-op when the
+    `md` kind isn't registered (env var unset) or has no embedder
+    wired (`vector_cache is None` — e.g. a `MockEmbedder`-less build).
+
+    Walks every configured root, embeds every block whose `sha256`
+    isn't already cached (`MdVectorCache.embed_missing` batches misses
+    into one `embed()` call and no-ops entirely on an already-warm
+    root), then flushes once at the end so a killed-mid-warmup process
+    still persists whatever it finished. Failures are logged and
+    swallowed — a degraded warmup never blocks startup, and cold
+    blocks just keep degrading to lexical-only until the next
+    successful pass.
+    """
+    hub = getattr(runtime, "hub", None)
+    handler_for = getattr(hub, "handler_for", None)
+    handler = handler_for("md") if handler_for is not None else None
+    if handler is None:
+        return
+    vector_cache = getattr(handler, "vector_cache", None)
+    embedder = getattr(handler, "embedder", None)
+    if vector_cache is None or embedder is None:
+        return
+
+    def _warm() -> None:
+        try:
+            log.info("warming md index vector cache for %d root(s)", len(handler.roots))
+            total_new = 0
+            for alias, root in handler.roots.items():
+                idx = handler.cache.get(root)
+                blocks = [b for _, b in idx.all_blocks()]
+                total_new += vector_cache.embed_missing(blocks, embedder)
+                log.debug("md index root %r warmed (%d blocks)", alias, len(blocks))
+            vector_cache.flush()
+            log.info("md index vector cache warm: %d new embedding(s)", total_new)
+        except Exception:
+            log.exception("background md index warmup failed")
+
+    import threading
+
+    thread = threading.Thread(target=_warm, name="precis-md-index-warmup", daemon=True)
+    thread.start()
+
+
 def _log_version_banner() -> None:
     """Emit a one-line ``version @ sha (branch) [provenance]`` boot banner.
 
@@ -717,6 +778,7 @@ def main(
     _log_version_banner()
     runtime = _init_runtime()
     _warm_embedder_background(runtime)
+    _warm_md_index_background(runtime)
 
     if transport == "stdio":
         mcp.run(transport="stdio")

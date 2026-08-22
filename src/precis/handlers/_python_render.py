@@ -175,7 +175,8 @@ def render_file_outline(alias: str, mod: ModuleIndex) -> str:
     if funcs:
         lines.append("  FUNCTIONS")
         for f in funcs:
-            lines.append(f"    L{f.start_line:<4} {f.signature}")
+            sig = _elide_signature(f.signature) if f.signature else f.name
+            lines.append(f"    L{f.start_line:<4} {sig}")
             if f.docstring:
                 lines.append(f"           {_oneline(f.docstring)}")
         lines.append("")
@@ -193,7 +194,8 @@ def render_file_outline(alias: str, mod: ModuleIndex) -> str:
                 s for s in mod.symbols if s.kind == "method" and s.parent == c.qualname
             ]
             for m in class_methods:
-                lines.append(f"      L{m.start_line:<4} {m.signature}")
+                sig = _elide_signature(m.signature) if m.signature else m.name
+                lines.append(f"      L{m.start_line:<4} {sig}")
         lines.append("")
 
     lines.append("Next:")
@@ -243,7 +245,7 @@ def render_symbol(alias: str, sym: Symbol, idx: RepoIndex) -> str:
         if methods:
             lines.append("Methods:")
             for m in methods:
-                ln = m.signature or m.name
+                ln = _elide_signature(m.signature) if m.signature else m.name
                 lines.append(f"  L{m.start_line:<4} {ln}")
             lines.append("")
 
@@ -344,3 +346,71 @@ def _oneline(text: str, *, max_len: int = 72) -> str:
     if len(first) > max_len:
         first = first[: max_len - 1] + "…"
     return first
+
+
+def _elide_signature(sig: str, *, max_params: int = 6, max_len: int = 110) -> str:
+    """Compress an overlong `def name(...) -> ret` signature for outline views.
+
+    Outline/list views exist to compress; a 70-param signature (e.g.
+    `precis.tools.core.put`) shouldn't dominate an outline's token cost.
+    Full signatures still show in symbol drill-down (`render_symbol`'s
+    header), which is deliberately left un-elided.
+
+    Splits the outermost paren group's contents on top-level commas only
+    (bracket-depth-tracked across `()[]{}`, so `dict[str, Any]`
+    annotations and defaults with commas don't inflate the param count).
+    Anything that doesn't parse as `def foo(...)` — no parens, unbalanced
+    parens — is returned unchanged rather than risk a bad render.
+    """
+    open_idx = sig.find("(")
+    if open_idx == -1:
+        return sig
+
+    depth = 0
+    close_idx = -1
+    for i in range(open_idx, len(sig)):
+        ch = sig[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = i
+                break
+    if close_idx == -1:
+        return sig  # unbalanced parens
+
+    params = [p for p in _split_top_level(sig[open_idx + 1 : close_idx]) if p.strip()]
+    if len(params) <= max_params and len(sig) <= max_len:
+        return sig
+
+    n_elided = len(params) - max_params
+    if n_elided <= 0:
+        # Already within the param budget; whatever made this long (a
+        # verbose annotation/default) won't shrink by eliding params.
+        return sig
+
+    kept = ", ".join(p.strip() for p in params[:max_params])
+    suffix = sig[close_idx:]  # ")" plus any trailing " -> ret"
+    return f"{sig[: open_idx + 1]}{kept}, … +{n_elided} more{suffix}"
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split `text` on commas outside any `()[]{}` nesting."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+            current.append(ch)
+        elif ch in ")]}":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
