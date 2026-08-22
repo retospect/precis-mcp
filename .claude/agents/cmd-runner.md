@@ -1,7 +1,7 @@
 ---
 name: cmd-runner
 description: "Cheap agent — runs one exact caller-given command, reports exit code + tail."
-tools: Bash, Read, mcp__precis__search, mcp__precis__put
+tools: Bash, Read, mcp__precis__precis
 model: haiku
 ---
 

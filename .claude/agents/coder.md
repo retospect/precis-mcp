@@ -1,7 +1,7 @@
 ---
 name: coder
 description: "Sonnet implementer for a well-scoped change — edits/tests to green; not architecture calls, asks if ambiguous."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__precis
 model: sonnet
 ---
 

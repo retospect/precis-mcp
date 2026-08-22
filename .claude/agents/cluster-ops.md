@@ -1,7 +1,7 @@
 ---
 name: cluster-ops
 description: "Cluster/prod ops gopher — SSHes a node, runs a read-only query, returns a digest; never mutates."
-tools: Bash, Read, Grep, mcp__precis__search, mcp__precis__put
+tools: Bash, Read, Grep, mcp__precis__precis
 model: haiku
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: cluster-admin
 description: "Sonnet WRITE cluster op — runs a decided, reversible runbook; hard-stops on novel/destructive/prod-DB writes."
-tools: Bash, Read, Grep, mcp__precis__search, mcp__precis__put
+tools: Bash, Read, Grep, mcp__precis__precis
 model: sonnet
 ---
 
