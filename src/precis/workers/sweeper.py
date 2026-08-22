@@ -442,6 +442,25 @@ def _route_log_retention_days() -> int:
         return route_log.DEFAULT_RETENTION_DAYS
 
 
+def _tool_calls_retention_days() -> int:
+    """Days to keep ``tool_calls`` rows before GC.
+
+    ``PRECIS_TOOL_CALLS_RETENTION_DAYS`` (default
+    :data:`precis.tool_ledger.DEFAULT_RETENTION_DAYS`). The ledger writes one
+    row per ``dispatch()`` call (migration 0133) — higher volume than
+    ``llm_call_log`` — so this wires :func:`precis.tool_ledger.gc` into the
+    sweep the same way ``_route_log_retention_days`` does for that table."""
+    from precis import tool_ledger
+
+    raw = os.environ.get(tool_ledger.RETENTION_DAYS_ENV)
+    if not raw:
+        return tool_ledger.DEFAULT_RETENTION_DAYS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return tool_ledger.DEFAULT_RETENTION_DAYS
+
+
 #: Rows to prune per sweep from ``worker_logs`` — bounded so the first drain of a
 #: long-unpruned table stays a short DELETE; successive per-minute passes finish
 #: the backlog, then it trickles at the aging rate.
@@ -676,6 +695,13 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     pruned_worker_logs = _gc_worker_logs(store)
     if pruned_worker_logs:
         log.info("sweeper: GC'd %d stale worker_logs row(s)", pruned_worker_logs)
+    from precis import tool_ledger
+
+    pruned_tool_calls = tool_ledger.gc(
+        store, retention_days=_tool_calls_retention_days()
+    )
+    if pruned_tool_calls:
+        log.info("sweeper: GC'd %d stale tool_calls row(s)", pruned_tool_calls)
     pruned_vault_events = _gc_vault_events(store)
     if pruned_vault_events:
         log.info("sweeper: GC'd %d stale vault.events row(s)", pruned_vault_events)

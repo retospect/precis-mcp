@@ -11,13 +11,21 @@ error string rendering in :mod:`precis.runtime.error`. ``PrecisRuntime``
 (``precis.runtime.core``) composes all of them via multiple inheritance —
 every method below runs against the same ``self`` regardless of which file
 it's defined in.
+
+``dispatch_with_status`` is also the single chokepoint every verb call
+passes through regardless of caller (MCP server, CLI, in-process agent
+tick) — so it's where the best-effort tool-call ledger write lives
+(:meth:`DispatchMixin._record_tool_call`, migration 0133, see
+:mod:`precis.tool_ledger` for the schema + mining queries).
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
+import time
 from typing import Any
 
 from precis.errors import BadInput, Internal, NotFound, PrecisError, Unsupported
@@ -53,6 +61,13 @@ _SIGIL_KIND: dict[str, tuple[str, bool]] = {
 #: A draft chunk handle ``dc<chunk_id>`` and any trailing relative operator;
 #: group 1 is the bare ``<chunk_id>`` (existence probe), group 2 the operator.
 _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
+
+#: Matches the ``[error:ClassName]`` prefix :meth:`ErrorMixin.render_error`
+#: always emits — the tool-call ledger (:mod:`precis.tool_ledger`) reads the
+#: error class name back out of the already-rendered body instead of
+#: threading the exception object through, so logging it costs one regex
+#: match rather than a second code path.
+_ERROR_TYPE_RE = re.compile(r"^\[error:(\w+)\]")
 
 #: Per-(kind, verb) recovery hints for "kind does not support verb" — a
 #: generic "try get(kind=…)" is a dead-end when the right move is a
@@ -113,6 +128,7 @@ class DispatchMixin(RuntimeShape):
         for the rendering. (MCP critic MAJOR — errors silently masked
         as content because ``isError`` was never set.)
         """
+        started = time.monotonic()
         with self.hub.request_scope():
             try:
                 if verb not in _VERBS:
@@ -131,10 +147,13 @@ class DispatchMixin(RuntimeShape):
                 body, _cursor = self.pagination.split(
                     self._render(response), alt_hint=response.pagination_alt_hint
                 )
+                self._record_tool_call(verb, args, body, False, started)
                 return body, False
             except PrecisError as e:
                 self._maybe_add_skill_hint(e, verb, args)
-                return self.render_error(e), True
+                body = self.render_error(e)
+                self._record_tool_call(verb, args, body, True, started)
+                return body, True
             except Exception as e:
                 # F10: full traceback (with SQL fragments, Python
                 # signatures, file paths) goes to the server log only.
@@ -146,16 +165,72 @@ class DispatchMixin(RuntimeShape):
                 # converted to a typed PrecisError (Unavailable,
                 # NotFound, etc.) before reaching this fallback.
                 log.exception("internal error in %s", verb)
-                return (
-                    self.render_error(
-                        Internal(
-                            f"internal error in {verb}: "
-                            f"{type(e).__name__} "
-                            f"(see server log)"
-                        )
-                    ),
-                    True,
+                body = self.render_error(
+                    Internal(
+                        f"internal error in {verb}: {type(e).__name__} (see server log)"
+                    )
                 )
+                self._record_tool_call(verb, args, body, True, started)
+                return body, True
+
+    def _record_tool_call(
+        self,
+        verb: str,
+        args: dict[str, Any],
+        body: str,
+        is_error: bool,
+        started: float,
+    ) -> None:
+        """Best-effort tool-call ledger write (migration 0133).
+
+        Fires after the verb has already fully run and its body is
+        rendered — the one extra INSERT never gates the caller's
+        result, and any failure here (missing table on a pre-0133 DB,
+        a bad/absent store, a connection hiccup) is swallowed. A
+        logging problem must never break the tool call it measures,
+        mirroring :mod:`precis.route_log`'s dark-by-construction rule.
+
+        ``args`` is read, never mutated — by the time this runs,
+        ``_dispatch_inner`` has already consumed its own private copy
+        (``dict(args)``), so the caller's original top-level kwarg
+        names are still exactly what came in. Only names are
+        recorded, never values (:mod:`precis.tool_ledger`'s no-
+        payload-content contract).
+        """
+        store = self.store
+        if store is None:
+            return
+        try:
+            from precis.agentlog import current_from_env
+            from precis.tool_ledger import ToolCallRecord, record_call
+            from precis.utils.workspace import current_model_from_env
+
+            error_type: str | None = None
+            if is_error:
+                m = _ERROR_TYPE_RE.match(body)
+                error_type = m.group(1) if m else "Unknown"
+            kind = args.get("kind")
+            record_call(
+                store,
+                ToolCallRecord(
+                    verb=verb,
+                    kind=str(kind) if kind is not None else None,
+                    # None-valued keys are wrapper defaults, not caller
+                    # input: tools/core.py's put/edit/get pass every
+                    # declared kwarg defaulted to None, so recording bare
+                    # key presence would log the same static ~70-key list
+                    # for every put — useless for arg-shape mining.
+                    input_keys=sorted(str(k) for k, v in args.items() if v is not None),
+                    outcome="error" if is_error else "ok",
+                    error_type=error_type,
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    agentlog_id=current_from_env(),
+                    source=current_model_from_env(),
+                    profile=os.environ.get("PRECIS_MCP_PROFILE", "typed"),
+                ),
+            )
+        except Exception:
+            log.debug("tool_ledger: _record_tool_call failed", exc_info=True)
 
     def fetch_more(self, cursor: str) -> tuple[str, bool]:
         """Return the next page for a pagination cursor.
