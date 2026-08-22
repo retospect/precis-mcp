@@ -1,6 +1,19 @@
 # Web basic auth + a real users table
 
-- **Status**: agreed (2026-08-21), implementing.
+- **Status**: **shipped + deployed + live** (2026-08-22). Kept open only
+  for the residuals below; the design sections are retained as the
+  rationale record until they are folded into the package docstrings.
+- **Live state**: melchior serves this to the **public internet** via
+  `tailscale funnel` (not just the tailnet — see §8). Roster: `reto`/`rs`,
+  `scrypt-pepper-v1`.
+- **Residuals**, each tracked separately:
+  - no failed-auth logging / rate limiting →
+    `web-auth-failed-login-observability.md`
+  - the non-atomic feed-token rotate race (§4, known-accepted)
+  - a full CSP (`default-src`/`script-src`); only `frame-ancestors` ships
+    today because the templates carry inline scripts and styles, and
+    `tests/precis_web/test_security_headers.py` has a tripwire asserting
+    the narrow policy so widening it forces the templates to be fixed first
 - **Scope decided with Reto**: precis-web only (not the embedder service,
   not the MCP network transport — the latter keeps its bearer token).
 - **Deliberately NOT** `docs/backlog/user-identity-and-ask-routing.md`.
@@ -198,4 +211,55 @@ scrypt); README env table lists `PRECIS_WEB_AUTH` and
 
 `redeploy-precis.yml` applies 0131, but the table lands **empty** — the
 web UI answers 503 until `precis users add` runs on the gateway. Do that
-in the same window as the deploy.
+in the same window as the deploy. **Done** for melchior 2026-08-22.
+
+## 8. Public exposure (`tailscale funnel`), 2026-08-22
+
+Reto's explicit call, after being shown the blast radius: the **whole
+UI** is on the public internet, not just `/podcast`. HTTP Basic against
+`web_users` is the only barrier.
+
+`serve` is tailnet-only; `funnel` is public — and **running `serve` on a
+funnelled port reverts it**. The `precis_web` role used to run `serve`
+unconditionally with `changed_when: false` + `failed_when: false`, so any
+redeploy silently un-published the site with nothing in the play recap.
+This actually happened, 17 minutes after the funnel first went up. Now
+the role picks the verb from `precis_web_funnel` (default **false**;
+`true` lives in the private overlay, never this repo) and a follow-up
+task asserts the end state. Two operational traps:
+
+- **Funnel fails by hanging**, not erroring: a node lacking the `funnel`
+  nodeAttr makes the CLI print an enablement URL and block forever. Hence
+  `async`/`poll` on that task.
+- **The overlay var must be pushed**, not just edited on the Mac —
+  otherwise a deploy launched *on melchior* reads the role default.
+
+## 9. Security validation, 2026-08-22
+
+Run against the deployed public endpoint. Everything below passed:
+
+- **120/120 GET routes → 401** unauthenticated. Unknown paths 401 too, so
+  route existence isn't enumerable by status code.
+- **No dot-segment bypass** of the `/podcast` exemption (8 encodings) —
+  the router doesn't normalise `..`.
+- **`/podcast/audio/{name}`**: allowlist match on the episode index, then
+  `resolve()` + `is_relative_to(root)`. Traversal structurally impossible.
+- **Feed token** compared as a SHA-256 digest, so no timing oracle (an
+  attacker supplies preimages, not digest bytes); an invalid `?t=` is a
+  dead end rather than a fallback to Basic.
+- **CSRF** enforced: cross-origin POST 403, same-origin 303 (control).
+- **Timing**: no usable enumeration oracle (numbers in
+  `web-auth-failed-login-observability.md`).
+
+Two findings, both fixed in `4bfe8a99`:
+
+1. The `/podcast` exemption matched by **string** prefix, so
+   `/podcastfoo` skipped auth — 404 only because no such route existed.
+   Any future `/podcasts` would have been born unauthenticated on the
+   public internet. Now matches by path segment (`_is_self_auth`).
+2. **No framing headers.** This is the gap `check_same_origin` cannot
+   close: a click inside a hostile `<iframe>` produces a request whose
+   `Origin` is *ours*, so the CSRF check passes. Fixed with
+   `SecurityHeadersMiddleware` (`X-Frame-Options: DENY` + CSP
+   `frame-ancestors 'none'`, plus `nosniff` / `Referrer-Policy` / HSTS),
+   installed outermost so it covers the 401 challenge and `/static`.
