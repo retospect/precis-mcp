@@ -50,12 +50,20 @@ Undo for the 209: `meta - 'support' - 'caveats' - 'support_reason' - 'verified_b
 Removing the bad attaches leaves the claim with nothing. Each needs a new source or
 withdrawal from the paper:
 
-- `fi189549`
-- `fi191000`
-- `fi191014`
-- `fi191021`
-- `fi191138`
-- `fi191167`
+- `fi191021` — genuinely stranded (no stamped edge at all)
+- `fi191138` — genuinely stranded (no stamped edge at all)
+- `fi189549` — 1 surviving edge, `draft-backfill` auto-`yes` (unverified)
+- `fi191000` — 3 surviving edges, all `draft-backfill` auto-`yes`
+- `fi191014` — 1 surviving edge, `draft-backfill` auto-`yes`
+- `fi191167` — 1 surviving edge, `draft-backfill` auto-`yes`
+
+**Correction (same day, on the follow-up sweep).** The original list called all six
+stranded. Four of them still carry an edge the retro-verify pass never saw, because
+those edges already had `support` set and so were outside the withheld extraction by
+construction. Those surviving edges are `meta.origin='draft-backfill'` — written
+`"support": "yes"` unconditionally at attach time, no reason, no verifier. They pass
+the gate; they are not evidence anyone checked. On *verified* evidence all six hubs
+are empty. → `evidence-edges-born-released.md`.
 
 ### A claim its own citation contradicts
 
@@ -77,6 +85,18 @@ extracted from a review paper's abstract sentence *about itself*, so it asserts
 something about the literature rather than about nature — unverifiable by this
 machinery no matter how many sources are attached. **Worth sweeping the corpus for
 other hubs of this shape before any sign-off.**
+
+**Swept — the shape is rare, and that is the bad news.** Seven title patterns over
+all 1714 live findings (control patterns confirmed the regex fires): 8 raw hits, 2
+false positives (`fi218623`/`fi218626`, real NEGF device claims that merely say
+"state-of-the-art"), leaving **5 genuine literature-about claims + 1 borderline** —
+0.35% of the corpus. `fi189549` is not a systemic shape.
+
+What it exposed instead: each of the four non-nanobud survey hubs (`fi176575`,
+`fi176820`, `fi176841`, `fi177382`) has exactly one evidence edge, and every one of
+them is **already stamped `support: yes`** — so a claim of the form "X has been
+reviewed", cited to the review itself, is sitting past the publish gate today. Not
+because a verifier was fooled: because nothing verified it. → the item below.
 
 ### Conjunctive claims (not blocking, but decide before signing)
 
@@ -266,3 +286,140 @@ That is a claim-shape problem the taproot extractor created at authoring time.
                     : Flexible Transparent Conductors and Touch Sensor*
   - Describes only the material and its gas-phase synthesis ('Carbon NanoBud, a hybrid of Carbon Nanotubes and fullerenes ... hybridization is achieved directly in the material synthesis process'); it neither produces nor tests transparent conductors or touch sensors.
 
+
+---
+
+# Follow-up pass, 2026-08-21/22 — A and B applied
+
+Scope decision: **nanobuds only.** The same auto-`yes` defect affects ~1208 edges
+on other people's claim sets; those were deliberately left alone
+(`evidence-edges-born-released.md`), as was the write-path fix.
+
+## What was applied to prod
+
+**A — the 30 rejected edges, deleted.** Row backup taken first. Unblocked 17 hubs
+that already had verified evidence.
+
+**B — the 44 `draft-backfill` auto-`yes` edges, pushed back.** Re-judged from their
+grounding chunks by 4 opus agents under the same `_PROMPT_VERIFY` contract, with
+the pre-existing `"yes"` withheld from them so it couldn't anchor the judgment.
+25 `yes`, 14 `partial`, **5 rejected** (11.4% — consistent with the first pass's
+12.5%), 0 contradicting. The 39 corroborating verdicts were written with
+`verified_by: opus-5/autoyes-pushback`; the 5 rejects were **deleted** rather
+than stripped, because stripping returns an edge to *withheld*, which blocks its
+hub — and three of the five hubs had other verified evidence that would have been
+blocked by a bad edge nobody stands behind.
+
+The 5 rejects were mis-**groundings**, not false claims: `fi191263`'s chunk was the
+title page and the abstract's opening lines about phosgene toxicity; `fi211523`'s
+never mentions the simulation the claim rests on. The papers are right; the
+attached passages were not. Re-grounding is open.
+
+## Where the paper stands
+
+| | hubs |
+|---|---|
+| publish-ready on verified or human-signed evidence | **119** |
+| blocked by a live `contradicts` | 2 (`fi189542`, `fi191316`) |
+| no evidence at all | 5 (`fi191014`, `fi191021`, `fi191138`, `fi211522`, `fi211523`) |
+| unverified auto-`yes` remaining | **0** |
+
+Started the day at 85 ready.
+
+## Open — two prose/claim edits that need a handler surface
+
+Both are agreed in substance; neither can be done with raw SQL.
+
+**`fi191015` — prose fix in draft `173020`, chunk `2445891`.** The hub claim
+("local curvature and structural defects lower the fusion reaction barrier") is
+*supported* — two verified edges carry it. Earlier notes in this file called it
+"a claim its own citation contradicts"; that was wrong. What the source refutes is
+the **surrounding argument**: the draft cites it to rationalize *defect-driven
+nucleation*, while the same paper reports that "in all considered cases the
+fullerene avoids the area where the defect is located". Barrier height and spatial
+preference are different things. Either re-source the nucleation framing or stop
+claiming the DFT work supports it.
+
+**`fi191021` — restate the hub claim.** The extractor narrowed a good draft
+sentence. Draft: "…relate the band gap of a carbon nanobud to **both the areal
+density of attached fullerenes and the chirality** of the host nanotube." Hub:
+"…controlled **largely by the chirality**…" — the density half dropped, and
+"largely" is a relative-importance claim no source makes. All three rejected
+sources fit the draft's version. Restate the hub to the draft sentence and
+re-attach them.
+
+⚠ **Why neither is a SQL edit.** A hub carries a `finding_body` chunk (`ord 0`)
+holding the claim verbatim, with its own embedding — `refs.title` alone would
+leave the chunk and ANN index asserting the old claim. Draft prose is the same
+story: body chunks are append-only, so a rewrite must go through
+`draft_handler.edit` (DELETE+INSERT) or the embedding/summary cascade strands.
+There is no `precis draft edit` CLI verb, and this repo's `precis` MCP is
+read-only by project rule. Do these from the web reader, or add the verb.
+
+**`fi191138` — re-grounding target found.** The result *is* in our copy of
+"Chemical and Physical Viewpoints About the Bonding in Fullerene–Graphene Hybrid
+Materials" (ref `3905`): chunk `473350` (abstract) states vdW assembly "also
+governed by permanent electrostatic Coulombic interactions that contribute at
+least 31%" versus FeG cycloaddition "by the formation of highly polarized chemical
+bonds"; chunk `473406` carries Table 2 (EDA of G-Fullerene vs FeG-Fullerene).
+`draft-backfill` attached the methods paragraph instead. Note the hub says pristine
+bonding is "dominated by weak electrostatic interactions" while the paper says
+vdW-assembled *with* ≥31% electrostatic — that verifies `partial`, not `yes`,
+unless the hub is softened.
+
+## Both edits applied, 2026-08-22
+
+**`fi191021` retitled** through `edit(kind='finding', title=…)` →
+`hub.refine_claim_sentence`. Old `finding_body` chunk `2612007` deleted, new
+`3119389` minted with `embedding NULL` (cascade re-runs correctly). Old `pub_id`
+kept as an alias, so existing `[fi191021]` cites still resolve. New claim:
+
+> First-principles calculations relate the band gap of a carbon nanobud to both
+> the areal density of attached fullerenes and the chirality of the host nanotube.
+
+**`fi191015` prose fixed** through `edit(kind='draft', id='dc2445891')`. The
+three-item citation list is intact; only the framing clause changed, plus an
+in-place qualifier:
+
+> Density-functional studies **characterize the energetics of this bonding rather
+> than the siting**: local curvature and structural defects in the graphene lattice
+> lower the fusion reaction barrier between C₆₀ and graphene [fi191015] **(though
+> the same calculations find the fullerene avoiding the immediate vicinity of the
+> defect, so barrier lowering alone does not account for preferential nucleation
+> there)**, DFTB calculations show that …
+
+### How the draft cascade actually works (the docstring is misleading)
+
+`precis.taproot.backfill`'s docstring says a prose rewrite goes through
+`draft_handler.edit` so "the chunk's DELETE+INSERT embedding/summary cascade
+re-runs". It does **not** DELETE+INSERT: `dc2445891` kept its `chunk_id` and its
+July embedding row. What it does is update `text` **and** `chunks.content_sha`
+together, leaving `chunk_embeddings.content_sha` mismatched — and
+`workers/embed.py`'s claim predicate is `NOT EXISTS (… o.status='failed' OR
+o.content_sha IS NOT DISTINCT FROM c.content_sha)`, so the mismatch is exactly
+what re-queues the chunk. The cascade is correct; the mechanism is sha-staleness,
+not row replacement. A finding hub retitle *does* replace the row (`2612007` →
+`3119389`), so the two paths genuinely differ.
+
+⚠ The hazard the append-only rule guards against is therefore specifically a raw
+`UPDATE chunks SET text = …`, which leaves `content_sha` untouched and makes the
+stale embedding **permanent and invisible** — the worker will never re-claim it.
+
+## Still open
+
+- **`fi191021` — re-attach its 3 sources.** They were deleted in A; the claim now
+  matches them. Attach withheld (`attach_evidence` takes `meta=None`; the
+  `"support": "yes"` defaults live in the *callers*, not the function), then verify.
+- **`fi191138` — re-ground** to ref `3905` chunk `473350` (abstract result) and/or
+  `473406` (Table 2). Expect `partial` unless the hub's "dominated by weak
+  electrostatic interactions" is softened to match "vdW-assembled with ≥31%
+  electrostatic".
+- **`fi191014` — numbers disagree with the draft.** The hub says the aerosol CVD
+  distribution spans **0.7–2 nm**; the draft sentence citing it says **0.4–2 nm**;
+  and the evidence pass found the source passage states *no* nanometre range at
+  all (it reports TEM cage-size statistics dominated by C42/C60). Three different
+  values, one of them absent from the source. Needs the real number before this
+  hub gets evidence.
+- **`fi211522`, `fi211523`** — no evidence; `fi211523` is a re-grounding candidate
+  (its deleted edge's chunk never mentioned the simulation the claim rests on).
+- **`fi189542`, `fi191316`** — blocked by a live `contradicts`; separate gate.
