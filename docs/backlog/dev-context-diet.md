@@ -12,8 +12,11 @@ session ≈28k. Target: **~31k (~3%)**.
 
 **User-only edits** (auto-mode classifier blocks agent writes to settings):
 - `.claude/settings.json`: `"disableArtifact": true` (~4k; no repo dependents);
-  `"disableWorkflows": true` (~5k) ONLY if losing `/coder-chain` is acceptable
-  (`.claude/workflows/coder-chain.js` runs on the Workflow tool).
+  `"disableWorkflows": true` (~5k) — the `/coder-chain` caveat is now moot:
+  `coder-chain` re-platformed onto the Agent tool (86808d8b,
+  `.claude/skills/coder-chain/SKILL.md`; old `.claude/workflows/coder-chain.js`
+  deleted), so disabling the Workflow tool no longer costs it. Still a
+  user-only edit — apply it whenever convenient.
 - `~/.claude/settings.json`: `"disableClaudeAiConnectors": true` (stops gmail
   connector auto-fetch).
 - Optional `skillOverrides`: `"name-only"` for land/go/rebase/next (~0.2k).

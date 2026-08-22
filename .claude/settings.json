@@ -1,4 +1,5 @@
 {
+  "disableWorkflows": true,
   "env": {
     "ENABLE_TOOL_SEARCH": "auto:20"
   },
