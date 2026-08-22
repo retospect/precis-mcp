@@ -5,7 +5,8 @@ summary: unit/exponent/dash/approximation spelling rules for a taproot claim sen
 answers:
   - how should I spell a unit, exponent, or dash in a taproot claim sentence?
   - why did my claim get blocked at approve for notation?
-applies-to: put/edit(kind='finding') claim-hub title text; taproot/notation.py::lint_notation; nanopub mint-gate title checks
+  - do I have to type the canonical symbols when searching?
+applies-to: put/edit(kind='finding') claim-hub title text; taproot/notation.py::lint_notation; nanopub mint-gate title checks; search(kind='finding') query wording — see precis-search-help "Notation"
 status: active
 ---
 
