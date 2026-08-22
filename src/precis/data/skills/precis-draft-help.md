@@ -369,6 +369,12 @@ directly, revealing the permission form inline for `third_party`.
 Programmatic: `edit(kind='draft', id='dc<id>', origin='third_party',
 permission={…})` — caption/image bytes stay put.
 
+The caption **is** the figure chunk's `text`, so it edits like any other
+prose: `edit(kind='draft', id='dc<id>', text='…')`, or **"✎ edit
+caption"** on a focused figure in `/smartdraft` (same inline editor a
+paragraph gets, minus the Enter-split / Backspace-merge keys — that
+chunk also carries the image). Blob and `meta.figure` are untouched.
+
 A figure's **medium** (how the pixels are produced) is separate from
 `origin`: a static **blob** (`image=` above), a data-driven **graph**
 (`own_graph` + a render recipe, below), or an **editable SVG canvas**

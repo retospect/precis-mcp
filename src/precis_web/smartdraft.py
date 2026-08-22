@@ -195,12 +195,16 @@ class ChunkNode:
 
     @property
     def editable(self) -> bool:
-        """Only free-text body chunks are inline-editable via the plain-text
-        editor here (a heading is text too). A table gets its own grid editor
-        (``is_table`` / ``table`` — gripe 56746); a figure gets its own
-        medium-aware image render + clearance badge (``is_figure`` /
-        ``figure_render`` — gripe 56668) — neither has a free-text edit
-        path, so both stay outside ``editable``."""
+        """Only free-text body chunks are inline-editable via the *generic*
+        focus branch's plain-text editor (a heading is text too). A table gets
+        its own grid editor (``is_table`` / ``table`` — gripe 56746) and a
+        figure its own medium-aware image render + clearance badge
+        (``is_figure`` / ``figure_render`` — gripe 56668), so both are routed
+        to a dedicated branch before this gate is consulted and stay outside
+        it. NB a figure IS caption-editable — its branch wraps the same
+        ``draft_edit`` editor around the ``<figure>`` with ``editable`` passed
+        literally (``block_keys=false``, so Enter/Backspace can't split or
+        merge the chunk holding the image); this property is not that gate."""
         return self.chunk_kind in ("paragraph", "heading")
 
     @property

@@ -313,6 +313,24 @@
           if (popIdOf(openEl) === popIdOf(el)) openEl = null;
         },
       };
+
+      // A preview fetch that never lands must not leave the card sitting on
+      // its "loading…" seed (linkify._POPOVER_PLACEHOLDER) forever: the
+      // anchor's hx-trigger is 'mouseenter once', so there is no retry to
+      // wait for. One delegated handler, page-wide — same shape as the
+      // open/close coordination above, and for the same reason (a
+      // citation-heavy draft renders thousands of these cards).
+      function refPopoverFail(e) {
+        const t = e.detail && e.detail.target;
+        if (!t || !t.classList || !t.classList.contains('ref-popover')) return;
+        const seed = t.querySelector('.ref-popover-status');
+        if (!seed) return;   // real content already swapped in — leave it
+        seed.className = 'ref-popover-status block px-1 py-1.5 text-xs text-rose-500';
+        seed.textContent = 'preview unavailable — click through to open it';
+      }
+      document.addEventListener('htmx:responseError', refPopoverFail);
+      document.addEventListener('htmx:sendError', refPopoverFail);
+      document.addEventListener('htmx:timeout', refPopoverFail);
     }
   </script>
   <script>

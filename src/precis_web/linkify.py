@@ -204,6 +204,25 @@ def _cite_style(key: str, local: frozenset[str] | None) -> tuple[str, str]:
     return _CITE_LOCAL_CLS, "§"
 
 
+#: Seed content for a hover-preview card, replaced by the htmx swap when the
+#: fetch lands. The card is REVEALED on a 200ms hover-intent timer that is
+#: deliberately independent of the fetch (``hx-trigger="mouseenter once"``
+#: fires immediately, and the result is cached for every later hover) — so a
+#: preview slower than 200ms used to paint an empty white box for the gap, the
+#: "sometimes it shows nicely, sometimes just an empty box" flake. It is the
+#: FIRST hover on any given anchor that can be slow; every one after it hits
+#: the already-swapped card, which is why the same chip looked fine on a
+#: retry. Seeding the card means the slow case reads as "loading…", never as
+#: a blank card. A failed fetch is rewritten to a terminal message by the
+#: delegated ``htmx:responseError``/``htmx:sendError`` listener in
+#: templates/base.html.j2 — ``once`` means there is no second attempt, so the
+#: placeholder must not be left sitting there claiming to still be loading.
+_POPOVER_PLACEHOLDER = (
+    '<span class="ref-popover-status block px-1 py-1.5 text-xs text-slate-400">'
+    "loading…</span>"
+)
+
+
 def _anchor_html(
     *,
     href: str,
@@ -352,7 +371,7 @@ def _anchor_html(
         f'text-sm whitespace-normal max-h-96 overflow-y-auto" '
         f'x-show="hovered" x-cloak :style="popStyle" '
         f'@mouseenter="clearTimeout(closeTimer); hovered = true" '
-        f'@mouseleave="{delayed_close_expr}"></span>'
+        f'@mouseleave="{delayed_close_expr}">{_POPOVER_PLACEHOLDER}</span>'
         f"</template>"
         f"</span>"
     )

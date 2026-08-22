@@ -14,6 +14,7 @@ reads (``smartdraft.py`` ~lines 218-250): ``dc``, ``handle``, ``chunk_id``,
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -1238,6 +1239,44 @@ def test_smartdraft_reader_figure_focus_renders_image_and_clearance_badge(
     # origin chip + clearance badge (cleared — an "original" blob-backed figure)
     assert ">original<" in body
     assert "✓ cleared" in body
+
+
+def test_smartdraft_reader_figure_focus_caption_is_inline_editable(
+    smartdraft_client: TestClient,
+) -> None:
+    """A figure's ``chunks.text`` IS its caption, so focusing one offers the
+    SAME ✎ inline text editor a prose block gets (``draft_editors.draft_edit``
+    → POST /drafts/{ident}/text) — before this, a caption was the one piece of
+    draft prose with no edit path in either reader: the focus pane rendered the
+    image plus the clearance form and nothing that could change the words.
+
+    The editor is opened with ``block_keys=false``: a figure chunk also carries
+    the image, so Enter-split would strand the picture on a truncated caption
+    and Backspace-merge would retire the chunk (figure and all) into the block
+    above."""
+    fig_dc = handle_registry.format_handle("draft", 5, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?focus={fig_dc}")
+    assert r.status_code == 200
+    body = r.text
+    # the ✎ trigger, and the shared editor scope wrapping this figure's handle
+    assert "✎ edit caption" in body
+    assert "draftEdit('sdt', 'H000005'" in body
+    # …with the block-boundary keys off (the 6th arg), unlike a prose block
+    assert re.search(
+        r"draftEdit\('sdt', 'H000005', '[0-9a-f]+', true, false, false\)", body
+    )
+    # the editing surface is really there (not just the trigger), seeded with
+    # the caption text
+    assert "Fig 1. A diagram." in body
+    # The scope wraps ONLY the caption: draft_edit hides everything it is
+    # handed (x-show="!editing"), so a scope around the whole block would
+    # black out the picture the moment you clicked ✎ and leave you captioning
+    # blind. The <img> must therefore render BEFORE the editor scope opens.
+    img = body.index('<img src="/drafts/blob/H000005?v=fixturesha00"')
+    assert img < body.index("draftEdit('sdt', 'H000005'")
+    # …and the caption stays a direct child of <figure>, as the element
+    # requires — the macro's wrapper <div> goes inside the <figcaption>.
+    assert "<figcaption" in body[img : body.index("draftEdit('sdt', 'H000005'")]
 
 
 def test_smartdraft_collaborate_pane_has_figure_upload_and_clearance_list(

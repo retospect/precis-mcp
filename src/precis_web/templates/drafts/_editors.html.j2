@@ -230,12 +230,20 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
           },
           // Enter splits the block at the caret into two chunks (this one keeps
           // the text before, a new one gets the text after). When the `[` picker
-          // is open, Enter accepts the highlighted result instead.
-          'Enter': (state) => {
+          // is open, Enter accepts the highlighted result instead. A caller that
+          // wires NO onSplit (a figure caption — its chunk also carries the
+          // image, so splitting it would strand the picture on a truncated
+          // caption) gets a soft line break instead, like Shift-Enter.
+          'Enter': (state, dispatch) => {
             if (ac && ac.key('enter')) return true;
+            if (!opts.onSplit) {
+              if (dispatch) dispatch(state.tr.replaceSelectionWith(
+                schema.nodes.hard_break.create()).scrollIntoView());
+              return true;
+            }
             const before = textUpTo(state.doc, state.selection.from);
             const after = docToText(state.doc).slice(before.length);
-            opts.onSplit && opts.onSplit(before, after);
+            opts.onSplit(before, after);
             return true;
           },
           'Tab': () => { if (ac && ac.key('enter')) return true; return false; },
@@ -259,10 +267,12 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
           },
           // Backspace at the very start merges this block into the previous one
           // (an empty block just gets deleted; caret lands at the join point).
+          // No onMergePrev (a figure caption) → fall through to the default, so
+          // backspacing at the start can't retire the chunk holding the image.
           'Backspace': (state) => {
             const sel = state.selection;
-            if (sel.empty && sel.$from.parentOffset === 0) {
-              opts.onMergePrev && opts.onMergePrev();
+            if (sel.empty && sel.$from.parentOffset === 0 && opts.onMergePrev) {
+              opts.onMergePrev();
               return true;
             }
             return false;
@@ -322,7 +332,13 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
 // it dispatches `draft:edited` (handle, warnings) — the classic reader's
 // virtual scroller re-hydrates just this block in place; smartdraft listens
 // for the same event and does a full-panel refresh (view.html.j2).
-function draftEdit(ident, handle, baseSha, editable, isHeading) {
+// ``blockKeys`` (default true) gates the block-boundary keys: Enter splits
+// the chunk, Backspace-at-start merges it into the previous one, arrows hand
+// off to a neighbour. A figure caption passes false — that chunk also carries
+// the image, so a split would strand the picture on a truncated caption and a
+// merge would retire the chunk (and with it the figure) outright.
+function draftEdit(ident, handle, baseSha, editable, isHeading, blockKeys) {
+  const bk = blockKeys !== false;
   return {
     editing: false, saving: false, err: '', orig: '',
     pmActive: false, _pm: null,   // ProseMirror surface (falls back to textarea)
@@ -386,9 +402,9 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
                 onBlur: () => this.save(),
                 onSave: () => this.save(),
                 onCancel: () => this.cancel(),
-                onSplit: (before, after) => this.split(before, after),
-                onLeave: (dir) => this.leave(dir),
-                onMergePrev: () => this.mergePrev(),
+                onSplit: bk ? ((before, after) => this.split(before, after)) : null,
+                onLeave: bk ? ((dir) => this.leave(dir)) : null,
+                onMergePrev: bk ? (() => this.mergePrev()) : null,
               });
             } catch (e) {
               this.pmActive = false; this._pm = null;
@@ -544,15 +560,19 @@ function tableEditor(ident, handle, baseSha, seed) {
 }
 </script>
 
-{# draft_edit(ident, handle, base_sha, editable, is_heading, seed_text, rows=3)
+{# draft_edit(ident, handle, base_sha, editable, is_heading, seed_text, rows=3,
+              block_keys=True)
    Wraps caller() (the rendered, non-editing view — including any of your own
    edit-trigger buttons, e.g. `@click="startEdit()"`) with the `draftEdit`
    Alpine scope and, when `editable`, the ProseMirror/textarea editing surface
    beneath it (shown instead, via x-show). `rows` sizes the plain-textarea
    fallback (classic reader uses the default 3; a larger reading pane may
-   want more). #}
-{% macro draft_edit(ident, handle, base_sha, editable, is_heading, seed_text, rows=3) %}
-<div x-data="draftEdit('{{ ident }}', '{{ handle }}', '{{ base_sha or '' }}', {{ editable | tojson }}, {{ is_heading | tojson }})">
+   want more). `block_keys=False` turns off the block-boundary keys
+   (Enter-split / Backspace-merge / arrow handoff) — for a chunk whose text is
+   one bound field rather than a free-standing prose block, i.e. a figure
+   caption, whose chunk also carries the image. #}
+{% macro draft_edit(ident, handle, base_sha, editable, is_heading, seed_text, rows=3, block_keys=True) %}
+<div x-data="draftEdit('{{ ident }}', '{{ handle }}', '{{ base_sha or '' }}', {{ editable | tojson }}, {{ is_heading | tojson }}, {{ block_keys | tojson }})">
   <div x-show="!editing">{{ caller() }}</div>
   {% if editable %}
   {# ProseMirror mount point (rich editor + live ref squiggle); shown once it

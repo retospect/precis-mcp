@@ -137,6 +137,23 @@ def test_popover_teleported_to_body() -> None:
     assert "ref-popover" in out
 
 
+def test_popover_card_is_seeded_so_a_slow_fetch_is_never_a_blank_box() -> None:
+    """The 200ms hover-intent timer reveals the card independently of the
+    fetch, so a preview slower than that used to paint an empty white box —
+    the "sometimes it shows nicely, sometimes just an empty box" flake (and
+    only ever on the FIRST hover of an anchor, since ``once`` caches the
+    result for the rest of the page's life). The card ships with a
+    ``loading…`` seed that the htmx swap replaces."""
+    out = str(linkify_refs("paper:acheson26"))
+    card = out[out.index('<template x-teleport="body">') :]
+    assert "loading…" in card
+    assert "ref-popover-status" in card  # the hook base.html.j2 rewrites on error
+    # …and it really is INSIDE the card (so hx-swap="innerHTML" clears it),
+    # not a sibling that would survive the swap and stack above the preview.
+    assert 'hx-swap="innerHTML"' in out
+    assert card.rstrip().endswith("</span></template></span>")
+
+
 def test_popover_hx_target_is_unique_id_not_dom_adjacency() -> None:
     """Once teleported, the card is no longer a DOM sibling of the anchor,
     so ``hx-target`` can't rely on ``next .ref-popover`` any more — each
@@ -1039,6 +1056,21 @@ def test_base_template_installs_one_delegated_popover_registry() -> None:
     # text (an unrelated stale-template-substitution symptom) — so this
     # script must never introduce one (no zero-argument IIFE/call).
     assert "()" not in html
+
+
+def test_base_template_rewrites_a_failed_preview_off_its_loading_seed() -> None:
+    """The card now ships seeded with ``loading…`` so a slow fetch never
+    paints a blank box — which means a fetch that FAILS must be rewritten, or
+    the card would sit there claiming to load forever (the anchor's
+    ``hx-trigger`` is ``mouseenter once``: there is no second attempt).
+    Delegated once page-wide, like the open/close registry above."""
+    html = _base_template_script()
+    assert html.count("document.addEventListener('htmx:responseError'") == 1
+    assert html.count("document.addEventListener('htmx:sendError'") == 1
+    # …and it only rewrites a card still showing the seed, so it can never
+    # clobber a preview that already swapped in.
+    assert "querySelector" in html and "ref-popover-status" in html
+    assert "preview unavailable" in html
 
 
 def test_base_template_registry_installs_one_scroll_and_keydown_listener() -> None:
