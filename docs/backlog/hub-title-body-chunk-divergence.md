@@ -1,6 +1,6 @@
 ---
-status: draft
-title: 45 claim hubs have a refs.title that differs from their ord=0 body chunk — search and dedup run on the wrong string (297 was the contaminated-predicate count)
+status: done
+title: RESOLVED 2026-08-22 — all 45 diverged claim hubs repaired on prod; strict divergence is 0 of 1,254 (297 was the contaminated-predicate count)
 model: sonnet
 ---
 
@@ -17,6 +17,45 @@ Measured 2026-08-19 over the live claim cohort (`kind='finding'` +
 
 Found while picking an exemplar hub, not by any check — nothing in the
 codebase compares the two.
+
+## CLOSED 2026-08-22 — the last 3 repaired; strict divergence is 0 of 1,254
+
+The three held-back rows were adjudicated against their corroborating papers,
+**all of which were already in the corpus** — the earlier note that fi191134
+needed an out-of-corpus source to settle was wrong. Each hub `cites` draft
+173020 and `corroborates` a paper reachable via `links`.
+
+In all three the **title was authoritative**, and in two of them the *body was
+not merely shorter but wrong* — which is why the "body-longer ⇒ body is richer"
+heuristic that held them back was worth distrusting:
+
+| hub | source | why the body lost |
+|---|---|---|
+| fi190976 | fi1483 | body says nanobuds form at "1000–1150 °C"; the source reports that at 1100 and 1150 °C "only non-active catalyst particles were observed" |
+| fi191129 | fi432 | body's extra clause ("width of this plateau set by the length of the neck") misstates Fig. 2 — increasing neck length shifts the plateau *upward in energy*, it does not set its width |
+| fi191134 | fi6028 | body says the opening scales "linearly with defect content", misreading a sentence about *degradation*; it also drops the source's headline that high defect concentration reduces the bandgap toward zero |
+
+Two titles were **amended before** the body was derived from them, because
+repairing an unamended title would have propagated its own error into the body
+*and* the `pub_id`:
+
+- **fi190976** gained the condition the coverage maximum depends on
+  (`… at a reactor temperature of 1000 °C under 145 ppm introduced water
+  vapour`). Without added water the product is pure CNTs, so the bare title
+  over-generalised a conditional result.
+- **fi191134** `DFT–NEGF` → `DFTB–NEGF`. The source used *density functional
+  tight binding* combined with NEGF; DFTB is not DFT.
+
+Amendments were applied as **guarded string surgery on the live DB title**, not
+as hardcoded replacement sentences — each asserted its anchor occurred exactly
+once and that the title actually changed, so a transcription slip could not
+silently reword a claim. Deltas confirmed it: +38 ch and +1 ch respectively.
+
+Result: **3 repaired, 0 failed**, notation lint clean on all three, all three
+moved `pub_id` with the old kept as alias (same mechanism as the 42). Corpus
+verification: **1,254 strict hubs, 0 diverged.** (1,254 vs the 1,249 measured a
+day earlier is ordinary corpus growth — five new hubs, all consistent.) Script:
+`~/precis-experiments/taproot-divergence-45-2026-08-21/repair-held3.py`.
 
 ## APPLIED 2026-08-21 — 42 repaired on prod, 3 held
 
@@ -101,6 +140,16 @@ title-authoritative, and two must not be repaired mechanically:
 | fi190976 | **title-authoritative, safe.** Title is the claim (max fullerene coverage at 1000 °C); body is a narrative recap attributing to Nasibulin et al. over a broader 1000–1150 °C process range. Nothing lost. |
 | fi191129 | **do not overwrite — the body holds a second atom.** It ends "…with the width of this plateau set by the length of the neck connecting tube and fullerene", a clause the title does not carry. This is a decomposition candidate (`conjunct-of`), not a divergence repair. |
 | fi191134 | **contradiction — adjudicate against the source.** Title: higher defect concentrations "reduce the bandgap back toward zero" (non-monotonic). Body: "the degree of opening scaling linearly with defect content" (monotonic). These are different physical claims; one is wrong. Repairing either direction enshrines a possibly-false claim. |
+
+**Superseded 2026-08-22 — see the CLOSED section at the top.** Reading the
+sources revised two of these three verdicts. fi191129's clause is not a second
+atom to preserve but a **misstatement** of the source figure, so it was dropped
+rather than decomposed. fi191134 was adjudicable **from the corpus** — fi6028
+was already ingested — and its title won, though the title needed its own
+`DFT`→`DFTB` fix first. Only fi190976's verdict survived intact, and even it
+gained a missing condition. The row above that aged worst is fi191129's: "the
+body holds a clause the title lacks" was read as *richer*, when the correct
+question was whether the clause is **true**.
 
 Full text of all 45 exported for review:
 `~/precis-experiments/taproot-divergence-45-2026-08-21/review.md`.
@@ -266,16 +315,25 @@ see the status note above.
 
 1. ~~**Find and fix the writer.**~~ **Done 2026-08-21** — swept, no live
    bypassing writer remains (see above). The repair is no longer temporary.
-2. **Repair 42 of the 45 strict hubs: chunk from title, one direction.** The
-   June cohort that motivated "per cohort, not globally" is not in the strict
-   population at all (see the re-measure above). **Hold fi191129** (second
-   atom — route to the decomposition pass) **and fi191134** (title/body
-   contradict on the physics — needs the source paper); fi190976 is safe. Re-derive `pub_id` after, and re-run the duplicate
-   scan, since collapsing divergence can surface hidden duplicates (this
-   already happened twice: fi191259/191268 and fi191179/191260).
+2. ~~**Repair 42 of the 45 strict hubs: chunk from title, one direction.**~~
+   **Done — all 45.** 42 mechanically on 2026-08-21, the last 3 on 2026-08-22
+   after source adjudication (see the CLOSED section). The June cohort that
+   motivated "per cohort, not globally" is not in the strict population at all
+   (see the re-measure above). `pub_id` was re-derived by the repair itself.
+   **Still open: re-run the duplicate scan**, since collapsing divergence can
+   surface hidden duplicates (this already happened twice: fi191259/191268 and
+   fi191179/191260) — and it must run on the *strict* predicate, not the
+   contaminated one the 24-pair sweep used.
    Chase-tree rows are out of scope: they never mint, and nothing publishes
    their bodies. If they are ever repaired it is a separate, lower-stakes pass
    that still needs the per-cohort split.
+2b. **Optional: mint the neck-length claim fi191129's body gestured at.** The
+   dropped clause was wrong, but the underlying dependence is real and is in
+   fi432: *"With increasing neck length this region shifts upward in energy and
+   more dips appear at low energies."* If minted it is a **separate atom**, not
+   a conjunct on fi191129, and it must go through the dedup-before-mint sweep
+   first. Deliberately not done as part of the repair — repairing divergence
+   and minting new claims are different authorities.
 3. **Detection has landed** — `title-body-divergence` and
    `missing-body-chunk` in the `precis taproot lint` cohort sweep, reporting
    only. Do not add either to `--fix`; see the opposite-repair argument above.
