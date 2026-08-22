@@ -11,18 +11,22 @@ the root cause and the class it belongs to: `psql` sourced the DB user's
 `until:` compared against, so the comparison could never succeed at any job
 count). Two things it leaves open.
 
-## 1. Confirm on the next full-bounce deploy
+## 1. Confirm on a full-bounce deploy — DONE 2026-08-22, both directions
 
-`psql -X` now returns a bare `0` as `deploy` on caspar, so the `until` *can*
-be satisfied — but that's verified at the shell, not through ansible. On the
-next `scripts/deploy` with `precis_bounce_scope: full`, check that
-`TASK [Wait for in-flight long jobs leased to this host to finish]` clears in
-seconds and reports `drain complete` rather than stalling 30 minutes.
+Verified on the first full-bounce deploy after the fix, and it happened to
+exercise both cases without being staged:
 
-Force the negative case too, once: hold a `STATUS:running` long job with a
-live `lease_until` and confirm the task actually waits for it. The drain has
-never demonstrably waited for anything, so "it returns 0 quickly" and "it
-works" are still different claims.
+- **melchior, balthazar** — cleared in seconds, `drain complete — running long
+  jobs (lease alive) leased here: 0`.
+- **spark** — retried 40 times (~20 min) and *then* reported `drain complete
+  … 0`. Spark had a genuine in-flight long job with a live lease, and the
+  deploy waited for it before bouncing.
+
+That second one is the negative case this section asked for, so it needs no
+separate staging. Before the fix all three hosts would have burned the full 60
+retries and printed `timed out (proceeding anyway)` regardless of job count;
+now the wait tracks actual work. The drain has both returned promptly when
+idle and demonstrably waited when not.
 
 ## 2. Re-read job deaths that happened around a deploy
 
