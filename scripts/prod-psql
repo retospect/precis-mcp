@@ -29,14 +29,22 @@ OPTS="${PRECIS_PROD_PSQL_OPTS:-}"
 # Fixed connection string — no user input interpolated, so it's quoting-safe.
 # -P pager=off and ON_ERROR_STOP make one-shot output clean and fail loudly.
 REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1 ${OPTS}"
+# -X (skip the remote user's ~/.psqlrc) on the SCRIPTED paths only. That file
+# is written for humans — on caspar it sets `\timing on`, `\x auto` and
+# unicode `\pset` borders — and every one of those lands on STDOUT, so a
+# caller parsing a `-At` scalar gets "1755892345\nTime: 0.4 ms" instead of a
+# number. Bit the deploy drain (never once ran, 2026-08-22) and would bite
+# scripts/deploy's canary heartbeat check on its first use. The interactive
+# branch below deliberately keeps ~/.psqlrc — that's a human at a prompt.
+REMOTE_SCRIPTED="psql -X -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1 ${OPTS}"
 
 if [[ $# -gt 0 ]]; then
     # One-shot: the SQL goes over ssh via psql's STDIN, never interpolated into
     # the remote command line — so any quotes/`$`/`;` in the SQL are safe.
-    printf '%s\n' "$*" | ssh -o IdentityAgent=none "$HOST" "$REMOTE"
+    printf '%s\n' "$*" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
 elif [[ ! -t 0 ]]; then
     # Piped SQL on stdin.
-    ssh -o IdentityAgent=none "$HOST" "$REMOTE"
+    ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
 else
     # No args, interactive terminal → interactive psql (allocate a tty).
     exec ssh -t -o IdentityAgent=none "$HOST" "$REMOTE"

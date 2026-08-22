@@ -568,6 +568,13 @@
     # Bound on the drain wait below (30s * N) — ops can pass
     # `-e precis_drain_retries=<n>` to shorten it for an urgent deploy.
     precis_drain_retries: 60
+    # Superuser to run the drain query as on the DB node. Same os-split as
+    # roles/postgres's pg_user, but resolved against the DELEGATED host's
+    # vars — a bare `os_family` here would read this play's host, not the
+    # DB node. The `| default` is a fail-loud fallback, not a guess: if the
+    # inventory ever stops defining os_family for the data host, the
+    # preflight below fails on `sudo: unknown user` instead of stalling.
+    precis_drain_pg_user: "{{ 'deploy' if hostvars[groups['data'][0]]['os_family'] | default('linux') == 'darwin' else 'postgres' }}"
     # 0b2's scope classifier gates how much of this play runs:
     #   full — everything below, unchanged from pre-scope behavior.
     #   web  — skip drain (nothing worker-side is moving) and bounce ONLY
@@ -599,13 +606,36 @@
         state: touch
         mode: "0644"
 
+    # Preflight — prove the drain query can RUN before we start waiting on
+    # it. A drain that cannot ask the question is not a drain that found
+    # zero jobs, but `failed_when: false` + an `until` on stdout makes the
+    # two indistinguishable: any psql problem yields stdout that never
+    # equals '0', so the wait below burns its full retry budget and then
+    # proceeds anyway. That fail-open silence is why the drain had never
+    # once run (found 2026-08-22): psql sources the become user's
+    # `~/.psqlrc`, whose `\timing on` appends a "Time: 0.4 ms" line to
+    # STDOUT, so `stdout | trim` was "0\nTime: 0.4 ms" — never '0', even on
+    # a fully idle cluster. `-X` (below) is the fix; this task is the guard
+    # that makes the next such breakage loud and immediate instead of a
+    # 30-minute silent no-op.
+    - name: Preflight the drain query (fail loudly if it cannot run)
+      when: precis_full_bounce | bool
+      delegate_to: "{{ groups['data'][0] }}"
+      become: true
+      become_user: "{{ precis_drain_pg_user }}"
+      ansible.builtin.command:
+        argv: [psql, -X, -d, precis_prod, -tAc, "SELECT 0"]
+      register: precis_drain_probe
+      changed_when: false
+      failed_when: (precis_drain_probe.stdout | default('') | trim) != '0'
+
     # Delegated to the DB node: refs kind='job' carry lease/state in meta
     # + STATUS: tags (STATUS:running via ref_tags/tags), not a column —
     # see precis.workers.executors._common's claim query for the same
-    # shape. Bounded wait (retries * delay, default 30 min) — a stuck
-    # job must never block a deploy forever; failed_when: false + the
-    # debug task below make the timeout visible instead of silently
-    # racing the restart.
+    # shape. Bounded wait (retries * delay, default 30 min) — a stuck job
+    # must never block a deploy forever, so this task still fails open on
+    # timeout; the preflight above is what keeps "open" from meaning
+    # "blind".
     #
     # `lease_until` filter: a STATUS:running row whose lease expired more
     # than 10 minutes ago (same orphan grace as the reconciler) is a corpse
@@ -618,14 +648,13 @@
       when: precis_full_bounce | bool
       delegate_to: "{{ groups['data'][0] }}"
       become: true
-      # Same os-split as roles/postgres's pg_user — resolved against the
-      # DELEGATED host's vars (a bare os_family here would read this
-      # play's host, not the DB node).
-      become_user: >-
-        {{ 'deploy' if hostvars[groups['data'][0]]['os_family'] | default('linux') == 'darwin'
-           else 'postgres' }}
+      become_user: "{{ precis_drain_pg_user }}"
+      # -X is load-bearing, not hygiene: without it psql reads the become
+      # user's ~/.psqlrc, and any output-shaping setting there (\timing,
+      # \pset border/linestyle, \x auto) corrupts the -tAc scalar this
+      # task's `until` compares against. See the preflight above.
       ansible.builtin.shell: >-
-        psql -d precis_prod -tAc "SELECT count(*) FROM refs r
+        psql -X -d precis_prod -tAc "SELECT count(*) FROM refs r
           JOIN ref_tags rt ON rt.ref_id = r.ref_id
           JOIN tags t ON t.tag_id = rt.tag_id
           WHERE r.kind = 'job'

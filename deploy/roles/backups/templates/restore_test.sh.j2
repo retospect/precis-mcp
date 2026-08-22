@@ -41,7 +41,9 @@ export PGOPTIONS="-c max_parallel_maintenance_workers=0 -c maintenance_work_mem=
 nice -n 19 pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges -j1 "${LATEST_DUMP}"
 
 # Basic sanity check — a healthy precis_prod restore has hundreds of tables.
-TABLE_COUNT=$(psql -U "${PG_USER}" -d "${TEST_DB}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
+# -X: skip ~/.psqlrc, whose interactive \timing / \pset settings would append
+# a "Time: …" line to this -tAc scalar (same trap that stalled the deploy drain).
+TABLE_COUNT=$(psql -X -U "${PG_USER}" -d "${TEST_DB}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 echo "[$(date)] Restore OK — ${TABLE_COUNT} tables found"
 
 # Clean up.

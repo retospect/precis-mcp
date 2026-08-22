@@ -33,5 +33,5 @@ SQL="$(uv run python -c 'from precis.cli.schema_doc import INTROSPECT_SQL; print
 echo "gen-schema: introspecting ${DB_NAME} via ssh ${SSH_HOST} → ${OUT}"
 printf '%s\n' "$SQL" \
   | ssh -o IdentityAgent=none "$SSH_HOST" \
-      "psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME} -tA -F\$'\t'" \
+      "psql -X -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME} -tA -F\$'\t'" \
   | uv run precis schema-doc --from-tsv - --snapshot "${DB_NAME} @ ${DATE}" -o "$OUT"
