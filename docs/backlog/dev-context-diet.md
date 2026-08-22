@@ -1,6 +1,6 @@
 ---
 status: ready
-title: dev-session context diet — user-only settings edits + OQ-11
+title: dev-session context diet — user-only settings edits
 ---
 
 # Dev-session context diet
@@ -13,6 +13,15 @@ trigger-vs-payload diet (2026-08-22 — recipe bodies live in
 checks shipped in `scripts/memory-lint` (payload-smell flag on code fences in
 memory files + a preamble token-vs-budget line in the hygiene output).
 
+OQ-11 is CLOSED (2026-08-22): neither MCP 2025-06-18 nor 2025-11-25 offers a
+prompts/list render-at-session-start flag — prompts are user-controlled by
+design (metadata is name/title/description/arguments only; 2025-11-25 adds
+just icons). The only spec-sanctioned session-start channel is
+`serverInfo.instructions`, which is exactly where
+`startup_skills.format_banner` already puts the `Pinned skills:` line (zero
+bytes when nothing is pinned). The banner is the mechanism, not a redundancy
+— it stays.
+
 **Remaining — user-only edits** (auto-mode classifier blocks agent writes to
 settings):
 - `.claude/settings.json`: `"disableArtifact": true` (~4k; no repo dependents);
@@ -24,10 +33,5 @@ settings):
 - `~/.claude/settings.json`: `"disableClaudeAiConnectors": true` (stops gmail
   connector auto-fetch).
 - Optional `skillOverrides`: `"name-only"` for land/go/rebase/next (~0.2k).
-
-**Remaining — open verification (OQ-11,** from the shipped command-profile
-item): can MCP 2025-06-18 + FastMCP 1.x flag a `prompts/list` entry as
-render-at-session-start? Decides whether the redundant `Pinned skills:`
-banner line drops. Owner: `src/precis/mcp_modalities.py::register_skill_prompts`.
 
 **Test:** fresh-session `/context` fixed total ≤ ~32k; memory-lint green.
