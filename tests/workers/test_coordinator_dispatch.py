@@ -578,8 +578,15 @@ class TestLeaseKeepalive:
         monkeypatch.setattr(coordinator, "_renew_lease_if_mine", _fake_renew)
 
         store = _FakeStore()
-        with coordinator._LeaseKeepalive(store, 9, {}):
-            time.sleep(0.09)  # would be several more ticks if it kept going
+        with coordinator._LeaseKeepalive(store, 9, {}) as ka:
+            # Losing identity makes _run return, so "stopped renewing" has
+            # a deterministic observable: the thread dies. Join it (with a
+            # generous timeout — a fixed sleep here flaked on loaded macOS
+            # CI runners that never scheduled even the first tick) and the
+            # call count is final.
+            assert ka._thread is not None
+            ka._thread.join(timeout=10.0)
+            assert not ka._thread.is_alive()
 
         assert len(calls) == 1
 
