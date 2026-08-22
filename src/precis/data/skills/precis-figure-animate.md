@@ -2,6 +2,9 @@
 id: precis-figure-animate
 title: precis — animating a figure (declarative, browser-native)
 summary: opt-in animation for the figure kind — declarative SMIL (<animate>, <animateTransform>, <animateMotion>, <set>) and CSS @keyframes in a <style>, played natively by the browser (no rasterization); static is still the default, reach for this only when the human asks for motion
+answers:
+  - how do I animate an element in a figure canvas?
+  - what keeps a figure animation measurable and in-bounds?
 applies-to: kind='figure' (author motion into the SVG source you edit via put/edit or the web turn loop)
 status: active
 ---

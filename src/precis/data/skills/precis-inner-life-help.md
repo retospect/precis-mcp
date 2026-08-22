@@ -2,6 +2,12 @@
 id: precis-inner-life-help
 title: precis — inner-life tag conventions for asa
 summary: inner-life tag protocol — internal-state, internal-thought, dreams, interests, identity scoping
+answers:
+  - how do I capture a fleeting thought or internal-state note?
+  - how do I refresh my living self-state doc?
+  - how do I reinforce a thought so it doesn't decay away?
+  - how do I promote a speculative dream connection into something durable?
+  - how do I browse older inner-life items the cold-start preamble didn't show?
 applies-to: put/get/search/tag (kind='memory'), tags=['internal-state'|'internal-thought'|'DREAM:speculative'|'user:asa'|'interest:*'|'changed-mind:*']
 status: active
 ---

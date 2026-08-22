@@ -2,6 +2,11 @@
 id: precis-tex-help
 title: precis — read and edit LaTeX files
 summary: LaTeX files — section-aware blocks, recursive TOC, literal-source edits against LaTeX syntax
+answers:
+  - how do I address a .tex file or one of its sections?
+  - how do I see the section hierarchy across included .tex files?
+  - how do I edit literal LaTeX source without breaking the surrounding structure?
+  - how do I create a new .tex file?
 applies-to: get/search/put/edit/delete (kind='tex')
 status: active
 ---

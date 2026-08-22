@@ -2,6 +2,11 @@
 id: precis-orcid-help
 title: precis — ORCID author identity nodes
 summary: Resolve a researcher's ORCID iD into a durable author node (dossier), link the works you hold, and LLM-gate fetching the rest
+answers:
+  - how do I resolve a researcher's ORCID iD into a durable author dossier?
+  - how do I find which of an author's works are missing from the corpus?
+  - how do I search for authors instead of papers?
+  - when should I refresh an author's ORCID dossier?
 applies-to: get/search/tag/link (kind='orcid')
 status: active
 ---

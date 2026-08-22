@@ -2,6 +2,12 @@
 id: precis-draft-help
 title: precis — the editable document kind
 summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] links (any handle) and bare [pc…] paper-chunk citations
+answers:
+  - how do I create a new draft, or fork/scaffold one from an existing document?
+  - how do I add a paragraph, figure, or table to a draft?
+  - how do I search inside a draft — lexical, semantic, or regex?
+  - how do I export a draft to LaTeX, PDF, or Word?
+  - how do I cite a paper I don't have yet without faking the reference?
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
 ---

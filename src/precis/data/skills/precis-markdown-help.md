@@ -2,6 +2,11 @@
 id: precis-markdown-help
 title: precis — read and edit markdown files
 summary: markdown files — block grammar, available views, slug stability, line and name selectors
+answers:
+  - how do I address a markdown file or one block inside it?
+  - how do I get the table of contents for a markdown file before reading it?
+  - how do I rewrite just one paragraph without touching the rest of the file?
+  - how do I make a surgical find-replace edit inside one block?
 applies-to: get/search/put/edit/delete (kind='markdown')
 status: active
 ---

@@ -2,6 +2,12 @@
 id: precis-get-help
 title: precis — the get verb (read or compute)
 summary: the get verb — read existing refs by id, or compute fresh results via q=
+answers:
+  - how do I browse a kind's listing when I don't have a slug yet?
+  - how do I page through a listing that has more entries than fit on one page?
+  - what does slug~N mean when addressing a chunk range?
+  - what's the difference between id='slug/view' and passing view= directly?
+  - how do I address a paper by DOI instead of slug?
 applies-to: get (every kind that supports it)
 status: active
 ---

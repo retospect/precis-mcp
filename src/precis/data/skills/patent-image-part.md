@@ -2,6 +2,9 @@
 id: patent-image-part
 title: precis — patent drawings registry (section style)
 summary: the patent drawings registry — describe figures (FIG. n) and register reference numerals (parts) referenced from the description by [dc…]
+answers:
+  - how do I register a patent drawing figure and its reference numerals?
+  - how are part reference numerals assigned — do I write the numeral myself?
 status: active
 style: patent-image-part
 role: section

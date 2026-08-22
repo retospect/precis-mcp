@@ -2,6 +2,9 @@
 id: sci-introduction
 title: precis — research-paper introduction (section style)
 summary: write the introduction — motivate, narrow to the gap, enumerate contributions, end with a [dc…] roadmap
+answers:
+  - how do I write an introduction that motivates the gap and states contributions?
+  - how do I end an introduction with a roadmap of the paper?
 status: active
 style: sci-introduction
 role: section

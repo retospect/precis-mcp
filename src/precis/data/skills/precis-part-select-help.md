@@ -2,6 +2,10 @@
 id: precis-part-select-help
 title: precis — selecting JLCPCB parts for a PCB
 summary: pick real, manufacturable components for a pcb design from the LCSC/JLCPCB catalog — search by parametrics, prefer Basic + high-turnover (not the last reel), read one part by C-number, and let the footprint auto-stamp onto your component. Covers LCSC, JLCPCB assembly, Basic vs Extended, stock, BOM cost.
+answers:
+  - how do I search the LCSC/JLCPCB catalog for a real, buyable part?
+  - how do I use a selected part in a PCB design?
+  - how do I pick parts for a typical board function, like decoupling or an MCU?
 applies-to: get/search (kind='part'); feeds put (kind='pcb')
 status: active
 ---

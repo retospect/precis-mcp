@@ -2,6 +2,11 @@
 id: precis-youtube-help
 title: precis — YouTube transcripts
 summary: YouTube transcript fetch — captions by video id or URL, 30-day cache, free. ALWAYS use this for a YouTube URL — never a native youtube_transcript_api / web-fetch.
+answers:
+  - how do I fetch the transcript for a YouTube video?
+  - can I paste a YouTube URL directly instead of the bare video id?
+  - how do I fetch a transcript in a specific language?
+  - what happens when a video has no transcript?
 applies-to: get (kind='youtube')
 status: active
 ---

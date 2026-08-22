@@ -1897,9 +1897,42 @@ def _m_glossary(ctx: AssemblyContext) -> str:
     return _render_glossary(ctx.store, ctx.ref_id)
 
 
-def _m_body(ctx: AssemblyContext) -> str:
+def _ref_body(ctx: AssemblyContext) -> str:
+    """This tick's ``## Body`` text, memoised in ``ctx.extras['ref_body']``.
+
+    ``_m_body`` (renders it) and ``_m_skill_injection`` (embeds it as the
+    injection query) both need this same string; without the memo each
+    ran its own :func:`_load_ref_body` — a title read plus a chunk scan
+    — duplicating a DB round-trip per planner-prompt build. Same
+    per-assembly-scratchpad idiom as the ``applies_when`` predicates in
+    :mod:`precis.utils.prompt.predicates` (e.g. ``_anchor_handle``)."""
     assert ctx.store is not None
-    return "## Body\n" + (_load_ref_body(ctx.store, ctx.ref_id) or "(empty)")
+    if "ref_body" in ctx.extras:
+        return ctx.extras["ref_body"]
+    body = _load_ref_body(ctx.store, ctx.ref_id)
+    ctx.extras["ref_body"] = body
+    return body
+
+
+def _m_body(ctx: AssemblyContext) -> str:
+    return "## Body\n" + (_ref_body(ctx) or "(empty)")
+
+
+def _m_skill_injection(ctx: AssemblyContext) -> str:
+    """Bimodal skill injection (docs/backlog/skill-question-targets-and-
+    injection.md §2): embed this tick's task text against the skill
+    corpus's question-shaped retrieval targets; on a high-confidence
+    match, inject the WHOLE matched skill body instead of leaving
+    discovery to the model to decide on its own (measured: 5 of ~19,853
+    prod jobs used it). No cue/snippet tier — below threshold injects
+    nothing, on purpose (see :mod:`precis.skill_index.injection`)."""
+    from precis.skill_index.injection import match_skill, render_injection
+
+    task_text = _ref_body(ctx)
+    match = match_skill(task_text)
+    if match is None:
+        return ""
+    return render_injection(match)
 
 
 def _m_anchor(ctx: AssemblyContext) -> str:
@@ -2378,6 +2411,7 @@ _VARIABLE_MODULES: list[Module] = [
     ),
     Module(id="glossary", layer=Layer.VARIABLE, build=_m_glossary),
     Module(id="body", layer=Layer.VARIABLE, build=_m_body),
+    Module(id="skill-injection", layer=Layer.VARIABLE, build=_m_skill_injection),
     Module(id="anchor", layer=Layer.VARIABLE, build=_m_anchor),
     Module(
         id="heading-intent",

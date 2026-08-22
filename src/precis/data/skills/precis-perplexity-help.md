@@ -2,6 +2,12 @@
 id: precis-perplexity-help
 title: precis — Perplexity (websearch / perplexity-reasoning / perplexity-research)
 summary: Perplexity Sonar tiers — websearch, perplexity-reasoning, perplexity-research; latency/cost trade-offs, import mode
+answers:
+  - which Perplexity tier should I use — websearch, reasoning, or research?
+  - why did get(kind='websearch', id=<number>) run a paid search instead of a lookup?
+  - how do I import a free Perplexity web-UI answer without paying twice?
+  - how do I force a fresh Perplexity call instead of the cached one?
+  - how do I see what I've already asked Perplexity recently?
 applies-to: get/search/put/tag/link (kind='websearch' | 'perplexity-reasoning' | 'perplexity-research')
 status: active
 ---

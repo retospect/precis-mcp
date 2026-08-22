@@ -2,6 +2,11 @@
 id: precis-message-help
 title: precis — proactive outbound messages (Discord posts)
 summary: proactive outbound messaging — unprompted channel posts, stored for introspection
+answers:
+  - how do I post a proactive message to a Discord channel?
+  - how do I attach files to an outbound message?
+  - how do I record why I'm pinging someone, for the audit trail?
+  - how do I check whether a message was actually sent?
 applies-to: get/search/put/delete/tag/link (kind='message')
 status: active
 ---

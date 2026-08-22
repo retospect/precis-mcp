@@ -2,6 +2,10 @@
 id: precis-ml-recipe
 title: precis — extract ranked training recipes from the corpus
 summary: recipe-extraction runbook — one entry per claimed result (dataset/method/hyperparameters/compute/code path), verified/unverified/blocked/inferred labels, ranked brief
+answers:
+  - how do I extract a reproducible recipe from a claimed ML result?
+  - how do I check whether the dataset and code for a result are actually available?
+  - how do I record my confidence per field instead of one blanket confidence?
 flavor: runbook
 status: active
 applies-to: search/get (kind='paper','citation','web'); put (kind='draft','plan')

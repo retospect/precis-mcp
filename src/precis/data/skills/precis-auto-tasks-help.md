@@ -2,6 +2,11 @@
 id: precis-auto-tasks-help
 title: precis — wait-for-condition todos via meta.auto_check
 summary: wait-for-condition todos — SQL-checkable evaluators, parking leaves, auto-resolve, timeouts
+answers:
+  - how do I make a todo that waits for a condition instead of being claimed immediately?
+  - what evaluators are available for meta.auto_check?
+  - how do I make a leaf wait for a child job to finish before it's doable?
+  - how do I schedule a todo to wake up at a specific time?
 applies-to: put (kind='todo' with meta.auto_check); precis worker --only auto_check
 status: active
 ---

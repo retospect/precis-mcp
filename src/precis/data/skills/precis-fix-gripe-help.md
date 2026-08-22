@@ -2,6 +2,12 @@
 id: precis-fix-gripe-help
 title: precis — drive a gripe to a candidate fix branch
 summary: end-to-end bug fix recipe — gripe to job to candidate branch, iteration, review handoff
+answers:
+  - how do I get an agent to prepare a fix branch for a bug I filed?
+  - how do I check whether my gripe-fix job is done?
+  - how do I review the candidate fix's diff before merging?
+  - how do I reject a fix and ask for another pass?
+  - how do I cancel a fix job that's stuck?
 applies-to: put (kind='job', job_type='fix_gripe')
 status: active
 ---

@@ -2,6 +2,11 @@
 id: precis-automations
 title: precis — find and edit standing automations (recurring agent behaviours)
 summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos tagged `automation`; find them with search(kind='todo', tags=['automation']), edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
+answers:
+  - how do I find the recurring todos that drive automated behaviours like the podcast cast?
+  - how do I change what an automation does?
+  - how do I mark a recurring todo as an automation?
+  - how do I link an automation to the artifact it produced?
 applies-to: recurring (meta.schedule set) todos tagged 'automation'; search(kind='todo', tags=['automation']); the podcast casts + briefing
 status: active
 ---

@@ -2,6 +2,11 @@
 id: precis-put-help
 title: precis — the put verb (create, annotate, import)
 summary: the put verb — mint new refs, attach tags and links on create, mode selection
+answers:
+  - how do I jot a quick note into memory?
+  - how do I file a todo or a gripe?
+  - how do I create a new markdown, plaintext, or tex file?
+  - how do I import a Perplexity report I already paid for in the web UI?
 applies-to: put (every kind that supports it)
 status: active
 ---

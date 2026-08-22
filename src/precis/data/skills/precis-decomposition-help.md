@@ -2,6 +2,11 @@
 id: precis-decomposition-help
 title: precis — when to split a task and how to size siblings
 summary: when to split vs do it yourself, how to size siblings, depth-at-leaves principle
+answers:
+  - should I split this task into subtasks or just do it myself?
+  - how big should sibling subtasks be relative to each other?
+  - when do I use ask-user instead of splitting further?
+  - when do I use a halt:* tag instead of decomposing?
 applies-to: put (kind='todo', parent_id=…), link (rel='blocked-by')
 status: active
 ---

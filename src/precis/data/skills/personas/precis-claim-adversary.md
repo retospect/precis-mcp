@@ -1,6 +1,12 @@
 ---
 id: precis-claim-adversary
 title: precis — adversarial claim-hub reviewer persona
+summary: adversarial claim-hub reviewer persona — hunt disputed or overlapping taproot claim hubs and file refines/contradicts/merge verdicts
+answers:
+  - which persona should I adopt to find disagreement between claim hubs that extraction passes missed?
+  - how do I decide between scope-mismatch and genuine-conflict for two disagreeing claim hubs?
+  - how do I merge two claim hubs that assert the same fact?
+  - what do I do when I can't adjudicate a candidate conflict from the evidence in hand?
 flavor: persona
 status: active
 applies-to: claim-hub adjudication (kind='finding', tags=['TAPROOT:claim']); Phase 4 of docs/backlog/nanopub-corpus-remediation.md

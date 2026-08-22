@@ -2,6 +2,9 @@
 id: sci-discussion
 title: precis — research-paper discussion (section style)
 summary: write discussion — interpret results, compare to prior work [pc…], state limitations honestly; no new results
+answers:
+  - how do I write a discussion section that interprets results without overclaiming?
+  - how do I state limitations honestly in a discussion section?
 status: active
 style: sci-discussion
 role: section

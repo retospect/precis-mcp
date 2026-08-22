@@ -2,6 +2,10 @@
 id: precis-wikipedia-help
 title: precis — on-demand Wikipedia lookup
 summary: Resolve a query to the best Wikipedia article and fetch its plain-text extract — cache-backed, fenced out of default search
+answers:
+  - how do I look up a topic on Wikipedia?
+  - why doesn't my fetched Wikipedia article show up in cross-kind search by default?
+  - how do I fetch a Wikipedia article in a language other than English?
 applies-to: get/search/tag/link (kind='wikipedia')
 status: active
 ---

@@ -2,6 +2,12 @@
 id: precis-pathway-help
 title: precis — reaction pathways (autocatpath)
 summary: explore a catalyst reaction network — intermediates, barriers, honest uncertainty — and argue with it as data, not a diagram
+answers:
+  - how do I sanity-check a catalyst reaction network before spending compute on it?
+  - how do I run a pathway and get its barriers/energies?
+  - how do I find the rate-limiting step in a reaction pathway?
+  - what's the CHE electrochemistry potential lever?
+  - how do I compare two candidate pathways to see which is better?
 applies-to: get/put (kind='pathway')
 status: active
 ---

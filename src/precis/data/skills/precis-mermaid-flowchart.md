@@ -2,6 +2,8 @@
 id: precis-mermaid-flowchart
 title: precis — flowchart / flow chart / process diagram / decision tree / org chart / workflow
 summary: a mermaid flowchart — boxes and arrows for a process, decision tree, org chart, or workflow
+answers:
+  - how do I draw a process diagram, decision tree, or org chart?
 applies-to: kind='mermaid'
 status: active
 ---

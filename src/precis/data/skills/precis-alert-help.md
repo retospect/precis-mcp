@@ -2,6 +2,11 @@
 id: precis-alert-help
 title: precis — the alert kind (machine-detected ops/health conditions)
 summary: kind='alert' — background passes raise deduped, auto-resolving alerts for spin loops, orphans, stalled recurrings; surfaced by the /alerts web tab
+answers:
+  - what does an alert on kind='alert' mean and who raised it?
+  - how do I triage or resolve an open alert?
+  - which background passes raise alerts, and for what conditions?
+  - does an alert show up in normal search?
 applies-to: kind='alert'; precis.alerts.raise_alert / resolve_stale_alerts / resolve_alert; /alerts web tab
 status: active
 ---

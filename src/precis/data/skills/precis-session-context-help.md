@@ -2,6 +2,11 @@
 id: precis-session-context-help
 title: precis — session context (pinned skills, disabled kinds, default tags)
 summary: per-session configuration — pinned skills, disabled kinds, default tags via env vars
+answers:
+  - why does get(kind='patent') return NotFound in this session?
+  - which skills did the operator pre-pin for this deployment?
+  - why did my note end up tagged with a project tag I didn't add?
+  - what does the workspace tag mean on a file?
 applies-to: env (PRECIS_STARTUP_SKILLS, PRECIS_KINDS_DISABLED, PRECIS_DEFAULT_TAGS)
 status: active
 ---

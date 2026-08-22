@@ -2,6 +2,11 @@
 id: precis-math-help
 title: precis — facts and world data via Wolfram Alpha
 summary: computational knowledge via Wolfram Alpha — facts, world data, unit conversion, math expressions
+answers:
+  - how do I look up a fact or world-data value, like a population or a physical constant?
+  - when do I use math (Wolfram) instead of calc?
+  - how do I force a fresh Wolfram call instead of the cached answer?
+  - what env var does the math kind need?
 applies-to: get (kind='math')
 status: active
 ---

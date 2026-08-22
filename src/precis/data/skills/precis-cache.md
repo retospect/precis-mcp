@@ -2,6 +2,11 @@
 id: precis-cache
 title: precis — paid tools cache automatically
 summary: cache mechanics for paid tools — TTLs, freshness, force-refresh, cost control
+answers:
+  - how long does a cached paid-tool answer stay fresh before it expires?
+  - how do I force a refetch instead of using the cached answer?
+  - how do I pin a cached row so it never goes stale?
+  - what makes two queries hit the same cache row?
 applies-to: get (kind in math/web/websearch/perplexity-reasoning/perplexity-research/youtube)
 status: active
 ---

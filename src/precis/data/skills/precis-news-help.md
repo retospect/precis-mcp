@@ -2,6 +2,10 @@
 id: precis-news-help
 title: precis — news kind (RSS ingestion + morning briefing)
 summary: multi-source news as first-class refs; news_poll feed ingestion, news_sources registry, search/tag, and the scheduled morning briefing with delivery
+answers:
+  - how do I read today's news items?
+  - how does the news_poll worker ingest new sources?
+  - how do I get a morning news briefing scheduled?
 applies-to: get/search (kind='news'); precis worker --only news_poll|briefing; news_sources table; recurring-todo scheduling
 status: active
 ---

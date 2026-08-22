@@ -2,6 +2,12 @@
 id: precis-relations
 title: precis — relation vocabulary for link(rel=)
 summary: closed relation vocabulary — cites, supports, contradicts, derived-from, blocks, retracts, corrects
+answers:
+  - which relation do I use to link two refs — cites, supports, or something else?
+  - how do I record that a memory agrees with or contradicts a paper?
+  - how do I mark one ref as derived from another?
+  - how do I block one todo on another?
+  - how do I record a retraction or correction relation?
 applies-to: link (rel=), put (rel= on create)
 status: active
 ---

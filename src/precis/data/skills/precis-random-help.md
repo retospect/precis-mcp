@@ -2,6 +2,10 @@
 id: precis-random-help
 title: precis — random corpus pick
 summary: corpus serendipity — random block pick for discovery, warm-up, sanity checks
+answers:
+  - how do I stumble into something in the corpus I didn't know to search for?
+  - how do I sanity-check that a fresh corpus actually has content?
+  - how do I mint a random short opaque identifier?
 applies-to: get(kind='random')
 status: active
 ---

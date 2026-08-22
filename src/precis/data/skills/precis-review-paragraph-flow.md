@@ -2,6 +2,10 @@
 id: precis-review-paragraph-flow
 title: precis — one-pass paragraph-flow review
 summary: Every paragraph must have a topic sentence, a developed body, and a transition; check each one and mint findings on offenders
+answers:
+  - how do I check that every paragraph has a topic sentence and a developed body?
+  - which block kinds get skipped by the paragraph-flow check?
+  - how do I file one finding per broken paragraph?
 applies-to: get (kind='tex'), put (kind='finding')
 status: active
 ---

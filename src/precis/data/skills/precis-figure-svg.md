@@ -2,6 +2,10 @@
 id: precis-figure-svg
 title: precis — authoring clean SVG for the figure kind
 summary: how to write good, safe, addressable SVG for a figure canvas — one <svg> root with a viewBox, stable id= + <title> names, shapes that stay in bounds, no scripts/foreignObject/external-href, and how to keep elements measurable so the out-of-bounds lint helps
+answers:
+  - how do I write safe, addressable SVG for a figure?
+  - how do I name figure elements so they're addressable?
+  - what should I never author directly in figure SVG?
 applies-to: kind='figure' (the SVG source you author via put/edit or the web turn loop)
 status: active
 ---

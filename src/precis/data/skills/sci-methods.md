@@ -2,6 +2,9 @@
 id: sci-methods
 title: precis — research-paper methods (section style)
 summary: write methods — reproducible detail, notation defined, $…$ math, past tense; no results or interpretation
+answers:
+  - how do I write a methods section detailed enough to reproduce the work?
+  - how do I present math and notation in a methods section?
 status: active
 style: sci-methods
 role: section

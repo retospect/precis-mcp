@@ -2,6 +2,8 @@
 id: precis-mermaid-state
 title: precis — state diagram / state machine / FSM / lifecycle / status flow
 summary: a mermaid state diagram — states and the transitions between them
+answers:
+  - how do I draw a state machine or lifecycle diagram?
 applies-to: kind='mermaid'
 status: active
 ---

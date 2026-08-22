@@ -2,6 +2,11 @@
 id: precis-cad-help
 title: precis — the CAD kind (analytic solid design you can read)
 summary: author a parametric solid as a text node-list, then probe it analytically (point/ray/arc/section/volume) and relate parts (clearance/interference/connectivity/translational DOF) — no meshing, no pixels; STL/3MF/STEP/SCAD are downstream exports
+answers:
+  - how do I author a parametric solid model as text?
+  - how do I check clearance or interference between two parts?
+  - how do I export a CAD design to STL / STEP / SCAD?
+  - how do I probe a design — find a point, section, or volume?
 applies-to: get/search/put/delete (kind='cad')
 status: active
 ---

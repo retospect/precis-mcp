@@ -2,6 +2,11 @@
 id: precis-conv-help
 title: precis — find, read, tag past conversations
 summary: captured chat transcripts — address by slug, read turns, browse recent conversations
+answers:
+  - how do I reopen a past conversation by its slug?
+  - how do I search across all captured conversations for a past decision?
+  - how do I cite a turn from a past conversation in a memory or draft?
+  - how do I browse recent conversation transcripts?
 applies-to: get/search/put/tag/link (kind='conv')
 status: active
 ---

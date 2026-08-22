@@ -2,6 +2,10 @@
 id: precis-self-consolidation-help
 title: precis — consolidating asa's inner life over time
 summary: memory consolidation — episodic to semantic abstraction, cluster retirement, supersedes links
+answers:
+  - how do I consolidate a cluster of episodic memories into one semantic memory?
+  - when should I run a consolidation pass?
+  - how do I undo a consolidation I got wrong?
 applies-to: search/get/put/link/tag (kind='memory'), rel='supersedes'
 status: active
 ---

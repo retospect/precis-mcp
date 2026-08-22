@@ -2,6 +2,10 @@
 id: precis-plaintext-help
 title: precis — read and edit plaintext files
 summary: plaintext files — txt/log paragraphs and lines, content-slug selectors, raw views
+answers:
+  - how do I point at one paragraph in a .txt or .log file?
+  - how do I create or append to a plaintext file?
+  - how do I make a surgical find-replace edit inside one paragraph of a log?
 applies-to: get/search/put/edit/delete (kind='plaintext')
 status: active
 ---

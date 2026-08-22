@@ -2,6 +2,10 @@
 id: precis-review-section-structure
 title: precis — one-pass section-structure review
 summary: Does the intro frame the contribution? Do sections deliver what the intro promises? Does the conclusion follow from the sections?
+answers:
+  - how do I check whether the intro's promised contributions actually land in the results?
+  - what are the four structural checks for section-structure review?
+  - what order should I run the structure checks in?
 applies-to: get (kind='tex'), put (kind='finding')
 status: active
 ---

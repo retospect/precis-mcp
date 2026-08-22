@@ -2,6 +2,10 @@
 id: precis-review-paper-help
 title: precis — adversarial review of scientific writing
 summary: adversarial review — unsupported claims, missing counterarguments, methodological weak spots
+answers:
+  - what's the quality bar for an adversarial paper review?
+  - what output format should my review findings take?
+  - when do I mint a kind='finding' ref during a review instead of just noting it?
 applies-to: get/search (kind='paper'|'chunk'|'citation'|'todo'), put (kind='finding')
 status: active
 ---

@@ -2,6 +2,11 @@
 id: precis-fisheye-help
 title: precis — the fisheye neighborhood render (focus + context)
 summary: view='fisheye'/'fisheye+1hop' on a draft/plan/paper/patent/memory chunk — the extent ladder, the spatial neighborhood, the reference ring
+answers:
+  - how do I read a chunk along with the text around it, not just the chunk itself?
+  - what's the difference between the fisheye neighborhood and fisheye+1hop?
+  - how is fisheye different from view='toc'?
+  - does the fisheye neighborhood shape change per kind?
 applies-to: get(kind='draft'|'plan'|'paper'|'patent'|'web'|'datasheet'|'cfp'|'memory'|'finding'|..., view=)
 status: active
 ---

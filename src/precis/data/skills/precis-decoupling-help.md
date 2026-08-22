@@ -2,6 +2,9 @@
 id: precis-decoupling-help
 title: precis — power decoupling & bypass caps on a PCB
 summary: add the right bypass/decoupling capacitors to a pcb design — one 100nF per power pin placed AT the pin, bulk caps per rail, and the proximity measures that keep them there. Covers power integrity, VDD bypass, bulk capacitance, supply rails.
+answers:
+  - how do I add the right bypass/decoupling capacitors to a PCB design?
+  - how do I check that decoupling caps are actually placed correctly?
 applies-to: put (kind='pcb'); pattern playbook
 status: active
 ---

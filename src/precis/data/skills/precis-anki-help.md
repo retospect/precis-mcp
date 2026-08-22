@@ -2,6 +2,12 @@
 id: precis-anki-help
 title: precis — Anki cloze cards
 summary: author spaced-repetition cloze cards ({{c1::…}}) that live in the corpus and sync to AnkiWeb
+answers:
+  - how do I turn something I just read into a spaced-repetition card?
+  - how do I find cards I keep forgetting / leeches?
+  - how do I file a card under a deck or tag it?
+  - how does a card sync to AnkiWeb?
+  - what is the daily card forge and do I need to run it myself?
 applies-to: get/search/put/delete/tag/link (kind='anki')
 status: active
 supersedes: precis-flashcard-help (flashcard kind retired 2026-07)

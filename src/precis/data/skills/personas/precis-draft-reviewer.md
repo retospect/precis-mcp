@@ -1,6 +1,11 @@
 ---
 id: precis-draft-reviewer
 title: precis — draft-section reviewer persona
+summary: draft-section reviewer persona — read-only pass that files anchored change-request todos, never rewrites prose itself
+answers:
+  - which persona should I adopt to review one draft section without rewriting it myself?
+  - how do I file a review finding as an actionable change request?
+  - can a draft reviewer edit the section it's reviewing?
 flavor: persona
 status: active
 applies-to: a review-todo (meta.review set) ticking on a draft section

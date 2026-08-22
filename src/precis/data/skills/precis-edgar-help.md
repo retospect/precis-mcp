@@ -2,6 +2,11 @@
 id: precis-edgar-help
 title: precis — find, read, compare SEC filings
 summary: SEC EDGAR filings — accession ids, fetch-as-ingest, biblio/body/toc/diff views, quarter-to-quarter comparison
+answers:
+  - how do I fetch an SEC filing by accession number?
+  - how do I compare a company's filings quarter to quarter?
+  - how do I find a filing by topic instead of accession number?
+  - how do I list all of a company's filings?
 applies-to: get/search/tag/link (kind='edgar')
 status: active
 ---

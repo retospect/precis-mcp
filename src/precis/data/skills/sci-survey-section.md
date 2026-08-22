@@ -2,6 +2,9 @@
 id: sci-survey-section
 title: precis — review-paper thematic synthesis (section style)
 summary: write a review's thematic section — integrate sources [pc…], compare/contrast, surface consensus vs open contention (synthesis, not enumeration)
+answers:
+  - how do I write a thematic synthesis section for a review paper?
+  - how do I surface consensus vs open contention across sources?
 status: active
 style: sci-survey-section
 role: section

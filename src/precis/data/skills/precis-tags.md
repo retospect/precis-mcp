@@ -2,6 +2,12 @@
 id: precis-tags
 title: precis — set, filter by, and discover tags
 summary: tag taxonomy — UPPERCASE axes, lowercase open axes, bare flags, filter and discover
+answers:
+  - how do I mark a todo as high priority?
+  - how do I clear STATUS:done off a todo?
+  - how do I browse every tag in use across the corpus?
+  - is there already a tag for a topic like sustainability — how do I check semantically?
+  - which closed UPPERCASE axes apply to which kind?
 applies-to: tag (add=, remove=), search (tags=), put (tags= on create), get/search (kind='tag')
 status: active
 ---

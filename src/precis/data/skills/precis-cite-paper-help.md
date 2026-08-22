@@ -2,6 +2,11 @@
 id: precis-cite-paper-help
 title: precis — how do I cite a paper?
 summary: the cite-a-paper router — in corpus → write the paper-chunk handle inline `[pc234]`; not in corpus → stub, wait for ingest, then cite; empirical claim → finding `[fi<id>]`
+answers:
+  - what's the right way to cite a paper that's already in the corpus?
+  - how do I cite a paper I only have a DOI for, that isn't ingested yet?
+  - I read a number in a review — how do I trace it back to who actually measured it?
+  - should I use an inline handle, a finding, a citation record, or bibtex?
 applies-to: get/put (kind='paper'|'citation'|'finding'|'todo')
 status: active
 ---

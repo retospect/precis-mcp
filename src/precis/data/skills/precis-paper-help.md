@@ -2,6 +2,12 @@
 id: precis-paper-help
 title: precis — find, read, cite papers
 summary: scientific paper corpus — find, read, address by handle (pa/pc), views and chunk selectors
+answers:
+  - how do I open a paper by handle or DOI?
+  - how do I find a paper by topic when I don't know any slugs?
+  - how do I look a paper up by its exact title or author instead of a keyword search?
+  - how do I find where a paper mentions a specific exact term?
+  - how do I filter papers by publication year?
 applies-to: get/search/tag/link (kind='paper')
 status: active
 ---

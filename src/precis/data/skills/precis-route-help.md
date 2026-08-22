@@ -2,6 +2,10 @@
 id: precis-route-help
 title: precis — the route kind (retrosynthesis routes you read as a graph)
 summary: plan a synthetic route to a target molecule with a swappable engine (stub/aizynth/askcos) on the compute lane, content-addressed so a repeat is a zero-compute cache hit; read the route as a step graph or its LinChemIn descriptors (view='metrics') — never a synchronous planner call
+answers:
+  - how do I plan a synthetic route to a target molecule?
+  - how do I read back a planned route?
+  - how do I block a task on a route plan finishing?
 applies-to: get/put/delete (kind='route')
 status: active
 ---

@@ -2,6 +2,12 @@
 id: precis-files-help
 title: precis — read and edit files (markdown, plaintext, tex, python)
 summary: shared file-kind conventions — roots, workspace tag scoping, two-track addressing, write modes
+answers:
+  - how do I scope a search to just my working directory's files?
+  - how do I pre-warm the file store before I start searching?
+  - how do I address a specific block, line range, or view in a file?
+  - what's the difference between coordinate addressing and durable-slug addressing?
+  - what do I do if a file's slug went stale after an edit?
 applies-to: cross-cutting (file-rooted kinds)
 status: active
 ---

@@ -2,6 +2,11 @@
 id: precis-stubs-help
 title: precis — papers we still need to get
 summary: paper acquisition backlog — stub list, fetch state, reason each is waiting
+answers:
+  - how do I see the papers we still need to fetch PDFs for?
+  - how do I find just the DOI stubs nobody has tried fetching yet?
+  - how do I add a missing paper to the acquisition backlog?
+  - why did a stub disappear from the backlog without a PDF landing?
 applies-to: search(kind='paper', view='stubs'|'chase-queue'), put (kind='paper')
 status: active
 ---

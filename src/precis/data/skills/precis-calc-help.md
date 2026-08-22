@@ -2,6 +2,11 @@
 id: precis-calc-help
 title: precis — the calc kind (local SymPy CAS)
 summary: an exact, free, local computer-algebra system — arithmetic, calculus (integrals/derivatives/limits/sums/ODEs), equation solving, algebra, linear algebra, number theory; trig in degrees by default with a view='rad' switch; plus local unit conversion (3 ft to m; 1 ton to kg; 100 degC to degF) via pint
+answers:
+  - how do I do exact arithmetic or calculus without paying for Wolfram?
+  - how do I convert units locally, like feet to meters?
+  - does calc use degrees or radians by default?
+  - what should I do if calc returns an error?
 applies-to: get (kind='calc')
 status: active
 ---

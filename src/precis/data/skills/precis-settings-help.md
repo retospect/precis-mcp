@@ -2,6 +2,10 @@
 id: precis-settings-help
 title: precis — DB-resident settings (config that isn't a secret)
 summary: precis.settings REGISTRY — DB row → env var → compiled default, DB wins; precis settings CLI, /settings web page, drift visibility via the condition registry
+answers:
+  - which wins if a setting is in the DB and also set as an env var?
+  - how do I register a new settings key?
+  - how do I see settings drift across the fleet?
 applies-to: precis.settings (get_str/get_float/get_int/get_bool/resolve/set_setting/clear_setting); precis settings CLI; /settings web page; KindSpec.requires_setting
 status: active
 ---

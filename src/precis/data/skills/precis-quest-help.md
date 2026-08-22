@@ -2,6 +2,11 @@
 id: precis-quest-help
 title: precis — the striving above the work
 summary: quests — perpetual unachievable strivings that pull work + knowledge into their service; logbook, serves-graph, tree rollup
+answers:
+  - how do I mint a new perpetual striving (quest)?
+  - how does PRIO: flow down from a quest to the work that serves it?
+  - how do I log an entry in a quest's WORM logbook?
+  - how is a quest different from a todo — why does it never go done?
 applies-to: get/search/put/delete/tag/link (kind='quest')
 status: active
 ---

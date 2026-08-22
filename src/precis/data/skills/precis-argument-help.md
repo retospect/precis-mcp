@@ -2,6 +2,11 @@
 id: precis-argument-help
 title: precis — build a defensible argument as a reusable lemma/inference graph
 summary: the reasoning shadow beside a draft — state lemmas, chain inferences, keep it out of the published prose
+answers:
+  - how do I state a lemma or chain an inference without it leaking into the published draft?
+  - what's the operator vocabulary for meta.rule in an argument chain?
+  - what happens to downstream conclusions if I retract a lemma?
+  - when should I NOT use the argument graph?
 applies-to: put / get / link / tag (kind='memory', kind='finding')
 status: active
 ---

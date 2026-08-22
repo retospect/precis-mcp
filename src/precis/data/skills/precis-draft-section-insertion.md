@@ -2,6 +2,9 @@
 id: precis-draft-section-insertion
 title: precis — inserting a new section into a living draft
 summary: before creating a section — read the toc, prefer expanding an existing section, insert at the lowest outline level that fits, propose a new top-level section in the logbook first
+answers:
+  - should I create a new section or expand an existing one?
+  - what should I check before inserting a new section into a draft?
 applies-to: put/edit (kind='draft')
 status: active
 ---

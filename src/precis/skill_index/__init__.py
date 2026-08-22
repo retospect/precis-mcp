@@ -37,6 +37,12 @@ Design notes:
   without the ``[paper]`` extra), the index advertises
   ``available=False`` and the caller drops back to its existing
   substring search. No silent quality loss.
+
+:mod:`precis.skill_index.injection` layers **bimodal harness-side
+injection** on top of this index (docs/backlog/skill-question-targets-
+and-injection.md §2): at a handful of harness-controlled prompt-assembly
+points, embed the task text once and either inject the WHOLE matched
+skill (score above threshold) or nothing at all — no cue/snippet tier.
 """
 
 from precis.skill_index.chunker import Chunk, chunk_by_h2

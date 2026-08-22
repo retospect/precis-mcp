@@ -2,6 +2,10 @@
 id: patent-claim
 title: precis — patent claim (section style)
 summary: write one patent claim per chunk — preamble + comprising + elements, antecedent basis; dependent claims reference others by [dc…]
+answers:
+  - how do I write one patent claim — independent vs dependent?
+  - how do I keep antecedent basis intact across a claim?
+  - how do I reference another claim from a dependent claim?
 status: active
 style: patent-claim
 role: section

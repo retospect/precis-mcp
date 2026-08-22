@@ -2,6 +2,10 @@
 id: precis-figure-help
 title: precis — the figure kind (interactive SVG canvas you draw with the model)
 summary: author an SVG drawing as a slug-addressed chunk-tree, edit it by whole-source rewrite, and draw *with* the model in the /figure web canvas (two shared documents — the SVG source and a shared vocabulary — plus compile + out-of-bounds lints); never exported, browser-rendered
+answers:
+  - how do I create and edit an SVG figure with the model?
+  - how do I bind a figure element to the chunk it depicts?
+  - what SVG features get stripped by the sanitizer?
 applies-to: get/put/edit/delete/link (kind='figure')
 status: active
 ---

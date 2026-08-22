@@ -2,6 +2,12 @@
 id: precis-python-help
 title: precis — navigate and edit Python codebases
 summary: Python code navigation and edits — qualname or file/line addressing, ruff-gated writes
+answers:
+  - how do I point at a Python symbol or a line range?
+  - I'm new to this repo — where do I start orienting?
+  - how do I find every caller of a function?
+  - how do I trace the call path from a console script entry point to a function?
+  - how do I replace a function body by its qualname?
 applies-to: get/search/put/edit/delete (kind='python')
 status: active
 ---

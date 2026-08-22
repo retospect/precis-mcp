@@ -2,6 +2,11 @@
 id: precis-cloze
 title: precis — authoring excellent Anki cloze cards
 summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering, specific uniquely-recoverable answers, hint types, ruthlessly terse, contextual Back Extra; with language/math worked examples
+answers:
+  - how do I write a good spaced-repetition cloze card instead of a bad one?
+  - how do I decide which deck a card goes in?
+  - what belongs in Back Extra vs the card front?
+  - how do I make cloze cards for language characters or math notation?
 applies-to: put/search (kind='anki')
 status: active
 ---

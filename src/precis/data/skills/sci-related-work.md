@@ -2,6 +2,9 @@
 id: sci-related-work
 title: precis — research-paper related work (section style)
 summary: write related work — thematic (not a serial list), cite precise [pc…] chunks, position the work against the gap
+answers:
+  - how do I organize a related-work section thematically instead of as a list?
+  - how do I position my work against the gap in related work?
 status: active
 style: sci-related-work
 role: section

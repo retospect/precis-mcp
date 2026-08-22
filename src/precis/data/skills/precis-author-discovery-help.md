@@ -2,6 +2,10 @@
 id: precis-author-discovery-help
 title: precis — author-network discovery (BFS)
 summary: Grow the corpus by walking paper → author → paper — resolve senior authors via ORCID and enqueue their missing work
+answers:
+  - how do I grow the corpus by following an author's other papers?
+  - how does the author-discovery loop decide which author to chase next?
+  - why does author discovery use two sources instead of one?
 applies-to: get/search (kind='semanticscholar', kind='orcid')
 status: active
 ---

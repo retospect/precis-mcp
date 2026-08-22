@@ -2,6 +2,9 @@
 id: patent-prior-art
 title: precis — patent prior-art / IDS (section style)
 summary: the prior-art / IDS disclosures — list material references as [pc…] corpus chunks; the IDS is a view rendered over them
+answers:
+  - how do I list prior-art references / the IDS disclosures section?
+  - how do I cite a patent vs a paper as a prior-art reference?
 status: active
 style: patent-prior-art
 role: section

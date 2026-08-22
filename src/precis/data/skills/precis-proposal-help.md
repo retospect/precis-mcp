@@ -2,6 +2,10 @@
 id: precis-proposal-help
 title: precis — write a proposal against a call-for-proposal
 summary: ingest a call-for-proposal (kind='cfp'), seed a proposal project with the idea + personnel, link the cfp, and let the planner write the draft section-by-section, checking each section's word count against the cfp's limits
+answers:
+  - how do I start a proposal project against a call-for-proposal (cfp)?
+  - what does the planner do automatically on each proposal tick?
+  - why is a cfp its own kind instead of just a paper?
 applies-to: kind='cfp' (get/search), kind='draft' (put/edit get view='wordcount'), kind='todo' (meta.llm_tier project), link rel='has-requirement'
 status: active
 ---

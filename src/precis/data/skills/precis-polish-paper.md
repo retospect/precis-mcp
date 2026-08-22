@@ -2,6 +2,10 @@
 id: precis-polish-paper
 title: precis — paper polish runbook
 summary: pre-submission paper review runbook — orchestrate adversarial/citation reviewer personas, severity ranking
+answers:
+  - how do I run a full pre-submission review pass across several reviewer personas?
+  - how do I aggregate findings from multiple reviewers into one report?
+  - when do I add a new reviewer persona to the polish runbook?
 flavor: runbook
 status: active
 applies-to: orchestrating multi-pass paper review before submission

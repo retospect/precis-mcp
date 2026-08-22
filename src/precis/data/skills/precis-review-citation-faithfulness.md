@@ -2,6 +2,10 @@
 id: precis-review-citation-faithfulness
 title: precis — one-pass citation-faithfulness review
 summary: For each claim in a draft, check it is cited (sufficiency), the cite supports it (correctness), and prefer the living [fi<hub>] form over a frozen paper cite (living-cite preference) — existence is pre-checked, not this pass's job
+answers:
+  - how do I check that every claim in a draft is cited and the citation actually supports it?
+  - what counts as 'support' for a citation faithfulness check?
+  - how do I file a finding for each faithfulness problem I find?
 applies-to: get (kind='draft'|'paper'), put (kind='finding'|'todo')
 status: active
 ---

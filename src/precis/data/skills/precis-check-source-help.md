@@ -2,6 +2,11 @@
 id: precis-check-source-help
 title: precis — find a passage, read its surrounds, check it supports the point
 summary: reader-side source-checking — locate the passage by chunk handle, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then cite it inline as [pc<id>]
+answers:
+  - how do I find the passage in a paper that backs a claim I want to cite?
+  - how do I read the context around a chunk before citing it?
+  - how do I judge whether a quote actually supports the claim I'm making?
+  - how is reviewing someone else's citation different from finding my own?
 applies-to: get/search (kind='paper'), drafting prose, put (kind='finding')
 status: active
 ---

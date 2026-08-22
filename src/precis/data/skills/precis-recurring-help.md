@@ -2,6 +2,11 @@
 id: precis-recurring-help
 title: precis — scheduled work (recurring + one-shot + push delivery) via meta.schedule
 summary: recurring task patterns — Watches umbrella, cron/every/at schedule shapes, per-tick subtask spawning or push delivery (meta.deliver)
+answers:
+  - what schedule formats does meta.schedule accept?
+  - how do I get a recurring todo to push a result to me instead of just ticking silently?
+  - what's the Watches umbrella and how do I see what's watched?
+  - what are the anti-patterns to avoid with recurring todos?
 applies-to: put (kind='todo' with meta.schedule [+ meta.deliver]); precis worker --only schedule
 status: active
 ---

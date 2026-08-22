@@ -2,6 +2,8 @@
 id: precis-mermaid-gitgraph
 title: precis — git graph / git branching diagram / commit history / branch flow
 summary: a mermaid gitGraph — branches, commits, and merges of a git history
+answers:
+  - how do I diagram git branches, commits, and merges?
 applies-to: kind='mermaid'
 status: active
 ---

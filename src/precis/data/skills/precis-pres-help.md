@@ -2,6 +2,10 @@
 id: precis-pres-help
 title: precis — store and search slide decks + unpublished writeups
 summary: internal artefacts — slide decks, unpublished writeups, course notes; subtype taxonomy
+answers:
+  - how do I ingest a slide deck one slide at a time?
+  - how do I capture an unpublished writeup or course notes?
+  - how do I find a specific slide or paragraph in a stored deck?
 applies-to: get/search/put/tag/link (kind='pres')
 status: active
 ---

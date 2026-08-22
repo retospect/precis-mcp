@@ -2,6 +2,11 @@
 id: precis-patent-power
 title: precis — raw CQL for patent search (power-user)
 summary: raw CQL patent search — Boolean queries, field-scoped lookups, date windows, citation-graph filters
+answers:
+  - how do I run a raw CQL query against EPO OPS?
+  - which fields can I scope a CQL patent query to?
+  - how do I save a CQL query as a recurring watch?
+  - what are common gotchas with OPS CQL queries?
 applies-to: search (kind='patent', q=<CQL>)
 status: active
 ---

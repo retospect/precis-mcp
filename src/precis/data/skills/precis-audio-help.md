@@ -2,6 +2,11 @@
 id: precis-audio-help
 title: precis — voice drafts (narrate a draft to audio) + the pronunciation lexicon
 summary: audio is a cross-cutting EXPORT LAYER over any draft (not a kind); `precis draft audio <slug>` narrates via Kokoro TTS; per-chunk meta.voice/lang = a voice score; two-level pronunciation lexicon (personal + per-draft); publishes to the private podcast feed
+answers:
+  - how do I narrate a draft to audio?
+  - how do I control who speaks each part / the voice score?
+  - how do I fix the pronunciation of a special word or acronym?
+  - where does a narrated draft end up — how do I listen to it?
 applies-to: draft narration/audio export; chunk meta.voice/lang; meta.pronunciation; PRECIS_LEXICON_FILE; precis draft audio; precis podcast
 status: active
 ---

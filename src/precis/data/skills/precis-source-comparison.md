@@ -2,6 +2,10 @@
 id: precis-source-comparison
 title: precis — compare corpus sources into an agreement matrix
 summary: source-comparison runbook — cross-kind gather, agreement/disagreement/confidence matrix, contradicts links, one draft
+answers:
+  - how do I compare what several sources say about the same question?
+  - how do I record a disagreement between sources on the link graph, not just in prose?
+  - when does a source-comparison deserve a diagram?
 flavor: runbook
 status: active
 applies-to: search (cross-kind); put (kind='draft'); link (rel='contradicts')

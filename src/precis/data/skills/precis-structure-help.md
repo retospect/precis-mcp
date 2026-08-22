@@ -2,6 +2,12 @@
 id: precis-structure-help
 title: precis — the structure kind (atomistic cells you can read as a graph)
 summary: build a periodic cell + bond graph as typed ops, then probe it analytically (neighbours/coordination/line/plane/sphere/path/rings/fragments/diff/pov), relax it on a fidelity ladder (clean→ml→dft), and export POSCAR/extXYZ/CIF — no pixels; the graph + numbers are the interface
+answers:
+  - how do I build an atomistic cell and bond graph as typed ops?
+  - how do I relax a structure through the fidelity ladder (clean to ml to DFT)?
+  - how do I probe coordination, rings, or fragments in a structure?
+  - how do I import a structure from an external catalyst database?
+  - how do I export a structure to POSCAR or CIF?
 applies-to: get/search/put/edit/delete (kind='structure')
 status: active
 ---

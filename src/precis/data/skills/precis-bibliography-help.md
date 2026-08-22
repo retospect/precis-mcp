@@ -2,6 +2,11 @@
 id: precis-bibliography-help
 title: precis — read citations that cite a paper
 summary: read side of citations — list verified claims pointing at a paper with quotes and confidence
+answers:
+  - how do I see which claims have been verified against a paper?
+  - what does each column in a bibliography listing mean?
+  - what's the difference between the bibliography (kind='citation') and an inline [pc<id>] cite?
+  - how do I find citations across all papers, not just one?
 applies-to: get (kind='paper', view='bibliography')
 status: active
 ---
