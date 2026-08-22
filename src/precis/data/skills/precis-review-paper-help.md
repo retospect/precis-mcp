@@ -25,11 +25,14 @@ The default LLM failure mode is sycophancy; reject it explicitly.
    note it. If "studies have shown" appears without an inline cite,
    flag it.
 
-2. **Verifier-loop check.** Every `[cite:N]` marker must resolve to
-   a `kind='citation'` ref with a verbatim source quote that
-   supports the specific claim. Pull each citation; read its quote;
-   judge support strength. Wrong-quote / quote-doesn't-support-claim
-   is the most common cite failure and the highest-value catch.
+2. **Verifier-loop check.** Every cite token — `[pc<id>]` paper
+   chunk, `[pa<id>]` whole paper, `[pk<id>]` patent, `[fi<id>]`
+   claim hub — backs a specific claim. Pull the cited passage
+   (`get(id='pc<id>')`; for `[fi<id>]` read the hub's evidence) and
+   judge support strength. Wrong-passage / passage-doesn't-support-
+   claim is the most common cite failure and the highest-value
+   catch. Full mechanics + filing format:
+   [[precis-review-citation-faithfulness]].
 
 3. **Counterargument audit.** For each major claim, ask "what's the
    strongest objection?" If the draft doesn't address it, that's a
