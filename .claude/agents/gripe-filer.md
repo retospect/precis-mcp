@@ -1,6 +1,6 @@
 ---
 name: gripe-filer
-description: "Haiku mechanical filer — files a decided finding at a caller-named target (gripe/backlog) after dedup; won't pick the target. Sibling of issue-closer (closes items)."
+description: "Haiku mechanical filer — files a decided finding (gripe/backlog) after dedup; won't pick the target."
 tools: Read, Edit, Write, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

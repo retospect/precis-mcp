@@ -1,6 +1,6 @@
 ---
 name: forensics
-description: "Sonnet read-only log miner — mines prod logs/job transcripts into a ranked findings summary. Read-only besides its own gripe."
+description: "Sonnet log/job-transcript miner — returns a ranked findings summary; read-only besides its own gripe."
 tools: Bash, Read, Grep, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

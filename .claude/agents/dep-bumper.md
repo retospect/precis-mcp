@@ -1,6 +1,6 @@
 ---
 name: dep-bumper
-description: "Sonnet dep-bump operator — applies a bump via uv, runs impacted tests, reports green/red. Won't fix breaking API changes."
+description: "Sonnet dep-bump operator — applies via uv, runs impacted tests; won't fix breaking API changes."
 tools: Bash, Read, Grep, Edit, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

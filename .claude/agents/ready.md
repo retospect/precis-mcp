@@ -1,6 +1,6 @@
 ---
 name: ready
-description: "Sonnet backlog-readiness judge — vets a docs/backlog spec against prose and code, flags blockers/advisories. Doesn't write code or flip status."
+description: "Sonnet backlog-readiness judge — vets a spec against prose/code; never writes code or flips status."
 tools: Read, Grep, Glob, Bash, Edit, mcp__claude-context__search_code, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

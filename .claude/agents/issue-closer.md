@@ -1,6 +1,6 @@
 ---
 name: issue-closer
-description: "Sonnet post-ship closer, backgrounded from /land or /go — closes only items the shipped commit visibly fixes. Leaves uncertain ones open."
+description: "Sonnet post-ship closer — closes only items a shipped commit visibly fixes; leaves uncertain open."
 tools: Bash, Read, Grep, Edit, mcp__precis__search, mcp__precis__get, mcp__precis__delete, mcp__precis__put
 model: sonnet
 ---

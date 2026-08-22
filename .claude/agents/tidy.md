@@ -1,6 +1,6 @@
 ---
 name: tidy
-description: "Cheap agent — runs ruff --fix + format, reports residual issues left for judgment. Ruff-specific sibling of cmd-runner/test-runner."
+description: "Cheap agent — runs ruff --fix + format, reports residual issues left for judgment."
 tools: Bash, Read, Edit, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

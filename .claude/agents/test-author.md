@@ -1,6 +1,6 @@
 ---
 name: test-author
-description: "Sonnet test writer — writes tests from a caller-given spec (behavior contract or bug repro), confirms they run right. Pairs with coder."
+description: "Sonnet test writer — writes tests from a caller spec (contract or repro), confirms they run."
 tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__search, mcp__precis__put
 model: sonnet
 ---

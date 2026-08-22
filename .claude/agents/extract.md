@@ -1,6 +1,6 @@
 ---
 name: extract
-description: "Cheap read-only agent — pulls facts/lists from files without judgment, formats them. Never edits or analyzes."
+description: "Cheap read-only agent — pulls facts/lists from files without judgment; never edits or analyzes."
 tools: Read, Grep, Glob, Bash, mcp__precis__search, mcp__precis__put
 model: haiku
 ---

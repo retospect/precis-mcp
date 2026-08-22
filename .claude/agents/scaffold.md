@@ -1,6 +1,6 @@
 ---
 name: scaffold
-description: "Cheap agent — mints a new file for this repo's three templated kinds (migration/backlog/skill) from convention. Never invents content."
+description: "Cheap agent — mints a new migration/backlog/skill file from convention; never invents content."
 tools: Read, Glob, Bash, Write, Edit, mcp__precis__search, mcp__precis__put
 model: haiku
 ---
