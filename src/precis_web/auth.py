@@ -72,6 +72,21 @@ _OPEN_PATHS = frozenset({"/healthz"})
 #: presented. See :mod:`precis_web.routes.podcast`.
 _SELF_AUTH_PREFIXES = ("/podcast",)
 
+
+def _is_self_auth(path: str) -> bool:
+    """Is *path* inside a self-authenticating subtree?
+
+    Matches by **path segment**, not string prefix. A bare
+    ``str.startswith("/podcast")`` also exempts ``/podcastfoo`` — and
+    would silently exempt any future ``/podcasts`` or
+    ``/podcast-admin``: a route born unauthenticated, reachable from the
+    public internet, with nothing in review to catch it. The exemption
+    has to name a subtree, so only the prefix itself and things under
+    its ``/`` qualify.
+    """
+    return any(path == p or path.startswith(f"{p}/") for p in _SELF_AUTH_PREFIXES)
+
+
 _CACHE_TTL = 300.0
 _CACHE_MAX = 512
 
@@ -310,7 +325,7 @@ class BasicAuthMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if path in _OPEN_PATHS or path.startswith(_SELF_AUTH_PREFIXES):
+        if path in _OPEN_PATHS or _is_self_auth(path):
             await self.app(scope, receive, send)
             return
 

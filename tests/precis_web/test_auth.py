@@ -382,6 +382,39 @@ def test_podcast_accepts_basic() -> None:
     assert resp.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "path", ["/podcastfoo", "/podcasts", "/podcast-admin", "/podcastconsole"]
+)
+def test_a_lookalike_prefix_is_not_exempt(path: str) -> None:
+    """The exemption names a subtree, not a string prefix.
+
+    ``startswith("/podcast")`` also matched these, so they skipped auth
+    and only 404'd because no such route happened to exist. Behind
+    ``tailscale funnel`` that made the next route named anything like
+    ``/podcasts`` unauthenticated on the public internet. 401 — the gate
+    answers before routing, so a non-existent path is indistinguishable
+    from a real one either way.
+    """
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    assert client.get(path).status_code == 401
+
+
+def test_the_exempt_subtree_itself_still_passes() -> None:
+    """Guard the other side: don't fix the leak by closing the door.
+
+    ``/podcast`` exactly, and anything under ``/podcast/``, must still
+    reach the route's own token check rather than the middleware's 401.
+    """
+    from precis_web.auth import _is_self_auth
+
+    assert _is_self_auth("/podcast")
+    assert _is_self_auth("/podcast/feed.xml")
+    assert _is_self_auth("/podcast/audio/ep-1.mp3")
+    assert not _is_self_auth("/podcastfoo")
+    assert not _is_self_auth("/console")
+
+
 def test_podcast_feed_token_authorizes_and_is_threaded_into_urls(tmp_path) -> None:
     from datetime import datetime
 

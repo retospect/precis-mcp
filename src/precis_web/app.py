@@ -89,6 +89,14 @@ def create_app(
             "reach this port"
         )
 
+    # Hardening headers LAST, so this is the outermost layer and they ride
+    # on the 401 challenge and /static too, not just handler responses.
+    # Unconditional: framing and MIME-sniffing don't care whether auth is
+    # on, and the auth-off path is exactly when the app is most exposed.
+    from precis_web.security_headers import SecurityHeadersMiddleware
+
+    app.add_middleware(SecurityHeadersMiddleware)
+
     register_error_handlers(app)
 
     # Self-hosted front-end assets under static/ (tailwind.css — a prebuilt
