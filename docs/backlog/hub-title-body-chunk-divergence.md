@@ -340,7 +340,15 @@ see the status note above.
    Chase-tree rows are out of scope: they never mint, and nothing publishes
    their bodies. If they are ever repaired it is a separate, lower-stakes pass
    that still needs the per-cohort split.
-2b. **Mint the neck-length claim fi191129's body carried.** The clause was
+2b. **DONE 2026-08-22 — minted as fi237847** (`pub_id` `34ongq`, alias
+   `j7xs3h`), grounded on pc29898 of pa432, demand-stamped to draft 173020.
+   Dedup swept first on the now-hybrid search (4 probes, 16 distinct hubs,
+   none carrying the relation); `direct-mint` independently placed it as a new
+   hub with "no matching or contradicting candidate". The applied sentence
+   needed a `refine_claim_sentence` pass — see
+   `direct-mint-apply-rerolls-the-reviewed-sentence.md`. Original item below.
+
+   **Mint the neck-length claim fi191129's body carried.** The clause was
    **true** (see the correction above), so this is not an optional salvage but
    the decomposition the original verdict called for. fi432 supports two
    relations, and the width one is the clause that was dropped:
