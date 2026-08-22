@@ -6,11 +6,11 @@
 # zero-breakage migration. Consumers combine:
 #   precis_shared_env | combine(precis_identity_env | default({}))
 precis_identity_env_raw:
-  UNPAYWALL_EMAIL: "{{ vault_unpaywall_email | default('') }}"
-  CROSSREF_MAILTO: "{{ vault_crossref_mailto | default(vault_unpaywall_email | default('')) }}"
+  # contact.* identity strings (unpaywall/crossref mailto, EDGAR UA) moved to
+  # DB-resident `precis.settings` rows 2026-08-22 — no env templating; the
+  # settings layer resolves DB → env → compiled default fleet-wide.
   SEMANTIC_SCHOLAR_API_KEY: "{{ vault_semantic_scholar_api_key | default('') }}"
   PRECIS_ANKI_USER: "{{ vault_anki_user | default('') }}"
-  PRECIS_EDGAR_USER_AGENT: "{{ vault_edgar_user_agent | default('') }}"
 precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('value', 'equalto', '') | list | items2dict }}"
 
 # Fleet-wide trailing-24h LLM spend ceiling (PRECIS_DAILY_COST_CEILING).

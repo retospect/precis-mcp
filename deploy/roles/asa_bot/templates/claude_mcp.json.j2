@@ -24,8 +24,10 @@
            of .pgpass is ambiguous per spawn. Each render site sets
            claude_mcp_pgpass_file to its run-as user's .pgpass. #}
         "PGPASSFILE": "{{ claude_mcp_pgpass_file }}",
-        "UNPAYWALL_EMAIL": "{{ vault_unpaywall_email | default('') }}",
-        "CROSSREF_MAILTO": "{{ vault_unpaywall_email | default('') }}",
+        {# contact emails are DB-resident settings (contact.polite_email /
+           contact.crossref_mailto) since 2026-08-22 — and the UNPAYWALL_EMAIL/
+           CROSSREF_MAILTO names that sat here matched no registered env var
+           anyway (registry reads PRECIS_-prefixed names): dead weight. #}
         "PRECIS_PATENT_RAW_ROOT": "{{ precis_patent_raw_root | default('') }}",
         "PRECIS_ROOT": "{{ precis_root | default('') }}",
         "PRECIS_PYTHON_ROOTS": "{{ precis_python_roots | default('') }}",
