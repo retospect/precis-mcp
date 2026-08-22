@@ -32,7 +32,7 @@ heuristic that held them back was worth distrusting:
 | hub | source | why the body lost |
 |---|---|---|
 | fi190976 | fi1483 | body says nanobuds form at "1000–1150 °C"; the source reports that at 1100 and 1150 °C "only non-active catalyst particles were observed" |
-| fi191129 | fi432 | body's extra clause ("width of this plateau set by the length of the neck") misstates Fig. 2 — increasing neck length shifts the plateau *upward in energy*, it does not set its width |
+| fi191129 | fi432 | *(no body loss — title and body carried the same claim; see the correction below. The body's extra clause was **true** and is now item 2b.)* |
 | fi191134 | fi6028 | body says the opening scales "linearly with defect content", misreading a sentence about *degradation*; it also drops the source's headline that high defect concentration reduces the bandgap toward zero |
 
 Two titles were **amended before** the body was derived from them, because
@@ -142,14 +142,27 @@ title-authoritative, and two must not be repaired mechanically:
 | fi191134 | **contradiction — adjudicate against the source.** Title: higher defect concentrations "reduce the bandgap back toward zero" (non-monotonic). Body: "the degree of opening scaling linearly with defect content" (monotonic). These are different physical claims; one is wrong. Repairing either direction enshrines a possibly-false claim. |
 
 **Superseded 2026-08-22 — see the CLOSED section at the top.** Reading the
-sources revised two of these three verdicts. fi191129's clause is not a second
-atom to preserve but a **misstatement** of the source figure, so it was dropped
-rather than decomposed. fi191134 was adjudicable **from the corpus** — fi6028
-was already ingested — and its title won, though the title needed its own
-`DFT`→`DFTB` fix first. Only fi190976's verdict survived intact, and even it
-gained a missing condition. The row above that aged worst is fi191129's: "the
-body holds a clause the title lacks" was read as *richer*, when the correct
-question was whether the clause is **true**.
+sources revised one of these three verdicts. fi191134 was adjudicable **from
+the corpus** — fi6028 was already ingested — and its title won, though the
+title needed its own `DFT`→`DFTB` fix first. fi190976's verdict survived
+intact, and even it gained a missing condition.
+
+**Correction, same day.** The repair run recorded fi191129's clause as a
+*misstatement* of Fig. 2 and dropped it. That verdict was wrong, and it was
+reached by reading the figure caption without the surrounding Results text.
+fi432 states, verbatim: *"The width of this plateau region, however, depends
+on the length of the neck region (see also Fig. 3 showing CNB3)."* Both
+relations hold — the plateau's **width** depends on neck length *and* the
+region shifts upward in energy — so the original verdict on this row ("the
+body holds a second atom, decompose rather than overwrite") was correct all
+along.
+
+The end state is unharmed: fi191129 is title-only and the second atom is
+minted separately under item 2b, which is what decomposition prescribes. What
+changed is 2b's content — it must carry the **width ← neck-length** relation,
+not only the energy shift. The transferable lesson is not the one first
+recorded here; it is that a figure caption is not the paper. Adjudicate a
+claim against the prose that discusses the figure, and quote it.
 
 Full text of all 45 exported for review:
 `~/precis-experiments/taproot-divergence-45-2026-08-21/review.md`.
@@ -327,13 +340,19 @@ see the status note above.
    Chase-tree rows are out of scope: they never mint, and nothing publishes
    their bodies. If they are ever repaired it is a separate, lower-stakes pass
    that still needs the per-cohort split.
-2b. **Optional: mint the neck-length claim fi191129's body gestured at.** The
-   dropped clause was wrong, but the underlying dependence is real and is in
-   fi432: *"With increasing neck length this region shifts upward in energy and
-   more dips appear at low energies."* If minted it is a **separate atom**, not
-   a conjunct on fi191129, and it must go through the dedup-before-mint sweep
-   first. Deliberately not done as part of the repair — repairing divergence
-   and minting new claims are different authorities.
+2b. **Mint the neck-length claim fi191129's body carried.** The clause was
+   **true** (see the correction above), so this is not an optional salvage but
+   the decomposition the original verdict called for. fi432 supports two
+   relations, and the width one is the clause that was dropped:
+   *"The width of this plateau region, however, depends on the length of the
+   neck region"* and *"With increasing neck length this region shifts upward in
+   energy and more dips appear at low energies."* Mint the width relation;
+   the energy shift is a candidate sibling atom, not a conjunct. Either way it
+   is a **separate atom**, never a conjunct on fi191129, and it goes through
+   the dedup-before-mint sweep first — now runnable for real, since ref-level
+   search gained a semantic leg in `b634155c`. Deliberately not done as part of
+   the repair: repairing divergence and minting new claims are different
+   authorities.
 3. **Detection has landed** — `title-body-divergence` and
    `missing-body-chunk` in the `precis taproot lint` cohort sweep, reporting
    only. Do not add either to `--fix`; see the opposite-repair argument above.
