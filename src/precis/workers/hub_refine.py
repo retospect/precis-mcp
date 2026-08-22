@@ -145,6 +145,61 @@ read (``cli/worker.py::_should_register``), so setting
 — the rejection memo is a read-modify-write on ``meta``
 (``docs/runbooks/taproot-chase-enablement.md``).
 
+**Reground** (``docs/backlog/taproot-reground.md``) grows this same pass
+from *additive-only enrichment* into a full *re-grounding* pass. It is
+deliberately **not** a second worker: there is exactly one mechanism that
+improves an existing claim hub, and it is this one. When
+:class:`RegroundConfig` is active the spine above gains five things, all
+on the same claim→discover→verify→write→stamp path:
+
+* **Fisheye + audit (stages 1-2).** Every current grounding chunk, with
+  its prev/next neighbours, goes to :func:`judge_edge_strict` — a judge
+  *strictly stricter* than the minter's ``_verify_support_with_caveats``,
+  which returns *yes* on a proxy because the sentence utters the claim.
+  Primary content → KEEP; asserts/defers/review-deferral/abstract-for-a-
+  measurement/title/byline/cover/bibliography → PRUNE; primary-against →
+  CONTRADICTS; **default KEEP on uncertainty**.
+* **Convergence guard.** ``meta.reground_seen`` memoes each edge's verdict
+  against the ``claim_sha``, so an edge is re-judged at most once per
+  claim wording — the same shape ``last_refined_sha`` already uses, and a
+  sha-reopen clears it along with the rejection memo. Reground converges;
+  it is not a periodic re-scan.
+* **Deeper re-discovery (stage 3).** The two existing discover sources at
+  a deeper top-k, plus — offered *first* — deeper passages inside papers
+  the hub already grounds on. That is the PRIMARY move: the pilot found 5
+  of 6 proxy prunes were same-paper depth corrections ("right paper,
+  wrong chunk"), which makes most reground actions low-risk. The
+  grounding-depth policy (:func:`claim_depth_policy`) lets a definition/
+  existence claim ground on an abstract but requires a body passage for a
+  measurement/mechanism one.
+* **Prune, add-first, in code.** Nothing is removed inside the per-hub
+  transaction. Prunes are planned (:class:`RegroundPlan`) and applied by
+  :func:`apply_reground_plan` only after the adds commit and are read
+  back from ``links`` — with a paired-add requirement, a strand guard,
+  and partial-failure counts. A contradictor is re-attached as a
+  ``contradicts`` edge, never plain-dropped.
+* **External last resort + retire flagging (stages 5-6).** Both behind
+  their own additional gates; the retire stage additionally needs a
+  per-hub opt-in tag, and its draft-prose edit is deliberately stubbed at
+  a worklist flag (see :func:`_flag_retire`).
+
+**The unattended reground service loop is dark.**
+:meth:`RegroundConfig.from_env` returns ``None`` unless
+``PRECIS_TAPROOT_REGROUND`` is set — this gates only the periodic
+``hub_refine`` service pass picking reground up on its own due-set; it says
+nothing about the ``reground_claim`` job (``workers/job_types/
+reground_claim.py``), which is its own explicit, attended opt-in entry
+point and dispatches regardless of this env var (deliberate — a submitted
+job is already a human decision to run it). The prune sub-stage needs
+``PRECIS_TAPROOT_REGROUND_PRUNE`` on top of that, set to the literal
+:data:`PRUNE_INTERLOCK_TOKEN` rather than a boolean, because it **must not
+be enabled in prod until ``taproot.slice_refine_eval`` passes on the
+deployed strict rubric** (the spec's live blocker — over-prune is the
+dangerous direction, and a plain ``=1`` is exactly what gets flipped by
+muscle memory) — this interlock DOES gate both paths, service and job
+alike (:func:`prune_interlock_open`). Retire/regenerate has no env flag at all: it is reachable
+only through the ``reground_claim`` job's explicit param plus the hub tag.
+
 Once claiming work, the pass always verifies with the
 LLM — there is no separate ``with_llm`` toggle here (unlike ``chase``): a
 hub-refine run that can't verify can't do anything, so reaching this pass
@@ -159,7 +214,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
+import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -168,13 +225,26 @@ from psycopg import Connection
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
+    _parse_json_object,
     claim_hub_predicate_sql,
     claim_sha,
 )
-from precis.taproot.hub import HUB_ROLES, attach_evidence, run_retraction_checks
+from precis.taproot.hub import (
+    HUB_ROLES,
+    EvidenceHandle,
+    WouldStrandHub,
+    append_reground_log,
+    attach_evidence,
+    live_evidence_handles,
+    reattach_as_contradicts,
+    reground_log_entry,
+    remove_evidence,
+    run_retraction_checks,
+)
 from precis.taproot.resolve import resolve_citation
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.llm.router import LlmRequest, Tier, dispatch
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 
 if TYPE_CHECKING:
@@ -659,6 +729,1731 @@ def _drop_patent_claim_blocks(
     ]
 
 
+# ══ reground — the audit/prune/re-discover/escalate extension ═══════
+#
+# docs/backlog/taproot-reground.md. Everything below extends the SAME
+# claim→discover→verify→write→stamp spine above; there is deliberately no
+# parallel producer. All of it is DARK: :meth:`RegroundConfig.from_env`
+# returns ``None`` unless an operator sets the flags, and the prune stage
+# needs a *second* flag that must not be set in prod until
+# ``taproot.slice_refine_eval`` passes on the deployed strict rubric (the
+# spec's live blocker: hub 176363 must drop its contradicting partials,
+# 176272/176360 must keep theirs — over-prune is the dangerous direction).
+
+
+#: ``finding.meta`` keys the reground stages read/write. ``reground_seen``
+#: is the **convergence guard**: ``{"<src_ref_id>:<chunk_id>": {"sha",
+#: "verdict", "at"}}``, so any one edge (or re-offered passage of an
+#: already-attached source) is judged at most once per ``claim_sha``.
+#: Cleared by the same sha-reopen that clears ``taproot_rejected`` — an
+#: edited claim genuinely reopens every verdict. Without this memo the
+#: audit stage would re-judge every edge every pass, which is exactly the
+#: unbounded re-scan the additive invariant existed to prevent.
+_META_REGROUND_SEEN = "reground_seen"
+#: The last external-escalation report (stage 5): mined reference DOIs we
+#: do NOT hold, plus whatever the S2/Perplexity probe returned. Display +
+#: worklist material, never itself evidence.
+_META_REGROUND_EXTERNAL = "reground_external"
+#: The hub's last reground verdict (``supportable`` / ``needs_external`` /
+#: ``retire``) and, for a retire, its proposed one-sentence groundable
+#: reword. A *record*, not a state machine — "questionable" stays emergent
+#: (a hub at zero print-visible supporters reads ``unverified`` via
+#: ``.trust``); nothing here is a new trust flag.
+_META_REGROUND_VERDICT = "reground_verdict"
+#: The intent-vs-committed repair anchor (spec §"The technique that found
+#: the original damage"): the end state the last applied plan *intended*,
+#: as ``{"sha", "at", "handles": [[src_ref_id, src_chunk_id, relation],
+#: ...]}``. :func:`verify_hub_intent` diffs it against ``links`` with no
+#: LLM spend at all, and :func:`repair_hub_intent` applies the delta
+#: adds-first.
+_META_REGROUND_INTENT = "reground_intent"
+
+#: Per-hub opt-in for the **destructive** retire/regenerate sub-stage.
+#: Two accepted forms, both checked (docs/backlog/taproot-reground.md's
+#: "distinct flag for the sweep + a ``TAPROOT:reground-ok`` opt-in tag"):
+#: the spec's literal ``TAPROOT:reground-ok``, for a human who hand-tags a
+#: hub, and the side-channel ``TAPROOT_REGROUND_OK:1`` namespace that is
+#: safe to write. The literal form is NOT the one to write from code: the
+#: ``taproot`` axis (``data/axes/taproot.yaml``) is ``select: one`` over
+#: ``[claim, review]``, so a re-classification pass would evict any third
+#: ``TAPROOT:`` value. The side-channel namespace mirrors the
+#: :data:`_DUE_NS` / :data:`_ATTEMPT_NS` precedent in this same module.
+_REGROUND_OK_NS = "TAPROOT_REGROUND_OK"
+_REGROUND_OK_VALUE = "1"
+_REGROUND_OK_SPEC_NS = "TAPROOT"
+_REGROUND_OK_SPEC_VALUE = "reground-ok"
+
+#: Written by the retire stage when it fires: the hub is *flagged* for the
+#: opus draft-prose pass, never auto-rewritten here (see
+#: :func:`_flag_retire`'s docstring for exactly what is stubbed).
+_REGROUND_RETIRE_NS = "TAPROOT_REGROUND_RETIRE"
+_REGROUND_RETIRE_VALUE = "1"
+
+
+def _env_flag(name: str) -> bool:
+    """A ``PRECIS_*`` boolean knob, **default off**. Anything but an
+    explicit ``1``/``true``/``yes``/``on`` (case-insensitive) is off — a
+    typo'd flag must fail closed, because every knob in this section
+    gates either LLM spend or a destructive write."""
+    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+#: The **exact** value ``PRECIS_TAPROOT_REGROUND_PRUNE`` must carry before
+#: the unattended service will remove anything. Not a boolean, on purpose:
+#: the prune stage is blocked on the ``taproot.slice_refine_eval`` rubric
+#: gate (hub 176363 must drop its contradicting partials, 176272/176360
+#: must keep theirs — over-prune is the dangerous direction, mirroring
+#: canon's zero-false-``same``), and a plain ``=1`` is exactly the kind of
+#: flag somebody flips from muscle memory while enabling the enrichment
+#: half. Setting a token that names the precondition makes the operator
+#: assert the eval passed, and makes the enablement greppable in a deploy
+#: template. ``prune`` on the ``reground_claim`` job param remains the
+#: normal, per-run, attended way to prune.
+PRUNE_INTERLOCK_TOKEN = "eval-passed"
+
+
+def prune_interlock_open() -> bool:
+    """True iff ``PRECIS_TAPROOT_REGROUND_PRUNE`` carries
+    :data:`PRUNE_INTERLOCK_TOKEN` **exactly** (no case folding — the point
+    is a literal, greppable string in a deploy template, not a boolean).
+
+    The single code-level answer to "has the rubric eval gate been
+    signed off on this host?", checked by BOTH prune paths: the unattended
+    service (:meth:`RegroundConfig.from_env`) and the attended
+    ``reground_claim`` job param. Without this, ``params={'prune': true}``
+    would be a way for any job submitter to run the prune stage in prod
+    with the eval blocker unresolved — policy, not code. It is code now.
+    """
+    return (os.environ.get("PRECIS_TAPROOT_REGROUND_PRUNE") or "") == (
+        PRUNE_INTERLOCK_TOKEN
+    )
+
+
+def _reground_deeper_topk() -> int:
+    """``PRECIS_TAPROOT_REGROUND_TOPK`` — default **24**, deliberately
+    deeper than enrichment's ``PRECIS_TAPROOT_REFINE_TOPK`` (8).
+
+    Stage 3's whole premise: real primaries rank *low* while the
+    ``references`` categorization is still converging (un-retagged
+    bibliography paragraphs occupy the top slots), so the recall floor has
+    to go deeper than enrichment used. Still a hard bound — reground stays
+    converging-by-construction, it just converges from further down."""
+    try:
+        return int(os.environ.get("PRECIS_TAPROOT_REGROUND_TOPK", "24"))
+    except ValueError:
+        return 24
+
+
+# ── the strict judge ────────────────────────────────────────────────
+
+#: The three verdicts :func:`judge_edge_strict` may return.
+STRICT_VERDICTS = ("KEEP", "PRUNE", "CONTRADICTS")
+
+
+@dataclass(frozen=True)
+class StrictVerdict:
+    """One strict-judge answer about one passage."""
+
+    verdict: str
+    reason: str
+
+
+#: Grounding-depth policy (fi189527, folded into this spec): what counts
+#: as an acceptable *depth* of grounding depends on the claim's own shape.
+DEPTH_ABSTRACT_OK = "abstract-ok"
+DEPTH_BODY_REQUIRED = "body-required"
+
+#: Any digit at all, or a mechanism/causation verb. Deliberately crude and
+#: deliberately biased toward :data:`DEPTH_BODY_REQUIRED`: the cost of
+#: mis-classifying a definition claim as measurement is that the judge is
+#: asked for a body passage it may not need (and still defaults to KEEP on
+#: uncertainty), whereas the cost of the opposite is accepting an
+#: abstract's quoted number as primary support for a measurement — the
+#: exact over-grounding the pilot found the minter doing.
+_QUANTITY_RE = re.compile(r"\d")
+_MECHANISM_RE = re.compile(
+    r"(?i)\b(mechanis|cataly|induc|caus|because|via\b|due to|driv|"
+    r"lead(?:s|ing)? to|result(?:s|ed|ing)? (?:in|from)|enabl|increas|"
+    r"decreas|enhanc|suppress|improv|reduc|shift|convert|activat|inhibit)"
+)
+
+
+def claim_depth_policy(sentence: str) -> str:
+    """:data:`DEPTH_BODY_REQUIRED` for a measurement/mechanism claim,
+    :data:`DEPTH_ABSTRACT_OK` for a definition/existence one.
+
+    Pure, no LLM — the policy is a *prompt input* and an attach-side
+    filter, not itself a judgment. See :data:`_QUANTITY_RE` for why the
+    heuristic leans strict.
+    """
+    s = sentence or ""
+    if _QUANTITY_RE.search(s) or _MECHANISM_RE.search(s):
+        return DEPTH_BODY_REQUIRED
+    return DEPTH_ABSTRACT_OK
+
+
+#: Section names that mark a chunk as front matter rather than a body
+#: passage. Used only to keep a *new* attach from re-grounding a
+#: measurement claim on an abstract/title/cover chunk — the pilot's
+#: dominant failure ("right paper, wrong chunk"). This is NOT a
+#: bibliography filter: reference chunks are excluded upstream by the
+#: converging ``references`` categorizer (``bib_retag`` + the classifier),
+#: which this pass deliberately does not duplicate.
+_FRONT_MATTER_RE = re.compile(
+    r"(?i)abstract|title|author|affiliation|cover|front ?matter|"
+    r"acknowledg|keywords?|running head"
+)
+
+
+def is_front_matter(*, chunk_ord: int | None, section_path: str | None) -> bool:
+    """True when a chunk reads as front matter: a front-matter section
+    name, or ``ord == 0`` with no section at all (an untagged title/cover
+    page — the shape the pilot kept finding under a measurement claim)."""
+    if section_path and _FRONT_MATTER_RE.search(section_path):
+        return True
+    return chunk_ord == 0 and not section_path
+
+
+_JUDGE_SYS = (
+    "You are a skeptical scientific evidence auditor deciding whether a "
+    "passage substantiates a claim with PRIMARY content or merely asserts "
+    "it. Reply with ONLY the requested JSON object, no prose."
+)
+
+_DEPTH_NOTE = {
+    DEPTH_BODY_REQUIRED: (
+        "This is a MEASUREMENT / MECHANISM claim. An abstract-level or "
+        "front-matter mention that merely quotes the result is NOT "
+        "sufficient grounding — the primary is the body passage that "
+        "describes the measurement, the computation, or the mechanism."
+    ),
+    DEPTH_ABSTRACT_OK: (
+        "This is a DEFINITION / EXISTENCE claim. An abstract-level "
+        "statement is acceptable primary grounding; do not demand a body "
+        "passage for it."
+    ),
+}
+
+_JUDGE_PROMPT = """\
+You are auditing ONE existing evidence edge on a scientific claim hub.
+Decide whether the PASSAGE substantiates the CLAIM with PRIMARY CONTENT,
+or merely asserts it / defers to other people's work (a PROXY).
+
+CLAIM:
+{claim}
+
+SETUP (structured):
+{scope_json}
+
+GROUNDING-DEPTH POLICY for this claim:
+{depth_note}
+
+SOURCE: {source_kind} {cite_key}, chunk ord {chunk_ord}{section_note}
+
+PASSAGE (the edge's grounding chunk):
+{chunk_text}
+
+NEIGHBOURING PASSAGES in the same source (context only -- so you can tell
+front matter from body. NEVER judge support off a neighbour):
+{neighbours}
+
+Answer with exactly one verdict:
+
+  KEEP        : the passage carries PRIMARY content for the claim -- it
+                reports the measurement, the computation, the mechanism,
+                the observation, or the definition ITSELF, as the
+                source's own work.
+  PRUNE       : the passage does NOT substantiate the claim, because it is
+                one of:
+                  - an ASSERTION THAT DEFERS to other work (a review
+                    sentence that states the claim while pointing at
+                    uncited references, e.g. "[5-24]", with no data of
+                    its own);
+                  - a REVIEW / related-work / background recitation;
+                  - a REVIEW-DEFERRAL of any other shape ("as has been
+                    shown", "it is well known that") with no result here;
+                  - an ABSTRACT-ONLY statement standing in for a
+                    MEASUREMENT or MECHANISM claim (the number is quoted,
+                    the measurement is not described);
+                  - TITLE, BYLINE, author list, affiliation, cover page,
+                    running header, or other FRONT MATTER;
+                  - a BIBLIOGRAPHY / reference-list entry;
+                  - text merely on-topic that never states the claim.
+  CONTRADICTS : the passage carries PRIMARY content running COUNTER to
+                the claim -- an opposite result, value, or tendency. Not
+                "silent on part of it": actually against it.
+
+RULES:
+  - Judge the claim EXACTLY AS STATED, never a looser or more general
+    version of it.
+  - Be STRICTER than "does this sentence utter the claim?". A passage
+    that utters the claim while attributing it to somebody else's
+    references is a PROXY -> PRUNE.
+  - DEFAULT TO KEEP WHEN UNCERTAIN. Over-pruning is the dangerous
+    direction; a doubtful edge stays.
+
+Respond with EXACTLY ONE JSON object, nothing else:
+{{
+  "verdict": "KEEP" | "PRUNE" | "CONTRADICTS",
+  "reason": "<one sentence>"
+}}
+"""
+
+#: Per-passage excerpt caps in the judge prompt — the passage itself gets
+#: the same 4000-char budget ``_chase_llm._verify_support_with_caveats``
+#: uses; a neighbour is context only and gets far less.
+_JUDGE_PASSAGE_CHARS = 4000
+_JUDGE_NEIGHBOUR_CHARS = 600
+
+
+def judge_edge_strict(
+    *,
+    claim: str,
+    scope: dict[str, Any],
+    cite_key: str,
+    chunk_ord: int | None,
+    chunk_text: str,
+    source_kind: str = "paper",
+    depth_policy: str = DEPTH_BODY_REQUIRED,
+    section_path: str | None = None,
+    neighbours: list[str] | None = None,
+) -> StrictVerdict | None:
+    """The strict judge — stage 2's verdict on ONE passage.
+
+    **Strictly stricter than** ``_chase_llm._verify_support_with_caveats``,
+    which is the minter's verifier and returns *yes* on a proxy because
+    the sentence states the claim. That looseness is correct for
+    *attaching* (a scoped, hedged supporter is still a supporter); it is
+    wrong for *auditing*, where the question is whether the passage is the
+    primary at all. The two prompts are deliberately separate rather than
+    one parameterized prompt: enrichment's calibration is load-bearing for
+    every existing edge, and re-tuning it to serve the audit would move
+    the attach threshold for the whole corpus.
+
+    Returns ``None`` on a dispatch failure or an unparseable reply —
+    treated by every caller as "no verdict", i.e. no memo written and no
+    action taken, so the edge is simply re-judged next pass. Conflating a
+    dead dispatch with a PRUNE would delete evidence on an infra blip.
+    """
+    section_note = f", section {section_path}" if section_path else ""
+    neighbour_text = (
+        "\n\n".join(n[:_JUDGE_NEIGHBOUR_CHARS] for n in neighbours if n)
+        if neighbours
+        else "(none — this passage has no live neighbours in the source)"
+    )
+    prompt = _JUDGE_PROMPT.format(
+        claim=claim,
+        scope_json=json.dumps(scope, sort_keys=True),
+        depth_note=_DEPTH_NOTE.get(depth_policy, _DEPTH_NOTE[DEPTH_BODY_REQUIRED]),
+        source_kind=source_kind,
+        cite_key=cite_key,
+        chunk_ord=chunk_ord if chunk_ord is not None else "(ref-level)",
+        section_note=section_note,
+        chunk_text=chunk_text[:_JUDGE_PASSAGE_CHARS],
+        neighbours=neighbour_text,
+    )
+    res = dispatch(
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            messages=[
+                {"role": "system", "content": _JUDGE_SYS},
+                {"role": "user", "content": prompt},
+            ],
+            prompt=prompt,
+            source="taproot:reground-judge",
+        )
+    )
+    if res.error:
+        log.warning("hub_refine: strict judge dispatch failed: %s", res.error)
+        return None
+    data = res.data if isinstance(res.data, dict) else _parse_json_object(res.text)
+    if not isinstance(data, dict):
+        return None
+    verdict = data.get("verdict")
+    if verdict not in STRICT_VERDICTS:
+        log.warning("hub_refine: strict judge returned verdict %r — ignored", verdict)
+        return None
+    return StrictVerdict(
+        verdict=str(verdict), reason=str(data.get("reason") or "").strip()
+    )
+
+
+JudgeFn = Callable[..., "StrictVerdict | None"]
+ExternalProbeFn = Callable[[str], list[dict[str, Any]]]
+
+
+# ── stage 5: external last resort ───────────────────────────────────
+
+
+def _probe_s2(claim_sentence: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Semantic Scholar free-text search for primary support.
+
+    Goes through :func:`precis.ingest.semantic_scholar.search_s2_papers`
+    (the existing corpus-side door, which owns its own HTTP client and
+    degrades to ``[]`` on any error) rather than building a URL here — so
+    this pass performs **no agent-supplied-URL fetch at all** and the
+    ``safe_get``/``safe_stream`` requirement is met by construction, not
+    by a wrapper that could be forgotten. Same reasoning for the DOI
+    mining leg, which is pure SQL.
+    """
+    from precis.ingest.semantic_scholar import search_s2_papers
+
+    out: list[dict[str, Any]] = []
+    for paper in search_s2_papers(claim_sentence, limit=limit):
+        doi = paper.get("doi")
+        if not doi:
+            continue
+        out.append(
+            {"doi": str(doi), "title": str(paper.get("title") or ""), "source": "s2"}
+        )
+    return out
+
+
+def _probe_perplexity(claim_sentence: str) -> list[dict[str, Any]]:
+    """STUB — the Perplexity leg of stage 5's external escalation.
+
+    Intended shape: run the claim as a ``perplexity-research`` query
+    through a booted :class:`precis.dispatch.Hub`
+    (``ResearchHandler.get(q=…)``), regex DOIs out of the returned report,
+    and hand them back in the same ``{doi, title, source}`` shape
+    :func:`_probe_s2` uses so :func:`_external_candidates` can treat both
+    legs identically.
+
+    Deliberately not built in this pass: the handler is a paid,
+    API-key-gated cache-backed kind whose ``get`` door would need booting
+    (and billing) from inside a worker for a stage that is dark and has
+    fired on **zero** of the pilot's ten hubs. The seam is the thing that
+    matters — swap this in via ``RegroundConfig.external_probe_fn`` (or
+    replace this body) and nothing else changes. Returning ``[]`` degrades
+    stage 5 to its S2 + DOI-mining legs, which is exactly what a dead
+    probe should do.
+    """
+    return []
+
+
+def _probe_external(claim_sentence: str) -> list[dict[str, Any]]:
+    """The default external probe: both legs, deduped by DOI. Each leg is
+    independently best-effort — a dead probe degrades the stage, never
+    fails the hub."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for leg in (_probe_s2, _probe_perplexity):
+        try:
+            hits = leg(claim_sentence)
+        except Exception:
+            log.warning(
+                "hub_refine: external probe %s failed", leg.__name__, exc_info=True
+            )
+            continue
+        for hit in hits:
+            doi = str(hit.get("doi") or "").strip().lower()
+            if not doi or doi in seen:
+                continue
+            seen.add(doi)
+            out.append(hit)
+    return out
+
+
+def _external_candidates(
+    conn: Connection,
+    store: Store,
+    hub_ref_id: int,
+    *,
+    claim_sentence: str,
+    query_vec: list[float],
+    grounding_ref_ids: list[int],
+    probe_fn: ExternalProbeFn,
+) -> tuple[list[_Candidate], dict[str, Any]]:
+    """Stage 5. Returns ``(candidates, report)``.
+
+    Two sources, both reduced to the same question — *is the primary
+    already in the corpus under a DOI nobody linked?*
+
+    1. **Reference-list DOI mining**: the hub's own grounding papers'
+       parsed bibliographies (``paper_bib_entries``, migration 0108). An
+       entry already matched to a held ref (``held_ref_id``) becomes an
+       ordinary candidate via a paper-scoped semantic search — the claim's
+       primary is often one hop down its own proxy's reference list.
+    2. **Probe** (``probe_fn``, S2 by default): free-text search for
+       papers whose DOI we may already hold.
+
+    A DOI we do **not** hold is recorded in the report, never acquired
+    here. Auto-acquisition (``put(kind='paper', doi=…)``) is a separate,
+    unbounded, network+cost-bearing decision, and the spec's own residual
+    (fi189542's paywalled Krishnan 1997) is precisely a human call. This
+    is the one place stage 5 is deliberately short of "resolve → hold".
+    """
+    report: dict[str, Any] = {
+        "at": datetime.now(UTC).isoformat(),
+        "unheld_dois": [],
+        "probed": [],
+    }
+    candidates: list[_Candidate] = []
+    if not grounding_ref_ids:
+        return candidates, report
+
+    rows = conn.execute(
+        "SELECT DISTINCT doi, held_ref_id FROM paper_bib_entries "
+        "WHERE ref_id = ANY(%s) AND doi IS NOT NULL",
+        (grounding_ref_ids,),
+    ).fetchall()
+    held_by_doi: dict[str, int] = {}
+    for doi, held_ref_id in rows:
+        doi_s = str(doi).strip().lower()
+        if not doi_s:
+            continue
+        if held_ref_id is None:
+            report["unheld_dois"].append({"doi": doi_s, "via": "reference-list"})
+        else:
+            held_by_doi[doi_s] = int(held_ref_id)
+
+    probed = probe_fn(claim_sentence)
+    report["probed"] = probed
+    for hit in probed:
+        doi_s = str(hit.get("doi") or "").strip().lower()
+        if not doi_s or doi_s in held_by_doi:
+            continue
+        # A ref's DOI lives in ``ref_identifiers`` (id_kind='doi',
+        # lower-cased by a CHECK), not on ``refs`` — same read shape
+        # ``store._refs_ops`` uses.
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r JOIN ref_identifiers ri "
+            "ON ri.ref_id = r.ref_id AND ri.id_kind = 'doi' "
+            "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+            "AND ri.id_value = %s LIMIT 1",
+            (doi_s,),
+        ).fetchone()
+        if row is None:
+            report["unheld_dois"].append({"doi": doi_s, "via": hit.get("source")})
+        else:
+            held_by_doi[doi_s] = int(row[0])
+
+    for ref_id in sorted(set(held_by_doi.values())):
+        if ref_id == hub_ref_id:
+            continue
+        hits = store.blocks.search_blocks(
+            q=claim_sentence,
+            query_vec=query_vec,
+            mode="semantic",
+            kind="paper",
+            scope_ref_id=ref_id,
+            limit=1,
+            max_distance=None,
+        )
+        if hits:
+            block, ref, _score = hits[0]
+            candidates.append(_Candidate(block=block, ref=ref, via="external"))
+    return candidates, report
+
+
+# ── plan / apply shapes ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RegroundAdd:
+    """One evidence edge this pass attached (already committed with the
+    hub's enrichment transaction) — the applier's read-back target."""
+
+    src_ref_id: int
+    src_chunk_id: int | None
+    handle: str | None = None
+    via: str = "semantic"
+
+
+@dataclass(frozen=True)
+class RegroundPrune:
+    """One edge the strict judge rejected, held for the post-commit
+    applier. ``requires_replacement`` is the add-first contract: a
+    depth-correction prune (the pilot's dominant, low-risk case) is only
+    released once its replacement add is confirmed committed."""
+
+    src_ref_id: int
+    src_chunk_id: int | None
+    relation: str
+    reason: str
+    verdict: str = "PRUNE"
+    handle: str | None = None
+    requires_replacement: bool = True
+
+
+@dataclass(frozen=True)
+class RegroundContradict:
+    """One edge whose passage carries primary content *against* the claim
+    — converted to ``contradicts`` (ADR 0073), never plain-dropped."""
+
+    src_ref_id: int
+    src_chunk_id: int | None
+    relation: str
+    reason: str
+    handle: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+#: :attr:`RegroundPlan.verdict` values. ``supportable`` — the hub holds
+#: (or now holds) primary grounding; ``needs_external`` — the corpus
+#: could not substantiate it and stage 5 either did not run or found
+#: nothing; ``retire`` — nothing anywhere substantiates the claim as
+#: worded. None of these is a stored trust state: "questionable" stays
+#: emergent (a hub at zero print-visible supporters reads ``unverified``
+#: via ``.trust``).
+VERDICT_SUPPORTABLE = "supportable"
+VERDICT_NEEDS_EXTERNAL = "needs_external"
+VERDICT_RETIRE = "retire"
+
+
+@dataclass
+class RegroundPlan:
+    """One hub's reground outcome: what was added (already committed) and
+    what still has to be removed, plus the intended end state.
+
+    Mutable on purpose — :func:`_refine_one_hub` fills it in as the
+    stages run, then hands it to :func:`apply_reground_plan` *after* its
+    own transaction commits. That split is the add-first contract in
+    structural form: adds land with the enrichment transaction, prunes
+    cannot even be attempted until that commit is visible on a fresh
+    connection.
+    """
+
+    hub_ref_id: int
+    claim_sha: str
+    adds: list[RegroundAdd] = field(default_factory=list)
+    prunes: list[RegroundPrune] = field(default_factory=list)
+    contradicts: list[RegroundContradict] = field(default_factory=list)
+    log: list[dict[str, Any]] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+    verdict: str = VERDICT_SUPPORTABLE
+    reword: str | None = None
+    #: Live edges at plan time, before anything in this plan was applied.
+    live_before: set[EvidenceHandle] = field(default_factory=set)
+    #: Whether stage 5 actually ran for this hub — the difference between
+    #: "the external last resort found nothing" (``retire``) and "we never
+    #: asked" (``needs_external``). A gate being *enabled* is not the same
+    #: as the stage having *fired*.
+    external_ran: bool = False
+
+    def intended_end_state(self) -> set[EvidenceHandle]:
+        """The edge set this plan means the hub to end up with — the left
+        side of the intent-vs-committed diff. Rebuilt, never stored as a
+        sort order or any other new state: current live edges, minus the
+        planned prunes, minus the corroborates edges being converted, plus
+        this plan's adds and the resulting ``contradicts`` edges."""
+        end = set(self.live_before)
+        for p in self.prunes:
+            end.discard(EvidenceHandle(p.src_ref_id, p.src_chunk_id, p.relation))
+        for c in self.contradicts:
+            end.discard(EvidenceHandle(c.src_ref_id, c.src_chunk_id, c.relation))
+            # The re-attach carries the SAME grounding handle
+            # (``meta.source_handle``), so the replacement edge is
+            # chunk-grained at the same passage — not a ref-level edge.
+            end.add(EvidenceHandle(c.src_ref_id, c.src_chunk_id, "contradicts"))
+        for a in self.adds:
+            end.add(EvidenceHandle(a.src_ref_id, a.src_chunk_id, _ROLE))
+        return end
+
+
+@dataclass(frozen=True)
+class RegroundApplyResult:
+    """What :func:`apply_reground_plan` actually did — the **partial-
+    failure surface** the spec requires: a caller reading only the summary
+    must still see that something was withheld."""
+
+    hub_ref_id: int
+    confirmed_adds: int = 0
+    missing_adds: int = 0
+    pruned: int = 0
+    withheld: int = 0
+    contradicts_reattached: int = 0
+    stranded_refused: bool = False
+    flags: tuple[str, ...] = ()
+
+    @property
+    def clean(self) -> bool:
+        return not (self.missing_adds or self.withheld or self.stranded_refused)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "hub": self.hub_ref_id,
+            "confirmed_adds": self.confirmed_adds,
+            "missing_adds": self.missing_adds,
+            "pruned": self.pruned,
+            "withheld": self.withheld,
+            "contradicts_reattached": self.contradicts_reattached,
+            "stranded_refused": self.stranded_refused,
+            "flags": list(self.flags),
+        }
+
+
+@dataclass(frozen=True)
+class RegroundConfig:
+    """Which reground stages are live for this run. Every field defaults
+    to the SAFE value; :meth:`from_env` returns ``None`` (reground off
+    entirely) unless an operator opts in.
+
+    ``prune`` is the one that must not be flipped in prod until
+    ``taproot.slice_refine_eval`` passes on the deployed strict rubric —
+    that eval is the gate, this flag is only the switch behind it. Both
+    routes to setting it (this class's :meth:`from_env` and the
+    ``reground_claim`` job param) go through :func:`prune_interlock_open`,
+    so the blocker is enforced in code on every path rather than by
+    convention on one of them.
+    ``authorize_retire`` additionally requires the per-hub opt-in tag
+    (:func:`_retire_authorized`), so the destructive stage can never fire
+    on a hub nobody vetted.
+    """
+
+    audit: bool = True
+    prune: bool = False
+    external: bool = False
+    authorize_retire: bool = False
+    deeper_topk: int = 24
+    judge_fn: JudgeFn = judge_edge_strict
+    external_probe_fn: ExternalProbeFn = _probe_external
+
+    @classmethod
+    def from_env(cls) -> RegroundConfig | None:
+        """``None`` unless ``PRECIS_TAPROOT_REGROUND`` is set — the whole
+        extension is dark by default. ``PRECIS_TAPROOT_REGROUND_EXTERNAL``
+        is a separate, additional opt-in;
+        ``PRECIS_TAPROOT_REGROUND_PRUNE`` is stricter still and must carry
+        :data:`PRUNE_INTERLOCK_TOKEN` verbatim rather than a boolean (see
+        that constant — the prune stage is blocked on the
+        ``slice_refine_eval`` rubric gate). There is deliberately **no**
+        env flag for retire/regenerate: that stage is reachable only
+        through the ``reground_claim`` job's explicit ``authorize_retire``
+        param plus the per-hub tag, so an env flip on a worker host can
+        never turn it on."""
+        if not _env_flag("PRECIS_TAPROOT_REGROUND"):
+            return None
+        return cls(
+            prune=prune_interlock_open(),
+            external=_env_flag("PRECIS_TAPROOT_REGROUND_EXTERNAL"),
+            deeper_topk=_reground_deeper_topk(),
+        )
+
+
+# ── stage 1/2: fisheye assemble + audit ─────────────────────────────
+
+
+def _seen_key(src_ref_id: int, src_chunk_id: int | None) -> str:
+    """The convergence memo's key — source ref plus grounding chunk, so a
+    *different* passage of an already-attached source is a distinct thing
+    to judge (that is the whole depth-correction move) while the same
+    passage is never re-judged at one ``claim_sha``."""
+    return f"{src_ref_id}:{src_chunk_id if src_chunk_id is not None else '-'}"
+
+
+@dataclass(frozen=True)
+class _FisheyeEdge:
+    """One current evidence edge with the context stage 1 assembles: its
+    grounding chunk plus that chunk's prev/next ``ord`` neighbours in the
+    same source — "the fisheye on all the pcs we point to"."""
+
+    src_ref_id: int
+    src_chunk_id: int | None
+    relation: str
+    chunk_ord: int | None
+    chunk_text: str
+    section_path: str | None
+    source_kind: str
+    cite_key: str
+    neighbours: list[str]
+
+    @property
+    def handle(self) -> str | None:
+        return handle_registry.try_format(
+            self.source_kind, self.src_chunk_id, chunk=True
+        )
+
+
+def _fisheye_edges(conn: Connection, hub_ref_id: int) -> list[_FisheyeEdge]:
+    """Stage 1 — every current grounding chunk of ``hub_ref_id`` with its
+    neighbours. One query for the edges, one per edge for the
+    neighbour pair; a hub carries a handful of edges, so this is bounded
+    by the same small constant the rest of the pass is."""
+    rows = conn.execute(
+        """
+        SELECT l.src_ref_id, l.src_chunk_id, l.relation,
+               c.ord, c.text, array_to_string(c.section_path, ' > '),
+               r.kind,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at DESC LIMIT 1) AS cite_key
+          FROM links l
+          JOIN refs r ON r.ref_id = l.src_ref_id
+          LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id
+         WHERE l.dst_ref_id = %s AND l.relation = ANY(%s)
+         ORDER BY l.src_ref_id, l.src_chunk_id
+        """,
+        (hub_ref_id, sorted(HUB_ROLES)),
+    ).fetchall()
+    out: list[_FisheyeEdge] = []
+    for src_ref_id, src_chunk_id, relation, ord_, text, section, kind, slug in rows:
+        neighbours: list[str] = []
+        if ord_ is not None:
+            nb_rows = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = ANY(%s) "
+                "AND retired_at IS NULL AND ord >= 0 ORDER BY ord",
+                (int(src_ref_id), [int(ord_) - 1, int(ord_) + 1]),
+            ).fetchall()
+            neighbours = [str(r[0] or "") for r in nb_rows]
+        out.append(
+            _FisheyeEdge(
+                src_ref_id=int(src_ref_id),
+                src_chunk_id=int(src_chunk_id) if src_chunk_id is not None else None,
+                relation=str(relation),
+                chunk_ord=int(ord_) if ord_ is not None else None,
+                chunk_text=str(text or ""),
+                section_path=str(section) if section else None,
+                source_kind=str(kind),
+                cite_key=str(slug or f"ref:{src_ref_id}"),
+                neighbours=neighbours,
+            )
+        )
+    return out
+
+
+def _audit_edges(
+    conn: Connection,
+    hub_ref_id: int,
+    *,
+    claim_sentence: str,
+    scope: dict[str, Any],
+    depth_policy: str,
+    cfg: RegroundConfig,
+    seen: dict[str, Any],
+    plan: RegroundPlan,
+) -> None:
+    """Stage 2 — strict-judge every current supporter, memoing each
+    verdict at the current ``claim_sha``.
+
+    Mutates ``seen`` (the convergence memo) and ``plan``. A ``KEEP`` lands
+    in the memo only: logging every kept edge every pass would turn the
+    audit trail into a heartbeat. Only actions (prune / contradicts) reach
+    ``meta.reground_log``.
+
+    Note what does **not** happen here: nothing is removed. Prunes are
+    *planned*, and applied only after the hub's transaction commits and
+    the paired adds have been read back — see :func:`apply_reground_plan`.
+    """
+    if not cfg.audit:
+        return
+    for edge in _fisheye_edges(conn, hub_ref_id):
+        if not edge.chunk_text.strip():
+            # Ref-level edge (or a stale source_handle that resolves to no
+            # live chunk — fi191322's shape). There is no passage to judge;
+            # a removal here would be a guess, so it is left alone.
+            continue
+        key = _seen_key(edge.src_ref_id, edge.src_chunk_id)
+        if seen.get(key, {}).get("sha") == plan.claim_sha:
+            continue  # convergence guard: judged once per claim_sha
+        verdict = cfg.judge_fn(
+            claim=claim_sentence,
+            scope=scope,
+            cite_key=edge.cite_key,
+            chunk_ord=edge.chunk_ord,
+            chunk_text=edge.chunk_text,
+            source_kind=edge.source_kind,
+            depth_policy=depth_policy,
+            section_path=edge.section_path,
+            neighbours=edge.neighbours,
+        )
+        if verdict is None:
+            # No verdict (dispatch failure / unparseable) — deliberately
+            # NOT memoed, so the edge is re-judged next pass rather than
+            # being silently frozen at an accident.
+            continue
+        seen[key] = {
+            "sha": plan.claim_sha,
+            "verdict": verdict.verdict,
+            "at": datetime.now(UTC).isoformat(),
+        }
+        if verdict.verdict == "KEEP":
+            continue
+        if verdict.verdict == "CONTRADICTS":
+            if edge.relation == "contradicts":
+                continue  # already recorded as a contradictor
+            plan.contradicts.append(
+                RegroundContradict(
+                    src_ref_id=edge.src_ref_id,
+                    src_chunk_id=edge.src_chunk_id,
+                    relation=edge.relation,
+                    reason=verdict.reason,
+                    handle=edge.handle,
+                    meta={
+                        "support": "no",
+                        "caveats": [],
+                        "source_handle": edge.handle,
+                        "reground": {
+                            "verdict": "CONTRADICTS",
+                            "reason": verdict.reason,
+                            "sha": plan.claim_sha,
+                        },
+                    },
+                )
+            )
+            continue
+        # PRUNE — planned, not applied. requires_replacement encodes the
+        # pilot's finding that the safe, dominant action is a same-paper
+        # depth correction: the prune rides on a confirmed replacement.
+        if not cfg.prune:
+            plan.flags.append(f"prune-proposed-but-gated:{edge.src_ref_id}")
+            plan.log.append(
+                reground_log_entry(
+                    src_ref_id=edge.src_ref_id,
+                    src_chunk_id=edge.src_chunk_id,
+                    relation=edge.relation,
+                    verdict="PRUNE",
+                    reason=verdict.reason,
+                    action="withheld (prune stage disabled)",
+                    sha=plan.claim_sha,
+                    handle=edge.handle,
+                )
+            )
+            continue
+        plan.prunes.append(
+            RegroundPrune(
+                src_ref_id=edge.src_ref_id,
+                src_chunk_id=edge.src_chunk_id,
+                relation=edge.relation,
+                reason=verdict.reason,
+                handle=edge.handle,
+            )
+        )
+
+
+# ── stage 3: same-paper deeper-chunk re-discovery ───────────────────
+
+#: The evidence-source kinds :func:`_same_paper_candidates` can run a
+#: ``store.search_blocks`` leg against. A subset of
+#: ``taproot.hub.EVIDENCE_SRC_KINDS`` on purpose — the same two kinds the
+#: enrichment semantic source already searches.
+_SEARCHABLE_SRC_KINDS = frozenset({"paper", "patent"})
+
+
+def _same_paper_candidates(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    source_refs: list[tuple[int, str]],
+    claim_sentence: str,
+    query_vec: list[float],
+    per_paper_k: int,
+) -> list[_Candidate]:
+    """The **primary reground move**: deeper passages inside papers this
+    hub is ALREADY grounded on.
+
+    The pilot's dominant failure was "right paper, wrong chunk" — 5 of 6
+    proxy prunes were same-paper depth corrections, where the real primary
+    (measured values, a figure caption enumerating the result, the DFT
+    body passage) sat deeper in an already-vetted paper. That makes this
+    the lowest-risk and highest-yield source, so its candidates are
+    offered *first*, ahead of citation-following and the corpus-wide ANN.
+
+    A paper-scoped ``store.search_blocks`` per attached source, with no
+    ``max_distance`` floor — the corpus-wide floor governs *discovery of
+    new papers*; inside a paper we already accepted, the strict judge is
+    the gate.
+    """
+    out: list[_Candidate] = []
+    for ref_id, kind in source_refs:
+        if ref_id == hub_ref_id or kind not in _SEARCHABLE_SRC_KINDS:
+            # ``edgar``/``datasheet`` are evidence-source kinds
+            # (``taproot.hub.EVIDENCE_SRC_KINDS``) but have no
+            # ``search_blocks`` leg here; their edges are still audited,
+            # they just get no deeper-passage re-discovery.
+            continue
+        hits = store.blocks.search_blocks(
+            q=claim_sentence,
+            query_vec=query_vec,
+            mode="semantic",
+            kind=kind,
+            scope_ref_id=ref_id,
+            limit=per_paper_k,
+            max_distance=None,
+        )
+        if kind == "patent":
+            hits = _drop_patent_claim_blocks(hits)
+        for block, ref, _score in hits:
+            out.append(_Candidate(block=block, ref=ref, via="same-paper"))
+    return out
+
+
+def _attached_source_refs(conn: Connection, hub_ref_id: int) -> list[tuple[int, str]]:
+    """``(ref_id, kind)`` for every source already carrying an evidence
+    edge on this hub — the input to :func:`_same_paper_candidates`, and
+    the reason it needs the kind: ``store.search_blocks``' mode-dispatched
+    wrapper takes one ``kind=`` string, and a patent must be searched as a
+    patent (so :func:`_drop_patent_claim_blocks` still applies)."""
+    rows = conn.execute(
+        "SELECT DISTINCT l.src_ref_id, r.kind FROM links l "
+        "JOIN refs r ON r.ref_id = l.src_ref_id "
+        "WHERE l.dst_ref_id = %s AND l.relation = ANY(%s) "
+        "AND r.deleted_at IS NULL",
+        (hub_ref_id, sorted(HUB_ROLES)),
+    ).fetchall()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+
+def _attached_edge_keys(conn: Connection, hub_ref_id: int) -> set[str]:
+    """:func:`_seen_key`\\ s of the passages this hub is already grounded
+    at — a candidate landing on one of them is the *existing edge*, which
+    the audit stage owns; re-offering it to discovery would double-judge
+    it."""
+    return {
+        _seen_key(h.src_ref_id, h.src_chunk_id)
+        for h in live_evidence_handles(conn, hub_ref_id)
+    }
+
+
+def _candidate_settled(
+    *,
+    source_ref_id: int,
+    chunk_id: int | None,
+    attached: set[int],
+    attached_keys: set[str],
+    rejected: dict[str, Any],
+    reground: RegroundConfig | None,
+    seen: dict[str, Any],
+    sha: str,
+) -> bool:
+    """The Filter step's pre-check — **the memo-gated re-verify** the spec
+    asks for at the old ``attached``-source pre-filter.
+
+    Additive-only enrichment (``reground is None``) keeps its original
+    behaviour byte-for-byte: a source ref already carrying *any* evidence
+    edge is skipped outright, which is what made the pass converge. With
+    reground on, that blanket skip is exactly what prevents the dominant
+    fix (a deeper passage of an already-attached paper), so it narrows to:
+    skip this source's *already-grounded passages*, and skip anything
+    already judged at this ``claim_sha``. Convergence is preserved by the
+    memo rather than by never looking — and a sha-reopen clears the memo,
+    so an edited claim genuinely re-opens the question.
+    """
+    if str(source_ref_id) in rejected:
+        return True
+    if source_ref_id not in attached:
+        return False
+    if reground is None:
+        return True
+    key = _seen_key(source_ref_id, chunk_id)
+    if key in attached_keys:
+        return True
+    return bool(seen.get(key, {}).get("sha") == sha)
+
+
+# ── stage 6: retire / regenerate (gated, and stubbed at the prose edit)
+
+
+def _retire_authorized(conn: Connection, hub_ref_id: int, cfg: RegroundConfig) -> bool:
+    """Both gates, ANDed: the run-level ``authorize_retire`` (a
+    ``reground_claim`` job param — deliberately **not** an env flag, so no
+    worker-host env edit can turn this on) *and* the per-hub opt-in tag,
+    so the destructive stage never fires on a hub nobody vetted."""
+    if not cfg.authorize_retire:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+         WHERE rt.ref_id = %s
+           AND ((t.namespace = %s AND t.value = %s)
+             OR (t.namespace = %s AND t.value = %s))
+         LIMIT 1
+        """,
+        (
+            hub_ref_id,
+            _REGROUND_OK_NS,
+            _REGROUND_OK_VALUE,
+            _REGROUND_OK_SPEC_NS,
+            _REGROUND_OK_SPEC_VALUE,
+        ),
+    ).fetchone()
+    return row is not None
+
+
+def _inbound_draft_citers(conn: Connection, hub_ref_id: int) -> list[int]:
+    """Draft chunks whose prose carries this hub's ``[fi<id>]`` inline
+    marker — the "retiring without editing the sentence leaves an
+    unsupported assertion + a dangling cite" set. Returned so the prose
+    pass (and a human) can see every artifact that would be left dangling,
+    including the other-artifact citers the spec says are flagged, never
+    silently rewritten."""
+    rows = conn.execute(
+        "SELECT c.chunk_id FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+        "WHERE r.kind = 'draft' AND r.deleted_at IS NULL AND c.ord >= 0 "
+        "AND c.retired_at IS NULL AND c.text LIKE %s ORDER BY c.chunk_id",
+        (f"%[fi{hub_ref_id}]%",),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _flag_retire(
+    conn: Connection, store: Store, hub_ref_id: int, plan: RegroundPlan
+) -> None:
+    """STUB (deliberate, flagged): flag the hub for the opus draft-prose
+    pass instead of performing the prose edit.
+
+    **Built here**: the gate (:func:`_retire_authorized`), the citer
+    census (:func:`_inbound_draft_citers`), a durable
+    ``meta.reground_verdict`` record carrying the proposed one-sentence
+    groundable reword, the ``TAPROOT_REGROUND_RETIRE`` worklist tag, and a
+    ``reground_log`` entry — everything a reviewer needs to act, and
+    everything reversible.
+
+    **Not built**: the three per-paragraph draft-edit modes themselves
+    (reword-in-place / replace-with-a-supportable-fact / stitch-delete).
+    Those require reading the whole surrounding paragraph, a frontier
+    model, and a reversible draft-diff surface for end-review — a
+    self-contained build of its own. The hub is left standing, its cites
+    intact, on a worklist. Nothing is deleted, so the stub cannot leave a
+    dangling cite; the failure mode of stopping here is a hub that stays
+    ``unverified``, which is the correct resting state for an unsupported
+    claim anyway.
+    """
+    citers = _inbound_draft_citers(conn, hub_ref_id)
+    store.update_ref(
+        hub_ref_id,
+        meta_patch={
+            _META_REGROUND_VERDICT: {
+                "verdict": VERDICT_RETIRE,
+                "sha": plan.claim_sha,
+                "at": datetime.now(UTC).isoformat(),
+                "reword": plan.reword,
+                "draft_citers": citers,
+                "prose_pass": "pending (draft-edit path not implemented)",
+            }
+        },
+        conn=conn,
+    )
+    store.add_tag(
+        hub_ref_id,
+        Tag.closed(_REGROUND_RETIRE_NS, _REGROUND_RETIRE_VALUE),
+        set_by="system",
+        conn=conn,
+    )
+    plan.flags.append("retire-flagged")
+    plan.log.append(
+        reground_log_entry(
+            src_ref_id=hub_ref_id,
+            src_chunk_id=None,
+            relation="(hub)",
+            verdict=VERDICT_RETIRE,
+            reason=(
+                "no primary support in corpus or external sources; flagged "
+                f"for the draft-prose pass ({len(citers)} draft citer(s))"
+            ),
+            action="retire-flagged",
+            sha=plan.claim_sha,
+        )
+    )
+
+
+# ── the applier: add-first, in code ─────────────────────────────────
+
+
+def _pair_prunes_with_adds(
+    prunes: list[RegroundPrune], confirmed: list[RegroundAdd]
+) -> tuple[list[RegroundPrune], list[RegroundPrune]]:
+    """Match each replacement-requiring prune to **one distinct** confirmed
+    add. Returns ``(releasable, withheld)``.
+
+    The spec is literal about this — *"issue a prune only for the subset
+    whose replacement add is confirmed committed"* — so the pairing is
+    **1:1**, not "any add releases every prune". Getting that wrong is the
+    quiet version of the original 173020 damage: a hub with two proxy
+    edges where only one gets a deeper replacement would have both pruned,
+    losing the second paper's evidence with nothing put in its place. It
+    would not strand the hub (the batch strand check still holds), so
+    nothing would ever have complained.
+
+    Two passes, because greedy first-fit would let a cross-paper prune
+    steal an add that a later same-paper prune needs:
+
+    1. **Same-source first** — a depth correction (the pilot's dominant,
+       lowest-risk action: the replacement is another passage of the very
+       paper being re-pointed) claims its own paper's add.
+    2. **Leftovers** — a cross-paper swap (the rarer tail, e.g. fi191169)
+       consumes one of the still-unclaimed adds.
+
+    A prune with ``requires_replacement=False`` is released unconditionally
+    — that is the *deliberate* unsupportable-claim prune, which the strand
+    guard and the retire gate govern instead.
+    """
+    unclaimed = list(confirmed)
+    releasable: list[RegroundPrune] = []
+    pending: list[RegroundPrune] = []
+
+    for p in prunes:
+        if not p.requires_replacement:
+            releasable.append(p)
+            continue
+        match = next((a for a in unclaimed if a.src_ref_id == p.src_ref_id), None)
+        if match is None:
+            pending.append(p)
+            continue
+        unclaimed.remove(match)
+        releasable.append(p)
+
+    withheld: list[RegroundPrune] = []
+    for p in pending:
+        if not unclaimed:
+            withheld.append(p)
+            continue
+        unclaimed.pop(0)
+        releasable.append(p)
+    return releasable, withheld
+
+
+def apply_reground_plan(
+    store: Store, plan: RegroundPlan, *, set_by: str = "system"
+) -> RegroundApplyResult:
+    """Apply one hub's planned prunes — **after** its adds have committed.
+
+    The four deterministic requirements from
+    docs/backlog/taproot-reground.md §"Applier must enforce add-first in
+    code, not in a prompt", each implemented rather than prompted:
+
+    1. **Read back** every add from ``links`` on a fresh connection. The
+       plan's ``adds`` are what ``attach_evidence`` was *asked* to write;
+       what counts is what is in the table. (The original damage happened
+       under exactly this gap: a permission classifier blocked the adds
+       and let the paired prunes through.)
+    2. **Prune only what has a confirmed replacement**, matched **1:1**
+       (:func:`_pair_prunes_with_adds`): each replacement-requiring prune
+       claims one distinct confirmed add — its own source's, if there is
+       one (the depth correction), else a leftover (a cross-paper swap).
+       A prune with no add left to claim is **withheld and the hub
+       flagged** — never silently skipped.
+    3. **Re-check ``count(live edges) > 0``.** Enforced twice: the plan
+       is simulated against read-back state before anything is deleted,
+       and ``taproot.hub.remove_evidence`` independently refuses its own
+       last-edge removal inside the transaction.
+    4. **Surface partial-failure counts** — :class:`RegroundApplyResult`
+       carries ``missing_adds`` / ``withheld`` / ``stranded_refused`` and
+       ``flags``, and the job glue puts them in the summary.
+
+    Each prune runs in its own transaction so one bad handle degrades one
+    edge, not the hub's whole plan. The contradicts conversions run first
+    (they are add-first *within* one transaction — see
+    ``taproot.hub.reattach_as_contradicts``), because a converted edge is
+    still a live edge and therefore changes the strand arithmetic below.
+    """
+    flags = list(plan.flags)
+    log_entries = list(plan.log)
+    reattached = 0
+    withheld = 0
+
+    for c in plan.contradicts:
+        try:
+            ok = reattach_as_contradicts(
+                store,
+                hub_ref_id=plan.hub_ref_id,
+                src_ref_id=c.src_ref_id,
+                src_chunk_id=c.src_chunk_id,
+                from_role=c.relation,
+                reason=c.reason,
+                claim_sha=plan.claim_sha,
+                handle=c.handle,
+                meta=c.meta,
+                set_by=set_by,
+            )
+        except Exception:
+            log.warning(
+                "hub_refine: contradicts re-attach failed for hub #%d src #%d",
+                plan.hub_ref_id,
+                c.src_ref_id,
+                exc_info=True,
+            )
+            ok = False
+        if ok:
+            reattached += 1
+        else:
+            withheld += 1
+            flags.append(f"contradicts-reattach-failed:{c.src_ref_id}")
+
+    with store.pool.connection() as conn:
+        committed = live_evidence_handles(conn, plan.hub_ref_id)
+
+    confirmed = [
+        a
+        for a in plan.adds
+        if EvidenceHandle(a.src_ref_id, a.src_chunk_id, _ROLE) in committed
+    ]
+    missing = [a for a in plan.adds if a not in confirmed]
+    for a in missing:
+        flags.append(f"add-not-committed:{a.src_ref_id}:{a.src_chunk_id}")
+
+    live_prunes = [
+        p
+        for p in plan.prunes
+        if EvidenceHandle(p.src_ref_id, p.src_chunk_id, p.relation) in committed
+        # anything else is already gone (a prior partial run) — nothing to do
+    ]
+    eligible, unpaired = _pair_prunes_with_adds(live_prunes, confirmed)
+    for p in unpaired:
+        withheld += 1
+        flags.append(f"prune-withheld-no-confirmed-add:{p.src_ref_id}")
+        log_entries.append(
+            reground_log_entry(
+                src_ref_id=p.src_ref_id,
+                src_chunk_id=p.src_chunk_id,
+                relation=p.relation,
+                verdict=p.verdict,
+                reason=p.reason,
+                action="withheld (no confirmed replacement add)",
+                sha=plan.claim_sha,
+                handle=p.handle,
+            )
+        )
+
+    stranded_refused = False
+    if eligible and len(committed) - len(eligible) <= 0:
+        # Simulated end state is zero live edges. Refuse the whole batch:
+        # a hub SHOULD be able to reach zero, but only via an authorized
+        # retire, never as the residue of a half-applied plan.
+        stranded_refused = True
+        withheld += len(eligible)
+        flags.append("prune-withheld-would-strand")
+        for p in eligible:
+            log_entries.append(
+                reground_log_entry(
+                    src_ref_id=p.src_ref_id,
+                    src_chunk_id=p.src_chunk_id,
+                    relation=p.relation,
+                    verdict=p.verdict,
+                    reason=p.reason,
+                    action="withheld (would strand hub at zero edges)",
+                    sha=plan.claim_sha,
+                    handle=p.handle,
+                )
+            )
+        eligible = []
+
+    pruned = 0
+    for p in eligible:
+        try:
+            pruned += remove_evidence(
+                store,
+                hub_ref_id=plan.hub_ref_id,
+                src_ref_id=p.src_ref_id,
+                src_chunk_id=p.src_chunk_id,
+                role=p.relation,
+                reason=p.reason,
+                verdict=p.verdict,
+                claim_sha=plan.claim_sha,
+                handle=p.handle,
+            )
+        except WouldStrandHub:
+            withheld += 1
+            stranded_refused = True
+            flags.append(f"prune-refused-last-edge:{p.src_ref_id}")
+        except Exception:
+            withheld += 1
+            flags.append(f"prune-failed:{p.src_ref_id}")
+            log.warning(
+                "hub_refine: prune failed for hub #%d src #%d",
+                plan.hub_ref_id,
+                p.src_ref_id,
+                exc_info=True,
+            )
+
+    with store.pool.connection() as conn:
+        final = live_evidence_handles(conn, plan.hub_ref_id)
+        if not final and plan.verdict != VERDICT_RETIRE:
+            # Belt-and-braces: the simulation above and remove_evidence's
+            # own guard should both have prevented this.
+            flags.append("post-check-zero-edges")
+        store.update_ref(
+            plan.hub_ref_id,
+            meta_patch={
+                _META_REGROUND_INTENT: {
+                    "sha": plan.claim_sha,
+                    "at": datetime.now(UTC).isoformat(),
+                    "handles": sorted(
+                        [h.src_ref_id, h.src_chunk_id, h.relation]
+                        for h in plan.intended_end_state()
+                    ),
+                }
+            },
+            conn=conn,
+        )
+        append_reground_log(store, plan.hub_ref_id, log_entries, conn=conn)
+        conn.commit()
+
+    return RegroundApplyResult(
+        hub_ref_id=plan.hub_ref_id,
+        confirmed_adds=len(confirmed),
+        missing_adds=len(missing),
+        pruned=pruned,
+        withheld=withheld,
+        contradicts_reattached=reattached,
+        stranded_refused=stranded_refused,
+        flags=tuple(flags),
+    )
+
+
+# ── intent-vs-committed: the first-class verify / repair mode ────────
+
+
+@dataclass(frozen=True)
+class RegroundDiff:
+    """One hub's intent-vs-committed diff. ``missing_adds`` are edges the
+    last applied plan intended that ``links`` does not hold;
+    ``stale_edges`` are edges ``links`` holds that the plan intended to be
+    gone. This is the technique that found the original 173020 damage —
+    10 missing adds + 8 stale edges in one wave, none of which any error
+    string mentioned — promoted from a one-off recovery script to a mode
+    of the job."""
+
+    hub_ref_id: int
+    missing_adds: tuple[EvidenceHandle, ...] = ()
+    stale_edges: tuple[EvidenceHandle, ...] = ()
+    #: ``None`` when the hub carries no stored intent (never regrounded,
+    #: or regrounded before this shipped) — distinct from "clean".
+    has_intent: bool = True
+
+    @property
+    def clean(self) -> bool:
+        return not (self.missing_adds or self.stale_edges)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "hub": self.hub_ref_id,
+            "has_intent": self.has_intent,
+            "missing_adds": [
+                [h.src_ref_id, h.src_chunk_id, h.relation] for h in self.missing_adds
+            ],
+            "stale_edges": [
+                [h.src_ref_id, h.src_chunk_id, h.relation] for h in self.stale_edges
+            ],
+        }
+
+
+def _stored_intent(conn: Connection, hub_ref_id: int) -> set[EvidenceHandle] | None:
+    row = conn.execute(
+        "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+        (hub_ref_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    raw = dict(row[0] or {}).get(_META_REGROUND_INTENT)
+    if not isinstance(raw, dict):
+        return None
+    handles = raw.get("handles")
+    if not isinstance(handles, list):
+        return None
+    out: set[EvidenceHandle] = set()
+    for item in handles:
+        if not isinstance(item, list) or len(item) != 3:
+            continue
+        src, chunk, rel = item
+        if not isinstance(src, int) or not isinstance(rel, str):
+            continue
+        out.add(
+            EvidenceHandle(
+                src_ref_id=src,
+                src_chunk_id=chunk if isinstance(chunk, int) else None,
+                relation=rel,
+            )
+        )
+    return out
+
+
+def verify_hub_intent(store: Store, hub_ref_id: int) -> RegroundDiff:
+    """Diff one hub's stored intended end state against ``links``. **No
+    LLM spend, no writes** — safe to run over a whole draft's hub set as
+    an audit."""
+    with store.pool.connection() as conn:
+        intent = _stored_intent(conn, hub_ref_id)
+        if intent is None:
+            return RegroundDiff(hub_ref_id=hub_ref_id, has_intent=False)
+        committed = live_evidence_handles(conn, hub_ref_id)
+    return RegroundDiff(
+        hub_ref_id=hub_ref_id,
+        missing_adds=tuple(sorted(intent - committed, key=_handle_sort_key)),
+        stale_edges=tuple(sorted(committed - intent, key=_handle_sort_key)),
+    )
+
+
+def _handle_sort_key(h: EvidenceHandle) -> tuple[int, int, str]:
+    return (
+        h.src_ref_id,
+        h.src_chunk_id if h.src_chunk_id is not None else -1,
+        h.relation,
+    )
+
+
+def repair_hub_intent(
+    store: Store, hub_ref_id: int, *, apply: bool = False, set_by: str = "system"
+) -> RegroundDiff:
+    """Apply a hub's intent-vs-committed delta, **adds first**.
+
+    ``apply=False`` (default) is a dry run — identical to
+    :func:`verify_hub_intent`. With ``apply=True``: re-issue every missing
+    add, read the result back, and only then remove the stale edges,
+    through the same :func:`~precis.taproot.hub.remove_evidence` door
+    (which independently refuses a last-edge removal). Returns the
+    *residual* diff — empty when the repair fully converged.
+    """
+    diff = verify_hub_intent(store, hub_ref_id)
+    if not apply or diff.clean or not diff.has_intent:
+        return diff
+
+    kinds: dict[int, str] = {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, kind FROM refs WHERE ref_id = ANY(%s)",
+            (sorted({h.src_ref_id for h in diff.missing_adds}),),
+        ).fetchall()
+        kinds = {int(r[0]): str(r[1]) for r in rows}
+
+    for h in diff.missing_adds:
+        try:
+            attach_evidence(
+                store,
+                hub_ref_id=hub_ref_id,
+                paper_ref_id=h.src_ref_id,
+                role=h.relation,
+                meta={
+                    "support": "yes",
+                    "source_handle": handle_registry.try_format(
+                        kinds.get(h.src_ref_id, "paper"), h.src_chunk_id, chunk=True
+                    ),
+                    "reground": {"repair": True},
+                },
+                set_by=set_by,
+                check_retraction=False,
+            )
+        except Exception:
+            log.warning(
+                "hub_refine: intent repair add failed for hub #%d src #%d",
+                hub_ref_id,
+                h.src_ref_id,
+                exc_info=True,
+            )
+
+    # Read back before removing anything — the same never-trust-the-write
+    # discipline apply_reground_plan uses.
+    after_adds = verify_hub_intent(store, hub_ref_id)
+    if after_adds.missing_adds:
+        log.warning(
+            "hub_refine: intent repair for hub #%d still missing %d add(s) — "
+            "withholding stale-edge removal",
+            hub_ref_id,
+            len(after_adds.missing_adds),
+        )
+        return after_adds
+
+    for h in after_adds.stale_edges:
+        if h.relation not in HUB_ROLES:
+            continue
+        try:
+            remove_evidence(
+                store,
+                hub_ref_id=hub_ref_id,
+                src_ref_id=h.src_ref_id,
+                src_chunk_id=h.src_chunk_id,
+                role=h.relation,
+                reason="intent-vs-committed repair: edge not in intended end state",
+                verdict="STALE",
+            )
+        except Exception:
+            log.warning(
+                "hub_refine: intent repair prune failed for hub #%d src #%d",
+                hub_ref_id,
+                h.src_ref_id,
+                exc_info=True,
+            )
+    return verify_hub_intent(store, hub_ref_id)
+
+
+# ── the reground verify/write tail ──────────────────────────────────
+
+#: Deeper passages offered per already-attached source. Small on purpose:
+#: the top-ranked deeper passage is nearly always the primary (the pilot's
+#: depth corrections were all rank-1 within the paper), and each extra
+#: slot is one more strict-judge call multiplied by the hub's source
+#: count. Two spares cover the case where rank 1 is itself front matter.
+_PER_PAPER_K = 3
+
+
+def _reground_verify_candidate(
+    store: Store,
+    conn: Connection,
+    hub_ref_id: int,
+    *,
+    cand: _Candidate,
+    claim_sentence: str,
+    scope: dict[str, Any],
+    depth_policy: str,
+    cfg: RegroundConfig,
+    seen: dict[str, Any],
+    rejected: dict[str, Any],
+    attached: set[int],
+    plan: RegroundPlan,
+    attached_this_pass: set[int],
+    pending_checks: list[int] | None,
+) -> None:
+    """Judge ONE reground candidate with the strict judge and write the
+    consequence. The reground counterpart of the Verify→Write tail above.
+
+    Three verdicts, three writes:
+
+    * ``KEEP`` → attach a ``corroborates`` edge, unless the
+      grounding-depth policy refuses it (a measurement/mechanism claim
+      will not accept a front-matter passage as its primary — that is the
+      over-grounding the pilot caught the minter doing). The refusal
+      applies only when the source actually **has** a deeper passage to
+      prefer: a single-body-chunk source has no depth to correct to, and
+      refusing there would drop a real supporter to gain nothing.
+      Recorded in
+      ``plan.adds`` so the applier can read it back and release the paired
+      prune.
+    * ``CONTRADICTS`` → attach a ``contradicts`` edge (ADR 0073). A
+      primary-against passage is information, not noise.
+    * ``PRUNE`` → memo. For a source we do NOT already hold an edge on,
+      that memo is the ordinary ``taproot_rejected`` entry (which also
+      excludes it from future discovery slots). For a source we DO hold an
+      edge on, only the passage-grained ``reground_seen`` memo is written:
+      marking the whole source rejected would be false — its other passage
+      is still live evidence — and would evict a legitimate supporter from
+      discovery.
+    """
+    block, ref = cand.block, cand.ref
+    source_ref_id = cand.source_ref_id
+    chunk_id = int(block.id)
+    handle = handle_registry.try_format(ref.kind, chunk_id, chunk=True)
+    # ``section_path`` is a first-class ``chunks`` column, popped out of
+    # ``BlockInsert.meta`` at insert time — so a ``Block`` read back from
+    # ``search_blocks`` does NOT carry it, and the depth-policy filter has
+    # to read it here rather than off ``block.meta``. The sibling count
+    # rides along: the depth refusal only makes sense when this source has
+    # somewhere deeper to go.
+    row = conn.execute(
+        "SELECT array_to_string(c.section_path, ' > '), "
+        "(SELECT count(*) FROM chunks x WHERE x.ref_id = c.ref_id "
+        "  AND x.ord >= 0 AND x.retired_at IS NULL) "
+        "FROM chunks c WHERE c.chunk_id = %s",
+        (chunk_id,),
+    ).fetchone()
+    section_path = str(row[0]) if row and row[0] else None
+    n_body_chunks = int(row[1]) if row else 0
+    verdict = cfg.judge_fn(
+        claim=claim_sentence,
+        scope=scope,
+        cite_key=ref.slug or f"ref:{source_ref_id}",
+        chunk_ord=block.pos,
+        chunk_text=block.text,
+        source_kind=ref.kind,
+        depth_policy=depth_policy,
+        section_path=section_path,
+        neighbours=None,
+    )
+    if verdict is None:
+        return  # no verdict — no memo, retried next pass
+    seen[_seen_key(source_ref_id, chunk_id)] = {
+        "sha": plan.claim_sha,
+        "verdict": verdict.verdict,
+        "at": datetime.now(UTC).isoformat(),
+    }
+    if verdict.verdict == "PRUNE":
+        if source_ref_id not in attached:
+            rejected[str(source_ref_id)] = {
+                "at": datetime.now(UTC).isoformat(),
+                "supports": "no",
+                "contradicts": False,
+                "via": "reground-judge",
+            }
+        return
+    if (
+        verdict.verdict == "KEEP"
+        and depth_policy == DEPTH_BODY_REQUIRED
+        and n_body_chunks > 1
+    ):
+        if is_front_matter(chunk_ord=block.pos, section_path=section_path):
+            plan.log.append(
+                reground_log_entry(
+                    src_ref_id=source_ref_id,
+                    src_chunk_id=chunk_id,
+                    relation=_ROLE,
+                    verdict="KEEP",
+                    reason=(
+                        "grounding-depth policy: measurement/mechanism claim "
+                        "will not ground on a front-matter passage"
+                    ),
+                    action="withheld (depth policy)",
+                    sha=plan.claim_sha,
+                    handle=handle,
+                )
+            )
+            return
+    role = _ROLE if verdict.verdict == "KEEP" else "contradicts"
+    attach_evidence(
+        store,
+        hub_ref_id=hub_ref_id,
+        paper_ref_id=source_ref_id,
+        role=role,
+        meta={
+            "support": "yes" if role == _ROLE else "no",
+            "caveats": [],
+            "source_handle": handle,
+            # Reversible as a set, the way the semantic backfill's
+            # ``src_grounding.method`` marker is: every edge this stage
+            # writes is queryable by ``meta->'reground'``.
+            "reground": {
+                "verdict": verdict.verdict,
+                "reason": verdict.reason,
+                "sha": plan.claim_sha,
+                "via": cand.via,
+            },
+        },
+        set_by="system",
+        conn=conn,
+        pending_checks=pending_checks,
+    )
+    attached_this_pass.add(source_ref_id)
+    if role == _ROLE:
+        plan.adds.append(
+            RegroundAdd(
+                src_ref_id=source_ref_id,
+                src_chunk_id=chunk_id,
+                handle=handle,
+                via=cand.via,
+            )
+        )
+    plan.log.append(
+        reground_log_entry(
+            src_ref_id=source_ref_id,
+            src_chunk_id=chunk_id,
+            relation=role,
+            verdict=verdict.verdict,
+            reason=verdict.reason,
+            action="added",
+            sha=plan.claim_sha,
+            handle=handle,
+        )
+    )
+
+
+def _hub_verdict(conn: Connection, hub_ref_id: int, plan: RegroundPlan) -> str:
+    """The escalation ladder's read-out, computed — never a stored state.
+
+    ``supportable`` when the hub will still hold at least one evidence
+    edge once this plan's prunes land; otherwise ``retire`` if the
+    external last resort actually ran and found nothing, else
+    ``needs_external`` (the corpus could not substantiate it *yet*, and
+    the ladder has a rung left). A hub that ends at zero edges reads
+    ``unverified`` through ``.trust`` on its own — this string is a
+    worklist label, not a trust flag.
+    """
+    live = live_evidence_handles(conn, hub_ref_id)
+    doomed = {
+        EvidenceHandle(p.src_ref_id, p.src_chunk_id, p.relation) for p in plan.prunes
+    }
+    if live - doomed:
+        return VERDICT_SUPPORTABLE
+    return VERDICT_RETIRE if plan.external_ran else VERDICT_NEEDS_EXTERNAL
+
+
 def _refine_one_hub(
     conn: Connection,
     store: Store,
@@ -668,6 +2463,8 @@ def _refine_one_hub(
     topk: int,
     min_sim: float | None,
     pending_checks: list[int] | None = None,
+    reground: RegroundConfig | None = None,
+    plan_out: list[RegroundPlan] | None = None,
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
@@ -709,6 +2506,19 @@ def _refine_one_hub(
     attempt lease, then returns before discovery/verify ever run — no
     evidence attach is attempted, so ``taproot.hub.attach_evidence``'s
     compound guard is never even reached.
+
+    **Reground** (``reground`` non-``None``, docs/backlog/taproot-
+    reground.md) grows this same function rather than forking a second
+    one: stage 1/2 (fisheye + strict audit) run before discovery, stage 3
+    adds same-paper deeper passages ahead of the existing two discover
+    sources and deepens their top-k, the ``attached`` pre-filter narrows
+    to a memo-gated re-verify (:func:`_candidate_settled`), and every
+    candidate is judged by the strict judge instead of the minter's
+    verifier. What it deliberately does NOT do here is remove anything:
+    prunes are accumulated into a :class:`RegroundPlan` appended to
+    ``plan_out`` and applied by :func:`apply_reground_plan` only after
+    this function's transaction has committed — that ordering IS the
+    add-first contract.
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:
@@ -740,6 +2550,33 @@ def _refine_one_hub(
     rejected: dict[str, Any] = {} if reopened else dict(meta.get(_META_REJECTED) or {})
     attached = _attached_source_ids(conn, hub_ref_id)
 
+    # Reground state. ``reground_seen`` is the convergence guard and is
+    # cleared by the same sha-reopen that clears the rejection memo.
+    reground_seen: dict[str, Any] = (
+        {} if reopened else dict(meta.get(_META_REGROUND_SEEN) or {})
+    )
+    plan: RegroundPlan | None = None
+    depth_policy = DEPTH_ABSTRACT_OK
+    attached_keys: set[str] = set()
+    if reground is not None:
+        depth_policy = claim_depth_policy(claim_sentence)
+        attached_keys = _attached_edge_keys(conn, hub_ref_id)
+        plan = RegroundPlan(
+            hub_ref_id=hub_ref_id,
+            claim_sha=new_sha,
+            live_before=live_evidence_handles(conn, hub_ref_id),
+        )
+        _audit_edges(
+            conn,
+            hub_ref_id,
+            claim_sentence=claim_sentence,
+            scope=scope,
+            depth_policy=depth_policy,
+            cfg=reground,
+            seen=reground_seen,
+            plan=plan,
+        )
+
     # Citation-miss / unresolved-cite records accumulate across passes
     # (keyed by their record tuple, deduped at persist time). A sha-reopen
     # clears them like the rejection memo — the old verdicts may no longer
@@ -759,6 +2596,24 @@ def _refine_one_hub(
             hub_ref_id,
         )
     if claim_sentence and query_vec is not None:
+        # Reground stage 3 deepens the recall floor: real primaries rank
+        # low while the ``references`` categorization is still converging.
+        effective_topk = topk if reground is None else reground.deeper_topk
+
+        # Discover source 0 (reground only, offered FIRST): deeper
+        # passages inside papers this hub already grounds on — the pilot's
+        # dominant, lowest-risk fix ("right paper, wrong chunk").
+        same_paper_cands: list[_Candidate] = []
+        if reground is not None:
+            same_paper_cands = _same_paper_candidates(
+                store,
+                hub_ref_id=hub_ref_id,
+                source_refs=_attached_source_refs(conn, hub_ref_id),
+                claim_sentence=claim_sentence,
+                query_vec=query_vec,
+                per_paper_k=_PER_PAPER_K,
+            )
+
         # Discover source 1 (new): citation-following. Built first so its
         # passages win the shared-dedup slot over the semantic source.
         cite_cands, new_unresolved = _citation_candidates(
@@ -799,7 +2654,7 @@ def _refine_one_hub(
             query_vec=query_vec,
             mode="semantic",
             kind="paper",
-            limit=topk,
+            limit=effective_topk,
             max_distance=min_sim,
             exclude_ref_ids=settled_ref_ids,
         )
@@ -809,31 +2664,124 @@ def _refine_one_hub(
                 query_vec=query_vec,
                 mode="semantic",
                 kind="patent",
-                limit=topk,
+                limit=effective_topk,
                 max_distance=min_sim,
                 exclude_ref_ids=settled_ref_ids,
             )
         )
-        sem_hits = sorted([*paper_hits, *patent_hits], key=lambda hit: hit[2])[:topk]
+        sem_hits = sorted([*paper_hits, *patent_hits], key=lambda hit: hit[2])[
+            :effective_topk
+        ]
         sem_cands = [
             _Candidate(block=block, ref=ref, via="semantic")
             for block, ref, _score in sem_hits
         ]
 
-        seen_sources: set[int] = set()
-        for cand in [*cite_cands, *sem_cands]:
+        # Stage 5 (external last resort) feeds the SAME candidate tail —
+        # it is a discover source, not a second pipeline. "Last resort"
+        # means the corpus legs offered nothing *new*: a leg that came
+        # back full of passages this hub already grounds on (or already
+        # judged at this sha) has substantiated nothing, so the count of
+        # UNSETTLED candidates is the trigger, not the raw hit count.
+        corpus_cands = [*same_paper_cands, *cite_cands, *sem_cands]
+        ext_cands: list[_Candidate] = []
+        corpus_offered_something_new = any(
+            not _candidate_settled(
+                source_ref_id=c.source_ref_id,
+                chunk_id=int(c.block.id),
+                attached=attached,
+                attached_keys=attached_keys,
+                rejected=rejected,
+                reground=reground,
+                seen=reground_seen,
+                sha=new_sha,
+            )
+            for c in corpus_cands
+            if c.source_ref_id != hub_ref_id
+        )
+        if (
+            reground is not None
+            and reground.external
+            and not corpus_offered_something_new
+        ):
+            ext_cands, ext_report = _external_candidates(
+                conn,
+                store,
+                hub_ref_id,
+                claim_sentence=claim_sentence,
+                query_vec=query_vec,
+                grounding_ref_ids=[
+                    r for r, _ in _attached_source_refs(conn, hub_ref_id)
+                ],
+                probe_fn=reground.external_probe_fn,
+            )
+            store.update_ref(
+                hub_ref_id, meta_patch={_META_REGROUND_EXTERNAL: ext_report}, conn=conn
+            )
+            if plan is not None:
+                plan.external_ran = True
+
+        # Shared dedup slot. Additive-only enrichment dedups at the
+        # SOURCE-ref level (a supporter is a paper, not a passage — see
+        # _attached_source_ids). Reground has to dedup at the PASSAGE
+        # level, because its primary move is a second passage of a source
+        # it already holds; the per-source attach cap below restores the
+        # bound that source-level dedup used to provide.
+        seen_slots: set[str] = set()
+        attached_this_pass: set[int] = set()
+        for cand in [*corpus_cands, *ext_cands]:
             source_ref_id = cand.source_ref_id
-            if source_ref_id == hub_ref_id or source_ref_id in seen_sources:
+            if source_ref_id == hub_ref_id:
                 continue
-            seen_sources.add(source_ref_id)
+            block, ref = cand.block, cand.ref
+            chunk_id = int(block.id) if reground is not None else None
+            slot = (
+                str(source_ref_id)
+                if reground is None
+                else _seen_key(source_ref_id, chunk_id)
+            )
+            if slot in seen_slots:
+                continue
+            seen_slots.add(slot)
+            if source_ref_id in attached_this_pass:
+                # One attach per source per pass: the deeper-passage leg
+                # must not turn one paper into a fan of near-duplicate
+                # edges, and the bounded-spend guarantee is per hub.
+                continue
             # Precheck BEFORE verify (idempotency + rejection memo): a
             # source ref already an evidence supporter of this hub (any
             # role, any grounding chunk) or already judged ``no`` must never
-            # cost another LLM call. Source-ref-level, not chunk-level —
-            # see _attached_source_ids.
-            if source_ref_id in attached or str(source_ref_id) in rejected:
+            # cost another LLM call. Reground narrows the ``attached`` half
+            # of that to a memo-gated re-verify — see _candidate_settled.
+            if _candidate_settled(
+                source_ref_id=source_ref_id,
+                chunk_id=chunk_id,
+                attached=attached,
+                attached_keys=attached_keys,
+                rejected=rejected,
+                reground=reground,
+                seen=reground_seen,
+                sha=new_sha,
+            ):
                 continue
-            block, ref = cand.block, cand.ref
+            if reground is not None and plan is not None:
+                _reground_verify_candidate(
+                    store,
+                    conn,
+                    hub_ref_id,
+                    cand=cand,
+                    claim_sentence=claim_sentence,
+                    scope=scope,
+                    depth_policy=depth_policy,
+                    cfg=reground,
+                    seen=reground_seen,
+                    rejected=rejected,
+                    attached=attached,
+                    plan=plan,
+                    attached_this_pass=attached_this_pass,
+                    pending_checks=pending_checks,
+                )
+                continue
             verification = _verify_support_with_caveats(
                 claim=claim_sentence,
                 scope=scope,
@@ -925,6 +2873,21 @@ def _refine_one_hub(
     unresolved_deduped = _dedup_records(unresolved)
     if unresolved_deduped or reopened:
         meta_patch[_META_UNRESOLVED] = unresolved_deduped
+    if reground is not None and plan is not None:
+        meta_patch[_META_REGROUND_SEEN] = reground_seen
+        plan.verdict = _hub_verdict(conn, hub_ref_id, plan)
+        if plan.verdict == VERDICT_RETIRE and _retire_authorized(
+            conn, hub_ref_id, reground
+        ):
+            _flag_retire(conn, store, hub_ref_id, plan)
+        elif plan.verdict != VERDICT_SUPPORTABLE:
+            meta_patch[_META_REGROUND_VERDICT] = {
+                "verdict": plan.verdict,
+                "sha": new_sha,
+                "at": datetime.now(UTC).isoformat(),
+            }
+        if plan_out is not None:
+            plan_out.append(plan)
     store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
     # This point is only reached on a completed run (a raise anywhere above
     # propagates out and this line never runs) -- clear the claim-time
@@ -935,6 +2898,53 @@ def _refine_one_hub(
 # ── runner ─────────────────────────────────────────────────────────
 
 
+def reground_one_hub(
+    store: Store,
+    hub_ref_id: int,
+    *,
+    embedder: Any,
+    cfg: RegroundConfig,
+    topk: int | None = None,
+    min_sim: float | None = None,
+) -> RegroundApplyResult:
+    """Reground exactly ONE hub, end to end — the ``reground_claim`` job's
+    per-hub unit, and the ``hub_ids``-override path that bypasses the
+    due-set entirely so a draft's whole hub set can be regrounded on
+    demand.
+
+    Same two-phase shape :func:`run_hub_refine_pass` uses, and for the
+    same reason: :func:`_refine_one_hub` (discover → strict judge →
+    attach → stamp) runs in one transaction and commits; only then does
+    :func:`apply_reground_plan` read the adds back and release the paired
+    prunes. Raises whatever the refine phase raises — the caller isolates
+    per hub.
+    """
+    resolved_topk = topk if topk is not None else _topk_default()
+    resolved_min_sim = min_sim if min_sim is not None else _min_sim_default()
+    pending_checks: list[int] = []
+    plans: list[RegroundPlan] = []
+    with store.pool.connection() as conn:
+        _refine_one_hub(
+            conn,
+            store,
+            hub_ref_id,
+            embedder=embedder,
+            topk=resolved_topk,
+            min_sim=resolved_min_sim,
+            pending_checks=pending_checks,
+            reground=cfg,
+            plan_out=plans,
+        )
+        conn.commit()
+    run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
+    if not plans:
+        # The hub drained without a plan (vanished, or became compound
+        # between claim and processing) — nothing was judged, nothing to
+        # apply.
+        return RegroundApplyResult(hub_ref_id=hub_ref_id)
+    return apply_reground_plan(store, plans[0])
+
+
 def run_hub_refine_pass(
     store: Store,
     *,
@@ -942,6 +2952,7 @@ def run_hub_refine_pass(
     embedder: Any | None = None,
     topk: int | None = None,
     min_sim: float | None = None,
+    reground: RegroundConfig | None = None,
 ) -> dict[str, int]:
     """One pass: claim due hubs, discover + verify + attach corroborators.
 
@@ -961,7 +2972,14 @@ def run_hub_refine_pass(
     quietly turn "ANN over paper chunks" into a much weaker keyword
     match without ever telling the operator.
 
-    Returns the standard ``{claimed, ok, failed}`` shape.
+    ``reground`` defaults to :meth:`RegroundConfig.from_env`, which is
+    ``None`` unless an operator has opted in — so the service's behaviour
+    is byte-identical to additive-only enrichment until the flags are set
+    (and the prune sub-stage needs its own second flag on top, behind the
+    ``slice_refine_eval`` rubric gate). Tests pass it explicitly.
+
+    Returns the standard ``{claimed, ok, failed}`` shape, plus reground
+    counters (``pruned``/``withheld``) when reground ran at all.
     """
     if embedder is None:
         log.warning("hub_refine: no embedder available -- pass degrades to a no-op")
@@ -971,6 +2989,7 @@ def run_hub_refine_pass(
     resolved_topk = topk if topk is not None else _topk_default()
     resolved_backstop_h = _backstop_hours()
     resolved_min_sim = min_sim if min_sim is not None else _min_sim_default()
+    resolved_reground = reground if reground is not None else RegroundConfig.from_env()
 
     with store.pool.connection() as conn:
         hub_ids = _claim_hubs_due_for_refine(
@@ -981,6 +3000,8 @@ def run_hub_refine_pass(
     claimed = len(hub_ids)
     ok = 0
     failed = 0
+    pruned = 0
+    withheld = 0
 
     for hub_ref_id in hub_ids:
         try:
@@ -989,6 +3010,7 @@ def run_hub_refine_pass(
             # only after the commit below — never inside the transaction
             # (see ``taproot.hub.attach_evidence``).
             pending_checks: list[int] = []
+            plans: list[RegroundPlan] = []
             with store.pool.connection() as conn:
                 _refine_one_hub(
                     conn,
@@ -998,9 +3020,18 @@ def run_hub_refine_pass(
                     topk=resolved_topk,
                     min_sim=resolved_min_sim,
                     pending_checks=pending_checks,
+                    reground=resolved_reground,
+                    plan_out=plans,
                 )
                 conn.commit()
             run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
+            # Prunes run only now — after the adds above are committed and
+            # can be read back (docs/backlog/taproot-reground.md's
+            # add-first contract, enforced in code).
+            for plan in plans:
+                applied = apply_reground_plan(store, plan)
+                pruned += applied.pruned
+                withheld += applied.withheld
             ok += 1
         except Exception:  # pragma: no cover — defensive, mirrors inbound_chase.py
             log.warning(
@@ -1008,9 +3039,36 @@ def run_hub_refine_pass(
             )
             failed += 1
 
-    return {"claimed": claimed, "ok": ok, "failed": failed}
+    result = {"claimed": claimed, "ok": ok, "failed": failed}
+    if resolved_reground is not None:
+        result["pruned"] = pruned
+        result["withheld"] = withheld
+    return result
 
 
 __all__ = [
+    "DEPTH_ABSTRACT_OK",
+    "DEPTH_BODY_REQUIRED",
+    "PRUNE_INTERLOCK_TOKEN",
+    "STRICT_VERDICTS",
+    "VERDICT_NEEDS_EXTERNAL",
+    "VERDICT_RETIRE",
+    "VERDICT_SUPPORTABLE",
+    "RegroundAdd",
+    "RegroundApplyResult",
+    "RegroundConfig",
+    "RegroundContradict",
+    "RegroundDiff",
+    "RegroundPlan",
+    "RegroundPrune",
+    "StrictVerdict",
+    "apply_reground_plan",
+    "claim_depth_policy",
+    "is_front_matter",
+    "judge_edge_strict",
+    "prune_interlock_open",
+    "reground_one_hub",
+    "repair_hub_intent",
     "run_hub_refine_pass",
+    "verify_hub_intent",
 ]

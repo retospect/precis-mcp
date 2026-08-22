@@ -44,6 +44,14 @@ Six functions:
    hub being minted for the same claim, it can't collapse two that both
    already exist.
 
+Plus, since reground (``docs/backlog/taproot-reground.md``), a matching
+**removal** door — :func:`remove_evidence` / :func:`reattach_as_contradicts`,
+with :func:`append_reground_log`'s ``meta.reground_log`` audit trail and
+the :class:`WouldStrandHub` guard. ``links`` has no ``deleted_at``, so
+dropping an edge is a hard delete: the log is the only record it ever
+happened, and the strand guard is what keeps a half-applied prune plan
+from silently emptying a hub.
+
 Callers that populate the edges: ``workers/chase.py::_taproot_bridge`` (the
 forward bridge, supplies the verdict ``meta``), ``workers/hub_refine.py``,
 and the authoring/backfill doors (:mod:`precis.taproot.authoring` /
@@ -884,6 +892,415 @@ def attach_evidence(
         # top of that (a pool-exhaustion deadlock under load). Hand the ref
         # back instead; the caller drains after its commit.
         pending_checks.append(paper_ref_id)
+
+
+# ── reground: the edge-REMOVAL door ─────────────────────────────────
+#
+# ``attach_evidence`` above is the single *write* door; until reground
+# (docs/backlog/taproot-reground.md) there was no *removal* door at all,
+# because ``hub_refine`` was strictly additive. Reground audits existing
+# edges and auto-removes proxy grounding, so removal needs the same
+# single-choke-point treatment — plus one thing attach doesn't need: an
+# audit trail. ``links`` has **no ``deleted_at`` column**, so a removal is
+# a HARD DELETE; nothing is left behind to read afterwards. The log below
+# IS the record.
+
+
+#: ``finding.meta`` key carrying a claim hub's reground audit trail
+#: (docs/backlog/taproot-reground.md stage 2): an append-only list of
+#: :func:`reground_log_entry` records — one per removal, contradicts
+#: re-attach, or deliberately *withheld* action. Read by the claim page /
+#: any human asking "why is this edge gone?".
+META_REGROUND_LOG = "reground_log"
+
+#: Ceiling on :data:`META_REGROUND_LOG` length — oldest entries drop
+#: first. Reground is converging-by-construction (the ``reground_seen``
+#: sha-memo in :mod:`precis.workers.hub_refine`), so a hub only ever
+#: approaches this bound if its claim sentence is re-edited dozens of
+#: times; leaving the list unbounded would let one pathological hub grow
+#: its ``meta`` row without limit.
+REGROUND_LOG_MAX = 200
+
+
+@dataclass(frozen=True)
+class EvidenceHandle:
+    """One committed evidence edge at the grain reground diffs on:
+    ``(source ref, grounding chunk, relation)``.
+
+    Deliberately **not** the ``links.link_id`` surrogate: the applier's
+    read-back (docs/backlog/taproot-reground.md §"Applier must enforce
+    add-first") has to compare an *intent* it formed before the write
+    against state it re-read after the commit, and an intent has no
+    link_id. ``src_chunk_id`` is ``None`` for a ref-level (``pa<id>``)
+    edge — the same NULL the ``links`` UNIQUE index treats as a distinct
+    endpoint.
+    """
+
+    src_ref_id: int
+    src_chunk_id: int | None
+    relation: str
+
+
+def live_evidence_handles(conn: Any, hub_ref_id: int) -> set[EvidenceHandle]:
+    """Every evidence edge (:data:`HUB_ROLES`) currently pointing at
+    ``hub_ref_id``, as :class:`EvidenceHandle`\\ s.
+
+    No ``deleted_at IS NULL`` filter — ``links`` has no such column, and
+    adding one to the predicate *errors* rather than merely
+    under-returning (docs/backlog/taproot-reground.md §"applier
+    contract"). Every row here is live by construction.
+    """
+    rows = conn.execute(
+        "SELECT src_ref_id, src_chunk_id, relation FROM links "
+        "WHERE dst_ref_id = %s AND relation = ANY(%s)",
+        (hub_ref_id, sorted(HUB_ROLES)),
+    ).fetchall()
+    return {
+        EvidenceHandle(
+            src_ref_id=int(r[0]),
+            src_chunk_id=int(r[1]) if r[1] is not None else None,
+            relation=str(r[2]),
+        )
+        for r in rows
+    }
+
+
+def live_evidence_count(conn: Any, hub_ref_id: int) -> int:
+    """How many live evidence edges ``hub_ref_id`` carries — the
+    "would this removal strand the hub at zero?" guard's input."""
+    return len(live_evidence_handles(conn, hub_ref_id))
+
+
+def reground_log_entry(
+    *,
+    src_ref_id: int,
+    src_chunk_id: int | None,
+    relation: str,
+    verdict: str,
+    reason: str,
+    action: str,
+    sha: str | None = None,
+    handle: str | None = None,
+) -> dict[str, Any]:
+    """Build one :data:`META_REGROUND_LOG` record.
+
+    The spec's four required fields are ``edge`` / ``verdict`` / ``reason``
+    / ``sha``; the structured ``src_ref_id``/``src_chunk_id``/``relation``
+    triple rides along so the log is queryable without re-parsing
+    ``edge``, and ``action`` distinguishes what actually happened
+    (``removed`` / ``reattached-contradicts`` / ``added`` / ``withheld``)
+    from what was judged.
+    """
+    edge = handle or (
+        f"ref:{src_ref_id}"
+        if src_chunk_id is None
+        else f"ref:{src_ref_id}#chunk:{src_chunk_id}"
+    )
+    return {
+        "at": datetime.now(UTC).isoformat(),
+        "edge": edge,
+        "src_ref_id": src_ref_id,
+        "src_chunk_id": src_chunk_id,
+        "relation": relation,
+        "verdict": verdict,
+        "reason": reason,
+        "action": action,
+        "sha": sha,
+    }
+
+
+def append_reground_log(
+    store: Store,
+    hub_ref_id: int,
+    entries: list[dict[str, Any]],
+    *,
+    conn: Any = None,
+) -> None:
+    """Append ``entries`` to ``meta.reground_log``, truncating to the
+    newest :data:`REGROUND_LOG_MAX`.
+
+    A read-modify-write on ``meta`` (``store.update_ref``'s ``meta_patch``
+    is a *top-level* ``meta || patch`` merge, so the list has to be rebuilt
+    whole). Same lost-update exposure as ``hub_refine``'s
+    ``taproot_rejected`` memo under two concurrent passes on one hub — the
+    unresolved "conflict-safe memo write" open item in
+    ``docs/backlog/taproot-reground.md``; run reground on one host, as the
+    enablement runbook already requires. A vanished hub is a silent no-op
+    rather than a raise: the log is an audit nicety, never worth failing a
+    removal that already happened.
+    """
+    if not entries:
+        return
+
+    def _do(c: Any) -> None:
+        row = c.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (hub_ref_id,),
+        ).fetchone()
+        if row is None:
+            return
+        existing = list(dict(row[0] or {}).get(META_REGROUND_LOG) or [])
+        existing.extend(entries)
+        store.update_ref(
+            hub_ref_id,
+            meta_patch={META_REGROUND_LOG: existing[-REGROUND_LOG_MAX:]},
+            conn=c,
+        )
+
+    if conn is not None:
+        _do(conn)
+        return
+    with store.tx() as c:
+        _do(c)
+
+
+class WouldStrandHub(BadInput):
+    """Raised by :func:`remove_evidence` when the removal would take a
+    claim hub to **zero** live evidence edges and the caller did not pass
+    ``allow_last=True``.
+
+    The failure this exists to prevent is on the record: the manual
+    123-hub pass over draft 173020 ran add-first as a *prompt instruction*
+    only, and under partial failure (adds blocked, paired prunes not) two
+    hubs were pruned to zero live edges before a human caught it
+    (docs/backlog/taproot-reground.md). A hub SHOULD be allowed to reach
+    zero — that is how "questionable" is expressed (emergent
+    ``unverified`` via ``.trust``) — but only as a deliberate, authorized
+    RETIRE, never as the accidental residue of a half-applied plan. So
+    the door refuses by default and the caller has to say so out loud.
+    """
+
+
+def remove_evidence(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    src_ref_id: int,
+    role: str,
+    src_chunk_id: int | None = None,
+    reason: str,
+    verdict: str = "PRUNE",
+    claim_sha: str | None = None,
+    handle: str | None = None,
+    conn: Any = None,
+    allow_last: bool = False,
+    log: bool = True,
+) -> int:
+    """Remove one ``source --role--> hub`` evidence edge. Returns the
+    number of rows deleted (``0`` when the edge was already gone).
+
+    The removal counterpart of :func:`attach_evidence`, and the only
+    sanctioned way to drop a :data:`HUB_ROLES` edge. Guards, in order:
+
+    * ``role`` must be one of :data:`HUB_ROLES`;
+    * ``hub_ref_id`` must be a live ``TAPROOT:claim`` finding (same guard
+      attach applies — a caller pointing at a review note or a non-finding
+      is a bug either way);
+    * unless ``allow_last=True``, the hub must still carry at least one
+      live evidence edge *after* this removal, else
+      :class:`WouldStrandHub` is raised **inside the transaction**, so a
+      caller sharing its ``conn`` rolls the whole attempt back rather than
+      landing a stranded hub.
+
+      Caveat: this strand guard reads live edges with a plain
+      ``SELECT`` (:func:`live_evidence_handles`), not ``SELECT ... FOR
+      UPDATE`` — it takes no row lock. Two concurrent removals of
+      *different* edges on the same hub can each observe the other's
+      edge as still live, each pass the ``<=1`` check, and both commit,
+      stranding the hub. Covered by the same documented one-host
+      enablement rule as the ``meta`` read-modify-write races
+      (:func:`append_reground_log`'s docstring,
+      ``docs/runbooks/taproot-chase-enablement.md``) — not a bug this
+      function fixes on its own.
+
+    Then a chunk-id-exact ``DELETE``, scoped to ``dst_chunk_id IS NULL``
+    — every :data:`HUB_ROLES` evidence edge lands on the hub itself
+    (never a specific chunk of it) by convention, and this predicate
+    enforces that convention at the hard-delete door rather than trusting
+    every caller upstream to have kept to it. Deliberately not
+    ``store.remove_link``: that door resolves its endpoint from an
+    ``ord``, and a stale/renumbered/retired grounding chunk (seen for
+    real — fi191322's ``source_handle`` in the pilot) would silently match
+    nothing. ``links`` carries no retraction-ripple hook for
+    ``establishes``/``corroborates``/``contradicts``
+    (``store._argument_ops.RETRACTION_RELATIONS``), so nothing is bypassed
+    by going direct.
+
+    ``log=True`` appends a :func:`reground_log_entry` to
+    :data:`META_REGROUND_LOG` — on by default, because a hard delete that
+    records nothing is exactly the un-auditable removal this door exists
+    to prevent. Only a caller that writes its own richer entry (the
+    contradicts re-attach below) passes ``log=False``.
+    """
+    if role not in HUB_ROLES:
+        raise BadInput(
+            f"invalid evidence role: {role!r}",
+            options=sorted(HUB_ROLES),
+            next=f"role must be one of {sorted(HUB_ROLES)}",
+        )
+
+    def _do(c: Any) -> int:
+        if not _is_claim_hub(hub_ref_id, conn=c):
+            raise BadInput(
+                f"hub_ref_id={hub_ref_id} is not a TAPROOT:claim finding",
+                next=(
+                    "evidence edges (and their removal) belong to claim hubs — "
+                    "pick a TAPROOT:claim finding"
+                ),
+            )
+        live = live_evidence_handles(c, hub_ref_id)
+        target = EvidenceHandle(
+            src_ref_id=src_ref_id, src_chunk_id=src_chunk_id, relation=role
+        )
+        if target not in live:
+            return 0
+        if not allow_last and len(live) <= 1:
+            raise WouldStrandHub(
+                f"removing {role} edge (src_ref_id={src_ref_id}, "
+                f"src_chunk_id={src_chunk_id}) would leave hub "
+                f"{hub_ref_id} with zero evidence edges",
+                next=(
+                    "attach the replacement primary FIRST and confirm it "
+                    "committed, or pass allow_last=True if this is an "
+                    "authorized retire"
+                ),
+            )
+        cur = c.execute(
+            "DELETE FROM links WHERE dst_ref_id = %s AND dst_chunk_id IS NULL "
+            "AND src_ref_id = %s AND src_chunk_id IS NOT DISTINCT FROM %s "
+            "AND relation = %s",
+            (hub_ref_id, src_ref_id, src_chunk_id, role),
+        )
+        n = cur.rowcount or 0
+        if n and log:
+            append_reground_log(
+                store,
+                hub_ref_id,
+                [
+                    reground_log_entry(
+                        src_ref_id=src_ref_id,
+                        src_chunk_id=src_chunk_id,
+                        relation=role,
+                        verdict=verdict,
+                        reason=reason,
+                        action="removed",
+                        sha=claim_sha,
+                        handle=handle,
+                    )
+                ],
+                conn=c,
+            )
+        return n
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
+def reattach_as_contradicts(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    src_ref_id: int,
+    src_chunk_id: int | None = None,
+    from_role: str = "corroborates",
+    reason: str,
+    claim_sha: str | None = None,
+    handle: str | None = None,
+    meta: dict[str, Any] | None = None,
+    set_by: str = "system",
+    conn: Any = None,
+) -> bool:
+    """Convert one evidence edge from ``from_role`` to ``contradicts``.
+    Returns ``True`` when the ``contradicts`` edge is committed.
+
+    The contradictor path (taproot evidence relations, ADR 0073): a
+    passage carrying *primary content that runs counter to the claim* is
+    the most informative edge a hub can hold — it must never be
+    plain-dropped by the prune stage. So this door **adds first**: the
+    ``contradicts`` edge goes in through :func:`attach_evidence`, is read
+    back from ``links`` (never trusting the write's return —
+    docs/backlog/taproot-reground.md), and only a confirmed re-attach
+    releases the removal of the old edge. If the read-back misses, the
+    old edge stays and ``False`` comes back for the caller to flag.
+
+    Both halves run in ONE transaction on purpose: unlike the applier's
+    cross-transaction add→prune pairing (where the add commits with the
+    enrichment pass and the prune follows later), these two writes are
+    two faces of one decision — rolling them back together can never
+    strand the hub, whereas committing the removal without the re-attach
+    can. ``allow_last=True`` on the removal is therefore safe *and*
+    necessary: the replacement is already in the same transaction, so the
+    strand guard would otherwise refuse a hub whose only edge is the one
+    being converted.
+    """
+
+    def _do(c: Any) -> bool:
+        attach_evidence(
+            store,
+            hub_ref_id=hub_ref_id,
+            paper_ref_id=src_ref_id,
+            role="contradicts",
+            meta=meta,
+            set_by=set_by,
+            conn=c,
+            check_retraction=False,
+        )
+        committed = live_evidence_handles(c, hub_ref_id)
+        if not any(
+            h.src_ref_id == src_ref_id and h.relation == "contradicts"
+            for h in committed
+        ):
+            log.warning(
+                "taproot: contradicts re-attach for hub %s src %s did not read "
+                "back — leaving the %s edge in place",
+                hub_ref_id,
+                src_ref_id,
+                from_role,
+            )
+            return False
+        removed = remove_evidence(
+            store,
+            hub_ref_id=hub_ref_id,
+            src_ref_id=src_ref_id,
+            src_chunk_id=src_chunk_id,
+            role=from_role,
+            reason=reason,
+            verdict="CONTRADICTS",
+            claim_sha=claim_sha,
+            handle=handle,
+            conn=c,
+            allow_last=True,
+            log=False,
+        )
+        append_reground_log(
+            store,
+            hub_ref_id,
+            [
+                reground_log_entry(
+                    src_ref_id=src_ref_id,
+                    src_chunk_id=src_chunk_id,
+                    relation=from_role,
+                    verdict="CONTRADICTS",
+                    reason=reason,
+                    action=(
+                        "reattached-contradicts"
+                        if removed
+                        else "reattached-contradicts (no prior edge)"
+                    ),
+                    sha=claim_sha,
+                    handle=handle,
+                )
+            ],
+            conn=c,
+        )
+        return True
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
 
 
 def link_claims(
@@ -1794,15 +2211,25 @@ __all__ = [
     "EVIDENCE_SRC_KINDS",
     "HUB_ROLES",
     "MERGE_COLLAPSE_RELATION",
+    "META_REGROUND_LOG",
+    "REGROUND_LOG_MAX",
+    "EvidenceHandle",
     "ExtractionOutcome",
     "MergeEdge",
     "MergePlan",
     "TitleRoundTripError",
+    "WouldStrandHub",
+    "append_reground_log",
     "apply_extraction",
     "apply_placement",
     "attach_evidence",
     "link_claims",
+    "live_evidence_count",
+    "live_evidence_handles",
     "merge_hubs",
     "mint_hub",
+    "reattach_as_contradicts",
     "refine_claim_sentence",
+    "reground_log_entry",
+    "remove_evidence",
 ]

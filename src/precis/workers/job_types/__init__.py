@@ -231,6 +231,16 @@ def _load_taproot_backfill() -> JobTypeSpec:
     return taproot_backfill.SPEC
 
 
+def _load_reground_claim() -> JobTypeSpec:
+    # Dispatch glue for the taproot reground pass (audit/prune +
+    # deeper re-discovery + the add-first applier). Thin: the mechanism
+    # lives in workers/hub_refine.py — docs/backlog/taproot-reground.md's
+    # DRY invariant is that there is exactly one hub-improver.
+    from precis.workers.job_types import reground_claim
+
+    return reground_claim.SPEC
+
+
 def _load_draft_refresh() -> JobTypeSpec:
     # One bounded, section-scoped refresh of a living draft (critique +
     # rewrite against corpus + research-arm evidence, growth-gated apply).
@@ -531,6 +541,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "taproot_backfill":
         _REGISTRY["taproot_backfill"] = _load_taproot_backfill()
         return _REGISTRY["taproot_backfill"]
+    if name == "reground_claim":
+        _REGISTRY["reground_claim"] = _load_reground_claim()
+        return _REGISTRY["reground_claim"]
     if name == "draft_refresh":
         _REGISTRY["draft_refresh"] = _load_draft_refresh()
         return _REGISTRY["draft_refresh"]
@@ -605,6 +618,7 @@ def known_job_types() -> list[str]:
         "plan_tick",
         "draft_export",
         "taproot_backfill",
+        "reground_claim",
         "draft_refresh",
         "remarkable_send",
         "news_poll",

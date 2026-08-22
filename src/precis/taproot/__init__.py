@@ -28,10 +28,12 @@ placed, grounded, widened, weighed, opposed, adjudicated, gated, published:
 6. **Weigh** — how much *independent* support? — partial: the union-find
    supporter count (``handlers/_finding_evidence.py``) is display-only and
    gates nothing
-7. **Oppose** — what conflicts with this? — **found but discarded**:
-   ``workers/_chase_llm.py::_verify_support_with_caveats`` returns a
-   ``contradicts`` flag that hub_refine memoes as rejected instead of writing
-   the edge
+7. **Oppose** — what conflicts with this? — **found but discarded** on the
+   enrichment path: ``workers/_chase_llm.py::_verify_support_with_caveats``
+   returns a ``contradicts`` flag that hub_refine memoes as rejected instead
+   of writing the edge. Reground's strict judge (also dark) does write it:
+   a CONTRADICTS verdict re-attaches as a ``contradicts`` edge rather than
+   dropping the old one
 8. **Adjudicate** — is the conflict real, and who wins? — **absent**
 9. **Gate** — publishable? — live, admissibility only
 10. **Publish** — mint · sign · anchor — live, human doors
@@ -179,6 +181,25 @@ difference matters because one of them looks like the other and isn't:
   (rendered on the claim page); resolved-but-not-held cites land in
   ``meta.unresolved_citations``, never auto-fetched; a miss never flips hub
   trust. Converging by construction, not a periodic re-scan.
+  **Reground** (docs/backlog/taproot-reground.md) is this same pass grown
+  from additive-only enrichment into a re-grounding pass — deliberately
+  NOT a second hub-improver. With ``RegroundConfig`` active it also audits
+  every *existing* edge against a strict judge (primary content -> KEEP;
+  asserts/defers/review-deferral/abstract-for-a-measurement/front-matter/
+  bibliography -> PRUNE; primary-against -> CONTRADICTS; default KEEP on
+  uncertainty), re-discovers deeper passages **inside papers the hub
+  already grounds on** (the dominant fix is "right paper, wrong chunk"),
+  applies a grounding-depth policy (definition/existence accepts an
+  abstract, measurement/mechanism needs a body passage), and removes
+  through :func:`.hub.remove_evidence` — add-first, read back from
+  ``links``, strand-guarded, logged to ``meta.reground_log``. A second
+  memo (``meta.reground_seen``, sha-keyed like ``last_refined_sha``) keeps
+  it converging. All of it ships dark behind ``PRECIS_TAPROOT_REGROUND*``;
+  the prune sub-stage additionally must not be enabled until
+  :mod:`.slice_refine_eval` passes on the deployed strict rubric, and
+  retire/regenerate has no env flag at all (job param + per-hub opt-in
+  tag). Job glue: ``reground_claim``, which also exposes the
+  intent-vs-committed diff as a read-only ``mode='verify'``.
 - **chase_trigger** (``workers/chase_trigger.py``; ``service prio``) — the
   incremental due-set
   watermark: sha-gated hub vectors in ``claim_embeddings``, reverse ANN from
