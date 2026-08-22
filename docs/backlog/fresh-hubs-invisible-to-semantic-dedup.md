@@ -66,6 +66,26 @@ backlog has a dedup pass at all.
 (1) is the real fix; (3) is cheap and worth doing regardless, since it makes
 the failure loud instead of silent.
 
+## Rejected: bumping embed priority (asked 2026-08-22)
+
+Raising `prio` on hub chunks or on the `embed_batch` job does **not** shrink
+the window, and it's worth writing down why so it isn't retried.
+
+Priority reorders a queue. During the blind window there is nothing in the
+queue to reorder: the chunk exists, but no `embed_batch` job represents it yet.
+Draining is already prompt — `job_inproc` claims one job per pass tick
+(`cli/worker.py`, `limit=1`) and melchior logs `job_inproc claimed=1 ok=1`
+every 30–90 s. Nor is capacity the constraint: the whole non-paper backlog was
+~270 chunks (1 of them a finding) when this was measured, so a hub chunk is not
+starved behind the 188k paper chunks.
+
+The latency is **mint cadence, not queue position** — the materializer emits an
+`embed_batch` roughly hourly (09:53, 10:17, 11:20, 12:09, 13:01, 14:14 on
+2026-08-22). fi237847's chunk was created 14:50, missed that cycle, and embedded
+~2 h later. Priority is the wrong axis; the fix has to create work sooner, not
+rank it higher. (Job prio is ASC — lower = more urgent — and would matter if
+`embed_batch` jobs were backing up behind other job types. They aren't.)
+
 ## Verification
 
 Mint a hub, immediately search its own claim sentence, and assert it returns
