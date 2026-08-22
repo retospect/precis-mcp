@@ -2,7 +2,9 @@
   "env": {
     "ENABLE_TOOL_SEARCH": "auto:20"
   },
-  "enabledMcpjsonServers": ["claude-context"],
+  "enabledMcpjsonServers": [
+    "claude-context"
+  ],
   "permissions": {
     "defaultMode": "auto",
     "allow": [
@@ -175,5 +177,6 @@
         ]
       }
     ]
-  }
+  },
+  "disableArtifact": true
 }
