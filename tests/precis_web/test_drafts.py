@@ -938,13 +938,24 @@ import precis_web.routes.drafts as drafts_mod
 from precis.export.retraction import CitedPaper, DraftRetractionReport
 
 
-def _cited(slug: str, status: str | None, *, checked_at: object = None) -> CitedPaper:
+def _cited(
+    slug: str,
+    status: str | None,
+    *,
+    checked_at: object = None,
+    doi: str | None = None,
+    doi_status: str | None = None,
+    doi_validated_at: object = None,
+) -> CitedPaper:
     return CitedPaper(
         ref_id=10,
         slug=slug,
         title=f"Paper {slug}",
         status=status,
         checked_at=checked_at,
+        doi=doi,
+        doi_status=doi_status,
+        doi_validated_at=doi_validated_at,
     )
 
 
@@ -1179,6 +1190,38 @@ def test_retraction_status_route_reads_only_no_network(
     assert data["total"] == 2
     assert [p["slug"] for p in data["retracted"]] == ["smith2024"]
     assert [p["slug"] for p in data["unchecked"]] == ["ghost404"]
+
+
+def test_retraction_status_route_surfaces_doi_completeness(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """DOI completeness/validity (docs/backlog/draft-doi-completeness-check.md)
+    rides the same status route JSON — missing DOI and never-validated DOI
+    are both first-class, distinct buckets, and neither blocks export."""
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(
+            papers=[
+                _cited("no-doi", None, doi=None),
+                _cited(
+                    "has-doi",
+                    None,
+                    doi="10.1/x",
+                    doi_status=None,
+                    doi_validated_at=None,
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.get("/drafts/nt/retraction-status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["blocks_export"] is False
+    assert [p["slug"] for p in data["missing_doi"]] == ["no-doi"]
+    assert [p["slug"] for p in data["doi_unvalidated"]] == ["has-doi"]
+    assert "missing DOI" in data["summary"]
+    assert "DOI never validated" in data["summary"]
 
 
 def test_retraction_check_route_reports_per_paper_status(

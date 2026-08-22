@@ -418,6 +418,15 @@ class Ref:
     alert_source: str | None = None
     fingerprint: str | None = None
     resolved_at: datetime | None = None
+    # Migration 0132 / DOI-completeness check. ``doi_status`` is
+    # ``'valid'`` / ``'not_found'`` once checked, ``None`` before the
+    # first check (mirrors ``retraction_status``'s vocabulary shape).
+    # ``doi_validated_at`` is the check timestamp; ``None`` means
+    # "never validated" — a first-class state distinct from "validated
+    # and clean", never rounded down (see ``ingest/provenance.py``'s
+    # ``check_ref_doi_validity``, the DOI twin of ``check_ref_retraction``).
+    doi_status: str | None = None
+    doi_validated_at: datetime | None = None
 
     @property
     def public_id(self) -> str:

@@ -1470,6 +1470,18 @@ class RetractionCheck:
     status: RetractionStatus | None = None
     checked_at: datetime | None = None
     error: str | None = None
+    #: DOI-validity signal riding this SAME Crossref round-trip, for free —
+    #: ``'valid'`` when :func:`check_doi` got an answer (Crossref message
+    #: or the RW cache), ``'not_found'`` when Crossref definitively 404'd
+    #: with nothing in the RW cache either, ``None`` when this check made
+    #: no network call at all (``fresh`` / ``no_doi`` / ``missing``) or
+    #: got an inconclusive one (malformed DOI, transport failure — a 429/
+    #: 5xx/timeout is not evidence the DOI is bad). A caller that also
+    #: needs DOI validity (``draft_retraction_report``) stamps this
+    #: instead of spending a second per-ref GET on
+    #: ``api.crossref.org/works/{doi}`` for the same DOI (docs/backlog/
+    #: draft-doi-completeness-check.md, pre-ship-review fix).
+    doi_signal: DoiStatus | None = None
 
     @property
     def flagged(self) -> bool:
@@ -1537,6 +1549,22 @@ def check_ref_retraction(
         )
 
     result = check_doi(doi, store=store, mailto=mailto)
+    # DOI-validity signal off this SAME call — see RetractionCheck.doi_signal.
+    # 'ok' means check_doi got an answer (a Crossref message, or an RW-cache
+    # fallback for a DOI that's real enough to carry retraction notices)
+    # either way the DOI resolves. 'unknown' is check_doi's status precisely
+    # when Crossref came back with a definitive 404 and the RW cache had
+    # nothing either — the one case we can call 'not_found' without another
+    # round-trip. 'malformed' (no network reached at all) and 'check_failed'
+    # (transport error — not evidence the DOI is bad) stay None: an
+    # inconclusive attempt is not a signal to stamp.
+    doi_signal: DoiStatus | None = (
+        "valid"
+        if result.status == "ok"
+        else "not_found"
+        if result.status == "unknown"
+        else None
+    )
     if result.status != "ok":
         return RetractionCheck(
             ref_id=ref_id,
@@ -1544,6 +1572,7 @@ def check_ref_retraction(
             status=current,
             checked_at=checked_at,
             error=result.error or result.status,
+            doi_signal=doi_signal,
         )
 
     if result.applied_status is None:
@@ -1557,6 +1586,7 @@ def check_ref_retraction(
         # A clean upstream read does not overturn an existing flag.
         status=result.applied_status or current,
         checked_at=datetime.now(UTC),
+        doi_signal=doi_signal,
     )
 
 
@@ -1587,10 +1617,185 @@ def check_refs_retraction(
     return out
 
 
+# ---------------------------------------------------------------------------
+# TTL-gated DOI-validity check — the DOI-completeness twin of the block above
+# ---------------------------------------------------------------------------
+#
+# docs/backlog/draft-doi-completeness-check.md: DOI *presence* (does this ref
+# carry a DOI at all) is a pure read off ``ref_identifiers`` and needs no
+# network — see ``precis.export.retraction``. DOI *validity* (does the DOI
+# actually resolve upstream) is the one piece that does, and mirrors
+# ``check_ref_retraction`` exactly — same TTL/stamp discipline, same
+# never-checked-is-not-clean split — down to riding the *same*
+# ``select_for_check``-picked subset in one press of the retraction-watch
+# button (``precis_web/routes/drafts.py``), so a user gets both signals
+# refreshed for the price of one wait.
+
+#: Default freshness window for a DOI validity re-check.
+DOI_VALIDATION_TTL_DAYS = 30
+
+#: DOI validity outcome vocabulary. Same shape as ``CheckOutcome`` — kept
+#: as its own alias (not a reuse) so the two check families can diverge
+#: later without one changing the other's public type.
+DoiCheckOutcome = Literal["fresh", "checked", "no_doi", "unchecked", "missing"]
+
+#: What a resolved upstream answer classifies as. Matches the
+#: ``refs_doi_status_check`` CHECK constraint (migration 0132).
+DoiStatus = Literal["valid", "not_found"]
+
+
+@dataclass(frozen=True, slots=True)
+class DoiValidationCheck:
+    """What one :func:`check_ref_doi_validity` call did, and what it found."""
+
+    ref_id: int
+    outcome: DoiCheckOutcome
+    status: DoiStatus | None = None
+    validated_at: datetime | None = None
+    error: str | None = None
+
+    @property
+    def never_validated(self) -> bool:
+        """True only when nobody has ever asked upstream about this DOI.
+
+        ``no_doi`` / ``unchecked`` / ``missing`` all leave ``validated_at``
+        ``None`` too, so this stays honest for every reason we couldn't
+        form an opinion, not just the happy "ref has a DOI, hasn't been
+        checked yet" case.
+        """
+        return self.validated_at is None
+
+
+# Crossref's REST API, not doi.org — matches the host ``bib_parse.py``
+# already fetches via ``safe_get`` (gr-established idiom), and a 404 there
+# means "Crossref has never heard of this DOI" without following a
+# publisher-controlled redirect chain to classify.
+_CROSSREF_WORKS_BASE = "https://api.crossref.org/works"
+_DOI_VALIDATE_TIMEOUT_S = 15.0
+
+
+def _fetch_doi_validity(doi: str, *, mailto: str | None) -> DoiStatus | None:
+    """Ask Crossref whether ``doi`` resolves, via ``safe_get`` — never raw
+    httpx/habanero (SSRF guard, see ``utils/safe_fetch.py``).
+
+    Returns ``'valid'`` (200), ``'not_found'`` (404), or ``None`` for any
+    other outcome (network error, rate limit, 5xx, unparseable). The
+    caller must not stamp a ``None`` — that would poison the TTL on an
+    answer we never actually got.
+    """
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_get
+
+    url = f"{_CROSSREF_WORKS_BASE}/{doi}"
+    params = {"mailto": mailto} if mailto else None
+    try:
+        with http_client(timeout=_DOI_VALIDATE_TIMEOUT_S) as client:
+            resp = safe_get(client, url, params=params)
+    except Exception:
+        return None
+    if resp.status_code == 404:
+        return "not_found"
+    if resp.status_code == 200:
+        return "valid"
+    return None
+
+
+def check_ref_doi_validity(
+    store: Store,
+    ref_id: int,
+    *,
+    force: bool = False,
+    ttl_days: int = DOI_VALIDATION_TTL_DAYS,
+    mailto: str | None = None,
+) -> DoiValidationCheck:
+    """Validate one ref's DOI against Crossref, TTL-gated exactly like
+    :func:`check_ref_retraction` (see that function + this section's
+    module comment for the shared rationale).
+
+    * inside the TTL and not ``force`` → ``fresh``, no network;
+    * upstream answered → ``checked``, stamped via
+      :meth:`Store.set_doi_validation` either way (``'valid'`` or
+      ``'not_found'`` — unlike retraction there is no second source whose
+      knowledge a clean read could clobber, so both outcomes are written);
+    * a ref with no DOI, or one Crossref couldn't be asked about, is
+      reported honestly (``no_doi`` / ``unchecked``) and **not** stamped —
+      stamping here would poison the TTL on an answer we never got.
+    """
+    ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    if ref is None:
+        return DoiValidationCheck(ref_id=ref_id, outcome="missing")
+
+    validated_at = getattr(ref, "doi_validated_at", None)
+    current: DoiStatus | None = getattr(ref, "doi_status", None)
+    if not force and validated_at is not None:
+        age = datetime.now(UTC) - validated_at
+        if age < timedelta(days=ttl_days):
+            return DoiValidationCheck(
+                ref_id=ref_id,
+                outcome="fresh",
+                status=current,
+                validated_at=validated_at,
+            )
+
+    doi = store.dois_for_refs([ref_id]).get(ref_id)
+    if not doi:
+        return DoiValidationCheck(
+            ref_id=ref_id, outcome="no_doi", status=current, validated_at=validated_at
+        )
+
+    result = _fetch_doi_validity(doi, mailto=mailto)
+    if result is None:
+        return DoiValidationCheck(
+            ref_id=ref_id,
+            outcome="unchecked",
+            status=current,
+            validated_at=validated_at,
+            error="doi validity check failed (crossref unreachable or non-200/404)",
+        )
+
+    store.set_doi_validation(ref_id, status=result)
+    return DoiValidationCheck(
+        ref_id=ref_id,
+        outcome="checked",
+        status=result,
+        validated_at=datetime.now(UTC),
+    )
+
+
+def check_refs_doi_validity(
+    store: Store,
+    ref_ids: Sequence[int],
+    *,
+    force: bool = False,
+    ttl_days: int = DOI_VALIDATION_TTL_DAYS,
+    mailto: str | None = None,
+) -> list[DoiValidationCheck]:
+    """:func:`check_ref_doi_validity` over a list, in order, deduped —
+    the DOI-validity twin of :func:`check_refs_retraction`, same
+    dedup/ordering contract so a caller can drive both off one
+    ``select_for_check`` selection in a single press."""
+    seen: set[int] = set()
+    out: list[DoiValidationCheck] = []
+    for ref_id in ref_ids:
+        if ref_id in seen:
+            continue
+        seen.add(ref_id)
+        out.append(
+            check_ref_doi_validity(
+                store, ref_id, force=force, ttl_days=ttl_days, mailto=mailto
+            )
+        )
+    return out
+
+
 __all__ = [
+    "DOI_VALIDATION_TTL_DAYS",
     "RETRACTION_TTL_DAYS",
     "BibEntry",
     "CandidateMatch",
+    "DoiCheckOutcome",
+    "DoiStatus",
+    "DoiValidationCheck",
     "LinkRelation",
     "MetadataVerification",
     "Notice",
@@ -1603,7 +1808,9 @@ __all__ = [
     "candidate_search",
     "check_doi",
     "check_dois",
+    "check_ref_doi_validity",
     "check_ref_retraction",
+    "check_refs_doi_validity",
     "check_refs_retraction",
     "classify_update_type",
     "dominant_status",

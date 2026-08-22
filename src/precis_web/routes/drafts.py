@@ -55,7 +55,11 @@ served from here:
   /drafts/{ident}/retraction-status`` (no-network read) and ``POST
   /drafts/{ident}/retraction-check`` (the watch button — live re-check,
   TTL-gated, ``force=1`` bypasses the TTL) back the export pane's
-  retraction UI; the shared walk is ``precis.export.retraction``.
+  retraction UI; the shared walk is ``precis.export.retraction``. That
+  same walk also carries DOI completeness/validity (docs/backlog/
+  draft-doi-completeness-check.md) — missing/invalid/never-validated DOI
+  counts ride the same two routes' JSON, advisory only, never gating the
+  export.
 
 Rendering is **raw source** (Tier A); the resolution pass that computes
 §-numbers / resolves cross-refs is the export engine (Tier B), shared
@@ -1107,8 +1111,11 @@ def _retraction_paper_json(paper: Any) -> dict[str, Any]:
     """One ``CitedPaper`` (``precis.export.retraction``) as JSON — the
     shape both the read-only status route and the check-now route hand
     the export pane, so the client renders off one shape regardless of
-    which one answered."""
+    which one answered. Carries the DOI completeness/validity fields
+    (docs/backlog/draft-doi-completeness-check.md) alongside the
+    retraction ones — one walk, two signals."""
     checked_at = paper.checked_at
+    doi_validated_at = paper.doi_validated_at
     return {
         "ref_id": paper.ref_id,
         "slug": paper.slug,
@@ -1120,6 +1127,13 @@ def _retraction_paper_json(paper: Any) -> dict[str, Any]:
         "checked_at": checked_at.isoformat()
         if hasattr(checked_at, "isoformat")
         else checked_at,
+        "doi": paper.doi,
+        "doi_presence_label": paper.doi_presence_label,
+        "doi_status": paper.doi_status,
+        "doi_never_validated": paper.doi_never_validated,
+        "doi_validated_at": doi_validated_at.isoformat()
+        if hasattr(doi_validated_at, "isoformat")
+        else doi_validated_at,
     }
 
 
@@ -1137,6 +1151,11 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
         "soft": [_retraction_paper_json(p) for p in report.soft],
         "unchecked": [_retraction_paper_json(p) for p in report.unchecked],
         "unresolved": report.unresolved,
+        # DOI completeness/validity — advisory only, never affects
+        # blocks_export. See docs/backlog/draft-doi-completeness-check.md.
+        "missing_doi": [_retraction_paper_json(p) for p in report.missing_doi],
+        "doi_invalid": [_retraction_paper_json(p) for p in report.doi_invalid],
+        "doi_unvalidated": [_retraction_paper_json(p) for p in report.doi_unvalidated],
     }
 
 
@@ -1416,6 +1435,16 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
     nearly free) and reports per-paper status. ``force=1`` ignores the
     TTL — without it, pressing the button twice in one day is a silent
     no-op and reads as broken.
+
+    Same press also validates DOIs (docs/backlog/
+    draft-doi-completeness-check.md) — ``draft_retraction_report`` shares
+    the retraction check's own Crossref round-trip for the DOI-validity
+    signal wherever that check hits the network this press, and only
+    falls back to a dedicated ``check_refs_doi_validity`` call for cites
+    the retraction check skipped (still TTL-fresh) — never two GETs to
+    Crossref for the same DOI. Either way one wait refreshes both
+    signals; a previously never-validated DOI comes back stamped
+    ``valid``/``not_found`` in the same JSON payload.
 
     Synchronous-with-a-cap for v1: the user
     is deliberately waiting on this button, but a large draft is one

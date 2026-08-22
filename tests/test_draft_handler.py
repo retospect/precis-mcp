@@ -1316,6 +1316,50 @@ def test_outline_clean_draft_has_no_hygiene_section(
     assert "## Hygiene" not in draft.get(id="nt").body
 
 
+def test_hygiene_footer_surfaces_missing_doi(draft: DraftHandler, hub: Hub) -> None:
+    """docs/backlog/draft-doi-completeness-check.md: a cited paper with no
+    DOI shows up in the Hygiene footer's DOI line, advisory (``⚠``), never
+    blocking anything."""
+    proj = _proj(hub)
+    paper = hub.live_store.insert_ref(kind="paper", slug="nodoi24", title="No DOI")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Background per [pa{paper.id}].",
+        at={"after": "¶" + th},
+    )
+
+    out = draft.get(id="nt").body
+    assert "## Hygiene" in out
+    assert "⚠ DOI:" in out
+    assert "missing DOI" in out
+
+
+def test_hygiene_footer_all_clear_when_dois_validated(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    paper = hub.live_store.insert_ref(kind="paper", slug="hasdoi24", title="Has DOI")
+    hub.live_store.insert_ref_identifiers(
+        paper.id, [("doi", "10.1/hasdoi24", "manual")]
+    )
+    hub.live_store.set_doi_validation(paper.id, status="valid")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Background per [pa{paper.id}].",
+        at={"after": "¶" + th},
+    )
+
+    out = draft.get(id="nt").body
+    assert "ℹ DOI: all 1 cited paper(s) have a validated DOI." in out
+    assert "⚠ DOI:" not in out
+
+
 def test_hygiene_view_returns_full_lists_unelided(
     draft: DraftHandler, hub: Hub
 ) -> None:

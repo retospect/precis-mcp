@@ -155,6 +155,86 @@ def test_missing_ref(monkeypatch):
     assert P.check_ref_retraction(store, 99).outcome == "missing"
 
 
+# ---------------------------------------------------------------------------
+# RetractionCheck.doi_signal — DOI validity riding this SAME Crossref
+# round-trip (docs/backlog/draft-doi-completeness-check.md, pre-ship-review
+# fix: draft_retraction_report used to spend a *second* GET to
+# api.crossref.org/works/{doi} via check_refs_doi_validity for the same
+# cite this check just resolved).
+# ---------------------------------------------------------------------------
+
+
+def test_doi_signal_valid_when_check_doi_resolves(monkeypatch):
+    monkeypatch.setattr(P, "check_doi", lambda *a, **kw: _result(status="ok"))
+    store: Any = FakeStore(FakeRef(checked_at=None), doi="10.1/x")
+
+    out = P.check_ref_retraction(store, 1)
+
+    assert out.outcome == "checked"
+    assert out.doi_signal == "valid"
+
+
+def test_doi_signal_not_found_on_a_definitive_crossref_404(monkeypatch):
+    """``check_doi`` reports ``status='unknown'`` precisely when Crossref
+    definitively 404'd and the RW cache had nothing either — the one case
+    safe to stamp ``not_found`` without another round-trip."""
+    monkeypatch.setattr(P, "check_doi", lambda *a, **kw: _result(status="unknown"))
+    store: Any = FakeStore(FakeRef(checked_at=None), doi="10.1/x")
+
+    out = P.check_ref_retraction(store, 1)
+
+    assert out.outcome == "unchecked"
+    assert out.doi_signal == "not_found"
+
+
+def test_doi_signal_none_on_transport_failure(monkeypatch):
+    """A 429/5xx/timeout is not evidence the DOI is bad — must not be
+    stamped either way."""
+    monkeypatch.setattr(
+        P, "check_doi", lambda *a, **kw: _result(status="check_failed", error="boom")
+    )
+    store: Any = FakeStore(FakeRef(checked_at=None), doi="10.1/x")
+
+    out = P.check_ref_retraction(store, 1)
+
+    assert out.outcome == "unchecked"
+    assert out.doi_signal is None
+
+
+def test_doi_signal_none_on_malformed_doi(monkeypatch):
+    monkeypatch.setattr(P, "check_doi", lambda *a, **kw: _result(status="malformed"))
+    store: Any = FakeStore(FakeRef(checked_at=None), doi="not-a-doi")
+
+    out = P.check_ref_retraction(store, 1)
+
+    assert out.outcome == "unchecked"
+    assert out.doi_signal is None
+
+
+def test_doi_signal_none_when_ttl_short_circuits(monkeypatch):
+    """A ``fresh`` outcome makes no network call at all — nothing to share."""
+    monkeypatch.setattr(
+        P, "check_doi", lambda *a, **kw: pytest.fail("TTL should have short-circuited")
+    )
+    recent = datetime.now(UTC) - timedelta(days=3)
+    store: Any = FakeStore(FakeRef(checked_at=recent), doi="10.1/x")
+
+    out = P.check_ref_retraction(store, 1)
+
+    assert out.outcome == "fresh"
+    assert out.doi_signal is None
+
+
+def test_doi_signal_none_when_no_doi(monkeypatch):
+    monkeypatch.setattr(P, "check_doi", lambda *a, **kw: pytest.fail("no DOI to check"))
+    store: Any = FakeStore(FakeRef(checked_at=None), doi=None)
+
+    out = P.check_ref_retraction(store, 1)
+
+    assert out.outcome == "no_doi"
+    assert out.doi_signal is None
+
+
 def test_batch_dedupes_and_preserves_order(monkeypatch):
     seen: list[int] = []
 

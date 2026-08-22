@@ -1381,6 +1381,30 @@ class RefsMixin:
             ).fetchall()
         return {int(rid): doi for rid, doi in rows if doi}
 
+    def set_doi_validation(
+        self, ref_id: int, *, status: str, conn: Connection | None = None
+    ) -> None:
+        """Stamp ``doi_status``/``doi_validated_at`` after a network DOI
+        validity check (:func:`precis.ingest.provenance.check_ref_doi_validity`).
+
+        ``status`` is ``'valid'`` or ``'not_found'`` (the
+        ``refs_doi_status_check`` constraint, migration 0132). Unlike
+        :meth:`set_retraction_status`, there is no second source (no
+        Retraction-Watch equivalent) whose knowledge a clean Crossref read
+        could clobber — a resolves/doesn't-resolve answer is the whole
+        picture — so status and timestamp are always written together,
+        with no separate "touch only" variant.
+        """
+        sql = (
+            "UPDATE refs SET doi_status = %s, doi_validated_at = now() "
+            "WHERE ref_id = %s AND deleted_at IS NULL"
+        )
+        if conn is not None:
+            conn.execute(sql, (status, ref_id))
+            return
+        with self.pool.connection() as c:
+            c.execute(sql, (status, ref_id))
+
     def _propagate_retraction_to_findings(
         self,
         retracted_ref_id: int,

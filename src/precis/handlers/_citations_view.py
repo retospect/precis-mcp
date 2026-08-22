@@ -40,6 +40,16 @@ BARE_BRACKET_REF_PATTERN` for handle-form cites, :data:`~precis.utils.
 pub_id_lookup.PLACEHOLDER_RE` for base32 ``[pub_id]`` placeholders),
 scanned in text order and span-deduped so a pub_id shaped like a handle
 (e.g. ``fi2345``) is never double-counted.
+
+**DOI completeness line** (docs/backlog/draft-doi-completeness-check.md):
+a header line summarizing DOI presence/validity across every distinct
+paper this view enumerates (direct cites + evidence-demand additions),
+reusing the identifier/ref lookups :func:`_build_rows` already fetched —
+no second walk, no divergent notion of "what does this draft cite" from
+the partition table below it. Shares its classifier
+(:func:`precis.export.retraction.summarize_doi_completeness`) with the
+Hygiene footer's own DOI line so the two surfaces can't drift on
+wording. Advisory only, same as every other signal in this view.
 """
 
 from __future__ import annotations
@@ -248,7 +258,9 @@ def _evidence_unfetched_paper_ids(
     return evidence_by_hub, unfetched
 
 
-def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, str]]]:
+def _build_rows(
+    store: Store, raw: list[_RawCite]
+) -> tuple[dict[str, list[dict[str, str]]], str]:
     paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
     finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
@@ -290,6 +302,8 @@ def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, s
     # unfetched evidence paper), skipping a paper already covered by a direct
     # to-fetch row or already emitted for an earlier hub/occurrence.
     evidence_rows_paper_ids = evidence_unfetched - direct_to_fetch_paper_ids
+    ev_refs_by_id: dict[int, Any] = {}
+    ev_dois: dict[int, dict[str, str]] = {}
     if evidence_rows_paper_ids:
         ev_refs_by_id = store.fetch_refs_by_ids(evidence_rows_paper_ids)
         ev_dois = store.identifiers_for_refs(list(evidence_rows_paper_ids))
@@ -315,11 +329,33 @@ def _build_rows(store: Store, raw: list[_RawCite]) -> dict[str, list[dict[str, s
                         "action": f"fetch (evidence for fi{c.ref_id})",
                     }
                 )
-    return buckets
+
+    # DOI completeness/validity line (docs/backlog/
+    # draft-doi-completeness-check.md) — over the papers this draft
+    # actually *cites* (direct paper/patent cite tokens only), reusing the
+    # identifier/ref lookups already fetched above rather than a second
+    # walk. Deliberately excludes ``evidence_rows_paper_ids`` — those are
+    # evidence-demand *candidates* surfaced by a cited ``[fi]`` hub, not
+    # cites this draft makes, and folding them in here made this line's
+    # count drift from the authoritative ``cited_paper_refs`` walk (the
+    # retraction pane / export summary) for the same draft. Shared
+    # classifier with the Hygiene footer's own DOI line
+    # (``handlers/draft.py::_hygiene_doi_line``) so wording can't drift
+    # between the two surfaces either.
+    from precis.export.retraction import summarize_doi_completeness
+
+    doi_line = summarize_doi_completeness(sorted(paper_ids), dois, refs_by_id)
+    return buckets, doi_line
 
 
-def _render(ref: Ref, buckets: dict[str, list[dict[str, str]]]) -> Response:
+def _render(
+    ref: Ref, buckets: dict[str, list[dict[str, str]]], doi_line: str
+) -> Response:
     lines = [f"# {ref.slug or ref.id} — citation lifecycle", ""]
+    if doi_line:
+        marker = "ℹ" if doi_line.startswith("all ") else "⚠"
+        lines.append(f"{marker} DOI: {doi_line}.")
+        lines.append("")
     for partition in _PARTITIONS:
         rows = buckets[partition]
         lines.append(f"## {_PARTITION_TITLE[partition]} ({len(rows)})")
@@ -338,8 +374,8 @@ def render_citations_view(store: Store, ref: Ref) -> Response:
     done. Read-only — no writes, no LLM call (see module docstring)."""
     chunks = store.drafts.reading_order(ref.id)
     raw = _collect_raw_cites(store, chunks)
-    buckets = _build_rows(store, raw)
-    return _render(ref, buckets)
+    buckets, doi_line = _build_rows(store, raw)
+    return _render(ref, buckets, doi_line)
 
 
 def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:

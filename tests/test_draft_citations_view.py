@@ -430,3 +430,66 @@ class TestEvidenceDemand:
         assert "evidence for fi" not in to_fetch
 
         assert draft_fetch_ref_ids(store, ref) == [shared]
+
+
+# ---------------------------------------------------------------------------
+# 6. DOI completeness line (docs/backlog/draft-doi-completeness-check.md)
+# ---------------------------------------------------------------------------
+
+
+class TestDoiCompletenessLine:
+    def test_missing_doi_surfaces_in_the_header_line(
+        self, store, draft: DraftHandler
+    ) -> None:
+        stub = seed_ref(store, title="No identifier at all", kind="paper")
+        ref = _new_draft(store, draft, "cites-doi-missing")
+        _add_para(store, draft, "cites-doi-missing", ref, f"See [pa{stub}].")
+
+        body = draft.get(id="cites-doi-missing", view="citations").body
+        assert "⚠ DOI:" in body
+        assert "missing DOI" in body
+        assert "no identifier" in body
+
+    def test_all_validated_dois_show_an_all_clear_line(
+        self, store, draft: DraftHandler
+    ) -> None:
+        paper = seed_ref(store, title="Fully validated", kind="paper")
+        store.insert_ref_identifiers(paper, [("doi", "10.1000/validated", "manual")])
+        store.set_doi_validation(paper, status="valid")
+        ref = _new_draft(store, draft, "cites-doi-clean")
+        _add_para(store, draft, "cites-doi-clean", ref, f"See [pa{paper}].")
+
+        body = draft.get(id="cites-doi-clean", view="citations").body
+        assert "ℹ DOI: all 1 cited paper(s) have a validated DOI." in body
+
+    def test_evidence_demand_candidates_excluded_from_the_doi_line(
+        self, store, draft: DraftHandler
+    ) -> None:
+        """An evidence-demand paper (surfaced because a cited ``[fi]`` hub's
+        evidence is unfetched) is not itself something this draft *cites* —
+        it must not be folded into the DOI line's count. Pre-ship-review
+        regression: the line used to also walk ``evidence_rows_paper_ids``,
+        so a draft citing only a ``[fi]`` hub (zero direct paper cites)
+        could still show a "missing DOI" line driven entirely by a paper
+        the draft never names — disagreeing with the authoritative
+        ``cited_paper_refs`` walk the retraction pane/export summary use."""
+        hub = _hub(store, "A settled claim with an unfetched, DOI-less evidence paper.")
+        evidence_paper = seed_ref(store, title="Unfetched Evidence Paper", kind="paper")
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=evidence_paper,
+            role="corroborates",
+            check_retraction=False,
+        )
+        ref = _new_draft(store, draft, "cites-fi-only")
+        _add_para(store, draft, "cites-fi-only", ref, f"Settled: [fi{hub}].")
+
+        body = draft.get(id="cites-fi-only", view="citations").body
+
+        # The evidence paper still surfaces as a to-fetch row...
+        to_fetch = _section(body, "TO FETCH (1)")
+        assert f"pa{evidence_paper}" in to_fetch
+        # ...but the draft cites zero papers directly, so there is no DOI
+        # line at all (not even one driven by the evidence candidate).
+        assert "DOI:" not in body

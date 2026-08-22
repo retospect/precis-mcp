@@ -366,12 +366,17 @@ def _hub_and_citation_stats(
     grounded, total = 0, 0
     try:
         handler = get_runtime(request).hub.handler_for("draft")
-        grounded, total = handler._taproot_hub_scoreboard(nodes)
+        # ``_taproot_hub_scoreboard`` takes resolved cited-paper ref_ids
+        # (docs/backlog/draft-doi-completeness-check.md's Hygiene-footer
+        # refactor shares the chunk-token mining with the DOI line) —
+        # mine once via the same helper the outline's own scoreboard uses.
+        cited_ref_ids = handler._cited_paper_ref_ids(nodes)
+        grounded, total = handler._taproot_hub_scoreboard(cited_ref_ids)
     except Exception:
         pass
     try:
         raw = _collect_raw_cites(store, nodes)
-        buckets = _build_rows(store, raw)
+        buckets, _doi_line = _build_rows(store, raw)
         lifecycle = {p: len(rows) for p, rows in buckets.items()}
     except Exception:
         lifecycle = {}

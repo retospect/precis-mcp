@@ -2314,6 +2314,10 @@ class DraftHandler(Handler):
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
+        A fourth line — DOI completeness/validity over the same cited
+        papers (docs/backlog/draft-doi-completeness-check.md), advisory
+        only — see :meth:`_hygiene_doi_line`.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -2362,12 +2366,18 @@ class DraftHandler(Handler):
                 "or get(kind='paper', id='<slug>~lo..hi', view='toc')."
             )
 
-        grounded, total = self._taproot_hub_scoreboard(chunks)
+        cited_ref_ids = self._cited_paper_ref_ids(chunks)
+
+        grounded, total = self._taproot_hub_scoreboard(cited_ref_ids)
         if grounded:
             out.append(
                 f"ℹ taproot: {grounded} of {total} cited passages have a "
                 "claim hub available; cite [pub_id] to use it."
             )
+
+        doi_line = self._hygiene_doi_line(cited_ref_ids)
+        if doi_line:
+            out.append(doi_line)
 
         if not out:
             return []
@@ -2390,39 +2400,68 @@ class DraftHandler(Handler):
         # prepends for the outline footer; this view is already scoped.
         return Response(body="\n".join([header, "", *lines[2:]]))
 
-    def _taproot_hub_scoreboard(self, chunks: list[Any]) -> tuple[int, int]:
-        """``(grounded, total)`` over every paper/patent cite token in the
-        draft (:func:`~precis.handlers._draft_lint.find_paper_cite_tokens`,
-        one pass per chunk — a
-        token repeated in two chunks counts as two cited passages).
-        ``grounded`` is the subset whose paper resolves and already has
-        ≥1 Taproot claim hub (:func:`~precis.taproot.lookup.
-        hubs_grounded_by_paper`) available to cite instead. Caches the
-        per-paper hub check so a paper cited from many passages costs one
-        lookup, not N."""
-        from precis.taproot.lookup import hubs_grounded_by_paper
+    def _cited_paper_ref_ids(self, chunks: list[Any]) -> list[int]:
+        """Every paper/patent cite token in the draft
+        (:func:`~precis.handlers._draft_lint.find_paper_cite_tokens`, one
+        pass per chunk), resolved to its target ``ref_id``, in mention
+        order with repeats kept (a paper cited twice appears twice).
+        Shared by :meth:`_taproot_hub_scoreboard` (which counts cited
+        *passages*, so needs the repeats) and :meth:`_hygiene_doi_line`
+        (which counts distinct cited *papers*, via ``set()`` over this
+        same list) — one chunk scan feeds both instead of each mining the
+        draft separately."""
         from precis.utils.mentions import resolve_handle_target
 
-        hub_cache: dict[int, bool] = {}
-        grounded = 0
-        total = 0
+        out: list[int] = []
         for c in chunks:
             if not c.text:
                 continue
             for tok in _draft_lint.find_paper_cite_tokens(c.text):
                 target = resolve_handle_target(self.store, tok)
-                if target is None:
-                    continue
-                total += 1
-                has_hub = hub_cache.get(target.dst_ref_id)
-                if has_hub is None:
-                    has_hub = bool(
-                        hubs_grounded_by_paper(self.store, target.dst_ref_id)
-                    )
-                    hub_cache[target.dst_ref_id] = has_hub
-                if has_hub:
-                    grounded += 1
-        return grounded, total
+                if target is not None:
+                    out.append(target.dst_ref_id)
+        return out
+
+    def _taproot_hub_scoreboard(self, cited_ref_ids: list[int]) -> tuple[int, int]:
+        """``(grounded, total)`` over ``cited_ref_ids``
+        (:meth:`_cited_paper_ref_ids` — one entry per cited *passage*,
+        repeats included). ``grounded`` is the subset whose paper already
+        has ≥1 Taproot claim hub (:func:`~precis.taproot.lookup.
+        hubs_grounded_by_paper`) available to cite instead. Caches the
+        per-paper hub check so a paper cited from many passages costs one
+        lookup, not N."""
+        from precis.taproot.lookup import hubs_grounded_by_paper
+
+        hub_cache: dict[int, bool] = {}
+        grounded = 0
+        for rid in cited_ref_ids:
+            has_hub = hub_cache.get(rid)
+            if has_hub is None:
+                has_hub = bool(hubs_grounded_by_paper(self.store, rid))
+                hub_cache[rid] = has_hub
+            if has_hub:
+                grounded += 1
+        return grounded, len(cited_ref_ids)
+
+    def _hygiene_doi_line(self, cited_ref_ids: list[int]) -> str:
+        """One line: DOI completeness + validity over every *distinct*
+        cited paper in the draft (docs/backlog/
+        draft-doi-completeness-check.md) — advisory only, never affects
+        export. Reuses ``cited_ref_ids`` (already mined for the
+        taproot-hub scoreboard just above — no second token scan) and the
+        shared :func:`~precis.export.retraction.summarize_doi_completeness`
+        classifier, so the wording can't drift from the citations-lifecycle
+        view's own DOI line. Empty string when the draft cites no papers."""
+        from precis.export.retraction import summarize_doi_completeness
+
+        ref_ids = sorted(set(cited_ref_ids))
+        if not ref_ids:
+            return ""
+        identifiers = self.store.identifiers_for_refs(ref_ids)
+        refs_by_id = self.store.fetch_refs_by_ids(ref_ids)
+        line = summarize_doi_completeness(ref_ids, identifiers, refs_by_id)
+        marker = "ℹ" if line.startswith("all ") else "⚠"
+        return f"{marker} DOI: {line}."
 
     def _work_lines(self, ref_id: int) -> list[str]:
         """Surface stuck / in-flight work on this draft (Fix A): the open
