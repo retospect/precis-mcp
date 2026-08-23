@@ -144,7 +144,7 @@ def _project_draft(store: Store, ancestor_ids: list[int]) -> dict[str, str] | No
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT r.ref_id, r.slug, r.title FROM links l
+            SELECT l.src_ref_id FROM links l
               JOIN refs r ON r.ref_id = l.src_ref_id
              WHERE l.dst_ref_id = ANY(%s) AND l.relation = 'draft-of'
                AND r.deleted_at IS NULL
@@ -154,9 +154,15 @@ def _project_draft(store: Store, ancestor_ids: list[int]) -> dict[str, str] | No
         ).fetchone()
     if row is None:
         return None
-    rid, slug, title = row
+    # ``refs`` has no ``slug`` column — the agent-facing slug lives in
+    # ``ref_identifiers`` and only the Ref mapper knows how to source it,
+    # so resolve the row instead of projecting a column that isn't there.
+    rid = int(row[0])
+    doc = store.fetch_refs_by_ids([rid]).get(rid)
+    slug = getattr(doc, "slug", None) if doc is not None else None
+    title = (getattr(doc, "title", None) or "").split("\n", 1)[0][:120]
     return {
-        "title": (title or "").split("\n", 1)[0][:120] or f"draft #{rid}",
+        "title": title or f"draft #{rid}",
         "url": f"/smartdraft/{slug or rid}",
     }
 
