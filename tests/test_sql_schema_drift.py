@@ -8,10 +8,16 @@ Real regressions this guard reproduces (all fixed 2026-06-19):
 * ``cli/dedupe.py`` — ``SELECT id, slug FROM refs`` (now ``ref_id`` + ``ref_identifiers``).
 * ``utils/bib_gen.py`` — ``src.slug`` on ``refs`` (slug moved to ``ref_identifiers``).
 * ``cli/maintenance.py`` — ``_VACUUM_TABLES`` listing pre-v2 phantom tables.
+* ``precis_web/routes/asks.py`` — ``r.slug`` on ``refs`` again, 500-ing
+  ``/needs-you`` in prod (fixed a4775105). This one shipped *because* the
+  guard's scan root stopped at ``src/precis``: ``tests/precis_web`` runs
+  against a ``FakeStore`` that never parses SQL, so nothing else was
+  checking web-route queries against a real schema.
 
 Mechanism
 ---------
-AST-walk ``src/precis`` for ``.execute()`` / ``.executemany()`` calls whose
+AST-walk ``src/precis`` + ``src/precis_web`` for ``.execute()`` /
+``.executemany()`` calls whose
 SQL argument is *statically reconstructable* — a string literal, ``+``- or
 implicitly-concatenated literals, a module-level string constant, or an
 f-string whose interpolations all resolve to module-level string constants
@@ -48,7 +54,12 @@ import pytest
 from precis.store import Store
 
 SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
-PRECIS_ROOT = SRC_ROOT / "precis"
+#: Packages scanned for static SQL. ``precis_web`` is here for a reason: its
+#: own test suite runs against a ``FakeStore`` that never parses SQL, so a
+#: route naming a dead column is green there and 500s in prod — which is
+#: exactly how ``routes/asks.py`` shipped a ``refs.slug`` reference
+#: (fixed a4775105). This guard is that suite's only schema check.
+SCAN_ROOTS = (SRC_ROOT / "precis", SRC_ROOT / "precis_web")
 
 # SQLSTATE codes that mean "the schema object this SQL names does not exist".
 _DRIFT_CODES = {
@@ -162,7 +173,7 @@ def _collect_file(path: Path, ext: Extraction, consts: dict[str, str]) -> None:
     except (SyntaxError, UnicodeDecodeError):
         return
 
-    rel = str(path.relative_to(PRECIS_ROOT))
+    rel = str(path.relative_to(SRC_ROOT))
 
     # *_TABLES collections of string literals -> validate as table names.
     for stmt in tree.body:
@@ -200,7 +211,10 @@ def _collect_file(path: Path, ext: Extraction, consts: dict[str, str]) -> None:
 
 def _extract_all() -> Extraction:
     paths = [
-        p for p in sorted(PRECIS_ROOT.rglob("*.py")) if "/migrations/" not in str(p)
+        p
+        for root in SCAN_ROOTS
+        for p in sorted(root.rglob("*.py"))
+        if "/migrations/" not in str(p)
     ]
     # First pass: gather every module-level string constant across the package
     # so cross-module references (e.g. finding.py interpolating _mappers'
@@ -264,6 +278,15 @@ def test_static_sql_resolves_against_schema(
         f"extracted only {len(explainable)} explainable queries — "
         "extractor likely broke"
     )
+    # Per-root floor: the aggregate above is dominated by ``precis``, so a
+    # scan root that silently stops contributing (a moved package, a bad
+    # rglob) would still clear it. Each root is asserted separately so the
+    # guard cannot quietly narrow back to where it was when the
+    # ``precis_web`` ``r.slug`` bug slipped through.
+    for root in SCAN_ROOTS:
+        pkg = root.name
+        n = sum(1 for q in explainable if q.file.split("/", 1)[0] == pkg)
+        assert n >= 20, f"only {n} explainable queries from {pkg}/ — root not scanned?"
 
     dsn = store.dsn
     assert dsn is not None
