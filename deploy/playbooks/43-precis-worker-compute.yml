@@ -34,12 +34,14 @@
 # arbitrated the same way) — the collapse folded the PROFILES onto one unit,
 # but a compute lane is a THROUGHPUT concern, orthogonal to profile.
 #
-# SCOPE / DEPENDENCIES. `inference` group only (the GPU node; topology.yml
-# precis_capabilities.autocatpath / .dft both resolve to it). This playbook does
-# NOT provision — it deliberately rides 20b's work and MUST run after it:
-#   * the worker venv (/opt/precis/venv) is created + kept current by 20b
+# SCOPE / DEPENDENCIES. `compute` group (every target_node-pinned GPU-job
+# claimant: inference + the repurposed serving pair; topology.yml
+# precis_capabilities.autocatpath resolves to the same set). This playbook does
+# NOT provision — it deliberately rides prior provisioning and MUST run after:
+#   * the worker venv (/opt/precis/venv) is created + kept current by 20b on
+#     inference nodes and 20c on serving nodes — same provision role
 #     (running this standalone on an unprovisioned node crash-loops the unit
-#     until 20b runs — acceptable for a satellite lane);
+#     until one of those runs — acceptable for a satellite lane);
 #   * the feature env drop-ins /etc/precis/autocatpath.env + /etc/precis/dft.env
 #     are rendered by roles/autocatpath + roles/dft — the SAME files the
 #     collapsed worker sources via its precis-worker.service.d/ drop-ins, so
@@ -79,7 +81,13 @@
 #      45-restart storm ran with no limiter effectively active).
 
 - name: Deploy the dedicated GPU/compute worker lane (job_ssh_node only)
-  hosts: inference
+  # `compute` = every node that claims target_node-pinned GPU jobs (the
+  # multi-GPU catpath fan-out: inference + the repurposed serving pair). The
+  # union keeps this play matching `inference` on an inventory that predates
+  # the `compute` group (ansible warns on the unknown name and proceeds).
+  # The venv this lane rides is provisioned by 20b on inference nodes and
+  # 20c on serving nodes — same precis_worker/provision role either way.
+  hosts: compute:inference
   become: true
   vars:
     # Kept in sync with roles/precis_worker/defaults/main.yml — this playbook

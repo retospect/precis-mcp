@@ -3432,6 +3432,55 @@ class TestDispatchAutocatpath:
         assert params["force_backend"] != "emt"  # routed → the config's own backend
         assert params["config"]["mlip"]["device"] == "cuda"
 
+    def test_multi_gpu_hosts_fan_seeds_round_robin(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Every host advertising a live ``gpu`` slot participates: the seed
+        fan-out round-robins across the sorted host list instead of pinning
+        the whole tree to the first-sorted host, and the (cheap) aggregate
+        pins to that first host."""
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
+        store.sync_host_resource_slots("castor", {"gpu": 1})
+        store.sync_host_resource_slots("pollux", {"gpu": 1})
+        store.sync_host_resource_slots("spark", {"gpu": 1})
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        seed_jobs = self._seed_jobs(store, sid)
+        targets = [(j.get("params") or {})["target_node"] for _id, j in seed_jobs]
+        # default fan-out: 3 seeds × 1 model — one per host, sorted order
+        assert targets == ["castor", "pollux", "spark"]
+        for _id, jmeta in seed_jobs:
+            params = jmeta.get("params") or {}
+            assert params["force_backend"] != "emt"  # every seed stays routed
+            assert params["config"]["mlip"]["device"] == "cuda"
+        # the aggregate todo pins to the first routed host
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT meta FROM refs
+                 WHERE parent_id = %s AND kind = 'todo' AND deleted_at IS NULL
+                """,
+                (sid,),
+            ).fetchone()
+        assert (row[0]["params"] or {})["target_node"] == "castor"
+
+    def test_env_pin_accepts_comma_separated_node_list(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The env pin accepts a comma-separated list and round-robins the
+        fan-out across it in the operator's order, without consulting
+        resource_slots."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark, castor")
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        targets = [
+            (j.get("params") or {})["target_node"]
+            for _id, j in self._seed_jobs(store, sid)
+        ]
+        assert targets == ["spark", "castor", "spark"]
+
     def test_null_route_raises_on_multihost_cluster_without_gpu(
         self, store: Any, monkeypatch: Any
     ) -> None:

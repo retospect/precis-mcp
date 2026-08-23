@@ -134,7 +134,13 @@ class PathwayHandler(Handler):
                 ),
             )
 
-        route_node = os.environ.get(_ROUTE_NODE_ENV) or None
+        # The env renders as the full autocatpath capability list since the
+        # multi-node fan-out (comma-separated). This surface mints ONE
+        # explore job, so it pins to the first entry — the raw string would
+        # match no worker's PRECIS_NODE and wedge the job unclaimed forever.
+        env_route = os.environ.get(_ROUTE_NODE_ENV) or ""
+        route_nodes = [n.strip() for n in env_route.split(",") if n.strip()]
+        route_node = route_nodes[0] if route_nodes else None
         # Routed: run the config's own backend on the pinned node. In-process:
         # force EMT (the gateway has no ML backend, keeps the put cheap).
         force = None if route_node else "emt"

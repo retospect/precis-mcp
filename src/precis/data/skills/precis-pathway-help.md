@@ -53,7 +53,7 @@ re-preview. Nothing is computed until you drop `mode='preview'`.
 put(kind="pathway", id="no-nh3-pd", text="""...same config...""")
 ```
 
-Heavy backends run on the GPU node; a real run takes minutes. Re-running an
+Heavy backends run on the GPU nodes (the seed fan-out spreads across them); a real run takes minutes. Re-running an
 unchanged config is a cache hit (free); editing it recomputes only what changed.
 
 ## Read the objective / what's the rate-limiting step / how good is this path

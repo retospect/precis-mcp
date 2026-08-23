@@ -286,7 +286,7 @@
           'PRECIS_CARD_FORGE_AUTONOMY': precis_card_forge_autonomy | default('act'),
         }
         | combine(
-          {'PRECIS_AUTOCATPATH_ROUTE_NODE': (precis_capabilities.autocatpath | first)}
+          {'PRECIS_AUTOCATPATH_ROUTE_NODE': (precis_capabilities.autocatpath | join(','))}
           if ((precis_capabilities.autocatpath | default([])) | length > 0) else {}
         )
         | combine(

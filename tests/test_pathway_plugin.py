@@ -749,6 +749,33 @@ def test_put_dispatches_job_when_route_node_set(
     assert jmeta["params"]["target_node"] == "spark"
 
 
+def test_put_route_node_env_list_pins_first_node(
+    pathway_store: Store,
+    register_autocatpath_explore: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The multi-node deploy renders the env as the comma-joined capability
+    list; this single-job surface must pin the FIRST node — the raw CSV
+    string would match no worker's ``PRECIS_NODE`` and wedge unclaimed."""
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark, castor, pollux")
+    hub = Hub(store=pathway_store)
+    h = _try(PathwayHandler, hub=hub)
+    assert h is not None
+
+    h.put(id="route_list_test", text=SMOKE)
+    ref = pathway_store.get_ref(kind="pathway", id="route-list-test")
+    assert ref is not None
+    assert ref.meta["route_node"] == "spark"
+
+    with pathway_store.pool.connection() as c:
+        rows = c.execute(
+            "SELECT meta FROM refs WHERE kind='job' AND parent_id=%s "
+            "AND deleted_at IS NULL",
+            (ref.id,),
+        ).fetchall()
+    assert rows and rows[0][0]["params"]["target_node"] == "spark"
+
+
 def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
     """The `autocatpath_explore` job dispatch (what ssh_node runs) computes +
     writes back onto the pathway ref."""

@@ -176,7 +176,7 @@
     {% endif %}
     {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
     <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
-    <string>{{ precis_capabilities.autocatpath | first }}</string>
+    <string>{{ precis_capabilities.autocatpath | join(',') }}</string>
     {% endif %}
     {# diagram_propose autonomous drawer — agentic path (claude_inproc). #}
     <key>PRECIS_DIAGRAM_AGENTIC</key>

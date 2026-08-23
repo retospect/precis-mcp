@@ -514,8 +514,10 @@ def dispatch_relax(
     return f"relax[{fidelity}] dispatched for {ref.slug}"
 
 
-#: Env pin for the node that runs autocatpath (has the plugin + an ML backend). When
-#: unset the job routes nowhere special and force-EMT keeps an in-process demo cheap.
+#: Env pin for the node(s) that run autocatpath (have the plugin + an ML backend).
+#: Comma-separated list → the seed fan-out round-robins across them. When unset
+#: the routed set comes from the `gpu` resource_slots map; no GPU hosts at all →
+#: force-EMT keeps an in-process demo cheap.
 _AUTOCATPATH_ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 
 
@@ -998,16 +1000,22 @@ def dispatch_autocatpath(
     except Exception as e:
         return f"autocatpath dispatch failed for {ref.slug}: export ({e})"
 
-    node = os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or None
-    # Env unset → resolve the GPU node from the runtime capability map rather
+    env_route = os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or ""
+    # The env pin accepts a comma-separated list; a single value keeps the old
+    # one-node contract.
+    nodes = [n.strip() for n in env_route.split(",") if n.strip()]
+    # Env unset → resolve the GPU node(s) from the runtime capability map rather
     # than degrading to an unrouted EMT job (gr172886). The env-set path (the
     # coordinator daemon) never touches resource_slots, so this adds no new
-    # dependency to it.
-    if node is None:
+    # dependency to it. EVERY host advertising a live `gpu` slot participates:
+    # the seed fan-out below round-robins across them — safe because seed
+    # partials land on each job's own DB meta and the aggregate combines them
+    # via SQL, never node-local disk.
+    if not nodes:
         slots = store.all_resource_slots()
         gpu_hosts = {s.host for s in slots if s.resource == "gpu" and s.capacity > 0}
         if gpu_hosts:
-            node = sorted(gpu_hosts)[0]
+            nodes = sorted(gpu_hosts)
         elif len({s.host for s in slots}) > 1:
             # A real multi-node cluster with no GPU advertised is a prod
             # misconfiguration — minting anyway would silently run junk EMT
@@ -1023,6 +1031,10 @@ def dispatch_autocatpath(
                 f"Set {_AUTOCATPATH_ROUTE_NODE_ENV} or fix the GPU host's "
                 "heartbeat/resource_slots."
             )
+    # `node` stays the routed/unrouted discriminator (backend + device policy)
+    # and pins the cheap aggregate; the per-seed target is assigned in the
+    # mint loop below.
+    node = nodes[0] if nodes else None
     # Routed → run the config's own backend on the pinned node; unrouted → EMT
     # (an in-process demo has no ML backend). An explicit override wins either way.
     force = force_backend or (None if node else "emt")
@@ -1140,7 +1152,16 @@ def dispatch_autocatpath(
 
         minted = 0
         for model_index in range(len(specs)):
-            for seed in seeds:
+            for seed_idx, seed in enumerate(seeds):
+                # Round-robin the fan-out across every routed GPU host —
+                # position-keyed (not minted-count) so a re-dispatch assigns
+                # the same node to the same (model, seed) cell regardless of
+                # which cells were skipped as already-handled.
+                seed_node = (
+                    nodes[(model_index * len(seeds) + seed_idx) % len(nodes)]
+                    if nodes
+                    else None
+                )
                 skey = _autocatpath_seed_content_key(
                     run_config, slab_extxyz, seed, model_index
                 )
@@ -1180,7 +1201,7 @@ def dispatch_autocatpath(
                         "model_index": model_index,
                         "force_backend": force,
                         "content_key": skey,
-                        "target_node": node,
+                        "target_node": seed_node,
                         # Provenance only: lets the seed job stamp its own
                         # meta.pathway_ref so the pathway page's run-job links
                         # reach the per-seed run_log chunks, not just the

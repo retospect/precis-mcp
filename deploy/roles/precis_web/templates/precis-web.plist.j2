@@ -62,7 +62,7 @@
     <string>1</string>
     {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
     <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
-    <string>{{ precis_capabilities.autocatpath | first }}</string>
+    <string>{{ precis_capabilities.autocatpath | join(',') }}</string>
     {% endif %}
     {% endif %}
     {% if inventory_hostname in (precis_capabilities.chem_plugin | default([])) %}
