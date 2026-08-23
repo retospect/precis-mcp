@@ -3695,6 +3695,55 @@ def test_gripes_page_renders_empty(client) -> None:
     assert "0 live" in resp.text
 
 
+def test_gripes_list_carries_the_filing_form(client) -> None:
+    resp = client.get("/gripes")
+    assert resp.status_code == 200
+    assert 'action="/gripes"' in resp.text
+    assert 'name="text"' in resp.text
+    assert "File gripe" in resp.text
+
+
+def test_gripes_filing_dispatches_put_and_redirects(runtime, client) -> None:
+    """The create path: ``put`` with no id, text carrying the attribution."""
+    resp = client.post(
+        "/gripes",
+        data={"text": "the slug error suggests nothing"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/gripes"
+    verb, args = runtime.calls[-1]
+    assert verb == "put"
+    assert args["kind"] == "gripe"
+    assert "id" not in args
+    # Complaint first (it becomes the list preview), attribution last.
+    assert args["text"].startswith("the slug error suggests nothing")
+    assert args["text"].endswith("via the /gripes web form")
+
+
+def test_gripes_filing_names_the_gate_as_off_when_it_is(runtime, client) -> None:
+    """No gate ⇒ no identity — the text says so rather than guessing one.
+
+    The shared fixture runs with ``auth_required`` off; the signed-in
+    case is ``test_gripes_filing.py``, which drives the real gate.
+    """
+    client.post("/gripes", data={"text": "friction"}, follow_redirects=False)
+    assert "filed by unknown (HTTP auth disabled)" in runtime.calls[-1][1]["text"]
+
+
+def test_gripes_filing_blank_is_a_noop_redirect(runtime, client) -> None:
+    resp = client.post("/gripes", data={"text": "   "}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert runtime.calls == []
+
+
+def test_gripes_filing_surfaces_handler_error(runtime, client) -> None:
+    runtime.error_verbs.add("put")
+    resp = client.post("/gripes", data={"text": "friction"}, follow_redirects=False)
+    assert resp.status_code == 400
+    assert "invalid put" in resp.text
+
+
 def test_gripes_detail_renders_body_and_comments(client) -> None:
     resp = client.get("/gripes/96")
     assert resp.status_code == 200

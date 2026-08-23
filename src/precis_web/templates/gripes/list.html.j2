@@ -22,6 +22,30 @@
   <span class="text-sm text-slate-500">{{ total }} {{ status }}</span>
 </div>
 
+{# File a gripe. Collapsed by default so the queue stays the page's
+   subject; open=false costs one click and keeps the triage view intact.
+   The attribution line the route appends is previewed here so nobody is
+   surprised their login lands in the body text. #}
+<details class="mb-5 rounded-md border border-slate-200 bg-white">
+  <summary class="cursor-pointer select-none px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+    File a gripe
+  </summary>
+  <form method="post" action="/gripes" class="space-y-2 border-t border-slate-100 px-4 py-3">
+    <textarea name="text" rows="4" required
+              placeholder="What broke, what you expected, and how to hit it again…"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+    <div class="flex flex-wrap items-center gap-3">
+      <button class="rounded-md bg-violet-600 text-white text-sm px-4 py-2 hover:bg-violet-700">
+        File gripe
+      </button>
+      <span class="text-[12px] text-slate-400">
+        Filed as <span class="font-mono">{{ filed_by }}</span> — the body is immutable once
+        filed, so corrections go in a comment.
+      </span>
+    </div>
+  </form>
+</details>
+
 {% if not groups %}
   <div class="rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
     {% if status == 'wontfix' %}
@@ -29,7 +53,7 @@
     {% elif status == 'all' %}
     ✓ No gripes filed yet.
     {% else %}
-    ✓ No live gripes. File friction as you hit it —
+    ✓ No live gripes. File friction as you hit it — use the form above, or
     <span class="font-mono">put(kind='gripe', text='…')</span>.
     {% endif %}
   </div>

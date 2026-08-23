@@ -11,7 +11,11 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 * ``GET /gripes`` — live gripes (default: everything but the terminal
   ``STATUS:done`` / ``STATUS:wontfix``), grouped by status,
   workflow-stage then recency ordered. ``?status=wontfix`` /
-  ``?status=all`` widen the view.
+  ``?status=all`` widen the view. Carries the filing form.
+* ``POST /gripes`` — ``put`` verb create. The filed text gets an
+  attribution line naming the signed-in user appended to it (see
+  ``_attribute``): a gripe's stored text *is* its whole record, and
+  the human who hit friction is the one worth going back to.
 * ``GET /gripes/{id}`` — body + append-only comment timeline, a
   comment box, and the status controls.
 * ``POST /gripes/{id}/status`` — ``tag`` verb, closed ``STATUS:`` axis
@@ -34,6 +38,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
 from precis.errors import NotFound
+from precis_web.auth import current_user
 from precis_web.deps import (
     await_dispatch,
     get_store,
@@ -141,6 +146,30 @@ def _prio_of(tags: Any) -> str | None:
     return None
 
 
+def _filed_by(request: Request) -> str:
+    """Who the attribution line should name.
+
+    ``current_user`` returns ``None`` when the gate never ran
+    (``PRECIS_WEB_AUTH`` off) — which is *not* "anonymous", it's "nobody
+    knows who this is" (see ``auth.py::current_user``). Say that in the
+    text rather than inventing a name: a gripe attributed to a guess is
+    worse than one that admits the server wasn't checking.
+    """
+    user = current_user(request)
+    return user.login if user is not None else "unknown (HTTP auth disabled)"
+
+
+def _attribute(text: str, who: str) -> str:
+    """Append the ``— filed by …`` line to a gripe body.
+
+    Appended, not prefixed: a gripe's ``ref.title`` is the filed text
+    verbatim and the list preview is its *first* line
+    (``_title_preview``), so a leading attribution would push the actual
+    complaint out of every row.
+    """
+    return f"{text.strip()}\n\n— filed by {who} via the /gripes web form"
+
+
 def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     """Live gripes with their STATUS/PRIO tags, workflow- then recency-sorted.
 
@@ -224,7 +253,26 @@ async def gripes(request: Request, status: str = "live") -> HTMLResponse:
             "status": status,
             "groups": _group_by_status(rows),
             "total": len(rows),
+            "filed_by": _filed_by(request),
         },
+    )
+
+
+@router.post("", response_model=None)
+async def file_gripe(request: Request, text: str = Form(...)) -> Response:
+    """File a new gripe via ``put`` (no id — the create path).
+
+    Blank text is a no-op redirect, mirroring the comment route: an
+    empty gripe carries nothing to triage.
+    """
+    if not text.strip():
+        return RedirectResponse(url="/gripes", status_code=303)
+    return await redirect_or_error(
+        request,
+        "put",
+        {"kind": "gripe", "text": _attribute(text, _filed_by(request))},
+        redirect="/gripes",
+        error_title="Filing error",
     )
 
 

@@ -71,8 +71,11 @@ unchanged.
 
 **Gripes workbench (`/gripes`)** — ``routes/gripes.py``: list grouped by
 ``STATUS`` (closed vocab ``open → triaged → ready_for_fix → in_review →
-wontfix``), detail + comment timeline, and ``retire`` (soft-delete, the
-"fix landed" resolution, distinct from ``wontfix``).
+wontfix``), a filing form, detail + comment timeline, and ``retire``
+(soft-delete, the "fix landed" resolution, distinct from ``wontfix``).
+Filing appends ``— filed by <login> …`` to the text: the gripe body is
+the whole record, and gripes filed from the browser come from a *human*
+worth going back to, unlike the agent-filed ones.
 
 **Manual (`/manual`)** — ``routes/manual.py``: the *user*-facing manual
 (how to write a paper, publish a claim, clear a figure, watch a quest
