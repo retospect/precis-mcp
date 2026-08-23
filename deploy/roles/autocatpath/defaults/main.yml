@@ -26,6 +26,21 @@ autocatpath_worker_user: deploy
 # same HOME or the daemon won't find the warmed weights.
 autocatpath_worker_home: /var/lib/precis
 
+# ── private-wheel override (pre-PyPI engine releases) ──────────────────────
+# Host-side wheelhouse: any `autocatpath-*.whl` sitting here (newest by name
+# wins) is installed OVER the constraints-pinned engine after the extras
+# install, every run — so an unpublished engine release can serve fleet-wide
+# without touching the PyPI pin, and SURVIVES redeploys (the wheel lives on
+# the host; the constraints pin would otherwise silently revert it, the exact
+# wipe that voided the 0.14 re-scores). Once the version is on PyPI and the
+# precis pin bump ships, DELETE the wheel(s) from every host — a lingering
+# wheel pins the venv to its exact version over any newer published pin.
+autocatpath_wheelhouse: /opt/precis/wheels
+# Optional controller-side wheel to push into the wheelhouse this run:
+#   ansible-playbook playbooks/44-autocatpath.yml \
+#     -e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.17.0-py3-none-any.whl
+autocatpath_wheel: ""
+
 # The precis-mcp extra to install, derived from the topology in ONE expression:
 # 'catalyst-gpu' (→ autocatpath[mace], the torch/MACE backend) on autocatpath_mace
 # nodes; else 'catalyst' (→ pure autocatpath, EMT-only, dependency-light). Exactly

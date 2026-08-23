@@ -34,24 +34,36 @@ over once catpath 0.17 exists.
 
 ## In scope — ordered checklist
 
-1. **Cut a catpath release >= 0.17.0** from green CI: `gh release create` in
-   the `retospect/catpath` repo, OIDC-published to PyPI (catpath's install
-   channel is release-gated, not a raw git dependency — see
-   `docs/backlog/autocatpath-0141-pin-bump.md`'s note on this for the prior
-   pin bump). Confirm the release actually carries `run_kinetics` /
-   `_kinetics_scalars` (the s3 harvest keys `_AUTOCATPATH_SUMMARY_REV` in
-   `precis/quest/compute.py` already expects) before proceeding.
-2. **Bump the precis pin** in `pyproject.toml`: `autocatpath>=0.13.0` →
-   `>=0.17.0` in BOTH the `catalyst` extra (~line 311) and the
-   `catalyst-gpu` extra's `autocatpath[mace]>=0.13.0` (~line 321). Ship
-   normally (`/land` or `/go`) — the gate container resolves the new pin,
-   no PyPI dependency for catpath itself since the extras name it directly.
-3. **Deploy the code**: `scripts/deploy` (cluster venvs — the engine-side
-   `catalyst`/`catalyst-gpu` extras) AND
-   `ansible-playbook deploy/playbooks/44-autocatpath.yml` (spark's GPU
-   engine venv — NOT covered by `redeploy-precis.yml`, same two-step shape
-   as every prior autocatpath version bump, see `catpath-dev-deploy` in
-   memory).
+> **Interim channel (2026-08-23): private wheel, no PyPI.** catpath stays
+> private for now, and its auto-publish is OFF anyway (a GitHub release does
+> NOT reach PyPI; publishing is a manual `workflow_dispatch` of
+> `workflow.yml` with a typed version confirm). Until publication, 0.17.0
+> reaches the sparks as a locally-built wheel (`uv build` in `~/catpath`)
+> via the `roles/autocatpath` wheelhouse (`/opt/precis/wheels` on each
+> host — installed over the constraints pin every run, survives redeploys;
+> see `deploy/roles/autocatpath/defaults/main.yml`). Steps 1–2 below are
+> DEFERRED to publication time; step 3's playbook-44 half runs now with
+> `-e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.17.0-py3-none-any.whl`.
+
+1. **(Deferred until publication) Publish catpath >= 0.17.0 to PyPI** from
+   green CI: manual `gh workflow run workflow.yml -R retospect/catpath -f
+   confirm=0.17.0` (OIDC trusted publishing; uploads both `autocatpath` and
+   the `catpath` alias). CI lint was fixed green at catpath `0092f96`.
+2. **(Deferred until publication) Bump the precis pin** in `pyproject.toml`:
+   `autocatpath>=0.13.0` → `>=0.17.0` in BOTH the `catalyst` extra (~line
+   311) and the `catalyst-gpu` extra's `autocatpath[mace]>=0.13.0` (~line
+   321), re-lock, ship. CANNOT ship while the package is private — `uv lock`
+   has to resolve the pin from PyPI. After this ships + deploys, DELETE the
+   wheelhouse wheels (`/opt/precis/wheels/autocatpath-*.whl` on spark/
+   castor/pollux) — a lingering wheel overrides any newer published pin.
+3. **Deploy the code**: `scripts/deploy` (cluster venvs + melchior — the
+   dispatch/harvest side of s3 lives in precis, so melchior needs it) AND
+   `ansible-playbook playbooks/44-autocatpath.yml` from the synced main
+   tree's `deploy/` (sparks' worker venvs: reinstalls precis-mcp@main +
+   engine; NOT covered by `redeploy-precis.yml` — `catpath-dev-deploy` in
+   memory). First wheel run adds
+   `-e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.17.0-py3-none-any.whl`;
+   later runs pick the wheelhouse copy up automatically.
 4. **Prod write — update qu164903's rubric** (Reto only, per
    `prod-mutation-needs-user-permission`; an agent prepares the exact
    one-off CLI/SQL and hands it over, does not run it):
@@ -100,6 +112,10 @@ over once catpath 0.17 exists.
   and the frontier hub (`/refs/quest/164903`) plots the new axes by
   default (no `?fx=&fy=` override needed).
 - The quest's dispatch is un-suspended and ticking again.
+- Fan-out proven (the last unproven piece of the 3-spark cutover): fresh
+  `autocatpath_seed` jobs spread across spark/castor/pollux — check
+  `target_node` distribution on new rows (`kind='job'`,
+  `meta->>'job_type'='autocatpath_seed'`, `deleted_at IS NULL`).
 
 ## Target + blast radius
 
@@ -109,8 +125,12 @@ quest), `deploy/group_vars/all.yml` (`precis_suspended_job_types`),
 
 ## Open questions / decisions log
 
-- Whether `reaction_config` needs explicit kinetics conditions (T,
-  pressures) added for qu164903, or whether `run_kinetics` derives
-  reasonable defaults from the existing config — resolve against
-  `precis_pathway.runner.run_kinetics`'s actual signature once catpath
-  0.17 lands, before step 4.
+- ~~Whether `reaction_config` needs explicit kinetics conditions~~ —
+  RESOLVED (2026-08-23, against catpath 0.17.0's `config.py`): no.
+  `ConditionsConfig` defaults to standard conditions (298.15 K; every
+  unlisted gas sits at the 1 bar reference) and `KineticsConfig` defaults
+  are sane (sticking 1.0, product = the run's `target`), so
+  `kinetics.solve` runs on the existing `reaction_config` unchanged. It
+  emits a stated warning that the product pressure defaults to the 1 bar
+  reference — acceptable: the frontier ranks candidates *comparatively*
+  at identical conditions. Skip the optional half of step 4.

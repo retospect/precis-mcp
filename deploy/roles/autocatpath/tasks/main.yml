@@ -69,6 +69,53 @@
   become: true
   changed_when: false
 
+# ── private-wheel override (see defaults/main.yml) ─────────────────────────
+# Runs AFTER both constraints-pinned installs above so the wheel's version is
+# what the venv ends on; deps resolve unconstrained (the engine's runtime deps
+# are the stable scientific stack, already present from the pinned install).
+- name: Ensure the autocatpath wheelhouse
+  ansible.builtin.file:
+    path: "{{ autocatpath_wheelhouse }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Push the controller-side autocatpath wheel into the wheelhouse
+  when: autocatpath_wheel | length > 0
+  ansible.builtin.copy:
+    src: "{{ autocatpath_wheel }}"
+    dest: "{{ autocatpath_wheelhouse }}/"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Find private autocatpath wheels in the wheelhouse
+  ansible.builtin.find:
+    paths: "{{ autocatpath_wheelhouse }}"
+    patterns: "autocatpath-*.whl"
+  register: autocatpath_wheelhouse_wheels
+  become: true
+
+- name: Install the newest wheelhouse wheel over the constraints pin
+  when: autocatpath_wheelhouse_wheels.files | length > 0
+  vars:
+    # Lexicographic newest — fine while the wheelhouse holds one stopgap
+    # wheel at a time; clean out old wheels rather than relying on this sort.
+    autocatpath_wheel_newest: >-
+      {{ (autocatpath_wheelhouse_wheels.files | map(attribute='path') | sort | last) }}
+  ansible.builtin.shell: |
+    {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python \
+      '{{ autocatpath_wheel_newest }}'
+  become: true
+  register: autocatpath_wheel_install
+  changed_when: >-
+    'Installed' in (autocatpath_wheel_install.stdout + autocatpath_wheel_install.stderr)
+    or 'Updated' in (autocatpath_wheel_install.stdout + autocatpath_wheel_install.stderr)
+  notify: restart precis-worker (autocatpath)
+
 # Pre-seed the MACE-MP-0 weights into the worker's cache. autocatpath's NEB gives
 # each image its own calculator, so the FIRST mace job loads the model N times
 # concurrently — and on a cold cache they race to download it and fail
