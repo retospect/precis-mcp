@@ -780,10 +780,17 @@ class DraftHandler(Handler):
         """Regex substitute (vi ``:%s/find/replace/``) across a scope's prose.
         ``sub`` is ``{'find':…, 'replace':…, 'flags':…}`` or a ``s/find/replace/``
         string. Dry-run by default (reports counts + a per-chunk before→after
-        sample); ``apply=True`` rewrites each chunk via the normal edit path
-        (re-embed / keywords / links cascade). Replacement is a Python regex
-        template, so ``\\1`` backreferences resolve. Table/figure chunks are
-        skipped (derived / blob text)."""
+        sample); ``apply=True`` rewrites each chunk via the normal edit path.
+
+        The re-embed / keywords / links cascade that follows is
+        **asynchronous** — ``edit_text`` only bumps ``content_sha``, and the
+        workers re-derive on the sha mismatch. Nothing here calls the
+        embedder, so a draft-wide substitution costs one UPDATE per chunk and
+        does NOT fan out embed requests on the request path (gripe 244419
+        diagnosed the MCP wedge as this path before reading it).
+
+        Replacement is a Python regex template, so ``\\1`` backreferences
+        resolve. Table/figure chunks are skipped (derived / blob text)."""
         find, replace, flags = self._parse_sub_expr(sub)
         rx = draft_regex.compile_pattern(find, flags)
         pairs, where = self._scope_chunks(scope, allow_all=False)
@@ -844,7 +851,10 @@ class DraftHandler(Handler):
             body += (
                 f"; skipped {len(skipped)} derived chunk(s) ({', '.join(skipped[:8])})"
             )
-        body += "\n\nEach edited chunk re-embeds; the original text is kept in chunk history."
+        body += (
+            "\n\nEach edited chunk re-embeds on the worker's next pass (not "
+            "inline); the original text is kept in chunk history."
+        )
         return Response(body=body)
 
     def _sub_dryrun(

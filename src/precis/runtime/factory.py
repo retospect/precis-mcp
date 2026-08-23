@@ -65,6 +65,8 @@ def _connect_store_or_raise(dsn: str, retry_seconds: float) -> Any:
 
 def build_runtime(
     config: PrecisConfig | None = None,
+    *,
+    interactive: bool = True,
 ) -> PrecisRuntime:
     """Construct a runtime, connecting the store if `config.database_url` is set.
 
@@ -75,6 +77,26 @@ def build_runtime(
     The active embedder is selected by `config.embedder`:
         ``"mock"``  → deterministic in-process (default; CI-safe)
         ``"bge-m3"`` → real `BAAI/bge-m3` via sentence-transformers
+
+    This is primarily the REQUEST-PATH composition root, so by default the
+    embedder it wires is built with the interactive budget
+    (``embedder_interactive_timeout`` / ``_max_retries``) and wrapped in
+    :class:`~precis.embedder.BoundedConcurrencyEmbedder`. Callers that
+    introspect ``hub.embedder``'s concrete type must unwrap via ``.inner``;
+    the wrapper forwards the whole ``Embedder`` Protocol, so structural
+    checks (``isinstance(e, Embedder)``) still hold.
+
+    Pass ``interactive=False`` for an unattended BULK pass that happens to
+    want a runtime — ``cli/taproot.py``'s ``backfill`` / ``direct-mint`` are
+    the ones in tree. Those loop over many chunks through
+    ``taproot/canon.py::block``, which embeds *unguarded*: on the
+    interactive budget a single transient embedder blip would abort the run
+    after ~31s and discard everything computed so far, where the patient
+    budget rides it out. They get ``embedder_timeout`` / ``_max_retries``
+    and no bulkhead.
+
+    ``precis worker`` never comes through here at all — it builds its own
+    via ``cli/worker.py::_resolve_embedder`` (gripe 244419).
 
     Caller owns the returned runtime; if it has a store, call
     `runtime.store.close()` before exit.
@@ -88,7 +110,11 @@ def build_runtime(
     """
     from precis.config import load_config
     from precis.dispatch import boot
-    from precis.embedder import Embedder, make_embedder
+    from precis.embedder import (
+        BoundedConcurrencyEmbedder,
+        Embedder,
+        make_embedder,
+    )
 
     if config is None:
         config = load_config()
@@ -133,13 +159,41 @@ def build_runtime(
         from precis import settings as _settings
 
         _settings.bind_store(store)
+        # Request-path budget, NOT the batch one (gripe 244419) — unless the
+        # caller declared itself a batch (``interactive=False``). A request
+        # path has a human or an agent waiting on the far end and reaches
+        # the embedder only for short query/card embeds; a bulk CLI pass has
+        # neither property and wants the patient budget instead.
+        # ``precis worker`` never comes through here at all — it builds its
+        # own via ``cli/worker.py::_resolve_embedder``.
         embedder = make_embedder(
             config.embedder,
             dim=store.embedding_dim(),
             url=config.embedder_url,
-            timeout=config.embedder_timeout,
-            max_retries=config.embedder_max_retries,
+            timeout=(
+                config.embedder_interactive_timeout
+                if interactive
+                else config.embedder_timeout
+            ),
+            max_retries=(
+                config.embedder_interactive_max_retries
+                if interactive
+                else config.embedder_max_retries
+            ),
         )
+        # ...and the bulkhead: bound how many of this process's threads can
+        # sit inside an embed at once, so a struggling embedder degrades
+        # semantic search instead of starving every OTHER verb of a thread.
+        # The timeout above bounds each wait; this bounds their number.
+        #
+        # Batch callers skip it. Shedding assumes the caller has a fallback
+        # (lexical-only) or a retry; a bulk pass like
+        # ``taproot/canon.py::block`` embeds unguarded and would abort the
+        # whole run, and it has no thread pool to protect in the first place.
+        if interactive:
+            embedder = BoundedConcurrencyEmbedder(
+                embedder, config.embedder_interactive_max_concurrency
+            )
 
     from precis import default_tags as _dt
     from precis.kind_gate import parse_disabled, parse_disabled_reasons

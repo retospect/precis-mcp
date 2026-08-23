@@ -757,7 +757,9 @@ def _run_backfill(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     if dsn:
         cfg = cfg.model_copy(update={"database_url": dsn})
-    runtime = build_runtime(cfg)
+    # Bulk unattended pass: ``canon.block()`` embeds unguarded per chunk,
+    # so take the patient batch budget + no shed (gripe 244419).
+    runtime = build_runtime(cfg, interactive=False)
     store = runtime.store
     embedder = getattr(runtime.hub, "embedder", None)
     if store is None:
@@ -1126,7 +1128,9 @@ def _run_direct_mint(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     if dsn:
         cfg = cfg.model_copy(update={"database_url": dsn})
-    runtime = build_runtime(cfg)
+    # Bulk unattended pass: ``canon.block()`` embeds unguarded per chunk,
+    # so take the patient batch budget + no shed (gripe 244419).
+    runtime = build_runtime(cfg, interactive=False)
     store = runtime.store
     embedder = getattr(runtime.hub, "embedder", None)
     if store is None:

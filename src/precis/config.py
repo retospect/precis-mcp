@@ -120,6 +120,76 @@ class PrecisConfig(BaseSettings):
     Set via ``PRECIS_EMBEDDER_MAX_RETRIES`` in the env.
     """
 
+    embedder_interactive_timeout: float = 15.0
+    """Per-call HTTP deadline (seconds) for the *request-path* embedder —
+    the one :func:`precis.runtime.factory.build_runtime` wires onto the hub
+    and every search verb's query embed goes through.
+
+    The batch budget above is deliberately patient, and on a request path
+    that patience is the bug (gripe 244419): ``embedder_timeout`` ×
+    (``embedder_max_retries`` + 1) is ~1800s, the seven verbs register as
+    plain sync callables so FastMCP runs each in an anyio worker thread,
+    and nothing sets ``current_default_thread_limiter`` — so ~40 such waits
+    exhaust the default pool and every subsequent call to that ``precis
+    serve`` queues for a thread, including a static ``get(kind='skill')``
+    that touches neither DB nor embedder. The observable is a process at 0%
+    CPU in state S with a clean ``pg_stat_activity``.
+
+    15s is chosen to clear a *cold* model without clearing a wedged one:
+    ``embedder_service`` unloads after ``idle_s`` (1800s) and the next
+    ``/embed`` pays a synchronous lazy reload, which for bge-m3 is ~7s. Two
+    attempts (see :attr:`embedder_interactive_max_retries`) bound the worst
+    case at ~31s including backoff, versus ~1800s before. Failing is cheap
+    here in a way it is not for a worker: ``utils/embed_query.py`` degrades
+    a failed query embed to lexical-only by design.
+
+    Set via ``PRECIS_EMBEDDER_INTERACTIVE_TIMEOUT`` in the env.
+    """
+
+    embedder_interactive_max_retries: int = 1
+    """Max retries per endpoint for the request-path embedder — see
+    :attr:`embedder_interactive_timeout`.
+
+    Low on purpose, and for the opposite reason to
+    :attr:`embedder_max_retries`. A worker retries patiently because
+    deferring a batch is expensive and there is nobody waiting. An
+    interactive caller has a fallback that is already correct (lexical-only)
+    and a human attached, and the embedder returns ``429`` past its
+    ``max_inflight=4`` admission gate — which ``RemoteEmbedder`` classifies
+    as retryable, so a patient retry budget under load turns N callers into
+    N × attempts of extra pressure on the thing that is already saturated.
+    One retry absorbs a single blip; beyond that, degrade.
+
+    Set via ``PRECIS_EMBEDDER_INTERACTIVE_MAX_RETRIES`` in the env.
+    """
+
+    embedder_interactive_max_concurrency: int = 4
+    """How many embeds one request-path process may have in flight at once
+    before it starts **shedding** them
+    (:class:`precis.embedder.BoundedConcurrencyEmbedder`).
+
+    The companion to :attr:`embedder_interactive_timeout`, and the other
+    half of gripe 244419. The timeout bounds how *long* one embed can park
+    an anyio worker thread; this bounds how *many* park at once. Without it
+    the wedge still reproduces, just faster to clear: enough simultaneous
+    slow embeds exhaust anyio's default 40-thread pool and every call to
+    that server — including embedder-free ones — queues behind them.
+
+    4 of 40 leaves ~90% of the pool for calls that never touch the
+    embedder, which is the property that matters: a static
+    ``get(kind='skill')`` must stay answerable while semantic search is
+    struggling. It also matches the service's own
+    ``PRECIS_EMBEDDER_MAX_INFLIGHT`` (4), so no single ``precis serve`` can
+    claim more than the whole service's admission budget.
+
+    Shedding is cheap here: a shed embed raises ``Upstream``, which every
+    request-path site already handles by degrading to lexical-only — and
+    which ``runtime/search.py`` additionally surfaces as a "degraded" hint
+    so the agent doesn't misread it as "no matches".
+
+    Set via ``PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY`` in the env.
+    """
+
     corpus_dir: str | None = None
     """Filesystem root of the ingested-PDF corpus, laid out as
     ``<corpus_dir>/<letter>/<cite_key>.pdf`` by ``precis watch``

@@ -131,7 +131,7 @@ def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
     """`PRECIS_EMBEDDER` selects the active embedder; mock is the default."""
     import os
 
-    from precis.embedder import MockEmbedder
+    from precis.embedder import BoundedConcurrencyEmbedder, MockEmbedder
     from precis.runtime import build_runtime
     from precis.store import Migrator
 
@@ -148,7 +148,12 @@ def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
         assert paper is not None
         assert rt.store is not None
         # Default: mock embedder. Real backend is opt-in via config.
-        assert isinstance(paper.embedder, MockEmbedder)
+        # ``build_runtime`` is the request-path composition root, so what
+        # the hub carries is the backend wrapped in the concurrency
+        # bulkhead (gripe 244419) — the wrapper forwards ``dim`` / ``model``
+        # and exposes the backend as ``.inner``.
+        assert isinstance(paper.embedder, BoundedConcurrencyEmbedder)
+        assert isinstance(paper.embedder.inner, MockEmbedder)
         assert paper.embedder.dim == rt.store.embedding_dim()
         rt.store.close()
     finally:

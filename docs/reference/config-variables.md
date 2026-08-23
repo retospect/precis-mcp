@@ -204,6 +204,27 @@ raised from 30 2026-08-10, embedder-wedge-hardening.md §5: a CPU-host
 embed batch can legitimately run past 30s, and a client timeout shorter
 than that hangs up on a still-computing batch, amplifying retries),
 `PRECIS_EMBEDDER_MAX_RETRIES` (5/3), `PRECIS_EMBEDDER_MAX_INFLIGHT` (4),
+`PRECIS_EMBEDDER_INTERACTIVE_TIMEOUT` (15) /
+`PRECIS_EMBEDDER_INTERACTIVE_MAX_RETRIES` (1) — the *request-path* pair,
+used only by `runtime/factory.py::build_runtime` (MCP server, precis_web,
+CLI tool paths); workers keep the patient pair above via
+`cli/worker.py::_resolve_embedder`. Split in response to gripe 244419: the
+patient budget's ~1800s worst case, taken on a thread FastMCP allocates
+per sync verb call, exhausts anyio's default 40-thread limiter and wedges
+the whole server. 15s clears a cold lazy reload (bge-m3 ~7s after
+`PRECIS_EMBEDDER_IDLE_S`) without clearing a wedged one; a failed query
+embed degrades to lexical-only by design (`utils/embed_query.py`),
+`PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY` (4) — the bulkhead half of
+the same fix (`embedder.py::BoundedConcurrencyEmbedder`): the timeout
+bounds how *long* one embed parks an anyio thread, this bounds how *many*
+park at once. Past the ceiling an embed is **shed**, not queued (queueing
+would hold the thread the bulkhead protects), raising `Upstream` — which
+every request-path site already degrades on, and which `runtime/search.py`
+surfaces as a "degraded to lexical-only" hint so a shed call isn't misread
+as "no matches". 4 of anyio's 40 leaves ~90% of the pool for verbs that
+never touch the embedder, and matches the service's own
+`PRECIS_EMBEDDER_MAX_INFLIGHT`. Workers are deliberately unwrapped, as
+are bulk CLI passes via `build_runtime(interactive=False)`.
 `PRECIS_STARTUP_SKILLS_CAP_KB` (50), `PRECIS_INPROC_CONCURRENCY` (1),
 `PRECIS_CLUSTER_INTERVAL_HOURS` (20), good-search knobs
 (`PRECIS_GOOD_SEARCH_*` — heartbeat 180, deadline 1200, slices 30, pool

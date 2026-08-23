@@ -8,6 +8,14 @@ a deterministic mock that never imports torch.
 The Protocol matches the runtime ``isinstance`` semantics provided by
 ``typing.runtime_checkable`` so handlers can accept ``Embedder`` and
 either backend transparently.
+
+Backends (``MockEmbedder`` / ``BgeM3Embedder`` / ``RemoteEmbedder``) come
+from :func:`make_embedder`. :class:`BoundedConcurrencyEmbedder` is a
+*decorator*, not a backend: it bounds how many embeds one process may
+have in flight and sheds past that. Only the request path wears it
+(``runtime/factory.py::build_runtime``); workers stay unwrapped and keep
+the patient ``embedder_timeout`` budget. See gripe 244419 for why the two
+paths must not share one budget.
 """
 
 from __future__ import annotations
@@ -23,7 +31,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Protocol, runtime_checkable
 
 from precis.embedder_wire import (
@@ -671,6 +680,122 @@ class RemoteEmbedder:
         delay = min(self._backoff_max, self._backoff_base * (2**attempt))
         # Full jitter — spreads retries from concurrent callers.
         self._sleep(random.uniform(0, delay))
+
+
+# ---------------------------------------------------------------------------
+# Bulkhead — bound how many threads one process can park inside an embed
+# ---------------------------------------------------------------------------
+
+
+class BoundedConcurrencyEmbedder:
+    """Wraps an `Embedder` so at most ``max_concurrency`` embeds are in
+    flight at once in this process, **shedding** rather than queueing past
+    that.
+
+    The second half of the gripe-244419 fix. Splitting the interactive
+    timeout budget (``PrecisConfig.embedder_interactive_timeout``) bounds
+    how *long* one request-path embed can park an anyio worker thread, but
+    not how *many* park at once: ``server.py`` registers the seven verbs as
+    plain sync callables, so FastMCP runs each in a thread, and nothing sets
+    ``current_default_thread_limiter``. Enough simultaneous slow embeds
+    still exhaust the default 40-thread pool, after which every call to that
+    ``precis serve`` queues for a thread — including a ``get(kind='skill')``
+    that touches neither DB nor embedder. The timeout split turned a wedge
+    needing ``kill`` + a human ``/mcp`` into a brownout; this bounds the
+    brownout's blast radius to the callers that actually wanted an embed.
+
+    **Sheds, never queues.** ``acquire(blocking=False)``: a caller that
+    can't get a slot raises immediately instead of waiting for one. Queueing
+    would hold the very thread this exists to protect — the wedge
+    reintroduced through a friendlier door.
+
+    **Raises ``Upstream``, not ``EmbedderUnavailable``.** Both are caught by
+    every request-path embed site, but only ``Upstream`` is *surfaced*:
+    ``runtime/search.py`` branches on it to emit a "semantic search degraded
+    to lexical-only, retry shortly" hint, so a shed request doesn't read as
+    a definitive "no matches" (the R2#2 finding that branch exists for), and
+    ``runtime/angle.py`` — purely semantic, no lexical leg — re-raises it as
+    a clean retryable error rather than a bare 500. The precedent is
+    :meth:`BgeM3Embedder._raise_if_warming`, which picks ``Upstream`` for
+    the same reason: a fast-fail guard in front of an embed, signalling
+    transient unavailability the agent should retry rather than a
+    misconfiguration.
+
+    Request-path only — :func:`precis.runtime.factory.build_runtime` applies
+    it. Workers deliberately go unwrapped: a worker pass *wants* to block on
+    a busy embedder (that patience is what ``embedder_timeout`` is for), it
+    has no thread pool to starve, and shedding there would just churn
+    claims.
+    """
+
+    def __init__(self, inner: Embedder, max_concurrency: int) -> None:
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
+        self._inner = inner
+        self._max_concurrency = max_concurrency
+        self._sem = threading.BoundedSemaphore(max_concurrency)
+
+    @property
+    def inner(self) -> Embedder:
+        """The wrapped embedder (exposed for tests + observability)."""
+        return self._inner
+
+    @property
+    def max_concurrency(self) -> int:
+        return self._max_concurrency
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    @property
+    def model(self) -> str:
+        return self._inner.model
+
+    def is_ready(self) -> bool:
+        return self._inner.is_ready()
+
+    def warmup(self) -> None:
+        # Ungated, matching ``BgeM3Embedder.warmup``'s bypass of its own
+        # warming gate: warmup runs on a background thread that is not the
+        # thread pool this protects, and making it sheddable would let the
+        # boot warm fail on the very contention it exists to prevent.
+        self._inner.warmup()
+
+    def unload(self) -> None:
+        # Idle-unload is the service's concern and never runs on the
+        # request path — no slot needed.
+        self._inner.unload()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        with self._slot(f"{len(texts)} text(s)"):
+            return self._inner.embed(texts)
+
+    def embed_one(self, text: str) -> list[float]:
+        # Delegates to the INNER ``embed_one``, not to ``self.embed`` — the
+        # latter would take a second slot for one logical embed, so a single
+        # caller could shed itself and N concurrent callers would consume
+        # 2N slots.
+        with self._slot("1 text"):
+            return self._inner.embed_one(text)
+
+    @contextmanager
+    def _slot(self, what: str) -> Iterator[None]:
+        if not self._sem.acquire(blocking=False):
+            from precis.errors import Upstream
+
+            raise Upstream(
+                f"embedder busy — {self._max_concurrency} embeds already in "
+                f"flight in this process, so this one ({what}) was shed "
+                "rather than queued; semantic search degraded to "
+                "lexical-only for this call",
+                next="retry shortly, or pass mode='lexical' for a "
+                "deterministic keyword-only pass",
+            )
+        try:
+            yield
+        finally:
+            self._sem.release()
 
 
 # ---------------------------------------------------------------------------
