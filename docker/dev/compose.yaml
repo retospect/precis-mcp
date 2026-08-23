@@ -8,10 +8,10 @@
 #
 #   scripts/test   → `compose --profile dev up -d --wait precis-test-db`
 #                    then `compose run --rm --no-deps -v <wt>:/app precis-dev …`
-#   scripts/ship   → same test-db, then the gate. It first tries a warm
-#                    `precis-gate` service (undefined here → it prints a
+#   scripts/ship   → same test-db, then the warm `precis-gate` service
+#                    below. If it can't come up healthy, ship prints a
 #                    WARNING and falls back to the per-run `precis-dev`
-#                    bind-mount, which is fine).
+#                    bind-mount, which is slower but correct.
 #   scripts/build-image precis-dev → `docker compose build precis-dev`
 #
 # Prod is remote (caspar, over SSH); nothing here touches it.
@@ -89,6 +89,64 @@ services:
       secrets:
         - gh_token
     working_dir: /app
+
+  # Warm gate container (scripts/ship). Long-lived across ships, and
+  # DELIBERATELY has no /app bind mount: ship tar-syncs `git archive HEAD`
+  # into this container's native overlay FS, so imports and collection run at
+  # native speed. Over the virtiofs bind mount 6+ xdist workers each re-read
+  # the whole tree and self-serialise to ~2x parallelism (the ~73s ceiling).
+  # Same image as precis-dev, so this costs no extra build. The image
+  # ENTRYPOINT is already tini, so `sleep infinity` runs as its child and
+  # signals are handled — no `init: true` needed.
+  #
+  # Caches live on a named volume under the image's own $HOME/.cache. That
+  # path EXISTS in the image owned by `precis`, so a fresh volume inherits
+  # that ownership; a volume mounted on a path absent from the image would be
+  # root-owned and unwritable by the exec user. They are deliberately NOT
+  # under /app, which sync_to_container wipes on every ship — keeping them
+  # outside is what makes mypy incremental across ships.
+  #
+  # PRECIS_TEST_PG_URL is set HERE because ship's warm path execs without
+  # passing TEST_DB_ENV (only the bind fallback passes it). Without this the
+  # warm gate would quietly gate against the host DB instead of the
+  # co-located RAM one. depends_on keeps that honest: if the test DB isn't
+  # healthy this service never becomes healthy, `up --wait` fails, and ship
+  # falls back to the bind gate rather than gating against a DB that moved.
+  #
+  # The healthcheck asserts what ship actually needs — /app and the cache dir
+  # WRITABLE by the exec user — so a container that starts but cannot be
+  # written to fails `--wait` and degrades to the bind gate, instead of
+  # stranding the ship in a half-usable warm container.
+  precis-gate:
+    image: precis-dev
+    working_dir: /app
+    command: ["sleep", "infinity"]
+    depends_on:
+      precis-test-db:
+        condition: service_healthy
+    environment:
+      PRECIS_TEST_PG_URL: postgresql://postgres@precis-test-db:5432/precis_test
+      MYPY_CACHE_DIR: /home/precis/.cache/mypy
+      RUFF_CACHE_DIR: /home/precis/.cache/ruff
+    volumes:
+      - gate-cache:/home/precis/.cache
+    healthcheck:
+      test:
+        - CMD
+        - sh
+        - -c
+        - >-
+          test -w /app && mkdir -p "$$MYPY_CACHE_DIR" "$$RUFF_CACHE_DIR"
+          && test -w "$$MYPY_CACHE_DIR"
+      interval: 2s
+      timeout: 10s
+      retries: 20
+
+volumes:
+  # Compose namespaces this by project name, and scripts/ship derives the
+  # project from the worktree — so sibling worktrees get their own gate cache
+  # and can never corrupt each other's mypy state.
+  gate-cache:
 
 secrets:
   gh_token:

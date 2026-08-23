@@ -72,9 +72,17 @@ claim ordering, which affects every pass that shares the base claim.
 
 - Is the skip an ordering choice or repeated claim failure? Undetermined —
   this was diagnosed from queue snapshots, not from a claim-path trace.
-- Separate hygiene item, noted not chased: the disabled
-  `/Library/LaunchDaemons/com.precis.worker-agent.plist.bak-20260723` contains
-  a **plaintext prod DB password**, and `deploy/roles/precis_worker_agent/` is
-  still wired into `deploy/site.yml` — so a deploy may resurrect the unit the
-  `.bak` rename disabled, since that rename is out-of-band and recorded
-  nowhere in the repo.
+- CORRECTED 2026-08-23 (this bullet previously claimed the opposite): a
+  deploy **cannot** resurrect `com.precis.worker-agent`. `deploy/site.yml`
+  imports playbook 20b (the collapsed `--profile all` worker); playbook 37
+  (the split agent-profile worker, the only caller of
+  `precis_worker_agent/tasks/units.yml`) was retired by the §L-b collapse on
+  2026-08-04, and `retire-split-agents.yml` booted the old units out. The
+  unit is absent on the Linux node entirely (`systemctl is-enabled` →
+  `not-found`). So `units.yml` is unreachable dead code and the `.bak` rename
+  is residue of a documented, deployed retirement — not an out-of-band hack.
+  Deleting that dead task file is the only cleanup left, and it is optional.
+- The stale `.bak` plist did hold a plaintext prod DB password; it is now
+  `0600` (2026-08-23). The password predates §L, which moved the daemon to a
+  password-free `agent_rw@host` DSN plus `~deploy/.pgpass` — so the live
+  template no longer writes a credential at all.
