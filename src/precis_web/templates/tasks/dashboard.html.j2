@@ -197,12 +197,14 @@
          title="running past PRECIS_STUCK_JOB_HOURS with a dead lease — presumed dead, pending sweeper or claim-time reclaim">⚠ {{ summary.stuck }} stuck</a>
       {% endif %}
       {% if summary.parked %}
-      <span class="px-2 py-1 rounded-full border bg-rose-50 border-rose-200 text-rose-700"
-            title="todos parked behind a failed child job — each shows a ▶ restart on its row">{{ summary.parked }} parked on failure</span>
+      <a href="/tasks?require=parked&show_jobs=all"
+         class="px-2 py-1 rounded-full border bg-rose-50 border-rose-200 text-rose-700"
+         title="todos parked behind a failed child job — each shows a ▶ restart on its row">{{ summary.parked }} parked on failure</a>
       {% endif %}
       {% if summary.halted %}
-      <span class="px-2 py-1 rounded-full border border-slate-300 text-slate-600"
-            title="subtrees with a halt brake on — the planner mints no ticks under these until ▶">⏸ {{ summary.halted }} halted</span>
+      <a href="/tasks?require=halted"
+         class="px-2 py-1 rounded-full border border-slate-300 text-slate-600"
+         title="subtrees with a halt brake on — the planner mints no ticks under these until ▶">⏸ {{ summary.halted }} halted</a>
       {% endif %}
       {% if summary.oldest_running %}
       <span class="text-slate-400" title="the longest-running job started {{ summary.oldest_running | abs_ts }}">oldest run {{ summary.oldest_running_for }}</span>

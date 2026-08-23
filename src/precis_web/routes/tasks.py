@@ -379,6 +379,12 @@ def _row_filterable_tags(row: dict[str, Any]) -> set[str]:
     # exactly the stuck rows instead of to every running job.
     if row.get("stuck"):
         out.add("stuck")
+    # ``parked`` / ``halted`` mirror the header chips (``_tree_summary``):
+    # a todo parked behind a failed child job, or under a halt brake.
+    if row.get("child_failures"):
+        out.add("parked")
+    if row.get("halted"):
+        out.add("halted")
     return out
 
 
@@ -418,33 +424,45 @@ def _filter_rows(
 ) -> list[dict[str, Any]]:
     """Keep rows matching the require/exclude tag sets, plus ancestors.
 
-    Match semantics (AND on both lists): a todo matches when **every**
+    Match semantics (AND on both lists): a row matches when **every**
     ``require`` tag is on it and **no** ``exclude`` tag is. The match
-    set is the union of the todo's free tags + its structured
+    set is the union of the row's free tags + its structured
     columns rendered as pseudo-tags (``status:<v>`` /
-    ``STATUS:<v>`` / ``level:<v>`` / ``kind:<v>``), so the operator
-    can filter by any visible badge using the same syntax as a tag.
+    ``STATUS:<v>`` / ``level:<v>`` / ``kind:<v>``, plus derived
+    ``stuck`` / ``parked`` / ``halted``), so the operator can filter
+    by any visible badge using the same syntax as a tag.
 
-    Tree context is preserved — every matched todo also pulls its
-    ancestor chain into the kept set so a deep match doesn't render as
-    a context-less orphan. Job rows ride along with their parent todo.
+    Both todos and jobs are matched directly — that's what makes the
+    header chips' filters (``kind:job`` + ``STATUS:running``,
+    ``stuck``) land on the rows they count instead of an empty page.
+
+    Tree context is preserved — every matched row also pulls its
+    ancestor todo chain into the kept set so a deep match doesn't
+    render as a context-less orphan. Jobs under a directly-matched
+    todo ride along without matching ``require`` themselves (so a tag
+    filter still shows the todo's job attempts), but a ride-along job
+    hitting an ``exclude`` tag is dropped. Ancestors pulled in purely
+    as context bring no ride-along jobs of their own.
     """
     if not require and not exclude:
         return rows
     req_set = set(require)
     exc_set = set(exclude)
 
-    matching: set[int] = set()
-    for r in rows:
-        if r["kind"] != "todo":
-            continue
+    def matches(r: dict[str, Any]) -> bool:
         row_tags = _row_filterable_tags(r)
         if req_set and not req_set.issubset(row_tags):
-            continue
-        if exc_set & row_tags:
-            continue
-        matching.add(r["id"])
+            return False
+        return not (exc_set & row_tags)
 
+    matching: set[int] = set()
+    matching_jobs: set[int] = set()
+    for r in rows:
+        if not matches(r):
+            continue
+        (matching if r["kind"] == "todo" else matching_jobs).add(r["id"])
+
+    # Todos whose jobs ride along: matched todos + their ancestors.
     keep = set(matching)
     by_id = {r["id"]: r for r in rows if r["kind"] == "todo"}
     for rid in list(matching):
@@ -453,11 +471,28 @@ def _filter_rows(
             keep.add(cur)
             cur = by_id[cur].get("parent_id")
 
+    # Context-only ancestors of directly-matched jobs (rendered, but
+    # their other jobs don't ride along).
+    context = set(keep)
+    for r in rows:
+        if r["kind"] != "job" or r["id"] not in matching_jobs:
+            continue
+        cur = r.get("parent_id")
+        while cur is not None and cur in by_id and cur not in context:
+            context.add(cur)
+            cur = by_id[cur].get("parent_id")
+
     return [
         r
         for r in rows
-        if (r["kind"] == "todo" and r["id"] in keep)
-        or (r["kind"] == "job" and r["parent_id"] in keep)
+        if (r["kind"] == "todo" and r["id"] in context)
+        or (
+            r["kind"] == "job"
+            and (
+                r["id"] in matching_jobs
+                or (r["parent_id"] in keep and not (exc_set & _row_filterable_tags(r)))
+            )
+        )
     ]
 
 

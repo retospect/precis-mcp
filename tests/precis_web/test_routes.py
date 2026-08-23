@@ -4511,15 +4511,59 @@ def test_filter_rows_matches_kind_pseudo_tag() -> None:
     # Requiring kind:todo keeps the todo (job rides along under parent).
     kept = _filter_rows(rows, require=["kind:todo"], exclude=[])
     assert [r["id"] for r in kept] == [1, 99]
-    # Excluding kind:job drops jobs even when their parent matched.
+    # kind:job matches the job row directly; its parent todo comes
+    # along as tree context.
     rows2 = [
         _row(1, tags=["project:p"]),
         _row(99, kind="job", parent_id=1, tags=[]),
     ]
-    # kind:job on a todo never matches → require=kind:job over a todo
-    # set yields no matches, so the kept set is empty.
     kept = _filter_rows(rows2, require=["kind:job"], exclude=[])
-    assert kept == []
+    assert [r["id"] for r in kept] == [1, 99]
+
+
+def test_filter_rows_matches_job_status_directly() -> None:
+    """The header chips' filter (kind:job + STATUS:running) lands on
+    exactly the counted jobs — not an empty page (the todo-only match
+    bug), and not the matched jobs' terminal siblings."""
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        _row(1),
+        _row(99, kind="job", parent_id=1, status="running"),
+        _row(98, kind="job", parent_id=1, status="failed"),
+        _row(2),
+        _row(97, kind="job", parent_id=2, status="queued"),
+    ]
+    kept = _filter_rows(rows, require=["kind:job", "STATUS:running"], exclude=[])
+    assert [r["id"] for r in kept] == [1, 99]
+
+
+def test_filter_rows_exclude_drops_ride_along_job() -> None:
+    """A job riding along under a matched todo is still subject to
+    ``exclude`` — so exclude=STATUS:failed hides the failed attempts."""
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        _row(1, tags=["project:p"]),
+        _row(99, kind="job", parent_id=1, status="running"),
+        _row(98, kind="job", parent_id=1, status="failed"),
+    ]
+    kept = _filter_rows(rows, require=["project:p"], exclude=["STATUS:failed"])
+    assert [r["id"] for r in kept] == [1, 99]
+
+
+def test_filter_rows_parked_and_halted_pseudo_tags() -> None:
+    """``parked`` / ``halted`` are filterable, mirroring the header
+    chips (``_tree_summary`` counts the same row flags)."""
+    from precis_web.routes.tasks import _filter_rows
+
+    rows = [
+        {**_row(1), "child_failures": [{"job": 5}]},
+        {**_row(2), "halted": True},
+        _row(3),
+    ]
+    assert [r["id"] for r in _filter_rows(rows, require=["parked"], exclude=[])] == [1]
+    assert [r["id"] for r in _filter_rows(rows, require=["halted"], exclude=[])] == [2]
 
 
 def test_filter_rows_matches_lowercase_status_too() -> None:
