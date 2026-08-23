@@ -340,6 +340,27 @@ rather than "clean" — checks are demand-driven, so coverage is sparse by
 design. Don't read a bare row as an integrity clearance. To actually check,
 use `get(kind="provenance", q="<doi>")` → `precis-provenance-help`.
 
+## What is the `Title match —` line above the table?
+## I searched a paper's exact title and the rows look unrelated
+
+Pasting a whole title into `q=` is a weak lexical query: Postgres FTS
+strips `attention is all you need` to `'attent' & 'need'`, so any
+content-dense body that repeats those words outranks the paper's own
+short card. Paper search compensates — on page 1 with no
+`scope=`/`tags=`/`after=`/`before=`, a near-exact trigram match on
+`refs.title` is promoted to the top of the table **and** named above it:
+
+```
+Title match — the paper record:
+  pa2928 [held] — Ashish Vaswani et al. (2017). Attention is All you Need
+```
+
+Read that line, not the row it promoted — the promoted row is still a
+*chunk* (often the paper's boilerplate first chunk), so its keywords can
+look nothing like your query. `held` vs `want` says whether the PDF is in
+the corpus. For the full list of title matches as records, use
+`search(kind='paper', title='…')`.
+
 ## Find the right skill for a task
 ## Which skill explains how to do X?
 ## Discover a skill by topic

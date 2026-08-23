@@ -117,6 +117,40 @@ def _retraction_flag(ref: Any) -> str:
     return f"⚠ {label}" if label else ""
 
 
+def _title_match_line(ref: Any) -> tuple[str, str]:
+    """One callout line for a paper whose *title* matched the query.
+
+    ``pa2928 [held] — Ashish Vaswani et al. (2017). Attention is All you
+    Need`` — the paper *record*, addressed by its ``pa`` handle, so a
+    caller who typed a title reads the answer off the first line instead
+    of inferring it from a promoted chunk row's keywords.
+
+    Carries the same ``⚠`` retraction annotation the table rows get — a
+    callout that promotes a paper above its own hit row must not be the
+    one place the notice goes missing.
+    """
+    handle = (
+        handle_registry.try_format(ref.kind, ref.id)
+        or getattr(ref, "slug", None)
+        or f"{ref.kind}:{ref.id}"
+    )
+    authors = _format_authors(ref.authors) or "(authors unknown)"
+    year = ref.year if ref.year is not None else "n.d."
+    title = _clean_inline_text(ref.title) if ref.title else "(untitled)"
+    held = "held" if getattr(ref, "pdf_sha256", None) is not None else "want"
+    flag = _retraction_flag(ref)
+    suffix = f"  {flag}" if flag else ""
+    return str(handle), f"{handle} [{held}] — {authors} ({year}). {title}{suffix}"
+
+
+def _render_title_callout(matches: list[tuple[str, str]]) -> str:
+    """The ``Title match:`` block that precedes the block-hit table."""
+    if not matches:
+        return ""
+    head = "Title match — the paper record" + ("s" if len(matches) > 1 else "") + ":"
+    return "\n\n" + head + "\n" + "\n".join(f"  {ln}" for _h, ln in matches)
+
+
 def _apply_retraction_downrank(
     hits: list[tuple[Any, Any, float]],
 ) -> list[tuple[Any, Any, float]]:
@@ -422,6 +456,10 @@ class BlockSearchResult:
     hyde_answers: list[str] = field(default_factory=list)
     per_paper_cap: int | None = None
     total: int | None = None
+    #: One line per near-exact *title* match ("pa2928 — Vaswani et al.
+    #: (2017). Attention is All you Need"), rendered above the block
+    #: table. See :meth:`FusedBlockSearch._inject_title_matches`.
+    title_matches: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -448,7 +486,7 @@ class FusedBlockSearch:
         q: str,
         kind: str,
         page_size: int,
-    ) -> list[Any]:
+    ) -> tuple[list[Any], list[tuple[str, str]]]:
         """Promote near-exact title matches to the front of ``hits``.
 
         See the call site: FTS stop-word stripping buries an exact-title
@@ -457,6 +495,17 @@ class FusedBlockSearch:
         the title/abstract card), and prepend — deduping by ref_id so a
         paper already in ``hits`` is reordered rather than duplicated.
         Best-effort: any lookup hiccup returns ``hits`` unchanged.
+
+        Returns ``(hits, callout_lines)``. Promotion alone isn't legible:
+        the promoted row still renders as a *chunk* handle plus that
+        chunk's keywords, and the representative block is often the
+        paper's boilerplate first chunk ("google hereby grants
+        permission…" for the Transformer paper) — so a caller who typed
+        an exact title sees a table of unrelated-looking keywords and
+        concludes the paper isn't held. The callout lines name the paper
+        *record* (``pa`` handle + one-line citation) above the table so
+        the answer to a title query is readable without decoding the
+        block rows.
         """
         import logging
 
@@ -465,16 +514,19 @@ class FusedBlockSearch:
         try:
             matches = self.store.find_refs_by_title_similarity(kind=kind, q=q, limit=3)
             if not matches:
-                return hits
+                return hits, []
             match_ids = [rid for rid, _sim in matches]
             existing = {h[1].id: h for h in hits}
             refs_map = self.store.fetch_refs_by_ids(match_ids)
             front: list[Any] = []
+            callouts: list[tuple[str, str]] = []
             for rid in match_ids:
+                ref = refs_map.get(rid)
+                if ref is not None:
+                    callouts.append(_title_match_line(ref))
                 if rid in existing:
                     front.append(existing[rid])  # reorder, don't refetch
                     continue
-                ref = refs_map.get(rid)
                 if ref is None:
                     continue
                 block = self.store.blocks.get_block(
@@ -487,15 +539,18 @@ class FusedBlockSearch:
                     continue
                 front.append((block, ref, float("inf")))
             if not front:
-                return hits
+                # Nothing promotable (no readable block on any match),
+                # but the record match itself is still the answer — keep
+                # the callout so the caller learns the paper is held.
+                return hits, callouts
             front_ids = {h[1].id for h in front}
             rest = [h for h in hits if h[1].id not in front_ids]
-            return (front + rest)[:page_size]
+            return (front + rest)[:page_size], callouts
         except Exception:  # pragma: no cover — relevance aid, never fatal
             log.warning(
                 "paper search: title introducer failed for %r", q, exc_info=True
             )
-            return hits
+            return hits, []
 
     def run(
         self,
@@ -698,6 +753,7 @@ class FusedBlockSearch:
         # unfiltered first-page search, surface near-exact title matches
         # at the top. Gated tightly (plain query only, high similarity
         # bar) so an ordinary keyword search is untouched.
+        title_matches: list[tuple[str, str]] = []
         if (
             page == 1
             and scope_ref_id is None
@@ -705,7 +761,9 @@ class FusedBlockSearch:
             and year_to is None
             and not normalized_tags
         ):
-            hits = self._inject_title_matches(hits, q=q, kind=kind, page_size=page_size)
+            hits, title_matches = self._inject_title_matches(
+                hits, q=q, kind=kind, page_size=page_size
+            )
 
         # When a publish-date filter is active, count papers that match
         # the query but have NO year — they're silently dropped by the
@@ -781,6 +839,7 @@ class FusedBlockSearch:
             hyde_answers=hyde_answers,
             per_paper_cap=per_paper_cap,
             total=total,
+            title_matches=title_matches,
         )
 
 
@@ -826,6 +885,28 @@ class PaperSearchResultRenderer:
             # so a literal "paper" leaked the wrong kind
             # (`no paper blocks match` on a cfp/datasheet search).
             body = f"no {kind} blocks match {q!r}"
+            # A title match with no promotable block still answers the
+            # question the caller actually asked ("is this paper here?").
+            body += _render_title_callout(result.title_matches)
+            if result.title_matches:
+                return Response(
+                    body=body
+                    + render_next_section(
+                        [
+                            (
+                                f"get(kind='{kind}', "
+                                f"id='{result.title_matches[0][0]}', view='toc')",
+                                "open the title-matched paper — TOC "
+                                "reading entry point",
+                            ),
+                            (
+                                f"search(kind='{kind}', title={q!r})",
+                                "list every paper whose title matches",
+                            ),
+                        ]
+                    )
+                    + year_notice
+                )
             doi_match = _DOI_RE.match(q.strip())
             if doi_match is not None:
                 doi = doi_match.group(1)
@@ -944,7 +1025,13 @@ class PaperSearchResultRenderer:
             table_rows,
             schema=["handle", "chunk_keywords"],
         )
-        body = head + year_notice + "\n\n" + rendered_table
+        body = (
+            head
+            + year_notice
+            + _render_title_callout(result.title_matches)
+            + "\n\n"
+            + rendered_table
+        )
 
         # Pagination affordance — when the lexical total exceeds what
         # we returned, surface the narrow-with-scope path explicitly.
@@ -964,6 +1051,17 @@ class PaperSearchResultRenderer:
         # separate ``Next:`` blocks back-to-back; merging keeps the
         # response shape consistent across kinds.
         nav: list[tuple[str, str]] = []
+        # A title match is the strongest answer this response carries —
+        # lead the trailer with the paper itself, above the block-hit
+        # drill-in, so "is <title> in the corpus?" resolves in one call.
+        if result.title_matches:
+            top_paper = result.title_matches[0][0]
+            nav.append(
+                (
+                    f"get(kind='{kind}', id='{top_paper}', view='toc')",
+                    "open the title-matched paper — TOC reading entry point",
+                )
+            )
         if hits:
             # point at the top hit by its computed chunk handle.
             first_handle = (

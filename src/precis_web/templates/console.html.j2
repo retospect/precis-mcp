@@ -21,6 +21,28 @@
   </div>
 </form>
 
+{# Result sits directly under the run form, *above* the examples /
+   resolve / quick blocks. It used to be last on the page: clicking an
+   example (or hitting Run) then rendered the output below the fold, so
+   the page looked unchanged and the console read as broken. Every path
+   here is a full page load that starts scrolled to the top, so keeping
+   the panel high makes the output visible for the run, resolve and
+   quick forms alike — don't move it back down. #}
+{% if result is not none %}
+<div class="mt-5">
+  <h2 class="text-sm font-semibold mb-2 {% if is_error %}text-rose-700{% else %}text-slate-700{% endif %}">
+    {% if is_error %}error{% else %}result{% endif %}
+  </h2>
+  {# Echo the call that produced this output so the request and its
+     response are read together (and the call is easy to copy/tweak). #}
+  <div class="mb-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
+    <span class="font-medium text-slate-500 mr-2">request</span>
+    <span class="font-mono text-slate-700">{{ verb }}{% if args_text %} {{ args_text }}{% endif %}</span>
+  </div>
+  <pre class="rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-800{% else %}border-slate-200 bg-white text-slate-700{% endif %} p-3 text-xs whitespace-pre-wrap overflow-x-auto">{{ result | linkify_refs }}</pre>
+</div>
+{% endif %}
+
 {# Example deep-links, grouped. A GET /console?verb=&args_text=
    prefills the form above and (for read-only get/search) runs it on
    load, so each link is a one-click, already-run query. The group
@@ -112,19 +134,4 @@
   </p>
   {% endif %}
 </form>
-
-{% if result is not none %}
-<div class="mt-5">
-  <h2 class="text-sm font-semibold mb-2 {% if is_error %}text-rose-700{% else %}text-slate-700{% endif %}">
-    {% if is_error %}error{% else %}result{% endif %}
-  </h2>
-  {# Echo the call that produced this output so the request and its
-     response are read together (and the call is easy to copy/tweak). #}
-  <div class="mb-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
-    <span class="font-medium text-slate-500 mr-2">request</span>
-    <span class="font-mono text-slate-700">{{ verb }}{% if args_text %} {{ args_text }}{% endif %}</span>
-  </div>
-  <pre class="rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-800{% else %}border-slate-200 bg-white text-slate-700{% endif %} p-3 text-xs whitespace-pre-wrap overflow-x-auto">{{ result | linkify_refs }}</pre>
-</div>
-{% endif %}
 {% endblock %}
