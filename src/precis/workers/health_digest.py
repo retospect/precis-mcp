@@ -127,7 +127,10 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.workers.doctor_report import DoctorReport
 
 from precis import health_checks
 from precis.alerts import (
@@ -1822,6 +1825,56 @@ def _render_digest(
     return "\n".join(lines)
 
 
+def _select_push_body(
+    checks: list[CheckResult],
+    *,
+    routed: frozenset[tuple[str, str]] = frozenset(),
+    doctor_report: DoctorReport | None = None,
+) -> str:
+    """Pure push-body selection (``docs/backlog/doctor-tick-report.md``
+    item 3) — no DB, no I/O, so the fallback law is provable without a
+    store.
+
+    The doctor-authored report replaces the template body only when a
+    fresh report was found (the caller has already applied
+    ``doctor_report.FRESH_WINDOW`` and failure-isolated the lookup) AND
+    it has a non-empty body. The all-green heartbeat stays
+    template-only **regardless** of any doctor report — it's the
+    dead-man proof, not a report, so it must never be suppressed or
+    replaced. Every other path (no report, stale report, empty report,
+    lookup failure surfaced as ``None``) falls through to the exact same
+    ``_render_digest`` call the pre-cutover code made, byte-identical."""
+    template = _render_digest(checks, routed=routed)
+    all_green = not any(c.status in ("stale", "unknown") for c in checks)
+    if all_green or doctor_report is None or not doctor_report.body.strip():
+        return template
+    return (
+        f"🩺 doctor report — {doctor_report.headline}\n\n"
+        f"{doctor_report.body}\n\n"
+        "(doctor-authored report; template digest below was suppressed "
+        "while this report is fresh)"
+    )
+
+
+def _lookup_fresh_doctor_report(store: Store) -> DoctorReport | None:
+    """Best-effort fresh doctor report for the push-body selector.
+
+    Failure-isolated on purpose: an import error, a DB blip, a schema
+    surprise on the doctor's own report draft — none of it may block the
+    digest send. Any exception here degrades to ``None``, which
+    :func:`_select_push_body` treats exactly like "no report exists"
+    (design law 9: the digest must send when the LLM/fleet is down)."""
+    try:
+        from precis.workers import doctor_report
+
+        return doctor_report.latest_report(store, max_age=doctor_report.FRESH_WINDOW)
+    except Exception:
+        log.exception(
+            "health_digest: doctor report lookup failed, falling back to template"
+        )
+        return None
+
+
 def _last_push_at(store: Store) -> datetime | None:
     from precis.budget import settings as app_settings
 
@@ -1858,7 +1911,16 @@ def _maybe_push(
     )
     if not (heartbeat_due or degraded):
         return False
-    body = _render_digest(checks, routed=routed)
+    # Belt-and-suspenders: _lookup_fresh_doctor_report already isolates its
+    # own failures, but the push must go out even if that isolation itself
+    # somehow doesn't — the digest send is the one thing that may never be
+    # blocked by the doctor-report read.
+    try:
+        doctor_report = _lookup_fresh_doctor_report(store)
+    except Exception:
+        log.exception("health_digest: doctor report lookup raised past its own guard")
+        doctor_report = None
+    body = _select_push_body(checks, routed=routed, doctor_report=doctor_report)
     # Keep the "degraded" marker whenever the finding set degraded, even
     # when the daily heartbeat also happens to be due at the same moment —
     # dropping it just because the heartbeat coincided would hide the more

@@ -33,6 +33,7 @@ from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers import health_digest, nursery
+from precis.workers.doctor_report import DoctorReport
 from precis.workers.health_digest import (
     CheckResult,
     _cadence_staleness_checks,
@@ -102,6 +103,84 @@ def test_render_digest_unknown_checks_render_separately() -> None:
     body = _render_digest(checks)
     assert "could not run" in body
     assert "broken" in body
+
+
+# ── (g) doctor-report reporting-spine cutover (item 3) ──────────────────
+# Pure-function push-body selection — provable without a DB or an LLM.
+
+
+def _doctor_report(body: str = "diagnosis: everything is on fire") -> DoctorReport:
+    return DoctorReport(
+        ref_id=1,
+        created_at=datetime.now(UTC),
+        headline="Doctor report — 2026-08-23",
+        body=body,
+    )
+
+
+def test_select_push_body_uses_doctor_report_when_fresh_and_degraded() -> None:
+    checks = [CheckResult("g", "a", "stale", "broke", "warn")]
+    body = health_digest._select_push_body(checks, doctor_report=_doctor_report())
+    assert "everything is on fire" in body
+    assert "could not run" not in body  # template path not the one selected
+
+
+def test_select_push_body_falls_back_to_template_when_no_report() -> None:
+    checks = [CheckResult("g", "a", "stale", "broke", "warn")]
+    template = _render_digest(checks)
+    body = health_digest._select_push_body(checks, doctor_report=None)
+    assert body == template
+
+
+def test_select_push_body_falls_back_to_template_when_report_empty() -> None:
+    checks = [CheckResult("g", "a", "stale", "broke", "warn")]
+    template = _render_digest(checks)
+    body = health_digest._select_push_body(
+        checks, doctor_report=_doctor_report(body="   ")
+    )
+    assert body == template
+
+
+def test_select_push_body_all_green_stays_template_even_with_fresh_report() -> None:
+    """The all-green heartbeat is the dead-man proof, not a report — it
+    must never be replaced by a doctor report, however fresh."""
+    checks = [CheckResult("g", "a", "ok", "fine", "warn")]
+    template = _render_digest(checks)
+    body = health_digest._select_push_body(checks, doctor_report=_doctor_report())
+    assert body == template
+    assert "all green" in body
+
+
+def test_lookup_fresh_doctor_report_degrades_to_none_on_exception(
+    monkeypatch,
+) -> None:
+    """Any exception in the lookup (import error, DB blip, LLM/fleet down)
+    degrades to ``None`` — the digest must still send."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("doctor store unreachable")
+
+    monkeypatch.setattr("precis.workers.doctor_report.latest_report", _boom)
+    assert health_digest._lookup_fresh_doctor_report(store=object()) is None  # type: ignore[arg-type]
+
+
+def test_maybe_push_falls_back_to_template_when_doctor_lookup_raises(
+    store, monkeypatch
+) -> None:
+    """End-to-end through ``_maybe_push``: a raising doctor lookup must not
+    prevent the push, and the body must be the template."""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        health_digest, "queue_ops_message", _fake_queue_ops_message(calls)
+    )
+    monkeypatch.setattr(
+        health_digest,
+        "_lookup_fresh_doctor_report",
+        lambda store: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    checks = [CheckResult("g", "a", "stale", "broke", "warn")]
+    pushed = _maybe_push(store, checks, degraded=True)
+    assert pushed is True
 
 
 # ── (a) cadence staleness ────────────────────────────────────────────────

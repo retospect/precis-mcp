@@ -193,7 +193,13 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    (`spark · … · 106`, `melchior · … · 7134`, …); this is the same signal, read
    from the `worker_logs` table. It is a **system-health** read, not a work
    queue — but a broken pass here is often the *root cause* of stalled todos in
-   step 4 (the bridge), so mine it. Prod-hop and pull the per-host histogram:
+   step 4 (the bridge), so mine it. **Read the latest doctor report first**:
+   the `doctor_tick` agent authors a periodic health report as a `draft` ref
+   (`kind='draft'`, `meta->>'author'='doctor'`, newest first — the same body
+   the ops digest pushes); if one exists and is fresh, its classification /
+   diagnosis / needs-a-human sections ARE this step — fall back to the raw
+   SQL below when the report is stale, absent, or you need to drill deeper.
+   Prod-hop and pull the per-host histogram:
    ```sql
    -- per-host err/warn in 24h (matches the /status footer)
    SELECT host, level, count(*) FROM worker_logs

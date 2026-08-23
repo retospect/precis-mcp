@@ -338,6 +338,8 @@ def _run_one(ctx: DispatchContext) -> None:
             _run_fix_gripe(store, ref_id, spec)
         elif spec.name == "plan_tick":
             _run_plan_tick(store, ref_id, spec)
+        elif spec.name == "doctor_tick":
+            _run_doctor_tick(store, ref_id, spec)
         else:  # pragma: no cover
             _record_failure(
                 store,
@@ -1303,6 +1305,83 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             # Slice-5 failure-bubble: tag the parent todo if any.
             # Inside the same tx so the status + bubble commit
             # together; orphan jobs (legacy, no parent_id) just no-op.
+            from precis.handlers._job_bubble import bubble_job_failure
+
+            bubble_job_failure(store, ref_id, conn=conn)
+        conn.commit()
+
+
+def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
+    """doctor_tick dispatch: run the doctor agent, persist the job's own
+    audit trail, finalize.
+
+    Same overall shape as ``_run_plan_tick`` (call ``spec.run``, capture
+    the transcript, append ``job_summary``/``job_result``, finalize
+    succeeded/failed) but much simpler: a doctor_tick job is parentless
+    (system-minted by the cadence scan, like ``draft_refresh``) and has no
+    resume-streak / decompose machinery — one tick, one pass, terminal
+    either way. The tick's own report-artifact write (today's ``draft``
+    ref) already happened inside ``spec.run``; this function only ever
+    touches the JOB ref.
+    """
+    t0 = time.perf_counter()
+    try:
+        outcome = spec.run(
+            store=store, job_ref_id=ref_id, params=_job_params(store, ref_id)
+        )
+    except Exception as exc:
+        wall = time.perf_counter() - t0
+        with store.pool.connection() as conn:
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"runner: doctor_tick raised after {wall:.1f}s: {exc!r}",
+                conn=conn,
+            )
+            _set_status(store, ref_id, _FAILED, conn=conn)
+            _set_meta(conn, ref_id, wall_seconds=wall)
+            from precis.handlers._job_bubble import bubble_job_failure
+
+            bubble_job_failure(store, ref_id, conn=conn)
+            conn.commit()
+        return
+
+    with store.pool.connection() as conn:
+        _append_chunk(
+            store,
+            ref_id,
+            _JOB_SUMMARY_KIND,
+            outcome.text or "(no output)",
+            conn=conn,
+        )
+        # Full LLM transcript for the Tasks-view debugger, same 1 MiB cap
+        # and idiom as plan_tick's — stored on the job ref (never a
+        # chunk, so never embedded, no migration).
+        _TRANSCRIPT_CAP = 1_000_000
+        transcript = outcome.raw_text[:_TRANSCRIPT_CAP]
+        if len(outcome.raw_text) > _TRANSCRIPT_CAP:
+            transcript += "\n…(truncated)"
+        if transcript:
+            _set_meta(conn, ref_id, transcript=transcript)
+        result_text = (
+            f"doctor_tick: exit={outcome.exit_code} duration={outcome.duration_s:.1f}s"
+        )
+        if outcome.cost_usd is not None:
+            result_text += f" cost=${outcome.cost_usd:.4f}"
+        if outcome.report_ref_id is not None:
+            result_text += f" report=ref:{outcome.report_ref_id}"
+        if outcome.error:
+            result_text += f" error={outcome.error}"
+        _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
+        _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
+        if outcome.exit_code == 0:
+            _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+        else:
+            _set_status(store, ref_id, _FAILED, conn=conn)
+            # Parentless (cadence-minted, like draft_refresh) — a no-op
+            # for the common case; harmless when a caller ever gives a
+            # doctor_tick job a parent todo.
             from precis.handlers._job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id, conn=conn)

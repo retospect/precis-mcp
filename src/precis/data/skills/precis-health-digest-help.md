@@ -125,9 +125,14 @@ goes out when:
   dead-man's proof the watchdog itself is alive, or
 * the finding set just **degraded** (any check went stale this eval).
 
-No push when everything's green and the last push was under 24h ago. Body
-is a pure Python string template — grouped, worst/oldest-first, age shown;
-no LLM phrasing in this slice.
+No push when everything's green and the last push was under 24h ago.
+Body selection (spine Layer 3 cutover): a degraded/daily push carries the
+**doctor's report** (`doctor_tick`'s per-day draft, `meta.author='doctor'`)
+when one is fresh; on staleness, absence, or any lookup failure it falls
+back to the pure string template — grouped, worst/oldest-first, age shown
+— so the digest still sends when the LLM is down. The all-green heartbeat
+is always the template (it is the dead-man proof, never LLM-authored).
+Detection stays SQL-only either way.
 
 ## External dead-man's-switch
 

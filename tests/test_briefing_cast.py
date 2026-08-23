@@ -11,6 +11,7 @@ from precis.reading.briefing_cast import (
     _DORMANT_NUDGE_KEY,
     _LOOKBACK_HOURS,
     _cite_token,
+    _doctor_report_line,
     _dormant_nudge,
     _lane_quest,
     _lane_reading,
@@ -19,6 +20,7 @@ from precis.reading.briefing_cast import (
     _render_papers,
     build_reading_briefing,
 )
+from precis.workers.doctor_report import DoctorReport
 
 
 class _FakeClient:
@@ -490,3 +492,72 @@ class TestAlertRecencyLane:
             _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
         )
         assert "orphan" in out_widened
+
+
+# ── doctor-report health line (docs/backlog/doctor-tick-report.md item 4) ──
+
+
+def _fake_doctor_report(body: str = "## Classification\nall green") -> DoctorReport:
+    return DoctorReport(
+        ref_id=1,
+        created_at=datetime(2026, 8, 23, tzinfo=UTC),
+        headline="Doctor report — 2026-08-23",
+        body=body,
+    )
+
+
+class TestDoctorReportLine:
+    """One health line sourced from the latest fresh doctor report,
+    degrading to empty (byte-identical output to before this line
+    existed) on absence or any read failure — the same posture as the
+    open-alerts block above."""
+
+    _NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
+    _CUTOFF = _NOW - timedelta(hours=_LOOKBACK_HOURS)
+
+    def test_line_appears_when_report_is_fresh(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(
+            "precis.workers.doctor_report.latest_report",
+            lambda store, max_age=None: _fake_doctor_report(),
+        )
+        out = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert "Doctor report:" in out
+        assert "all green" in out
+
+    def test_absent_report_leaves_output_unchanged(self, monkeypatch: Any) -> None:
+        """No doctor draft at all — the real ``latest_report`` call raises
+        against the bare ``_AlertLaneStore`` fake (no ``.pool``), which must
+        degrade to exactly today's output rather than propagate."""
+        out = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert out == ""
+
+    def test_lookup_failure_degrades_to_empty(self, monkeypatch: Any) -> None:
+        def _boom(store: Any, max_age: Any = None) -> Any:
+            raise RuntimeError("doctor store unreachable")
+
+        monkeypatch.setattr("precis.workers.doctor_report.latest_report", _boom)
+        out = _lane_system_activity(
+            _AlertLaneStore(), cutoff=self._CUTOFF, now=self._NOW
+        )
+        assert out == ""
+
+    def test_doctor_report_line_prefers_first_body_paragraph(self) -> None:
+        report = _fake_doctor_report(body="## Diagnosis\nembed backlog draining")
+        # Internal newlines are flattened: the lane renders each part as a
+        # single `- ` bullet, so a surviving `\n` would leak an un-bulleted
+        # continuation line into the brief.
+        assert _doctor_report_line(report) == "Diagnosis embed backlog draining"
+
+    def test_doctor_report_line_falls_back_to_headline_when_body_empty(self) -> None:
+        report = _fake_doctor_report(body="")
+        assert _doctor_report_line(report) == "Doctor report — 2026-08-23"
+
+    def test_doctor_report_line_truncates_long_bodies(self) -> None:
+        report = _fake_doctor_report(body="x" * 500)
+        line = _doctor_report_line(report)
+        assert len(line) <= 241  # cap + ellipsis
+        assert line.endswith("…")

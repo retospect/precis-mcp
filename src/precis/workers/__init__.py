@@ -211,6 +211,23 @@ Notable pass mechanics
   is **restart-once** (``cap=1``) — ssh + a sudoers grant scoped to
   exactly one worker-bounce command per platform (provisioned by
   ``redeploy-precis.yml``), dark until ``PRECIS_RESTART_ONCE_ENABLED=1``.
+* ``doctor_tick`` (spine Layer 3, :mod:`.job_types.doctor_tick`) — the
+  LLM judgment layer at the ``report`` dial, deliberately *outside* the
+  detection path: an 8h scheduler cadence mints one idem-keyed
+  ``claude_inproc`` job per window (mint is free; the spend is gated at
+  dispatch like every agent job). The agent reads only published
+  surfaces under the reviewer deny list — ``put(kind='gripe')`` is its
+  sole write — and appends a four-section report (classification /
+  diagnosis / what-was-healed / needs-a-human) to a per-UTC-day
+  ``draft`` ref (:mod:`.doctor_report`, ``meta.author='doctor'``).
+  ``health_digest``'s degraded/daily push swaps in the doctor's body
+  when a report is fresh (:data:`.doctor_report.FRESH_WINDOW`, measured
+  from the last appended tick, not draft creation) and falls back to
+  the template on staleness, absence, or any lookup failure — the
+  digest must send when the LLM is down, and the all-green heartbeat
+  stays template-only (dead-man proof). The morning brief carries one
+  doctor line, same degrade-to-empty posture. Design:
+  ``docs/backlog/self-healing-spine.md`` Layer 3.
 * ``corpus_reconcile`` (per-host ``pdf_locations`` presence ledger),
   ``paper_reconcile`` (standing dedup + hygiene heals), ``openalex_enrich``
   (abstract fill + card rebuild), and ``paper_meta_enrich`` (Crossref/

@@ -233,9 +233,14 @@ Per tick:
    (`review.py::_REVIEWER_DISALLOWED_TOOLS` deny list at the permissive
    tier).
 
-Evidence-base prerequisite: `quest_tick` / `catpath_explore` (and
-doctor's own ticks) persist `meta.transcript` like `plan_tick` does —
-today they discard the stream, a confusion-mining blind spot.
+Evidence-base prerequisite — met (verified 2026-08-23): the
+transcript-bearing job types already persist `meta.transcript`
+(`plan_tick` in the executor; `quest_tick` via
+`quest/tick.py::_persist_job_transcript`); catpath's live lane
+(`autocatpath_seed`/`autocatpath_aggregate`) is `ssh_node` NEB/DFT
+compute with no LLM stream to persist. The surviving rule: every *new*
+agent job type — doctor ticks included — persists its transcript via
+the plan_tick idiom.
 
 ### Layer 4 — the autonomy ladder (how far the doctor's `draft` goes)
 
@@ -422,9 +427,30 @@ this doc stays the cross-slice record and is trimmed as slices ship.
    ~4 days) — `pass-dead-on-host` detects the class within one hourly
    window after its 4 h budget; the bounce stays manual until
    restart-once is armed.
-4. **`doctor_tick` at `report`** + reporting-spine cutover (doctor
-   authors the digest, template becomes fallback; brief lane;
-   transcript persistence for agent job types).
+4. **`doctor_tick` at `report`** + reporting-spine cutover —
+   ✅ SHIPPED 2026-08-23: `job_types/doctor_tick.py` +
+   `workers/doctor_report.py` (per-UTC-day `draft` ref,
+   `meta.author='doctor'`; same-day ticks append; freshness measured
+   from the last appended tick, `FRESH_WINDOW` 12 h); 8 h mint-only
+   cadence (idem_key `doctor:<UTC date>/<window>`, `spends=False` —
+   spend gated at dispatch, the `draft_refresh_scan` precedent);
+   executor arm persists `meta.transcript` (plan_tick idiom); reviewer
+   deny-list posture (`write:gripe` envelope still open, gr179501);
+   prompt `data/prompts/doctor-prompt.md` (untrusted-input framing,
+   gather→classify-by-ratio→diagnose→gripe-with-dedup). Cutover:
+   `health_digest`'s degraded/daily push swaps in a fresh doctor body,
+   template on stale/absent/lookup-failure; all-green heartbeat stays
+   template-only; brief gains one doctor line; `/whatneedsdoing` step 5
+   reads the report first. The Layer-3 transcript prerequisite was
+   found already met (`quest_tick` persists; catpath's live lane is
+   `ssh_node` compute, no LLM stream) — paragraph corrected above.
+   On-demand dispatch from Layer-2 escalation arrives with the `heal`
+   dial. The doctor's gather surface today is what `search`/`get`
+   expose (alerts, gripes, llm tote); per-host `worker_logs` rates,
+   scheduler-lease staleness, and claim-registry forensics have no
+   agent-queryable surface yet — the prompt has the doctor name those
+   gaps in "Needs a human" rather than guess (candidate Layer-2/T0
+   follow-ups).
 5. **Dial up**: `heal`, then `draft` (Rung 1), then per-class Rung 2 —
    each class earns its way in. T0 telemetry lands whenever a row first
    needs it.

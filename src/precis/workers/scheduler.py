@@ -61,6 +61,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.runner import BatchResult
@@ -163,6 +164,71 @@ def _run_draft_refresh_scan(store: Store, batch_size: int) -> None:
         result.ok,
         result.failed,
     )
+
+
+def _doctor_tick_window(now: datetime) -> str:
+    """The ``<UTC date>/<window>`` idem_key half for the current 8h slice
+    of the day — ``window`` = ``hour // 8`` (``0``, ``1``, ``2``), so
+    exactly one queued ``doctor_tick`` job can exist per 8h window."""
+    return f"{now:%Y-%m-%d}/{now.hour // 8}"
+
+
+def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
+    """Mint ONE queued ``doctor_tick`` job for the current 8h window
+    (``docs/backlog/doctor-tick-report.md`` item 1: the self-healing
+    spine's Layer-3 doctor), fired from the host-agnostic ``doctor_tick``
+    cadence — any live worker can win the lease, like
+    ``health_digest``/``draft_refresh_scan``; execution lands on whichever
+    ``claude_inproc`` (gateway) worker claims the minted job, same as
+    every other agent-lane job. ``batch_size`` is unused — the idem_key
+    IS the per-window cap.
+
+    Minting reuses the direct-``insert_ref`` + idem_key-guarded pattern
+    :func:`_run_draft_refresh_scan`/:func:`precis.workers.materialize._mint_jobs`
+    established: parentless (system-minted background maintenance, like
+    ``draft_refresh``), any status blocks a re-mint for the same key.
+    ``spends=False`` follows the ``draft_refresh_scan`` precedent below,
+    not a new choice: minting itself is free (no LLM call happens here),
+    so a budget freeze must not silently skip the mint — the minted job's
+    own dispatch is where the daily ceiling actually gates the spend,
+    the same as every other ``claude_inproc`` job.
+    """
+    del batch_size
+    from precis.store.types import Tag
+
+    now = datetime.now(UTC)
+    idem_key = f"doctor:{_doctor_tick_window(now)}"
+    with store.pool.connection() as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
+            "AND meta->>'idem_key' = %s LIMIT 1",
+            (idem_key,),
+        ).fetchone()
+        if existing is not None:
+            conn.commit()
+            return
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"doctor_tick ({idem_key})",
+            meta={
+                "job_type": "doctor_tick",
+                "executor": "claude_inproc",
+                "params": {},
+                "idem_key": idem_key,
+            },
+            prio=8,  # background maintenance — same as draft_refresh_scan
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "queued"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        conn.commit()
+    log.info("scheduler: minted doctor_tick job for window %s", idem_key)
 
 
 def _run_anki_sync(store: Store, batch_size: int) -> None:
@@ -490,6 +556,19 @@ CADENCES: tuple[Cadence, ...] = (
         name="draft_refresh_scan",
         interval_s=4 * 3600 + 7 * 60,
         run=_run_draft_refresh_scan,
+    ),
+    # docs/backlog/doctor-tick-report.md item 1 (self-healing spine Layer
+    # 3): mints one queued doctor_tick job per 8h window (the spec's
+    # 6-12h band). Host-agnostic like draft_refresh_scan — the lease IS
+    # the fleet-singleton throttle. spends=False: minting is free; the
+    # LLM spend lives in the doctor_tick job this cadence mints, gated
+    # there at dispatch like every claude_inproc job — see
+    # _run_doctor_tick_mint for why this diverges from a naive
+    # spends=True read of "this cadence leads to an LLM call".
+    Cadence(
+        name="doctor_tick",
+        interval_s=8 * 3600,
+        run=_run_doctor_tick_mint,
     ),
     # Nanopub slice 3: the daily anchor sweep (spec: one cron, decided
     # 2026-08-13). Host-agnostic — the lease is the fleet-singleton

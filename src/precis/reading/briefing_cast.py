@@ -67,6 +67,7 @@ from precis.workers.briefing import _complete_with_retry
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.workers.doctor_report import DoctorReport
 
 log = logging.getLogger(__name__)
 
@@ -359,6 +360,29 @@ def _count_papers_since(store: Store, cutoff: datetime) -> int:
         return 0
 
 
+#: Cap the doctor-report health line so one loud tick can't blow the
+#: brief's word budget the way an unbounded diagnosis section would.
+_DOCTOR_LINE_MAX_CHARS = 240
+
+
+def _doctor_report_line(report: DoctorReport) -> str:
+    """One display line for the health lane: the report's lead section
+    (its first non-empty body paragraph), falling back to the draft's
+    headline when the body has nothing readable yet. Empty when there is
+    truly nothing to say, so the caller's degrade-to-empty stays a single
+    ``if line:`` check."""
+    first = next((p.strip() for p in report.body.split("\n\n") if p.strip()), "")
+    text = (first or report.headline or "").lstrip("#").strip()
+    # The lane renders each part as a single `- ` bullet; an embedded
+    # newline would leak an un-bulleted continuation line into the brief.
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > _DOCTOR_LINE_MAX_CHARS:
+        text = text[:_DOCTOR_LINE_MAX_CHARS].rstrip() + "…"
+    return text
+
+
 def _lane_system_activity(
     store: Any,
     *,
@@ -420,6 +444,24 @@ def _lane_system_activity(
         titles = [t for a in fresh if (t := (a.get("title") or "").strip())]
         if titles:
             parts.append(f"Open alerts ({len(titles)}): " + "; ".join(titles))
+
+    # Doctor report headline (self-healing spine Layer 3,
+    # docs/backlog/doctor-tick-report.md item 4) — best-effort, same
+    # degrade-to-empty posture as the open-alerts block above: any read
+    # failure or absence of a fresh report leaves this lane's output
+    # byte-wise unchanged from before this line existed.
+    try:
+        from precis.workers import doctor_report as _doctor_report_mod
+
+        report = _doctor_report_mod.latest_report(
+            store, max_age=_doctor_report_mod.FRESH_WINDOW
+        )
+    except Exception:  # pragma: no cover - doctor report surface optional
+        report = None
+    if report is not None:
+        line = _doctor_report_line(report)
+        if line:
+            parts.append(f"Doctor report: {line}")
 
     # "Needs you" / failed-job attention — count only, the detail is a tap away.
     try:

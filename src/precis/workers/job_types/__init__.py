@@ -214,6 +214,23 @@ def _load_plan_tick() -> JobTypeSpec:
     )
 
 
+def _load_doctor_tick() -> JobTypeSpec:
+    # Self-healing spine Layer 3: the LLM judgment pass over the fleet's
+    # own published health surfaces. Same hardcoded-run shape as
+    # plan_tick (not the plugin dispatch protocol) — see
+    # ``executors/claude_inproc.py::_run_doctor_tick``.
+    from precis.workers.job_types import doctor_tick
+
+    return JobTypeSpec(
+        name="doctor_tick",
+        params_schema=doctor_tick.PARAMS_SCHEMA,
+        compatible_executors=doctor_tick.COMPATIBLE_EXECUTORS,
+        requires=doctor_tick.REQUIRES,
+        description=doctor_tick.DESCRIPTION,
+        run=doctor_tick.run,
+    )
+
+
 def _load_draft_export() -> JobTypeSpec:
     # Deterministic draft → LaTeX → PDF export (runs via its plugin
     # ``dispatch`` under claude_inproc; no claude subprocess).
@@ -535,6 +552,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "plan_tick":
         _REGISTRY["plan_tick"] = _load_plan_tick()
         return _REGISTRY["plan_tick"]
+    if name == "doctor_tick":
+        _REGISTRY["doctor_tick"] = _load_doctor_tick()
+        return _REGISTRY["doctor_tick"]
     if name == "draft_export":
         _REGISTRY["draft_export"] = _load_draft_export()
         return _REGISTRY["draft_export"]
@@ -616,6 +636,7 @@ def known_job_types() -> list[str]:
     builtins = [
         "fix_gripe",
         "plan_tick",
+        "doctor_tick",
         "draft_export",
         "taproot_backfill",
         "reground_claim",
