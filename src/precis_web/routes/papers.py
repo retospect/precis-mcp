@@ -591,7 +591,9 @@ def _render_detail(
             "title": paper["title"],
             "handle": format_handle(ref.kind, ref_id),
             "slug": cite_key,
-            "list_url": "/papers",
+            # Straight into Drive scoped to papers (skips the retired
+            # ``/papers`` list's redirect hop).
+            "list_url": "/drive?k=paper&folder=*&sort=recency",
             "list_label": "papers",
             "n_chunks": n_chunks,
             "pdf_on_disk": found is not None,

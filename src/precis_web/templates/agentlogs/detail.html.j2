@@ -1,9 +1,10 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
 
 <div class="mb-4">
-  <a href="/agentlogs" class="text-xs text-sky-700 hover:underline">← all agent logs</a>
+  {{ drive_back('agentlog', 'Agent logs') }}
   <h1 class="text-lg font-semibold mt-1">{{ title }}</h1>
   <div class="text-[12px] text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
     {% if source %}<span>source: <span class="font-mono">{{ source }}</span></span>{% endif %}

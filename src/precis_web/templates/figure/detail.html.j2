@@ -1,11 +1,12 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
 {# inline SVG fills the canvas box; declarative SMIL/CSS animation then plays #}
 <style>#fig-canvas > svg { width: 100%; height: 100%; display: block; }</style>
 
 <div class="mb-4 flex items-center gap-3">
-  <a href="/figure" class="text-xs text-slate-400 hover:text-slate-600">← Figures</a>
+  {{ drive_back('figure', 'Figures') }}
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <span class="text-xs text-slate-400">{{ slug }} · canvas {{ vb_w }}×{{ vb_h }}</span>
 </div>

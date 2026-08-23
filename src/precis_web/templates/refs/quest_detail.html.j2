@@ -1,7 +1,8 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ headline }}{% endblock %}
 {% block content %}
-<a href="/refs/quest" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
+{{ drive_back('quest', kind_label) }}
 
 {# ── Header strip — striving + status/prio/momentum/tote ────────────── #}
 <div class="mt-2 mb-4">

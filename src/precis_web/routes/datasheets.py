@@ -72,8 +72,8 @@ async def detail(
         ref,
         initial_tab=tab.strip().capitalize(),
         meta_panel="datasheets/_meta_panel.html.j2",
-        list_url="/drive",
-        list_label="drive",
+        list_url="/drive?k=datasheet&folder=*&sort=recency",
+        list_label="datasheets",
         extra=_ds_panel_ctx(ref),
     )
 

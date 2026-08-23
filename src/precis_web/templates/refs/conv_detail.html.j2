@@ -1,7 +1,8 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ ref.title }}{% endblock %}
 {% block content %}
-<a href="/refs/{{ kind }}" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
+{{ drive_back(kind, kind_label) }}
 <div class="mt-2 mb-4">
   <h1 class="text-lg font-semibold">{{ ref.title }}</h1>
   <p class="text-sm text-slate-500">

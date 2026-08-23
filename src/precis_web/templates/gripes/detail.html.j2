@@ -1,7 +1,8 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}Gripe #{{ id }}{% endblock %}
 {% block content %}
-<a href="/gripes" class="text-sm text-slate-500 underline">&larr; Gripes</a>
+{{ drive_back('gripe', 'Gripes') }}
 
 <div class="mt-2 mb-4 flex flex-wrap items-start justify-between gap-3">
   <div>

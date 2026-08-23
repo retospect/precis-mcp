@@ -1,0 +1,8 @@
+{# The one back link for kind-detail pages: straight into Drive scoped to
+   the kind — same pivot as the Status "Refs by kind" chips (folder=* so
+   filed rows list beside unfiled ones) — rather than each kind's thin
+   list page. #}
+{% macro drive_back(kind, label) -%}
+<a href="/drive?k={{ kind | urlencode }}&amp;folder=*&amp;sort=recency"
+   class="text-xs text-slate-400 hover:text-slate-600">&larr; {{ label }}</a>
+{%- endmacro %}

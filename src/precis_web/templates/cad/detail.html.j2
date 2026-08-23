@@ -1,10 +1,11 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
 
 <div class="mb-4">
   <div class="flex items-center gap-3">
-    <a href="/cad" class="text-xs text-slate-400 hover:text-slate-600">← CAD</a>
+    {{ drive_back('cad', 'CAD') }}
     <h1 class="text-lg font-semibold">{{ title }}</h1>
     <span class="text-xs text-slate-400">{{ slug }} · {{ n_parts }} part{{ '' if n_parts == 1 else 's' }} · {{ n_nodes }} feature{{ '' if n_nodes == 1 else 's' }}</span>
   </div>
