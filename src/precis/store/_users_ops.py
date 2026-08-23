@@ -1,7 +1,7 @@
 """``web_users`` CRUD — the precis-web Basic-auth identity table.
 
 Mixin on :class:`precis.store.Store`. Migration ``0131_web_users.sql``
-defines the table; :mod:`precis.users` owns the password KDF and the
+defines the table (``0134`` adds ``orcid``); :mod:`precis.users` owns the password KDF and the
 feed-token digest, so nothing in this module ever sees a plaintext.
 
 Two read shapes, deliberately separate:
@@ -22,16 +22,35 @@ from __future__ import annotations
 from typing import Any
 
 from psycopg import Connection
+from psycopg.errors import UniqueViolation
 
-from precis.users import PasswordRecord, WebUser, normalize_login
+from precis.users import PasswordRecord, WebUser, normalize_login, normalize_orcid
 
 _USER_COLS = (
     "id, login, abbrev, full_name, email, disabled_at, "
     "last_login_at, created_at, updated_at, "
     # Presence, never the digest: callers decide whether a podcast link
     # exists, and nothing outside this module needs the hash itself.
-    "(feed_token_sha256 IS NOT NULL) AS has_feed_token"
+    "(feed_token_sha256 IS NOT NULL) AS has_feed_token, orcid"
 )
+
+
+#: Which unique index a collision came from → what to tell the human.
+#: Names are Postgres' own defaults for the ``UNIQUE`` columns in
+#: ``0131_web_users.sql`` plus the partial index in ``0134``.
+_TAKEN = {
+    "web_users_orcid_key": "that ORCID iD is already on another account",
+    "web_users_abbrev_key": "that abbrev is already taken",
+    "web_users_login_key": "that login is already taken",
+}
+
+
+def _taken(exc: UniqueViolation) -> str:
+    """A duplicate-key error as a sentence the person who typed it can act
+    on. Falls back to the driver's own message for an index this doesn't
+    know — a vague sentence beats swallowing which constraint fired."""
+    name = getattr(exc.diag, "constraint_name", None) or ""
+    return _TAKEN.get(name, str(exc).strip() or "that value is already taken")
 
 
 def _row_to_user(row: tuple[Any, ...]) -> WebUser:
@@ -46,6 +65,7 @@ def _row_to_user(row: tuple[Any, ...]) -> WebUser:
         created_at=row[7],
         updated_at=row[8],
         has_feed_token=bool(row[9]),
+        orcid=row[10],
     )
 
 
@@ -106,9 +126,9 @@ class WebUsersMixin:
         if not row:
             return None
         record = PasswordRecord(
-            password_hash=str(row[10]),
-            password_salt=str(row[11]),
-            password_algo=str(row[12]),
+            password_hash=str(row[11]),
+            password_salt=str(row[12]),
+            password_algo=str(row[13]),
         )
         return _row_to_user(row), record
 
@@ -191,9 +211,25 @@ class WebUsersMixin:
         abbrev: str | None = None,
         full_name: str | None = None,
         email: str | None = None,
+        orcid: str | None = None,
     ) -> bool:
         """Patch the display fields. ``None`` means "leave alone" — use
-        the empty string to clear ``full_name`` / ``email``."""
+        the empty string to clear ``full_name`` / ``email`` / ``orcid``.
+
+        ``orcid`` is normalized (and checksum-validated) here rather than
+        trusted from the caller: the column's CHECK is shape-only, so this
+        is where a mistyped iD is refused no matter which door it came
+        through. Raises :class:`ValueError` on a malformed one — before
+        any of the other fields are written, so a bad iD never lands a
+        half-applied patch.
+
+        A collision with another account's ``abbrev`` / ``login`` /
+        ``orcid`` is a :class:`ValueError` too. The uniqueness lives in
+        the table (it has to — two sessions can race), but a bare
+        ``UniqueViolation`` reaching the callers means a 500 on the web
+        form and a traceback in the CLI for what is, from where the human
+        stands, a correctable typo. Translating it here fixes both doors
+        at once."""
         sets: list[str] = []
         params: list[Any] = []
         if abbrev is not None:
@@ -205,14 +241,20 @@ class WebUsersMixin:
         if email is not None:
             sets.append("email = %s")
             params.append(normalize_login(email) or None)
+        if orcid is not None:
+            sets.append("orcid = %s")
+            params.append(normalize_orcid(orcid) or None)
         if not sets:
             return False
         sets.append("updated_at = now()")
         params.append(normalize_login(login))
         sql = f"UPDATE web_users SET {', '.join(sets)} WHERE login = %s"
-        with self.pool.connection() as conn:
-            with conn.transaction():
-                cur = conn.execute(sql, params)
+        try:
+            with self.pool.connection() as conn:
+                with conn.transaction():
+                    cur = conn.execute(sql, params)
+        except UniqueViolation as exc:
+            raise ValueError(_taken(exc)) from exc
         return bool(cur.rowcount)
 
     def set_web_user_disabled(self, login: str, *, disabled: bool) -> bool:

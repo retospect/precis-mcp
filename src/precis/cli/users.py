@@ -7,7 +7,7 @@ roles to assign. Subcommands:
 * ``list``          — the roster: login, abbrev, name, email, state.
 * ``passwd LOGIN``  — set a new password. **This is the recovery path** —
   HTTP Basic has no reset flow of its own (see below).
-* ``edit LOGIN``    — change abbrev / full name / email.
+* ``edit LOGIN``    — change abbrev / full name / email / ORCID iD.
 * ``disable`` / ``enable LOGIN`` — soft toggle; the row (and its abbrev,
   which future edit-attribution renders) survives.
 * ``rm LOGIN``      — delete outright.
@@ -34,6 +34,9 @@ recovery would mean adding an unauthenticated public route that mints
 credentials — the exact surface the auth gate exists to remove. So
 recovery is this CLI, run over SSH by someone who already has the box.
 The ``email`` column is for display and future notification, not auth.
+The ``orcid`` column is neither: it is the identity a nanopub signed by
+this person is attributed to (:mod:`precis.nanopub.keys`), validated
+(ISO 7064 checksum included) on the way in.
 """
 
 from __future__ import annotations
@@ -90,11 +93,19 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _password_flags(p_pw)
     p_pw.add_argument("--no-pepper", action="store_true", help="Hash as scrypt-v1.")
 
-    p_edit = s.add_parser("edit", help="Change abbrev / name / email.")
+    p_edit = s.add_parser("edit", help="Change abbrev / name / email / ORCID.")
     p_edit.add_argument("login")
     p_edit.add_argument("--abbrev", default=None)
     p_edit.add_argument("--name", default=None, help="Empty string clears it.")
     p_edit.add_argument("--email", default=None, help="Empty string clears it.")
+    p_edit.add_argument(
+        "--orcid",
+        default=None,
+        help=(
+            "ORCID iD — the identity nanopubs this person signs are "
+            "attributed to. Any form; stored dashed. Empty string clears it."
+        ),
+    )
 
     p_dis = s.add_parser("disable", help="Block login, keep the row.")
     p_dis.add_argument("login")
@@ -227,7 +238,8 @@ def _list(store: Store) -> None:
         seen = u.last_login_at.strftime("%Y-%m-%d") if u.last_login_at else "never"
         print(
             f"{u.login:<{width}}  {u.abbrev:<6} {state:<8} "
-            f"last-login {seen}  {u.full_name or ''} {u.email or ''}".rstrip()
+            f"last-login {seen}  {u.full_name or ''} {u.email or ''} "
+            f"{u.orcid or ''}".rstrip()
         )
 
 
@@ -243,9 +255,16 @@ def _passwd(args: argparse.Namespace, store: Store) -> None:
 
 
 def _edit(args: argparse.Namespace, store: Store) -> None:
-    changed = store.update_web_user(
-        args.login, abbrev=args.abbrev, full_name=args.name, email=args.email
-    )
+    try:
+        changed = store.update_web_user(
+            args.login,
+            abbrev=args.abbrev,
+            full_name=args.name,
+            email=args.email,
+            orcid=args.orcid,
+        )
+    except ValueError as exc:  # a mistyped ORCID iD, checksum included
+        raise SystemExit(f"error: {exc}") from exc
     if not changed:
         raise SystemExit("error: nothing to change, or no such user")
     print(f"updated {args.login}")

@@ -190,6 +190,42 @@ def test_approve_sign_and_serve_trig(
     assert client.get("/np/%25").status_code == 404
 
 
+def test_attesting_sign_refuses_without_an_account_orcid(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    """``attest=1`` with nobody signed in is a stop, not a bot signature.
+
+    An attestation names a person. This app runs with the gate off, so
+    there is no account and therefore no iD to attribute the claim to —
+    the same refusal a signed-in user with an empty ``/account`` ORCID
+    field gets.
+    """
+    import json
+
+    store = _store(runtime_with_store)
+    priv, _pub = generate_keypair(2048)
+    monkeypatch.setenv("NANOPUB_ATTESTING_PRIVATE_KEY", priv)
+    monkeypatch.setenv(
+        "NANOPUB_ATTESTING_ORCID", "https://orcid.org/0000-0002-1825-0097"
+    )
+    paper, chunk, sha = _seed_paper(store)
+    title = "DFT finds the unattributed claim holds."
+    hub = _seed_hub(store, title, paper, chunk)
+    approved = client.post(
+        f"/nanopub/fi{hub}/approve",
+        data={"title": title, "payload": json.dumps(_payload(chunk, sha))},
+        follow_redirects=False,
+    )
+    assert approved.status_code == 303
+
+    resp = client.post(f"/nanopub/fi{hub}/sign", data={"attest": "1"})
+    assert resp.status_code == 400
+    assert "ORCID" in resp.text
+    # Refused before the key was opened: the row is untouched, so the
+    # claim can still be signed once an identity exists.
+    assert store.nanopub_publish_row(hub).state == "reviewed"
+
+
 def test_claim_page_shows_review_section_with_publish_row(
     client: TestClient, runtime_with_store
 ) -> None:

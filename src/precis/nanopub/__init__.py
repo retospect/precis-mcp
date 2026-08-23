@@ -63,7 +63,13 @@ Built (slices 1–3, all local / reversible):
   loads only through the explicitly-interactive door
   (``load_profile(role='attesting', interactive=True)``) — no worker,
   job, or scheduled pass may touch it, which is what keeps "signed"
-  meaning "a human checked".
+  meaning "a human checked". *Which* human is a separate question from
+  which key: the attesting signature carries the signer's own ORCID iD,
+  read off their ``web_users`` row (set at ``/account``) and passed down
+  by the web sign button. It must match the identity the key is
+  registered to (vault ``NANOPUB_ATTESTING_ORCID``) or the sign is
+  refused — so the account field is an authorization check, not a label,
+  and no claim is ever attributed to a person who never held the key.
 - :mod:`.ots` — OpenTimestamps: nightly Merkle batch over signed
   artifacts (leaf digests = ``byte_sha256`` of the exact stored bytes),
   one calendar stamp per batch, pending→upgraded sweep with a

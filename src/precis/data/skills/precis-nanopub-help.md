@@ -40,11 +40,14 @@ stays authoritative; the nanopub is the frozen published form.
 - **Minting, signing, anchoring, sign-off and publishing are not agent
   verbs.** `precis nanopub approve/sign/signoff/anchor/publish` is run
   by a person (the `/nanopub` web surface is the same interactive
-  door); the attesting key is invocable only from those surfaces. A bot
-  signature alone never publishes anything: publication requires an
-  **attesting** entry in the trust allowlist, and the registry POST
-  (`publish --live`) is the one irreversible step — CLI-only, never
-  automated.
+  door); the attesting key is invocable only from those surfaces. An
+  attesting signature is attributed to the signing human's own ORCID iD
+  (their `/account` field) and is refused when that is empty or is not
+  the identity the key is registered to — there is no way to attest as
+  the machine. A bot signature alone never publishes anything:
+  publication requires an **attesting** entry in the trust allowlist,
+  and the registry POST (`publish --live`) is the one irreversible
+  step — CLI-only, never automated.
 - Never edit a hub that shows `reviewed` or later state to "fix" its
   wording — the approved string is frozen; an edit flips the row back
   for re-review (pre-publication) or forces a public supersede

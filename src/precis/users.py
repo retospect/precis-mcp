@@ -106,6 +106,9 @@ class WebUser:
     #: ``/account`` knows the difference between "no link yet" and "a
     #: link exists but this deployment can't read it back".
     has_feed_token: bool = False
+    #: Canonical dashed ORCID iD, or ``None``. The identity a nanopub
+    #: this person signs is attributed to — see :func:`normalize_orcid`.
+    orcid: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -143,6 +146,34 @@ def validate_password(password: str) -> None:
             f"password must be at least {MIN_PASSWORD_LENGTH} characters "
             f"(got {len(password)})"
         )
+
+
+def normalize_orcid(raw: str) -> str:
+    """Canonical dashed ORCID iD, ``""`` for empty. Raises ``ValueError``.
+
+    Both write doors — ``precis users edit --orcid`` and the ``/account``
+    profile form — go through here, so a checksum-failing iD cannot enter
+    the table from either one. The parse itself is
+    :func:`precis.ingest.orcid.normalize_orcid_id`: one ISO 7064
+    implementation for the whole repo, shared with ``kind='orcid'``. It is
+    imported lazily because this module sits on the auth gate's hot path
+    and nothing there resolves an iD.
+
+    Empty is a value, not a failure — clearing the field is how you say
+    "not this account's identity any more".
+    """
+    from precis.errors import BadInput
+    from precis.ingest.orcid import normalize_orcid_id
+
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    try:
+        return normalize_orcid_id(value)
+    except BadInput as exc:
+        # BadInput is the MCP envelope; the two callers here are a CLI and
+        # an HTML form, both of which speak ValueError already.
+        raise ValueError(str(exc)) from exc
 
 
 def normalize_login(value: str) -> str:
@@ -366,6 +397,7 @@ __all__ = [
     "hash_password",
     "mint_feed_token",
     "normalize_login",
+    "normalize_orcid",
     "recall_feed_token",
     "remember_feed_token",
     "resolve_pepper",

@@ -44,6 +44,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from precis_web.auth import current_user
 from precis_web.deps import get_store, get_web_config, templates
 from precis_web.routes.claim import claim_page_context
 
@@ -249,6 +250,22 @@ async def nanopub_sign(
 
     store = get_store(request)
     attesting = bool(attest)
+    # An attestation is a person's, so it is signed under the person's own
+    # ORCID (``web_users.orcid``, set on /account) — not under a
+    # deployment-wide identity that would make every attester the box.
+    # No iD on the account means there is nobody to attribute the claim
+    # to; that is a stop, not a default.
+    signer = current_user(request)
+    if attesting and (signer is None or not signer.orcid):
+        return _error(
+            request,
+            "Sign refused",
+            "an attestation is attributed to an ORCID iD, and there is no "
+            "signed-in account carrying one — add yours on /account (with "
+            "the gate on, so the server knows who you are), then sign. The "
+            "bot signature below needs no identity and stays available.",
+            400,
+        )
     try:
         mint.sign(
             store,
@@ -259,6 +276,10 @@ async def nanopub_sign(
             # open the attesting-key door.
             interactive=attesting,
             llm_models=[],
+            signer_orcid=signer.orcid if attesting and signer else None,
+            signer_name=(signer.full_name or signer.login)
+            if attesting and signer
+            else None,
         )
     except (BadInput, PermissionError) as exc:
         return _error(request, "Sign refused", str(exc), 400)

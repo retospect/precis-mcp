@@ -222,9 +222,20 @@ def sign(
     role: str = "bot",
     interactive: bool = False,
     llm_models: list[str] | None = None,
+    signer_orcid: str | None = None,
+    signer_name: str | None = None,
 ) -> PublishRow:
     """Mint + sign the hub's ``reviewed`` publish row into an immutable
     artifact: ``reviewed`` → ``signed``.
+
+    ``signer_orcid`` is the attesting human's own iD (``web_users.orcid``,
+    set on ``/account``) and lands in the artifact's ``signer`` column —
+    an attestation names a person, so the web sign button passes the one
+    on the signed-in account rather than letting the box speak for
+    whoever is at the keyboard. It is checked against the key's
+    registered identity; see
+    :func:`precis.nanopub.keys.load_profile`. Ignored for the bot role,
+    whose identity is the fixed agent URI.
 
     Gates re-run (state may have moved since approval) plus the drift
     check; a compound resolves its atoms' trusty codes into
@@ -250,7 +261,13 @@ def sign(
         raise MintGateError(violations)
 
     inp, dependency_codes = _mint_input(store, row, bundle)
-    profile = load_profile(store, role, interactive=interactive)
+    profile = load_profile(
+        store,
+        role,
+        interactive=interactive,
+        signer_orcid=signer_orcid,
+        signer_name=signer_name,
+    )
     np = _build_and_sign(inp, profile, llm_models or [])
 
     trig_bytes = np.rdf.serialize(format="trig").encode("utf-8")

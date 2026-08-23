@@ -25,9 +25,12 @@ same-origin, **not** ``DENY``/``'none'`` — the UI frames its own pages
 ``PRECIS_WEB_AUTH=off`` disables the gate for local development only.
 ``/account``
 (``routes/account.py``) is the signed-in user's own page — password,
-profile, and the podcast subscribe URL (shown whole, copyable: the row
+profile (including the ORCID iD nanopubs signed here are attributed to),
+sign-out, and the podcast subscribe URL (shown whole, copyable: the row
 holds only the token's digest, so the readable copy comes from the
-vault); roster management stays in the CLI.
+vault); roster management stays in the CLI. Sign-out is a 401 with a
+fresh challenge, not a session delete — Basic auth has no session, so
+the browser's own prompt is the door.
 
 Nav (template ``templates/base.html.j2``; badge counts
 ``nav.py::nav_badges``):

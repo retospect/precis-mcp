@@ -281,6 +281,90 @@ def test_profile_rejects_a_non_address() -> None:
     assert store.user.email == "reto@example.com"
 
 
+def test_profile_saves_a_pasted_orcid_url_as_the_dashed_id() -> None:
+    store = FakeStore()
+    r = _client(store).post(
+        "/account/profile",
+        data={
+            "full_name": "",
+            "email": "",
+            "orcid": "https://orcid.org/0000-0002-1825-0097",
+        },
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert store.user.orcid == "0000-0002-1825-0097"
+
+
+def test_profile_refuses_an_orcid_that_fails_its_checksum() -> None:
+    store = FakeStore()
+    r = _client(store).post(
+        "/account/profile",
+        # Last digit off by one: shape-valid, checksum-invalid — exactly
+        # the mistype that would otherwise sign a claim as a stranger.
+        data={"full_name": "", "email": "", "orcid": "0000-0002-1825-0098"},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert "checksum" in r.text
+    assert store.user.orcid is None
+
+
+def test_profile_shows_a_taken_orcid_as_a_banner_not_a_500() -> None:
+    store = FakeStore()
+
+    def _taken(login: str, **fields: object) -> bool:
+        raise ValueError("that ORCID iD is already on another account")
+
+    store.update_web_user = _taken  # type: ignore[method-assign]
+    r = _client(store).post(
+        "/account/profile",
+        data={"full_name": "", "email": "", "orcid": "0000-0002-1825-0097"},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert "already on another account" in r.text
+
+
+def test_the_page_says_the_orcid_is_for_signing_nanopubs() -> None:
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert r.status_code == 200
+    assert 'name="orcid"' in r.text
+    assert "used for signing" in r.text and "nanopub" in r.text
+
+
+# ── sign out ─────────────────────────────────────────────────────────
+
+
+def test_logout_answers_with_a_fresh_challenge() -> None:
+    client = _client(FakeStore())
+    r = client.post("/account/logout", headers=_auth())
+    assert r.status_code == 401
+    challenge = r.headers["www-authenticate"]
+    # A realm the cached credential was never accepted for is the whole
+    # mechanism — a bare ``realm="precis"`` would be re-sent silently.
+    assert challenge.startswith("Basic realm=") and "signed-out" in challenge
+    assert challenge.isascii()  # header values are latin-1; keep it plain
+    assert r.headers["cache-control"] == "no-store"
+    assert "Signed out" in r.text
+
+
+def test_each_logout_challenge_is_a_different_realm() -> None:
+    client = _client(FakeStore())
+    first = client.post("/account/logout", headers=_auth())
+    second = client.post("/account/logout", headers=_auth())
+    # Otherwise the browser caches the sign-out realm too, and the second
+    # sign-out of a session is a no-op.
+    assert first.headers["www-authenticate"] != second.headers["www-authenticate"]
+
+
+def test_logout_is_not_a_get() -> None:
+    # A link would be followed by prefetchers; only the button signs out.
+    client = _client(FakeStore())
+    assert client.get("/account/logout", headers=_auth()).status_code == 405
+
+
 # ── podcast token ────────────────────────────────────────────────────
 
 

@@ -9,7 +9,14 @@ who reaches one credential mint more of them.
 Three things live here today:
 
 * **Change password** — the only self-service credential path there is.
-* **Profile** — full name and email, both display-only fields.
+* **Profile** — full name, email, and ORCID iD. The first two are
+  display-only; the iD is not. A nanopub signature is attributed to an
+  ORCID, never to a login (:func:`precis.nanopub.keys.load_profile`
+  builds the signing profile around one, and the artifact stores it as
+  ``signer``), so this field is where the human at the keyboard is
+  connected to the identity the claims they attest will carry.
+* **Sign out** — see below; Basic auth makes this stranger than it
+  should be.
 * **Podcast feed link** — the subscribe URL, shown whole so it can be
   copied into a podcast app, plus mint/revoke. The row stores only the
   token's digest, so the readable copy comes from the vault
@@ -35,11 +42,24 @@ runs in another process entirely — see
 credentials for the life of the tab, so "you're already authenticated"
 is a weak claim about who is at the keyboard. Re-typing it is the only
 thing standing between an unlocked laptop and a stolen account.
+
+**Signing out is a 401, not a cookie delete.** There is no session to
+end: the credential lives in the browser, which re-sends it on every
+request until it decides to forget. The one lever a server has is to
+answer with a fresh challenge, which is what :func:`logout` does — a
+401 carrying ``WWW-Authenticate`` under a realm the cached credential
+was never accepted for. Every mainstream browser responds by dropping
+what it had and prompting again; cancelling that prompt is the actual
+sign-out, and the page says so, because a "signed out" banner the
+browser then silently un-does would be a lie. Quitting the browser
+remains the only guarantee, and that is a property of HTTP Basic, not
+of this route.
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -53,13 +73,14 @@ from precis.users import (
     forget_feed_token,
     hash_password,
     mint_feed_token,
+    normalize_orcid,
     recall_feed_token,
     remember_feed_token,
     resolve_pepper,
     validate_password,
     verify_password,
 )
-from precis_web.auth import current_user
+from precis_web.auth import REALM, current_user
 from precis_web.deps import get_store, get_web_config, templates
 
 log = logging.getLogger(__name__)
@@ -214,18 +235,75 @@ async def save_profile(
     request: Request,
     full_name: str = Form(""),
     email: str = Form(""),
+    orcid: str = Form(""),
 ) -> Response:
-    """Update the two display fields. Empty clears."""
+    """Update the profile fields. Empty clears.
+
+    The iD is validated (shape *and* ISO 7064 checksum) before anything
+    is written, and stored canonically dashed — paste
+    ``https://orcid.org/0000-…`` and the URL wrapper is stripped, because
+    the prefix is rendering and storing it would make "same iD?" a
+    string-shape question. A mistyped digit is refused here rather than
+    surfacing later as a nanopub attributed to a stranger.
+    """
     user = _require_self(request)
     address = email.strip()
     if address and "@" not in address:
         return _render(
             request, user=user, error=f"{address!r} doesn't look like an address."
         )
-    get_store(request).update_web_user(
-        user.login, full_name=full_name.strip(), email=address
-    )
+    try:
+        researcher_id = normalize_orcid(orcid)
+        # The store raises for a *taken* iD as well as a malformed one —
+        # the unique index is the only thing that can decide the first,
+        # and both are the same kind of correctable typo from here.
+        get_store(request).update_web_user(
+            user.login,
+            full_name=full_name.strip(),
+            email=address,
+            orcid=researcher_id,
+        )
+    except ValueError as exc:
+        return _render(request, user=user, error=str(exc))
     return RedirectResponse("/account?saved=1", status_code=303)
+
+
+@router.post("/logout", response_class=HTMLResponse)
+async def logout(request: Request) -> Response:
+    """Answer with a challenge the browser's cached credential can't satisfy.
+
+    POST, not a link: a GET would be followed by every prefetcher and
+    link-checker that sees the page, and being logged out by a browser's
+    speculative fetch is an unpleasant way to learn that.
+
+    The realm carries a random suffix. Browsers key a cached Basic
+    credential on origin *and* realm, so an unfamiliar realm is what makes
+    them prompt instead of silently re-sending — a fixed "signed out"
+    realm would itself be cached after the first use, and the second
+    sign-out of the session would do nothing.
+
+    The 401 body is the page you are meant to read after cancelling the
+    prompt. ``no-store`` because this is the one page whose whole purpose
+    is that the *next* request re-authenticates.
+    """
+    user = current_user(request)
+    if user is not None:
+        log.info("account: sign-out challenge issued for %s", user.login)
+    return templates.TemplateResponse(
+        request,
+        "account/logout.html.j2",
+        {"active_tab": "account", "user": user},
+        status_code=401,
+        headers={
+            # ASCII only, and no em dash: a header value is latin-1 by
+            # spec, and starlette raises rather than mangling one.
+            "WWW-Authenticate": (
+                f'Basic realm="{REALM} signed-out {secrets.token_hex(4)}", '
+                "charset=UTF-8"
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/feed-token", response_class=HTMLResponse)

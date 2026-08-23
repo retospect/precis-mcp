@@ -199,3 +199,48 @@ def test_feed_token_clear_revokes(store: Store) -> None:
         cli_users._feed_token(args, store)
     user = store.get_web_user("reto")
     assert user is not None
+
+
+# ── edit --orcid ─────────────────────────────────────────────────────
+
+
+def _edit(store: Store, login: str = "reto", **over: object) -> str:
+    args = _parse(["users", "edit", login])
+    for k, v in over.items():
+        setattr(args, k, v)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cli_users._edit(args, store)
+    return buf.getvalue()
+
+
+def test_edit_stores_the_orcid_canonically(store: Store) -> None:
+    _add(store)
+    _edit(store, orcid="https://orcid.org/0000-0002-1825-0097")
+    user = store.get_web_user("reto")
+    assert user is not None
+    assert user.orcid == "0000-0002-1825-0097"
+
+
+def test_edit_refuses_a_mistyped_orcid_without_a_traceback(store: Store) -> None:
+    _add(store)
+    with pytest.raises(SystemExit) as exc:
+        _edit(store, orcid="0000-0002-1825-0098")  # checksum digit off by one
+    assert "error:" in str(exc.value)
+    user = store.get_web_user("reto")
+    assert user is not None and user.orcid is None
+
+
+def test_edit_refuses_an_orcid_another_account_already_claims(store: Store) -> None:
+    from precis.users import hash_password
+
+    _add(store)
+    # Straight to the store: the stdin fixture holds one password, and a
+    # second CLI add in the same test would read an exhausted buffer.
+    store.create_web_user(login="ada", abbrev="al", password=hash_password("pw"))
+    _edit(store, orcid="0000-0002-1825-0097")
+    # Two accounts on one iD is a duplicate person or a typo; either way
+    # the operator gets a sentence, not a UniqueViolation traceback.
+    with pytest.raises(SystemExit) as exc:
+        _edit(store, "ada", orcid="0000-0002-1825-0097")
+    assert "already on another account" in str(exc.value)

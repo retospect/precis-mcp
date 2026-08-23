@@ -89,7 +89,8 @@ swaps the typed surface for one `precis(command, text=)` tool over the same
 dispatcher — `tools/command_parser.py`), the **CLI**
 (`precis …`), the **web UI** (`src/precis_web/`, behind HTTP Basic against
 `web_users` — `precis_web/auth.py`, roster via `precis users`, self-service
-at `/account`), the
+at `/account`: password, ORCID iD (the identity an attesting nanopub
+signature is attributed to), podcast link, sign-out-by-fresh-challenge), the
 **Discord bridge** (`src/asa_bot/`, `[asa]` extra, stdio to the server), and
 the **Slack bridge** (`src/asa_slack/`, `[asa-slack]` extra) — a sibling that
 routes chat turns through the ADR-0046 `dispatch()` seam (forced `Tier.BIG` +

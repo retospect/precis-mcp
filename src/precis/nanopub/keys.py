@@ -42,8 +42,14 @@ VAULT_SECRET = {
     "attesting": "NANOPUB_ATTESTING_PRIVATE_KEY",
 }
 #: The attesting identity's ORCID URI lives in the vault too — it is the
-#: allowlist key, not a code constant.
+#: allowlist key, not a code constant. It names the human the *key* is
+#: registered to; :func:`load_profile` takes the signer's own iD (from
+#: their ``web_users`` row, via ``/account``) and refuses to sign under
+#: this key for anybody else.
 ATTESTING_ORCID_SECRET = "NANOPUB_ATTESTING_ORCID"
+
+#: URI form of an ORCID iD — what a nanopub carries as its signer.
+ORCID_URI_PREFIX = "https://orcid.org/"
 
 MIN_KEY_BITS = 2048
 GENERATE_KEY_BITS = 4096
@@ -85,11 +91,25 @@ def fingerprint(public_b64der: str) -> str:
     return hashlib.sha256(base64.b64decode(public_b64der)).hexdigest()
 
 
+def orcid_uri(value: str) -> str:
+    """An ORCID iD in any accepted form → the ``https://orcid.org/…``
+    URI a nanopub is signed under. Raises on a malformed or
+    checksum-failing iD (:func:`precis.users.normalize_orcid`)."""
+    from precis.users import normalize_orcid
+
+    canonical = normalize_orcid(value)
+    if not canonical:
+        raise ValueError("no ORCID iD given")
+    return f"{ORCID_URI_PREFIX}{canonical}"
+
+
 def load_profile(
     store: Store | None,
     role: str,
     *,
     interactive: bool = False,
+    signer_orcid: str | None = None,
+    signer_name: str | None = None,
 ) -> Profile:
     """The signing :class:`nanopub.Profile` for ``role`` (``'bot'`` or
     ``'attesting'``), keys from the vault.
@@ -97,7 +117,23 @@ def load_profile(
     ``interactive=True`` is the attesting-key door: pass it ONLY from a
     surface a person is driving right now. Worker/job/scheduled code
     calling with it is a defect by definition — the parameter exists to
-    make that defect a one-line grep."""
+    make that defect a one-line grep.
+
+    ``signer_orcid`` is **who is attesting** — the iD off the signed-in
+    person's account (``/account``, ``web_users.orcid``). A nanopub is
+    attributed to an ORCID and never to a login, so the identity has to
+    come from the human at the surface rather than from a
+    deployment-wide constant; the web sign button passes theirs. Omitted
+    (the CLI, where there is no web session), the vault value stands in.
+
+    **It must match the vault's** :data:`ATTESTING_ORCID_SECRET`. That
+    secret names the human this key is *registered to* — the nanopub
+    registry allowlists the pair — so signing under someone else's iD
+    with it would publish a claim attributed to a person who never held
+    the key. A mismatch is refused, which is also what makes the account
+    field an authorization check and not just a label: only the human the
+    key belongs to can drive the attesting button.
+    """
     from nanopub import Profile
 
     from precis.secrets import get_secret
@@ -111,6 +147,48 @@ def load_profile(
             "workers and jobs sign with the non-attesting bot key"
         )
 
+    # Identity first, key second: everything that can refuse this call
+    # runs before the private key is read out of the vault. Nothing
+    # downstream depends on the order — it is so a rejected sign never
+    # touches the key material at all, which keeps any future
+    # vault-access audit honest about what was actually opened.
+    if role == "bot":
+        identity = str(BOT_AGENT)
+        name = "precis (non-attesting bot identity)"
+    else:
+        stored = get_secret(ATTESTING_ORCID_SECRET, store=store) or ""
+        if not stored.startswith(ORCID_URI_PREFIX):
+            raise RuntimeError(
+                "the attesting identity must be an ORCID URI in vault "
+                f"secret {ATTESTING_ORCID_SECRET} (got {stored!r})"
+            )
+        try:
+            # Canonicalize BOTH sides before comparing. The vault value is
+            # typed in by an operator; a lowercase checksum 'x' or a
+            # missing dash there would otherwise fail every legitimate
+            # signer closed, and the person staring at the refusal has no
+            # way to see that the two iDs are the same one.
+            identity = orcid_uri(stored)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"vault secret {ATTESTING_ORCID_SECRET} is not a usable "
+                f"ORCID iD ({exc})"
+            ) from exc
+        name = "attesting reviewer"
+        if signer_orcid:
+            try:
+                claimed = orcid_uri(signer_orcid)
+            except ValueError as exc:
+                raise PermissionError(f"signer ORCID iD: {exc}") from exc
+            if claimed != identity:
+                raise PermissionError(
+                    f"this attesting key is registered to {identity} — it "
+                    f"cannot sign as {claimed}. Set the right iD on "
+                    "/account, or have the person who holds that identity "
+                    "sign."
+                )
+            name = signer_name or name
+
     private = get_secret(VAULT_SECRET[role], store=store)
     if not private:
         raise RuntimeError(
@@ -118,18 +196,6 @@ def load_profile(
             "`precis nanopub keygen` and store it via `precis secret set`"
         )
     public = public_key_b64(private)
-
-    if role == "bot":
-        identity = str(BOT_AGENT)
-        name = "precis (non-attesting bot identity)"
-    else:
-        identity = get_secret(ATTESTING_ORCID_SECRET, store=store) or ""
-        if not identity.startswith("https://orcid.org/"):
-            raise RuntimeError(
-                "the attesting identity must be an ORCID URI in vault "
-                f"secret {ATTESTING_ORCID_SECRET} (got {identity!r})"
-            )
-        name = "attesting reviewer"
 
     return Profile(
         orcid_id=identity,

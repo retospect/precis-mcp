@@ -96,6 +96,43 @@ def test_update_display_fields(store: Store) -> None:
     assert not store.update_web_user("reto")
 
 
+def test_orcid_is_stored_canonically_and_clears(store: Store) -> None:
+    _make(store)
+    # Any accepted form goes in; the dashed iD comes back out.
+    assert store.update_web_user("reto", orcid="https://orcid.org/0000-0002-1825-0097")
+    user = store.get_web_user("reto")
+    assert user is not None
+    assert user.orcid == "0000-0002-1825-0097"
+    # Empty string clears, same as the other display fields.
+    assert store.update_web_user("reto", orcid="")
+    user = store.get_web_user("reto")
+    assert user is not None
+    assert user.orcid is None
+
+
+def test_orcid_checksum_is_refused_before_anything_is_written(store: Store) -> None:
+    _make(store, full_name="Reto Stamm")
+    with pytest.raises(ValueError):
+        store.update_web_user("reto", full_name="Changed", orcid="0000-0002-1825-0098")
+    user = store.get_web_user("reto")
+    assert user is not None
+    assert user.orcid is None
+    # The patch is refused whole — a bad iD must not land the other fields.
+    assert user.full_name == "Reto Stamm"
+
+
+def test_a_second_account_cannot_claim_the_same_orcid(store: Store) -> None:
+    _make(store)
+    _make(store, login="ada", abbrev="al")
+    assert store.update_web_user("reto", orcid="0000-0002-1825-0097")
+    with pytest.raises(ValueError, match="already on another account"):
+        store.update_web_user("ada", orcid="0000-0002-1825-0097")
+    # The index is partial, so "nobody has one" stays unconstrained.
+    assert store.update_web_user("ada", orcid="")
+    user = store.get_web_user("ada")
+    assert user is not None and user.orcid is None
+
+
 def test_feed_token_lookup_and_rotation(store: Store) -> None:
     _make(store)
     token, digest = mint_feed_token()
