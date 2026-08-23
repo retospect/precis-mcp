@@ -178,6 +178,48 @@
       mermaid.initialize({ startOnLoad: true, securityLevel: "strict", theme: "default" });
     </script>
     {% endif %}
+    {# ── Vitals strip ──────────────────────────────────────────────
+       Counted over the WHOLE tree (routes/tasks.py::_tree_summary),
+       not the 25 roots this page renders — "is the factory alive" is
+       not a per-page question. Each count links to the filter that
+       shows exactly those rows, so a non-zero number is one click
+       from its cause. #}
+    <div class="mb-3 flex flex-wrap items-center gap-2 text-xs">
+      <a href="/tasks?require=kind%3Ajob&require=STATUS%3Arunning&show_jobs=all"
+         class="px-2 py-1 rounded-full border {% if summary.running %}bg-amber-50 border-amber-300 text-amber-800{% else %}border-slate-200 text-slate-500{% endif %}"
+         title="jobs currently claimed by a worker">⏱ {{ summary.running }} running</a>
+      <a href="/tasks?require=kind%3Ajob&require=STATUS%3Aqueued&show_jobs=all"
+         class="px-2 py-1 rounded-full border {% if summary.queued %}bg-sky-50 border-sky-300 text-sky-800{% else %}border-slate-200 text-slate-500{% endif %}"
+         title="jobs minted and waiting for a worker">{{ summary.queued }} queued</a>
+      {% if summary.stuck %}
+      <a href="/tasks?require=stuck&show_jobs=all"
+         class="px-2 py-1 rounded-full border bg-rose-50 border-rose-300 text-rose-800 font-medium"
+         title="running past PRECIS_STUCK_JOB_HOURS with a dead lease — presumed dead, pending sweeper or claim-time reclaim">⚠ {{ summary.stuck }} stuck</a>
+      {% endif %}
+      {% if summary.parked %}
+      <span class="px-2 py-1 rounded-full border bg-rose-50 border-rose-200 text-rose-700"
+            title="todos parked behind a failed child job — each shows a ▶ restart on its row">{{ summary.parked }} parked on failure</span>
+      {% endif %}
+      {% if summary.halted %}
+      <span class="px-2 py-1 rounded-full border border-slate-300 text-slate-600"
+            title="subtrees with a halt brake on — the planner mints no ticks under these until ▶">⏸ {{ summary.halted }} halted</span>
+      {% endif %}
+      {% if summary.oldest_running %}
+      <span class="text-slate-400" title="the longest-running job started {{ summary.oldest_running | abs_ts }}">oldest run {{ summary.oldest_running_for }}</span>
+      {% endif %}
+      {# Auto-refresh. Off by default and opt-in: this page has editable
+         textareas + tag inputs, and a reload that eats half-typed text is
+         worse than a stale number. The JS below skips the reload while any
+         input is focused for the same reason. #}
+      <span class="ml-auto flex items-center gap-2 text-slate-400">
+        <span id="tasks-as-of" title="server render time — {{ as_of | abs_ts }}">as of {{ as_of | abs_ts }}</span>
+        <button type="button" id="tasks-autorefresh"
+                class="px-2 py-1 rounded border border-slate-300 hover:bg-slate-50"
+                title="reload every 30s so a left-open tab stays honest; skipped while you're typing">
+          <span data-when-on>⟳ auto 30s</span><span data-when-off>⟳ auto off</span>
+        </button>
+      </span>
+    </div>
     <div class="flex items-center justify-between mb-3">
       <h1 class="text-lg font-semibold">
         {% if focus_id %}Subtree of #{{ focus_id }}{% else %}Task tree{% endif %}
@@ -302,7 +344,7 @@
           {% endif %}
           {# Processing signals: live row lock and worker lease. #}
           {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-rose-600 text-white" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}
-          {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white" title="leased until {{ r.lease_until }}">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500" title="lease expired {{ r.lease_until }}">lease expired</span>{% endif %}
+          {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-500 text-white" title="worker lease expires {{ r.lease_until | relative }} ({{ r.lease_until | abs_ts }})">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-500" title="worker lease expired {{ r.lease_until | relative }} ({{ r.lease_until | abs_ts }})">lease expired</span>{% endif %}
           {% for ai in r.attention_icons %}
           <a href="{{ ai.href }}" class="text-base leading-none" title="{{ ai.title }}">{{ ai.icon }}</a>
           {% endfor %}
@@ -354,12 +396,52 @@
                  class="absolute z-50 left-0 top-full mt-1"></div>
           </span>
           {% endif %}
+          {# ── Time cluster ───────────────────────────────────────────
+             The row's single right-hand anchor (ml-auto): everything
+             after it — retry / ⏹ / 🔍 / 📊 / ⋯ — packs to the right of
+             it. Relative in the row, absolute in the tooltip, the same
+             pairing every other list view uses.
+
+             What each row answers:
+               todo  — when it was minted, and (once it leaves 'open')
+                       how long it's been in its current state.
+               job   — queued: how long it's been waiting.
+                       running: how long it's been running (+ ⚠ when the
+                       sweeper would call it dead).
+                       terminal: when it finished, and the queue/run
+                       split from ``r.timing``.
+             ``status_since`` is the ref_tags row for the CURRENT status
+             — see routes/tasks.py::_load_tags for why that's all the
+             transition history there is. #}
+          <span class="ml-auto flex items-center gap-1.5 text-xs text-slate-400 tabular-nums whitespace-nowrap">
+            {% if r.stuck %}
+            <span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-medium"
+                  title="STATUS:running since {{ r.status_since | abs_ts }} with no live lease, past PRECIS_STUCK_JOB_HOURS — presumed dead. Recovery is the sweeper, or the next claim cycle's reclaim for a lease-owning executor.">⚠ stuck {{ r.status_since | ago | replace(' ago', '') }}</span>
+            {% endif %}
+            {% if r.kind == 'job' %}
+              {% if r.status == 'queued' %}
+              <span title="minted {{ r.created_at | abs_ts }} — waiting for a worker to claim it">queued {{ r.created_at | ago }}</span>
+              {% elif r.status == 'running' %}
+              <span title="{% if r.started_at %}claimed {{ r.started_at | abs_ts }}{% else %}STATUS:running since {{ r.status_since | abs_ts }}{% endif %}">started {{ (r.started_at or r.status_since) | ago }}</span>
+              {% else %}
+              <span title="{{ r.status }} at {{ r.status_since | abs_ts }}">{{ r.status }} {{ r.status_since | ago }}</span>
+              {% endif %}
+              {% if r.timing %}
+              <span class="text-slate-300" title="queue wait vs run time{% if not r.started_at %} — this job predates the meta.started_at stamp, so the two can't be told apart{% endif %}">{{ r.timing }}</span>
+              {% endif %}
+            {% else %}
+              <span title="created {{ r.created_at | abs_ts }}">created {{ r.created_at | ago }}</span>
+              {% if r.status != 'open' and r.status_since %}
+              <span class="text-slate-300" title="entered {{ r.status }} at {{ r.status_since | abs_ts }}">{{ r.status }} {{ r.status_since | ago }}</span>
+              {% endif %}
+            {% endif %}
+          </span>
           {# Retry a failed/cancelled job: clears the parent's child-failed
              bubble (optionally swapping its meta.llm_tier) so dispatch
              re-mints a fresh attempt. Posts to put(kind='job', mode='retry')
              via the /retry route. Visible with "+ show closed jobs". #}
           {% if r.kind == 'job' and r.status in ['failed', "cancelled"] %}
-          <form method="post" action="/tasks/{{ r.id }}/retry" class="ml-auto flex items-center gap-1">
+          <form method="post" action="/tasks/{{ r.id }}/retry" class="flex items-center gap-1">
             {{ filter_inputs() }}
             <select name="model" class="rounded border-slate-300 text-xs border px-1 py-0.5"
                     title="model for the retry (blank = keep the parent's current LLM tier)">
@@ -376,7 +458,7 @@
           {# Tape-player ⏹ for a live job: cancel it and halt its parent task
              so dispatch doesn't immediately re-mint a fresh tick. #}
           {% if r.kind == 'job' and r.status in ['queued', 'running'] %}
-          <form method="post" action="/tasks/{{ r.id }}/stop" class="ml-auto inline-flex">
+          <form method="post" action="/tasks/{{ r.id }}/stop" class="inline-flex">
             {{ filter_inputs() }}
             <button class="text-sm leading-none text-rose-600 hover:text-rose-800"
                     title="⏹ stop — cancel this job &amp; halt its parent task">⏹</button>
@@ -388,13 +470,12 @@
              one click for the visual-tree path. #}
           {% if r.id != focus_id %}
           <a href="/tasks{{ state_qs(r.id) }}"
-             class="ml-auto text-xs text-slate-400 hover:text-emerald-700"
+             class="text-xs text-slate-400 hover:text-emerald-700"
              title="focus this subtree">🔍</a>
           <a href="/tasks{{ state_qs(r.id, tree_override=3) }}"
              class="text-xs text-slate-400 hover:text-emerald-700"
              title="focus + show tree diagram (3 deep)">📊</a>
           {% else %}
-          <span class="ml-auto"></span>
           {% endif %}
           {# Tape-player stop/start: ⏹ halts this whole subtree (and cancels
              its live jobs) so the planner stops minting ticks; ▶ clears the
@@ -773,6 +854,65 @@
 
   applyFilters();
   applyCollapsed();
+})();
+</script>
+
+<script>
+/* Auto-refresh + a ticking staleness clock for the vitals strip.
+
+   Separate from the tree script above, which early-returns when there
+   are no rows — an empty tree is exactly when you most want to know
+   whether the page is live or a tab you left open on Tuesday. */
+(function () {
+  const BTN = document.getElementById('tasks-autorefresh');
+  const AS_OF = document.getElementById('tasks-as-of');
+  if (!BTN || !AS_OF) return;
+  const KEY = 'precis.tasks.autorefresh';
+  const RENDERED_AT = Date.now();
+  const BASE_LABEL = AS_OF.textContent;
+
+  function isOn() {
+    try { return localStorage.getItem(KEY) === '1'; } catch (_) { return false; }
+  }
+  function paint() {
+    const on = isOn();
+    BTN.classList.toggle('bg-emerald-600', on);
+    BTN.classList.toggle('text-white', on);
+    BTN.classList.toggle('border-emerald-600', on);
+    const onSpan = BTN.querySelector('[data-when-on]');
+    const offSpan = BTN.querySelector('[data-when-off]');
+    if (onSpan && offSpan) {
+      onSpan.style.display = on ? '' : 'none';
+      offSpan.style.display = on ? 'none' : '';
+    }
+  }
+  BTN.addEventListener('click', function () {
+    try { localStorage.setItem(KEY, isOn() ? '0' : '1'); } catch (_) {}
+    paint();
+  });
+
+  // Age the render in place, so a stale tab says so whether or not
+  // auto-refresh is on.
+  function tickAge() {
+    const secs = Math.round((Date.now() - RENDERED_AT) / 1000);
+    AS_OF.textContent = secs < 30 ? BASE_LABEL : BASE_LABEL + ' · ' +
+      (secs < 90 ? secs + 's' : secs < 5400 ? Math.round(secs / 60) + 'm'
+                                            : Math.round(secs / 3600) + 'h') + ' old';
+  }
+  setInterval(tickAge, 15000);
+
+  // Never reload out from under a half-typed tag / edited task body.
+  function isTyping() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+  }
+  setInterval(function () {
+    if (isOn() && !isTyping()) window.location.reload();
+  }, 30000);
+
+  paint();
 })();
 </script>
 {% endblock %}

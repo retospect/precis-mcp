@@ -18,6 +18,21 @@ The move route is a thin shell over the reserved virtual relation
 ``link(kind='todo', rel='parent')`` so the cycle / depth / owner
 guards stay single-sourced in the handler — the web layer never
 touches ``parent_id`` directly.
+
+**Time.** Three timestamps reach a row, and only three exist:
+``refs.created_at`` (minted), the ``ref_tags.created_at`` of the row's
+single ``STATUS:*`` tag (``status_since`` — entered its current state,
+so *started* for a running job and *finished* for a terminal one), and
+``meta.started_at`` (the claim instant, stamped by
+``workers/executors/_common.py``). There is no transition history to
+read: STATUS is written with ``replace_prefix=True``, which deletes
+the prior tag rather than expiring it, so a finished job's "running"
+timestamp is gone and ``meta.started_at`` is the only thing that can
+tell its queue wait from its run time. Jobs claimed before that stamp
+shipped show a fused ``queued+ran`` span instead of a split, and say
+so. ``_stuck_job`` reuses ``workers/sweeper.py``'s stuck condition and
+its ``PRECIS_STUCK_JOB_HOURS`` threshold — see that function for the
+one condition it deliberately does not copy, and why.
 """
 
 from __future__ import annotations
@@ -43,6 +58,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.timefmt import age_seconds, duration, span_seconds
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -358,6 +374,11 @@ def _row_filterable_tags(row: dict[str, Any]) -> set[str]:
     # how the closed tag literally lives in the DB (``STATUS:done``).
     if row.get("status"):
         out.add(f"STATUS:{row['status']}")
+    # ``stuck`` is derived, not stored (see ``_stuck_job``) — exposing it
+    # as a pseudo-tag is what lets the header's warning chip link to
+    # exactly the stuck rows instead of to every running job.
+    if row.get("stuck"):
+        out.add("stuck")
     return out
 
 
@@ -478,19 +499,31 @@ def _load_freeform_tags(store: Store, ref_ids: list[int]) -> dict[int, list[str]
     return out
 
 
-def _load_tags(store: Store, ref_ids: list[int]) -> dict[int, dict[str, str]]:
-    """Bulk-fetch STATUS + the §M facet-derived ``level`` for each todo.
+def _load_tags(store: Store, ref_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Bulk-fetch STATUS (+ when it was written) and the §M facet-derived
+    ``level`` for each todo.
 
-    Returns ``{ref_id: {'status': ..., 'level': ...}}`` with sensible
-    defaults (``status='open'``, ``level='subtask'``). ``level`` is
-    synthesized from ``meta.rotation_root`` / ``meta.worker_mintable`` /
-    ``meta.schedule`` — see ``handlers._todo_views._level_label`` (same
-    four-way vocabulary: strategic / tactical / subtask / recurring).
+    Returns ``{ref_id: {'status': ..., 'level': ..., 'status_since': ...}}``
+    with sensible defaults (``status='open'``, ``level='subtask'``,
+    ``status_since=None``). ``level`` is synthesized from
+    ``meta.rotation_root`` / ``meta.worker_mintable`` / ``meta.schedule``
+    — see ``handlers._todo_views._level_label`` (same four-way
+    vocabulary: strategic / tactical / subtask / recurring).
+
+    ``status_since`` is the ``ref_tags.created_at`` of the STATUS row —
+    i.e. when this node *entered* its current state. Because STATUS is
+    written with ``replace_prefix=True`` there is exactly one such row
+    per ref, which makes this the finish time of a terminal job and the
+    start time of a running one. It comes off that same row via the
+    ``LATERAL`` below — one lookup yielding both columns, not a second
+    subselect repeating the join. ``None`` for a node with no STATUS
+    tag at all.
     """
     from precis.handlers._todo_views import _level_label
 
-    out: dict[int, dict[str, str]] = {
-        rid: {"status": "open", "level": "subtask"} for rid in ref_ids
+    out: dict[int, dict[str, Any]] = {
+        rid: {"status": "open", "level": "subtask", "status_since": None}
+        for rid in ref_ids
     }
     if not ref_ids:
         return out
@@ -498,22 +531,31 @@ def _load_tags(store: Store, ref_ids: list[int]) -> dict[int, dict[str, str]]:
         rows = conn.execute(
             """
             SELECT r.ref_id,
-                   COALESCE(
-                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) AS status,
+                   COALESCE(st.value, 'open') AS status,
+                   st.created_at AS status_since,
                    COALESCE((r.meta->>'rotation_root')::boolean, false) AS rotation_root,
                    COALESCE((r.meta->>'worker_mintable')::boolean, true) AS worker_mintable,
                    (r.meta ? 'schedule') AS is_recurring
               FROM refs r
+              -- One LATERAL, not two correlated subselects: status and
+              -- status_since come off the SAME ref_tags row, so reading
+              -- them as two subqueries ran the identical join + LIMIT 1
+              -- twice per ref (~2.6k todos + their jobs per render).
+              LEFT JOIN LATERAL (
+                   SELECT t.value, rt.created_at
+                     FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                    LIMIT 1
+              ) st ON true
              WHERE r.ref_id = ANY(%s)
             """,
             (ref_ids,),
         ).fetchall()
-    for ref_id, status, rotation_root, worker_mintable, is_recurring in rows:
+    for row in rows:
+        ref_id, status, status_since, rotation_root, worker_mintable, is_recurring = row
         rid = int(ref_id)
         out[rid]["status"] = str(status)
+        out[rid]["status_since"] = status_since
         out[rid]["level"] = _level_label(
             rotation_root=bool(rotation_root),
             worker_mintable=bool(worker_mintable),
@@ -530,12 +572,20 @@ def _child_jobs(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
     surface them under their parent todo so the lock/lease badges have
     a node to attach to. Degrades to ``[]`` cleanly when the query
     returns nothing (and under the test fake's empty cursor).
+
+    ``created_at`` (queued-at) and ``meta.started_at`` (the claim
+    instant, stamped by ``workers/executors/_common.py``'s lease
+    stamp) ride along on the same row so the dashboard can split a
+    job's queue wait from its run time. ``started_at`` is ``None`` for
+    any job claimed before that stamp shipped, and for one that has
+    never been claimed.
     """
     if not todo_ids:
         return []
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id, parent_id, title, meta->>'lease_until' "
+            "SELECT ref_id, parent_id, title, meta->>'lease_until', "
+            "created_at, meta->>'started_at' "
             "FROM refs WHERE kind = 'job' AND deleted_at IS NULL "
             "AND parent_id = ANY(%s)",
             (todo_ids,),
@@ -546,6 +596,10 @@ def _child_jobs(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
             "parent_id": int(r[1]) if r[1] is not None else None,
             "title": r[2],
             "lease_until": r[3],
+            # The test fake's cursor returns short rows for some queries;
+            # tolerate a missing tail rather than IndexError-ing the page.
+            "created_at": r[4] if len(r) > 4 else None,
+            "started_at": r[5] if len(r) > 5 else None,
         }
         for r in rows
     ]
@@ -727,6 +781,71 @@ def _reason_from_event(event_text: str, *, limit: int = 200) -> str:
     return first_line[:limit].rstrip() + ("…" if len(first_line) > limit else "")
 
 
+def _stuck_job(status: str, status_since: Any, lease_until: str | None) -> bool:
+    """True when a job looks dead: running, past the stuck threshold,
+    with no live lease.
+
+    The same three-part test ``workers/sweeper.py``'s stuck-job phase
+    uses — current STATUS is ``running``, the ``ref_tags`` row that
+    wrote it is older than ``PRECIS_STUCK_JOB_HOURS``, and
+    ``meta.lease_until`` is null or past — reading the threshold
+    through the sweeper's own ``_stuck_job_hours`` so the two can't
+    drift when the env var is retuned.
+
+    It does NOT copy the sweeper's fourth condition, which excludes
+    ``_LEASE_OWNING_EXECUTORS`` (``ssh_node`` / ``claude_inproc`` /
+    ``claude_docker``). That exclusion is about *which mechanism*
+    recovers the row, not about whether it's dead: those executors are
+    reclaimed at claim time by the expiry / epoch arms in
+    ``executors/_common.py`` instead of by the wall-clock sweep. Both
+    kinds are equally dead to an operator reading this page, and
+    copying the exclusion would hide exactly the case this exists for
+    — the ``plan_tick`` job that sat ``STATUS:running`` for 35h
+    (gr191124) ran on a lease-owning executor, and rendered here
+    identically to one that started 20 seconds ago.
+
+    So the badge means "this is dead and something will recover it",
+    not "the sweeper specifically will" — the UI copy says it that way.
+    """
+    if status != "running":
+        return False
+    if _lease_active(lease_until):
+        return False
+    secs = age_seconds(status_since)
+    if secs is None:
+        return False
+    from precis.workers.sweeper import _stuck_job_hours
+
+    return secs > _stuck_job_hours() * 3600.0
+
+
+def _job_timing(
+    status: str, created_at: Any, started_at: Any, status_since: Any
+) -> str:
+    """One-line 'queued 12s · ran 4m18s' for a job row, or ``""``.
+
+    Split is only honest when ``meta.started_at`` is present (see
+    ``_child_jobs``). Without it — every job claimed before that stamp
+    shipped — we fall back to the fused ``created → finished`` span,
+    labelled ``queued+ran`` so the page never passes queue time off as
+    run time.
+    """
+    if status in ("queued", "open"):
+        return ""
+    end = status_since if status not in ("running",) else datetime.now(UTC)
+    if started_at:
+        queued = duration(span_seconds(created_at, started_at))
+        ran = duration(span_seconds(started_at, end))
+        parts = []
+        if queued:
+            parts.append(f"queued {queued}")
+        if ran:
+            parts.append(f"ran {ran}" if status != "running" else f"running {ran}")
+        return " · ".join(parts)
+    fused = duration(span_seconds(created_at, end))
+    return f"queued+ran {fused}" if fused else ""
+
+
 def _lease_active(lease_until: str | None) -> bool:
     """True when ``lease_until`` parses and lies in the future."""
     if not lease_until:
@@ -782,6 +901,9 @@ def _build_rows(
             "parent_id": r.parent_id if r.parent_id in by_id else None,
             "lease_until": None,
             "meta": getattr(r, "meta", None),
+            # Free — ``Ref`` already carries both; no extra query.
+            "created_at": getattr(r, "created_at", None),
+            "started_at": None,
         }
     for j in jobs:
         # A job whose parent todo vanished is dropped (no orphan jobs).
@@ -793,6 +915,8 @@ def _build_rows(
             "title": j["title"],
             "parent_id": j["parent_id"],
             "lease_until": j["lease_until"],
+            "created_at": j.get("created_at"),
+            "started_at": j.get("started_at"),
         }
 
     children: dict[int | None, list[dict[str, Any]]] = {}
@@ -890,6 +1014,13 @@ def _build_rows(
                     },
                 ]
         rollup_total = rollup_done + rollup_waiting + rollup_active
+        status = tags[node["id"]]["status"]
+        # ``.get`` not ``[]``: a time field missing is a row that renders
+        # without its clock, not a 500 on the whole tree. Same posture as
+        # ``_child_jobs``' short-row tolerance.
+        status_since = tags[node["id"]].get("status_since")
+        created_at = node.get("created_at")
+        started_at = node.get("started_at")
         rows.append(
             {
                 "id": node["id"],
@@ -897,9 +1028,29 @@ def _build_rows(
                 "parent_id": node["parent_id"],
                 "title": node["title"],
                 "gist": _gist(node["title"]),
-                "status": tags[node["id"]]["status"],
+                "status": status,
                 "level": tags[node["id"]]["level"],
                 "depth": depth,
+                # ── time ──────────────────────────────────────────────
+                # ``created_at`` is when the row was minted;
+                # ``status_since`` is when it entered its current state
+                # — for a job that means started (running) or finished
+                # (terminal). ``timing`` is the pre-rendered queue/run
+                # split. See ``_load_tags`` for why one STATUS row is
+                # all the history there is.
+                "created_at": created_at,
+                "status_since": status_since,
+                "started_at": started_at,
+                "timing": (
+                    _job_timing(status, created_at, started_at, status_since)
+                    if node["kind"] == "job"
+                    else ""
+                ),
+                "stuck": (
+                    _stuck_job(status, status_since, lease_until)
+                    if node["kind"] == "job"
+                    else False
+                ),
                 "rollup": {
                     "active": rollup_active,
                     "waiting": rollup_waiting,
@@ -925,6 +1076,42 @@ def _build_rows(
     for root in children.get(None, []):
         walk(root, 0)
     return rows
+
+
+def _tree_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Whole-factory vitals for the dashboard header strip.
+
+    Folded over the *unfiltered, unpaginated* row set — the page shows
+    25 roots at a time, so per-page counts would answer a question
+    nobody asked ("is this page busy") instead of the one they did
+    ("is the factory alive"). Pure Python over rows already in hand:
+    no extra query.
+
+    ``oldest_running`` is the start of the longest-running job, which
+    is what turns "3 running" from a reassuring number into an
+    actionable one — three jobs running for 12 seconds and three
+    running since Tuesday look identical without it.
+    """
+    running = [r for r in rows if r["kind"] == "job" and r["status"] == "running"]
+    oldest = None
+    for r in running:
+        ref = r.get("started_at") or r.get("status_since")
+        secs = age_seconds(ref)
+        if secs is None:
+            continue
+        if oldest is None or secs > oldest[0]:
+            oldest = (secs, ref)
+    return {
+        "running": len(running),
+        "queued": sum(
+            1 for r in rows if r["kind"] == "job" and r["status"] == "queued"
+        ),
+        "stuck": sum(1 for r in rows if r.get("stuck")),
+        "parked": sum(1 for r in rows if r.get("child_failures")),
+        "halted": sum(1 for r in rows if r.get("halted")),
+        "oldest_running": oldest[1] if oldest else None,
+        "oldest_running_for": duration(oldest[0]) if oldest else "",
+    }
 
 
 def _workspace_for(
@@ -1010,6 +1197,10 @@ async def dashboard(
     """
     store = get_store(request)
     rows = _build_rows(store)
+    # Vitals are over the WHOLE tree, before the job-hide / focus /
+    # filter / pagination narrowing below — a running job you've
+    # filtered out of view is still running.
+    summary = _tree_summary(rows)
     require = [r for r in require if r]
     exclude = [x for x in exclude if x]
     rows = _hide_inactive_jobs(rows, show_all=(show_jobs == "all"))
@@ -1073,6 +1264,8 @@ async def dashboard(
             "tree_depths": _TREE_DEPTHS,
             "doable_body": doable_body,
             "status_choices": STATUS_CHOICES,
+            "summary": summary,
+            "as_of": datetime.now(UTC),
         },
     )
 
@@ -1559,6 +1752,16 @@ async def history(request: Request, ref_id: int) -> HTMLResponse:
             "result": notes.get(j["id"], {}).get("result", ""),
             "events": notes.get(j["id"], {}).get("events", []),
             "summary": notes.get(j["id"], {}).get("summary", ""),
+            # Same time vocabulary as the tree rows, so an attempt reads
+            # the same in the history panel as it did inline.
+            "created_at": j.get("created_at"),
+            "status_since": job_status.get(j["id"], {}).get("status_since"),
+            "timing": _job_timing(
+                str(job_status.get(j["id"], {}).get("status", "open")),
+                j.get("created_at"),
+                j.get("started_at"),
+                job_status.get(j["id"], {}).get("status_since"),
+            ),
         }
         for j in jobs
     ]

@@ -10,6 +10,11 @@
         <span class="text-slate-400">#{{ a.id }}</span>
         <span class="{{ sc.get(a.status, 'text-sky-700') }}">[{{ a.status }}]</span>
         <span class="text-slate-600 truncate">{{ a.title }}</span>
+        {# Same relative-in-row / absolute-in-tooltip pairing as the tree. #}
+        <span class="ml-auto shrink-0 text-slate-400 tabular-nums whitespace-nowrap">
+          {% if a.status_since %}<span title="{{ a.status }} at {{ a.status_since | abs_ts }}">{{ a.status_since | ago }}</span>{% endif %}
+          {% if a.timing %}<span class="text-slate-300">· {{ a.timing }}</span>{% endif %}
+        </span>
       </div>
       {% if a.result or a.events or a.summary %}
       <details class="ml-6 mt-0.5">

@@ -2,10 +2,19 @@
 
 Single-sourced so the route code (Status page sections) and the
 templates (via the ``ago`` Jinja filter) render time the same way.
-Both helpers tolerate a ``datetime`` *or* an ISO-8601 string (some
+Every helper tolerates a ``datetime`` *or* an ISO-8601 string (some
 store methods — ``stub_backlog`` — stringify timestamps before they
-reach the view) *or* ``None`` / empty, returning ``""`` when there's
-nothing to show.
+reach the view; job ``meta.started_at`` is stamped as text) *or*
+``None`` / empty, returning ``""`` (or ``None``) when there's nothing
+to show.
+
+Two vocabularies, deliberately kept apart:
+
+* :func:`ago` / :func:`relative` — "how long ago", rounded to one
+  unit, for a timestamp.
+* :func:`duration` / :func:`span_seconds` — an elapsed *span* between
+  two timestamps, to two units, for a run time the operator compares
+  against a timeout.
 """
 
 from __future__ import annotations
@@ -82,3 +91,37 @@ def abs_ts(value: Any) -> str:
     if dt is None:
         return ""
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def duration(secs: float | None) -> str:
+    """Two-unit elapsed label for a span of seconds ('12s', '4m18s', '2h05m').
+
+    Distinct from :func:`_bucket`, which deliberately rounds to ONE unit
+    for "how long ago" — a span the operator is comparing against a
+    timeout (a job's run time vs the sweeper's stuck threshold) wants the
+    minutes, not "2h". Negative / ``None`` reads as ``""`` so a caller
+    with a missing endpoint can interpolate it unguarded.
+    """
+    if secs is None or secs < 0:
+        return ""
+    secs = int(secs)
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m{secs % 60:02d}s"
+    if secs < 86400:
+        return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
+    return f"{secs // 86400}d{(secs % 86400) // 3600:02d}h"
+
+
+def span_seconds(start: Any, end: Any) -> float | None:
+    """Seconds between two timestamps (datetime or ISO string), or ``None``
+    when either end is missing / unparseable. Negative spans (clock skew
+    between the worker that stamped the start and the DB that stamped the
+    end) clamp to ``0.0`` rather than rendering a nonsense backwards span.
+    """
+    a = _as_datetime(start)
+    b = _as_datetime(end)
+    if a is None or b is None:
+        return None
+    return max(0.0, (b - a).total_seconds())

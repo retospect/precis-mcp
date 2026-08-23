@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+
+from precis_web.routes.tasks import _job_timing, _stuck_job, _tree_summary
 
 
 @pytest.fixture
@@ -120,3 +123,154 @@ def test_start_task_skips_llm_when_already_present(
     # No tag(meta=...) call setting llm_tier for id=81 (it's already set).
     tag_calls = [c for c in runtime.calls if c[0] == "tag" and c[1].get("id") == 81]
     assert not any("llm_tier" in c[1].get("meta", {}) for c in tag_calls)
+
+
+# ── _job_timing ───────────────────────────────────────────────────────
+
+
+def test_job_timing_queued_or_open_is_blank() -> None:
+    now = datetime.now(UTC)
+    assert _job_timing("queued", now, None, None) == ""
+    assert _job_timing("open", now, None, None) == ""
+
+
+def test_job_timing_finished_with_started_at_shows_queued_and_ran() -> None:
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    started = created + timedelta(seconds=12)
+    finished = started + timedelta(seconds=258)  # 4m18s
+    result = _job_timing("succeeded", created, started, finished)
+    assert "queued " in result
+    assert "ran " in result
+    assert result == "queued 12s · ran 4m18s"
+
+
+def test_job_timing_finished_without_started_at_uses_fused_span() -> None:
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    finished = created + timedelta(seconds=90)
+    result = _job_timing("failed", created, None, finished)
+    assert result.startswith("queued+ran")
+    assert result == "queued+ran 1m30s"
+
+
+def test_job_timing_running_with_started_at_shows_running() -> None:
+    started = datetime.now(UTC) - timedelta(seconds=30)
+    created = started - timedelta(seconds=5)
+    result = _job_timing("running", created, started, None)
+    assert "running " in result
+
+
+# ── _stuck_job ────────────────────────────────────────────────────────
+
+
+def test_stuck_job_not_running_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_STUCK_JOB_HOURS", "1")
+    old_since = datetime.now(UTC) - timedelta(hours=5)
+    assert _stuck_job("queued", old_since, None) is False
+
+
+def test_stuck_job_running_live_lease_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_STUCK_JOB_HOURS", "1")
+    old_since = datetime.now(UTC) - timedelta(hours=5)
+    future_lease = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    assert _stuck_job("running", old_since, future_lease) is False
+
+
+def test_stuck_job_running_expired_lease_recent_since_is_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_STUCK_JOB_HOURS", "1")
+    recent_since = datetime.now(UTC) - timedelta(minutes=5)
+    assert _stuck_job("running", recent_since, None) is False
+
+
+def test_stuck_job_running_expired_lease_old_since_is_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_STUCK_JOB_HOURS", "1")
+    old_since = datetime.now(UTC) - timedelta(hours=2)
+    assert _stuck_job("running", old_since, None) is True
+
+
+# ── _tree_summary ─────────────────────────────────────────────────────
+
+
+def test_tree_summary_counts_every_bucket_and_picks_oldest_running() -> None:
+    now = datetime.now(UTC)
+    rows: list[dict[str, Any]] = [
+        {
+            "kind": "job",
+            "status": "running",
+            "started_at": now - timedelta(minutes=5),
+            "status_since": None,
+            "stuck": False,
+            "child_failures": [],
+            "halted": False,
+        },
+        {
+            # The oldest running job — sits in the middle of the list so
+            # a "pick first" or "pick last" bug wouldn't be caught.
+            "kind": "job",
+            "status": "running",
+            "started_at": now - timedelta(hours=2),
+            "status_since": None,
+            "stuck": True,
+            "child_failures": [],
+            "halted": False,
+        },
+        {
+            "kind": "job",
+            "status": "running",
+            "started_at": now - timedelta(seconds=30),
+            "status_since": None,
+            "stuck": False,
+            "child_failures": [],
+            "halted": False,
+        },
+        {
+            "kind": "job",
+            "status": "queued",
+            "started_at": None,
+            "status_since": None,
+            "stuck": False,
+            "child_failures": [],
+            "halted": False,
+        },
+        {
+            "kind": "job",
+            "status": "queued",
+            "started_at": None,
+            "status_since": None,
+            "stuck": False,
+            "child_failures": [],
+            "halted": False,
+        },
+        {
+            "kind": "todo",
+            "status": "open",
+            "started_at": None,
+            "status_since": None,
+            "stuck": False,
+            "child_failures": [{"job_id": 1, "reason": "boom"}],
+            "halted": False,
+        },
+        {
+            "kind": "todo",
+            "status": "open",
+            "started_at": None,
+            "status_since": None,
+            "stuck": False,
+            "child_failures": [],
+            "halted": True,
+        },
+    ]
+    oldest_running = rows[1]["started_at"]
+
+    summary = _tree_summary(rows)
+
+    assert summary["running"] == 3
+    assert summary["queued"] == 2
+    assert summary["stuck"] == 1
+    assert summary["parked"] == 1
+    assert summary["halted"] == 1
+    assert summary["oldest_running"] == oldest_running
+    assert summary["oldest_running_for"].startswith("2h")

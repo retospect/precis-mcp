@@ -400,6 +400,16 @@ def claim_executor_jobs(
     apart from its own. ``lease_boot_id`` is null when this process never
     minted a boot_id (see :func:`_this_worker_lease_identity`).
 
+    The same stamp writes ``meta.started_at`` — the wall-clock instant of
+    the job's FIRST claim, and the only durable record of when it began
+    running (``STATUS:running`` is replaced, not expired, on the terminal
+    write). Set-if-absent, so a reclaim leaves it alone: a re-stamp would
+    make a job that has been nominally running for hours report as having
+    just started, and its stalled time would read as queue wait. The
+    reclaim instants live in ``meta.reclaims`` instead. Read by the
+    ``/tasks`` dashboard to split a job's queue wait from its run time;
+    absent on any job claimed before this shipped.
+
     **Attempt cap (§H piece 3, generalized from ssh_node's original
     guard).** Every RE-claim of a ``STATUS:running`` row (``reclaim_
     stale_running=True`` only) bumps ``meta.attempts`` — EXCEPT an
@@ -573,6 +583,25 @@ def claim_executor_jobs(
             "lease_boot_id": lease_boot_id,
             "lease_process": lease_process,
             "lease_host": lease_host,
+            # Wall-clock instant of the FIRST claim — the only durable
+            # record of when a job started running. ``STATUS:running`` is
+            # written with ``replace_prefix=True``, so the moment a job
+            # reaches a terminal state its ``running`` ``ref_tags`` row is
+            # *deleted*, not expired: after the fact, "queued at" and
+            # "finished at" survive but "started at" is gone, and run time
+            # can't be told apart from queue time. ``lease_until`` is
+            # claim+lease and gets renewed, so it can't stand in.
+            #
+            # Set-if-absent, NOT re-stamped on a reclaim. A reclaim would
+            # otherwise rewrite the start of a job that has been nominally
+            # running for hours, and every reader downstream would fold
+            # that dead time into the *queued* bucket
+            # (``created_at → started_at``) — mislabelling 35h of stalled
+            # run as queue wait, and making the stalest job in the tree
+            # report as the freshest. The reclaim instant is not lost:
+            # ``meta.reclaims`` below already records every one as
+            # ``{at, why}``.
+            "started_at": meta.get("started_at") or datetime.now(UTC).isoformat(),
         }
         if reclaim_stale_running and status_value == RUNNING:
             why = _reclaim_reason(meta, advertised_boot_ids)
@@ -593,6 +622,7 @@ def claim_executor_jobs(
         meta["lease_boot_id"] = lease_boot_id
         meta["lease_process"] = lease_process
         meta["lease_host"] = lease_host
+        meta["started_at"] = fields["started_at"]
 
     def _finish_claim(
         ref_id: int,

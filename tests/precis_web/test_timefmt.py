@@ -8,7 +8,14 @@ import pytest
 
 pytest.importorskip("fastapi")  # keeps the suite skippable without web extra
 
-from precis_web.timefmt import abs_ts, age_seconds, ago, relative
+from precis_web.timefmt import (
+    abs_ts,
+    age_seconds,
+    ago,
+    duration,
+    relative,
+    span_seconds,
+)
 
 
 def test_ago_buckets() -> None:
@@ -71,3 +78,43 @@ def test_age_seconds_none_for_garbage() -> None:
     assert age_seconds(None) is None
     assert age_seconds("nope") is None
     assert age_seconds(datetime.now(UTC)) is not None
+
+
+@pytest.mark.parametrize(
+    "secs, expected",
+    [
+        (0, "0s"),
+        (59, "59s"),
+        (60, "1m00s"),
+        (3599, "59m59s"),
+        (3600, "1h00m"),
+        (86399, "23h59m"),
+        (86400, "1d00h"),
+        (None, ""),
+        (-5, ""),
+    ],
+)
+def test_duration_boundaries(secs: float | None, expected: str) -> None:
+    assert duration(secs) == expected
+
+
+def test_span_seconds_accepts_datetime_and_iso_string_mix() -> None:
+    start = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
+    end_iso = "2026-06-14T09:04:18+00:00"
+    assert span_seconds(start, end_iso) == pytest.approx(258.0)
+
+
+def test_span_seconds_none_end_returns_none() -> None:
+    start = datetime.now(UTC)
+    assert span_seconds(start, None) is None
+
+
+def test_span_seconds_unparseable_string_returns_none() -> None:
+    start = datetime.now(UTC)
+    assert span_seconds(start, "not-a-date") is None
+
+
+def test_span_seconds_backwards_span_clamps_to_zero() -> None:
+    start = datetime.now(UTC)
+    end = start - timedelta(seconds=30)
+    assert span_seconds(start, end) == 0.0
