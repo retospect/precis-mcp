@@ -42,6 +42,7 @@ def mint_citation(
     source_handle: str | None = None,
     source_quote: str | None = None,
     verifier_confidence: float | None = None,
+    tags: list[str] | None = None,
     set_by: ActorSlug = "weave",
 ) -> int:
     """Mint a ``citation`` ref for ``claim``, sourced from ``paper_ref_id``.
@@ -96,6 +97,7 @@ def mint_citation(
         source_handle=source_handle or paper_ref.slug,
         source_quote=source_quote or claim,
         verifier_confidence=verifier_confidence,
+        tags=tags,
         link=f"paper:{paper_ref.slug}",
     )
 

@@ -223,6 +223,13 @@ class GroupPlan:
     #: order), so :func:`apply_chunk` rewrites the ``[pa…]`` run to the matching
     #: ``[pc<chunk>]`` sequence. Empty for every other action.
     reground_targets: list[int] = field(default_factory=list)
+    #: For a ``"reground"`` action: ``(paper_ref_id, chunk_id, chunk_text)`` per
+    #: supporter, same run order as :attr:`reground_targets`. The locate already
+    #: proved a claim-passage binding (:attr:`group`'s ``span_text`` *is* the
+    #: claim - "a claim is whatever a citation grounds"); :func:`apply_chunk`
+    #: persists it as a ``citation`` audit record so the intermediate ``[pc]``
+    #: carries *what* is claimed, not just a bare pointer. Empty otherwise.
+    reground_grounds: list[tuple[int, int, str]] = field(default_factory=list)
     note: str = ""
 
 
@@ -504,6 +511,7 @@ def _plan_reground(
     chunks are append-only), the same guard as the slice-1 mixed-run rule.
     """
     targets: list[int] = []
+    grounds: list[tuple[int, int, str]] = []
     for _handle, paper_ref_id in fetched:
         chunks = _read_paper_chunks(store, paper_ref_id)
         chosen = locate_fn(group.span_text, chunks) if chunks else None
@@ -518,11 +526,13 @@ def _plan_reground(
                 ),
             )
         targets.append(chosen[0])  # chunk_id
+        grounds.append((paper_ref_id, chosen[0], chosen[2]))
     return GroupPlan(
         group=group,
         action="reground",
         supporters=fetched,
         reground_targets=targets,
+        reground_grounds=grounds,
         note="re-ground [pa]→[pc] at located passage(s): "
         + "".join(f"[pc{cid}]" for cid in targets),
     )
@@ -772,6 +782,62 @@ def _file_review_todo(
 # ── apply (writes: mint/converge hubs + rewrite prose) ─────────────────────
 
 
+def _record_reground_citations(
+    store: Store, plan: GroupPlan, *, set_by: ActorSlug
+) -> int:
+    """Persist the claim-passage binding a re-ground already proved.
+
+    :func:`_default_locate` runs a Tier.MEDIUM confirm that the group's span is
+    supported by the chosen chunk, and then the plan keeps only the ``chunk_id``
+    — the proposition and the judgement are dropped, leaving the rewritten
+    ``[pc]`` a bare pointer at a paragraph. ``kind='citation'``
+    ([[precis-citation-help]]'s optional verification record) is exactly that
+    missing rung, so mint one per located supporter: the claim is the cite-group
+    span ("a claim is whatever a citation grounds"), the source is the located
+    passage.
+
+    No ``verifier_confidence`` is recorded — the locate returns a decision, not
+    a score, and inventing one would misrepresent it. ``source_quote`` is the
+    whole located chunk, not a pinpointed excerpt: this arm's locate confirms a
+    *passage*, and narrowing to verbatim words is
+    :mod:`precis.taproot.reground`'s job (its ``GroundedRecord`` validates a
+    quote for uniqueness), not something to fake here.
+
+    Marked with the lowercase **open** tag ``origin:draft-backfill``, mirroring
+    the ``meta.origin`` fingerprint this module already stamps on evidence
+    edges. Deliberately *not* the closed ``ORIGIN:`` axis: that vocabulary
+    means "where the content came from" (``wikipedia``) and its members are
+    fenced out of default search, which would hide these records from the
+    readers that most need them.
+
+    Best-effort and isolated: an audit record is never a precondition for the
+    prose rewrite, so a failure is noted on the plan and the batch continues.
+    Returns the number of records minted.
+    """
+    from precis.quest.citation_mint import mint_citation
+
+    claim = plan.group.span_text.strip()
+    if not claim:
+        return 0
+    minted = 0
+    for paper_ref_id, chunk_id, chunk_text in plan.reground_grounds:
+        try:
+            mint_citation(
+                store,
+                claim=claim,
+                paper_ref_id=paper_ref_id,
+                source_handle=f"pc{chunk_id}",
+                source_quote=chunk_text,
+                tags=["origin:draft-backfill"],
+                set_by=set_by,
+            )
+        except Exception as exc:
+            plan.note += f" (citation record failed for pc{chunk_id}: {exc})"
+        else:
+            minted += 1
+    return minted
+
+
 def apply_chunk(
     store: Store,
     embedder: Any,
@@ -798,10 +864,15 @@ def apply_chunk(
     instead promoted to a ref-level (``ungrounded``) hub edge and its token
     rewritten to ``[fi<hub>]``. A stub ``[pa]`` is always skipped regardless.
 
-    The prose rewrite goes through ``draft_handler.edit`` (a whole-chunk
-    rewrite) — **never** a raw ``UPDATE`` — so the chunk's DELETE+INSERT
-    embedding/summary cascade re-runs (draft body chunks are append-only;
-    an in-place update leaves stale ``chunk_embeddings``). A group that maps
+    The prose rewrite goes through ``draft_handler.edit``, i.e.
+    :meth:`precis.store._draft_ops.DraftOps.edit_text` — an **in-place**
+    ``UPDATE`` that bumps ``content_sha`` and logs an ``edited`` event with
+    ``prev_text``. Draft chunks are updated in place *on purpose*: the handle
+    (and every ``[dc<id>]`` reference to it) survives, which a DELETE+INSERT
+    would break. The sha bump is what re-derives the embedding — the worker's
+    staleness check re-claims any chunk whose ``chunk_embeddings.content_sha``
+    no longer matches. (The append-only rule is about *paper* body chunks,
+    whose ``content_sha`` is ``NULL`` and never refreshed.) A group that maps
     to no hub (no-claim / needs_review / unresolved) leaves its ``[pc…]``
     untouched.
 
@@ -886,6 +957,7 @@ def apply_chunk(
             replacement = "".join(f"[pc{cid}]" for cid in plan.reground_targets)
             edits.append((cites[0].start, cites[-1].end, replacement))
             plan.note = f"re-grounded [pa]→{replacement}"
+            _record_reground_citations(store, plan, set_by=set_by)
             continue
         if not plan.atom_plans and plan.compound_plan is None:
             # no-claim / unresolved / stub-fetch-first / reground-nomatch —

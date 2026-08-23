@@ -226,7 +226,10 @@ supporters=[…])`` / ``precis taproot mint`` (:mod:`.authoring`);
 ``rel='refines'`` / ``precis taproot refine`` mints claim->claim links
 (advisory only — no evidence flow, each hub keeps its own paper->hub edges);
 ``precis taproot backfill`` / the ``taproot_backfill`` job (:mod:`.backfill`;
-the LLM cascade runs on the cluster worker, never in the MCP handler).
+the LLM cascade runs on the cluster worker, never in the MCP handler). A
+fetched-``[pa]`` re-ground also mints a ``citation`` audit record per located
+supporter (tagged ``origin:draft-backfill``), so the intermediate ``[pc]``
+carries the claim the locate proved instead of a bare pointer.
 
 Read surfaces: ``get(kind='finding', view='evidence')`` (originators /
 corroborators / contradicts tables); the default ``finding`` search cohort

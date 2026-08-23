@@ -898,6 +898,116 @@ def test_apply_fetched_pa_default_regrounds_pa_to_pc(
     assert _links_count(hub.live_store) == links_before  # no edge
 
 
+def _set_slug(store: Store, ref_id: int, slug: str) -> None:
+    """seed_ref registers no cite_key, so ``Ref.slug`` is None and
+    mint_citation cannot build a handle. Register one (the refs.slug column
+    itself was dropped in v2; the slug reads from ``ref_identifiers``)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'cite_key', %s, 'manual') ON CONFLICT DO NOTHING",
+            (ref_id, slug),
+        )
+        conn.commit()
+
+
+def _citation_refs(store: Store) -> list[Any]:
+    """Every live citation ref, oldest first."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'citation' AND deleted_at IS NULL "
+            "ORDER BY ref_id"
+        ).fetchall()
+    out = []
+    for (rid,) in rows:
+        ref = store.get_ref(kind="citation", id=rid)
+        assert ref is not None
+        out.append(ref)
+    return out
+
+
+def _ref_tag_values(store: Store, ref_id: int, namespace: str) -> set[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = %s",
+            (ref_id, namespace),
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def test_apply_reground_records_claim_passage_citation(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The locate proves a claim-passage binding, but the plan used to keep only
+    # the chunk_id — leaving the rewritten [pc] a bare pointer at a paragraph.
+    # Assert the binding is persisted as a citation audit record: the claim is
+    # the cite-group span, the source is the located passage.
+    paper, pa, chunk_id = _fetched_pa_c(
+        hub.live_store, text="ribbons conduct at room temperature"
+    )
+    _set_slug(hub.live_store, paper, "ribbons24")
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+    assert _citation_refs(hub.live_store) == []
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
+    )
+
+    assert result.plans[0].action == "reground"
+    assert result.plans[0].reground_grounds[0][1] == chunk_id
+    cites = _citation_refs(hub.live_store)
+    assert len(cites) == 1, result.plans[0].note
+    meta = cites[0].meta or {}
+    # The claim is the prose the citation grounds, not a bare handle.
+    assert "Ribbons are semiconducting" in meta["claim"]
+    # The source is the located passage, verbatim.
+    assert meta["source_quote"] == "ribbons conduct at room temperature"
+    # No score is invented — the locate returns a decision, not a confidence.
+    assert meta["source_handle"] == "ribbons24~0"
+    assert meta.get("verifier_confidence") is None
+    # A lowercase open tag, not the closed ORIGIN: axis — whose members are
+    # fenced out of default search. Open tags land whole in the OPEN sentinel
+    # namespace, so the prefix is part of the value.
+    assert "origin:draft-backfill" in _ref_tag_values(
+        hub.live_store, cites[0].id, "OPEN"
+    )
+
+
+def test_apply_reground_nomatch_records_no_citation(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # No passage located → no rewrite and no audit record: a citation whose
+    # claim was never grounded is worse than none.
+    _, pa, _ = _fetched_pa_c(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_none,
+    )
+
+    assert result.plans[0].action == "reground-nomatch"
+    assert _citation_refs(hub.live_store) == []
+
+
 def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
     draft: DraftHandler, hub: Hub
 ) -> None:

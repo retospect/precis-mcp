@@ -94,6 +94,19 @@ paper is fetched:
   run re-grounds all-or-nothing: any supporter failing to locate leaves
   the whole run untouched (never erase a token).
 
+A re-ground also **records what it claimed**. The locate has already judged
+that the cite-group span is supported by the chosen passage, so applying it
+mints a `citation` audit record per located supporter — claim = the span (*a
+claim is whatever a citation grounds*), source = the located chunk, tagged
+`origin:draft-backfill`. Without it the rewritten `[pc]` is a bare pointer at
+a paragraph and that judgement is lost, leaving a later reader to re-derive
+it. No `verifier_confidence` is stored: the locate returns a decision, not a
+score. The record is best-effort — a failure is noted on the plan and never
+blocks the prose rewrite — so read `search(kind='citation',
+tags=['origin:draft-backfill'])` as an audit trail, not as a guarantee of
+one-per-`[pc]`. The quote stored is the whole passage; pinning verbatim words
+(what a nanopub mint needs) is still the promote's job.
+
 ```python
 # the [pa] arm rides the same job; ref_level=True promotes a fetched [pa]
 # whole-paper instead of re-grounding it to a [pc] passage
