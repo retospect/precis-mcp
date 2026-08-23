@@ -7,6 +7,36 @@
     <a href="/structure" class="text-xs text-slate-400 hover:text-slate-600">← Structures</a>
     <h1 class="text-lg font-semibold">{{ title }}</h1>
     <span class="text-xs text-slate-400">{{ slug }} · v{{ version }} · {{ viewer.n_atoms }} atom{{ '' if viewer.n_atoms == 1 else 's' }} · pbc {{ pbc | join('/') }}</span>
+
+    {# ── what is this page? ──
+       Hover to read, click to pin (so you can move the mouse into the panel
+       without it vanishing). Alpine is already on every page; `@click.outside`
+       closes a pinned panel. The copy lives server-side in
+       ``routes.structure.PAGE_HELP`` — one region per bullet, so a new region
+       on the page is one tuple, not a template edit. #}
+    <div class="relative ml-auto" x-data="{ open: false, pin: false }" @click.outside="pin = false; open = false">
+      <button type="button"
+              class="flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+              aria-label="What is on this page?"
+              @mouseenter="open = true" @mouseleave="if (!pin) open = false"
+              @click="pin = !pin; open = pin"
+              @focus="open = true" @blur="if (!pin) open = false">?</button>
+      <div x-show="open" x-cloak
+           class="absolute right-0 top-6 z-50 w-96 rounded-lg border border-slate-200 bg-white p-3 text-xs shadow-lg"
+           @mouseenter="open = true" @mouseleave="if (!pin) open = false">
+        <p class="text-slate-600">One <span class="font-semibold">design</span> — a periodic cell of atoms
+          you (or an agent) authored as typed ops. Everything below is a view on that one design.</p>
+        <dl class="mt-2 space-y-1.5">
+          {% for heading, body in page_help %}
+          <div>
+            <dt class="font-semibold text-slate-700">{{ heading }}</dt>
+            <dd class="text-slate-500 leading-snug">{{ body }}</dd>
+          </div>
+          {% endfor %}
+        </dl>
+        <p class="mt-2 text-[10px] text-slate-400">Click the ? to pin this open.</p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -16,6 +46,13 @@
   <div>
     <div class="flex items-center gap-2 mb-2">
       <h2 class="text-sm font-semibold text-slate-700">Cell</h2>
+      {% if pinned_run %}
+      {# Arrived from a run page's "show these atoms" link — say which run's
+         geometry is on screen, and offer the way back to the default view. #}
+      <span class="text-[11px] text-slate-500">showing
+        <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}/run/{{ pinned_run }}">r{{ pinned_run }}</a>'s geometry
+        <a class="text-slate-400 hover:text-slate-600" href="/structure/{{ slug }}">(latest)</a></span>
+      {% endif %}
       {% if viewer.relaxed %}
       <div class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs ml-auto">
         <button type="button" data-mode="initial" class="sv-mode px-2 py-1 hover:bg-slate-100">Input</button>
@@ -92,17 +129,19 @@
   <div id="runs">
     <div class="flex items-center gap-2 mb-2 flex-wrap">
       <h2 class="text-sm font-semibold text-slate-700">Compute runs
-        <span class="text-xs font-normal text-slate-400">— the fidelity ladder (§9) · cache keys (§23.16)</span>
+        <span class="text-xs font-normal text-slate-400" title="{{ run_kind_blurb }}">— one row per relax, newest first</span>
       </h2>
       {# Relax button — default params; an energy rung with no local backend
-         dispatches to the GPU node (no todo needed). #}
+         dispatches to the GPU node (no todo needed). Each option carries its
+         rung's own gloss, so the picker explains the ladder at the moment you
+         are choosing from it. #}
       <form method="post" action="/structure/{{ slug }}/relax" class="ml-auto flex items-center gap-1">
         <select name="fidelity"
                 class="rounded border border-slate-300 px-1.5 py-0.5 text-xs bg-white"
-                title="clean = local geometry repair · ml/dft = relax on the GPU node">
-          <option value="clean">clean</option>
-          <option value="ml">ml</option>
-          <option value="dft" selected>dft</option>
+                title="Which rung to relax at — cheap and rough at the top, slow and correct at the bottom. Hover an option for what it does.">
+          <option value="clean" title="{{ rung_info.clean.blurb }}">clean — {{ rung_info.clean.label }}</option>
+          <option value="ml" title="{{ rung_info.ml.blurb }}">ml — {{ rung_info.ml.label }}</option>
+          <option value="dft" selected title="{{ rung_info.dft.blurb }}">dft — {{ rung_info.dft.label }}</option>
         </select>
         <button class="rounded bg-emerald-600 text-white text-xs px-2.5 py-0.5 hover:bg-emerald-700 whitespace-nowrap">
           Relax ▸
@@ -117,8 +156,10 @@
          class="space-y-2 mb-2">
       {% for j in pending %}
       <div class="rounded-lg border border-sky-200 bg-sky-50/50 p-2 flex items-center gap-2 text-xs">
-        <span class="font-mono text-slate-400">job {{ j.job_id }}</span>
-        <span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">{{ j.fidelity }}</span>
+        <a class="font-mono text-slate-400 hover:text-emerald-700 hover:underline"
+           href="/refs/job/{{ j.job_id }}" title="Open the job — where it is queued, which node has it, and its log.">job {{ j.job_id }}</a>
+        <span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700"
+              title="{{ j.rung_help }}">{{ j.fidelity }} relax</span>
         {% if j.status == 'failed' %}
           <span class="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">failed</span>
         {% else %}
@@ -136,49 +177,64 @@
       {% for r in runs %}
       <div class="rounded-lg border {% if r.id == viewer.relaxed_run_id %}border-emerald-300 bg-emerald-50/40{% else %}border-slate-200 bg-white{% endif %} p-3">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-mono text-slate-400">r{{ r.id }}</span>
-          <span class="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">{{ r.fidelity }}</span>
-          {% if r.model %}<span class="text-[10px] text-slate-400">{{ r.model }}</span>{% endif %}
+          {# The run id is the way in: /structure/{slug}/run/{id} says what the
+             rung computes, what the numbers mean, and where they came from. #}
+          <a class="text-xs font-mono text-slate-400 hover:text-emerald-700 hover:underline"
+             href="/structure/{{ slug }}/run/{{ r.id }}"
+             title="Open this run — what it did, what the numbers mean, how it settled.">r{{ r.id }}</a>
+          <a class="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200"
+             href="/structure/{{ slug }}/run/{{ r.id }}"
+             title="{{ r.rung_help }}">{{ r.fidelity }} relax</a>
+          {% if r.model %}<span class="text-[10px] text-slate-400" title="{{ metric_help.model }}">{{ r.model }}</span>{% endif %}
           {% if r.status == 'succeeded' %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">succeeded</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200"
+                  title="{{ metric_help.status }}">succeeded</span>
           {% elif r.status == 'running' %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">running</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200"
+                  title="{{ metric_help.status }}">running</span>
           {% else %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">{{ r.status }}</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200"
+                  title="{{ metric_help.status }}">{{ r.status }}</span>
           {% endif %}
           {% if r.converged %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">converged</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200"
+                  title="{{ metric_help.converged }}">converged</span>
+          {% endif %}
+          {% if r.cached %}
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200"
+                  title="{{ metric_help.cached }}">⚡ reused</span>
+          {% endif %}
+          {% if r.provenance == 'external' %}
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
+                  title="{{ metric_help.external }}">imported</span>
           {% endif %}
           <span class="ml-auto text-[10px] text-slate-400">{{ r.created }}</span>
         </div>
 
+        {# Every number here carries its own gloss — this is the one place on
+           the site where a reader meets eV and eV/Å. #}
         <div class="mt-2 grid grid-cols-3 gap-2 text-sm">
           <div>
-            <div class="text-[10px] text-slate-400 uppercase tracking-wide">Energy</div>
+            <div class="text-[10px] text-slate-400 uppercase tracking-wide cursor-help" title="{{ metric_help.energy }}">Energy</div>
             <div class="tabular-nums font-medium">{{ '%.4f'|format(r.energy) if r.energy is not none else '—' }}<span class="text-[10px] text-slate-400"> eV</span></div>
           </div>
           <div>
-            <div class="text-[10px] text-slate-400 uppercase tracking-wide">Max force</div>
+            <div class="text-[10px] text-slate-400 uppercase tracking-wide cursor-help" title="{{ metric_help.max_force }}">Max force</div>
             <div class="tabular-nums">{{ '%.4f'|format(r.max_force) if r.max_force is not none else '—' }}<span class="text-[10px] text-slate-400"> eV/Å</span></div>
           </div>
           <div>
-            <div class="text-[10px] text-slate-400 uppercase tracking-wide">Steps</div>
+            <div class="text-[10px] text-slate-400 uppercase tracking-wide cursor-help" title="{{ metric_help.steps }}">Steps</div>
             <div class="tabular-nums">{{ r.n_steps }}</div>
           </div>
         </div>
 
-        {% if r.cache_key %}
-        <div class="mt-2 pt-2 border-t border-slate-100 flex items-center gap-2">
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200"
-                title="Content-addressed over (structure_sha, fidelity, model, params, code_version). An identical relax on any design is a zero-compute cache hit.">
-            ⚡ cache key
-          </span>
-          <code class="text-[11px] text-slate-500 font-mono truncate" title="{{ r.cache_key }}">{{ r.cache_key[:16] }}…</code>
-          {% if r.structure_sha %}
-          <code class="text-[11px] text-slate-400 font-mono ml-auto truncate" title="structure_sha: {{ r.structure_sha }}">sha {{ r.structure_sha[:10] }}…</code>
-          {% endif %}
+        {# The cache key + structure sha used to sit here. They are machine
+           identity, not something a reader of this page wants — they moved to
+           the run page's folded "technical details". #}
+        <div class="mt-2 pt-2 border-t border-slate-100 flex items-center gap-3 text-[10px] text-slate-400">
+          <span title="{{ metric_help.on_version }}">on design v{{ r.on_version }}</span>
+          <a class="ml-auto text-emerald-700 hover:underline" href="/structure/{{ slug }}/run/{{ r.id }}">what this run did →</a>
         </div>
-        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -739,15 +795,20 @@
   const slug = box.getAttribute('data-slug');
   const initialRuns = parseInt(box.getAttribute('data-run-count') || '0', 10);
   const esc = (s) => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   function rowHtml(j) {
     const pill = j.status === 'failed'
       ? '<span class="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">failed</span>'
       : '<span class="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">⟳ ' + esc(j.status) + '</span>';
+    // Mirrors the server-rendered pending row above — job link + the rung's
+    // own gloss as its tooltip, so a polled row explains itself too.
     return '<div class="rounded-lg border border-sky-200 bg-sky-50/50 p-2 flex items-center gap-2 text-xs">'
-      + '<span class="font-mono text-slate-400">job ' + esc(j.job_id) + '</span>'
-      + '<span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">' + esc(j.fidelity) + '</span>'
+      + '<a class="font-mono text-slate-400 hover:text-emerald-700 hover:underline" href="/refs/job/'
+      + encodeURIComponent(j.job_id) + '">job ' + esc(j.job_id) + '</a>'
+      + '<span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700" title="'
+      + esc(j.rung_help || '') + '">' + esc(j.fidelity) + ' relax</span>'
       + pill
       + '<span class="ml-auto text-[10px] text-slate-400">' + esc(j.created) + '</span></div>';
   }

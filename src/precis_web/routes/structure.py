@@ -11,6 +11,11 @@ compute history.
   (initial vs DFT-relaxed geometry) beside the **run-cube** panel — every
   fidelity-ladder pass with its energy, forces, and the content-addressed
   ``cache_key`` that makes an identical relax a zero-compute hit (§23.16).
+* ``GET /structure/{slug}/run/{run_id}`` — one run of the cube, explained:
+  the rung and what that rung actually computes, the numbers with their
+  caveats, the convergence curve, and where the numbers came from (computed
+  here / on the compute node / reused from cache / imported). The hashes live
+  here, folded away — they are machine identity, not something a reader needs.
 * ``POST /structure/{slug}/relax`` — the run-cube "Relax" button: run a
   chosen rung (clean/ml/dft) with default params. An energy rung with no
   local backend dispatches a ``struct_relax`` job to the GPU node, parented
@@ -136,6 +141,177 @@ def _list_rows(store: Store) -> list[dict[str, Any]]:
     return out
 
 
+#: Plain-English gloss per fidelity rung — the mouseover behind every rung
+#: chip, the Relax picker's options, and the run page's "what ran" line. Keyed
+#: by the recorded ``fidelity`` string; :func:`rung_info` widens a ``dft-fast``
+#: / ``dft-tight`` into the ``dft`` family rather than rendering it bare.
+RUNG_INFO: dict[str, dict[str, str]] = {
+    "clean": {
+        "label": "geometry repair",
+        "where": "runs here, seconds",
+        "blurb": (
+            "Geometry repair, no physics: atoms are nudged apart until nothing "
+            "overlaps and no bond is shorter than the two atoms allow. It has "
+            "no energy at all — that is why Energy reads an em dash, not 0."
+        ),
+    },
+    "emt": {
+        "label": "cheap approximate physics",
+        "where": "runs here, seconds",
+        "blurb": (
+            "Effective-medium theory (ASE EMT) — a real but rough energy and "
+            "forces, for the closed set Al/Ni/Cu/Pd/Ag/Pt/Au plus H/C/N/O. "
+            "Good enough to shake out a bad geometry before paying for GPU."
+        ),
+    },
+    "ml": {
+        "label": "machine-learned potential",
+        "where": "runs on the GPU node",
+        "blurb": (
+            "A machine-learned interatomic potential (MACE-MP-0 / CHGNet) "
+            "predicts the forces a DFT calculation would give, thousands of "
+            "times faster. The standard pre-relax before any real DFT."
+        ),
+    },
+    "ff": {
+        "label": "classical force field",
+        "where": "rented compute",
+        "blurb": (
+            "A classical force field — fixed bonded/non-bonded terms, no "
+            "electrons. Fast and only as good as its parameters for these atoms."
+        ),
+    },
+    "xtb": {
+        "label": "semi-empirical quantum",
+        "where": "rented compute",
+        "blurb": (
+            "Semi-empirical tight binding (xTB) — approximate electronic "
+            "structure: between a force field and DFT in both cost and trust."
+        ),
+    },
+    "dft": {
+        "label": "density-functional theory",
+        "where": "runs on the GPU node",
+        "blurb": (
+            "Density-functional theory — actually solves for the electrons to "
+            "get the energy and forces. The slow, trustworthy rung: minutes to "
+            "hours, and the number other people's DFT can be compared against."
+        ),
+    },
+}
+
+#: Fallback gloss for a rung we have no entry for (a newly added backend) —
+#: better an honest "unknown rung" than a chip with no explanation.
+_RUNG_UNKNOWN: dict[str, str] = {
+    "label": "unrecognised rung",
+    "where": "",
+    "blurb": "No description on file for this fidelity rung.",
+}
+
+
+def rung_info(fidelity: str | None) -> dict[str, str]:
+    """Gloss for a recorded ``fidelity``, widening ``dft-fast`` → ``dft``."""
+    key = (fidelity or "").strip().lower()
+    if key in RUNG_INFO:
+        return RUNG_INFO[key]
+    family = key.split("-", 1)[0]
+    return RUNG_INFO.get(family, _RUNG_UNKNOWN)
+
+
+#: Mouseover text for the numbers a run reports. The run-cube is the one place
+#: on the site where a reader meets eV and eV/Å, so every column says what it
+#: means and — the part that actually bites — what it may *not* be compared to.
+METRIC_HELP: dict[str, str] = {
+    "energy": (
+        "Total energy of the whole cell, in eV. Only meaningful against another "
+        "run of the same rung on the same atoms — lower is more stable. An ml "
+        "energy and a DFT energy are different scales; never subtract them."
+    ),
+    "max_force": (
+        "The largest force still pulling on any single atom, in eV/Å — the "
+        "'is it settled?' number. A relax stops once it drops under its "
+        "threshold (~0.05 eV/Å); a big value means the geometry is still moving."
+    ),
+    "steps": "How many optimiser steps the relax took before it stopped.",
+    "converged": (
+        "The relax reached its force threshold instead of running out of steps. "
+        "A non-converged geometry is still informative, but its energy is not a "
+        "minimum — treat it as a snapshot, not a result."
+    ),
+    "cached": (
+        "This exact relax — same geometry, same rung, same settings — had "
+        "already been run, here or on another design, so the stored result was "
+        "reused. No compute was spent."
+    ),
+    "external": (
+        "Imported numbers: the energy came from an outside dataset (e.g. "
+        "Materials Project / OC20), not from a relax we ran."
+    ),
+    "model": "The specific potential or code that produced these numbers.",
+    "on_version": (
+        "The design version the run started from. Editing the design bumps the "
+        "version, so an older run describes older atoms."
+    ),
+    "status": (
+        "succeeded = the backend finished and returned numbers · running = in "
+        "flight · failed = it stopped without a usable result."
+    ),
+    "cache_key": (
+        "Content-addressed over (structure_sha, fidelity, model, params, "
+        "code version). An identical relax on any design hits this key and "
+        "costs nothing."
+    ),
+    "structure_sha": (
+        "Fingerprint of the exact geometry that went in — the atoms, positions "
+        "and cell this run actually saw."
+    ),
+}
+
+#: What a run-cube row *is*, said once. Reaction barriers are a different
+#: animal that lives on the quest's pathway runs, and conflating the two is the
+#: easiest mistake to make on this page.
+RUN_KIND_BLURB = (
+    "Every row here is one relax: the atoms were moved downhill until the "
+    "forces on them were small, and the settled geometry + energy recorded. A "
+    "relax is not a reaction — it computes no barrier and no rate. Those come "
+    "from pathway runs, which hang off the quest, not off this design."
+)
+
+#: The ``?`` popover: what each region of the structure page is for.
+PAGE_HELP: tuple[tuple[str, str], ...] = (
+    (
+        "Cell",
+        "The design's atoms and bonds in 3D. Click an atom or bond to inspect "
+        "it; once a relax has landed you can flip between the input geometry, "
+        "the relaxed one, and an overlay of the two.",
+    ),
+    (
+        "Compute runs",
+        "The design's compute history, newest first — one row per relax, with "
+        "the rung it ran at and what it found. Open a row to see what that run "
+        "actually did. Relax ▸ starts a new one.",
+    ),
+    (
+        "Further instructions",
+        "Describe a change in plain English; an LLM proposes the concrete edit "
+        "ops. Nothing is applied until you review and accept, and accepting "
+        "makes a new design rather than overwriting this one.",
+    ),
+    (
+        "Eyes & measures",
+        "Named distances, angles and marked sites saved on the design, "
+        "re-evaluated live against the current geometry. Hover a row to glow "
+        "the atoms it covers.",
+    ),
+    (
+        "Lineage & provenance",
+        "Where this design came from: the designs it was derived from or "
+        "spawned, the quest it is a candidate for, and the papers that "
+        "motivated it.",
+    ),
+)
+
+
 def _pending_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """In-flight ``struct_relax`` jobs for this design — the compute-lane jobs
      parented on the structure whose ``STATUS`` is not yet
@@ -159,10 +335,12 @@ def _pending_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in rows:
         params = (r[1] or {}).get("params", {})
+        fidelity = params.get("fidelity", "?")
         out.append(
             {
                 "job_id": int(r[0]),
-                "fidelity": params.get("fidelity", "?"),
+                "fidelity": fidelity,
+                "rung_help": rung_info(fidelity)["blurb"],
                 "status": r[2],
                 "created": _ago(r[3]),
             }
@@ -186,7 +364,8 @@ def _run_rows(store: Store, ref_id: int) -> list[dict[str, Any]]:
     sql = """
         SELECT id, fidelity, status, model, on_version, converged,
                n_steps, energy, max_force, max_disp, cache_key,
-               structure_sha, final_geometry, created_at
+               structure_sha, final_geometry, created_at,
+               provenance, params
           FROM struct_runs
          WHERE ref_id = %s
          ORDER BY id DESC
@@ -212,9 +391,129 @@ def _run_rows(store: Store, ref_id: int) -> list[dict[str, Any]]:
                 "structure_sha": r[11],
                 "final_geometry": r[12],
                 "created": _ago(r[13]),
+                "provenance": r[14] or "computed",
+                # A cache *hit* still records a per-design row (the cube is
+                # append-only) — ``params.cached`` is what marks it as free.
+                "cached": bool((r[15] or {}).get("cached")),
+                "rung_help": rung_info(r[1])["blurb"],
+                "rung_label": rung_info(r[1])["label"],
             }
         )
     return out
+
+
+def _run_detail(store: Store, ref_id: int, run_id: int) -> dict[str, Any] | None:
+    """One run, everything it recorded — the per-run page's payload.
+
+    ``ref_id`` is part of the lookup, not a post-hoc check: a run id belonging
+    to a *different* design must 404 here rather than render under this
+    design's slug. Returns ``None`` when there is no such run on this design.
+    """
+    sql = """
+        SELECT id, fidelity, status, model, on_version, converged,
+               n_steps, energy, max_force, max_disp, cache_key,
+               structure_sha, created_at, provenance, params, method,
+               (final_geometry IS NOT NULL) AS has_geometry,
+               (forces IS NOT NULL)         AS has_forces
+          FROM struct_runs
+         WHERE id = %s AND ref_id = %s
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(sql, (run_id, ref_id)).fetchone()
+        if row is None:
+            return None
+        # The convergence curve: max_force per optimiser step (§6.9 stores the
+        # curve + the final state, never a geometry per frame).
+        curve = [
+            float(c[0])
+            for c in conn.execute(
+                "SELECT max_force FROM struct_frames "
+                "WHERE run_id = %s AND max_force IS NOT NULL ORDER BY step",
+                (run_id,),
+            ).fetchall()
+        ]
+        # The dispatched-to-the-GPU-node case: the worker stamps the run it
+        # sank onto the job's meta, and the job parents on this structure — so
+        # the reverse link is an indexed parent_id lookup, not a meta scan.
+        job = conn.execute(
+            "SELECT r.ref_id, "
+            "       (SELECT t.value FROM ref_tags rt JOIN tags t "
+            "          ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS' "
+            "         WHERE rt.ref_id = r.ref_id LIMIT 1) "
+            "  FROM refs r "
+            " WHERE r.parent_id = %s AND r.kind = 'job' "
+            "   AND r.deleted_at IS NULL "
+            "   AND r.meta->>'struct_run_id' = %s "
+            " ORDER BY r.ref_id DESC LIMIT 1",
+            (ref_id, str(run_id)),
+        ).fetchone()
+
+    info = rung_info(row[1])
+    params = dict(row[14] or {})
+    provenance = row[13] or "computed"
+    cached = bool(params.get("cached"))
+    return {
+        "id": int(row[0]),
+        "fidelity": row[1],
+        "status": row[2],
+        "model": row[3],
+        "on_version": int(row[4]),
+        "converged": bool(row[5]),
+        "n_steps": int(row[6]),
+        "energy": float(row[7]) if row[7] is not None else None,
+        "max_force": float(row[8]) if row[8] is not None else None,
+        "max_disp": float(row[9]) if row[9] is not None else None,
+        "cache_key": row[10],
+        "structure_sha": row[11],
+        "created": _ago(row[12]),
+        "provenance": provenance,
+        "params": params,
+        "method": dict(row[15] or {}),
+        "has_geometry": bool(row[16]),
+        "has_forces": bool(row[17]),
+        "cached": cached,
+        "rung_label": info["label"],
+        "rung_help": info["blurb"],
+        "rung_where": info["where"],
+        "origin": _run_origin(provenance, cached, bool(job)),
+        "job_id": int(job[0]) if job else None,
+        "job_status": (job[1] if job else None),
+        "curve": curve,
+        "curve_svg": _curve_svg(curve),
+    }
+
+
+def _run_origin(provenance: str, cached: bool, has_job: bool) -> str:
+    """One sentence on where these numbers came from — the question a reader
+    asks before trusting them."""
+    if provenance == "external":
+        return METRIC_HELP["external"]
+    if cached:
+        return METRIC_HELP["cached"]
+    if has_job:
+        return "Computed for this design as a job on the compute node."
+    return "Computed for this design, locally, when the relax op ran."
+
+
+#: Sparkline geometry — a glance at the convergence curve, not a plot.
+_CURVE_W, _CURVE_H = 240.0, 40.0
+
+
+def _curve_svg(curve: list[float]) -> str:
+    """The convergence curve as SVG polyline points (max force per step,
+    scaled into :data:`_CURVE_W` x :data:`_CURVE_H`). Empty for a curve too
+    short to say anything — one point is a dot, not a trend."""
+    if len(curve) < 2:
+        return ""
+    hi = max(curve)
+    lo = min(curve)
+    span = (hi - lo) or 1.0
+    step = _CURVE_W / (len(curve) - 1)
+    pts = [
+        f"{i * step:.1f},{_CURVE_H - (v - lo) / span * _CURVE_H:.1f}"
+        for i, v in enumerate(curve)
+    ]
+    return " ".join(pts)
 
 
 #: Pauling bond-order decay constant (Å) — ``s = exp((R0-d)/0.37)`` reads
@@ -354,16 +653,30 @@ def _geom_payload(scene: Any, comment: str) -> dict[str, Any]:
     }
 
 
-def _viewer(store: Store, ref: Any, runs: list[dict[str, Any]]) -> dict[str, Any]:
+def _viewer(
+    store: Store,
+    ref: Any,
+    runs: list[dict[str, Any]],
+    *,
+    pin_run_id: int | None = None,
+) -> dict[str, Any]:
     """Build the 3D viewer payload: the input geometry, the optional relaxed
     geometry (newest succeeded run carrying a ``final_geometry``), and a colour
-    legend. Each geometry carries its own atoms/bonds/lattice."""
+    legend. Each geometry carries its own atoms/bonds/lattice.
+
+    ``pin_run_id`` shows *that* run's geometry instead of the newest one — the
+    per-run page's "show this geometry in the viewer" link. A pin naming a run
+    with no stored geometry simply leaves the relaxed side empty (the page then
+    reads as input-only), rather than silently showing a different run's atoms.
+    """
     scene, _handles = store.structure_load(ref.id)
     initial = _geom_payload(scene, f"{ref.slug} (input)")
 
     relaxed: dict[str, Any] | None = None
     relaxed_run_id: int | None = None
     for run in runs:  # newest-first
+        if pin_run_id is not None and int(run["id"]) != pin_run_id:
+            continue
         geom = run.get("final_geometry")
         if run["status"] == "succeeded" and geom:
             apply_geometry(scene, geom)  # mutate to the relaxed positions
@@ -565,18 +878,10 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
     try:
         ref = resolve_live_slug_ref(store, kind="structure", id=slug)
     except NotFound:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "title": "Structure not found",
-                "detail": f"no live structure design with slug {slug!r}",
-                "status": 404,
-            },
-            status_code=404,
-        )
+        return _not_found(request, f"no live structure design with slug {slug!r}")
     runs = _run_rows(store, ref.id)
-    viewer = _viewer(store, ref, runs)
+    pin = _int_or_none(request.query_params.get("run"))
+    viewer = _viewer(store, ref, runs, pin_run_id=pin)
     scene, _handles = store.structure_load(ref.id)
     meta = dict(ref.meta or {})
     return templates.TemplateResponse(
@@ -597,7 +902,59 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "provenance": paper_provenance_rows(store, ref.id),
             "proposal": _latest_proposal(store, ref.id),
             "quest_context": _quest_context(store, ref.id),
+            "pinned_run": pin,
+            "page_help": PAGE_HELP,
+            "metric_help": METRIC_HELP,
+            "rung_info": RUNG_INFO,
+            "run_kind_blurb": RUN_KIND_BLURB,
         },
+    )
+
+
+def _int_or_none(raw: str | None) -> int | None:
+    """A query param that must be an int or absent — a junk value is ignored
+    (a stale link should degrade to the default view, never 500)."""
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+@router.get("/structure/{slug}/run/{run_id}", response_class=HTMLResponse)
+async def structure_run(request: Request, slug: str, run_id: int) -> HTMLResponse:
+    """One compute run, in words: which rung ran and what that rung *is*, what
+    the numbers mean, whether it settled, and where the numbers came from."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="structure", id=slug)
+    except NotFound:
+        return _not_found(request, f"no live structure design with slug {slug!r}")
+    run = _run_detail(store, ref.id, run_id)
+    if run is None:
+        return _not_found(request, f"design {slug!r} has no compute run r{run_id}")
+    return templates.TemplateResponse(
+        request,
+        "structure/run.html.j2",
+        {
+            "active_tab": "structure",
+            "slug": ref.slug,
+            "title": ref.title or ref.slug,
+            "run": run,
+            "metric_help": METRIC_HELP,
+            "run_kind_blurb": RUN_KIND_BLURB,
+            "curve_w": _CURVE_W,
+            "curve_h": _CURVE_H,
+            "quest_context": _quest_context(store, ref.id),
+        },
+    )
+
+
+def _not_found(request: Request, detail: str) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {"title": "Not found", "detail": detail, "status": 404},
+        status_code=404,
     )
 
 
