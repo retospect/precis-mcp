@@ -257,6 +257,47 @@ def test_multi_assertion_does_not_fire_on_single_clause() -> None:
     assert not any("multi-assertion" in w for w in warnings)
 
 
+def test_multi_assertion_ignores_serial_comma_in_noun_list() -> None:
+    # gr245400: `A, B, and C` is one assertion. Splitting on the serial
+    # comma stranded the subject on one side of the cut and the verb on the
+    # other, so the finite-verb count read one claim as two.
+    for sentence in [
+        "X-ray diffraction shows that CD-MOF-1 (K+), CD-MOF-2 (Rb+), and "
+        "CD-MOF-3 (Cs+) are all isostructural.",
+        "Infrared spectroscopy observes absorption bands at 2159, 2025, and "
+        "1977 cm-1 in the calcined material.",
+        "DFT calculations show that the atom-to-atom, bond-to-bond, and "
+        "bond-to-ring configurations differ in stability.",
+    ]:
+        warnings = lint_claim_sentence(sentence)
+        assert not any("multi-assertion" in w for w in warnings), sentence
+
+
+def test_multi_assertion_still_fires_when_verb_set_misses_the_predicate() -> None:
+    # The length cap, not the verb set, is what catches this one: the span
+    # before `, and` carries a predicate (`cannot be switched off`) that
+    # `_FINITE_VERB_RE` does not know, but it is far too long to be a list
+    # item, so the join is still read as a coordination.
+    warnings = lint_claim_sentence(
+        "Because graphene has no gap between its valence and conduction "
+        "bands, a graphene field-effect transistor channel cannot be "
+        "switched off, and the device's on/off current ratio hardly "
+        "exceeds 100."
+    )
+    assert any("multi-assertion" in w for w in warnings)
+
+
+def test_multi_assertion_digit_grouping_comma_does_not_open_a_list() -> None:
+    # The comma in `10,000` separates nothing; if it were taken as the
+    # comma that opened an enumeration, the "item" it closes would be the
+    # tail of a number ("000 cm2/Vs") and the real coordination would slip.
+    warnings = lint_claim_sentence(
+        "Measurements find mobilities of 10,000 cm2/Vs, and transport "
+        "remains ballistic at submicron distances."
+    )
+    assert any("multi-assertion" in w for w in warnings)
+
+
 def test_no_terminal_period_fires_when_missing() -> None:
     warnings = lint_claim_sentence("DFT predicts a 1.2 eV band gap for monolayer MoS2")
     assert any("no-terminal-period" in w for w in warnings)

@@ -228,6 +228,26 @@ or evidence naming no method — so scaling the rewrite pass graduates roughly
 half the pool and the other half needs claim-type-aware judgment
 (`taproot-claim-type-v2.md`), not grammar.
 
+**Two tranches later that day the strict cohort stands at 299 clean (23.6%)**
+— 215 Opus rewrites applied through the `edit(kind='finding', title=…)`
+reword door, pair-blocked pool 963 → 577. Two corrections the tranches
+forced, both worth carrying forward:
+
+- **`multi-assertion` was over-firing on serial commas.** `A, B, and C` is
+  one assertion, but the detector split on the Oxford comma and counted the
+  stranded subject and verb as two clauses (gr245400). Fixed in
+  `sentence_lint.py::_clause_fragments`; corpus dry run flipped 8 sentences,
+  every one a genuine noun/adjective/number list, with true coordinations
+  and `; ` joins untouched.
+- **Evidence windows must reach the methods section.** Chunk-level
+  `establishes`/`corroborates` links point at *result* paragraphs, which
+  routinely state the finding without naming the technique — so a rewriter
+  given only those correctly refuses to name one, and the claim loses
+  specificity it had (`fi218658`/`fi218661` lost "density functional
+  theory" to a bare "Calculations" this way, since the paper declares DFT in
+  its methods chunk, `ord=12`). Pull the paper's method-bearing chunks
+  alongside the grounding passage.
+
 | bucket | count | |
 |---|---|---|
 | E — grammar-violating, grounded | 1,044 | 68.5% |

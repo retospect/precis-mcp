@@ -706,8 +706,20 @@ _DANGLING_PHRASES: tuple[str, ...] = (
 
 # ── multi-assertion ───────────────────────────────────────────────────────
 
-#: Coordinating join between two clauses -- `, and` / `; `.
-_CLAUSE_SPLIT_RE = re.compile(r",\s+and\s+|;\s+")
+#: The two coordinating-join shapes. `_clause_fragments` trusts `; ` but
+#: has to interrogate `, and` (see gr245400).
+_SEMICOLON_JOIN_RE = re.compile(r";\s+")
+_COMMA_AND_JOIN_RE = re.compile(r",\s+and\s+")
+
+#: Longest a comma-delimited span may be and still read as a list item
+#: rather than a clause. Measured, not guessed: across the 1,547-hub claim
+#: corpus every true enumeration item closed by a serial comma is <= 4
+#: words ("ABTS", "[2]pseudorotaxane", "CD-MOF-2 (Rb+)"), and every true
+#: coordinated clause is longer.
+_ENUM_ITEM_MAX_WORDS = 4
+
+#: `10,000` -- a comma bracketed by digits, which separates nothing.
+_DIGIT_GROUP_COMMA_RE = re.compile(r"\d,\d")
 
 #: A broad, heuristic finite-verb set for the multi-assertion check and
 #: `lint_scope`'s free-text detector. False-negative-biased on purpose --
@@ -724,6 +736,57 @@ _FINITE_VERB_RE = re.compile(
     r"doped|annealed|coated|etched|patterned|functionali[sz]ed)\b",
     re.IGNORECASE,
 )
+
+
+def _clause_fragments(sentence: str) -> list[str]:
+    """Split `sentence` at genuine clause joins (`, and` / `; `).
+
+    A serial ("Oxford") comma closing a noun enumeration -- `A, B, and C` --
+    is not a clause join, and splitting there strands the sentence's subject
+    on one side of the cut and its verb on the other. The finite-verb count
+    in `lint_claim_sentence` then reads one assertion as two (gr245400: 3 of
+    96 rewrites in the 2026-08-23 graduation tranche were blocked this way,
+    every one a single assertion).
+
+    The enumeration tell is local: an earlier comma opened the list, and the
+    item it closes -- the span between that comma and `, and` -- is a SHORT
+    bare noun phrase carrying no finite verb. Both halves of that test earn
+    their keep. Verbless alone lets `..., including mechanistically
+    controlled NDC/PDC transformation, and remain thermally stable` through,
+    because the heuristic verb set does not know every predicate it might
+    meet; the length cap catches those, since a real coordinated clause is
+    never four words long. Erring toward firing is the safe direction here
+    -- `multi-assertion` blocks at approve, so a missed enumeration costs a
+    reword while a missed coordination ships two claims as one.
+    """
+    cuts: list[tuple[int, int]] = [
+        (m.start(), m.end()) for m in _SEMICOLON_JOIN_RE.finditer(sentence)
+    ]
+    for m in _COMMA_AND_JOIN_RE.finditer(sentence):
+        prev_comma = sentence.rfind(",", 0, m.start())
+        # A digit-grouping comma (`10,000`) never opens a list -- skip past
+        # it, or the "item" it appears to close is the tail of a number.
+        while prev_comma > 0 and _DIGIT_GROUP_COMMA_RE.match(sentence, prev_comma - 1):
+            prev_comma = sentence.rfind(",", 0, prev_comma)
+        if prev_comma >= 0:
+            item = sentence[prev_comma + 1 : m.start()]
+            if len(item.split()) <= _ENUM_ITEM_MAX_WORDS and not _FINITE_VERB_RE.search(
+                item
+            ):
+                continue  # serial comma inside an enumeration, not a clause join
+        cuts.append((m.start(), m.end()))
+
+    if not cuts:
+        return [sentence]
+    cuts.sort()
+    fragments: list[str] = []
+    pos = 0
+    for start, end in cuts:
+        fragments.append(sentence[pos:start])
+        pos = end
+    fragments.append(sentence[pos:])
+    return fragments
+
 
 # ── mixed-point-range (2026-08-20 numeric-value policy) ──────────────────
 #
@@ -929,7 +992,7 @@ def lint_claim_sentence(sentence: str) -> list[str]:
             "evidence."
         )
 
-    clauses = [c for c in _CLAUSE_SPLIT_RE.split(sentence) if len(c.split()) >= 3]
+    clauses = [c for c in _clause_fragments(sentence) if len(c.split()) >= 3]
     if len(clauses) >= 2 and sum(1 for c in clauses if _FINITE_VERB_RE.search(c)) >= 2:
         warnings.append(
             "multi-assertion: sentence joins two clauses each carrying a "
