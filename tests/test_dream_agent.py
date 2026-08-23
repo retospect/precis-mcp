@@ -51,28 +51,28 @@ def test_eligible_true_without_any_soul_file(
     mcp.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(mcp))
-    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
     assert eligible() is True
 
 
-def test_persona_falls_back_to_the_packaged_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No override ⇒ the packaged persona-neutral dreamer prompt, not the
-    operator's chat persona."""
-    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
+def test_persona_is_the_packaged_file() -> None:
+    """The packaged persona-neutral dreamer prompt, not the operator's chat
+    persona."""
     persona = _load_persona()
     assert persona is not None
     assert "dreaming pass over a research corpus" in persona
 
 
-def test_persona_env_override_wins(
+def test_no_env_var_can_swap_the_persona(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """The retired `PRECIS_DREAM_SOUL_PATH` override stays retired: the
+    persona pairs with the packaged workflow prompt (Step 6d/6e), so a site
+    file that drifted from it would misbrief the one pass whose entire
+    output is judgement calls."""
     soul = tmp_path / "SOUL.md"
     soul.write_text("# site persona", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(soul))
-    assert _load_persona() == "# site persona"
+    assert _load_persona() != "# site persona"
 
 
 def test_apply_fisheye_appends_kind_diverse_draw(
@@ -301,7 +301,6 @@ def test_happy_path_dispatches_with_files(
 
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt))
-    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(mcp))
 
     captured: dict = {}

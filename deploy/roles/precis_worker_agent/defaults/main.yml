@@ -38,9 +38,9 @@ precis_worker_agent_container_bin: /opt/homebrew/bin/docker
 precis_agent_image: "precis-agent:latest"
 
 # §A: the operator-SOUL copy is retired — the dreamer persona is packaged
-# (precis/data/prompts/dream-persona.md) and the plist no longer sets
-# PRECIS_DREAM_SOUL_PATH. Set that var by hand on a host that genuinely
-# wants a site-specific dreamer persona; nothing here provisions one.
+# (precis/data/prompts/dream-persona.md) and there is no env override left
+# to point elsewhere. A site-specific dreamer persona is an edit to that
+# file, so it stays versioned with the workflow prompt it pairs with.
 
 # Embedder plumbing (gr185401): same values/reasoning as the precis_worker
 # role's precis_worker_embedder* — the agent profile's embedder consumers

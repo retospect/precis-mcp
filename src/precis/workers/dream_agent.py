@@ -13,6 +13,10 @@ unified :func:`precis.utils.claude_agent.call_claude_agent` so:
 * the cluster-side bash script collapses to a one-liner that just
   shells out to `precis worker --only dream_agent --once`.
 
+The system prompt (`--append-system-prompt`) is the **packaged** dreamer
+persona at ``precis/data/prompts/dream-persona.md`` and takes no env
+override — see :data:`_PACKAGED_PERSONA_FILE`.
+
 Inputs (env):
 
 * ``PRECIS_DREAM_PROMPT_PATH`` — optional override file containing the
@@ -21,13 +25,6 @@ Inputs (env):
   ``precis/data/prompts/dream-prompt.md`` — the persona-neutral SSOT, so
   the prompt no longer has to be shipped by the operator's deploy. Set
   this only to override the default with a site-specific prompt.
-* ``PRECIS_DREAM_SOUL_PATH`` — optional override for the agent's system
-  prompt (`--append-system-prompt`). Unset (the normal case) falls back to
-  the **packaged** dreamer persona at
-  ``precis/data/prompts/dream-persona.md``. This used to point at the
-  operator's own chat persona (asa's ``SOUL.md``), which is written for a
-  Discord/Slack turn loop and says nothing about synthesis over a corpus;
-  it is now a site override, not a prerequisite.
 * ``PRECIS_MCP_CONFIG`` — MCP config JSON the agent uses to call
   precis tools.
 * ``PRECIS_DREAM_LENS`` — the oracle lens (comma-list) biasing the
@@ -326,11 +323,14 @@ _PACKAGED_PROMPT = "precis.data.prompts"
 _PACKAGED_PROMPT_FILE = "dream-prompt.md"
 
 #: Packaged dreamer persona — the ``--append-system-prompt`` layer. Was
-#: the operator's own chat persona (asa's ``SOUL.md``, via
-#: ``PRECIS_DREAM_SOUL_PATH``), which is written for a Discord/Slack turn
-#: loop and says nothing about synthesis over a corpus. The packaged file
-#: is the default; the env var stays as an optional site override, exactly
-#: like ``PRECIS_DREAM_PROMPT_PATH``.
+#: the operator's own chat persona (asa's ``SOUL.md``, reached through a
+#: ``PRECIS_DREAM_SOUL_PATH`` env override), which is written for a
+#: Discord/Slack turn loop and says nothing about synthesis over a corpus.
+#: No override survives, unlike ``PRECIS_DREAM_PROMPT_PATH``: this persona
+#: is one half of a pair with the packaged workflow prompt — Step 6d/6e's
+#: nanopub-proposal discipline is written in that file and the voice that
+#: has to follow it in this one — so a site copy would desync from it
+#: silently, on the one pass whose whole output is judgement calls.
 _PACKAGED_PERSONA_FILE = "dream-persona.md"
 
 
@@ -360,15 +360,12 @@ def _load_prompt() -> str | None:
 
 
 def _load_persona() -> str | None:
-    """The dreamer's system prompt: the ``PRECIS_DREAM_SOUL_PATH`` override
-    if set+readable, else the packaged persona-neutral default.
+    """The dreamer's system prompt — the packaged persona-neutral default,
+    with no env override (:data:`_PACKAGED_PERSONA_FILE`).
 
     Returns the prompt *text*, not a path — ``LlmRequest.system_prompt``
     takes ``str | Path``, so a packaged resource passes through as a
     literal without needing a file on disk."""
-    override = _env_path("PRECIS_DREAM_SOUL_PATH")
-    if override is not None:
-        return override.read_text(encoding="utf-8")
     return _load_packaged(_PACKAGED_PERSONA_FILE, what="dream persona")
 
 

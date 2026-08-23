@@ -17,9 +17,8 @@ Owner anchors: `src/precis/workers/dream_agent.py`,
 
 Also live: the packaged persona-neutral dreamer prompt
 (`data/prompts/dream-persona.md`) — the dream no longer wears the
-operator's chat persona, and `PRECIS_DREAM_SOUL_PATH` is an optional
-site override rather than the eligibility gate (that is now
-`PRECIS_MCP_CONFIG`) — and **Step 6d/6e**: a cycle that lands on a
+operator's chat persona, `PRECIS_DREAM_SOUL_PATH` is gone entirely
+(the eligibility gate is now `PRECIS_MCP_CONFIG`) — and **Step 6d/6e**: a cycle that lands on a
 cross-binding it cannot close proposes a nanopub `hypothesis`
 (`handlers/_finding_hypothesis.py`) and checks it against the real mint
 gates (`view='mint-preflight'`) before leaving it in the review queue.

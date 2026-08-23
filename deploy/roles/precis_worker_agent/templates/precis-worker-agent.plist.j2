@@ -79,10 +79,10 @@
        process the eligible claimant — a system-profile worker on the same
        host never gets PRECIS_DREAM_AGENT, so it can never win the lease.
        See the cadence's `eligible` gate, workers/dream_agent.py::eligible.
-       The dreamer persona is packaged (precis/data/prompts/dream-persona.md);
-       PRECIS_DREAM_SOUL_PATH is an optional site override and is deliberately
-       NOT set here — it used to point at the operator's chat persona, which
-       is written for a Discord/Slack turn loop, not for corpus synthesis. #}
+       The dreamer persona is packaged (precis/data/prompts/dream-persona.md)
+       and takes no env override; the retired PRECIS_DREAM_SOUL_PATH used to
+       point this at the operator's chat persona, which is written for a
+       Discord/Slack turn loop, not for corpus synthesis. #}
     <key>PRECIS_DREAM_AGENT</key>
     <string>1</string>
     {% endif %}

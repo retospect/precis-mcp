@@ -3092,7 +3092,6 @@ def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
         lambda label: {
             "PRECIS_DREAM_AGENT": "1",
             "PRECIS_DREAM_PROMPT_PATH": "/etc/hostname",
-            "PRECIS_DREAM_SOUL_PATH": "/etc/hostname",
         },
     )
     resp = client.get("/env?agent=dream_agent")
