@@ -16,8 +16,17 @@ rejects a non-GET whose ``Origin`` doesn't match, which stops a form on
 evil.example POSTing here. It does *not* stop evil.example framing this
 origin and tricking a click: the request that click produces comes from
 the framed page, so its ``Origin`` is ours and the check passes. The only
-defence is refusing to be framed, which is what ``X-Frame-Options`` and
-CSP ``frame-ancestors`` do.
+defence is refusing to be framed by *another origin*, which is what
+``X-Frame-Options`` and CSP ``frame-ancestors`` do.
+
+**Same-origin framing is allowed on purpose** (``'self'`` /
+``SAMEORIGIN``, not ``'none'`` / ``DENY``). The UI frames itself: the
+/nanopub workbench's review + paper panes load ``?embed=1`` pages, and the
+document reader frames ``/static/pdfjs/web/viewer.html``. ``'none'``
+blanked all three (shipped 2026-08-22, reported the next day). ``'self'``
+costs nothing defensively — a clickjack needs the *attacker's* page to be
+the framing ancestor, and no attacker-controlled page is served from this
+origin.
 
 **The CSP is deliberately frame-ancestors ONLY.** A real
 ``default-src``/``script-src`` policy is worth having, but the templates
@@ -31,11 +40,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 #: Sent on every response. Values are bytes: ASGI headers are raw pairs.
 _HEADERS: tuple[tuple[bytes, bytes], ...] = (
-    # Refuse framing outright. X-Frame-Options is the legacy spelling and
-    # frame-ancestors the modern one; send both, since they are cheap and
-    # their support sets are not identical.
-    (b"x-frame-options", b"DENY"),
-    (b"content-security-policy", b"frame-ancestors 'none'"),
+    # Refuse *cross-origin* framing. X-Frame-Options is the legacy spelling
+    # and frame-ancestors the modern one; send both, since they are cheap
+    # and their support sets are not identical. Not DENY/'none': this app
+    # frames its own pages (see the module docstring).
+    (b"x-frame-options", b"SAMEORIGIN"),
+    (b"content-security-policy", b"frame-ancestors 'self'"),
     # Don't let a browser second-guess a Content-Type into something
     # executable.
     (b"x-content-type-options", b"nosniff"),

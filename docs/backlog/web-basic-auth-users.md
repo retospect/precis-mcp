@@ -260,6 +260,9 @@ Two findings, both fixed in `4bfe8a99`:
 2. **No framing headers.** This is the gap `check_same_origin` cannot
    close: a click inside a hostile `<iframe>` produces a request whose
    `Origin` is *ours*, so the CSRF check passes. Fixed with
-   `SecurityHeadersMiddleware` (`X-Frame-Options: DENY` + CSP
-   `frame-ancestors 'none'`, plus `nosniff` / `Referrer-Policy` / HSTS),
+   `SecurityHeadersMiddleware` (`X-Frame-Options: SAMEORIGIN` + CSP
+   `frame-ancestors 'self'`, plus `nosniff` / `Referrer-Policy` / HSTS),
    installed outermost so it covers the 401 challenge and `/static`.
+   Same-origin, not `DENY`/`'none'`: the UI frames its own pages
+   (/nanopub's `?embed=1` panes, the reader's PDF.js viewer), and
+   `'none'` blanked all three.

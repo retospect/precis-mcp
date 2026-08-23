@@ -18,6 +18,10 @@ enclosure URLs). An empty roster fails *closed* with a 503 naming the
 ``precis users add`` line to run. A cross-site state-changing request is
 refused 403 (``Origin``/``Referer`` must match) — Basic auth makes every
 mutating route a CSRF target, with no cookie to mark ``SameSite``.
+The clickjack that check cannot close is shut by
+``security_headers.py`` (outermost, so it rides the 401 too): framing is
+same-origin, **not** ``DENY``/``'none'`` — the UI frames its own pages
+(/nanopub's ``?embed=1`` panes, the reader's PDF.js viewer).
 ``PRECIS_WEB_AUTH=off`` disables the gate for local development only.
 ``/account``
 (``routes/account.py``) is the signed-in user's own page — password,

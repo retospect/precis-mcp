@@ -4,7 +4,9 @@ These went in when precis-web moved from tailnet-only to the public
 internet behind ``tailscale funnel``. The framing headers are the ones
 that matter: ``check_same_origin`` cannot stop a clickjack, because a
 click inside a hostile ``<iframe>`` produces a request whose ``Origin``
-is *ours*.
+is *ours*. They are scoped to same-origin rather than DENY/``'none'``,
+because the UI frames itself — see
+:func:`test_an_authenticated_page_carries_them`.
 """
 
 from __future__ import annotations
@@ -35,16 +37,27 @@ def test_the_401_challenge_carries_them_too() -> None:
     """
     resp = _client().get("/", follow_redirects=False)
     assert resp.status_code == 401
-    assert resp.headers["x-frame-options"] == "DENY"
-    assert resp.headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+    assert resp.headers["content-security-policy"] == "frame-ancestors 'self'"
 
 
 def test_an_authenticated_page_carries_them() -> None:
+    """Same-origin framing, deliberately — ``DENY``/``'none'`` blanks the app.
+
+    The UI frames its own pages: /nanopub's workbench loads its review and
+    paper panes as ``?embed=1`` iframes, and the document reader frames
+    ``/static/pdfjs/web/viewer.html``. ``frame-ancestors 'none'`` (shipped
+    2026-08-22) left all three as empty boxes with a console CSP refusal.
+    Same-origin gives up nothing: a clickjack needs the *attacker's* page
+    as the framing ancestor, and this origin serves none. So the two
+    framing values below are exact on purpose — don't tighten them back to
+    ``DENY``/``'none'`` without fixing those three panes first.
+    """
     resp = _client().get("/", follow_redirects=False, headers=_basic("reto", "pw"))
     assert resp.status_code in (200, 302, 303, 307)
     for header, value in (
-        ("x-frame-options", "DENY"),
-        ("content-security-policy", "frame-ancestors 'none'"),
+        ("x-frame-options", "SAMEORIGIN"),
+        ("content-security-policy", "frame-ancestors 'self'"),
         ("x-content-type-options", "nosniff"),
         ("referrer-policy", "same-origin"),
     ):
@@ -55,7 +68,7 @@ def test_an_authenticated_page_carries_them() -> None:
 def test_they_are_present_with_auth_off() -> None:
     """Auth-off is when the app is *most* exposed, not least."""
     resp = _client(auth=False).get("/", follow_redirects=False)
-    assert resp.headers["x-frame-options"] == "DENY"
+    assert resp.headers["x-frame-options"] == "SAMEORIGIN"
 
 
 def test_referrer_policy_is_never_no_referrer() -> None:
@@ -81,6 +94,6 @@ def test_the_csp_does_not_restrict_scripts_or_styles() -> None:
     is the tripwire, not a statement that a narrow CSP is ideal.
     """
     csp = _client().get("/", follow_redirects=False).headers["content-security-policy"]
-    assert csp == "frame-ancestors 'none'"
+    assert csp == "frame-ancestors 'self'"
     assert "script-src" not in csp
     assert "default-src" not in csp
