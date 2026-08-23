@@ -92,6 +92,10 @@ three of the four are **not** merges:
   are exactly where an automated judge would over-merge, so they should route
   to a human rather than to `merge_confirm`.
 - `gripe #180306` filed pair 7 independently; closing it is part of done.
+- **`fi176485` / `fi176490`** — near-identical molecular NAND-tree claims,
+  spotted by eye during the 2026-08-23 graduation campaign rather than by the
+  cosine sweep. Add them to the candidate list; they also serve as a check on
+  whether the sweep's floor caught them.
 
 ## Why 24 and not more
 
