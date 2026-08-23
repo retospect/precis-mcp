@@ -161,6 +161,16 @@ def nav_badges(request: Request) -> dict[str, Any]:
     except Exception:
         log.debug("nav: triage count failed", exc_info=True)
     try:
+        # Agent-proposed nanopub hypotheses waiting to be approved or
+        # dropped. Prepared and gate-checked, but approve/sign are human
+        # doors by design — so this is the third thing that genuinely
+        # waits on a person.
+        from precis.handlers._finding_hypothesis import PROPOSED_TAG
+
+        needs_you += store.count_refs(kind="finding", tags=[PROPOSED_TAG])
+    except Exception:
+        log.debug("nav: proposed-hypothesis count failed", exc_info=True)
+    try:
         gripes = _gripes_count(store)
     except Exception:
         log.debug("nav: gripes count failed", exc_info=True)

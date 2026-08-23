@@ -154,7 +154,9 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
   (``tool_calls`` must be a definitive 0 — a cheap-but-real pass is never
   flagged). Reviewers pass explicit ``disallowed_tools`` (gr179501; these
   standing passes never set an envelope, so it defaults permissive);
-  ``dream_agent`` has its own deny list keeping ``put`` + ``tag``.
+  ``dream_agent`` has its own deny list keeping ``put`` + ``tag`` (its
+  hypothesis proposals write their own motivation/provenance edges
+  server-side, so the list stays tight without ``link``).
 
 Notable pass mechanics
 ----------------------

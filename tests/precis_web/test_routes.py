@@ -5210,6 +5210,30 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
     assert 'action="/asks/14634/answer"' in resp.text
 
 
+def test_needs_you_renders_proposed_hypotheses(client, monkeypatch) -> None:
+    """Agent-proposed hypotheses are the third thing that genuinely waits on
+    a person: approve and sign are human doors by design, so a prepared,
+    gate-checked conjecture sits in the queue until someone rules on it."""
+    from precis_web.routes import needs_you as needs_you_mod
+
+    monkeypatch.setattr(
+        needs_you_mod,
+        "_load_proposed",
+        lambda store, **kw: (
+            [{"id": 9182, "title": "Raman observes a G-band shift in nanobud films."}],
+            1,
+        ),
+    )
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    assert "Proposed hypotheses" in resp.text
+    assert "fi9182" in resp.text
+    assert "Raman observes a G-band shift" in resp.text
+    # Each row deep-links to the claim page, where the approve form arrives
+    # pre-filled from the parked payload.
+    assert 'href="/claim/fi9182"' in resp.text
+
+
 def test_nav_badge_counts_on_every_page(client) -> None:
     """The global nav injects the Needs-you badge on an unrelated page.
 

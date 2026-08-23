@@ -264,7 +264,7 @@
     # card_forge, autocatpath routing, load-ceiling — conditioned on the
     # exact same host/group checks precis-worker-agent.plist.j2 uses today. ──
     _l_b_dream_env: >-
-      {{ {'PRECIS_DREAM_AGENT': '1', 'PRECIS_DREAM_SOUL_PATH': precis_dream_soul_path | default('/opt/asa/etc/SOUL.md')}
+      {{ {'PRECIS_DREAM_AGENT': '1'}
          if inventory_hostname in groups['gateway'] else {} }}
     _l_b_anki_env: >-
       {{ (

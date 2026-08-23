@@ -82,6 +82,46 @@ Constraints — these are load-bearing (the dream pass has a spin-loop history):
 
 Threads are optional — a cycle with no thread worth capturing writes none. This step never blocks Step 7.
 
+Step 6d — propose a nanopub hypothesis, when there is genuinely something to say. RARE: at most ONE per cycle, and most cycles none. A memory is a note; a hypothesis is a signed, timestamped artifact that goes into a review queue a human works through, so the bar is much higher.
+
+Reach for this when a Step-6 connection is a **cross-binding you cannot close**: two findings whose junction nobody has demonstrated, where you can name the experiment that would settle it. That is exactly what the `hypothesis` artifact type is for — its worked example was minted from a compound claim that failed its commensurability gate, restated honestly as a conjecture. A hypothesis has NO evidence by definition: it carries motivation instead, and states the discriminating experiment. A signed, timestamped hypothesis is a priority claim on an idea.
+
+  precis put(
+      kind="finding",
+      hypothesis=True,
+      title="<the claim sentence — see the sentence rules below>",
+      scope={"material": "...", "method": "..."},        # optional
+      motivation="<the inferential leap, named. What each source established, and precisely which transfer between them is unproven.>",
+      testable_by="<the discriminating experiment — the measurement that would settle it either way>",
+      motivated_by=["pc<id>", "fi<id>"],                 # >=2, spanning >=2 different source papers
+      from_memory="me<id>"                               # the Step-6 memory this came out of
+  )
+
+THE SENTENCE IS THE HARD PART. It is gated by the same lint every published claim faces, and the gate is severe on purpose — only ~1.4% of existing hubs pass it. Your sentence MUST carry:
+
+  * an **evidence verb** — one of predicts / finds / shows / measures / observes / demonstrates (inflections fine), AND
+  * an **epistemic mode** — the technique that would produce the observation: DFT, spin-polarized DFT, first-principles, NEGF, molecular dynamics (MD), Monte Carlo, TEM, SEM, STM, AFM, c-AFM, Raman, XRD, XPS, NMR, nanoindentation.
+
+In practice this forces the sentence to name the measurement that would test it, which is the point. Also: a terminal period, ONE assertion, self-contained (no "this", "the same group", "as above"), no author names, no em dashes, and UTF-8 notation (`C₆₀`, `≈10⁴ cm² V⁻¹ s⁻¹`), never TeX.
+
+  ❌ "Mechanical switching persists when the molecules are assembled into thin films."
+     (no evidence verb, no epistemic mode, and "the molecules" dangles)
+  ✅ "c-AFM measures conductance switching under electrode displacement in monolayer films of quantum-interference-active coordination cages."
+
+Two more rules the door enforces, so aim at them:
+  * **≥2 motivators across ≥2 different source papers.** A conjecture that leaps from one source is just a restatement of that source. Two claim hubs grounded in the same single paper count as ONE source. Name a passage (`pc<id>`) rather than a whole paper wherever you actually read one — the edge then records which passage provoked you.
+  * **Papers, patents, and claim hubs only.** Your own memories are what you thought *with*; they are not sources a signed artifact can cite. Put them in the `motivation` prose by all means, not in `motivated_by`.
+
+The door lints the sentence BEFORE it writes anything, so a sentence that fails comes back as a refusal listing every violation, with nothing minted. Reword and call put() again — you have not left a mess behind. Expect refusals; that is the gate working, not a malfunction. If you cannot get a sentence past it, the honest outcome is to drop the proposal and keep the Step-6 memory.
+
+Step 6e — confirm what you filed:
+
+  precis get(kind="finding", id="fi<id>", view="mint-preflight")
+
+This runs the full mint gates (not just the sentence) against the payload you parked, and prints any remaining blocking violation. It should say PASS. Read it and stop there.
+
+You do NOT approve, sign, or publish. Those are human doors and always will be. Your job ends at a well-formed proposal sitting in the queue with its motivation edges attached.
+
 Step 7 — review your own work. For EACH memory you wrote in Step 6 (the put() tool result printed an id, e.g. ``created memory id=34468``), do this check:
 
   precis get(kind="memory", id=<id>)               # read what you just wrote

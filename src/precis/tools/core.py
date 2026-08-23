@@ -747,6 +747,18 @@ def put(
     # claim HUB instead of a chase finding — title=/body= carry the claim
     # sentence. Supplying both supporters= and cited_in= errors (two modes).
     supporters: list[dict[str, Any]] | None = None,
+    # finding hypothesis-proposal (see precis-nanopub-help): hypothesis=True
+    # proposes a nanopub HYPOTHESIS — a conjecture, which by type carries no
+    # evidence, so it takes motivated_by= (>=2 artifacts across >=2 source
+    # papers, pc<id> to ground at a passage) plus motivation= (the inferential
+    # leap) and testable_by= (the discriminating experiment) instead of
+    # supporters=/cited_in=. from_memory= records the note that reasoned its
+    # way here. Prepares and parks it for review; approve/sign stay human-only.
+    hypothesis: bool = False,
+    motivation: str | None = None,
+    testable_by: str | None = None,
+    motivated_by: list[str] | None = None,
+    from_memory: str | None = None,
     # citation (see precis-citation-help):
     source_handle: str | None = None,
     source_quote: str | None = None,
@@ -897,6 +909,14 @@ def put(
             "scope": scope,
             "cited_in": cited_in,
             "supporters": supporters,
+            # False is the "not this mode" value and would be stripped by
+            # _invoke_handler's None-filter anyway; pass it through only when
+            # set so the handler's default stands.
+            "hypothesis": hypothesis or None,
+            "motivation": motivation,
+            "testable_by": testable_by,
+            "motivated_by": motivated_by,
+            "from_memory": from_memory,
             "source_handle": source_handle,
             "source_quote": source_quote,
             "char_offset": char_offset,

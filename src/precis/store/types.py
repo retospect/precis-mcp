@@ -232,6 +232,19 @@ Relation = Literal[
     # of')`. Keep in sync with the `relations` seed in
     # 0126_taproot_conjunct_of_relation.sql.
     "conjunct-of",
+    # Taproot advisory link, third relation — migration 0135. `motivated-by`
+    # (hypothesis claim hub → the paper/patent/claim hub that provoked it) is
+    # the graph form of a `hypothesis` nanopub's `prov:wasDerivedFrom` +
+    # `precis:motivatedBy` provenance. Same link-don't-merge / no-evidence-flow
+    # shape and same direction convention as `refines`/`conjunct-of` (derived
+    # node → the node it derives from); unlike those two the TARGET may be a
+    # paper or patent, not just another hub. Deliberately NOT a `HUB_ROLES`
+    # evidence edge — motivation is what prompted a conjecture, never support
+    # for it, and `hub_refine` must never widen along it. No inverse: read both
+    # directions via `links_for(direction='in'|'out',
+    # relation='motivated-by')`. Keep in sync with the `relations` seed in
+    # 0135_taproot_motivated_by_relation.sql.
+    "motivated-by",
     # Acquisition-mode findings — migration 0105. `awaits-evidence` binds
     # a `finding` (STATUS:acquiring) to each `DREAM:acquire` paper stub its
     # `wants=` descriptors minted; the chase worker polls the linked stubs

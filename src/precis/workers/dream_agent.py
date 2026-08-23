@@ -2,7 +2,7 @@
 
 Replaces the bash `dream-pass.sh` script that lives in
 `cluster/roles/precis_dream/files/`. Same dispatch payload (claude -p
-with SOUL.md as system prompt + MCP precis config + bypass
+with a persona as system prompt + MCP precis config + bypass
 permissions + WebFetch/WebSearch disabled), but lifted into the
 unified :func:`precis.utils.claude_agent.call_claude_agent` so:
 
@@ -21,10 +21,13 @@ Inputs (env):
   ``precis/data/prompts/dream-prompt.md`` — the persona-neutral SSOT, so
   the prompt no longer has to be shipped by the operator's deploy. Set
   this only to override the default with a site-specific prompt.
-* ``PRECIS_DREAM_SOUL_PATH`` — file containing the agent's system
-  prompt (`--append-system-prompt`). This is the **persona** layer (for
-  asa, her SOUL.md) — kept out of the packaged workflow prompt so the
-  workflow stays generic.
+* ``PRECIS_DREAM_SOUL_PATH`` — optional override for the agent's system
+  prompt (`--append-system-prompt`). Unset (the normal case) falls back to
+  the **packaged** dreamer persona at
+  ``precis/data/prompts/dream-persona.md``. This used to point at the
+  operator's own chat persona (asa's ``SOUL.md``), which is written for a
+  Discord/Slack turn loop and says nothing about synthesis over a corpus;
+  it is now a site override, not a prerequisite.
 * ``PRECIS_MCP_CONFIG`` — MCP config JSON the agent uses to call
   precis tools.
 * ``PRECIS_DREAM_LENS`` — the oracle lens (comma-list) biasing the
@@ -157,7 +160,7 @@ def run_dream_pass(store: Store) -> BatchResult:
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     if skip_if_high_load("dream_agent"):
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
-    soul_path = _env_path("PRECIS_DREAM_SOUL_PATH")
+    persona = _load_persona()
     mcp_path = _env_path("PRECIS_MCP_CONFIG")
     prompt = _load_prompt()
     if prompt is None:
@@ -233,7 +236,7 @@ def run_dream_pass(store: Store) -> BatchResult:
             prompt=prompt,
             tools_needed=True,
             model=model_pin,
-            system_prompt=soul_path,
+            system_prompt=persona,
             mcp_config=mcp_path,
             max_turns=_DEFAULT_MAX_TURNS,
             timeout_s=_DEFAULT_TIMEOUT_S,
@@ -303,19 +306,47 @@ def eligible() -> bool:
     (``workers/scheduler.py``) — checked BEFORE a claim attempt, same test
     ``run_dream_pass`` itself re-checks (belt-and-suspenders). Mirrors
     ``dream-pass.sh``'s missing-SOUL skip: ``PRECIS_DREAM_AGENT`` truthy AND
-    the soul file it points at is actually readable. Without this, a worker
+    the process actually carries the agent profile. Without this, a worker
     on the *pinned* host that lacks the dream env (e.g. its system-profile
     process, as opposed to the agent-profile one that carries OAuth + the
-    soul path) would win the lease and burn the fire for nothing."""
-    return _gate_enabled() and _env_path("PRECIS_DREAM_SOUL_PATH") is not None
+    MCP config) would win the lease and burn the fire for nothing.
+
+    The capability marker is ``PRECIS_MCP_CONFIG``, not the old soul path:
+    a dream's entire deliverable is precis tool calls, so a process that
+    can't reach MCP can do nothing whatever it is handed as a persona. The
+    persona itself is now packaged (:func:`_load_persona`) and so is never
+    a reason to skip."""
+    return _gate_enabled() and _env_path("PRECIS_MCP_CONFIG") is not None
 
 
 #: Packaged dreaming workflow — the SSOT prompt, persona-neutral. The
 #: operator's deploy no longer has to ship one; `PRECIS_DREAM_PROMPT_PATH`
-#: is now an optional override, and the persona lives in the system prompt
-#: (``PRECIS_DREAM_SOUL_PATH``), not here.
+#: is now an optional override.
 _PACKAGED_PROMPT = "precis.data.prompts"
 _PACKAGED_PROMPT_FILE = "dream-prompt.md"
+
+#: Packaged dreamer persona — the ``--append-system-prompt`` layer. Was
+#: the operator's own chat persona (asa's ``SOUL.md``, via
+#: ``PRECIS_DREAM_SOUL_PATH``), which is written for a Discord/Slack turn
+#: loop and says nothing about synthesis over a corpus. The packaged file
+#: is the default; the env var stays as an optional site override, exactly
+#: like ``PRECIS_DREAM_PROMPT_PATH``.
+_PACKAGED_PERSONA_FILE = "dream-persona.md"
+
+
+def _load_packaged(filename: str, *, what: str) -> str | None:
+    """Read a packaged prompt resource; ``None`` (logged) if unreadable."""
+    try:
+        from importlib import resources
+
+        return (
+            resources.files(_PACKAGED_PROMPT)
+            .joinpath(filename)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        log.exception("dream_agent: packaged %s unreadable", what)
+        return None
 
 
 def _load_prompt() -> str | None:
@@ -325,17 +356,20 @@ def _load_prompt() -> str | None:
     override = _env_path("PRECIS_DREAM_PROMPT_PATH")
     if override is not None:
         return override.read_text(encoding="utf-8")
-    try:
-        from importlib import resources
+    return _load_packaged(_PACKAGED_PROMPT_FILE, what="dream prompt")
 
-        return (
-            resources.files(_PACKAGED_PROMPT)
-            .joinpath(_PACKAGED_PROMPT_FILE)
-            .read_text(encoding="utf-8")
-        )
-    except (FileNotFoundError, ModuleNotFoundError, OSError):
-        log.exception("dream_agent: packaged dream prompt unreadable")
-        return None
+
+def _load_persona() -> str | None:
+    """The dreamer's system prompt: the ``PRECIS_DREAM_SOUL_PATH`` override
+    if set+readable, else the packaged persona-neutral default.
+
+    Returns the prompt *text*, not a path — ``LlmRequest.system_prompt``
+    takes ``str | Path``, so a packaged resource passes through as a
+    literal without needing a file on disk."""
+    override = _env_path("PRECIS_DREAM_SOUL_PATH")
+    if override is not None:
+        return override.read_text(encoding="utf-8")
+    return _load_packaged(_PACKAGED_PERSONA_FILE, what="dream persona")
 
 
 def _apply_lens(prompt: str, store: Store) -> tuple[str, str | None]:

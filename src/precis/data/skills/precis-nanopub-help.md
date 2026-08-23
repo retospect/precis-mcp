@@ -1,14 +1,16 @@
 ---
 id: precis-nanopub-help
 title: precis — publishing claims as signed nanopubs (view='nanopub' + mint pipeline)
-summary: get(kind='finding', view='nanopub') renders a claim hub as TriG — a draft pre-mint, the exact signed bytes post-mint; the mint pipeline (approve → sign → OTS anchor) is CLI/human-driven, not an agent verb
+summary: get(kind='finding', view='nanopub') renders a claim hub as TriG — a draft pre-mint, the exact signed bytes post-mint; view='mint-preflight' runs the real gates read-only; an agent may propose a hypothesis but the mint pipeline (approve → sign → OTS anchor) stays CLI/human-driven
 answers:
   - how do I check whether my claim has been published as a nanopub?
   - what publish state is this claim hub in?
   - can I mint or sign a nanopub myself as an agent?
+  - how do I propose a hypothesis for a human to review?
+  - how do I check my payload against the mint gates without approving?
   - why can't I edit a hub that's already reviewed or published?
   - why does a claim hub show as unmintable?
-applies-to: get (kind='finding', view='nanopub'); precis nanopub CLI (human-run); reading publish state
+applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); precis nanopub CLI (human-run); reading publish state
 status: active
 ---
 
@@ -34,6 +36,69 @@ stays authoritative; the nanopub is the frozen published form.
   `reviewed`). A hub with a live `contradicts` edge renders an
   UNMINTABLE warning — disputed claims are visible internally,
   unpublishable externally, until adjudicated by artifacts.
+- `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
+  **real** mint gates read-only and get the violation list back. Pass a
+  candidate envelope as `args={'payload': {...}}`; omit it and whatever
+  is frozen or parked on the hub is gated instead. No state change. Use
+  this instead of reimplementing the gates locally — a hand-rolled
+  mirror rots silently the moment a gate changes.
+- **Propose a hypothesis** — see the section below. The one artifact
+  type an agent can originate.
+
+## Hypothesis — the artifact type an agent can originate
+
+Three artifact types exist: `claim` (an atomic finding, grounded in a
+verbatim passage), `compound` (a conjunction of already-signed atoms),
+and `hypothesis`. A hypothesis asserts a **conjecture**, so by
+definition it has no supporting passage — the gates reject a hypothesis
+that arrives carrying one. What it carries instead is `motivation`
+prose naming the inferential leap and `testable_by` naming the
+discriminating experiment, *"what separates a conjecture from vibes"*.
+
+Reach for it when two findings suggest a binding nobody has
+demonstrated. The worked example
+(`docs/reference/nanopub-example/qi-hypothesis-scaled-switching.trig`)
+came from a compound that **failed** its commensurability gate: every
+clause mapped but the binding was unearned, so it was re-minted
+honestly as a typed Hypothesis. A signed, timestamped hypothesis is a
+priority claim on an idea. The sentence stays declarative and unhedged
+— epistemic status lives in the *type*, so a later confirming claim can
+carry the same sentence and converge on the same content address.
+
+```
+put(kind='finding', hypothesis=True,
+    title='<claim sentence — same grammar as any claim, see below>',
+    motivation='<what each source established; which transfer is unproven>',
+    testable_by='<the measurement that would settle it either way>',
+    motivated_by=['pc293', 'fi1234'],   # >=2, spanning >=2 source papers
+    from_memory='me4567')               # optional: the note it came from
+```
+
+Rules the door enforces:
+
+- **≥2 motivators across ≥2 distinct source papers.** A conjecture that
+  leaps from one source restates that source. Two claim hubs grounded
+  in the same single paper are one source, not two.
+- **Papers, patents, and claim hubs only** — a memory is something you
+  thought *with*, not a source an artifact can cite. Name it in the
+  `motivation` prose instead.
+- Naming a passage (`pc<id>`) rather than a whole paper records *which*
+  passage provoked the conjecture, as a chunk-granular `motivated-by`
+  edge. Those edges are motivation, never support: `hub_refine` is
+  deliberately blind to them, because widening a guess by searching for
+  evidence that agrees with it is a confirmation engine.
+- The sentence faces the same blocking lint as any claim — an evidence
+  verb **and** an epistemic mode, so it names the technique that would
+  test it. (The reference `.trig` above predates that gate and its own
+  sentence would fail it; copy the shape, not the sentence.)
+
+The door **prepares**; it never approves. It lints the sentence first
+and refuses without writing anything if it fails, so a rejected
+proposal leaves no hub behind for a human to clean up. On success it
+mints the hub, attaches the motivation edges, and parks the prepared
+envelope so the human's approve form comes pre-filled. Confirm with
+`view='mint-preflight'`, which runs the full gates (not just the
+sentence) against what you parked.
 
 ## What an agent must NOT do
 

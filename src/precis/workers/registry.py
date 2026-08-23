@@ -1056,6 +1056,12 @@ SERVICES: tuple[ServiceSpec, ...] = (
             ),
             gating=(
                 ("PRECIS_DREAM_AGENT", "must be '1' / 'true' to run"),
+                (
+                    "PRECIS_MCP_CONFIG",
+                    "must point at a readable file — the agent-profile marker "
+                    "`eligible()` checks (a dream's whole deliverable is precis "
+                    "tool calls)",
+                ),
                 ("PRECIS_DATABASE_URL", "runtime can't load without it"),
             ),
             # No wrapper script (§A) — dream-pass.sh is retired; the

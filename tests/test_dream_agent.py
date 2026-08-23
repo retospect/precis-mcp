@@ -12,6 +12,7 @@ from precis.workers.dream_agent import (
     _apply_fisheye,
     _apply_quest_anchor,
     _gate_enabled,
+    _load_persona,
     _load_prompt,
     eligible,
     run_dream_pass,
@@ -23,32 +24,55 @@ def test_gate_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _gate_enabled() is False
 
 
-def test_eligible_false_without_gate_or_soul(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eligible_false_without_gate_or_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_DREAM_AGENT", raising=False)
-    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
+    monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
     assert eligible() is False
 
 
-def test_eligible_false_when_gate_on_but_soul_missing(
+def test_eligible_false_when_gate_on_but_mcp_config_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Mirrors dream-pass.sh's missing-SOUL skip: the env flag alone is not
-    enough — the §A scheduler cadence must not claim without a readable soul
-    file, or a worker that merely has the env flag set (but not the actual
-    persona file) would win the lease and burn the fire for nothing."""
+    """The env flag alone is not enough — the §A scheduler cadence must not
+    claim on a process that can't reach MCP, or that worker wins the lease and
+    burns the fire for nothing (a dream's whole deliverable is precis tool
+    calls). Replaces the old missing-SOUL skip: the persona is packaged now,
+    so its absence is never a reason not to dream."""
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
-    monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(tmp_path / "missing-SOUL.md"))
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(tmp_path / "missing-mcp.json"))
     assert eligible() is False
 
 
-def test_eligible_true_when_gate_on_and_soul_readable(
+def test_eligible_true_without_any_soul_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The de-asa change: no soul file anywhere, and the dream still runs."""
+    mcp = tmp_path / "mcp.json"
+    mcp.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(mcp))
+    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
+    assert eligible() is True
+
+
+def test_persona_falls_back_to_the_packaged_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No override ⇒ the packaged persona-neutral dreamer prompt, not the
+    operator's chat persona."""
+    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
+    persona = _load_persona()
+    assert persona is not None
+    assert "dreaming pass over a research corpus" in persona
+
+
+def test_persona_env_override_wins(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     soul = tmp_path / "SOUL.md"
-    soul.write_text("# persona", encoding="utf-8")
-    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    soul.write_text("# site persona", encoding="utf-8")
     monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(soul))
-    assert eligible() is True
+    assert _load_persona() == "# site persona"
 
 
 def test_apply_fisheye_appends_kind_diverse_draw(
@@ -272,14 +296,12 @@ def test_happy_path_dispatches_with_files(
 ) -> None:
     prompt = tmp_path / "dream-prompt.md"
     prompt.write_text("DREAM CYCLE — do dream things.", encoding="utf-8")
-    soul = tmp_path / "soul.md"
-    soul.write_text("you are asa.", encoding="utf-8")
     mcp = tmp_path / "mcp.json"
     mcp.write_text("{}", encoding="utf-8")
 
     monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
     monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt))
-    monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(soul))
+    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(mcp))
 
     captured: dict = {}
@@ -300,8 +322,10 @@ def test_happy_path_dispatches_with_files(
     assert result.failed == 0
     # Prompt body landed.
     assert "DREAM CYCLE" in captured["prompt"]
-    # system_prompt / mcp_config came through as Path objects.
-    assert isinstance(captured["system_prompt"], Path)
+    # The packaged dreamer persona rides as system_prompt *text* (no soul
+    # file on disk anywhere); mcp_config is still a Path.
+    assert isinstance(captured["system_prompt"], str)
+    assert "dreaming pass over a research corpus" in captured["system_prompt"]
     assert isinstance(captured["mcp_config"], Path)
     # WebFetch / WebSearch disabled.
     assert "WebFetch" in captured["disallowed"]

@@ -45,7 +45,9 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | Autonomous GPU/token spend — operator's call. `PRECIS_QUEST_WEEKLY_CHARS` must be set too (§9). Activation: [`docs/backlog/quest-loop-activation.md`](../backlog/quest-loop-activation.md). |
 | `PRECIS_BACKLOG_GROOM_ENABLED` | Backlog groomer (auto repo-bug fixing) | off | Activation: [`docs/backlog/backlog-groomer-items-half.md`](../backlog/backlog-groomer-items-half.md). |
 | `PRECIS_CHASE_LLM` | LLM finding-chase pass | `0` | The SQL chase covers the default path; LLM chase is opt-in. |
-| `PRECIS_DREAM_AGENT` | Dream agent enable | off | Set on the agent-profile worker process (with `PRECIS_DREAM_SOUL_PATH`) so that process is the `dream_agent` scheduler cadence's eligible claimant. |
+| `PRECIS_DREAM_AGENT` | Dream agent enable | off | Set on the agent-profile worker process (which also carries `PRECIS_MCP_CONFIG`) so that process is the `dream_agent` scheduler cadence's eligible claimant. |
+| `PRECIS_DREAM_SOUL_PATH` | Dreamer persona override | packaged | Optional. Unset ⇒ the packaged persona-neutral dreamer prompt (`precis/data/prompts/dream-persona.md`). Deliberately not set by the deploy: it used to point at the operator's chat persona, which is written for a Discord/Slack turn loop, not corpus synthesis. |
+| `PRECIS_ASK_SOUL_PATH` | Web "ask" persona | unset | System prompt for `precis_web/ask.py`. Falls back to `PRECIS_DREAM_SOUL_PATH` (the name it used to share with the dream pass). |
 | `PRECIS_FRICTION_REFLECT` | Friction-reflection pass | off | Staged — prerequisite recorded in [`docs/backlog/friction-reflection-enable.md`](../backlog/friction-reflection-enable.md). |
 | `PRECIS_ORACLE_AUTO_REINGEST` | Reingest on oracle sync | `1` (on) | |
 | `PRECIS_BACKFILL_CITATION_LENS` | Citation-lens backfill | `1` (on) | |

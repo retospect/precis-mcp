@@ -11,8 +11,16 @@ This handler owns the **write door** for findings:
   ``finding_body`` chunk that holds claim + setup as flowing prose,
   the initial ``derived-from`` link to the cited frontier, and
   tags it ``STATUS:tracing``.
+- ``put(hypothesis=True, motivation, testable_by, motivated_by)``
+  proposes a nanopub **hypothesis** — a conjecture, which by type
+  carries no evidence at all and stands on the artifacts that
+  provoked it instead. Prepares and parks it for human approval;
+  it never approves. See :mod:`._finding_hypothesis`.
 - ``get(id)`` renders the begat-style detail (claim, setup, primary,
-  via-chain, status).
+  via-chain, status). ``view='evidence'`` (:mod:`._finding_evidence`),
+  ``view='nanopub'`` (:mod:`._finding_nanopub`) and
+  ``view='mint-preflight'`` (:mod:`._finding_mint_preflight`, the real
+  mint gates run read-only) are the finding-specific views.
 - ``search(q, status=...)`` filters by status (default
   ``STATUS:established``) and falls through to the base full-text
   + ANN hybrid.
@@ -149,6 +157,11 @@ class FindingHandler(NumericRefHandler):
         supporters: list[dict[str, Any]] | None = None,
         wants: list[dict[str, Any]] | None = None,
         provenance: str | None = None,
+        hypothesis: bool = False,
+        motivation: str | None = None,
+        testable_by: str | None = None,
+        motivated_by: list[str] | None = None,
+        from_memory: str | None = None,
         parent_id: int | None = None,
         tags: list[str] | None = None,
         link: str | None = None,
@@ -193,6 +206,12 @@ class FindingHandler(NumericRefHandler):
         **Hub mode** — pass ``supporters=`` instead of
         ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub.
 
+        **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
+        ``testable_by=`` and ``motivated_by=`` (≥2 artifacts across ≥2 source
+        papers) to propose a nanopub hypothesis: a conjecture with no evidence
+        by type, prepared and parked for a human to approve. See
+        :func:`precis.handlers._finding_hypothesis.put_hypothesis`.
+
         Existing-id ``put`` is rejected (mutate via tag/link/delete
         per the seven-verb surface).
         """
@@ -203,6 +222,38 @@ class FindingHandler(NumericRefHandler):
         )
 
         body_text = body if body is not None else text
+
+        # --- Hypothesis-proposal mode ---
+        # A finding born with ``hypothesis=True`` is a conjecture, not a
+        # finding: it has no evidence by type (the mint gates reject a
+        # hypothesis that arrives with grounding passages) and stands on
+        # ``motivated_by=`` artifacts instead. Deliberately checked before
+        # every other mode so a caller mixing it with supporters=/cited_in=
+        # gets a mode-conflict error rather than a confusing missing-field
+        # one. See :mod:`precis.handlers._finding_hypothesis`.
+        if hypothesis:
+            if cited_in is not None or supporters is not None or wants is not None:
+                raise BadInput(
+                    "hypothesis mode is exclusive — a conjecture has no "
+                    "evidence by definition, so it takes motivated_by= "
+                    "rather than supporters=/cited_in=/wants=.",
+                    next=(
+                        "put(kind='finding', hypothesis=True, title=<sentence>, "
+                        "motivation=..., testable_by=..., "
+                        "motivated_by=['pc293','fi1234'])"
+                    ),
+                )
+            from precis.handlers import _finding_hypothesis
+
+            return _finding_hypothesis.put_hypothesis(
+                self.store,
+                sentence=body_text or title or "",
+                scope=scope,
+                motivation=motivation,
+                testable_by=testable_by,
+                motivated_by=motivated_by,
+                from_memory=from_memory,
+            )
 
         # --- Taproot hub-mint mode ---
         # A finding born with paper ``supporters=`` (and no ``cited_in``) is a
@@ -680,6 +731,12 @@ class FindingHandler(NumericRefHandler):
         id: str | int | None = None,
         view: str | None = None,
         q: str | None = None,
+        # ``view='mint-preflight'``'s candidate payload, arriving through
+        # ``get``'s ``args=`` extras channel. Explicit rather than swallowed
+        # by ``**_kw``: ``_accepted_kwargs`` deliberately excludes VAR_KEYWORD
+        # catch-alls, so an extras key absent from the signature is rejected
+        # as a typo before it ever reaches the handler.
+        payload: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='evidence'`` renders a claim hub's evidence, split by
@@ -688,10 +745,17 @@ class FindingHandler(NumericRefHandler):
         ``view='nanopub'`` renders the hub as TriG — the exact frozen
         artifact bytes once signed, an unsigned draft otherwise
         (:mod:`precis.handlers._finding_nanopub`, nanopub slice 1).
+        ``view='mint-preflight'`` runs the real
+        :func:`precis.nanopub.gates.run_mint_gates` against a candidate
+        payload and returns the violation list — read-only, no state
+        change (:mod:`precis.handlers._finding_mint_preflight`). Pass the
+        payload through ``get``'s extras channel,
+        ``args={'payload': {...}}``; omitted, it gates whatever is already
+        frozen or parked on the hub.
         Every other view (bare get, ``links``/``log``/``raw``) falls
         through to the base
         :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
-        Both deliberately kept off ``_BASE_VIEWS`` — finding-specific,
+        All three deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
         id = self._resolve_pub_id_slug(id)
@@ -703,6 +767,14 @@ class FindingHandler(NumericRefHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_nanopub.render_nanopub_view(self.store, ref)
+        if view == "mint-preflight":
+            from precis.handlers import _finding_mint_preflight
+
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_mint_preflight.render_mint_preflight(
+                self.store, ref, payload=payload
+            )
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:

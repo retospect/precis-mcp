@@ -43,9 +43,24 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     distinct supporting (establishes/corroborates) papers, with
     shared-author papers collapsed to one supporter. Advisory only: a
     defeasible truth-proxy signal, never a gate and never a verdict.
+
+    A hub marked a ``hypothesis`` in ``refs.meta``
+    (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE``) has zero
+    evidence edges *by definition* — indistinguishable, on edge count
+    alone, from an orphan bibliography-stub hub the admissibility test
+    exists to catch. So this hub type gets its own section instead of the
+    plain "no evidence edges yet" line: its ``motivated-by`` edges
+    (:data:`~precis.taproot.hub.MOTIVATION_RELATION`), under a "motivated
+    by" heading, spelled out as motivation rather than support.
     """
     from precis.export._patent_cite import format_patent_bibliography_entry
     from precis.format import render_agent_table
+    from precis.handlers._finding_hypothesis import (
+        ARTIFACT_HYPOTHESIS,
+        META_ARTIFACT_TYPE,
+    )
+
+    is_hypothesis = (ref.meta or {}).get(META_ARTIFACT_TYPE) == ARTIFACT_HYPOTHESIS
 
     evidence = seniority.derive_evidence(store, ref.id)
     all_edges = evidence.originators + evidence.corroborators + evidence.contradictors
@@ -53,7 +68,14 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     header = [f"# evidence for finding {ref.id}", "", ref.title]
     if not all_edges:
         header.append("")
-        header.append("no evidence edges yet for this claim hub")
+        if is_hypothesis:
+            header.append(
+                "no supporters — this is a hypothesis, which carries "
+                "motivation instead of evidence by definition"
+            )
+            header += _motivation_section(store, ref.id)
+        else:
+            header.append("no evidence edges yet for this claim hub")
         return Response(body="\n".join(header))
 
     refs_by_id = store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
@@ -111,6 +133,45 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         lines += ["", "support outcomes are populated by chase (Phase 3)"]
 
     return Response(body="\n".join(lines))
+
+
+def _motivation_section(store: Store, hub_ref_id: int) -> list[str]:
+    """The "## motivated by" lines for a hypothesis hub: its outbound
+    ``motivated-by`` edges (:func:`~precis.taproot.hub.attach_motivation`),
+    each a paper/patent/claim-hub handle plus, when the edge pins one, the
+    passage that provoked the conjecture — labelled motivation throughout so
+    it never reads as support.
+    """
+    from precis.format import render_agent_table
+    from precis.taproot.hub import MOTIVATION_RELATION
+    from precis.utils import handle_registry
+
+    links = store.links_for(hub_ref_id, direction="out", relation=MOTIVATION_RELATION)
+    lines = ["", "## motivated by", ""]
+    if not links:
+        lines.append("(none)")
+        return lines
+
+    refs_by_id = store.fetch_refs_by_ids({link.dst_ref_id for link in links})
+    rows: list[dict[str, str]] = []
+    for link in links:
+        motivator = refs_by_id.get(link.dst_ref_id)
+        kind = motivator.kind if motivator is not None else "finding"
+        handle = handle_registry.try_format(kind, link.dst_ref_id)
+        passage = (
+            handle_registry.try_format(kind, link.dst_chunk_id, chunk=True)
+            if link.dst_chunk_id is not None
+            else None
+        )
+        rows.append(
+            {
+                "source": handle or f"ref{link.dst_ref_id}",
+                "title": (motivator.title if motivator is not None else "—")[:80],
+                "passage": passage or "—",
+            }
+        )
+    lines.append(render_agent_table(rows, schema=["source", "title", "passage"]))
+    return lines
 
 
 def _independent_supporter_counts(

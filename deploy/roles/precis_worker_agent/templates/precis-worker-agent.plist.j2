@@ -74,18 +74,17 @@
     <string>1</string>
     {% if inventory_hostname in groups['gateway'] %}
     {# §A: the `dream_agent` scheduler cadence is host-pinned to the gateway
-       (workers/scheduler.py); this is what makes THIS agent-profile process
-       the eligible claimant (a system-profile worker on the same host has
-       neither var set, so it can never win the lease — see the cadence's
-       `eligible` gate, workers/dream_agent.py::eligible). Same env shape
-       dream-pass.sh used to export before its LaunchDaemon was retired. The
-       SOUL file is copied to a deploy-readable path by this role's tasks
-       (operator persona lives at /Users/hermes/.asa/SOUL.md; deploy can't
-       read hermes's home dir). #}
+       (workers/scheduler.py); this var plus PRECIS_MCP_CONFIG (set above,
+       unconditionally, on this agent-profile process) is what makes THIS
+       process the eligible claimant — a system-profile worker on the same
+       host never gets PRECIS_DREAM_AGENT, so it can never win the lease.
+       See the cadence's `eligible` gate, workers/dream_agent.py::eligible.
+       The dreamer persona is packaged (precis/data/prompts/dream-persona.md);
+       PRECIS_DREAM_SOUL_PATH is an optional site override and is deliberately
+       NOT set here — it used to point at the operator's chat persona, which
+       is written for a Discord/Slack turn loop, not for corpus synthesis. #}
     <key>PRECIS_DREAM_AGENT</key>
     <string>1</string>
-    <key>PRECIS_DREAM_SOUL_PATH</key>
-    <string>{{ precis_dream_soul_path | default('/opt/asa/etc/SOUL.md') }}</string>
     {% endif %}
     {% if inventory_hostname in groups['precis_anki_sync'] %}
     {# §A: the `anki_sync` scheduler cadence is host-pinned to the gateway too

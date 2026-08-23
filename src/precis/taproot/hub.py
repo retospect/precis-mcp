@@ -1386,6 +1386,111 @@ def link_claims(
         return _do(c)
 
 
+#: The relation a hypothesis hub carries to each artifact that provoked it
+#: (migration 0135). Motivation, **not** evidence: it never flows support,
+#: and :mod:`precis.workers.hub_refine` must never widen along it.
+MOTIVATION_RELATION = "motivated-by"
+
+#: Kinds a hypothesis may name as a motivator. Papers and patents (the
+#: :data:`EVIDENCE_SRC_KINDS` sources) plus other claim hubs — a conjecture
+#: can be provoked by a passage nobody ever minted as a claim, which is why
+#: this is wider than :func:`link_claims`' hub↔hub contract. Memories are
+#: deliberately absent: a dream may *think* with its own prior notes, but a
+#: signed artifact cites sources, and a note is not one.
+MOTIVATION_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent", "finding"})
+
+
+def attach_motivation(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    motivator_ref_id: int,
+    meta: dict[str, Any] | None = None,
+    set_by: str = "agent",
+    conn: Any = None,
+) -> bool:
+    """Write one ``hub --motivated-by--> artifact`` edge. Returns ``True`` if
+    a new edge was written, ``False`` if it already existed.
+
+    The graph form of a ``hypothesis`` nanopub's provenance: the artifact
+    emits ``prov:wasDerivedFrom`` + ``precis:motivatedBy`` pointing at what
+    provoked the conjecture (:func:`precis.nanopub.assemble._provenance`,
+    hypothesis branch), and this edge points the same way — hub → motivator,
+    the derived-node-to-source direction :func:`link_claims` established.
+
+    This is the third taproot write door, beside :func:`attach_evidence`
+    (paper→hub support) and :func:`link_claims` (hub↔hub advisory). Keeping
+    motivation out of :data:`HUB_ROLES` is load-bearing rather than tidy:
+    :mod:`precis.workers.hub_refine` widens a claim by searching for evidence
+    that supports it, and aiming that at a conjecture makes a confirmation
+    engine of it (``docs/backlog/claim-review-mechanism.md``). A motivator is
+    what prompted the guess, never support for it.
+
+    ``meta['source_handle']`` (a ``pc<id>`` handle) grounds the edge at the
+    specific passage, materialised as ``dst_chunk_id`` — the motivator is on
+    the *destination* side here, the mirror of an evidence edge's ``src_pos``.
+    Idempotent on ``(hub, motivator, relation)``.
+    """
+    if hub_ref_id == motivator_ref_id:
+        raise BadInput(
+            f"a hypothesis cannot be motivated by itself (ref_id={hub_ref_id})",
+            next="name a paper, patent, or a different claim hub",
+        )
+    validated = validate_relation(MOTIVATION_RELATION, store=store)
+
+    def _do(c: Any) -> bool:
+        if not _is_claim_hub(hub_ref_id, conn=c):
+            raise BadInput(
+                f"hub_ref_id={hub_ref_id} is not a TAPROOT:claim finding",
+                next="motivation edges hang off a claim hub",
+            )
+        src = store.fetch_refs_by_ids([motivator_ref_id]).get(motivator_ref_id)
+        if src is None or src.kind not in MOTIVATION_SRC_KINDS:
+            kind_desc = "unknown" if src is None else src.kind
+            raise BadInput(
+                f"motivator_ref_id={motivator_ref_id} is a {kind_desc!r} ref",
+                options=sorted(MOTIVATION_SRC_KINDS),
+                next=(
+                    "a hypothesis is motivated by a paper, a patent, or "
+                    "another claim hub — not by a note"
+                ),
+            )
+        existing = c.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = %s",
+            (hub_ref_id, motivator_ref_id, validated),
+        ).fetchone()
+        if existing is not None:
+            return False
+        # `_grounding_chunk_ord` is named for the evidence path but is
+        # generic: it resolves meta['source_handle'] and refuses a chunk
+        # belonging to any ref other than the one named. Here that ref is the
+        # motivator, which lands on dst_pos rather than src_pos.
+        dst_pos = _grounding_chunk_ord(store, paper_ref_id=motivator_ref_id, meta=meta)
+        store.add_link(
+            src_ref_id=hub_ref_id,
+            dst_ref_id=motivator_ref_id,
+            dst_pos=dst_pos,
+            relation=validated,
+            meta=meta,
+            set_by=set_by,
+            conn=c,
+        )
+        log.info(
+            "taproot: hub %s --%s--> %s (%s)",
+            hub_ref_id,
+            validated,
+            motivator_ref_id,
+            "passage" if dst_pos is not None else "ref-level",
+        )
+        return True
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
 #: The relation :func:`merge_hubs` writes from the retired loser to the
 #: winner to record a collapse (requirement 6, docs/backlog/claim-hub-merge-
 #: door.md). Reused, not invented: it is exactly the relation
@@ -2212,6 +2317,8 @@ __all__ = [
     "HUB_ROLES",
     "MERGE_COLLAPSE_RELATION",
     "META_REGROUND_LOG",
+    "MOTIVATION_RELATION",
+    "MOTIVATION_SRC_KINDS",
     "REGROUND_LOG_MAX",
     "EvidenceHandle",
     "ExtractionOutcome",
@@ -2223,6 +2330,7 @@ __all__ = [
     "apply_extraction",
     "apply_placement",
     "attach_evidence",
+    "attach_motivation",
     "link_claims",
     "live_evidence_count",
     "live_evidence_handles",

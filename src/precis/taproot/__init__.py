@@ -6,11 +6,18 @@ A claim lives on exactly one **claim hub**: a ``finding`` tagged
 edges. The graph is an overlay on ``finding``/``ref_tags``/``links`` — its
 only own schema is ``claim_embeddings`` (migration 0101) plus link relations
 ``establishes`` (0094, seeded without an inverse: hubs read evidence via
-``links_for(direction='in')``), ``refines`` (0100), and ``conjunct-of``
-(0126, atom -> compound, asymmetric, no inverse, mirrors 0100); ``corroborates``
-/ ``contradicts`` reuse existing slugs, endpoint kinds disambiguate. A claim
-hub is either **atomic** (evidence-bearing) or **compound** (an
-un-decomposable bundling sentence, no direct evidence — see :mod:`.hub`).
+``links_for(direction='in')``), ``refines`` (0100), ``conjunct-of``
+(0126, atom -> compound, asymmetric, no inverse, mirrors 0100), and
+``motivated-by`` (0135, hypothesis -> the artifact that provoked it, same
+advisory contract: no evidence flows); ``corroborates`` / ``contradicts``
+reuse existing slugs, endpoint kinds disambiguate. A claim hub is
+**atomic** (evidence-bearing), **compound** (an un-decomposable bundling
+sentence, no direct evidence — see :mod:`.hub`), or **hypothesis** (a
+conjecture, evidence-free *by type*: it carries motivation and a
+discriminating experiment instead, marked by ``refs.meta.artifact_type``
+and minted through ``handlers/_finding_hypothesis.py``). The widening pass
+skips hypotheses — searching a corpus for support of a guess is a
+confirmation engine (:func:`.canon.not_hypothesis_predicate_sql`).
 Design:
 ``docs/backlog/taproot.md``; governance: taproot evidence relations (+ the living citation pins).
 

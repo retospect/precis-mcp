@@ -2242,8 +2242,10 @@ def run(args: argparse.Namespace) -> None:
         # melchior — workers/scheduler.py), which calls run_dream_pass
         # directly; the old standalone hermes-pinned 15-min LaunchDaemon
         # (dream-pass.sh, precis_dream role) is retired. The worker-agent
-        # role now installs PRECIS_DREAM_AGENT / PRECIS_DREAM_SOUL_PATH on
-        # melchior's agent-profile plist instead.
+        # role now installs PRECIS_DREAM_AGENT on melchior's agent-profile
+        # plist instead. The persona is packaged
+        # (data/prompts/dream-persona.md); PRECIS_DREAM_SOUL_PATH is an
+        # optional site override the deploy deliberately does not set.
         if _register("dream_agent"):
             from precis.workers.dream_agent import run_dream_pass
             from precis.workers.runner import BatchResult as _BatchResult

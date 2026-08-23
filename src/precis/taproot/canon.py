@@ -128,6 +128,42 @@ def claim_hub_predicate_sql(*, ref_alias: str = "r") -> str:
     )"""
 
 
+def not_hypothesis_predicate_sql(*, ref_alias: str = "r") -> str:
+    """The "this hub asserts a finding, not a conjecture" clause — AND it
+    onto :func:`claim_hub_predicate_sql` in any pass that *acts on* a claim.
+
+    A hypothesis hub carries ``TAPROOT:claim`` + ``STATUS:canonical`` like
+    any other (:func:`~precis.taproot.hub.mint_hub` writes both
+    unconditionally), so the claim-hub predicate alone cannot tell the two
+    apart. It is not a defect in that predicate — for *reading* the corpus a
+    hypothesis is a claim hub. It matters for the passes that go looking for
+    supporting evidence.
+
+    ``hub_refine`` widens a claim by searching for evidence that supports
+    it. Pointed at a conjecture that is a confirmation engine, and
+    ``docs/backlog/claim-review-mechanism.md`` says so in as many words:
+    *"it will find support for whatever the claim already says, including
+    claims that are wrong."* A hypothesis is the worst possible input —
+    it is a guess, and the type exists precisely because nothing supports
+    it yet. Widening one manufactures the evidence its own gates refuse it.
+
+    Reads ``refs.meta->>'artifact_type'``
+    (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE``) rather than the
+    ``hypothesis-proposed`` tag or ``nanopub_publish.artifact_type``: the tag
+    is dropped once a human triages, and the publish row only exists after
+    approve, but a hypothesis is one from the moment it is minted.
+    """
+    return (
+        f"({ref_alias}.meta->>'artifact_type') IS DISTINCT FROM %(hypothesis_artifact)s"
+    )
+
+
+#: Bind param for :func:`not_hypothesis_predicate_sql`.
+NOT_HYPOTHESIS_PREDICATE_PARAMS: dict[str, str] = {
+    "hypothesis_artifact": "hypothesis",
+}
+
+
 def claim_sha(title: str) -> str:
     """Stable content hash of a claim sentence (a hub's ``title``).
 
@@ -1213,6 +1249,7 @@ __all__ = [
     "CLAIM_FORM_RULES",
     "CLAIM_HUB_PREDICATE_PARAMS",
     "MERGE_CONFIDENCE_THRESHOLD",
+    "NOT_HYPOTHESIS_PREDICATE_PARAMS",
     "STATUS_CANONICAL",
     "STATUS_NAMESPACE",
     "TAPROOT_CLAIM",
@@ -1233,5 +1270,6 @@ __all__ = [
     "extract_claim_strict",
     "extract_claim_strict_big",
     "merge_confirm",
+    "not_hypothesis_predicate_sql",
     "place",
 ]

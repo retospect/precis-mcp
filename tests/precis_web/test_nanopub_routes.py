@@ -152,6 +152,102 @@ def test_prefill_skips_heading_residue_and_ranks_by_claim(
     assert "Introduction**" not in resp.text
 
 
+def _seed_hypothesis(
+    store: Any, sentence: str, motivator_ref: int, motivator_chunk: int
+) -> tuple[int, int]:
+    """A minted hypothesis hub (via the real ``put(hypothesis=True, …)``
+    door), plus a second motivating paper. Returns ``(hub, other_paper)``.
+
+    ``sentence`` must lint clean — the door runs `check_claim_sentence`
+    before it writes anything, so it needs an evidence verb AND an
+    epistemic-mode token or nothing is minted at all.
+    """
+    from precis.dispatch import Hub
+    from precis.handlers.finding import FindingHandler
+
+    other = seed_ref(store, title="A second motivating paper", kind="paper")
+    resp = FindingHandler(hub=Hub(store=store)).put(
+        title=sentence,
+        hypothesis=True,
+        motivation="Both sources attribute the effect to the same mechanism; "
+        "the transfer here is untested.",
+        testable_by="an experiment discriminating the two candidate mechanisms",
+        motivated_by=[f"pc{motivator_chunk}", f"pa{other}"],
+    )
+    hub = int(resp.body.split("fi", 1)[1].split()[0])
+    return hub, other
+
+
+def test_approve_prefill_uses_the_proposed_payload_for_a_hypothesis(
+    client: TestClient, runtime_with_store
+) -> None:
+    """A human opening ``/claim/fi<id>`` for an agent-proposed hypothesis
+    finds the approve textarea already filled in from
+    ``refs.meta.proposed_payload`` — not the ordinary passage-candidate
+    derivation (a hypothesis has no grounding chunks to derive from)."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub, _other = _seed_hypothesis(
+        store, "DFT predicts a 12% modulus rise under uniaxial strain.", paper, chunk
+    )
+
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    # Quotes are autoescaped in the textarea (test_approve_gate_failure_is_a_400
+    # precedent) — assert on quote-free content from the parked payload.
+    assert "the transfer here is untested" in resp.text
+    assert "an experiment discriminating the two candidate mechanisms" in resp.text
+
+
+def test_approve_prefill_frozen_payload_wins_over_proposed(
+    client: TestClient, runtime_with_store
+) -> None:
+    """Once a publish row carries a frozen ``grounding`` payload, it still
+    wins over the parked proposal — the proposal is a starting point, not a
+    ledger. The approve-form textarea only renders while the row is still
+    ``candidate`` (state 'reviewed'+ swaps the whole action panel to Sign),
+    so this writes ``grounding`` directly rather than going through
+    ``nanopub_approve`` (which also flips the state)."""
+    from psycopg.types.json import Jsonb
+
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub, _other = _seed_hypothesis(
+        store, "Raman shows a G-band shift in the annealed films.", paper, chunk
+    )
+    row = store.nanopub_create_publish_row(hub, artifact_type="hypothesis")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE nanopub_publish SET grounding = %s WHERE id = %s",
+            (Jsonb({"passages": [], "fields": {}, "frozen-marker": True}), row.id),
+        )
+
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    assert "frozen-marker" in resp.text
+    # The proposed payload's motivation prose is gone — the frozen payload
+    # fully replaced it in the textarea.
+    assert "the transfer here is untested" not in resp.text
+
+
+def test_claim_page_labels_a_proposed_hub_hypothesis(
+    client: TestClient, runtime_with_store
+) -> None:
+    """`bundle.artifact_type` can only ever be ``claim``/``compound``
+    (:func:`precis.nanopub.evidence.load_bundle`) — the DAG's hub-node
+    label reads the durable meta marker instead, so a proposed hypothesis
+    with no publish row yet still shows up as one."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub, _other = _seed_hypothesis(
+        store, "TEM observes lattice fringes at the junction interface.", paper, chunk
+    )
+
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    assert "hypothesis · unminted" in resp.text
+
+
 def test_approve_sign_and_serve_trig(
     client: TestClient, runtime_with_store, monkeypatch: Any
 ) -> None:

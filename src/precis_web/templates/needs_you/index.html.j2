@@ -5,15 +5,16 @@
   <h1 class="text-lg font-semibold">Needs you</h1>
   <span class="text-sm text-slate-500">
     {{ asks|length }} ask{{ '' if asks|length == 1 else 's' }} ·
+    {{ proposed_total }} proposed ·
     {{ triage_total }} to triage
   </span>
 </div>
 
-{% if not asks and not triage %}
+{% if not asks and not triage and not proposed %}
 <p class="text-sm text-slate-500">
   Nothing's waiting on you — no open
-  <span class="font-mono">ask-user</span> todos and no papers flagged
-  <span class="font-mono">needs-triage</span>.
+  <span class="font-mono">ask-user</span> todos, no proposed hypotheses, and
+  no papers flagged <span class="font-mono">needs-triage</span>.
 </p>
 {% endif %}
 
@@ -28,6 +29,36 @@
     {% with next_path = "/needs-you" %}{% include "asks/_row.html.j2" %}{% endwith %}
     {% endfor %}
   </ul>
+</section>
+{% endif %}
+
+{# ── Proposed hypotheses ────────────────────────────────────────── #}
+{% if proposed %}
+<section class="mb-8">
+  <div class="flex items-baseline justify-between mb-3">
+    <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400">
+      Proposed hypotheses <span class="text-slate-300">— conjectures prepared for approval</span>
+    </h2>
+    <a href="/nanopub" class="text-xs text-emerald-700 hover:underline">
+      Claim workbench &rarr;
+    </a>
+  </div>
+  <ul class="divide-y divide-slate-100 rounded border border-slate-200">
+    {% for h in proposed %}
+    <li class="flex items-baseline gap-3 px-3 py-2">
+      <span class="font-mono text-xs text-slate-400">fi{{ h.id }}</span>
+      <a href="/claim/fi{{ h.id }}" class="min-w-0 flex-1 text-sm text-slate-800 hover:text-emerald-700 break-words">
+        {{ h.title }}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if proposed_more %}
+  <p class="mt-2 text-xs text-slate-500">
+    + {{ proposed_more }} more on the
+    <a href="/nanopub" class="text-emerald-700 hover:underline">claim workbench</a>.
+  </p>
+  {% endif %}
 </section>
 {% endif %}
 

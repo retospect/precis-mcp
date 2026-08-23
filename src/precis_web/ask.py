@@ -18,8 +18,12 @@ the supplied source text):
 
 * ``PRECIS_FOLLOWUP_MODEL`` — model override; falls back to
   ``PRECIS_DREAM_AGENT_MODEL`` then sonnet.
-* ``PRECIS_DREAM_SOUL_PATH`` — system prompt file (shared with the
-  dream pass — the agent answers in the same voice).
+* ``PRECIS_ASK_SOUL_PATH`` — system prompt file: the operator persona the
+  answer is written in. Falls back to ``PRECIS_DREAM_SOUL_PATH``, which is
+  the name this used to ride on back when the dream pass and this surface
+  shared one voice; the dream now carries a packaged persona of its own
+  (``precis/data/prompts/dream-persona.md``), so the old name is a
+  compatibility fallback only — deploys should set ``PRECIS_ASK_SOUL_PATH``.
 * ``PRECIS_MCP_CONFIG`` — MCP config JSON; when present the agent can
   call precis tools (search / get) to ground the answer in the corpus.
 * ``PRECIS_FOLLOWUP_TIMEOUT_S`` — wall-clock cap (default 600).
@@ -74,7 +78,9 @@ def _resolve_config() -> _Config:
     timeout_s = float(raw_timeout) if raw_timeout else _DEFAULT_TIMEOUT_S
     return _Config(
         model=model,
-        soul_path=_env_path("PRECIS_DREAM_SOUL_PATH"),
+        soul_path=(
+            _env_path("PRECIS_ASK_SOUL_PATH") or _env_path("PRECIS_DREAM_SOUL_PATH")
+        ),
         mcp_path=_env_path("PRECIS_MCP_CONFIG"),
         timeout_s=timeout_s,
     )

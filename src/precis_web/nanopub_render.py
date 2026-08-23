@@ -40,6 +40,10 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
     (``ctx['np']``) rather than splatting it flat, so its keys can never
     silently shadow the reader-evidence context's own."""
     from precis.errors import BadInput
+    from precis.handlers._finding_hypothesis import (
+        ARTIFACT_HYPOTHESIS,
+        META_ARTIFACT_TYPE,
+    )
     from precis.nanopub import evidence
     from precis.nanopub.preflight import publish_preflight, withheld_edges
 
@@ -54,6 +58,25 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         store.nanopub_artifact(row.artifact_id)
         if row and row.artifact_id is not None
         else None
+    )
+    # `load_bundle` fetches this same ref internally but doesn't carry its
+    # meta out on the bundle (`bundle.artifact_type` is claim/compound only —
+    # see `_suggested_payload`/`_graph`), so one extra fetch here is what
+    # both the prefill and the state-header branches need.
+    hub_ref = store.fetch_refs_by_ids([hub_id]).get(hub_id)
+    hub_meta = (hub_ref.meta or {}) if hub_ref is not None else {}
+    # A hypothesis never has a `claim`/`compound` bundle.artifact_type
+    # (load_bundle can only ever set one of those) — the durable meta marker
+    # is what actually says "hypothesis", and a publish row's own frozen
+    # artifact_type (set at approve) always wins once one exists.
+    display_artifact_type = (
+        row.artifact_type
+        if row is not None
+        else (
+            ARTIFACT_HYPOTHESIS
+            if hub_meta.get(META_ARTIFACT_TYPE) == ARTIFACT_HYPOTHESIS
+            else bundle.artifact_type
+        )
     )
     proof = (
         store.nanopub_latest_proof(row.batch_id)
@@ -84,8 +107,8 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
-        "suggested_payload": _suggested_payload(store, row, bundle),
-        "graph": _graph(store, bundle, row),
+        "suggested_payload": _suggested_payload(store, row, bundle, hub_meta),
+        "graph": _graph(store, bundle, row, display_artifact_type),
     }
 
 
@@ -151,12 +174,22 @@ def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
     return quote, snip
 
 
-def _suggested_payload(store: Any, row: Any, bundle: Any) -> str:
-    """The approve form's prefill: the frozen payload when one exists,
-    else per-passage candidates derived from the grounding chunks —
-    quote + unique snip suggested, for the reviewer to trim and attest."""
+def _suggested_payload(
+    store: Any, row: Any, bundle: Any, hub_meta: dict[str, Any]
+) -> str:
+    """The approve form's prefill: the frozen payload when one exists;
+    else the prepared payload an agent's hypothesis proposal parked on
+    ``refs.meta`` (`handlers/_finding_hypothesis.py::META_PROPOSED_PAYLOAD`),
+    so a human opening a proposed hub finds the form already filled in;
+    else per-passage candidates derived from the grounding chunks — quote +
+    unique snip suggested, for the reviewer to trim and attest."""
     if row is not None and row.grounding:
         return json.dumps(row.grounding, indent=2)
+    from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD
+
+    proposed = hub_meta.get(META_PROPOSED_PAYLOAD)
+    if proposed is not None:
+        return json.dumps(proposed, indent=2)
     by_ref = {s.ref_id: s for s in bundle.sources}
     passages = []
     for chunk in bundle.grounding_chunks:
@@ -226,10 +259,17 @@ def _dispute_panel(store: Any, bundle: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _graph(store: Any, bundle: Any, row: Any) -> dict[str, Any]:
+def _graph(
+    store: Any, bundle: Any, row: Any, display_artifact_type: str
+) -> dict[str, Any]:
     """The per-hub neighborhood as positioned SVG nodes + edges (layered:
     papers → atoms → hub → anchor), with a detail dict per node for the
-    click pane — the viewer.html prototype's NODES shape, served live."""
+    click pane — the viewer.html prototype's NODES shape, served live.
+
+    ``display_artifact_type`` labels the hub node instead of
+    ``bundle.artifact_type``: :func:`~precis.nanopub.evidence.load_bundle`
+    can only ever set the bundle's own field to ``claim``/``compound``, so
+    it alone can never say ``hypothesis`` — see :func:`hub_context`."""
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     width = 940
@@ -305,10 +345,10 @@ def _graph(store: Any, bundle: Any, row: Any) -> dict[str, Any]:
             "x": width // 2,
             "y": hub_y,
             "label": bundle.sentence[:44],
-            "sub": f"{bundle.artifact_type} · {state}"
+            "sub": f"{display_artifact_type} · {state}"
             + (" · ⚠ DISPUTED" if bundle.contradicts else ""),
             "detail": {
-                "kind": f"{bundle.artifact_type} hub",
+                "kind": f"{display_artifact_type} hub",
                 "title": bundle.sentence,
                 # No aida field: the URI is just the sentence URL-encoded —
                 # unreadable here; the publish-row panel has a copy button.

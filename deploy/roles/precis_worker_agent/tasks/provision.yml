@@ -128,51 +128,12 @@
   changed_when: false
   failed_when: false
 
-# §A: dream_agent's `dream_agent` scheduler cadence is host-pinned to the
-# gateway (this daemon's host) and reads its soul from a deploy-readable
-# path — hermes's own ~/.asa/SOUL.md isn't readable by `deploy`. Copy it
-# in place of the retired precis_dream role's file-install task.
-# fail-soft: an absent operator SOUL is a normal state on a fresh cluster
-# (dream_agent's own eligible() gate degrades to a silent skip, same as
-# dream-pass.sh's old missing-SOUL check), not a deploy failure.
-- name: Ensure /opt/asa/etc exists (dream_agent's deploy-readable SOUL path)
-  when:
-    - os_family == "darwin"
-    - inventory_hostname in groups['gateway']
-  ansible.builtin.file:
-    path: /opt/asa/etc
-    state: directory
-    owner: deploy
-    group: staff
-    mode: "0755"
-  become: true
-
-- name: Copy the operator SOUL to a deploy-readable path (dream_agent, §A)
-  when:
-    - os_family == "darwin"
-    - inventory_hostname in groups['gateway']
-  ansible.builtin.copy:
-    src: /Users/hermes/.asa/SOUL.md
-    dest: "{{ precis_dream_soul_path | default('/opt/asa/etc/SOUL.md') }}"
-    mode: "0644"
-    owner: deploy
-    group: staff
-    remote_src: true
-  become: true
-  register: _dream_soul_copy
-  failed_when: false
-  notify: restart precis-worker-agent
-
-- name: Warn if the operator SOUL is missing (dream_agent degrades to a no-op)
-  when:
-    - os_family == "darwin"
-    - inventory_hostname in groups['gateway']
-    - _dream_soul_copy is failed
-  ansible.builtin.debug:
-    msg: >-
-      /Users/hermes/.asa/SOUL.md not found on {{ inventory_hostname }} —
-      dream_agent's eligible() gate will skip the `dream_agent` cadence
-      (PRECIS_DREAM_SOUL_PATH points at a missing file) until it exists.
+# §A: the operator-SOUL copy to /opt/asa/etc/SOUL.md is retired. It existed
+# solely so dream_agent could read hermes's ~/.asa/SOUL.md (unreadable by
+# `deploy`) as its system prompt. The dreamer persona is now packaged
+# (precis/data/prompts/dream-persona.md) and PRECIS_DREAM_SOUL_PATH is an
+# optional site override the plist no longer sets, so nothing on this host
+# reads that path — asa_slack templates /Users/hermes/.asa/SOUL.md directly.
 
 # §A: anki_sync's cadence runs from this daemon's process now (the retired
 # precis_anki_sync role used to provision these on its own). Same venv

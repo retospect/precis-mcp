@@ -81,6 +81,25 @@ hubs (6.6%) lint clean. Common blockers: `no-epistemic-mode` (1,052),
 approve is the intended workflow, not a bug — the sentence gets authored
 properly at that point, not patched around.
 
+## When it isn't a claim yet — mint a hypothesis instead
+
+Every rule below assumes you are stating something a source *shows*. If
+what you have is a **conjecture** — two findings whose binding nobody has
+demonstrated — do not force it into a claim hub and go looking for a
+paper that props it up. That is the failure mode: search a corpus this
+size hard enough and something supports almost any proposition.
+
+Mint it as what it is: `put(kind='finding', hypothesis=True, …)` with
+`motivation=` (the inferential leap) and `testable_by=` (the experiment
+that would settle it). A hypothesis hub carries **no evidence edges by
+type** — motivation replaces grounding, and `motivated-by` edges point at
+what provoked it. Full rules: [[precis-nanopub-help]].
+
+Do not read such a hub as an *orphan hub* (the no-evidence-edge
+pathology this page's admissibility test exists to stop) — an orphan is a
+bibliography entry minted by mistake; a hypothesis has no evidence
+because it is a guess, and says so in its type.
+
 ## What makes a mintable claim
 
 A hub's sentence is read alone — in other drafts, years later, without its

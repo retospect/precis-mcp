@@ -225,9 +225,11 @@ from psycopg import Connection
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
+    NOT_HYPOTHESIS_PREDICATE_PARAMS,
     _parse_json_object,
     claim_hub_predicate_sql,
     claim_sha,
+    not_hypothesis_predicate_sql,
 )
 from precis.taproot.hub import (
     HUB_ROLES,
@@ -257,6 +259,12 @@ log = logging.getLogger(__name__)
 #: — the single source of truth for "is this ref a claim hub", not a
 #: fourth reinvention of the pair of ``EXISTS`` clauses).
 _CLAIM_HUB_SQL = claim_hub_predicate_sql()
+#: The "not a conjecture" clause, AND-ed onto the claim-hub predicate below.
+#: A hypothesis hub carries the same TAPROOT:claim + STATUS:canonical tags,
+#: so without this the widening pass would go hunting for evidence that
+#: supports a guess — a confirmation engine aimed at exactly the thing
+#: nothing supports yet (docs/backlog/claim-review-mechanism.md).
+_NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
 
 #: The evidence-edge role hub-refine always attaches with — never
 #: ``establishes`` (originator promotion is derived elsewhere, see the
@@ -433,6 +441,7 @@ def _claim_hubs_due_for_refine(
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
            AND {_CLAIM_HUB_SQL}
+           AND {_NOT_HYPOTHESIS_SQL}
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id
@@ -447,6 +456,7 @@ def _claim_hubs_due_for_refine(
             "due_value": _DUE_VALUE,
             "attempt_ns": _ATTEMPT_NS,
             **CLAIM_HUB_PREDICATE_PARAMS,
+            **NOT_HYPOTHESIS_PREDICATE_PARAMS,
         },
     ).fetchall()
 

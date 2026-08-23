@@ -108,7 +108,9 @@ Built (slices 4–5, publish path — POST gated, nothing published):
   ``/nanopub/fi<id>`` per-hub review page (clickable SVG claim DAG,
   publish-row side panel, symmetric dispute rendering, one action per
   state, sign button that signs for real, approve form prefilled with a
-  gate-passing quote+snip candidate per grounding chunk),
+  gate-passing quote+snip candidate per grounding chunk — or, for an
+  agent-proposed hypothesis, with the envelope it parked on
+  ``refs.meta.proposed_payload``),
   ``/np/<code>`` serving exact frozen bytes during embargo.
 - Export appendix — a draft citing a hub whose publish row is
   signed/anchored/published gets a "Published claim artifacts"

@@ -493,6 +493,39 @@ def test_finding_view_evidence_empty_hub(store: Any) -> None:
     assert "no evidence edges yet for this claim hub" in resp.body
 
 
+def test_finding_view_evidence_hypothesis_shows_motivated_by_not_supporters(
+    store: Any,
+) -> None:
+    """A hypothesis hub has zero evidence edges *by definition* (the mint
+    gates reject one that arrives with grounding passages) —
+    indistinguishable, on edge count alone, from an orphan bibliography-stub
+    hub the admissibility test exists to catch. Its ``motivated-by`` edges
+    render instead, under their own heading, explicitly not support."""
+    handler = _make_handler(store)
+    pa1 = _paper(store, title="First motivating paper")
+    ch1 = seed_chunk(store, ref_id=pa1, text="A motivating passage.")
+    pa2 = _paper(store, title="Second motivating paper")
+
+    resp = handler.put(
+        title="DFT predicts an analogous transfer effect in a new system.",
+        hypothesis=True,
+        motivation="Both systems share a mechanism; the transfer is untested.",
+        testable_by="an experiment discriminating the two candidate mechanisms",
+        motivated_by=[f"pc{ch1}", f"pa{pa2}"],
+    )
+    hub = int(resp.body.split("fi", 1)[1].split()[0])
+
+    ev = handler.get(id=hub, view="evidence")
+
+    assert "no supporters" in ev.body and "hypothesis" in ev.body
+    assert "## motivated by" in ev.body
+    assert "First motivating paper" in ev.body and f"pc{ch1}" in ev.body
+    assert "Second motivating paper" in ev.body and f"pa{pa2}" in ev.body
+    # Never rendered as if it were the ordinary role sections.
+    assert "originators (establishes)" not in ev.body
+    assert "corroborators" not in ev.body
+
+
 def test_finding_view_evidence_marks_only_zero_block_papers_unfetched(
     store: Any,
 ) -> None:

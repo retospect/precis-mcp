@@ -15,8 +15,29 @@ external reach (`PRECIS_DREAM_SEARCH`), and the dream throttle
 Owner anchors: `src/precis/workers/dream_agent.py`,
 `src/precis/tools/core.py` (angle spray / dreamable view).
 
+Also live: the packaged persona-neutral dreamer prompt
+(`data/prompts/dream-persona.md`) — the dream no longer wears the
+operator's chat persona, and `PRECIS_DREAM_SOUL_PATH` is an optional
+site override rather than the eligibility gate (that is now
+`PRECIS_MCP_CONFIG`) — and **Step 6d/6e**: a cycle that lands on a
+cross-binding it cannot close proposes a nanopub `hypothesis`
+(`handlers/_finding_hypothesis.py`) and checks it against the real mint
+gates (`view='mint-preflight'`) before leaving it in the review queue.
+A dream's output is no longer a dead end at `kind='memory'`.
+
 ## Open scope
 
+- **Proposed hypotheses have no lane in the `/nanopub` forest.** They
+  land there as `unminted` alongside ~1,300 ordinary hubs that simply
+  never got a publish row, so the forest cannot tell "an agent prepared
+  this for you" from "nobody ever touched this". Discovery works today
+  via `/needs-you` (counted lane, linked rows) and the top-bar badge —
+  that is the queue a human actually works. Giving the forest its own
+  `hypothesis-proposed` grouping means a new field on
+  `nanopub/overview.py::HubOverviewRow` threaded through `hub_tree` and
+  the state strip, whose axis is publish state — which a proposal, by
+  construction, does not have. Worth doing only if the forest becomes
+  the place people triage proposals.
 - **Dream mode rotation (Part B).** Rotate the cycle's *deliverable*
   (connection / library-gap / open-question / consolidation /
   analogy), not just the lens (`PRECIS_DREAM_LENS`). Needs surgery on
