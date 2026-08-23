@@ -37,6 +37,31 @@ unchanged. Project-specific filters live in `.rtk/filters.toml` (committed).
   TTY) — rtk captures output, so there's nothing to type into.
 - When you genuinely need the raw stream — run it without `rtk`.
 
+## Long runs: never blind-wait on a silent foreground
+
+rtk solves **volume**, not **latency** — a foreground `scripts/deploy`,
+image build, or big ingest returns *nothing* until exit, minutes of zero
+visibility. For anything expected to run > ~1 minute:
+
+1. Launch via Bash `run_in_background: true` — the task's exit (code +
+   notification) is the authoritative completion signal.
+2. Watch the **live log file**, not the process stdout. `scripts/deploy`
+   already tees each run to the MAIN checkout's
+   `.deploy-logs/<ts>-<ref>.log` (path on its first `▶` line); for other
+   commands, redirect to a file yourself.
+3. Arm a Monitor with a line-buffered filter covering milestones **and
+   every failure signature** — silence must never be ambiguous. For a
+   deploy:
+
+       tail -F "$LOG" | grep -E --line-buffered '^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]'
+
+4. TaskStop the monitor when the completion notification lands.
+
+**Retrofit:** a deploy already running blind (yours or a sibling
+session's) is still tee'ing — `ls -1t <main>/.deploy-logs/*.log | head -1`
+and tail/Read that. Don't wait in the dark, and don't pipe the raw log
+into context — filter as above.
+
 ## The output is a DIGEST, not raw
 
 Treat rtk output as a filtered digest. If a detail you need was compressed

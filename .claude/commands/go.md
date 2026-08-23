@@ -1,7 +1,7 @@
 ---
 description: Implement the agreed spec, ship to main, and deploy to the cluster — the dark-factory one-keystroke. Run from inside a feature worktree.
 argument-hint: "[optional ship/commit message]"
-allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Agent
+allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
 ---
 
 You said **go**. Turn the spec we've established this session into shipped,
@@ -81,16 +81,28 @@ Optional ship message from the user: `$ARGUMENTS`
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,
      not a failure — relay it and continue to deploy.
 
-7. **Deploy.** Only after a green ship, push the new `main` to the cluster:
-   ```
-   scripts/deploy
-   ```
-   This pings all hosts (aborts on any unreachable — a partial deploy mixes
-   versions), then runs the ansible redeploy (reinstalls `precis-mcp@main`
-   into every venv and bounces every daemon). It auto-applies pending
-   migrations (precis-web role). If it exits non-zero, surface the failing
-   ansible task verbatim — the cluster may be on mixed versions; do not
-   declare success.
+7. **Deploy.** Only after a green ship, push the new `main` to the cluster —
+   **in the background, watching the live log**. Never foreground-wait on
+   `scripts/deploy`: its stdout reaches you only at exit, minutes of zero
+   visibility.
+   - Launch `scripts/deploy` via Bash `run_in_background: true`. Its exit
+     (code + task notification) is the authoritative completion signal.
+   - It tees every run live to the MAIN checkout's
+     `.deploy-logs/<ts>-<ref>.log` — the path is announced on the script's
+     first `▶` line (read it from the background task's output file). Arm a
+     Monitor on that log covering milestones AND every failure signature,
+     so silence is never ambiguous:
+     ```
+     tail -F "$LOG" | grep -E --line-buffered '^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]'
+     ```
+     TaskStop the monitor once the completion notification lands. Keep
+     working (e.g. step 9's issue-closer prep) between events.
+   The script pings all hosts first (aborts on any unreachable — a partial
+   deploy mixes versions), then runs the ansible redeploy (reinstalls
+   `precis-mcp@main` into every venv, bounces every daemon, auto-applies
+   pending migrations via the precis-web role). If it exits non-zero,
+   surface the failing ansible task verbatim — the cluster may be on mixed
+   versions; do not declare success.
 
 8. **Confirm — always end with this exact three-line block** (verify each
    line, don't assume; check `git rev-parse origin/main` for the sha):
