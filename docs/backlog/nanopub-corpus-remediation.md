@@ -248,6 +248,27 @@ forced, both worth carrying forward:
   its methods chunk, `ord=12`). Pull the paper's method-bearing chunks
   alongside the grounding passage.
 
+**Tranche 3 acted on both and reached 411 of 1,280 clean (32.1%)** — 111 more
+rewrites, pair-blocked pool 578 → 469, 328 applied in all. The widened window
+did what it promised (rewrite rate 47% → 55.5%, and the specificity loss did
+not recur), but it introduced a failure the gate cannot see and the next
+tranche must plan around:
+
+- **A methods window buys yield and costs precision.** The method block offers
+  every instrument the paper used, not the one that produced *this* result,
+  and a rewriter will attach the nearest plausible name: `fi176401` said "AFM
+  shows" where the evidence plainly says the rotation was recorded by optical
+  profilometry. Both sentences are gate-clean, so no lint distinguishes them.
+  Rank the sources **original technique → evidence passage → method block**,
+  and draw the method block only from the best-tier source paper
+  (`establishes` > `corroborates` > `cites`) — a paper that merely cites a
+  hub has methods that belong to different work entirely.
+- **Budget an attribution audit per tranche.** Re-showing accepted rewrites
+  with their evidence and asking only "does this technique match what produced
+  this observation?" found 5 corrections and 1 SKIP in 57 — ~11%, all
+  invisible to the lint. A half-wave potential credited to NMR, an SEM present
+  in no source, DFT credited for a result it only seeded with parameters.
+
 | bucket | count | |
 |---|---|---|
 | E — grammar-violating, grounded | 1,044 | 68.5% |
