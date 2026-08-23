@@ -314,6 +314,141 @@ def test_quest_hub_frontier_scatter_falls_back_when_underpopulated(
     assert "not enough simulated candidates to plot yet." in resp.text
 
 
+def test_frontier_section_renders_before_lineage(client, runtime) -> None:
+    """The frontier is the page's key artifact — it now renders directly
+    after the hub-nav row, before the Lineage panel (kinetics-cutover
+    reorder), not after the dossier/logbook two-column block."""
+    store = runtime.store
+    store.quests.append(_quest(id=200, title="Grand catalysis quest"))
+    store.quests.append(_quest(id=201, title="NH3 selectivity sub-quest"))
+    store.serves_links.append(SimpleNamespace(src_ref_id=201, dst_ref_id=200))
+
+    resp = client.get("/refs/quest/201")
+    assert resp.status_code == 200
+    assert ">Lineage<" in resp.text
+    assert 'id="frontier"' in resp.text
+    assert resp.text.index('id="frontier"') < resp.text.index(">Lineage<")
+
+
+def test_frontier_axis_picker_renders_selectable_keys(
+    client, runtime, monkeypatch
+) -> None:
+    """A quest declaring >= 2 rubric objectives gets an ``fx``/``fy`` GET
+    form pre-selecting its own default axes among every measure a
+    candidate carries."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    store = runtime.store
+    store.quests[0].meta = {
+        "rubric_objectives": [
+            {"key": "log_tof", "sense": "max"},
+            {"key": "atom_cost", "sense": "min"},
+        ]
+    }
+    frontier = FrontierResult(
+        objectives=[("log_tof", "max"), ("atom_cost", "min")],
+        frontier=[
+            Candidate(
+                1,
+                "st1",
+                "Fe-N4",
+                {"log_tof": 2.0, "atom_cost": 1.0, "selectivity_margin": 0.4},
+                True,
+            ),
+            Candidate(
+                2,
+                "st2",
+                "Cu-N4",
+                {"log_tof": 1.0, "atom_cost": 0.5, "selectivity_margin": 0.1},
+                True,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert 'name="fx"' in resp.text and 'name="fy"' in resp.text
+    assert '<option value="selectivity_margin"' in resp.text
+    # the quest's own declared axes are the default selection
+    assert 'value="log_tof" selected' in resp.text
+    assert 'value="atom_cost" selected' in resp.text
+
+
+def test_frontier_fx_fy_override_valid_key(client, runtime, monkeypatch) -> None:
+    """``?fx=&fy=`` overrides the plotted axes when each names a measure
+    present on >= 1 candidate."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    store = runtime.store
+    store.quests[0].meta = {
+        "rubric_objectives": [
+            {"key": "log_tof", "sense": "max"},
+            {"key": "atom_cost", "sense": "min"},
+        ]
+    }
+    frontier = FrontierResult(
+        objectives=[("log_tof", "max"), ("atom_cost", "min")],
+        frontier=[
+            Candidate(
+                1,
+                "st1",
+                "Fe-N4",
+                {"log_tof": 2.0, "atom_cost": 1.0, "selectivity_margin": 0.4},
+                True,
+            ),
+            Candidate(
+                2,
+                "st2",
+                "Cu-N4",
+                {"log_tof": 1.0, "atom_cost": 0.5, "selectivity_margin": 0.1},
+                True,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97?fx=selectivity_margin&fy=atom_cost")
+    assert resp.status_code == 200
+    assert 'value="selectivity_margin" selected' in resp.text
+    assert 'value="atom_cost" selected' in resp.text
+    assert 'value="log_tof" selected' not in resp.text
+
+
+def test_frontier_fx_fy_unknown_key_ignored(client, runtime, monkeypatch) -> None:
+    """An ``fx``/``fy`` value that names no measure and no rubric objective
+    is silently ignored — the page falls back to the quest's own default
+    axes rather than 400ing or plotting an empty axis."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    store = runtime.store
+    store.quests[0].meta = {
+        "rubric_objectives": [
+            {"key": "log_tof", "sense": "max"},
+            {"key": "atom_cost", "sense": "min"},
+        ]
+    }
+    frontier = FrontierResult(
+        objectives=[("log_tof", "max"), ("atom_cost", "min")],
+        frontier=[
+            Candidate(1, "st1", "Fe-N4", {"log_tof": 2.0, "atom_cost": 1.0}, True),
+            Candidate(2, "st2", "Cu-N4", {"log_tof": 1.0, "atom_cost": 0.5}, True),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97?fx=not-a-real-key&fy=also-bogus")
+    assert resp.status_code == 200
+    assert 'value="log_tof" selected' in resp.text
+    assert 'value="atom_cost" selected' in resp.text
+
+
 def test_quest_hub_exploration_queue_links_to_drive_stubs(client, runtime) -> None:
     """The Gaps panel's "exploration queue" affordance points at Drive,
     scoped to this quest's tag *and* chunkless (papers acquired but

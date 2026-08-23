@@ -2061,7 +2061,8 @@ class TestReactionContext:
 
     def test_creed_block_states_the_champion_once_one_exists(self, store: Any) -> None:
         # A converged, measured candidate makes the frontier non-empty — the
-        # creed's "champion to beat" line names its barrier, reframing the
+        # creed's "champion to beat" line names its primary-objective value
+        # (post kinetics-cutover: `log_tof`, sense=max), reframing the
         # graduation threshold as a moving target rather than a fixed line.
         from precis.quest.catalyst_seed import seed_catalyst_quest
 
@@ -2071,13 +2072,18 @@ class TestReactionContext:
             store, qid, {"name": "Champion candidate", "structure": _tick_spec("Fe")}
         )
         assert candidate is not None
-        # The default rubric now declares selectivity_margin/poison_margin too
-        # (catalyst_seed.RUBRIC_OBJECTIVES) — a candidate missing a declared
-        # objective is `unevaluated` and can never be the champion, so stamp
-        # the full objective vector.
+        # The default rubric declares log_tof/atom_cost/selectivity_margin/
+        # poison_margin (catalyst_seed.RUBRIC_OBJECTIVES) — a candidate
+        # missing a declared objective is `unevaluated` and can never be the
+        # champion, so stamp the full objective vector.
         store.stamp_ref_meta(
             candidate,
-            {"barrier": 0.42, "selectivity_margin": 0.3, "poison_margin": 0.15},
+            {
+                "log_tof": 0.42,
+                "atom_cost": 1.1,
+                "selectivity_margin": 0.3,
+                "poison_margin": 0.15,
+            },
         )
         store.structure_record_run(
             candidate,

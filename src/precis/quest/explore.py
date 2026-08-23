@@ -39,9 +39,9 @@ def tried_set_summary(
     via the same reader the frontier uses
     (:func:`precis.quest.frontier._candidate_from_structure`) plus its
     ``ruled-out:`` tag. Renders measured candidates best-first (by the
-    quest's primary rubric objective — ``barrier`` for a catalyst quest,
-    ``energy`` by default), then any still-awaiting-a-sim ones, then a
-    ``ruled out:`` clause. E.g.::
+    quest's primary rubric objective — ``log_tof`` (max) for a catalyst
+    quest post kinetics-cutover, ``energy`` by default), then any
+    still-awaiting-a-sim ones, then a ``ruled out:`` clause. E.g.::
 
         Tried: Ag adatom 0.74 (BEST) · Cu adatom 0.96 · Ni adatom 1.02; \
 ruled out: PdCuNi alloy 2.84

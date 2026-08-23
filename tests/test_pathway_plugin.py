@@ -20,6 +20,7 @@ Skips cleanly (whole module) if ``autocatpath`` isn't installed.
 from __future__ import annotations
 
 import io
+import math
 from pathlib import Path
 from typing import Any
 
@@ -235,6 +236,78 @@ def test_seed_fanout_matches_monolith_run() -> None:
     assert summarize(fanout) == summarize(monolith)
 
 
+def test_run_kinetics_missing_module_sets_kinetics_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployed engine that predates ``autocatpath.kinetics`` (the fleet's
+    pinned floor, 0.13.0 — monkeypatched here since the test image itself
+    bakes a newer engine that DOES carry the module) is feature-detected
+    rather than treated as a bug: ``run_kinetics`` folds a `kinetics_error`
+    onto ``results_json`` and never raises, so the aggregate this rides on
+    still succeeds."""
+    from autocatpath import __version__ as engine_version
+
+    art = runner.run_pathway_from_yaml(SMOKE)
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: None)
+    runner.run_kinetics(art["config"], art)
+    assert (
+        art["results_json"]["kinetics_error"]
+        == f"engine {engine_version} lacks kinetics"
+    )
+    assert "kinetics" not in art["results_json"]
+
+
+def test_run_kinetics_success_folds_solve_result_onto_results_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A feature-detected engine (monkeypatched here — the fleet's pinned
+    0.13.0 has no real ``kinetics`` module to exercise) has its ``solve()``
+    result folded onto ``results_json["kinetics"]`` verbatim, keyed off the
+    SAME ``nodes``/``edges``/``score.activity.span_eV`` the aggregate just
+    produced."""
+    art = runner.run_pathway_from_yaml(SMOKE)
+    canned = {"tof": 4.2e-3, "product": "NO3", "drc": {"X_RC": {"NO->NO2": 0.9}}}
+    calls: dict[str, Any] = {}
+
+    class _FakeKinetics:
+        @staticmethod
+        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
+            calls["nodes"] = nodes
+            calls["edges"] = edges
+            calls["span"] = span
+            calls["mari"] = mari
+            return canned
+
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: _FakeKinetics)
+    runner.run_kinetics(art["config"], art)
+
+    assert art["results_json"]["kinetics"] == canned
+    assert "kinetics_error" not in art["results_json"]
+    assert calls["nodes"] == art["results_json"]["nodes"]
+    assert calls["edges"] == art["results_json"]["edges"]
+    assert calls["mari"] is None  # this flow runs no coverage scan
+
+
+def test_run_kinetics_solve_exception_sets_kinetics_error_never_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kinetics is a diagnostic bonus riding on a successful aggregate, never
+    load-bearing for it: ANY exception the solve raises lands as
+    ``kinetics_error`` — ``run_kinetics`` itself never raises."""
+    art = runner.run_pathway_from_yaml(SMOKE)
+
+    class _FakeKinetics:
+        @staticmethod
+        def solve(*_a: Any, **_k: Any) -> dict:
+            raise ValueError("no usable transitions")
+
+    monkeypatch.setattr(runner, "_import_kinetics", lambda: _FakeKinetics)
+    runner.run_kinetics(art["config"], art)  # must not raise
+
+    assert art["results_json"]["kinetics_error"] == "no usable transitions"
+    assert "kinetics" not in art["results_json"]
+
+
 def test_summarize_passes_through_che_electro_scalars() -> None:
     """`summarize()` (`_dispatch_common`, the seam
     `_dispatch_common.finish` unpacks straight onto the JOB's own meta) picks
@@ -386,6 +459,125 @@ def test_selectivity_scalars_lifts_score_context_strings() -> None:
     assert out["trap_margin"] == -0.64
     # a malformed score section (non-string fields) lifts nothing
     assert _selectivity_scalars({"score": {"limiting_factor": 3}}) == {}
+
+
+def test_kinetics_scalars_trusted_lifts_tof_log_tof_and_band() -> None:
+    """A trusted solve (finite ``tof``, no disagreeing guard bracket) lifts
+    the raw TOF, its log10, the Monte-Carlo 5-95 % band (also log10'd), and
+    which transition carries the largest |X_RC| — the whole point of the
+    log-space band is Pareto-friendliness (TOF spans decades)."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars(
+        {
+            "kinetics": {
+                "tof": 1000.0,
+                "sensitivity": {"tof": {"median": 1000.0, "p5": 100.0, "p95": 10000.0}},
+                "drc": {"X_RC": {"NO->NO2": 0.1, "NO2->NO3": 0.95}},
+            }
+        }
+    )
+    assert out["kinetics_trusted"] is True
+    assert out["tof"] == 1000.0
+    assert out["log_tof"] == pytest.approx(3.0)
+    assert out["log_tof_p5"] == pytest.approx(2.0)
+    assert out["log_tof_p95"] == pytest.approx(4.0)
+    assert out["drc_top"] == "NO2->NO3"
+
+
+def test_kinetics_scalars_guard_bracket_disagreement_is_untrusted() -> None:
+    """``tof_bracket.agree is False`` (excluded steps turn out load-bearing
+    at their optimistic bound) marks the solve untrusted: the raw ``tof``
+    still rides out (for display), but ``log_tof``/the band never do."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars({"kinetics": {"tof": 5.0, "tof_bracket": {"agree": False}}})
+    assert out["kinetics_trusted"] is False
+    assert out["tof"] == 5.0
+    assert "log_tof" not in out
+    assert "log_tof_p5" not in out
+    assert out["kinetics_note"] == "guard bracket: excluded steps load-bearing"
+
+
+def test_kinetics_scalars_non_finite_tof_is_untrusted_and_absent() -> None:
+    """A non-finite (``nan``/``inf``) TOF is untrusted AND absent — never a
+    fabricated raw value, unlike the guard-bracket case above."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars({"kinetics": {"tof": float("nan")}})
+    assert out["kinetics_trusted"] is False
+    assert "tof" not in out
+    assert out["kinetics_note"] == "tof not finite"
+
+
+def test_kinetics_scalars_non_positive_tof_is_untrusted() -> None:
+    """A finite but non-positive TOF is a solver anomaly (a turnover
+    frequency can be arbitrarily small but never zero/negative) — it must
+    NOT read as a confidently-measured dead candidate at the log floor."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    for bad in (0.0, -3.5):
+        out = _kinetics_scalars(
+            {
+                "kinetics": {
+                    "tof": bad,
+                    "sensitivity": {"tof": {"p5": 1e-6, "p95": 1e-2}},
+                }
+            }
+        )
+        assert out["kinetics_trusted"] is False
+        assert out["tof"] == bad  # raw value still surfaced for forensics
+        assert "log_tof" not in out
+        assert "log_tof_p5" not in out and "log_tof_p95" not in out
+        assert out["kinetics_note"] == "tof non-positive (solver anomaly)"
+
+
+def test_kinetics_scalars_bracket_agrees_stays_trusted() -> None:
+    """``tof_bracket.agree is True`` (or the bracket simply absent) does not
+    gate trust — only an explicit ``agree is False`` does."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars({"kinetics": {"tof": 2.0, "tof_bracket": {"agree": True}}})
+    assert out["kinetics_trusted"] is True
+    assert out["log_tof"] == pytest.approx(math.log10(2.0))
+
+
+def test_kinetics_scalars_error_string_lifts_trust_false_and_note() -> None:
+    """No `kinetics` dict but a `kinetics_error` string (the engine predates
+    the module, or the solve blew up) -> `kinetics_trusted=False` + the
+    error text as `kinetics_note`, no numeric keys at all."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars({"kinetics_error": "engine 0.13.0 lacks kinetics"})
+    assert out == {
+        "kinetics_trusted": False,
+        "kinetics_note": "engine 0.13.0 lacks kinetics",
+    }
+
+
+def test_kinetics_scalars_neither_key_present_yields_nothing() -> None:
+    """Kinetics was never attempted on this artifact (a pre-slice-A job, or
+    one whose `run_kinetics` call never ran) -> no fabricated keys."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    assert _kinetics_scalars({"nodes": {}, "edges": []}) == {}
+
+
+def test_summarize_folds_in_kinetics_scalars() -> None:
+    """End-to-end: `summarize()` (the seam `finish()` unpacks onto the JOB's
+    own meta) picks up the kinetics scalars alongside barrier/span/CHE/
+    selectivity, off a real computed artifact's `results_json`."""
+    from precis_pathway._dispatch_common import summarize
+
+    art = runner.run_pathway_from_yaml(SMOKE)
+    art = {
+        **art,
+        "results_json": {**art["results_json"], "kinetics": {"tof": 10.0}},
+    }
+    out = summarize(art)
+    assert out["kinetics_trusted"] is True
+    assert out["tof"] == 10.0
+    assert out["log_tof"] == pytest.approx(1.0)
 
 
 def test_aggregate_seed_partials_retry_skips_nothing_extra() -> None:
@@ -1803,6 +1995,94 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     # matches what the monolith would have produced on the same seeds
     monolith = runner.run_pathway(cfg, force_backend="emt")
     assert _json_eq(got.meta["results"]["nodes"], monolith["results_json"]["nodes"])
+
+    # slice A: kinetics runs right after the aggregate, in-process — either a
+    # real solve (`kinetics`) or a diagnostic note (`kinetics_error`, e.g. a
+    # deployed engine predating the module, or a solve that couldn't
+    # converge on this tiny fan-out network); either way it never fails the
+    # aggregate itself (`ctx.status == "succeeded"`, asserted above), and
+    # exactly one of the two keys lands.
+    r = got.meta["results"]
+    assert ("kinetics" in r) != ("kinetics_error" in r)
+    assert any(kind == "job_event" and "kinetics" in text for kind, text in ctx.chunks)
+
+
+def test_aggregate_job_dispatch_folds_in_kinetics_when_engine_has_it(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feature-detected engine (monkeypatched — the fleet's pinned 0.13.0
+    has no real ``kinetics`` module) has ``run_kinetics``'s fold-in reach
+    the persisted pathway's ``results.kinetics``, and the dispatch logs a
+    ``job_event`` chunk naming the TOF."""
+    from precis_pathway import aggregate_job
+    from precis_pathway import runner as runner_mod
+
+    canned = {"tof": 7.5e-2}
+    monkeypatch.setattr(
+        runner_mod,
+        "run_kinetics",
+        lambda config, artifact: artifact["results_json"].__setitem__(
+            "kinetics", canned
+        ),
+    )
+
+    cfg = _yaml_dict(FANOUT)
+    ref, agg_todo_id = _seed_a_todo_tree(pathway_store, cfg)
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "pathway_ref_id": ref.id,
+            "pathway_slug": ref.slug,
+            "config": cfg,
+            "force_backend": "emt",
+        },
+    )
+    ctx.meta["dispatched_from_todo"] = agg_todo_id
+    aggregate_job._dispatch(ctx, aggregate_job.SPEC)
+
+    assert ctx.failure is None, ctx.failure
+    assert ctx.status == "succeeded"
+    got = pathway_store.get_ref(kind="pathway", id=ref.slug)
+    assert got is not None
+    assert got.meta["results"]["kinetics"] == canned
+    assert any(kind == "job_event" and "7.500e-02" in text for kind, text in ctx.chunks)
+
+
+def test_aggregate_job_dispatch_kinetics_missing_engine_module_never_fails(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployed engine predating ``autocatpath.kinetics`` (monkeypatched
+    here — the test image bakes a newer engine that DOES carry the module)
+    surfaces a ``kinetics_error`` note and a ``kinetics skipped`` chunk;
+    the aggregate itself still succeeds."""
+    from precis_pathway import aggregate_job
+    from precis_pathway import runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "_import_kinetics", lambda: None)
+
+    cfg = _yaml_dict(FANOUT)
+    ref, agg_todo_id = _seed_a_todo_tree(pathway_store, cfg)
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "pathway_ref_id": ref.id,
+            "pathway_slug": ref.slug,
+            "config": cfg,
+            "force_backend": "emt",
+        },
+    )
+    ctx.meta["dispatched_from_todo"] = agg_todo_id
+    aggregate_job._dispatch(ctx, aggregate_job.SPEC)
+
+    assert ctx.failure is None, ctx.failure
+    assert ctx.status == "succeeded"
+    got = pathway_store.get_ref(kind="pathway", id=ref.slug)
+    assert got is not None
+    assert "lacks kinetics" in got.meta["results"]["kinetics_error"]
+    assert "kinetics" not in got.meta["results"]
+    assert any(
+        kind == "job_event" and "kinetics skipped" in text for kind, text in ctx.chunks
+    )
 
 
 def test_aggregate_job_dispatch_no_seed_partials_fails_cleanly(

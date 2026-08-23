@@ -113,6 +113,72 @@ def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
+    """Lift microkinetics scalars from ``results_json["kinetics"]`` (folded
+    in by :func:`precis_pathway.runner.run_kinetics`, right after the
+    aggregate) — same "read the already-computed artifact" move as
+    :func:`_selectivity_scalars` above, for the ``solve()`` payload instead
+    of the score card.
+
+    Trust gate: a solve is trusted iff its ``tof`` is a finite float **> 0**
+    (a turnover frequency can be arbitrarily small but never zero/negative —
+    a non-positive value is a solver anomaly, not a dead catalyst) AND
+    (there is no ``tof_bracket``, or its ``agree`` isn't literally ``False``
+    — the guard against excluded-step barriers that turn out load-bearing at
+    their optimistic bound). An untrusted solve still surfaces its raw
+    ``tof`` (never ``log_tof``/``log_tof_p5``/``log_tof_p95`` — those stay
+    gated on trust) plus a ``kinetics_note`` reason string, so the harvest
+    lane (:mod:`precis.quest.compute`) can decide what to keep off the
+    candidate's ranked measures.
+
+    ``kinetics_trusted`` is emitted whenever kinetics was attempted at all —
+    either a ``kinetics`` dict or a ``kinetics_error`` string is present
+    (:func:`precis_pathway.runner.run_kinetics` always sets exactly one) —
+    never fabricated when neither key is on ``results``.
+    """
+    out: dict[str, Any] = {}
+    kin = results.get("kinetics")
+    err = results.get("kinetics_error")
+    if not isinstance(kin, dict):
+        if isinstance(err, str) and err:
+            out["kinetics_trusted"] = False
+            out["kinetics_note"] = err
+        return out
+
+    tof = _finite_num(kin.get("tof"))
+    if tof is not None:
+        out["tof"] = tof
+    bracket = kin.get("tof_bracket")
+    bracket_ok = not (isinstance(bracket, dict) and bracket.get("agree") is False)
+    trusted = tof is not None and tof > 0.0 and bracket_ok
+    out["kinetics_trusted"] = trusted
+    if tof is None:
+        out["kinetics_note"] = "tof not finite"
+    elif tof <= 0.0:
+        out["kinetics_note"] = "tof non-positive (solver anomaly)"
+    elif not bracket_ok:
+        out["kinetics_note"] = "guard bracket: excluded steps load-bearing"
+    else:
+        out["log_tof"] = math.log10(max(tof, 1e-30))
+        sensitivity = kin.get("sensitivity")
+        band = sensitivity.get("tof") if isinstance(sensitivity, dict) else None
+        if isinstance(band, dict):
+            p5 = _finite_num(band.get("p5"))
+            if p5 is not None and p5 > 0.0:
+                out["log_tof_p5"] = math.log10(max(p5, 1e-30))
+            p95 = _finite_num(band.get("p95"))
+            if p95 is not None and p95 > 0.0:
+                out["log_tof_p95"] = math.log10(max(p95, 1e-30))
+
+    drc = kin.get("drc")
+    x_rc = drc.get("X_RC") if isinstance(drc, dict) else None
+    if isinstance(x_rc, dict):
+        finite_x_rc = {k: v for k, v in x_rc.items() if _finite_num(v) is not None}
+        if finite_x_rc:
+            out["drc_top"] = max(finite_x_rc, key=lambda k: abs(finite_x_rc[k]))
+    return out
+
+
 def summarize(artifact: PathwayArtifact) -> dict[str, Any]:
     """Reduce a run artifact to the scalar summary a caller ranks on.
 
@@ -154,6 +220,12 @@ def summarize(artifact: PathwayArtifact) -> dict[str, Any]:
             if v is not None:
                 out[k] = v
         out.update(_selectivity_scalars(results))
+        # Isolated: a kinetics-reduction bug must cost only the kinetics
+        # scalars, never the long-established barrier/span/electro summary.
+        try:
+            out.update(_kinetics_scalars(results))
+        except Exception:  # pragma: no cover - defensive
+            log.warning("autocatpath: kinetics summary failed", exc_info=True)
         return out
     except Exception:  # pragma: no cover - defensive
         log.warning("autocatpath: summary failed", exc_info=True)

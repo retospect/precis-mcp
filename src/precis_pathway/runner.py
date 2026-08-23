@@ -1046,6 +1046,76 @@ def aggregate_seed_partials(
     }
 
 
+def _import_kinetics() -> Any:
+    """The ``autocatpath.kinetics`` module, or ``None`` when the deployed
+    engine predates it (the module shipped in engine 0.15.0; the fleet's
+    pinned floor, 0.13.0, predates it — a plain ``ImportError``, not a bug).
+    A thin, mockable seam so :func:`run_kinetics` never needs a >=0.15
+    engine installed to exercise its ImportError / exception handling in
+    tests — a caller can monkeypatch this function directly instead of
+    faking ``sys.modules``.
+    """
+    try:
+        from autocatpath import kinetics
+    except ImportError:
+        return None
+    return kinetics
+
+
+def run_kinetics(config: dict[str, Any], artifact: PathwayArtifact) -> None:
+    """Run catpath's post-hoc microkinetics over a just-aggregated pathway,
+    in-process, folding the result onto ``artifact["results_json"]`` (mutated
+    in place — no return value).
+
+    Mirrors autocatpath's own CLI ``kinetics`` post-processing branch
+    (``cli.py``, ``args.cmd == "kinetics"``: rebuild the net + ledger refs +
+    thermo-corrected refs from the config, then ``kinetics.solve``), but
+    reads ``nodes``/``edges``/``score.activity.span_eV`` straight off the
+    in-memory ``results_json`` instead of a ``results.json`` on disk — this
+    flow (the aggregate job) never writes one. ``mari`` is always ``None``:
+    no coverage scan runs here.
+
+    ``config`` must be the EFFECTIVE (post-backend-override) config —
+    typically ``artifact["config"]`` fresh off :func:`aggregate_seed_partials`
+    — not the raw dispatch params, whose ``force_backend`` override may
+    already be baked into ``artifact["config"]`` and would otherwise silently
+    diverge from what actually ran.
+
+    Kinetics is a diagnostic bonus riding on a successful aggregate, never
+    load-bearing for it: this function never raises. A deployed engine
+    predating the ``kinetics`` module, or any exception the solve raises,
+    lands as ``results_json["kinetics_error"]`` instead — the aggregate
+    itself still succeeds and persists either way.
+    """
+    results_json = artifact["results_json"]
+    kinetics = _import_kinetics()
+    if kinetics is None:
+        results_json["kinetics_error"] = f"engine {__version__} lacks kinetics"
+        return
+    try:
+        from autocatpath.ledger import compute_ledgers
+        from autocatpath.pipeline import _build_net, ledger_refs
+        from autocatpath.thermo import build_table
+
+        cfg = _prep(config, None)
+        nodes = results_json["nodes"]
+        edges = results_json["edges"]
+        span = ((results_json.get("score") or {}).get("activity") or {}).get("span_eV")
+        net = _build_net(cfg)
+        ledgers, _warns = compute_ledgers(net)
+        refs = ledger_refs(cfg, net, ledgers, log=lambda *a, **k: None)
+        table = build_table(cfg)
+        if table and refs:
+            refs = table.corrected_refs(refs)
+        result = kinetics.solve(
+            cfg, nodes, edges, net, refs, span=span, mari=None, log=lambda *a, **k: None
+        )
+        results_json["kinetics"] = result
+    except Exception as exc:
+        log.warning("autocatpath kinetics: solve failed", exc_info=True)
+        results_json["kinetics_error"] = str(exc)
+
+
 def _snapshot_yaml(cfg: Config) -> str:
     import yaml
 

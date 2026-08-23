@@ -6,18 +6,37 @@ a `quest` whose meta wires the whole loop:
 * ``meta.reaction_config`` — autocatpath's worked NO→NH₃/Pd example
   (`examples/no_to_nh3_pd.yaml`). :func:`precis.quest.compute.run_compute_step`
   reads it and co-dispatches a autocatpath barrier eval with every candidate's relax.
-* ``meta.rubric_objectives`` — the measured axes that actually land **today**:
-  the autocatpath ``barrier`` (min), the relax ``energy`` (min, the stability
-  proxy), and — catpath >= 0.6.0's engine scorecard (``results_json.score``)
-  — the selectivity/poisoning pair ``selectivity_margin`` (max: the worst
-  branch-point margin — side climb minus the competing main-route climb at
-  the same fork) and ``poison_margin`` (max: worst screened poison's
-  ``delta_vs_substrate`` — extrinsic poisoning resistance; needs
-  ``reaction_config.poisons``). ``trap_margin`` (max: best-route span minus
-  the worst off-route state's escape climb; intrinsic self-poisoning; absent
-  when there are no off-route states) is harvested + displayed but
-  deliberately NOT a default Pareto axis — five axes make domination too
-  weak; opt in per quest via ``rubric_objectives``. ``formation_e`` is a
+* ``meta.rubric_objectives`` — the measured axes the frontier ranks on,
+  post kinetics-cutover: ``log_tof`` (max, log10 turnover frequency — the
+  kinetics model's own activity readout, computed FROM the harvested
+  barriers), ``atom_cost`` (min, log10 mass-weighted $/kg — the soft
+  economic axis: a dear-but-active composition still competes, it just
+  needs to buy real activity to survive domination), and — catpath >=
+  0.6.0's engine scorecard (``results_json.score``) — the selectivity/
+  poisoning pair ``selectivity_margin`` (max: the worst branch-point margin
+  — side climb minus the competing main-route climb at the same fork) and
+  ``poison_margin`` (max: worst screened poison's ``delta_vs_substrate`` —
+  extrinsic poisoning resistance; needs ``reaction_config.poisons``).
+  ``barrier`` is demoted to a **context scalar** (still harvested, still
+  shown, still the graduation gate below) rather than a Pareto axis of its
+  own — ``log_tof`` is computed FROM the barriers, so ranking on both would
+  be two redundant axes measuring the same underlying fact, weakening
+  domination for no informational gain. A kinetics run that fails or comes
+  back untrustworthy does NOT fake a low (bad) TOF — it goes
+  **provisional** via the same trust gate ``barrier_trusted`` already uses
+  (``kinetics_trusted``/``kinetics_note`` on the candidate; see
+  :mod:`precis.quest.frontier`'s ``ProvisionalCandidate``), so an unmeasured/
+  unconfirmed candidate reads as "needs attention", never as "bad".
+  ``energy`` (the pre-cutover starter axis) is likewise dropped from the
+  rubric: an absolute relaxed energy is reference/composition-dependent, so
+  it never ranked *across* candidates meaningfully — stability concerns
+  surface through relax convergence and the trap/poison margins instead.
+  ``trap_margin``
+  (max: best-route span minus the worst off-route state's escape climb;
+  intrinsic self-poisoning; absent when there are no off-route states) is
+  harvested + displayed but deliberately NOT a default Pareto axis — five
+  axes make domination too weak, and that reasoning still holds at exactly
+  four; opt in per quest via ``rubric_objectives``. ``formation_e`` is a
   future refinement — declaring an objective nothing produces would leave
   every candidate *unevaluated* (an empty frontier).
 * ``meta.graduation`` — the in-silico ceiling that promotes a good design to a
@@ -83,12 +102,13 @@ REACTION_CONFIG: dict[str, Any] = {
     },
 }
 
-#: Rank on the four measured axes: barrier + relax energy (min) and the
-#: catpath >= 0.6.0 engine-scorecard selectivity/poisoning pair (max) — see
-#: the module docstring for why trap_margin is deliberately not a fifth axis.
+#: Rank on the four measured axes: kinetics activity (log_tof, max) + the
+#: soft economic axis (atom_cost, min) and the catpath >= 0.6.0
+#: engine-scorecard selectivity/poisoning pair (max) — see the module
+#: docstring for why barrier is a context scalar, not a fifth axis.
 RUBRIC_OBJECTIVES: list[dict[str, str]] = [
-    {"key": "barrier", "sense": "min"},
-    {"key": "energy", "sense": "min"},
+    {"key": "log_tof", "sense": "max"},
+    {"key": "atom_cost", "sense": "min"},
     {"key": "selectivity_margin", "sense": "max"},
     {"key": "poison_margin", "sense": "max"},
 ]

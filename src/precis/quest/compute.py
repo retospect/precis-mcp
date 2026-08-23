@@ -27,11 +27,14 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.quest.atomcost import atom_cost, dearest
+from precis.quest.frontier import _UNTRUSTED_VALUE_SUFFIX
 from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
 from precis.structure.preflight import PreflightReason
@@ -196,6 +199,89 @@ def _geom_hash(scene: Any) -> str:
     )
     payload = json.dumps(rows, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+
+def _candidate_composition(
+    scene: Any | None, spec: dict[str, Any] | None
+) -> dict[str, int] | None:
+    """Element -> atom count for a candidate, from the most reliable source
+    available.
+
+    Preferred: the actual materialised geometry (``scene``, the same
+    :class:`~precis.structure.scene.Scene` :func:`_geom_hash` reads at the
+    same call site) — every atom the spec's ``ops`` produced (host slab,
+    substituted dopant, adsorbate) counted directly, so :func:`atom_cost`
+    weighs what was actually built, not what was asked for.
+
+    Fallback (``scene`` unavailable — a load failure means :func:`_geom_hash`
+    itself already gave up too, see the caller): a coarse count straight
+    from the un-materialised ``spec['ops']`` — a ``slab`` op's ``size``
+    ``[nx, ny, nz]`` product IS the slab's atom count (confirmed by
+    :func:`~precis.structure.ops._op_slab`'s own build), so the host element
+    gets that weight; an ``add_atom``/``set_element`` op (a dopant
+    substitution or an adsorbate) contributes one atom each. Order-of-
+    magnitude only, matching :func:`atom_cost`'s own tolerance — this path
+    only fires on the rare load failure.
+
+    ``None`` when neither source yields any element.
+    """
+    if scene is not None:
+        counts: dict[str, int] = {}
+        for a in scene.atoms.values():
+            counts[a.element] = counts.get(a.element, 0) + 1
+        if counts:
+            return counts
+    if not isinstance(spec, dict):
+        return None
+    ops = spec.get("ops")
+    if not isinstance(ops, list):
+        return None
+    counts = {}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        element = op.get("element")
+        if not isinstance(element, str) or not element:
+            continue
+        op_name = op.get("op")
+        if op_name == "slab":
+            size = op.get("size")
+            n = 1
+            if isinstance(size, (list, tuple)) and len(size) == 3:
+                try:
+                    n = max(1, int(size[0]) * int(size[1]) * int(size[2]))
+                except (TypeError, ValueError):
+                    n = 1
+            counts[element] = counts.get(element, 0) + n
+        elif op_name in ("add_atom", "set_element"):
+            counts[element] = counts.get(element, 0) + 1
+    return counts or None
+
+
+def _stamp_atom_cost(
+    store: Store, ref_id: int, composition: dict[str, int]
+) -> float | None:
+    """Best-effort ``atom_cost``/``atom_cost_dearest`` stamp onto ``ref_id``'s
+    meta from a composition — isolated from the caller's own try/except (a
+    bug in the pure arithmetic here must never cost the caller its own
+    stamp, e.g. :func:`_ensure_candidate_detail`'s ``geom_hash``). Returns
+    the stamped ``atom_cost`` (or ``None`` — absent composition price
+    coverage, or a stamp failure), so a caller that also ratchets
+    ``frontier_viewport`` (:func:`harvest_measures`) doesn't have to
+    recompute it."""
+    try:
+        cost = atom_cost(composition)
+        if cost is None:
+            return None
+        meta_stamp: dict[str, Any] = {"atom_cost": cost}
+        dearest_note = dearest(composition)
+        if dearest_note is not None:
+            meta_stamp["atom_cost_dearest"] = dearest_note
+        store.stamp_ref_meta(ref_id, meta_stamp)
+        return cost
+    except Exception:
+        log.debug("_stamp_atom_cost: failed for ref %s", ref_id, exc_info=True)
+        return None
 
 
 def _dup_status_summary(store: Store, existing: Any) -> str:
@@ -447,6 +533,7 @@ def _ensure_candidate_detail(
             src_ref_id=ref.id, dst_ref_id=quest_id, relation="serves", conn=conn
         )
         store.add_tag(ref.id, Tag.open(_CANDIDATE_TAG), set_by="system", conn=conn)
+    scene: Any = None
     try:
         scene, _handles = store.structure_load(ref.id)
         store.stamp_ref_meta(ref.id, {"geom_hash": _geom_hash(scene)})
@@ -454,6 +541,13 @@ def _ensure_candidate_detail(
         log.debug(
             "ensure_candidate: geom_hash stamp failed for %s", slug, exc_info=True
         )
+    # atom_cost (slice B): composition-derived, no sim needed — stamped at
+    # creation time so a candidate never spends a tick "awaiting" its own
+    # cost. `scene` is `None` above when the load just failed (rare); the
+    # composition fallback then reads straight off `spec`'s ops.
+    composition = _candidate_composition(scene, spec)
+    if composition is not None:
+        _stamp_atom_cost(store, int(ref.id), composition)
     note = _link_parent_if_present(store, quest_id, proposal, int(ref.id))
     return int(ref.id), False, note
 
@@ -579,8 +673,13 @@ _AUTOCATPATH_CACHE_EPOCH = "0.13.0"
 #: are stale for harvest even on the same engine. Bump on any
 #: summarize() output-schema change. s2 = engine-scorecard margins
 #: (selectivity_margin/trap_margin/poison_margin off results.score)
-#: replacing the 0.5.2 span-based lifts.
-_AUTOCATPATH_SUMMARY_REV = "s2"
+#: replacing the 0.5.2 span-based lifts. s3 = in-process microkinetics
+#: (tof/log_tof/log_tof_p5/log_tof_p95/kinetics_trusted/kinetics_note/
+#: drc_top — precis_pathway.runner.run_kinetics + _dispatch_common.
+#: _kinetics_scalars) folded onto the aggregate's own summary — a completed
+#: pre-s3 aggregate job carries none of these keys, so it must re-key for
+#: harvest to pick them up.
+_AUTOCATPATH_SUMMARY_REV = "s3"
 
 #: Matches the ``autocatpath`` requirement (any extras) in dist metadata,
 #: e.g. ``autocatpath>=0.7; extra == "catalyst"`` / ``autocatpath[mace]>=0.7``.
@@ -1318,6 +1417,33 @@ _AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS: tuple[str, ...] = (
     "worst_problem",
 )
 
+#: In-process microkinetics scalars (``precis_pathway.runner.run_kinetics`` +
+#: ``_dispatch_common._kinetics_scalars``), ranking measures like the
+#: barrier/selectivity ones above: ``tof`` (site^-1 s^-1, raw — a solve's
+#: trust gate still lets an untrusted TOF ride out here; the gate below
+#: excludes it from the harvested measures the same way ``barrier_trusted``
+#: excludes an untrusted barrier), ``log_tof``/``log_tof_p5``/``log_tof_p95``
+#: (log10, only ever present on a TRUSTED solve — the Monte-Carlo 5-95 % TOF
+#: band, when the run's own barrier uncertainty was enough to sample one).
+_AUTOCATPATH_KINETICS_KEYS: tuple[str, ...] = (
+    "tof",
+    "log_tof",
+    "log_tof_p5",
+    "log_tof_p95",
+)
+
+#: ``kinetics_trusted``/``kinetics_note`` context (the kinetics-specific
+#: trust verdict — a run_kinetics failure/import-miss, or the guard-bracket
+#: excluded-step warning) — never measures on their own, but drive the
+#: pop-into-``{key}_untrusted_value`` gate below, same shape as
+#: ``barrier_trusted``/``_pathway_quality``.
+_AUTOCATPATH_KINETICS_CONTEXT_KEYS: tuple[str, ...] = ("kinetics_note", "drc_top")
+
+#: Suffix a gated-out kinetics measure is stashed under on an untrusted
+#: solve — aliased from the frontier's own constant (the read side of the
+#: stash/backfill contract) so the two ends can never drift apart silently.
+_KINETICS_UNTRUSTED_VALUE_SUFFIX = _UNTRUSTED_VALUE_SUFFIX
+
 
 def _num_measure(v: Any) -> float | None:
     """A numeric measure, or None (``bool`` is an ``int`` but never a measure)."""
@@ -1377,6 +1503,34 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, Any]:
     for k in _AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS:
         ctx = src.get(k)
         if isinstance(ctx, (str, dict)) and ctx:
+            out[k] = ctx
+    # In-process microkinetics (tof/log_tof/log_tof_p5/log_tof_p95): the same
+    # "read the job meta" harvest as everything above, but gated on its OWN
+    # trust verdict — ``kinetics_trusted`` already lives on THIS SAME job
+    # meta (`_dispatch_common.summarize`/`_kinetics_scalars` stamped it, no
+    # separate pathway-ref fetch needed, unlike `barrier_trusted`/
+    # `_pathway_quality`). Mirrors that pattern's OUTCOME rather than its
+    # read-time mechanics: an untrusted value never lands under its real
+    # key at all — it is stashed as ``{key}_untrusted_value`` up front, the
+    # same suffix `frontier._candidate_from_structure`'s provisional-
+    # candidate machinery (`_merge_provisional_measures`) generically
+    # backfills from ``flags``.
+    kinetics_trusted = src.get("kinetics_trusted")
+    if isinstance(kinetics_trusted, bool):
+        out["kinetics_trusted"] = kinetics_trusted
+        kin_measures: dict[str, float] = {}
+        for k in _AUTOCATPATH_KINETICS_KEYS:
+            v = _num_measure(src.get(k))
+            if v is not None:
+                kin_measures[k] = v
+        if kinetics_trusted:
+            out.update(kin_measures)
+        else:
+            for k, v in kin_measures.items():
+                out[f"{k}{_KINETICS_UNTRUSTED_VALUE_SUFFIX}"] = v
+    for k in _AUTOCATPATH_KINETICS_CONTEXT_KEYS:
+        ctx = src.get(k)
+        if isinstance(ctx, str) and ctx:
             out[k] = ctx
     return out
 
@@ -1951,6 +2105,65 @@ def _bump_seed_infra_retry_count(store: Store, structure_ref_id: int) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def _fold_viewport_updates(
+    updates: dict[str, tuple[float, float]], measures: dict[str, Any]
+) -> None:
+    """Fold every numeric value in ``measures`` into ``updates`` (mutated
+    in place) as a ``(min, max)`` span — a span, not a single point, so a
+    harvest that stamps two different numeric values for the same measure
+    key across candidates in one pass (e.g. ``barrier`` on two structures)
+    still widens correctly rather than the second stamp clobbering the
+    first. See :func:`_ratchet_frontier_viewport`, which this feeds."""
+    for key, raw in measures.items():
+        v = _num_measure(raw)
+        if v is None or not math.isfinite(v):
+            continue
+        lo, hi = updates.get(key, (v, v))
+        updates[key] = (min(lo, v), max(hi, v))
+
+
+def _ratchet_frontier_viewport(
+    store: Store, quest_id: int, updates: dict[str, tuple[float, float]]
+) -> None:
+    """Widen ``quest.meta.frontier_viewport`` (``{measure: [lo, hi]}``,
+    read by :func:`precis.quest.frontier.build_frontier_scatter`) to cover
+    every span in ``updates`` — a pure ratchet: an existing pinned range only
+    ever grows, never shrinks, so the scatter's axes don't keep re-scaling
+    tick over tick as fresh candidates land inside a range a human/agent
+    already widened. Creates the dict when absent. A malformed existing
+    entry (not a 2-tuple, non-numeric, ``lo > hi``) is treated as absent —
+    replaced outright by the fresh span — rather than failing the ratchet
+    over cosmetic axis bookkeeping. Best-effort: swallows its own errors so
+    a viewport-write hiccup never costs the harvest its real measures."""
+    if not updates:
+        return
+    try:
+        refs = store.fetch_refs_by_ids({quest_id})
+        ref = refs.get(quest_id)
+        raw = (ref.meta or {}).get("frontier_viewport") if ref is not None else None
+        viewport: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+        changed = False
+        for measure, (lo, hi) in updates.items():
+            entry = viewport.get(measure)
+            vlo, vhi = lo, hi
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                try:
+                    elo, ehi = float(entry[0]), float(entry[1])
+                except (TypeError, ValueError):
+                    elo = ehi = float("nan")
+                if math.isfinite(elo) and math.isfinite(ehi) and elo <= ehi:
+                    vlo, vhi = min(lo, elo), max(hi, ehi)
+            if [vlo, vhi] != entry:
+                viewport[measure] = [vlo, vhi]
+                changed = True
+        if changed:
+            store.stamp_ref_meta(quest_id, {"frontier_viewport": viewport})
+    except Exception:
+        log.debug(
+            "_ratchet_frontier_viewport: failed for quest %s", quest_id, exc_info=True
+        )
+
+
 def harvest_measures(
     store: Store,
     quest_id: int,
@@ -2022,6 +2235,15 @@ def harvest_measures(
       :func:`_seed_todo_handled`) — this closes the qu164903 class of bug
       (9 lost candidates: an infra-killed seed job used to stay
       ``STATUS:failed`` forever, with nothing watching it).
+    * a candidate missing ``atom_cost`` (needs no sim — composition-derived,
+      slice B) gets it backfilled here from its own materialised geometry,
+      so a candidate created before this feature (or one whose creation-time
+      stamp failed) still picks it up on the next harvest.
+
+    Any fresh numeric measure this pass stamps (barrier lane + the
+    ``atom_cost`` backfill) also widens ``quest.meta.frontier_viewport``
+    (:func:`_ratchet_frontier_viewport`) so the frontier scatter's axes
+    cover it without a human having to notice and pin a wider range by hand.
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -2029,9 +2251,24 @@ def harvest_measures(
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     harvested = ruled_out = 0
     notes: list[str] = []
+    viewport_updates: dict[str, tuple[float, float]] = {}
     for s in structures:
         handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
         name = (s.title or "").splitlines()[0] if s.title else handle
+        if "atom_cost" not in (s.meta or {}):
+            try:
+                scene, _handles = store.structure_load(s.id)
+                composition = _candidate_composition(scene, None)
+                if composition is not None:
+                    cost = _stamp_atom_cost(store, s.id, composition)
+                    if cost is not None:
+                        _fold_viewport_updates(viewport_updates, {"atom_cost": cost})
+            except Exception:
+                log.debug(
+                    "harvest_measures: atom_cost backfill failed for %s",
+                    s.id,
+                    exc_info=True,
+                )
         upto = int((s.meta or {}).get("quest_harvested_upto", 0) or 0)
         runs = store.structure_runs(s.id)
         fresh = [r for r in runs if r.get("converged") and int(r.get("id", 0)) > upto]
@@ -2093,6 +2330,7 @@ def harvest_measures(
             _bump_tier_stamp(candidate_meta, measures, tier)
             store.stamp_ref_meta(s.id, measures)
             candidate_meta.update(measures)
+            _fold_viewport_updates(viewport_updates, measures)
             if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
                 _link_pathway(store, s.id, pathway_ref)
                 if tier == _TIER_VERIFY:
@@ -2295,6 +2533,7 @@ def harvest_measures(
                     notes.append(
                         f"autocatpath infra failure persists for [{handle}] (gripe already filed)"
                     )
+    _ratchet_frontier_viewport(store, quest_id, viewport_updates)
     return ComputeStep(
         candidates_created=0,
         sims_dispatched=0,
@@ -2533,6 +2772,17 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     # scorecard swap; resets must clear them too
     "side_span_margin",
     "trap_depth",
+    # in-process microkinetics (slice A) + its trust flags/context — same
+    # staleness story as the barrier above
+    "kinetics_trusted",
+    *_AUTOCATPATH_KINETICS_KEYS,
+    *_AUTOCATPATH_KINETICS_CONTEXT_KEYS,
+    *(f"{k}{_KINETICS_UNTRUSTED_VALUE_SUFFIX}" for k in _AUTOCATPATH_KINETICS_KEYS),
+    # atom_cost/atom_cost_dearest (slice B) are deliberately NOT here: they
+    # are derived from composition alone, not from a sim run — a stale
+    # engine invalidates a barrier, never a candidate's own atom count, so
+    # reset_compute must leave them stamped rather than null a value the
+    # next harvest would just re-derive identically anyway.
 )
 
 

@@ -63,6 +63,162 @@
   {% endif %}
 </div>
 
+{# ── Frontier ─────────────────────────────────────────────────────── #}
+<section id="frontier" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Frontier — Pareto candidates</h2>
+  {% if frontier_axis_keys %}
+  <form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+    <label class="flex items-center gap-1">x:
+      <select name="fx" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+        {% for k in frontier_axis_keys %}
+        <option value="{{ k }}" {% if k == frontier_x %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="flex items-center gap-1">y:
+      <select name="fy" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+        {% for k in frontier_axis_keys %}
+        <option value="{{ k }}" {% if k == frontier_y %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="rounded-md border border-slate-300 bg-white text-xs px-2 py-1 text-slate-700 hover:bg-slate-50">plot</button>
+  </form>
+  {% endif %}
+  {% if frontier_scatter %}
+  {% set fs = frontier_scatter %}
+  <div id="fs-wrap" class="relative w-full max-w-lg mb-2">
+  <svg id="fs-svg" viewBox="0 0 {{ fs.width }} {{ fs.height }}"
+       class="w-full h-auto" role="img"
+       aria-label="Pareto scatter: {{ fs.x_label }} vs {{ fs.y_label }}">
+    <defs>
+      {# 5-point star, outer r=7 / inner r=3, centred on (0,0) — positioned
+         per-point via <use x= y=>. Marker grammar: shape = frontier
+         membership (star/circle), fill = trust (filled/hollow-dashed),
+         colour = band (blue confirmed / orange provisional / grey waiting). #}
+      <path id="fs-star" d="M0,-7 L1.76,-2.43 L6.66,-2.16 L2.85,0.93 L4.11,5.66 L0,3 L-4.11,5.66 L-2.85,0.93 L-6.66,-2.16 L-1.76,-2.43 Z"/>
+    </defs>
+    <text x="8" y="14" class="fill-slate-500" style="font-size: 11px;">{{ fs.y_label }}</text>
+    <text x="{{ fs.width - 8 }}" y="{{ fs.height - 6 }}"
+          text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ fs.x_label }}</text>
+    {# axes: faint gridline + tick mark + value per pre-projected tick #}
+    {% for t in fs.x_ticks %}
+    <line x1="{{ t.pos }}" y1="{{ fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad }}" stroke="#e2e8f0" stroke-width="1"/>
+    <line x1="{{ t.pos }}" y1="{{ fs.height - fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad + 4 }}" stroke="#94a3b8" stroke-width="1"/>
+    <text x="{{ t.pos }}" y="{{ fs.height - fs.pad + 14 }}" text-anchor="middle" class="fill-slate-500" style="font-size: 9px;">{{ t.label }}</text>
+    {% endfor %}
+    {% for t in fs.y_ticks %}
+    <line x1="{{ fs.pad }}" y1="{{ t.pos }}" x2="{{ fs.width - fs.pad }}" y2="{{ t.pos }}" stroke="#e2e8f0" stroke-width="1"/>
+    <line x1="{{ fs.pad - 4 }}" y1="{{ t.pos }}" x2="{{ fs.pad }}" y2="{{ t.pos }}" stroke="#94a3b8" stroke-width="1"/>
+    <text x="{{ fs.pad - 6 }}" y="{{ t.pos + 3 }}" text-anchor="end" class="fill-slate-500" style="font-size: 9px;">{{ t.label }}</text>
+    {% endfor %}
+    <line x1="{{ fs.pad }}" y1="{{ fs.height - fs.pad }}" x2="{{ fs.width - fs.pad }}" y2="{{ fs.height - fs.pad }}" stroke="#94a3b8" stroke-width="1"/>
+    <line x1="{{ fs.pad }}" y1="{{ fs.pad }}" x2="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" stroke="#94a3b8" stroke-width="1"/>
+    {# hover crosshair — full-width/height guide lines through the hovered
+       point, recoloured to the point's own band colour by the JS below #}
+    <line id="fs-cross-h" x1="{{ fs.pad }}" x2="{{ fs.width - fs.pad }}" y1="0" y2="0" stroke-width="1" style="display:none" pointer-events="none"/>
+    <line id="fs-cross-v" y1="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" x1="0" x2="0" stroke-width="1" style="display:none" pointer-events="none"/>
+    {% for p in fs.points %}
+    {# Extra objective values (every rubric objective NOT one of the two
+       plotted axes) + the derived $/rate, appended to the hover tooltip so
+       a point's FULL objective vector is visible without switching axes. #}
+    {% set ns = namespace(extra="") %}
+    {% for m in p.extra_measures %}
+      {% set ns.extra = ns.extra ~ "\n" ~ m.label ~ " = " ~ m.value %}
+    {% endfor %}
+    {% if p.rate_readout %}
+      {% set ns.extra = ns.extra ~ "\n$/rate = " ~ p.rate_readout %}
+    {% endif %}
+    {% if p.band == "provisional" %}
+      {% set pcolor = "#c2410c" %}
+      {% set status = "provisional" + (", untrusted" if p.untrusted else "") + (" — provisional frontier ★" if p.on_frontier else "") %}
+      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.extra ~ "\n" ~ status ~ (("\n" ~ p.reasons|join("\n")) if p.reasons else "") %}
+    {% else %}
+      {% set pcolor = "#0369a1" if p.converged else "#94a3b8" %}
+      {% set status = "frontier ★" if p.on_frontier else ("converged" if p.converged else "awaiting sim") %}
+      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.extra ~ "\n" ~ status %}
+    {% endif %}
+    {% if p.open_url %}<a href="{{ p.open_url }}">{% endif %}
+    <g class="fs-pt" data-color="{{ pcolor }}" data-cx="{{ p.cx }}" data-cy="{{ p.cy }}" data-tip="{{ tip }}" aria-label="{{ tip }}">
+      {# oversize invisible hit target so the hover doesn't need pixel aim #}
+      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="11" fill="transparent" stroke="none"/>
+      {% if p.band == "provisional" %}
+      {% if p.on_frontier %}
+      <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}" fill="white"
+           stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      {% else %}
+      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5" class="fill-white"
+              stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      {% endif %}
+      {% elif p.on_frontier %}
+      <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}"
+           class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
+           stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
+           stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
+      {% else %}
+      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
+              class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
+              stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
+              stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
+      {% endif %}
+    </g>
+    {% if p.open_url %}</a>{% endif %}
+    {% endfor %}
+  </svg>
+  <div id="fs-tip" class="pointer-events-none absolute z-10 hidden rounded border border-slate-300 bg-white px-2 py-1 text-[11px] leading-snug text-slate-700 shadow-md whitespace-nowrap"></div>
+  </div>
+  <p class="text-xs text-slate-400 mb-3">
+    star = on the frontier, circle = off it · filled blue = confirmed ·
+    hollow/dashed orange = provisional (measured, unconfirmed) ·
+    hollow/dashed grey = awaiting sim · hover a point for details
+  </p>
+  <script>
+  (function () {
+    const svg = document.getElementById('fs-svg');
+    const tip = document.getElementById('fs-tip');
+    const wrap = document.getElementById('fs-wrap');
+    if (!svg || !tip || !wrap) { return; }
+    const ch = document.getElementById('fs-cross-h');
+    const cv = document.getElementById('fs-cross-v');
+    const escHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    svg.querySelectorAll('.fs-pt').forEach((g) => {
+      g.addEventListener('mouseenter', () => {
+        const c = g.dataset.color;
+        ch.setAttribute('y1', g.dataset.cy); ch.setAttribute('y2', g.dataset.cy);
+        cv.setAttribute('x1', g.dataset.cx); cv.setAttribute('x2', g.dataset.cx);
+        ch.setAttribute('stroke', c); cv.setAttribute('stroke', c);
+        ch.style.display = ''; cv.style.display = '';
+        tip.innerHTML = g.dataset.tip.split('\n').map(escHtml).join('<br>');
+        tip.classList.remove('hidden');
+      });
+      g.addEventListener('mousemove', (ev) => {
+        const r = wrap.getBoundingClientRect();
+        let x = ev.clientX - r.left + 14;
+        if (x + tip.offsetWidth + 4 > r.width) { x = ev.clientX - r.left - tip.offsetWidth - 10; }
+        let y = ev.clientY - r.top + 14;
+        if (y + tip.offsetHeight + 4 > r.height) { y = ev.clientY - r.top - tip.offsetHeight - 10; }
+        tip.style.left = x + 'px'; tip.style.top = y + 'px';
+      });
+      g.addEventListener('mouseleave', () => {
+        tip.classList.add('hidden');
+        ch.style.display = 'none'; cv.style.display = 'none';
+      });
+    });
+  })();
+  </script>
+  {% endif %}
+  {% if not frontier_scatter and frontier_has_candidates %}
+  <p class="text-xs text-slate-400 italic mb-2">not enough simulated candidates to plot yet.</p>
+  {% endif %}
+  {% if frontier_error %}
+  <p class="text-sm text-rose-700 whitespace-pre-wrap">{{ frontier_text | linkify_refs }}</p>
+  {% elif frontier_text %}
+  <div class="text-xs text-slate-700 overflow-x-auto">{{ frontier_text | linkify_toon }}</div>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">no candidate structures serve this quest yet.</p>
+  {% endif %}
+</section>
+
 {# ── Lineage — the `serves` DAG one hop each way ─────────────────── #}
 {% if lineage_parents or lineage_children %}
 <section class="mb-4 rounded-lg border border-slate-200 bg-white p-3">
@@ -162,133 +318,6 @@
     {% endif %}
   </section>
 </div>
-
-{# ── Frontier ─────────────────────────────────────────────────────── #}
-<section id="frontier" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Frontier — Pareto candidates</h2>
-  {% if frontier_scatter %}
-  {% set fs = frontier_scatter %}
-  <div id="fs-wrap" class="relative w-full max-w-lg mb-2">
-  <svg id="fs-svg" viewBox="0 0 {{ fs.width }} {{ fs.height }}"
-       class="w-full h-auto" role="img"
-       aria-label="Pareto scatter: {{ fs.x_label }} vs {{ fs.y_label }}">
-    <defs>
-      {# 5-point star, outer r=7 / inner r=3, centred on (0,0) — positioned
-         per-point via <use x= y=>. Marker grammar: shape = frontier
-         membership (star/circle), fill = trust (filled/hollow-dashed),
-         colour = band (blue confirmed / orange provisional / grey waiting). #}
-      <path id="fs-star" d="M0,-7 L1.76,-2.43 L6.66,-2.16 L2.85,0.93 L4.11,5.66 L0,3 L-4.11,5.66 L-2.85,0.93 L-6.66,-2.16 L-1.76,-2.43 Z"/>
-    </defs>
-    <text x="8" y="14" class="fill-slate-500" style="font-size: 11px;">{{ fs.y_label }}</text>
-    <text x="{{ fs.width - 8 }}" y="{{ fs.height - 6 }}"
-          text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ fs.x_label }}</text>
-    {# axes: faint gridline + tick mark + value per pre-projected tick #}
-    {% for t in fs.x_ticks %}
-    <line x1="{{ t.pos }}" y1="{{ fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad }}" stroke="#e2e8f0" stroke-width="1"/>
-    <line x1="{{ t.pos }}" y1="{{ fs.height - fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad + 4 }}" stroke="#94a3b8" stroke-width="1"/>
-    <text x="{{ t.pos }}" y="{{ fs.height - fs.pad + 14 }}" text-anchor="middle" class="fill-slate-500" style="font-size: 9px;">{{ t.label }}</text>
-    {% endfor %}
-    {% for t in fs.y_ticks %}
-    <line x1="{{ fs.pad }}" y1="{{ t.pos }}" x2="{{ fs.width - fs.pad }}" y2="{{ t.pos }}" stroke="#e2e8f0" stroke-width="1"/>
-    <line x1="{{ fs.pad - 4 }}" y1="{{ t.pos }}" x2="{{ fs.pad }}" y2="{{ t.pos }}" stroke="#94a3b8" stroke-width="1"/>
-    <text x="{{ fs.pad - 6 }}" y="{{ t.pos + 3 }}" text-anchor="end" class="fill-slate-500" style="font-size: 9px;">{{ t.label }}</text>
-    {% endfor %}
-    <line x1="{{ fs.pad }}" y1="{{ fs.height - fs.pad }}" x2="{{ fs.width - fs.pad }}" y2="{{ fs.height - fs.pad }}" stroke="#94a3b8" stroke-width="1"/>
-    <line x1="{{ fs.pad }}" y1="{{ fs.pad }}" x2="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" stroke="#94a3b8" stroke-width="1"/>
-    {# hover crosshair — full-width/height guide lines through the hovered
-       point, recoloured to the point's own band colour by the JS below #}
-    <line id="fs-cross-h" x1="{{ fs.pad }}" x2="{{ fs.width - fs.pad }}" y1="0" y2="0" stroke-width="1" style="display:none" pointer-events="none"/>
-    <line id="fs-cross-v" y1="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" x1="0" x2="0" stroke-width="1" style="display:none" pointer-events="none"/>
-    {% for p in fs.points %}
-    {% if p.band == "provisional" %}
-      {% set pcolor = "#c2410c" %}
-      {% set status = "provisional" + (", untrusted" if p.untrusted else "") + (" — provisional frontier ★" if p.on_frontier else "") %}
-      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ "\n" ~ status ~ (("\n" ~ p.reasons|join("\n")) if p.reasons else "") %}
-    {% else %}
-      {% set pcolor = "#0369a1" if p.converged else "#94a3b8" %}
-      {% set status = "frontier ★" if p.on_frontier else ("converged" if p.converged else "awaiting sim") %}
-      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ "\n" ~ status %}
-    {% endif %}
-    {% if p.open_url %}<a href="{{ p.open_url }}">{% endif %}
-    <g class="fs-pt" data-color="{{ pcolor }}" data-cx="{{ p.cx }}" data-cy="{{ p.cy }}" data-tip="{{ tip }}" aria-label="{{ tip }}">
-      {# oversize invisible hit target so the hover doesn't need pixel aim #}
-      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="11" fill="transparent" stroke="none"/>
-      {% if p.band == "provisional" %}
-      {% if p.on_frontier %}
-      <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}" fill="white"
-           stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
-      {% else %}
-      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5" class="fill-white"
-              stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
-      {% endif %}
-      {% elif p.on_frontier %}
-      <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}"
-           class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
-           stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
-           stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
-      {% else %}
-      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
-              class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
-              stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
-              stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
-      {% endif %}
-    </g>
-    {% if p.open_url %}</a>{% endif %}
-    {% endfor %}
-  </svg>
-  <div id="fs-tip" class="pointer-events-none absolute z-10 hidden rounded border border-slate-300 bg-white px-2 py-1 text-[11px] leading-snug text-slate-700 shadow-md whitespace-nowrap"></div>
-  </div>
-  <p class="text-xs text-slate-400 mb-3">
-    star = on the frontier, circle = off it · filled blue = confirmed ·
-    hollow/dashed orange = provisional (measured, unconfirmed) ·
-    hollow/dashed grey = awaiting sim · hover a point for details
-  </p>
-  <script>
-  (function () {
-    const svg = document.getElementById('fs-svg');
-    const tip = document.getElementById('fs-tip');
-    const wrap = document.getElementById('fs-wrap');
-    if (!svg || !tip || !wrap) { return; }
-    const ch = document.getElementById('fs-cross-h');
-    const cv = document.getElementById('fs-cross-v');
-    const escHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    svg.querySelectorAll('.fs-pt').forEach((g) => {
-      g.addEventListener('mouseenter', () => {
-        const c = g.dataset.color;
-        ch.setAttribute('y1', g.dataset.cy); ch.setAttribute('y2', g.dataset.cy);
-        cv.setAttribute('x1', g.dataset.cx); cv.setAttribute('x2', g.dataset.cx);
-        ch.setAttribute('stroke', c); cv.setAttribute('stroke', c);
-        ch.style.display = ''; cv.style.display = '';
-        tip.innerHTML = g.dataset.tip.split('\n').map(escHtml).join('<br>');
-        tip.classList.remove('hidden');
-      });
-      g.addEventListener('mousemove', (ev) => {
-        const r = wrap.getBoundingClientRect();
-        let x = ev.clientX - r.left + 14;
-        if (x + tip.offsetWidth + 4 > r.width) { x = ev.clientX - r.left - tip.offsetWidth - 10; }
-        let y = ev.clientY - r.top + 14;
-        if (y + tip.offsetHeight + 4 > r.height) { y = ev.clientY - r.top - tip.offsetHeight - 10; }
-        tip.style.left = x + 'px'; tip.style.top = y + 'px';
-      });
-      g.addEventListener('mouseleave', () => {
-        tip.classList.add('hidden');
-        ch.style.display = 'none'; cv.style.display = 'none';
-      });
-    });
-  })();
-  </script>
-  {% endif %}
-  {% if not frontier_scatter and frontier_has_candidates %}
-  <p class="text-xs text-slate-400 italic mb-2">not enough simulated candidates to plot yet.</p>
-  {% endif %}
-  {% if frontier_error %}
-  <p class="text-sm text-rose-700 whitespace-pre-wrap">{{ frontier_text | linkify_refs }}</p>
-  {% elif frontier_text %}
-  <div class="text-xs text-slate-700 overflow-x-auto">{{ frontier_text | linkify_toon }}</div>
-  {% else %}
-  <p class="text-sm text-slate-400 italic">no candidate structures serve this quest yet.</p>
-  {% endif %}
-</section>
 
 {# ── Gaps ─────────────────────────────────────────────────────────── #}
 <section id="gaps" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">

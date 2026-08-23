@@ -608,27 +608,78 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         request, "get", {"kind": "quest", "id": qid, "view": "gaps"}
     )
 
-    # Frontier scatter (Cycle C J4) — the same `Candidate`s the text
-    # frontier's markdown summarises, read directly off `frontier.py`'s pure
-    # builder (a store read, not a second `get(view=…)` dispatch — mirrors
-    # how `_render_frontier` itself calls `quest_frontier`) so the hub can
-    # plot real (x, y) points instead of re-parsing the markdown. `None` when
+    # Frontier scatter (Cycle C J4, + kinetics-cutover per-quest axes/axis
+    # picker/viewport) — the same `Candidate`s the text frontier's markdown
+    # summarises, read directly off `frontier.py`'s pure builder (a store
+    # read, not a second `get(view=…)` dispatch — mirrors how
+    # `_render_frontier` itself calls `quest_frontier`) so the hub can plot
+    # real (x, y) points instead of re-parsing the markdown. `None` when
     # fewer than two candidates carry both axis measures — the template
     # falls back to the text-only frontier already below it.
     # Isolated like the text frontier above (which degrades to ``frontier_error``):
     # a bad struct_runs row must not 500 the whole hub — just drop the scatter.
     frontier_has_candidates = False
     frontier_scatter = None
+    frontier_x: str | None = None
+    frontier_y: str | None = None
+    frontier_axis_keys: list[str] = []
     try:
         fr = frontier_mod.quest_frontier(store, qid)
         frontier_has_candidates = bool(
             fr.frontier or fr.dominated or fr.provisional or fr.unevaluated
         )
+        objectives = fr.objectives
+        default_x, default_y, default_x_label, default_y_label = (
+            frontier_mod.plot_axes_for(getattr(ref, "meta", None), objectives)
+        )
+        # Selectable axes for the ``?fx=&fy=`` picker: any measure present
+        # on >= 1 candidate (any band — a human may plot a raw run scalar
+        # the quest doesn't rank on) union the declared rubric objective
+        # keys (a declared-but-unmeasured-yet axis is still a valid pick,
+        # it just plots nothing until a candidate lands on it). An
+        # unrecognised query value is silently ignored (falls back to the
+        # quest's default), never a 400 — a stale/hand-edited link degrades
+        # quietly rather than erroring the whole hub.
+        frontier_axis_keys = sorted(
+            {k for k, _ in objectives}
+            | {
+                k
+                for c in (*fr.frontier, *fr.dominated, *fr.unevaluated)
+                for k in c.measures
+            }
+            | {k for pc in fr.provisional for k in pc.measures}
+        )
+        axis_key_set = set(frontier_axis_keys)
+        req_fx = request.query_params.get("fx")
+        req_fy = request.query_params.get("fy")
+        if req_fx is not None and req_fx in axis_key_set:
+            x_key, x_label = req_fx, frontier_mod.axis_label_for(req_fx)
+        else:
+            x_key, x_label = default_x, default_x_label
+        if req_fy is not None and req_fy in axis_key_set:
+            y_key, y_label = req_fy, frontier_mod.axis_label_for(req_fy)
+        else:
+            y_key, y_label = default_y, default_y_label
+        frontier_x = x_key
+        frontier_y = y_key
+        # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
+        # [lo, hi]}``) — unions into the plotted range so the axis doesn't
+        # keep re-scaling as new points land inside a range already widened
+        # by a human/agent. Malformed/absent handled by
+        # `build_frontier_scatter` itself.
+        raw_viewport = (getattr(ref, "meta", None) or {}).get("frontier_viewport")
+        viewport = raw_viewport if isinstance(raw_viewport, dict) else None
         frontier_scatter = frontier_mod.build_frontier_scatter(
             fr.frontier + fr.dominated,
             provisional=fr.provisional,
             open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
             frontier_ref_ids={c.ref_id for c in fr.frontier},
+            x_measure=x_key,
+            y_measure=y_key,
+            x_label=x_label,
+            y_label=y_label,
+            viewport=viewport,
+            objectives=objectives,
         )
     except Exception:
         log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
@@ -707,6 +758,9 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "frontier_error": frontier_error,
             "frontier_scatter": frontier_scatter,
             "frontier_has_candidates": frontier_has_candidates,
+            "frontier_axis_keys": frontier_axis_keys,
+            "frontier_x": frontier_x,
+            "frontier_y": frontier_y,
             "gaps_text": gaps_text,
             "gaps_error": gaps_error,
             "servers_lite": servers_lite,

@@ -11,6 +11,7 @@ against real PG (the ``store`` fixture).
 from __future__ import annotations
 
 import importlib.metadata
+import math
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
+from precis.quest import atomcost as atomcost_mod
 from precis.quest import compute as compute_mod
 from precis.quest.frontier import (
     Candidate,
@@ -183,6 +185,143 @@ class TestFrontierScatter:
         # the shared axis range spans BOTH confirmed and provisional points
         assert scatter.x_max == 0.5
         assert scatter.y_min == -20.0
+
+    def test_viewport_widens_axis_range(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        plain = build_frontier_scatter([a, b])
+        widened = build_frontier_scatter([a, b], viewport={"barrier": (0.0, 2.0)})
+        assert plain is not None and widened is not None
+        # only the x axis (barrier) was pinned — the y (energy) pixel
+        # positions are unaffected by a viewport naming the other axis.
+        assert {p["cx"] for p in widened.points} != {p["cx"] for p in plain.points}
+        assert {p["cy"] for p in widened.points} == {p["cy"] for p in plain.points}
+        assert all(0.0 <= p["cx"] <= widened.width for p in widened.points)
+
+    def test_viewport_malformed_entry_ignored(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        plain = build_frontier_scatter([a, b])
+        with_bad = build_frontier_scatter(
+            [a, b],
+            viewport={"barrier": "not-a-tuple"},  # type: ignore[dict-item]
+        )
+        assert plain is not None and with_bad is not None
+        assert {p["cx"] for p in with_bad.points} == {p["cx"] for p in plain.points}
+
+    def test_viewport_missing_measure_key_leaves_range_untouched(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        plain = build_frontier_scatter([a, b])
+        with_vp = build_frontier_scatter([a, b], viewport={})
+        assert plain is not None and with_vp is not None
+        assert {p["cx"] for p in with_vp.points} == {p["cx"] for p in plain.points}
+        assert {p["cy"] for p in with_vp.points} == {p["cy"] for p in plain.points}
+
+    def test_extra_measures_and_rate_readout_in_point_dict(self) -> None:
+        a = Candidate(
+            1,
+            "st1",
+            "A",
+            {"log_tof": 2.0, "atom_cost": 1.0, "selectivity_margin": 0.4},
+            True,
+        )
+        b = Candidate(
+            2,
+            "st2",
+            "B",
+            {"log_tof": 1.0, "atom_cost": 0.5, "selectivity_margin": 0.1},
+            True,
+        )
+        scatter = build_frontier_scatter(
+            [a, b],
+            x_measure="log_tof",
+            y_measure="atom_cost",
+            objectives=[
+                ("log_tof", "max"),
+                ("atom_cost", "min"),
+                ("selectivity_margin", "max"),
+            ],
+        )
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["extra_measures"] == [
+            {
+                "key": "selectivity_margin",
+                "label": "Selectivity margin (eV)",
+                "value": "0.4",
+            }
+        ]
+        # atom_cost(1.0) - log_tof(2.0)
+        assert by_id[1]["rate_readout"] == "-1"
+
+    def test_extra_measures_and_rate_readout_default_empty(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        assert all(p["rate_readout"] is None for p in scatter.points)
+        assert all(p["extra_measures"] == [] for p in scatter.points)
+
+
+# ── per-quest scatter axes (kinetics cutover) ──────────────────────────
+
+
+class TestPlotAxesFor:
+    def test_defaults_to_first_two_declared_objectives(self) -> None:
+        from precis.quest.frontier import plot_axes_for
+
+        meta = {
+            "rubric_objectives": [
+                {"key": "log_tof", "sense": "max"},
+                {"key": "atom_cost", "sense": "min"},
+                {"key": "selectivity_margin", "sense": "max"},
+            ]
+        }
+        objectives = [
+            ("log_tof", "max"),
+            ("atom_cost", "min"),
+            ("selectivity_margin", "max"),
+        ]
+        x, y, x_label, y_label = plot_axes_for(meta, objectives)
+        assert (x, y) == ("log_tof", "atom_cost")
+        assert x_label == "log₁₀ TOF (site⁻¹ s⁻¹)"
+        assert y_label == "log₁₀ atom cost ($/kg)"
+
+    def test_falls_back_below_two_declared_objectives(self) -> None:
+        from precis.quest.frontier import (
+            PARETO_X_MEASURE,
+            PARETO_Y_MEASURE,
+            plot_axes_for,
+        )
+
+        meta = {"rubric_objectives": [{"key": "energy", "sense": "min"}]}
+        x, y, _xl, _yl = plot_axes_for(meta, [("energy", "min")])
+        assert (x, y) == (PARETO_X_MEASURE, PARETO_Y_MEASURE)
+
+    def test_falls_back_when_no_meta_at_all(self) -> None:
+        from precis.quest.frontier import (
+            PARETO_X_MEASURE,
+            PARETO_Y_MEASURE,
+            plot_axes_for,
+        )
+
+        x, y, _xl, _yl = plot_axes_for(None, [])
+        assert (x, y) == (PARETO_X_MEASURE, PARETO_Y_MEASURE)
+
+    def test_unknown_key_label_falls_back_to_bare_key(self) -> None:
+        from precis.quest.frontier import plot_axes_for
+
+        meta = {
+            "rubric_objectives": [
+                {"key": "custom_x", "sense": "max"},
+                {"key": "custom_y", "sense": "min"},
+            ]
+        }
+        objectives = [("custom_x", "max"), ("custom_y", "min")]
+        x, y, x_label, y_label = plot_axes_for(meta, objectives)
+        assert (x, y) == ("custom_x", "custom_y")
+        assert x_label == "custom_x" and y_label == "custom_y"
 
 
 # ── candidate creation ────────────────────────────────────────────────
@@ -1559,6 +1698,78 @@ class TestGeneralizedFrontier:
         assert on_frontier[ids[1]] is False  # barrier=0.9, dominated by ids[0]
 
 
+# ── kinetics cutover: kinetics_trusted/kinetics_note/drc_top/atom_cost_dearest ──
+
+
+class TestKineticsFlags:
+    def test_kinetics_context_flags_copied(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "kinetics_trusted": True,
+                "kinetics_note": "converged",
+                "drc_top": "N-N coupling",
+                "atom_cost_dearest": "Ru",
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["kinetics_trusted"] is True
+        assert c.flags["kinetics_note"] == "converged"
+        assert c.flags["drc_top"] == "N-N coupling"
+        assert c.flags["atom_cost_dearest"] == "Ru"
+
+    def test_kinetics_untrusted_stash_recovered_as_provisional(
+        self, store: Any
+    ) -> None:
+        # A directly-stamped `log_tof_untrusted_value` (the kinetics
+        # contract's own trust-gate stash, mirroring the barrier-exclusion
+        # `*_untrusted_value` suffix) must land as a flag, never a bogus
+        # literal-named measure, and must backfill `log_tof` in the
+        # provisional band's merged view — exactly like an untrusted barrier.
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "log_tof", "sense": "max"}]}
+        )
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-9.0,
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "kinetics_trusted": False,
+                "kinetics_note": "guard-bracket excluded a step",
+                "log_tof_untrusted_value": 1.2,
+            },
+        )
+        c = _cand(store, sid)
+        assert "log_tof" not in c.measures
+        assert "log_tof_untrusted_value" not in c.measures
+        assert c.flags["log_tof_untrusted_value"] == 1.2
+        assert c.flags["kinetics_trusted"] is False
+        assert c.flags["kinetics_note"] == "guard-bracket excluded a step"
+
+        fr = quest_frontier(store, qid)
+        assert fr.frontier == [] and fr.dominated == []
+        assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
+        assert fr.provisional[0].measures["log_tof"] == 1.2
+        assert "log_tof" in fr.provisional[0].untrusted_keys
+
+
 # ── provisional bucket — measured-but-unconfirmed candidates ──────────
 
 
@@ -1736,6 +1947,7 @@ class TestLeaderboard:
             "tier",
             "barrier",
             "energy",
+            "$/rate",
             "band",
             "graduated",
             "quality",
@@ -1752,6 +1964,8 @@ class TestLeaderboard:
         assert rows[1]["graduated"] == ""
         assert rows[3]["barrier"] == "—"  # unevaluated: no measure
         assert rows[0]["quality"] == ""  # no flags stamped → unknown, not flagged
+        # neither candidate carries atom_cost/log_tof → $/rate is a dash
+        assert all(r["$/rate"] == "—" for r in rows)
 
     def test_untrusted_barrier_flagged_in_leaderboard(self) -> None:
         from precis.quest.frontier import FrontierResult, leaderboard
@@ -1900,6 +2114,50 @@ class TestLeaderboard:
         qid = _mk_quest(store, "A striving with no candidates yet")
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="leaderboard").body
         assert "no candidate structures serve this quest yet" in body
+
+    def test_dollar_per_rate_computed_when_both_components_present(self) -> None:
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        f1 = Candidate(1, "st1", "A", {"log_tof": 2.0, "atom_cost": 1.0}, True)
+        fr = FrontierResult(
+            objectives=[("log_tof", "max"), ("atom_cost", "min")], frontier=[f1]
+        )
+        rows, schema = leaderboard(fr)
+        assert "$/rate" in schema
+        assert rows[0]["$/rate"] == "-1"  # atom_cost(1.0) - log_tof(2.0)
+
+    def test_dollar_per_rate_dash_when_a_component_is_missing(self) -> None:
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        f1 = Candidate(1, "st1", "A", {"barrier": 0.3}, True)
+        fr = FrontierResult(objectives=[("barrier", "min")], frontier=[f1])
+        rows, _schema = leaderboard(fr)
+        assert rows[0]["$/rate"] == "—"
+
+    def test_dollar_per_rate_approx_marker_on_untrusted_component(self) -> None:
+        from precis.quest.frontier import (
+            FrontierResult,
+            ProvisionalCandidate,
+            leaderboard,
+        )
+
+        cand = Candidate(1, "st1", "A", {}, True, flags={"kinetics_trusted": False})
+        pc = ProvisionalCandidate(
+            candidate=cand,
+            measures={"log_tof": 1.5, "atom_cost": 0.5},
+            untrusted_keys=frozenset({"log_tof"}),
+            reasons=["kinetics untrusted"],
+            on_frontier=True,
+        )
+        fr = FrontierResult(
+            objectives=[("log_tof", "max")],
+            frontier=[],
+            dominated=[],
+            unevaluated=[],
+            provisional=[pc],
+        )
+        rows, _schema = leaderboard(fr)
+        assert rows[0]["$/rate"] == "≈-1"  # atom_cost(0.5) - log_tof(1.5)
 
 
 # ── composite rubric objective (the potential lever's weighted-sum rubric) ─
@@ -2379,6 +2637,113 @@ class TestAutocatpathHarvest:
         assert meta["barrier"] == 0.4
         assert "barrier_trusted" not in meta
         assert "barrier_neb_failed" not in meta
+
+    def test_kinetics_trusted_lifts_tof_and_log_tof_as_measures(
+        self, store: Any
+    ) -> None:
+        """A trusted solve (`_dispatch_common._kinetics_scalars`' own trust
+        gate already applied at job-meta-stamp time) rides straight onto
+        the candidate's ranked measures — `tof`/`log_tof`/`log_tof_p5`/
+        `log_tof_p95`, plus the `kinetics_trusted`/`drc_top` context."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "kinetics_trusted": True,
+                    "tof": 12.5,
+                    "log_tof": 1.0969,
+                    "log_tof_p5": 0.9,
+                    "log_tof_p95": 1.2,
+                    "drc_top": "NO->N+O",
+                }
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["kinetics_trusted"] is True
+        assert meta["tof"] == 12.5
+        assert meta["log_tof"] == 1.0969
+        assert meta["log_tof_p5"] == 0.9
+        assert meta["log_tof_p95"] == 1.2
+        assert meta["drc_top"] == "NO->N+O"
+
+        c = _cand(store, sid)
+        assert c.measures["tof"] == 12.5
+        assert c.measures["log_tof"] == 1.0969
+        assert c.flags["kinetics_trusted"] is True
+        assert c.flags["drc_top"] == "NO->N+O"
+
+    def test_kinetics_untrusted_stashes_tof_as_untrusted_value(
+        self, store: Any
+    ) -> None:
+        """An untrusted solve (guard-bracket disagreement, or a non-finite
+        TOF) must NOT land `tof`/`log_tof` as numeric candidate measures —
+        the harvest itself stashes them as `{key}_untrusted_value` up front
+        (unlike `barrier_trusted`, whose gate runs at frontier read-time:
+        `kinetics_trusted` already lives on the SAME job meta, no separate
+        pathway-ref fetch needed), plus a `kinetics_note` reason string."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "kinetics_trusted": False,
+                    "kinetics_note": "guard bracket: excluded steps load-bearing",
+                    "tof": 3.2,
+                }
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["kinetics_trusted"] is False
+        assert meta["kinetics_note"] == "guard bracket: excluded steps load-bearing"
+        assert meta["tof_untrusted_value"] == 3.2
+        assert "tof" not in meta
+        assert "log_tof" not in meta
+
+        c = _cand(store, sid)
+        assert "tof" not in c.measures
+        assert "log_tof" not in c.measures
+        # the frontier's generic `_untrusted_value` suffix pickup (same
+        # mechanism `barrier_untrusted_value` rides) recovers the raw value
+        # for provisional display — never as a ranked measure.
+        assert c.flags["kinetics_trusted"] is False
+        assert c.flags["kinetics_note"] == "guard bracket: excluded steps load-bearing"
+        assert c.flags["tof_untrusted_value"] == 3.2
+
+    def test_kinetics_error_stamps_trust_false_and_note_no_tof(
+        self, store: Any
+    ) -> None:
+        """When the engine predates `kinetics` (or the solve itself blew up),
+        `_dispatch_common._kinetics_scalars` stamps only `kinetics_trusted`
+        + `kinetics_note` (the error text) onto the job meta — no `tof` at
+        all, so the harvest lifts nothing beyond the two context keys."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "kinetics_trusted": False,
+                    "kinetics_note": "engine 0.13.0 lacks kinetics",
+                }
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["kinetics_trusted"] is False
+        assert meta["kinetics_note"] == "engine 0.13.0 lacks kinetics"
+        assert "tof" not in meta
+        assert "tof_untrusted_value" not in meta
 
 
 class TestTierLadderHarvest:
@@ -4363,3 +4728,282 @@ class TestFrontierTreeDossierChunk:
             if (c.meta or {}).get("pinned") == "frontier-tree"
         )
         assert "Fe" in tree_chunk.text
+
+
+# ── atom cost (slice B, kinetics cutover) ───────────────────────────────
+
+
+class TestAtomCostPricing:
+    def test_pure_element_is_log10_of_its_price(self) -> None:
+        v = atomcost_mod.atom_cost({"Fe": 100})
+        assert v == pytest.approx(math.log10(atomcost_mod.ELEMENT_USD_PER_KG["Fe"]))
+
+    def test_matches_the_specified_formula_exactly(self) -> None:
+        # log10( Σ(n_i·m_i·p_i) / Σ(n_i·m_i) ) — the mass-weighted average
+        # USD/kg, log10'd. A 2%-Ru-on-Fe doping level (a realistic
+        # substitutional dopant count on a small slab).
+        counts = {"Fe": 98, "Ru": 2}
+        mass_fe = 98 * atomcost_mod._ATOMIC_MASS["Fe"]
+        mass_ru = 2 * atomcost_mod._ATOMIC_MASS["Ru"]
+        expected = math.log10(
+            (
+                mass_fe * atomcost_mod.ELEMENT_USD_PER_KG["Fe"]
+                + mass_ru * atomcost_mod.ELEMENT_USD_PER_KG["Ru"]
+            )
+            / (mass_fe + mass_ru)
+        )
+        assert atomcost_mod.atom_cost(counts) == pytest.approx(expected)
+
+    def test_trace_precious_dopant_moves_price_toward_it_but_short_of_pure(
+        self,
+    ) -> None:
+        # Ru is ~150,000x pricier than Fe per kg, so even a 2%-by-count
+        # dopant swings the mass-weighted $/kg well above pure Fe's own
+        # price — the SAME economics as a real Pt/Al2O3 catalyst costing far
+        # more per kg than plain alumina at a few wt% loading. The doped
+        # value must still land strictly BETWEEN the two pure endpoints,
+        # never snapping to (or past) either one.
+        fe_only = atomcost_mod.atom_cost({"Fe": 100})
+        doped = atomcost_mod.atom_cost({"Fe": 98, "Ru": 2})
+        ru_only = atomcost_mod.atom_cost({"Ru": 100})
+        assert fe_only is not None and doped is not None and ru_only is not None
+        assert fe_only < doped < ru_only
+
+    def test_unpriced_trace_element_skipped_not_fabricated(self) -> None:
+        # "Xx" is in neither table — a trace of it must not block pricing
+        # the rest of a composition that IS mostly priced.
+        v = atomcost_mod.atom_cost({"Fe": 99, "Xx": 1})
+        assert v == pytest.approx(math.log10(atomcost_mod.ELEMENT_USD_PER_KG["Fe"]))
+
+    def test_majority_unpriced_mass_returns_none(self) -> None:
+        # He has a known atomic mass (so it counts toward total mass) but no
+        # price — with almost all the mass unpriced, the >=50% coverage gate
+        # must refuse rather than price off a sliver of Fe.
+        assert atomcost_mod.atom_cost({"He": 99, "Fe": 1}) is None
+
+    def test_wholly_unpriced_returns_none(self) -> None:
+        assert atomcost_mod.atom_cost({"He": 10}) is None
+
+    def test_empty_composition_returns_none(self) -> None:
+        assert atomcost_mod.atom_cost({}) is None
+
+    def test_zero_and_negative_counts_ignored(self) -> None:
+        assert atomcost_mod.atom_cost({"Fe": 0, "Ru": -1}) is None
+
+    def test_boolean_count_ignored(self) -> None:
+        # bool is an int subclass — must never be treated as a real count.
+        assert atomcost_mod.atom_cost({"Fe": True}) is None
+
+
+class TestAtomCostDearest:
+    def test_priciest_present_element_named_regardless_of_share(self) -> None:
+        assert atomcost_mod.dearest({"Fe": 98, "Ru": 2}) == "Ru ≈ $15000/kg"
+
+    def test_pure_element(self) -> None:
+        assert atomcost_mod.dearest({"Fe": 1}) == "Fe ≈ $0.1/kg"
+
+    def test_no_priced_element_present_is_none(self) -> None:
+        assert atomcost_mod.dearest({"He": 5}) is None
+
+    def test_empty_composition_is_none(self) -> None:
+        assert atomcost_mod.dearest({}) is None
+
+
+class TestCandidateComposition:
+    def test_prefers_materialised_scene_over_spec(self, store: Any) -> None:
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A striving")
+        spec = {
+            "ops": [{"op": "slab", "element": "Pd", "size": [2, 2, 3], "fix_layers": 1}]
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd(111)", "structure": spec}
+        )
+        assert sid is not None
+        scene, _handles = store.structure_load(sid)
+        composition = compute_mod._candidate_composition(scene, spec)
+        assert composition == {"Pd": 12}
+
+    def test_falls_back_to_spec_ops_when_scene_unavailable(self) -> None:
+        spec = {
+            "ops": [
+                {"op": "slab", "element": "Fe", "size": [2, 2, 2]},
+                {"op": "set_element", "atom": "a1", "element": "Ru"},
+            ]
+        }
+        assert compute_mod._candidate_composition(None, spec) == {"Fe": 8, "Ru": 1}
+
+    def test_no_scene_no_ops_is_none(self) -> None:
+        assert compute_mod._candidate_composition(None, {"cell": {}}) is None
+        assert compute_mod._candidate_composition(None, None) is None
+
+
+class TestAtomCostStampedAtCandidateCreation:
+    def test_ensure_candidate_stamps_atom_cost_and_dearest(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        meta = store.fetch_refs_by_ids({sid})[sid].meta
+        assert meta.get("atom_cost") == pytest.approx(
+            math.log10(atomcost_mod.ELEMENT_USD_PER_KG["Fe"])
+        )
+        assert meta.get("atom_cost_dearest") == "Fe ≈ $0.1/kg"
+
+
+class TestAtomCostHarvestBackfill:
+    def _strip_atom_cost(self, store: Any, sid: int) -> None:
+        """Simulate a pre-slice-B candidate: the key is wholly ABSENT (not
+        merely null — ``stamp_ref_meta(..., {"atom_cost": None})`` would
+        leave a JSON ``null`` present, which is not what an old candidate
+        looks like), same shape :func:`compute._candidate_composition`'s
+        harvest backfill checks for with ``"atom_cost" not in meta``."""
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'atom_cost' - 'atom_cost_dearest' "
+                "WHERE ref_id = %s",
+                (sid,),
+            )
+            conn.commit()
+
+    def test_missing_atom_cost_backfilled_on_harvest(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._strip_atom_cost(store, sid)
+        assert "atom_cost" not in (store.fetch_refs_by_ids({sid})[sid].meta or {})
+
+        compute_mod.harvest_measures(store, qid)
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("atom_cost") == pytest.approx(
+            math.log10(atomcost_mod.ELEMENT_USD_PER_KG["Fe"])
+        )
+        assert meta.get("atom_cost_dearest") == "Fe ≈ $0.1/kg"
+
+    def test_existing_atom_cost_left_untouched_on_harvest(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        # A sentinel value that harvest would never recompute — proves the
+        # backfill is skipped once the key is already present.
+        store.stamp_ref_meta(sid, {"atom_cost": -99.0})
+
+        compute_mod.harvest_measures(store, qid)
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("atom_cost") == -99.0
+
+
+class TestAtomCostSurvivesResetCompute:
+    def test_reset_compute_does_not_null_atom_cost(self, store: Any) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"reaction_config": {"substrate": "NO", "target": "NH3"}}
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        stamped = store.fetch_refs_by_ids({sid})[sid].meta.get("atom_cost")
+        assert stamped is not None
+        store.stamp_ref_meta(sid, {"barrier": 0.5, "barrier_trusted": True})
+
+        compute_mod.reset_compute(store, qid)
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("barrier") is None  # the barrier lane WAS reset
+        assert meta.get("atom_cost") == stamped  # composition-derived — untouched
+        assert "atom_cost" not in compute_mod._AUTOCATPATH_MEASURE_KEYS
+
+
+class TestFrontierViewportRatchet:
+    def test_creates_viewport_when_absent(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        compute_mod._ratchet_frontier_viewport(store, qid, {"atom_cost": (-1.0, 2.0)})
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert meta.get("frontier_viewport") == {"atom_cost": [-1.0, 2.0]}
+
+    def test_widens_but_never_shrinks(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        compute_mod._ratchet_frontier_viewport(store, qid, {"atom_cost": (-1.0, 2.0)})
+        # A narrower fresh span must not shrink the pinned range.
+        compute_mod._ratchet_frontier_viewport(store, qid, {"atom_cost": (0.0, 1.0)})
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert meta.get("frontier_viewport") == {"atom_cost": [-1.0, 2.0]}
+        # A span that's wider on ONE side unions in only that side.
+        compute_mod._ratchet_frontier_viewport(store, qid, {"atom_cost": (-3.0, 1.5)})
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert meta.get("frontier_viewport") == {"atom_cost": [-3.0, 2.0]}
+
+    def test_malformed_existing_entry_is_replaced_outright(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(qid, {"frontier_viewport": {"atom_cost": "garbage"}})
+        compute_mod._ratchet_frontier_viewport(store, qid, {"atom_cost": (0.0, 1.0)})
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert meta.get("frontier_viewport") == {"atom_cost": [0.0, 1.0]}
+
+    def test_second_measure_key_added_alongside_first(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        compute_mod._ratchet_frontier_viewport(store, qid, {"atom_cost": (-1.0, 2.0)})
+        compute_mod._ratchet_frontier_viewport(store, qid, {"barrier": (0.1, 0.9)})
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert meta.get("frontier_viewport") == {
+            "atom_cost": [-1.0, 2.0],
+            "barrier": [0.1, 0.9],
+        }
+
+    def test_empty_updates_is_a_noop(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        compute_mod._ratchet_frontier_viewport(store, qid, {})
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert "frontier_viewport" not in meta
+
+    def test_harvest_ratchets_viewport_from_a_fresh_barrier(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", "result": {"barrier": 0.7}},
+            parent_id=sid,
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        viewport = meta.get("frontier_viewport") or {}
+        assert viewport.get("barrier") == [0.7, 0.7]
+        # the same-pass atom_cost backfill widens it too (a fresh candidate,
+        # stamped at creation — this harvest doesn't need to backfill it,
+        # but the creation-time stamp still contributes no viewport entry;
+        # only a HARVEST-stamped measure does, per the docstring contract).
+        assert "atom_cost" not in viewport
+
+
+class TestFoldViewportUpdates:
+    def test_widens_across_calls(self) -> None:
+        updates: dict[str, tuple[float, float]] = {}
+        compute_mod._fold_viewport_updates(updates, {"barrier": 0.5})
+        compute_mod._fold_viewport_updates(updates, {"barrier": 0.2})
+        compute_mod._fold_viewport_updates(updates, {"barrier": 0.9})
+        assert updates == {"barrier": (0.2, 0.9)}
+
+    def test_ignores_non_numeric_and_bool(self) -> None:
+        updates: dict[str, tuple[float, float]] = {}
+        compute_mod._fold_viewport_updates(
+            updates,
+            {
+                "barrier_trusted": True,
+                "kinetics_note": "excluded step",
+                "barrier": 0.4,
+            },
+        )
+        assert updates == {"barrier": (0.4, 0.4)}

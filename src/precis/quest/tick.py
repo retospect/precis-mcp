@@ -640,11 +640,16 @@ def _explorers_creed(store: Store, quest_id: int, *, fr: Any | None = None) -> s
     champion = _champion(store, quest_id, fr=fr)
     if champion is not None:
         value, name = champion
+        # Generic over the primary objective (kinetics cutover: this is
+        # `log_tof`, sense=max, not the old `barrier`, sense=min — `_champion`
+        # already picks the best value on EITHER sense; only the wording here
+        # must not hard-code "rate-limiting" (a barrier-specific idea).
         champion_line = (
-            f"Champion to beat: the current best rate-limiting measure is "
-            f"{value:g} ({name}). Every tick, propose at least one untried "
-            "variant you predict will beat it, and state (a) the mechanistic "
-            "reason you expect it to win and (b) your predicted value.\n"
+            f"Champion to beat: the current frontier leader's primary "
+            f"measure is {value:g} ({name}). Every tick, propose at least "
+            "one untried variant you predict will beat it, and state (a) "
+            "the mechanistic reason you expect it to win and (b) your "
+            "predicted value.\n"
         )
     else:
         champion_line = ""
@@ -963,6 +968,17 @@ conflicts with this table, the table wins and you must correct the dossier. \
 You do not emit `result`/`milestone` entries — the system stamps those from \
 simulations; you close a lead with a `dead-end` when the table shows it \
 beaten.)
+
+Reading the axes: `log_tof` is the ACTIVITY axis — a candidate that is measured \
+but dead-slow is legitimately dominated by a faster one, `barrier` alone no \
+longer settles that. A "provisional" row on kinetics (`kinetics_note` shown) \
+means the run is UNKNOWN and worth fixing or re-running — never read it as \
+"this candidate is bad", only as "not yet resolved". `atom_cost` is a SOFT \
+economic axis: a dear composition that buys real activity can still be worth \
+proposing — it only loses if a cheaper design beats it on both axes at once. \
+Where both are measured, `$/rate` (atom_cost − log_tof, shown per row) reads \
+directly as "100× more active buys 100× less catalyst for the same spend" — \
+use it to judge a dear-but-active tradeoff at a glance.
 {literature}{reaction_context}{skill_injection}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \

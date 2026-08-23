@@ -5,7 +5,8 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
-``structure`` sims), `frontier` (Pareto rank), `figures` (static matplotlib
+``structure`` sims), `frontier` (Pareto rank), `atomcost` (static
+element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
 pareto/profile renderers + frozen data snapshots for draft export; CLI
 ``precis quest figure``), `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
@@ -21,8 +22,10 @@ Package-level invariants (each enforced where named):
 - **Infra failure is never a physical verdict.** A failed relax or
   autocatpath job retries once then gripes — it is never ``ruled-out:``
   (``compute``; dossier-owned-by-process).
-- **Untrusted barriers don't rank — but they stay visible.** A pathway with
-  NEB-not-converged / adsorbate-detached warnings is excluded from the
+- **Untrusted measures don't rank — but they stay visible.** A pathway with
+  NEB-not-converged / adsorbate-detached warnings, or a kinetics solve whose
+  guard bracket disagrees / TOF is non-finite (``kinetics_trusted``), is
+  excluded from the
   confirmed frontier and can never graduate (``compute._pathway_quality`` →
   ``frontier`` → ``graduate``), but its measured values surface as a
   **provisional** band (``frontier.ProvisionalCandidate`` — merged measures,

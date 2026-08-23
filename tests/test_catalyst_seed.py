@@ -39,10 +39,12 @@ class TestSeedCatalystQuest:
     def test_objectives_and_graduation_are_wired(self, store: Any) -> None:
         qid, _ = seed_catalyst_quest(store)
         # the frontier ranks on the four axes the engine lands today:
-        # activity (barrier/energy) + selectivity + poisoning resistance
+        # kinetics activity (log_tof) + the soft economic axis (atom_cost)
+        # + selectivity + poisoning resistance. barrier is a context scalar
+        # (still the graduation gate below), not a Pareto axis of its own.
         assert _objectives_for(store, qid) == [
-            ("barrier", "min"),
-            ("energy", "min"),
+            ("log_tof", "max"),
+            ("atom_cost", "min"),
             ("selectivity_margin", "max"),
             ("poison_margin", "max"),
         ]

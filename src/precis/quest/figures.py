@@ -201,23 +201,34 @@ def build_pareto_snapshot(
     the PNG. ``fr`` (a :class:`~precis.quest.frontier.FrontierResult`) is
     passed in rather than recomputed — see :func:`quest_pareto_figure` for
     the convenience wrapper that calls :func:`~precis.quest.frontier.
-    quest_frontier` once and builds both artifacts from it.
+    quest_frontier` once and builds both artifacts from it. The axis pair
+    is the quest's own :func:`~precis.quest.frontier.plot_axes_for` pick
+    (its first two declared ``rubric_objectives`` when it declares >= 2,
+    else the hub-v2 fallback) — kept in sync with the web scatter and the
+    PNG's marker grammar, not a fixed ``barrier``/``energy`` pair anymore.
     """
     from precis.utils import handle_registry
 
     from . import frontier as frontier_mod
 
+    objectives = frontier_mod._objectives_for(store, quest_ref.id)
+    x_measure, y_measure, _x_label, _y_label = frontier_mod.plot_axes_for(
+        getattr(quest_ref, "meta", None), objectives
+    )
     scatter = frontier_mod.build_frontier_scatter(
         [*fr.frontier, *fr.dominated],
         provisional=fr.provisional,
         frontier_ref_ids={c.ref_id for c in fr.frontier},
+        x_measure=x_measure,
+        y_measure=y_measure,
+        x_label=_x_label,
+        y_label=_y_label,
     )
     points = scatter.points if scatter is not None else []
 
     candidates_by_id = {c.ref_id: c for c in (*fr.frontier, *fr.dominated)}
     provisional_by_id = {pc.candidate.ref_id: pc for pc in fr.provisional}
 
-    x_measure, y_measure = frontier_mod.PARETO_X_MEASURE, frontier_mod.PARETO_Y_MEASURE
     extra_axis_keys = [
         k for k in (x_measure, y_measure) if k not in ("barrier", "energy")
     ]
@@ -245,13 +256,23 @@ def build_pareto_snapshot(
             c = candidates_by_id.get(ref_id)
             measures = c.measures if c is not None else {}
             flags = c.flags if c is not None else {}
+        # "trusted" must track EVERY trust gate feeding the plotted axes,
+        # not just the barrier lane: post kinetics-cutover a row can be
+        # provisional purely because kinetics is untrusted while its
+        # barrier is fine. False if any present gate is False; None when
+        # no gate has reported yet.
+        gate_vals = [
+            v
+            for v in (flags.get("barrier_trusted"), flags.get("kinetics_trusted"))
+            if isinstance(v, bool)
+        ]
         row: dict[str, Any] = {
             "handle": p["handle"],
             "name": p["name"],
             "band": p["band"],
             "on_frontier": p["on_frontier"],
             "converged": p["converged"],
-            "trusted": flags.get("barrier_trusted"),
+            "trusted": all(gate_vals) if gate_vals else None,
             "tier": flags.get("barrier_tier") or flags.get("tier"),
             "barrier": measures.get("barrier"),
             "energy": measures.get("energy"),
@@ -260,7 +281,6 @@ def build_pareto_snapshot(
             row[k] = measures.get(k)
         rows.append(row)
 
-    objectives = frontier_mod._objectives_for(store, quest_ref.id)
     from precis.quest.compute import _autocatpath_engine_token
 
     return {
@@ -294,10 +314,18 @@ def quest_pareto_figure(store: Store, quest_ref: Any) -> tuple[bytes, dict[str, 
     from . import frontier as frontier_mod
 
     fr = frontier_mod.quest_frontier(store, quest_ref.id)
+    objectives = frontier_mod._objectives_for(store, quest_ref.id)
+    x_measure, y_measure, x_label, y_label = frontier_mod.plot_axes_for(
+        getattr(quest_ref, "meta", None), objectives
+    )
     scatter = frontier_mod.build_frontier_scatter(
         [*fr.frontier, *fr.dominated],
         provisional=fr.provisional,
         frontier_ref_ids={c.ref_id for c in fr.frontier},
+        x_measure=x_measure,
+        y_measure=y_measure,
+        x_label=x_label,
+        y_label=y_label,
     )
     if scatter is None:
         raise ValueError(

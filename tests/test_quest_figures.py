@@ -163,6 +163,50 @@ class TestParetoRenderer:
         assert snapshot["rows"] == []
         assert snapshot["schema"] == 1
 
+    def test_build_pareto_snapshot_follows_per_quest_kinetics_axes(self) -> None:
+        """Kinetics cutover: a quest declaring ``log_tof``/``atom_cost`` as
+        its first two rubric objectives plots THOSE axes, not the old
+        ``barrier``/``energy`` hub-v2 starter pick — the PNG twin must stay
+        in sync with the web scatter's :func:`~precis.quest.frontier.
+        plot_axes_for` pick."""
+        frontier = [
+            Candidate(1, "st1", "Fe-N4", {"log_tof": 2.0, "atom_cost": 1.0}, True),
+            Candidate(2, "st2", "Cu-N4", {"log_tof": 1.0, "atom_cost": 0.5}, True),
+        ]
+        fr = FrontierResult(
+            objectives=[("log_tof", "max"), ("atom_cost", "min")],
+            frontier=frontier,
+            dominated=[],
+        )
+        quest_ref = _FakeRef(
+            id=98,
+            kind="quest",
+            title="A kinetics-cutover catalyst quest",
+            meta={
+                "rubric_objectives": [
+                    {"key": "log_tof", "sense": "max"},
+                    {"key": "atom_cost", "sense": "min"},
+                ]
+            },
+        )
+        store = _FakeStore(quest_ref)
+
+        snapshot = figures.build_pareto_snapshot(cast(Any, store), quest_ref, fr)
+        assert snapshot["params"]["x_measure"] == "log_tof"
+        assert snapshot["params"]["y_measure"] == "atom_cost"
+        by_handle = {r["handle"]: r for r in snapshot["rows"]}
+        assert by_handle["st1"]["log_tof"] == 2.0
+        assert by_handle["st1"]["atom_cost"] == 1.0
+        # the PNG twin plots the same axis pair (marker grammar stays in sync)
+        scatter = build_frontier_scatter(
+            [*fr.frontier, *fr.dominated],
+            x_measure=snapshot["params"]["x_measure"],
+            y_measure=snapshot["params"]["y_measure"],
+        )
+        assert scatter is not None
+        png = figures.render_pareto_png(scatter, title=quest_ref.title)
+        assert png.startswith(_PNG_MAGIC)
+
 
 # ---------------------------------------------------------------------------
 # Pathway profile

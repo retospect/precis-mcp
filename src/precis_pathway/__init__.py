@@ -24,10 +24,16 @@ cross-repo seam.
 The artifact's ``results_json``/``graph_json`` come from
 ``autocatpath.pipeline.analyze`` (>= 0.5.2) — catpath's own analysis,
 verbatim (traps / poisons / selectivity / CHE / the >= 0.6.0 ``score``
-scorecard included), not a local mirror; ``_dispatch_common`` then reduces
-it to the scalar summary the quest harvests (barrier/span +
+scorecard included), not a local mirror. The aggregate additionally runs
+the engine's **microkinetics in-process** post-combine
+(``runner.run_kinetics`` — mirrors the ``autocatpath kinetics`` CLI branch;
+feature-detected, engine >= 0.15, any failure lands as
+``results_json.kinetics_error``, never fails the run); ``_dispatch_common``
+then reduces it all to the scalar summary the quest harvests (barrier/span +
 ``selectivity_margin``/``trap_margin``/``poison_margin`` — lifted from
-``results_json.score`` — and their naming context).
+``results_json.score`` — plus the trust-gated kinetics scalars
+``tof``/``log_tof``/band, ``kinetics_trusted``/``kinetics_note``/
+``drc_top``, and their naming context).
 
 It ships **dark** behind ``PRECIS_AUTOCATPATH_ENABLED`` (mirrors
 ``PRECIS_BIO_ENABLED`` / ``PRECIS_SANDBOX_ENABLED``), so the merge — and an

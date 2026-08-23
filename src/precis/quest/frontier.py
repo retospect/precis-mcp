@@ -116,9 +116,12 @@ class FrontierResult:
 
 
 #: Quest hub v2 / Cycle C J4 — the Pareto-scatter axis choice. A starter pick
-#: (Reto, 2026-07-25), explicitly changeable later: swap the two ``*_MEASURE``
-#: keys (+ their ``*_LABEL``) and every caller (route + template) follows —
-#: nothing else moves.
+#: (Reto, 2026-07-25). Kinetics cutover: this pair is now only the
+#: **fallback** a quest falls back to when it declares fewer than two
+#: rubric objectives (:func:`plot_axes_for`) — a quest with >= 2 declared
+#: objectives plots its own first two instead, so a catalyst quest's
+#: scatter shows its real headline trade-off (``log_tof`` vs ``atom_cost``)
+#: rather than this starter pick.
 #:
 #: X = "highest barrier" → the autocatpath rate-limiting barrier
 #: :func:`compute._autocatpath_measures_from_job` stamps onto a candidate's own
@@ -136,6 +139,53 @@ PARETO_X_MEASURE = "barrier"
 PARETO_X_LABEL = "Barrier (eV)"
 PARETO_Y_MEASURE = "energy"
 PARETO_Y_LABEL = "Relaxed energy (eV)"
+
+#: Human-readable axis labels for measures the scatter/PNG twin might plot —
+#: read by :func:`plot_axes_for` for a quest's own declared axes (an unknown
+#: key falls back to the bare key itself, so a future measure never crashes
+#: the label lookup, just shows unpretty).
+_AXIS_LABELS: dict[str, str] = {
+    "log_tof": "log₁₀ TOF (site⁻¹ s⁻¹)",
+    "atom_cost": "log₁₀ atom cost ($/kg)",
+    "barrier": "Barrier (eV)",
+    "energy": "Relaxed energy (eV)",
+    "selectivity_margin": "Selectivity margin (eV)",
+    "poison_margin": "Poison margin (eV)",
+}
+
+
+def axis_label_for(key: str) -> str:
+    return _AXIS_LABELS.get(key, key)
+
+
+def plot_axes_for(
+    quest_meta: dict[str, Any] | None, objectives: list[tuple[str, str]]
+) -> tuple[str, str, str, str]:
+    """``(x_key, y_key, x_label, y_label)`` — the quest's own Pareto-scatter axes.
+
+    Kinetics cutover: a quest that declares >= 2 ``rubric_objectives`` plots
+    its own first two (a catalyst quest orders ``log_tof``/``atom_cost``
+    first — the headline activity/cost trade-off) instead of the fixed hub-v2
+    starter pick (:data:`PARETO_X_MEASURE`/:data:`PARETO_Y_MEASURE`), which
+    remains the fallback for every quest that declares fewer than two (the
+    single-objective default, or a hand-built quest with no
+    ``rubric_objectives`` at all) — unaffected by this change.
+
+    ``quest_meta`` (the quest ref's raw ``meta``, not required to be
+    parsed) is consulted alongside the already-resolved ``objectives``
+    (:func:`_objectives_for`'s output) so a quest whose raw
+    ``rubric_objectives`` names >= 2 axes but had one dropped by that
+    function's defensive parse (a malformed key/sense) still falls back
+    cleanly rather than indexing past a shorter resolved list.
+    """
+    raw = (quest_meta or {}).get("rubric_objectives")
+    declared_two_plus = isinstance(raw, list) and len(raw) >= 2
+    if declared_two_plus and len(objectives) >= 2:
+        x_key, y_key = objectives[0][0], objectives[1][0]
+    else:
+        x_key, y_key = PARETO_X_MEASURE, PARETO_Y_MEASURE
+    return x_key, y_key, axis_label_for(x_key), axis_label_for(y_key)
+
 
 #: Minimum plottable candidates (both axis measures present) before the
 #: scatter is worth drawing — below this a two-point line/point cloud with
@@ -212,6 +262,62 @@ class FrontierScatter:
     y_ticks: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _rate_readout(measures: dict[str, float]) -> str | None:
+    """``atom_cost - log_tof`` (log10 $ per unit TOF) when both measures are
+    present, else ``None`` (never a fabricated partial). Read as: 100x more
+    active (higher ``log_tof``) buys 100x less catalyst mass for the same
+    dollar spend — the single number that answers "is dear-but-active worth
+    it". Shared by :func:`leaderboard` (the ``$/rate`` column) and
+    :func:`build_frontier_scatter` (the hover tooltip)."""
+    ac = measures.get("atom_cost")
+    lt = measures.get("log_tof")
+    if not isinstance(ac, (int, float)) or not isinstance(lt, (int, float)):
+        return None
+    return f"{ac - lt:g}"
+
+
+def _extra_objective_measures(
+    measures: dict[str, float],
+    objectives: Sequence[tuple[str, str]],
+    plotted: tuple[str, str],
+) -> list[dict[str, str]]:
+    """The candidate's value for every declared objective OTHER than the
+    two currently plotted — ``{"key", "label", "value"}`` per entry, in
+    declared order, skipping any objective this candidate has no value
+    for (never a fabricated ``"—"`` — the tooltip just omits it)."""
+    out: list[dict[str, str]] = []
+    for key, _sense in objectives:
+        if key in plotted:
+            continue
+        v = measures.get(key)
+        if isinstance(v, (int, float)):
+            out.append({"key": key, "label": axis_label_for(key), "value": f"{v:g}"})
+    return out
+
+
+def _union_viewport(
+    lo: float,
+    hi: float,
+    viewport: dict[str, tuple[float, float]] | None,
+    measure: str,
+) -> tuple[float, float]:
+    """``[lo, hi]`` unioned with ``viewport[measure]`` when present + well-
+    formed, else ``(lo, hi)`` unchanged — see :func:`build_frontier_scatter`'s
+    ``viewport`` param."""
+    if not viewport:
+        return lo, hi
+    entry = viewport.get(measure)
+    if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+        return lo, hi
+    try:
+        vlo, vhi = float(entry[0]), float(entry[1])
+    except (TypeError, ValueError):
+        return lo, hi
+    if not (math.isfinite(vlo) and math.isfinite(vhi)) or vlo > vhi:
+        return lo, hi
+    return min(lo, vlo), max(hi, vhi)
+
+
 def build_frontier_scatter(
     candidates: Sequence[Candidate],
     *,
@@ -225,6 +331,8 @@ def build_frontier_scatter(
     width: float = _SVG_WIDTH,
     height: float = _SVG_HEIGHT,
     pad: float = _SVG_PAD,
+    viewport: dict[str, tuple[float, float]] | None = None,
+    objectives: Sequence[tuple[str, str]] = (),
 ) -> FrontierScatter | None:
     """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
 
@@ -250,6 +358,25 @@ def build_frontier_scatter(
     points too, so the template's marker grammar — shape = frontier
     membership (star/circle), fill = trust, colour = band — covers both
     bands with one vocabulary.
+
+    ``viewport`` (optional — ``{measure: (lo, hi)}``, read from
+    ``quest.meta.frontier_viewport`` by the caller) pins a wider axis range
+    than the current data alone would produce: when an entry names the
+    chosen ``x_measure``/``y_measure``, the plotted range becomes the union
+    of the data-derived range and the stored one (:func:`_union_viewport`)
+    — so the axis doesn't keep re-scaling tick-to-tick as new points land
+    inside a range a human already widened. A missing/malformed entry (not
+    a 2-tuple, non-numeric, ``lo > hi``, or no ``viewport`` at all) leaves
+    the data-derived range untouched.
+
+    ``objectives`` (optional — the quest's full declared objective vector,
+    not just the two plotted axes) stamps each point's ``extra_measures``
+    (the OTHER declared objectives it carries a value for, each
+    ``{"key", "label", "value"}``) plus a ``rate_readout`` ($/rate,
+    :func:`_rate_readout` — ``None`` when not computable), so the template's
+    hover tooltip can show the full objective vector, not just the plotted
+    pair, without a second lookup. Default empty — every pre-existing
+    caller gets no extra fields, unchanged.
     """
     plottable = [
         c
@@ -281,6 +408,8 @@ def build_frontier_scatter(
     x_hi = x_max + x_span * _RANGE_PAD_FRACTION
     y_lo = y_min - y_span * _RANGE_PAD_FRACTION
     y_hi = y_max + y_span * _RANGE_PAD_FRACTION
+    x_lo, x_hi = _union_viewport(x_lo, x_hi, viewport, x_measure)
+    y_lo, y_hi = _union_viewport(y_lo, y_hi, viewport, y_measure)
     x_range = (x_hi - x_lo) or 1.0
     y_range = (y_hi - y_lo) or 1.0
 
@@ -294,6 +423,7 @@ def build_frontier_scatter(
         # SVG y grows downward; flip so the higher value plots higher up.
         return pad + (1.0 - (v - y_lo) / y_range) * plot_h
 
+    plotted = (x_measure, y_measure)
     points: list[dict[str, Any]] = []
     for c in plottable:
         x = c.measures[x_measure]
@@ -309,6 +439,10 @@ def build_frontier_scatter(
             "on_frontier": bool(frontier_ref_ids and c.ref_id in frontier_ref_ids),
             "cx": round(_cx(x), 2),
             "cy": round(_cy(y), 2),
+            "extra_measures": _extra_objective_measures(
+                c.measures, objectives, plotted
+            ),
+            "rate_readout": _rate_readout(c.measures),
         }
         if open_url_for is not None:
             point["open_url"] = open_url_for(c)
@@ -332,6 +466,10 @@ def build_frontier_scatter(
             "reasons": list(pc.reasons),
             "cx": round(_cx(x), 2),
             "cy": round(_cy(y), 2),
+            "extra_measures": _extra_objective_measures(
+                pc.measures, objectives, plotted
+            ),
+            "rate_readout": _rate_readout(pc.measures),
         }
         if open_url_for is not None:
             ppoint["open_url"] = open_url_for(c)
@@ -586,6 +724,12 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     for k, v in meta.items():
         if k == "params" or k in _META_NON_MEASURE:
             continue
+        # A directly-stamped untrusted-value stash (e.g. `log_tof_
+        # untrusted_value`, kinetics contract) is flag-only display context
+        # (see below), never a literal measure of its own — excluded here
+        # so it doesn't ALSO land in `measures` under its raw stash name.
+        if isinstance(k, str) and k.endswith(_UNTRUSTED_VALUE_SUFFIX):
+            continue
         fv = _numeric(v)
         if fv is not None:
             measures.setdefault(k, fv)  # runs win on collision
@@ -606,6 +750,20 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         flags["adsorption_barrier"] = meta.get("adsorption_barrier")
     if "barrier_screen" in meta:
         flags["barrier_screen"] = meta.get("barrier_screen")
+    # Kinetics cutover: the trust gate + naming context the kinetics model
+    # harvest stamps (same shape as `barrier_trusted` above) — a kinetics
+    # run that fails or comes back untrustworthy sets `kinetics_trusted`
+    # False + a `kinetics_note` reason, so `log_tof` never lands as a
+    # ranking measure but still surfaces the candidate as `provisional`
+    # (via the `*_untrusted_value` stash mechanism below) rather than
+    # reading as never-tried. `drc_top` (the degree-of-rate-control-leading
+    # elementary step) and `atom_cost_dearest` (the priciest element driving
+    # `atom_cost`) are display-only naming context, never a measure.
+    if "kinetics_trusted" in meta:
+        flags["kinetics_trusted"] = bool(meta.get("kinetics_trusted"))
+    for k in ("kinetics_note", "drc_top", "atom_cost_dearest"):
+        if k in meta:
+            flags[k] = meta.get(k)
     # Selectivity/poisoning naming context (catpath >= 0.5.2 harvests —
     # compute._AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS): the most competitive
     # side product, the deepest kinetic-trap state, per-species poison
@@ -622,6 +780,24 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     ):
         if k in meta:
             flags[k] = meta.get(k)
+    # A kinetics-untrusted stash — a numeric value directly stamped onto
+    # `meta` under the SAME `_UNTRUSTED_VALUE_SUFFIX` convention the
+    # barrier-exclusion block below derives at read time (e.g.
+    # `log_tof_untrusted_value`, kinetics contract). Copied into `flags`
+    # (never `measures`) so :func:`_merge_provisional_measures` recovers it
+    # for the provisional band exactly like a popped barrier value — and
+    # excluded from the generic meta harvest below (`_META_NON_MEASURE`
+    # can't list it by name since the base measure varies) so it never
+    # ALSO lands as a bogus literal-named measure.
+    for k, v in meta.items():
+        if (
+            isinstance(k, str)
+            and k.endswith(_UNTRUSTED_VALUE_SUFFIX)
+            and k not in flags
+        ):
+            fv = _numeric(v)
+            if fv is not None:
+                flags[k] = fv
     # The tier-ladder rung the candidate's CURRENT canonical `barrier` came
     # from (:func:`precis.quest.compute._canonicalize_barrier`) — read by
     # :mod:`precis.quest.graduate`'s verify-only gate; absent on a candidate
@@ -827,11 +1003,16 @@ def leaderboard(
     awaiting, and within each band sorted by the primary objective (best
     first). A provisional row shows its merged measures with ``≈`` on each
     unconfirmed value and its exclusion reasons in ``quality`` — measured but
-    not confirmed, never ranked against the confirmed bands. Pure over a
-    :class:`FrontierResult` so it is trivially testable; the handler renders
-    it via ``toon.dump``. This is the striving's authoritative leaderboard —
-    autocatpath's own ``compare`` view is a compute-side diagnostic over
-    sibling pathways, not this.
+    not confirmed, never ranked against the confirmed bands. A ``$/rate``
+    column (:func:`_rate_readout` — ``atom_cost - log_tof``, log10 $ per
+    unit TOF) is computed HERE at read time whenever a candidate carries
+    both components — never stored — so "100x more active buys 100x less
+    catalyst" reads as one number without a spreadsheet; ``—`` when either
+    component is absent. Pure over a :class:`FrontierResult` so it is
+    trivially testable; the handler renders it via ``toon.dump``. This is
+    the striving's authoritative leaderboard — autocatpath's own
+    ``compare`` view is a compute-side diagnostic over sibling pathways,
+    not this.
     """
     obj_keys = [k for k, _ in fr.objectives]
     primary = fr.objectives[0] if fr.objectives else None
@@ -857,6 +1038,7 @@ def leaderboard(
             for key in obj_keys:
                 v = c.measures.get(key)
                 row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
+            row["$/rate"] = _rate_readout(c.measures) or "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
             quality = (
                 "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
@@ -897,6 +1079,12 @@ def leaderboard(
                     row[key] = f"≈{v:g}"
                 else:
                     row[key] = f"{v:g}"
+            rate = _rate_readout(pc.measures)
+            if rate is None:
+                row["$/rate"] = "—"
+            else:
+                approx = bool(pc.untrusted_keys & {"atom_cost", "log_tof"})
+                row["$/rate"] = f"≈{rate}" if approx else rate
             row["graduated"] = ""  # a provisional row can never graduate
             quality = "; ".join(pc.reasons) or "unconfirmed"
             if pc.on_frontier:
@@ -911,7 +1099,16 @@ def leaderboard(
         + _prov_rows(fr.provisional)
         + _rows(fr.unevaluated, "awaiting")
     )
-    schema = ["design", "name", "tier", *obj_keys, "band", "graduated", "quality"]
+    schema = [
+        "design",
+        "name",
+        "tier",
+        *obj_keys,
+        "$/rate",
+        "band",
+        "graduated",
+        "quality",
+    ]
     return rows, schema
 
 
@@ -1093,9 +1290,11 @@ __all__ = [
     "FrontierResult",
     "FrontierScatter",
     "ProvisionalCandidate",
+    "axis_label_for",
     "build_frontier_scatter",
     "leaderboard",
     "pareto_split",
+    "plot_axes_for",
     "quest_frontier",
     "render_frontier_tree",
 ]

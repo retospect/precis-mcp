@@ -164,6 +164,23 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"autocatpath_aggregate: aggregate failed: {exc}")
         return
 
+    # Microkinetics is a diagnostic bonus riding on the just-aggregated
+    # pathway, in-process, right here — `run_kinetics` never raises (any
+    # failure, including a deployed engine that predates the `kinetics`
+    # module, lands as `results_json["kinetics_error"]`), so this can never
+    # fail the aggregate itself.
+    runner.run_kinetics(artifact["config"], artifact)
+    r = artifact["results_json"]
+    if isinstance(r.get("kinetics"), dict):
+        tof = r["kinetics"].get("tof")
+        tof_s = f"{tof:.3e} /site/s" if isinstance(tof, (int, float)) else "no TOF"
+        ctx.append_chunk("job_event", f"autocatpath_aggregate: kinetics -> TOF {tof_s}")
+    elif r.get("kinetics_error"):
+        ctx.append_chunk(
+            "job_event",
+            f"autocatpath_aggregate: kinetics skipped ({r['kinetics_error']})",
+        )
+
     from precis_pathway._dispatch_common import finish
 
     finish(
