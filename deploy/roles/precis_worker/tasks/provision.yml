@@ -121,6 +121,16 @@
     - reload precis worker (macos)
     - reload precis worker (linux)
 
+# The constraints-pinned --upgrade above reverts autocatpath to the pin on
+# engine hosts — re-apply any private wheelhouse wheel (pre-PyPI releases)
+# so a redeploy can't wipe it. Empty wheelhouse = clean skip. See
+# roles/autocatpath/tasks/wheelhouse.yml + defaults for the full story.
+- name: Re-apply the autocatpath wheelhouse over the constraints pin
+  when: inventory_hostname in (precis_capabilities.autocatpath | default([]))
+  ansible.builtin.include_role:
+    name: autocatpath
+    tasks_from: wheelhouse
+
 # ── §L control cutover: seed service_config from TODAY's live plist flag
 # state, BEFORE the plist/unit below is re-rendered without the ENABLE
 # flags — so the very first cutover deploy is behaviour-preserving. Uses

@@ -1,0 +1,43 @@
+---
+# Re-apply the private autocatpath wheelhouse (see defaults/main.yml).
+#
+# Shared by TWO callers: roles/autocatpath/tasks/main.yml (playbook 44) and
+# roles/precis_worker/tasks/provision.yml (redeploy-precis.yml), which
+# include_role's this file right after its constraints-pinned
+# `precis-mcp[...,catalyst]` install — that `--upgrade` reverts the engine to
+# the pin on every redeploy, so without this re-apply a private wheel install
+# is silently wiped by the next deploy (the 0.14-era void-run trap).
+# A host with an empty wheelhouse skips cleanly.
+
+- name: Ensure the autocatpath wheelhouse
+  ansible.builtin.file:
+    path: "{{ autocatpath_wheelhouse }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Find private autocatpath wheels in the wheelhouse
+  ansible.builtin.find:
+    paths: "{{ autocatpath_wheelhouse }}"
+    patterns: "autocatpath-*.whl"
+  register: autocatpath_wheelhouse_wheels
+  become: true
+
+- name: Install the newest wheelhouse wheel over the constraints pin
+  when: autocatpath_wheelhouse_wheels.files | length > 0
+  vars:
+    # Lexicographic newest — fine while the wheelhouse holds one stopgap
+    # wheel at a time; clean out old wheels rather than relying on this sort.
+    autocatpath_wheel_newest: >-
+      {{ (autocatpath_wheelhouse_wheels.files | map(attribute='path') | sort | last) }}
+  ansible.builtin.shell: |
+    {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python \
+      '{{ autocatpath_wheel_newest }}'
+  become: true
+  register: autocatpath_wheel_install
+  changed_when: >-
+    'Installed' in (autocatpath_wheel_install.stdout + autocatpath_wheel_install.stderr)
+    or 'Updated' in (autocatpath_wheel_install.stdout + autocatpath_wheel_install.stderr)
+  notify: restart precis-worker (autocatpath)
