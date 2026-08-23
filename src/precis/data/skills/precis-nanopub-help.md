@@ -140,6 +140,13 @@ sentence, shaped **general → specific**: `[epistemic mode + method] +
   spin-polarized DFT, molecular dynamics, DFT–NEGF transport, …) or the
   experimental technique (TEM, Raman, c-AFM, nanoindentation, …).
   Gloss niche method names on first use: "first-principles (DFT)".
+  Spelled-out names count ("density functional theory"), and so does a
+  way-of-knowing phrase built on a generic head noun — *measurements,
+  simulations, calculations, spectroscopy, microscopy, experiments,
+  analysis, theory, trial, imaging, assay, modelling* — with the
+  specific qualifier in front: "current-voltage measurements",
+  "Williamson–Hall analysis", "a randomized double-blind trial". Take
+  the mode from the evidence; never guess one the source doesn't state.
 - **Controlled evidence verbs** (small closed vocabulary — the verb
   encodes epistemic reach, so pick by meaning, not variety):
   - *predicts* — simulation/theory only, and only for a claim that
@@ -155,6 +162,18 @@ sentence, shaped **general → specific**: `[epistemic mode + method] +
     fullerene outgrowths on the sidewall."
   - *demonstrates* — experiment only; a capability or effect realized
     in the lab.
+  - *calculates / computed* — simulation/theory only; a quantitative
+    model output: "DFT calculates a formation energy of 7.63 eV."
+  - *estimates* — either mode; an approximate or fitted quantity,
+    stated as such.
+  - *reveals* — either mode; a structure or mechanism made visible.
+  - *confirms* — either mode; independent corroboration of a result
+    already on record.
+  - *identifies* — either mode; an assignment or classification:
+    "Raman spectroscopy identifies breathing-mode bands at 23 cm⁻¹."
+  - *indicates* — either mode; an inference from indirect evidence —
+    weaker reach than *measures/shows*, pick it only when the evidence
+    really is indirect.
   Never *measures/observes/demonstrates* for a simulation; reserve
   *predicts* for forward-looking claims — a within-model comparison is
   *found*, not *predicted*.

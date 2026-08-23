@@ -73,12 +73,13 @@ Authoring stays frictionless; nothing ungoverned reaches *publishable*,
 but a hub can sit `candidate` indefinitely with an advisory flag
 unresolved.
 
-**Expect refusal at approve, not malfunction.** Only 21/1,524 live hubs
-(1.4%) currently lint clean. Common blockers: `no-epistemic-mode`
-(1,419), `no-evidence-verb` (1,232), `no-terminal-period` (330),
-`author-name` (157), `over-long` (152), `not-falsifiable` (138). A legacy
-hub failing approve is the intended workflow, not a bug — the sentence
-gets authored properly at that point, not patched around.
+**Expect refusal at approve, not malfunction.** Measured 2026-08-23 over
+the strict cohort (`TAPROOT:claim` + `STATUS:canonical`, n=1,267): 83
+hubs (6.6%) lint clean. Common blockers: `no-epistemic-mode` (1,052),
+`no-evidence-verb` (903), `over-long` (162), `author-name` (83),
+`no-terminal-period` (48), `not-falsifiable` (22). A legacy hub failing
+approve is the intended workflow, not a bug — the sentence gets authored
+properly at that point, not patched around.
 
 ## What makes a mintable claim
 

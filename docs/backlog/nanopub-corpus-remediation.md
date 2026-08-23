@@ -216,6 +216,18 @@ measurement loop, and it is what `precis taproot lint` wraps.
 **21 of 1,524 hubs (1.4%) are lint-clean.** That is the headline: this is not
 a corpus with a quality tail, it is a corpus with a quality *floor*.
 
+**Re-measured 2026-08-23, strict predicate (n=1,267): 83 clean (6.6%).** Two
+lexicon growths that day (`sentence_lint.py`: spelled-out technique names +
+new tokens, seven new evidence verbs, then generic way-of-knowing head nouns
+— dated comments in the module carry the dry-run verdicts) account for the
+move; `no-epistemic-mode` 1,052, `no-evidence-verb` 903, and 788 hubs are
+blocked *solely* by that pair. A 50-hub Opus rewrite pilot over the
+pair-blocked pool (grounding passages supplied, invent-nothing rule): 27
+rewrote honestly, 23 had to SKIP — capability/definitional/historical claims,
+or evidence naming no method — so scaling the rewrite pass graduates roughly
+half the pool and the other half needs claim-type-aware judgment
+(`taproot-claim-type-v2.md`), not grammar.
+
 | bucket | count | |
 |---|---|---|
 | E — grammar-violating, grounded | 1,044 | 68.5% |

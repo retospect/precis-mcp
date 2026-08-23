@@ -32,7 +32,9 @@ _ONE_VIOLATION_PER_CODE: dict[str, str] = {
     "multi-assertion": (
         "DFT shows the gap increases, and TEM demonstrates the strain decreases."
     ),
-    "no-evidence-verb": "DFT indicates the bandgap of 1.5 eV in this material.",
+    # `suggests` is deliberately outside `_EVIDENCE_VERB_RE` (`indicates`,
+    # the previous specimen here, graduated into it 2026-08-23).
+    "no-evidence-verb": "DFT suggests the bandgap of 1.5 eV in this material.",
     "no-epistemic-mode": "This alloy shows a bandgap of 1.5 eV at room temperature.",
     "over-long": (
         "DFT shows the extremely anisotropic elastic modulus of this remarkably "

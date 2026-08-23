@@ -144,6 +144,78 @@ EPISTEMIC_MODE_TOKENS: frozenset[str] = frozenset(
         "first-principles",
         "first principles",
         "Monte Carlo",
+        # 2026-08-23 growth, corpus-dry-run vetted (strict cohort, n=1,267;
+        # every flipped sentence eyeballed per
+        # docs/conventions/corpus-normalization.md). First: spelled-out
+        # forms of the seeded acronyms -- `\bDFT\b` missed "Density
+        # functional theory predicts ..." on 21 exemplary house-grammar
+        # hubs, the single most embarrassing gap.
+        "density functional theory",
+        "density-functional theory",
+        "X-ray diffraction",
+        "X-ray photoelectron spectroscopy",
+        "transmission electron microscopy",
+        "scanning electron microscopy",
+        "scanning tunneling microscopy",
+        "scanning tunnelling microscopy",
+        "atomic force microscopy",
+        "nuclear magnetic resonance",
+        # Techniques the corpus names that the seed list lacked. Vetted
+        # candidates deliberately NOT added: `FRET` and bare `fluorescence`
+        # (the corpus uses both as the phenomenon *claimed*, not the way of
+        # knowing -- only the phrase form "fluorescence measurements" names
+        # a mode); `SQUID`/`BET`/`SIMS`/`EDS` (case-insensitive matches on
+        # ordinary words or bibliography "Eds."); zero-yield speculative
+        # entries (DMFT, EPR, ellipsometry, ...) stay out until the corpus
+        # shows them.
+        "DFTB",
+        "ab initio",
+        "device simulation",
+        "device simulations",
+        "SAXS",
+        "cryo-EM",
+        "FTIR",
+        "UV-vis",
+        "photoluminescence",
+        "voltammetry",
+        "impedance spectroscopy",
+        "X-ray absorption spectroscopy",
+        "mass spectrometry",
+        "force spectroscopy",
+        "electrical measurements",
+        "transport measurements",
+        "fluorescence measurements",
+        "Rosetta",
+        "UV/vis",
+        # Generic way-of-knowing head nouns (2026-08-23 rewrite pilot).
+        # A 50-hub Opus rewrite pilot produced honestly method-attributed
+        # house-grammar sentences -- "Thermal-conductance measurements on
+        # single-molecule junctions find ...", "A randomized double-blind
+        # trial ... finds ..." -- that this closed set still rejected: no
+        # enumeration of *specific* technique spellings can cover the
+        # space of legitimate mode phrases. The heads are themselves a
+        # small closed set; the qualifier ("current-voltage",
+        # "thermal-conductance") rides free. Corpus dry run: content-use
+        # false passes (e.g. "bridging tile theory to ...") all stay
+        # blocked by other codes, so none reaches lint-clean wrongly.
+        "measurement",
+        "measurements",
+        "simulation",
+        "simulations",
+        "calculation",
+        "calculations",
+        "spectroscopy",
+        "microscopy",
+        "experiments",
+        "analysis",
+        "theory",
+        "trial",
+        "trials",
+        "imaging",
+        "assay",
+        "assays",
+        "modelling",
+        "modeling",
     }
 )
 
@@ -164,7 +236,25 @@ _EVIDENCE_VERB_RE = re.compile(
     r"shows?|showed|shown|"
     r"measures?|measured|measuring|"
     r"observes?|observed|observing|"
-    r"demonstrates?|demonstrated|demonstrating)\b",
+    r"demonstrates?|demonstrated|demonstrating|"
+    # 2026-08-23 growth, corpus-dry-run vetted alongside
+    # EPISTEMIC_MODE_TOKENS (same eyeball pass). `computed` is participle-
+    # only on purpose: `computes`/`computing` match domain nouns and
+    # content verbs ("reservoir computing", "logic gates compute...") --
+    # 15 of 19 corpus flips were wrong. `estimates?` also matching the
+    # noun ("a first-order estimate") is accepted: the noun still names
+    # the epistemic act. Rejected: `detects` (zero corpus yield),
+    # `characterizes` (active-voice study-happened -- "A characterizes B"
+    # asserts no finding), `reports`/`reported` (would exempt "was
+    # reported by ..." from past-passive, the history-of-science shape
+    # that code exists to block).
+    r"calculates?|calculated|calculating|"
+    r"computed|"
+    r"estimates?|estimated|estimating|"
+    r"reveals?|revealed|revealing|"
+    r"confirms?|confirmed|confirming|"
+    r"identif(?:y|ies|ied|ying)|"
+    r"indicates?|indicated|indicating)\b",
     re.IGNORECASE,
 )
 
@@ -825,8 +915,9 @@ def lint_claim_sentence(sentence: str) -> list[str]:
     if not _EVIDENCE_VERB_RE.search(sentence):
         warnings.append(
             "no-evidence-verb: none of predicts/finds/shows/measures/"
-            "observes/demonstrates (or an inflection) found -- a claim "
-            "sentence should name how the finding was established."
+            "observes/demonstrates/calculates/computed/estimates/reveals/"
+            "confirms/identifies/indicates (or an inflection) found -- a "
+            "claim sentence should name how the finding was established."
         )
 
     if not _EPISTEMIC_MODE_RE.search(sentence):
