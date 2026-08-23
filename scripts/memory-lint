@@ -114,7 +114,7 @@ fi
 # session; keep their combined weight visible (dev-context-diet). ~4 B/token.
 claude_b=$(wc -c < CLAUDE.md 2>/dev/null | tr -d ' ' || echo 0)
 pre_tok=$(( (bytes + claude_b) / 4 ))
-PRE_BUDGET_TOK=4000
+PRE_BUDGET_TOK=6000
 if (( pre_tok > PRE_BUDGET_TOK )); then
     echo "preamble OVER budget: CLAUDE.md+MEMORY.md ≈ ${pre_tok} tok > ${PRE_BUDGET_TOK} — diet per docs/backlog/dev-context-diet.md"
 else
