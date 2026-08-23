@@ -17,7 +17,22 @@
       "Bash(uv:*)",
       "Bash(ansible-playbook:*)",
       "Bash(ansible:*)",
-      "mcp__claude-context"
+      "Bash(scripts/test:*)",
+      "Bash(scripts/coderef:*)",
+      "Bash(scripts/inflight:*)",
+      "Bash(scripts/memory-lint:*)",
+      "Bash(scripts/backlog-lint:*)",
+      "Bash(rtk grep:*)",
+      "Bash(rtk tail:*)",
+      "Bash(rtk head:*)",
+      "Bash(rtk ls:*)",
+      "Bash(rtk cat:*)",
+      "Bash(rtk git:*)",
+      "Bash(rtk scripts/ship:*)",
+      "mcp__claude-context",
+      "mcp__precis__get",
+      "mcp__precis__search",
+      "mcp__precis__more"
     ]
   },
   "hooks": {
