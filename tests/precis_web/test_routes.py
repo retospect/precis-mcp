@@ -1057,6 +1057,62 @@ def test_drive_default_landing_hides_filed(runtime, client) -> None:
     assert runtime.store.recent_unfiled_only is True
 
 
+def test_drive_folder_any_lists_filed_and_unfiled(runtime, client) -> None:
+    """``folder=*`` ("Anywhere") drops the top-level filter without scoping
+    to a folder — the whole-kind pivot Status's "Refs by kind" chips need,
+    since most todos/drafts live inside folders and would otherwise be
+    hidden from a list whose count came from every ref of that kind."""
+    resp = client.get("/drive?folder=*")
+    assert resp.status_code == 200
+    assert runtime.store.recent_parent_id is None
+    assert runtime.store.recent_unfiled_only is False
+    # The sentinel is not a stale folder id — no "not found" dead-end notice.
+    assert "not found" not in resp.text
+    assert ">Anywhere<" in resp.text
+
+
+def test_drive_url_kinds_win_over_cookie_without_submitted(runtime, client) -> None:
+    """An explicit ``?k=`` is authoritative even without ``submitted=1``:
+    a deep link (a Status kind chip, a shared URL) means the kinds it names,
+    not whatever this browser last picked."""
+    client.cookies.set("items_kinds", "web")
+    resp = client.get("/drive?k=paper")
+    assert resp.status_code == 200
+    assert runtime.store.recent_kinds == ["paper"]
+
+
+def test_drive_deep_link_kind_does_not_write_cookie(runtime, client) -> None:
+    """…but only a real form submit persists the selection, so a drive-by
+    scope can't overwrite the operator's saved kind facet."""
+    resp = client.get("/drive?k=paper", follow_redirects=False)
+    assert resp.status_code == 200
+    assert "items_kinds" not in resp.cookies
+
+
+def test_drive_unfaceted_kind_renders_other_chip(runtime, client) -> None:
+    """A kind with no facet of its own (Status lists every kind in ``refs``)
+    still renders a checkbox, so the scope survives the next form submit."""
+    resp = client.get("/drive?k=job")
+    assert resp.status_code == 200
+    assert runtime.store.recent_kinds == ["job"]
+    assert 'value="job"' in resp.text
+
+
+def test_status_kind_chips_link_into_drive(client, monkeypatch) -> None:
+    """The Health tab's "Refs by kind" chips pivot into the general browse
+    surface rather than opening a separate single-purpose listing page."""
+    from precis_web.routes import status as status_mod
+
+    monkeypatch.setattr(
+        status_mod, "_kind_counts", lambda store: [{"kind": "paper", "count": 7}]
+    )
+    resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    # folder=* rides along so the list's total matches the count on the chip
+    # (drafts/todos mostly live inside folders, which the landing hides).
+    assert "/drive?k=paper&amp;folder=*" in resp.text
+
+
 def test_folder_options_survives_cyclic_parent_chain() -> None:
     """A corrupted ``folder`` table where a folder is its own ancestor
     (300 -> parent 301 -> parent 300) must not stack-overflow the

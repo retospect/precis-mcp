@@ -1045,7 +1045,7 @@ class FakeStore(_FakeStoreBase):
     ):
         """Canned recent source refs for the /drive default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
-        ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_has_chunks``
+        ``self.recent_kinds`` / ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_has_chunks``
         / ``self.recent_has_schedule`` / ``self.recent_parent_id`` /
         ``self.recent_unfiled_only`` / ``self.recent_ref_ids`` /
         ``self.recent_deleted`` / ``self.recent_offset`` record the filters.
@@ -1058,6 +1058,7 @@ class FakeStore(_FakeStoreBase):
         ``self.recent_untried`` — the FakeStore carries no ``ref_events``,
         so the real last-manual-open ordering is exercised against real PG
         in ``tests/precis_web/test_drive_sql.py`` instead."""
+        self.recent_kinds = list(kinds)
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
         self.recent_has_chunks = has_chunks

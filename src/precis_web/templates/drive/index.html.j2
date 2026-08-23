@@ -148,7 +148,11 @@
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Folder</label>
       <select name="folder" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm max-w-[12rem]">
-        <option value="">Any</option>
+        <option value="">Top level</option>
+        {# "Anywhere" (folder=*) drops the top-level filter instead of
+           scoping to one folder — filed artifacts list beside unfiled
+           ones, so a kind's list matches its real total. #}
+        <option value="*" {% if folder == '*' %}selected{% endif %}>Anywhere</option>
         {% for f in folder_options %}
         <option value="{{ f.id }}" {% if folder == f.id | string %}selected{% endif %}>{{ f.label }}</option>
         {% endfor %}
@@ -275,6 +279,23 @@
        class="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50">
       🔁 Schedules
     </a>
+  </div>
+  {% endif %}
+
+  {# ── Other: kinds the deep link named that have no facet of their own
+     (Status's "Refs by kind" chips cover every kind in `refs`). Rendered
+     server-side from the selection, not from a def list — the point is to
+     keep a scope like ?k=job visible and serializable across a submit. #}
+  {% if other_kind_defs %}
+  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+    <span class="text-slate-500 mr-1">Other</span>
+    {% for kk in other_kind_defs %}
+    <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
+           :class="kinds.includes('{{ kk }}') ? 'bg-slate-200 border-slate-400 text-slate-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
+      <input type="checkbox" name="k" value="{{ kk }}" x-model="kinds" class="sr-only" />
+      <span>{{ kk }}</span>
+    </label>
+    {% endfor %}
   </div>
   {% endif %}
 

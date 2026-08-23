@@ -49,7 +49,11 @@ Nav (template ``templates/base.html.j2``; badge counts
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag
 facets, ``sort=relevance|recency|oldest|untried``, ``state=stub|deleted``)
 grafted onto the folder tree + CRUD. The no-query landing lists unfiled
-refs by ``updated_at``. ``state=stub`` is the downloads queue: fetchable
+refs by ``updated_at``; ``folder=*`` ("Anywhere") drops that top-level
+filter so a whole-kind pivot — Status's "Refs by kind" chips link here —
+counts filed artifacts too. An explicit ``k=`` in the URL beats the
+``items_kinds`` cookie, but only a form submit (``submitted=1``) writes it,
+so a deep link can't clobber the operator's saved facet. ``state=stub`` is the downloads queue: fetchable
 stubs only (DOI/arXiv/S2 id present, shared predicate
 ``precis/store/_stub_predicate.py::stub_predicate_sql``), default
 ``sort=untried`` via ``manual:open`` ``ref_events``; opening a row beacons

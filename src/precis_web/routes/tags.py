@@ -128,8 +128,11 @@ async def refs_by_tag(
 
     * ``?namespace=NS&value=V`` — every ref carrying the tag (the
       original "Tags table → view N refs" pivot)
-    * ``?kind=K`` — every live ref of one kind (the Status page
-      "Refs by kind" chip pivot; DRY with the tag-pivot view above)
+    * ``?kind=K`` — every live ref of one kind (DRY with the tag-pivot
+      view above; no longer linked from the UI — the Status page's
+      "Refs by kind" chips now land on ``/drive?k=K&folder=*``, the
+      general browse surface, rather than opening this single-purpose
+      listing — but kept as a URL shape and as the tag+kind base)
     * ``?namespace=NS&value=V&kind=K`` — intersection: refs of one
       kind that also carry the tag
 

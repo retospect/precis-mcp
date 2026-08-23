@@ -119,6 +119,13 @@ _KIND_ICON = {
 #: normalization — the tag itself no longer exists).
 _WORK_KINDS: tuple[str, ...] = ("quest", "todo")
 
+#: ``folder=*`` — the "anywhere" sentinel for the folder facet: no folder
+#: scope *and* no top-level filing filter, so filed artifacts list beside
+#: unfiled ones. The plain landing (``folder=``) hides anything filed; a
+#: whole-kind pivot (the Status page's "Refs by kind" chips) needs the
+#: complete set or its count contradicts the chip that linked here.
+_FOLDER_ANY = "*"
+
 
 def _artifact_kinds(request: Request) -> list[str]:
     """Kinds declared ``role='artifact'`` in this build (minus folder).
@@ -329,7 +336,10 @@ async def index(
     …)``, not scoped to the ``paper`` kind, by design: chunk presence
     is meaningful for any source kind, not just papers); ``folder=`` (a
     folder ``ref_id``) narrows the no-query landing to one folder's
-    direct children — the same facet the sidebar tree's links drive;
+    direct children — the same facet the sidebar tree's links drive —
+    while ``folder=*`` ("Anywhere") drops the default top-level filter
+    instead, listing filed artifacts beside unfiled ones so a whole-kind
+    pivot shows the kind's real total;
     ``sort=recency`` orders newest-first; ``sort=untried`` orders by last
     manual-open attempt (never-tried first, then oldest-tried — the
     default for the downloads/acquisition queue, i.e. ``state=stub`` or
@@ -348,14 +358,19 @@ async def index(
 
     Kind selection persists in an ``items_kinds`` cookie (unchanged
     name — pre-dates the merge, no reason to churn a cookie key): an
-    explicit submit (``submitted=1``) sets it; a fresh visit reads it
-    (or defaults to every source kind).
+    explicit submit (``submitted=1``) sets it; a fresh visit with no
+    ``k=`` reads it (or defaults to every source kind). An explicit
+    ``k=`` in the URL is authoritative even without ``submitted`` — a
+    deep link (Status's "Refs by kind" chips, a shared URL) means the
+    kinds it names — but only a real form submit writes the cookie, so
+    such a drive-by scope can't overwrite the operator's saved pick.
     """
     store = get_store(request)
     q = (q or "").strip()
 
-    if submitted:
-        selected_kinds = [x.strip() for x in k if x.strip()]
+    url_kinds = [x.strip() for x in k if x.strip()]
+    if submitted or url_kinds:
+        selected_kinds = url_kinds
     else:
         cookie = request.cookies.get("items_kinds", "")
         selected_kinds = [x for x in cookie.split(",") if x] or list(
@@ -411,6 +426,7 @@ async def index(
     until_dt = _parse_date(until)
     folder_raw = (folder or "").strip()
     folder_id = int(folder_raw) if folder_raw.isdigit() else None
+    folder_any = folder_raw == _FOLDER_ANY
     page = max(1, page)
     offset = (page - 1) * _PAGE_SIZE
 
@@ -444,6 +460,13 @@ async def index(
     # role='artifact' work kind (``todo``) lists once, under "Work".
     work_kind_defs = list(_WORK_KINDS)
     artifact_kind_defs = [k for k in artifact_kind_defs if k not in _WORK_KINDS]
+    # A deep link can scope to a kind that has no chip — Status's "Refs by
+    # kind" lists every kind in ``refs`` (job, finding, citation, …), not
+    # just the browsable facets. Render those as an "Other" chip row so the
+    # scope is visible and, more importantly, survives the next form submit
+    # instead of silently vanishing with no input to serialize it.
+    _faceted = {*_DEFAULT_SOURCE_KINDS, *artifact_kind_defs, *work_kind_defs}
+    other_kind_defs = [kk for kk in selected_kinds if kk not in _faceted]
 
     rows: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
@@ -499,9 +522,10 @@ async def index(
         # The default top level hides anything filed into a folder — a
         # folder's contents live only inside it (still findable via search,
         # which ignores folders). When a folder *is* selected we show its
-        # children instead; the trash view (``deleted``) shows every deleted
-        # ref regardless of where it was filed.
-        unfiled_only = folder_id is None and not show_deleted
+        # children instead; the trash view (``deleted``) and the "Anywhere"
+        # sentinel (``folder=*``) show every ref regardless of where it was
+        # filed.
+        unfiled_only = folder_id is None and not show_deleted and not folder_any
         recent, has_next = await asyncio.to_thread(
             _recent_rows,
             store,
@@ -552,8 +576,11 @@ async def index(
         f"?{request.url.query}" if request.url.query else ""
     )
 
-    # Pager links preserve every filter, only ``page`` changes.
-    _pager_params: list[tuple[str, str]] = [("submitted", "1")]
+    # Pager links preserve every filter, only ``page`` changes. ``submitted``
+    # rides along only when this request was one: paging a deep-linked scope
+    # must not start writing the kind cookie halfway through (the explicit
+    # ``k=`` entries below carry the selection either way).
+    _pager_params: list[tuple[str, str]] = [("submitted", "1")] if submitted else []
     if q:
         _pager_params.append(("q", q))
     _pager_params.append(("sort", sort))
@@ -611,7 +638,7 @@ async def index(
     # ``fetch_claimed=``) are the other notice sources; a bad folder
     # bookmark wins if somehow more than one fires at once (folder
     # resolution failing is the more actionable thing to surface).
-    if folder_raw and current is None:
+    if folder_raw and not folder_any and current is None:
         notice = f"folder #{folder_id} not found (deleted?)"
     elif requeued > 0:
         stub = "stub" if requeued == 1 else "stubs"
@@ -651,6 +678,7 @@ async def index(
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
             "artifact_kind_defs": artifact_kind_defs,
             "work_kind_defs": work_kind_defs,
+            "other_kind_defs": other_kind_defs,
             "selected_kinds": selected_kinds,
             "tags": tags,
             "sort": sort,
