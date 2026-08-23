@@ -53,6 +53,22 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-08-23** — sampled 6 largest 08-15–08-23 sessions (5.3–19.5 MB, all
+  in the primary checkout). Rule D's `echo "==="` half is fixed (0/6 files,
+  vs. 73% of one session's Bash calls pre-fix); `sed -n` half is not (2–76
+  calls/file still). Two new patterns filed as Rules E/F in
+  `token-review-hook-gaps`: (e) raw `tail .../tasks/<id>.output` polling for
+  background-job status instead of the `Monitor` tool (~111 polls vs. 9
+  `Monitor` calls across the sample, 3/6 files used `Monitor` zero times);
+  (f) one session (`b30f9d07`, web-basic-auth feature build) ran almost fully
+  un-delegated — 366 raw Bash, 104 Edit, 0 `coder` dispatches for standard
+  multi-file feature work, plus 34 raw `ssh melchior` calls with 0
+  cluster-ops delegation (Rule B confirmed still ignored, at unusually high
+  volume) — flagged as a candidate Edit-count nudge, held for recurrence
+  before committing to a hook. Rules A–C: cluster-ops delegation and
+  compact-thrash re-reads both showed up mixed (2/6 files clean, others still
+  re-reading governing docs 4–10× across compacts) — no regression, no new
+  fix warranted this pass.
 - **2026-08-15** — sampled 6 largest 08-08–08-15 sessions (6–15 MB). New
   pattern (the 07-29/08-07 hook fixes are holding — cluster-ops delegation and
   coderef-nudge both confirmed working): `sed -n '<range>p' <local-file>`

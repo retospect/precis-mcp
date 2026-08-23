@@ -25,4 +25,24 @@ Concentrated in primary-checkout orchestration sessions, not worktree feature
 sessions. The 07-29 fixes are holding (cluster-ops delegation + coderef nudge
 confirmed working in the same sample).
 
+2026-08-23 pass adds two more, from the 6 largest sessions since 08-15
+(19.5MB–5.3MB; `echo "==="` narration is now essentially gone — 0/6 files —
+so that half of Rule D shipped; `sed -n` is not fixed, still 2–76 calls/file):
+(e) **Rule E**: raw `Bash tail -N .../tasks/<id>.output` polling for
+background-job status instead of the `Monitor` tool, often bundled with a
+`git log`/`git rev-parse` probe in the same call — ~111 raw polls vs. 9
+`Monitor` calls across the 6-file sample (3 of 6 files used `Monitor` zero
+times). Nudge repeated `tail .../tasks/*.output` on the same path within a
+session toward `Monitor`. (f) **Rule F**: session `b30f9d07` (web-basic-auth
+feature build) ran almost entirely un-delegated — 366 raw `Bash`, 104 `Edit`,
+32 `Write`, **zero** `coder` dispatches for standard multi-file feature work
+(`auth.py` edited 22×, `users.py` 16×, `test_auth.py` 13×), plus 34 raw
+`ssh melchior` calls with zero `cluster-ops`/`cluster-admin` dispatch (Rule B
+confirmed still firing-but-ignored, at unusually high volume in this one
+session). Candidate: a PreToolUse-on-Edit nudge that counts same-session
+Edit/Write calls against feature-shaped files and suggests `coder` dispatch
+past a threshold — orthogonal to the existing Bash-only rules, so likely a
+separate hook. Not yet confirmed as a repeat-session pattern (single session
+so far); watch the next pass for recurrence before committing to the hook.
+
 test: hook unit tests on the new patterns.

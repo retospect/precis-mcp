@@ -198,11 +198,16 @@ def _walk_md_files(root: Path) -> Iterable[Path]:
     """Yield every `.md`/`.markdown` file under `root`, depth-first,
     sorted within each directory for stable output order. Skips
     `_SKIP_DIRS` and any directory whose name starts with `.`.
+
+    Symlinks are never followed: `root` is a sandbox boundary, and a
+    symlinked directory can loop the walk or escape it entirely.
     """
     if not root.is_dir():
         return
     entries = sorted(root.iterdir(), key=lambda p: p.name)
     for entry in entries:
+        if entry.is_symlink():
+            continue
         if entry.is_dir():
             if entry.name in _SKIP_DIRS or entry.name.startswith("."):
                 continue

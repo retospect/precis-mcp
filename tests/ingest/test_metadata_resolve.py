@@ -261,13 +261,14 @@ def _titleless_paper(
     slug: str,
     n: int,
     title: str = "",
+    year: int | None = None,
     chunks: tuple[str, ...] = (),
     doi: str | None = None,
     tag: bool = False,
 ) -> int:
     """A chunked (``pdf_sha256`` set) paper with N body chunks. ``tag=False``
     leaves it *untagged* — the case the widened selection must now reach."""
-    ref = store.insert_ref(kind="paper", slug=slug, title=title)
+    ref = store.insert_ref(kind="paper", slug=slug, title=title, year=year)
     sha = f"{n:064x}"
     with store.pool.connection() as conn, conn.transaction():
         conn.execute(
@@ -302,9 +303,10 @@ def test_title_candidates_scans_beyond_chunk0(store: Store) -> None:
             "M.F. Thorpe, Cavendish Laboratory",
         ),
     )
-    cands = _title_candidates(store, _ref(store, rid))
+    cands, trusted = _title_candidates(store, _ref(store, rid))
     assert "Continuous deformations in random networks" in cands
     assert all("ScienceDirect" not in c for c in cands)
+    assert not trusted  # scraped from chunks, not the stored title
 
 
 def test_title_candidates_filter_furniture_and_strip_markdown(store: Store) -> None:
@@ -320,7 +322,7 @@ def test_title_candidates_filter_furniture_and_strip_markdown(store: Store) -> N
             "Jianmo Ni, Chen Qu",
         ),
     )
-    cands = _title_candidates(store, _ref(store, rid))
+    cands, _trusted = _title_candidates(store, _ref(store, rid))
     # Furniture (received-line, URL, masthead) dropped; markdown stripped; the
     # real title is the first candidate (it precedes the author line).
     assert cands[0] == "Large Dual Encoders Are Generalizable Retrievers"
@@ -330,11 +332,14 @@ def test_title_candidates_filter_furniture_and_strip_markdown(store: Store) -> N
 def test_track2_scans_past_missing_candidate(store: Store) -> None:
     # First candidate misses S2; the resolver must keep scanning to the real
     # title in chunk 1 rather than giving up (the old single-query behaviour).
+    # The ref carries a year matching the hit's, so the scraped-title
+    # corroboration gate is satisfied and the verdict stays auto.
     rid = _titleless_paper(
         store,
         slug="scanpast",
         n=0x103,
         title="",
+        year=1985,
         chunks=(
             "Preliminary Notes And Acknowledgements Section",
             "Continuous deformations in random networks",
@@ -346,7 +351,7 @@ def test_track2_scans_past_missing_candidate(store: Store) -> None:
         title: {
             "title": title,
             "authors": [{"name": "Thorpe, M"}],
-            "year": None,
+            "year": 1985,
             "doi": "10.1016/scanpast",
         },
     }
@@ -355,6 +360,49 @@ def test_track2_scans_past_missing_candidate(store: Store) -> None:
     )
     r = _verdict(out, rid)
     assert r.verdict == "auto" and r.doi == "10.1016/scanpast"
+
+
+def test_track2_scraped_title_without_year_is_review(store: Store) -> None:
+    # gr239230: for a title-less PDF the query title is scraped from body
+    # chunks, so query-vs-hit similarity is near-tautological — without an
+    # affirmative year match the hit must go to review, never auto-write.
+    rid = _titleless_paper(
+        store,
+        slug="scraped-noyr",
+        n=0x104,
+        title="",
+        chunks=("Continuous deformations in random networks",),
+    )
+    cand: dict[str, Any] = {
+        "title": "Continuous deformations in random networks",  # sim = 1.0
+        "authors": [{"name": "Thorpe, M"}],
+        "year": 1985,  # ref.year is None → no corroboration
+        "doi": "10.1016/wrongpaper",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    r = _verdict(out, rid)
+    assert r.verdict == "review" and r.reason == "scraped-title-no-corroboration"
+    # Nothing written: the DOI stayed unattached.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM ref_identifiers WHERE ref_id=%s AND id_kind='doi'", (rid,)
+        ).fetchone()
+    assert row is None
+
+
+def test_track2_stored_title_without_year_still_auto(store: Store) -> None:
+    # A usable stored title is independent ground truth — similarity alone
+    # still auto-applies even when neither side carries a year.
+    rid = _triage_paper(store, slug="stored-noyr", title="A Study of Widget Dynamics")
+    cand: dict[str, Any] = {
+        "title": "A Study of Widget Dynamics",
+        "authors": [{"name": "X"}],
+        "year": None,
+        "doi": "10.1/stored-noyr",
+    }
+    out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
+    r = _verdict(out, rid)
+    assert r.verdict == "auto" and r.doi == "10.1/stored-noyr"
 
 
 def test_widened_selection_reaches_untagged_titleless(store: Store) -> None:

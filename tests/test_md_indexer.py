@@ -48,6 +48,22 @@ def test_walk_skips_dot_dirs_and_skip_dirs(tmp_path: Path) -> None:
     assert found == ["keep/doc.md"]
 
 
+def test_walk_never_follows_symlinks(tmp_path: Path) -> None:
+    # gr239368: a symlinked dir can loop the walk (self-link) or escape the
+    # root (link to an outside tree); a symlinked file escapes it too.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.md").write_text("# Leak\n", encoding="utf-8")
+    root = tmp_path / "root"
+    _write(root, "real.md", "# Real\n")
+    (root / "loop").symlink_to(root, target_is_directory=True)
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    (root / "filelink.md").symlink_to(outside / "leak.md")
+
+    found = sorted(p.relative_to(root).as_posix() for p in _walk_md_files(root))
+    assert found == ["real.md"]
+
+
 def test_walk_stable_sorted_order(tmp_path: Path) -> None:
     _write(tmp_path, "z.md", "# Z\n")
     _write(tmp_path, "a.md", "# A\n")

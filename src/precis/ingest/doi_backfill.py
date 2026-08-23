@@ -10,7 +10,7 @@ confident first:
   exact paper, so no similarity gamble.
 * **Phase B — title match.** For the rest, reuse
   :func:`precis.ingest.metadata_resolve._resolve_one`'s similarity/year/
-  ownership GATING, but write ONLY the recovered DOI — never
+  ownership/scraped-title GATING, but write ONLY the recovered DOI — never
   ``apply_resolution`` (that would also rewrite title/authors/cards,
   which a bare DOI recovery has no business touching).
 

@@ -114,3 +114,16 @@ Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict
   on those columns, then drop via forward migration. Dead bloat all <5%,
   vacuum nominal. Fleet note: melchior `llm_summarize` logged 66 transient
   summarizer 504s against 117k chunk_summaries written — noisy-but-working.
+
+- **2026-08-23** — Healthy; re-confirms 2026-08-22. No long-runners; dead
+  bloat all <5% (worker_logs 3.2%, autovac current). Drop candidates
+  unchanged: `llm_call_log` request/response hash indexes (~140 MB, lifetime
+  idx_scan=0) — still awaiting the verify-then-drop migration. New
+  observations: `app_settings` 2.9M cumulative seq scans on 13 rows — a
+  13-row table seq-scans by design, but the volume says a caller polls
+  `live_config` hot (see `docs/backlog/db-resident-settings.md`, cache TTL
+  angle); `chunk_tags`/`chunk_embeddings` show no autovacuum in
+  pg_stat_user_tables — dead ratios are fine (2.7%/0.4%), watch next pass.
+  `tag_embeddings_vector_hnsw` shows idx_scan=0 this window but was
+  deliberately kept 2026-08-07 (backs ANN below size threshold) — do not
+  re-flag.

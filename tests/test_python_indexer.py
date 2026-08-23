@@ -31,6 +31,22 @@ def _write(repo: Path, relpath: str, content: str) -> Path:
     return file
 
 
+def test_walk_never_follows_symlinks(tmp_path: Path) -> None:
+    # gr239368: a symlinked dir can loop the walk (self-link) or escape the
+    # root (link to an outside tree); a symlinked file escapes it too.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.py").write_text("X = 1\n", encoding="utf-8")
+    root = tmp_path / "root"
+    _write(root, "real.py", "Y = 2\n")
+    (root / "loop").symlink_to(root, target_is_directory=True)
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    (root / "filelink.py").symlink_to(outside / "leak.py")
+
+    idx = index_repo(root)
+    assert sorted(idx.modules) == ["real"]
+
+
 def _by_qualname(idx: RepoIndex, qn: str) -> Symbol:
     """Look up a symbol or fail the test with a useful message."""
     sym = idx.symbol(qn)

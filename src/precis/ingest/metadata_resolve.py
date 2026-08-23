@@ -13,8 +13,12 @@ resolves from what we ALREADY hold:
 
 Trust: Track 1 auto-applies unless Crossref's own title is junk (book
 front-matter → discard list). Track 2 auto-applies only at/above
-``_AUTO_SIM`` with a compatible year; ``[_REVIEW_SIM, _AUTO_SIM)`` is
-surfaced for review, never auto-written. Nothing is deleted here;
+``_AUTO_SIM`` with a compatible year — and when the query title was
+*scraped* from body chunks rather than taken from ``refs.title``, only
+with an affirmative year match on both sides (query-vs-hit similarity is
+near-tautological for a scraped query, so it can't corroborate alone).
+``[_REVIEW_SIM, _AUTO_SIM)`` is surfaced for review, never auto-written.
+Nothing is deleted here;
 not-a-paper candidates (book cruft, held-without-chunks) are only flagged.
 
 Reuses ``lookup_crossref`` / ``lookup_s2`` (both carry tenacity backoff),
@@ -178,18 +182,24 @@ def _is_title_like(line: str) -> bool:
     return letters >= 0.5 * len(line)
 
 
-def _title_candidates(store: Store, ref: Any) -> list[str]:
-    """Ordered title-query candidates for the S2 title track.
+def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
+    """Ordered title-query candidates for the S2 title track, plus whether
+    they are *trusted*.
 
-    The stored title wins if usable. Otherwise scan the first
-    ``_TITLE_SCAN_CHUNKS`` body chunks — not just chunk 0's first line — and
-    collect title-like lines in document order (the title usually precedes the
-    authors/abstract, so first-seen is the best guess; the Track-2 similarity
-    gate resolves ambiguity by keeping the best-matching candidate).
+    The stored title wins if usable — that single candidate is trusted:
+    it is independent ground truth, so query-vs-hit similarity genuinely
+    validates the hit. Otherwise scan the first ``_TITLE_SCAN_CHUNKS`` body
+    chunks — not just chunk 0's first line — and collect title-like lines in
+    document order (the title usually precedes the authors/abstract, so
+    first-seen is the best guess; the Track-2 similarity gate resolves
+    ambiguity by keeping the best-matching candidate). Scraped candidates
+    are *untrusted*: the scraped line IS the search query, so a high
+    query-vs-hit similarity only proves S2 found something title-shaped like
+    it, not that the hit is this paper.
     """
     t = (ref.title or "").strip()
     if t and not is_garbage_title(t) and not is_pii(t):
-        return [t]
+        return [t], True
     blocks = store.blocks.list_blocks_for_ref(
         ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
     )
@@ -206,8 +216,8 @@ def _title_candidates(store: Store, ref: Any) -> list[str]:
             seen.add(key)
             cands.append(line)
             if len(cands) >= _MAX_TITLE_CANDIDATES:
-                return cands
-    return cands
+                return cands, False
+    return cands, False
 
 
 def _similarity(store: Store, a: str, b: str) -> float:
@@ -279,7 +289,7 @@ def _resolve_one(
     # returned title best matches its query. Extra candidates only raise recall
     # — the similarity gate below still guards every write. Early-exit once a
     # candidate already clears the auto bar so we don't spend needless lookups.
-    candidates = _title_candidates(store, ref)
+    candidates, trusted_title = _title_candidates(store, ref)
     if not candidates:
         return Resolution(rid, "miss", "title", "no-query-title")
     best: Resolution | None = None
@@ -313,6 +323,12 @@ def _resolve_one(
             "review",
             ("year-mismatch" if not years_ok else "low-similarity"),
         )
+        return res
+    # A scraped query title can't corroborate its own hit (S2 ranked the hit
+    # by closeness to that very string), so auto needs an affirmative year
+    # match on both sides; a missing year goes to review, not through.
+    if not trusted_title and (ref.year is None or res.year is None):
+        res.verdict, res.reason = "review", "scraped-title-no-corroboration"
         return res
     # High-confidence — but a recovered DOI owned by another live ref means
     # this is a duplicate, not a metadata fix: hand to review, don't write.
