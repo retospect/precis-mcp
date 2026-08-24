@@ -455,6 +455,12 @@ dev = [
     "types-tqdm>=4.70.0.20260805",
     "types-xmltodict>=1.0.1.20260518",
     "types-networkx>=3.6.1.20260728",
+    # Diff-coverage gate: the full-suite ship gate (scripts/ship without
+    # --impacted) runs pytest under coverage and diff-cover then fails the
+    # ship if changed src lines aren't executed by a test. Also feeds
+    # scripts/mutate-diff its per-test contexts (--cov-context=test) so each
+    # mutant runs only its covering tests. Not used by /land or scripts/test.
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -633,3 +639,18 @@ testpaths = ["tests"]
 # isolation holds. For a clean single-test debug session
 # (pdb / -s output), override with ``-n0``.
 addopts = "-n auto"
+
+[tool.coverage.run]
+# relative_files: coverage runs INSIDE the gate container (/app) but
+# diff-cover runs on the HOST (the warm gate container has no .git — source
+# arrives via `git archive` — so it can't compute the diff). Relative paths
+# (src/precis/…) make one coverage.xml valid in both places.
+relative_files = true
+
+[tool.coverage.report]
+# Defensive-only lines a diff-coverage gate must not force tests for.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]

@@ -15,7 +15,9 @@ Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
 Work happens in worktrees (`claude -w <name>`). **`/land`** = ship
 (`scripts/ship --impacted`: commit WIP → sync main → container gate ruff +
 mypy + impacted pytest → squash-merge to `main`). **`/go`** = ship with the
-full suite + `scripts/deploy`. **`/qland`** = ungated burst-land
+full suite + diff-coverage gate (changed src lines need tests) +
+`scripts/deploy`, plus a budgeted advisory mutation pass
+(`scripts/mutate-diff`). **`/qland`** = ungated burst-land
 (`scripts/ship --quick`: commit WIP → sync → squash-merge, NO gate) for when
 many trees are in flight and gates congest — qland them one by one, then one
 `/go` gates the integrated `main` + deploys (ship skips the push when the

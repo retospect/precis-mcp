@@ -119,8 +119,10 @@ precis-mcp/
 - [ ] `uv run ruff format --check .` passes.
 - [ ] `uv run mypy src tests` passes.
 - [ ] The full suite passes in the dev container (`scripts/test`; the
-      torch-free host can only run extra-free subsets) with coverage on
-      touched modules ≥ existing level.
+      torch-free host can only run extra-free subsets), and changed `src/`
+      lines are test-executed — the full-suite ship gate enforces this
+      (diff-cover, min `PRECIS_DIFF_COVER_MIN=90`; see
+      `docs/conventions/testing.md` §Coverage posture).
 - [ ] If schema changed: a new `migrations/NNNN_<slug>.sql` exists; old
       migrations are unmodified; the migration applies cleanly to a
       fresh DB.

@@ -116,14 +116,28 @@ See also the `test_leak_hardfail` / `docker_wedge_test_creds` /
 `test_db_shared_singleton` gotchas for specific failure modes this harness
 guards against or can trip on.
 
-## Coverage posture: deliberately unmeasured
+## Coverage posture: diff-gated, never %-tracked
 
-No coverage tool is wired into `scripts/test`/`scripts/ship` — this is a
-decision, not an oversight. The gate is `ruff` + `mypy` + `pytest`; a
-coverage percentage is not a merge criterion and never gates a ship. The
-risk class coverage numbers are meant to proxy for — SQL paths FakeStore
-can't see — is already covered directly by the real-PG-companion-test
-policy above, which is a sharper signal than a line-coverage threshold.
+A repo-wide coverage percentage is still not a merge criterion — a big
+number on a mature tree proxies nothing. What **is** gated (since
+2026-08-24): **changed `src/` lines must be executed by a test.** The
+full-suite ship path (`/go`, bare `scripts/ship`) runs pytest under
+pytest-cov in the gate container, then `diff-cover` on the **host** (the
+warm gate container has no `.git` — source arrives via `git archive`, so
+the container can't compute the diff; `relative_files = true` in pyproject
+makes one `coverage.xml` valid in both places). Under
+`PRECIS_DIFF_COVER_MIN` (default 90) the ship dies with the untested
+changed lines listed. `/land --impacted` is exempt — its testmon-narrowed
+run would under-count by construction. `PRECIS_DIFF_COVER_MIN=0` is the
+deliberate override; say why in the ship message. Defensive-only lines
+(`TYPE_CHECKING`, `NotImplementedError`, `@overload`) are excluded via
+`[tool.coverage.report] exclude_also` — extend that list rather than
+sprinkling `# pragma: no cover`.
+
+Execution is necessary, not sufficient: the real-PG-companion-test policy
+above still stands (a covered line through FakeStore proves nothing about
+its SQL), and the mutation pass below is what checks that covering tests
+actually *assert*.
 
 ## Judging effectiveness (instead of a coverage %)
 
@@ -142,10 +156,23 @@ never uses. Fixing those is the highest-leverage runtime win: swap
 into the `--fast` set. Don't delete tests to go faster; re-home the
 mis-classified ones.
 
-**Catch power — mutation-spot-check, don't count lines.** Line coverage says
-a line *ran*, not that a test would *fail* if it broke. When you want a real
-read on whether a module's tests assert or merely execute, run a mutation
-pass over that one module (periodic, never in the gate):
+**Catch power — mutation, budgeted on the ship path + spot-checks on demand.**
+Line coverage says a line *ran*, not that a test would *fail* if it broke —
+and execute-but-barely-assert is the characteristic failure mode of
+agent-written tests. Two tools:
+
+*On `/go` (automatic, advisory):* `scripts/mutate-diff` mutates only the
+just-shipped commit's **covered** changed `src/` lines and runs each mutant
+against just the tests that covered that line (per-test contexts recorded by
+`scripts/ship --mutate`), capped by `PRECIS_MUTATE_MAX` (20) and
+`PRECIS_MUTATE_BUDGET` (600s). It never blocks — each `SURVIVED` line is a
+change your tests don't notice, harvested as a residual in `/go` step 10.
+Diff-targeting is why it stays cheap: mutmut mutates whole files and can't
+use the gate's coverage contexts for test selection.
+
+*Whole-module spot-check (manual, periodic):* when you want a deep read on
+one risk-dense module rather than a diff, run mutmut over it in a dev
+shell:
 
 ```
 # in a dev shell (scripts/dev); pick ONE hot module, not the tree.
@@ -157,8 +184,9 @@ uv run --with mutmut mutmut results        # survivors = untested behaviour
 Survivors are the honest to-do list: each is a code change your tests don't
 notice. Target the risk-dense modules (review-tier logic, SQL builders,
 routing/threshold math), not everything. A surviving-mutant report is a
-sharper "are these tests effective?" answer than any coverage number, which
-is why it lives here and not in the gate.
+sharper "are these tests effective?" answer than any coverage number — the
+diff pass keeps new code honest per-ship; this spot-check is for auditing
+stock.
 
 **What caught a real bug — leave a one-line trace.** When a red gate (or a
 `--fast`/`--impacted` run) actually stops a real defect from shipping, note

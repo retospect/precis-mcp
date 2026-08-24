@@ -87,6 +87,15 @@ memory/
 # use a HYPHEN, which the old `.testmondata.*` (dot) missed, so `git add -A` swept
 # a 4.7MB `-wal` blob into a ship once. `.testmondata*` catches all of them.
 .testmondata*
+# Gate coverage artifacts (scripts/ship full path): coverage.xml feeds the
+# host-side diff-cover gate, .coverage* (sqlite + per-process shards) feeds
+# scripts/mutate-diff's covering-test lookup. Regenerated every full gate —
+# never shipped.
+coverage.xml
+.coverage
+.coverage.*
+# scripts/mutate-diff's scratch diff patch — regenerated per run, not source.
+.mutate-diff.patch
 
 # scripts/nightly local full-build result (machine-specific state, not git)
 .nightly-status.md

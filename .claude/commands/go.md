@@ -1,7 +1,7 @@
 ---
 description: Implement the agreed spec, ship to main, and deploy to the cluster — the dark-factory one-keystroke. Run from inside a feature worktree.
 argument-hint: "[optional ship/commit message]"
-allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
+allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(scripts/mutate-diff:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
 ---
 
 You said **go**. Turn the spec we've established this session into shipped,
@@ -52,9 +52,13 @@ Optional ship message from the user: `$ARGUMENTS`
    squash-merge to `main` → reset the branch to the shipped `main` →
    local-main fast-forward. `/go` deliberately runs the **full** pytest suite
    here (no `--impacted`) — a deploy ships this code to the whole cluster, so
-   the gate must be authoritative, unlike `/land`'s testmon-narrowed run.
+   the gate must be authoritative, unlike `/land`'s testmon-narrowed run. The
+   full path also runs the **diff-coverage gate** (changed `src/` lines must
+   be executed by a test, min `PRECIS_DIFF_COVER_MIN`, default 90) —
+   `--mutate` additionally records per-test coverage contexts for step 7's
+   background mutation pass.
    ```
-   scripts/ship "<message>"
+   scripts/ship --mutate "<message>"
    ```
    This is also the settle-up step after a `/qland` burst: those merges were
    ungated, so this full gate validates the *integrated* `main`. When the
@@ -69,6 +73,11 @@ Optional ship message from the user: `$ARGUMENTS`
      (same container + test DB, against this worktree). (A lone
      `UniqueViolation` in an unrelated test is usually shared-`precis_test`
      pollution — clean the row, re-run.)
+   - **Red diff-coverage gate** — the diff-cover report above the `✖` lists
+     the exact changed lines no test executed. Write tests for them (spawn
+     `test-author` with the uncovered lines as the spec if they're
+     non-trivial) and re-run; `PRECIS_DIFF_COVER_MIN=0 scripts/ship …` is the
+     deliberate, say-why-in-the-ship-message override, not a reflex.
    - **Flake vs. real — classify before you re-run.** Infra flakes from a
      concurrent sibling gate look like reds but aren't your code. *Zero
      output after ruff* / dots stopping mid-run / `gwN crashed` = **OOM-137**;
@@ -108,6 +117,17 @@ Optional ship message from the user: `$ARGUMENTS`
    pending migrations via the precis-web role). If it exits non-zero,
    surface the failing ansible task verbatim — the cluster may be on mixed
    versions; do not declare success.
+
+   **Also launch the mutation pass in parallel** (background, advisory —
+   costs no wall time next to the deploy): `scripts/mutate-diff` bare. It
+   mutates only the just-shipped squash commit's covered `src/` lines and
+   runs each mutant against just its covering tests (the contexts
+   `--mutate` recorded), capped by `PRECIS_MUTATE_MAX`/`_BUDGET`. A
+   `SURVIVED` line means your tests don't notice that change — treat each
+   survivor as a step-10 residual (add the missing assertion now, or file
+   it); never ignore one silently. It's advisory: it cannot fail the ship,
+   and a "no .coverage / skipping" note (e.g. after a docs-only ship) is
+   fine to relay as-is.
 
 8. **Confirm — always end with this exact three-line block** (verify each
    line, don't assume; check `git rev-parse origin/main` for the sha):

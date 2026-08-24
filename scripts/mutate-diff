@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# scripts/mutate-diff — the deliberately-small mutation pass: budgeted,
+# diff-only, covering-tests-only, ADVISORY (survivors are a to-do list, not
+# a red gate). /go runs this after a green `scripts/ship --mutate`.
+#
+# What it does: mutates ONLY the src/ lines a commit changed that a test
+# actually covers (per the `.coverage` sqlite `scripts/ship --mutate` leaves
+# in the worktree root, `--cov-context=test`), and for each mutant runs ONLY
+# the tests that covered that line — not the whole suite. A survivor means a
+# changed, "covered" line has no test that actually pins its behaviour (a
+# gap diff-coverage can't see: diff-coverage only asks "was this line
+# executed", not "would a test notice if it broke").
+#
+# Usage:
+#   scripts/mutate-diff            # mutate HEAD's own diff (HEAD^..HEAD)
+#   scripts/mutate-diff <commit>   # mutate <commit>^..<commit>
+#
+# `<commit>` defaults to HEAD: scripts/ship squash-merges the branch to one
+# commit on main, so after a ship the worktree sits on exactly that squash
+# commit — HEAD^..HEAD IS the shipped diff.
+#
+# Env knobs (mirrors scripts/lib/mutate_driver.py's CLI):
+#   PRECIS_MUTATE_MAX     max mutants generated this run (default 20)
+#   PRECIS_MUTATE_BUDGET  wall-clock budget in seconds (default 600)
+#   PRECIS_MUTATE_TIMEOUT per-mutant pytest timeout in seconds (default 120)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+WORKTREE="$PWD"
+
+COMMIT="${1:-HEAD}"
+MAX="${PRECIS_MUTATE_MAX:-20}"
+BUDGET="${PRECIS_MUTATE_BUDGET:-600}"
+TIMEOUT="${PRECIS_MUTATE_TIMEOUT:-120}"
+
+# No coverage-with-contexts artifact — nothing to run against. Advisory, so
+# this is a skip, not a failure: a plain `scripts/ship` (no --mutate) never
+# produces per-test contexts, and that's a legitimate state to be in.
+if [[ ! -f .coverage ]]; then
+    echo "no .coverage with per-test contexts — run scripts/ship --mutate first; skipping mutation pass."
+    exit 0
+fi
+
+# Safety: the driver mutates src/ files in place on the bind mount (it
+# restores each one in a `finally` before moving to the next), so it needs a
+# clean src/ going in — otherwise a container crash mid-mutant and this
+# wrapper's own crash-recovery `git checkout -- src` below would eat real
+# uncommitted work instead of just reverting a stray mutant.
+if [[ -n "$(git status --porcelain -- src)" ]]; then
+    echo "ERR: src/ has uncommitted changes — commit or stash them first (the mutation pass needs a clean src/ to safely restore)." >&2
+    exit 1
+fi
+
+git diff -U0 --no-color "${COMMIT}^" "${COMMIT}" -- src > .mutate-diff.patch
+
+if [[ ! -s .mutate-diff.patch ]]; then
+    echo "nothing to mutate — ${COMMIT}^..${COMMIT} touches no src/."
+    rm -f .mutate-diff.patch
+    exit 0
+fi
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
+[[ -f "$INFRA_COMPOSE" ]] || {
+    echo "ERR: compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)" >&2
+    exit 1
+}
+# Per-worktree compose project, same isolation scripts/test and scripts/ship
+# use — see scripts/lib/compose-project.sh.
+source "${WORKTREE}/scripts/lib/compose-project.sh"
+COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+# Gate-slot admission (gr202193): cap concurrent heavyweight containers
+# fleet-wide, same as scripts/test/scripts/ship.
+source "${WORKTREE}/scripts/lib/gate-slot.sh"
+compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
+
+# Covering tests may hit Postgres — bring up the same co-located RAM test DB
+# scripts/test/scripts/ship use, with the same host-DB fallback warning.
+TEST_DB_ENV=()
+if compose up -d --wait precis-test-db >/dev/null 2>&1; then
+    TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
+else
+    echo "WARNING: precis-test-db didn't start — mutation pass falls back to the container's default test DB" >&2
+fi
+
+# Cleanup: always drop the scratch patch file. If the container died
+# mid-mutant it may have left a mutated file behind despite the driver's own
+# `finally` restore (e.g. a hard container kill) — a non-clean src/ at this
+# point is exactly that, so restore it (and say so; the driver's `finally`
+# is the primary defence, this is the belt-and-suspenders backstop).
+cleanup() {
+    gate_slot_release
+    rm -f .mutate-diff.patch
+    if [[ -n "$(git status --porcelain -- src)" ]]; then
+        echo "WARNING: src/ left dirty by the mutation pass (container died mid-mutant?) — restoring via 'git checkout -- src'." >&2
+        git checkout -- src
+    fi
+}
+trap cleanup EXIT
+
+gate_slot_acquire
+
+# --with coverage: the baked precis-dev venv predates the pytest-cov/coverage
+# dependency, so `--no-sync` alone won't see it — the UV_WITH bridge pattern
+# documented in scripts/test's header (resolves from uv.lock without an image
+# rebuild). Positional params passed as inner "$1"/"$2"/"$3" (the scripts/test
+# quoting trick) so no cross-shell re-quoting of MAX/BUDGET/TIMEOUT is needed.
+compose run --rm --no-deps -e UV_LINK_MODE=copy \
+    "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
+    -v "${WORKTREE}":/app precis-dev \
+    bash -lc 'uv run --no-sync --with coverage python scripts/lib/mutate_driver.py --patch .mutate-diff.patch --max-mutants "$1" --budget "$2" --per-mutant-timeout "$3"' \
+    _ "$MAX" "$BUDGET" "$TIMEOUT"

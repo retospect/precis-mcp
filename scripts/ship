@@ -44,11 +44,19 @@
 #         scripts/ship            # falls back to a generated message
 #         scripts/ship --impacted "…"   # /land: testmon-selected pytest, not the
 #                                        # full suite (also via PRECIS_SHIP_IMPACTED=1)
+#         scripts/ship --mutate "…"     # /go: additionally record per-test coverage
+#                                        # contexts for scripts/mutate-diff (also via
+#                                        # PRECIS_SHIP_MUTATE=1)
 #         scripts/ship --quick "…"      # /qland: NO gate at all — commit → sync →
 #                                        # squash-merge only (also via
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
 #                                        # many worktrees; main is unvalidated until
 #                                        # the next full gate (/go or bare ship).
+#
+# The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
+# pytest runs under pytest-cov in the container, then diff-cover on the HOST
+# (the warm gate container has no .git) fails the ship when changed src/ lines
+# aren't executed by any test (min PRECIS_DIFF_COVER_MIN, default 90).
 #
 # Plain git, no git-town: this repo runs flat feature branches on main, so the
 # only thing git-town did here was `fetch + merge main`. Its `ship` does
@@ -69,16 +77,24 @@ BRANCH="$(git branch --show-current)"
 # map, so the first impacted ship is a full run and later ones are the fast
 # selection. mypy + ruff always run in full regardless of this flag.
 IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
+# --mutate (or PRECIS_SHIP_MUTATE=1): record per-test coverage contexts
+# (--cov-context=test) during the full-suite gate and keep the .coverage
+# sqlite, so a follow-up scripts/mutate-diff can run each mutant against just
+# its covering tests. /go opts in; meaningless with --impacted (no coverage
+# runs there).
 # --quick (/qland): skip the gate ENTIRELY — no ruff/mypy/pytest, no gate
 # container, no gate slot. Everything else (ship lock, sync/merge, squash CAS
 # push, branch reset, local-main ff) runs unchanged, so the merge machinery
 # stays race-safe; only validation is deferred. Use for burst-landing many
 # in-flight worktrees, then run ONE full-gate integration (/go) over the
 # merged main.
+# Flags accepted in any order.
+MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
 while :; do
     case "${1:-}" in
         --impacted) IMPACTED=1; shift ;;
+        --mutate)   MUTATE=1; shift ;;
         --quick)    QUICK=1; shift ;;
         *) break ;;
     esac
@@ -257,6 +273,17 @@ testmon_from_container() {
     # literal and tar would miss the file testmon just built in /app.
     compose exec -T precis-gate sh -c 'ls /app/.testmondata* >/dev/null 2>&1' || return 0
     compose exec -T precis-gate sh -c 'cd /app && tar -cf - .testmondata*' \
+        | tar -C "$WORKTREE" --no-same-owner -xf - || true
+}
+
+# Pull the full-suite gate's coverage artifacts out of the warm container's
+# native /app (no bind mount, so they'd otherwise be lost on the next sync):
+# coverage.xml for the host-side diff-cover gate, .coverage (present only with
+# --mutate) for scripts/mutate-diff's covering-test lookup. No-op in bind mode
+# (they're written to the mounted worktree directly) and when no coverage ran.
+coverage_from_container() {
+    compose exec -T precis-gate sh -c 'ls /app/coverage.xml >/dev/null 2>&1' || return 0
+    compose exec -T precis-gate sh -c 'cd /app && tar -cf - coverage.xml $(ls .coverage 2>/dev/null)' \
         | tar -C "$WORKTREE" --no-same-owner -xf - || true
 }
 
@@ -445,8 +472,16 @@ for attempt in 1 2 3; do
             PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py'
             say "integration gate (ruff autofix · mypy · pytest --impacted + repo invariants) — ${GATE_MODE} gate"
         else
-            PYTEST_CMD="uv run pytest -q -n ${PYTEST_N}"
-            say "integration gate (ruff autofix · mypy · pytest) — ${GATE_MODE} gate, -n ${PYTEST_N}"
+            # Full authoritative path measures coverage too: pytest-cov writes
+            # /app/coverage.xml (xml only — no terminal table flooding the
+            # gate output), consumed by the host-side diff-cover gate below.
+            # --mutate additionally records WHICH test executed each line
+            # (per-test contexts in the .coverage sqlite) so scripts/mutate-diff
+            # can run each mutant against just its covering tests.
+            COV_ARGS="--cov=src --cov-report=xml:coverage.xml"
+            [[ "$MUTATE" == 1 ]] && COV_ARGS+=" --cov-context=test"
+            PYTEST_CMD="uv run pytest -q -n ${PYTEST_N} ${COV_ARGS}"
+            say "integration gate (ruff autofix · mypy · pytest+cov) — ${GATE_MODE} gate, -n ${PYTEST_N}"
         fi
         run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && ${PYTEST_CMD}" \
             || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
@@ -458,7 +493,32 @@ for attempt in 1 2 3; do
         say "amended ruff auto-fixes into the branch"
     fi
 
-    fi  # end of non-quick gate section
+    # ── diff-coverage gate (full path only, post-amend so HEAD's line
+    # numbers match the ruff-normalised source the suite actually ran) ────
+    # Every changed src/ line must have been executed by a test in the gate
+    # run above. Runs on the HOST: the warm container has no .git (source
+    # goes in via `git archive`), and coverage.xml carries relative paths
+    # (relative_files, pyproject) so it resolves here. Skipped when the diff
+    # touches no src/ Python — docs/tests/scripts changes have nothing to
+    # measure. PRECIS_DIFF_COVER_MIN=0 is the deliberate escape hatch; the
+    # tool being unavailable WARNs rather than blocks (same posture as the
+    # tailwind rebuild).
+    if [[ "$DOCS_ONLY" != 1 && "$IMPACTED" != 1 ]]; then
+        [[ "$GATE_MODE" == warm ]] && coverage_from_container
+        if grep -qE '^src/.*\.py$' <<< "$CHANGED"; then
+            DIFF_COVER_MIN="${PRECIS_DIFF_COVER_MIN:-90}"
+            if [[ -f coverage.xml ]] && command -v uvx >/dev/null 2>&1; then
+                say "diff-coverage gate — changed src lines need tests (min ${DIFF_COVER_MIN}%)"
+                uvx -q 'diff-cover>=9' coverage.xml --compare-branch=origin/main \
+                    --fail-under="$DIFF_COVER_MIN" \
+                    || die "diff coverage under ${DIFF_COVER_MIN}% — the report above lists the untested changed lines. Add tests for them (or, deliberately, PRECIS_DIFF_COVER_MIN=0) and re-run scripts/ship."
+            else
+                echo "WARNING: coverage.xml or uvx missing — skipping the diff-coverage gate"
+            fi
+        fi
+    fi
+
+    fi  # end of non-quick gate section (quick mode skips gate + diff-coverage)
 
     # Squash-merge to main via plumbing. If main moved during the gate (the
     # ancestor check fails) or the CAS lease is rejected, loop: re-sync picks
