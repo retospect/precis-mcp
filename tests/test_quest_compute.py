@@ -2948,6 +2948,15 @@ class TestBarrierAbsurdMagnitudeGuard:
         compute_mod.harvest_measures(store, qid)
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert "barrier_absurd" not in meta
+        # The guard's return value drives the logbook note — a normal barrier
+        # must produce NO nonphysical-barrier entry (mutation survivor: the
+        # early-exit `return False` flipped to True went unnoticed).
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert not any("nonphysical barrier" in b.text for b in logs)
 
     def test_large_negative_barrier_flagged_absurd(self, store: Any) -> None:
         """The guard checks MAGNITUDE: a -50 eV reading (sign/unit bug
