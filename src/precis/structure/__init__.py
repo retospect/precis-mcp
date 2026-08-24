@@ -25,6 +25,10 @@ Compute-adjacent seams, each with its own module docstring:
   per-layer · adsorbate site · coordination) powering the round-trip eval;
   ``handlers/structure.py::guard_energy_comparable`` refuses a
   cross-method-fingerprint ΔE.
+- `canonical` — periodic-symmetry canonical frame: ``geom_hash_c`` (invariant
+  under in-plane lattice translation/rotation/mirror) + ``normalize_scene``;
+  quest candidates opt in via ``StructureHandler.put(normalize=True)`` so
+  translation twins ("corner" vs "central") collapse to one candidate.
 """
 
 from __future__ import annotations

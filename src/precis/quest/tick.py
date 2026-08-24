@@ -673,7 +673,9 @@ def _explorers_creed(store: Store, quest_id: int, *, fr: Any | None = None) -> s
         "downshift weakens N–O) to the next variant that should push it "
         "further — transfer the mechanism, don't restate it. YOU choose the "
         "dopant, its placement, and coverage — this system never picks the "
-        "chemistry for you, only the ops that build what you choose.\n"
+        "chemistry for you, only the ops that build what you choose "
+        "(placement = site type + relative offsets — the cell tiles; "
+        "absolute positions don't exist).\n"
         'Forbidden: never write "solved", "done", or "closed" about the '
         'quest. "Ruled out" applies to ONE failed variant, never to the '
         "search. Narrating or lit-searching WITHOUT a new proposal is not "
@@ -719,9 +721,10 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
     knobs = (
         "pick ANY dopant element (your own chemistry judgment), its "
         "placement (an adatom on the surface / a substitution at the "
-        "surface layer / a substitution one layer down), coverage (1–3 "
-        "atoms), and an optional co-adsorbate (e.g. H). Only the fcc(111) "
-        "facet is buildable today"
+        "surface layer / a substitution one layer down — a site type + "
+        "offset relative to your co-adsorbate, never an absolute cell "
+        "position), coverage (1–3 atoms), and an optional co-adsorbate "
+        "(e.g. H). Only the fcc(111) facet is buildable today"
     )
     slab_op = (
         f'{{"op": "slab", "element": "{el}", "size": {size}, '
@@ -760,6 +763,24 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
         "atoms.\n"
+    )
+    # PBC ground rules (qu164903 corner saga): without these the model treats
+    # supercell positions as physical sites ("corner" vs "central"), proposes
+    # translation-image duplicates as new experiments, and narrates the
+    # resulting noise as chemistry. Stated here, in the one prompt block a
+    # reaction quest is guaranteed to see — skills are not injected reliably.
+    tiling = (
+        "\n### The cell tiles\n"
+        f"The {nx}x{ny} cell repeats in-plane. A lone dopant has no absolute "
+        "position — frac [0,0] and [0.33,0.33] are the SAME crystal: no "
+        "corner/edge/center sites exist, and a shifted/rotated/mirrored "
+        "copy of an existing candidate is collapsed, not simulated. Only "
+        "relative geometry is physical — state placements as offsets from "
+        "the co-adsorbate, never cell positions. Max separation is ~half a "
+        f"cell vector and images repeat at the {nx}-site spacing, so nothing "
+        f"can be isolated. 1 dopant/cell = 1/{nx * ny} ML everywhere. Stored "
+        "candidates are canonicalized: read-back coords may be shifted, "
+        "relative geometry never.\n"
     )
     # Novelty steer (gripe 171149): a stalled loop tended to re-propose the same
     # handful of dopants. The PRINCIPLE, not a fixed shortlist (no code-owned
@@ -827,6 +848,7 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         f"- a worked SYNTAX example of a doped variant (Cu here is "
         f"illustrative only — choose your own element): `{doped}`\n"
         f"{op_menu}"
+        f"{tiling}"
         f"{novelty}"
         f"{creed}"
     )
@@ -1037,7 +1059,10 @@ use it for formulae and chemical species, e.g. `$NH_3$`, `$C_{{60}}$`). \
 Reference anything by copying its exact handle in square brackets from the \
 context above: `[st<id>]` a candidate structure (the frontier table), \
 `[pc<id>]`/`[pa<id>]` literature (see above), `[fi<id>]` a finding — never \
-invent one: parentheses don't linkify and a made-up handle resolves to nothing.
+invent one: parentheses don't linkify and a made-up handle resolves to nothing. \
+EVERY quantitative value carries its handle inline — including comparison \
+numbers recalled from earlier ticks. A number you cannot source from the \
+context above, flag as unsourced rather than stating bare.
 
 Respond with EXACTLY ONE JSON object and nothing else:
 {{
@@ -1085,7 +1110,9 @@ experiment rather than a spread) are candidate \
 materials to simulate — each an atomistic \
 `structure` (a periodic `cell` + `add_atom` ops with fractional coords, or a \
 `slab` bulk-template op that builds a metal surface for you — see the reaction \
-rules above if this is a catalyst quest). Only propose a candidate you can \
+rules above if this is a catalyst quest). A periodic cell TILES: specs \
+differing only by a lattice translation/rotation/mirror are one candidate. \
+Only propose a candidate you can \
 express as a concrete structure and that is NOT already ruled out; omit \
 `structure` if you cannot, and it will be recorded as a lead but not simulated. \
 `parent`: the slug of the candidate this one varies, when you are refining an \
@@ -1254,7 +1281,9 @@ def _build_commit_prompt(
         "MUST now output at least one entry in `proposals` for a "
         "composition NOT in the tried-set above — use your own chemistry "
         "judgment to choose the most promising untried variant (dopant, "
-        "placement, coverage, co-adsorbate). Do not review, narrate, or "
+        "placement, coverage, co-adsorbate; a mere in-plane shift of an "
+        "existing candidate is the same crystal, not a variant). Do not "
+        "review, narrate, or "
         "lit-search this turn; propose a buildable `structure` (a `slab` op "
         "plus composition ops).\n"
     )

@@ -37,6 +37,7 @@ from precis.quest.atomcost import atom_cost, dearest
 from precis.quest.frontier import _UNTRUSTED_VALUE_SUFFIX
 from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
+from precis.structure.canonical import geom_hash_c as _geom_hash_c
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
@@ -322,6 +323,48 @@ def _note_duplicate_proposal(
     )
 
 
+def _note_symmetry_duplicate(
+    store: Store, quest_id: int, proposal: dict[str, Any], existing_handle: str
+) -> None:
+    """Log a `symmetry-duplicate proposal` observation — the periodic-symmetry
+    sibling of :func:`_note_duplicate_proposal`. The proposal's geometry
+    resolved to the *same crystal* as an existing candidate under a lattice
+    translation, an in-plane rotation, or an in-plane mirror
+    (:func:`precis.structure.canonical.geom_hash_c`), so it was never wired
+    in as a new candidate."""
+    name = str(proposal.get("name") or "(unnamed)")
+    append_entry(
+        store,
+        quest_id,
+        text=(
+            f"symmetry-duplicate proposal: {name} is the same crystal as "
+            f"candidate {existing_handle} under lattice translation/rotation/"
+            "mirror — not created as a new candidate"
+        ),
+        entry_type="observation",
+        by=MEASURED_BY,
+    )
+
+
+def _symmetry_duplicate_candidate(store: Store, quest_id: int, chc: str) -> Any | None:
+    """This quest's earlier candidate `structure` (if any) whose stamped
+    ``meta.geom_hash_c`` equals ``chc`` — the canonical-frame sibling of the
+    slug-addressed dedup above, catching a candidate that reformulates an
+    already-explored crystal at a different absolute position/orientation.
+
+    Reuses :func:`precis.quest.gaps._live_servers` (the same one-hop `serves`
+    query :mod:`precis.quest.frontier` reads its candidates through). The
+    fresh candidate this runs for is not yet linked `serves` this quest at
+    the point it is called, so it can never self-match here.
+    """
+    from precis.quest.gaps import _live_servers
+
+    for s in _live_servers(store, quest_id):
+        if s.kind == "structure" and (s.meta or {}).get("geom_hash_c") == chc:
+            return s
+    return None
+
+
 #: Cap on a rejection reason's length. A preflight report runs to several
 #: hundred characters; the proposer needs its actionable head, and the logbook
 #: tail this lands in shares the tick prompt's budget.
@@ -489,7 +532,13 @@ def _ensure_candidate_detail(
     if not proposal.get("name"):
         name = slug
     try:
-        StructureHandler(hub=hub).put(id=slug, text=json.dumps(spec), title=name)
+        # normalize=True: quest candidates all live in one canonical
+        # periodic-symmetry frame (precis.structure.canonical.normalize_scene)
+        # so a translation/rotation/mirror twin of an already-stored candidate
+        # hashes identically below instead of minting a phantom sim.
+        StructureHandler(hub=hub).put(
+            id=slug, text=json.dumps(spec), title=name, normalize=True
+        )
     except Exception as exc:
         log.warning(
             "ensure_candidate: StructureHandler.put raised for quest %s slug %s "
@@ -528,19 +577,69 @@ def _ensure_candidate_detail(
                 "resolve — not your spec's fault, re-propose next tick",
             ),
         )
+    # Load the fresh scene + compute both geometry hashes BEFORE the
+    # link/tag tx (and before the legacy `geom_hash` dedup lived below) so a
+    # periodic-symmetry duplicate can be caught and skipped rather than wired
+    # in as a new candidate. A load/hash failure here disables BOTH the
+    # canonical dedup and the stamp below — same fallback as the legacy
+    # `geom_hash`-only code had, never fatal to candidate creation.
+    scene: Any = None
+    geom_hash: str | None = None
+    geom_hash_canonical: str | None = None
+    try:
+        scene, _handles = store.structure_load(ref.id)
+        geom_hash = _geom_hash(scene)
+        geom_hash_canonical = _geom_hash_c(scene)
+    except Exception:
+        log.debug(
+            "ensure_candidate: geom_hash stamp failed for %s", slug, exc_info=True
+        )
+
+    if geom_hash_canonical is not None:
+        try:
+            twin = _symmetry_duplicate_candidate(store, quest_id, geom_hash_canonical)
+        except Exception:
+            log.debug(
+                "ensure_candidate: symmetry-duplicate lookup failed for %s",
+                slug,
+                exc_info=True,
+            )
+            twin = None
+        if twin is not None:
+            from precis.utils import handle_registry
+
+            twin_handle = (
+                handle_registry.try_format("structure", twin.id)
+                or f"structure:{twin.id}"
+            )
+            _note_symmetry_duplicate(store, quest_id, proposal, twin_handle)
+            try:
+                store.stamp_ref_meta(ref.id, {"symmetry_duplicate_of": twin_handle})
+                store.soft_delete_ref(ref.id)
+            except Exception:
+                log.debug(
+                    "ensure_candidate: cleanup of symmetry-duplicate %s failed",
+                    slug,
+                    exc_info=True,
+                )
+            note = _link_parent_if_present(store, quest_id, proposal, int(twin.id))
+            return int(twin.id), True, note
+
     with store.tx() as conn:
         store.add_link(
             src_ref_id=ref.id, dst_ref_id=quest_id, relation="serves", conn=conn
         )
         store.add_tag(ref.id, Tag.open(_CANDIDATE_TAG), set_by="system", conn=conn)
-    scene: Any = None
-    try:
-        scene, _handles = store.structure_load(ref.id)
-        store.stamp_ref_meta(ref.id, {"geom_hash": _geom_hash(scene)})
-    except Exception:
-        log.debug(
-            "ensure_candidate: geom_hash stamp failed for %s", slug, exc_info=True
-        )
+    if geom_hash is not None:
+        meta_stamp: dict[str, Any] = {"geom_hash": geom_hash}
+        if geom_hash_canonical is not None:
+            meta_stamp["geom_hash_c"] = geom_hash_canonical
+        try:
+            store.stamp_ref_meta(ref.id, meta_stamp)
+        except Exception:
+            log.debug(
+                "ensure_candidate: geom_hash stamp failed for %s", slug, exc_info=True
+            )
     # atom_cost (slice B): composition-derived, no sim needed — stamped at
     # creation time so a candidate never spends a tick "awaiting" its own
     # cost. `scene` is `None` above when the load just failed (rare); the

@@ -8,6 +8,8 @@ answers:
   - how do I probe coordination, rings, or fragments in a structure?
   - how do I import a structure from an external catalyst database?
   - how do I export a structure to POSCAR or CIF?
+  - does it matter where in the cell I put a dopant?
+  - what does a 3×3 slab supercell mean for coverage?
 applies-to: get/search/put/edit/delete (kind='structure')
 status: active
 ---
@@ -66,8 +68,16 @@ put(
 
 - **`cell`** is either `{a,b,c,alpha?,beta?,gamma?,pbc}` (lengths/angles, °)
   **or** `{lattice: [[…],[…],[…]], pbc}` (an explicit 3×3, Å). `pbc` is a
-  per-axis `[bool,bool,bool]` — a **slab** is `[true,true,false]` (periodic
-  in-plane, vacuum gap along **c**).
+  per-axis `[bool,bool,bool]`; a hand-authored vacuum-gap cell conventionally
+  sets `[true,true,false]`. The **`slab` op** ignores this — it always emits
+  `(true,true,true)` (ASE's fcc111 convention; the vacuum gap is geometric,
+  not a pbc flag).
+- **A periodic cell tiles — a lone defect has no absolute position.**
+  Placements that differ only by a lattice translation (or an in-plane
+  rotation/mirror) are the same crystal; only the relative offset between
+  species is physical, capped by the cell size. Quest candidate structures
+  are stored canonicalized into one reference frame
+  (`precis.structure.canonical`).
 - **`description`** makes the design findable by purpose (folded into the
   one search card). Optional, recommended.
 - `put` applies the ops eagerly and echoes the TOC, so a bad op surfaces
@@ -79,7 +89,7 @@ put(
 | op | args | effect |
 |----|------|--------|
 | `set_cell` | `lattice` or `a,b,c,…` + `pbc` | redefine the cell |
-| `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell (ASE-exact atom order, so autocatpath can inject it). Omit the top-level `cell`. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
+| `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell + `pbc (true,true,true)` (ASE-exact atom order, so autocatpath can inject it). Omit the top-level `cell`. `size` is `nx×ny` in-plane repeats × `nz` layers — the cell tiles, so one substitution = 1/(nx·ny) ML coverage. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
 | `add_atom` | `element`, `frac:[fa,fb,fc]` | place an atom (wraps into the cell) |
 | `set_element` | `atom`, `element` | transmute — **keeps the atom's label & position** (see caution below) |
 | `vacancy` | `atom` | remove an atom (label not recycled) |

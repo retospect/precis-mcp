@@ -4513,11 +4513,25 @@ _GEOM_A = {
     "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
 }
 _GEOM_B = {
-    # A different cell (not part of the geometry hash — only species + frac
-    # positions are) so this is a distinct content-addressed candidate that
-    # happens to relax the SAME atoms.
+    # A different cell (not part of either geometry hash — only species +
+    # frac positions are) and the SAME atom position as `_GEOM_A`, so this
+    # is a distinct content-addressed spec that resolves to the identical
+    # crystal — caught by the canonical (geom_hash_c) dedup at creation,
+    # same as the legacy geom_hash always caught it.
     "cell": {"a": 8.4, "b": 8.4, "c": 25.0, "pbc": [True, True, False]},
     "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+}
+#: A genuine periodic-symmetry translation twin of `_GEOM_A` — same lone
+#: dopant, a different absolute in-plane position (0,0) vs (1/3,1/3) — the
+#: legacy absolute-position `geom_hash` does NOT match this pair; only the
+#: canonical `geom_hash_c` does (qu164903's corner saga).
+_TWIN_A = {
+    "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+}
+_TWIN_B = {
+    "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Fe", "frac": [1.0 / 3, 1.0 / 3, 0.5]}],
 }
 
 
@@ -4529,41 +4543,273 @@ class TestGeomHash:
         )
         assert sid is not None
         ref = store.fetch_refs_by_ids({sid})[sid]
-        gh = (ref.meta or {}).get("geom_hash")
+        meta = ref.meta or {}
+        gh = meta.get("geom_hash")
+        ghc = meta.get("geom_hash_c")
         assert isinstance(gh, str) and len(gh) == 12
+        assert isinstance(ghc, str) and len(ghc) == 12
 
-    def test_identical_geometry_different_spec_shares_geom_hash(
+    def test_identical_geometry_different_spec_dedupes_at_creation(
         self, store: Any
     ) -> None:
+        # `_GEOM_A`/`_GEOM_B` resolve to the same atom at the same absolute
+        # position (only an irrelevant cell dimension differs) — a
+        # periodic-symmetry duplicate of itself, so the second proposal is
+        # never wired in as a new live candidate; `ensure_candidate` hands
+        # back the first one.
         qid = _mk_quest(store, "A striving")
         sid_a = compute_mod.ensure_candidate(
             store, qid, {"name": "a", "structure": _GEOM_A}
         )
-        sid_b = compute_mod.ensure_candidate(
+        assert sid_a is not None
+        sid_b, was_dup, _note = compute_mod._ensure_candidate_detail(
             store, qid, {"name": "b", "structure": _GEOM_B}
         )
-        assert sid_a is not None and sid_b is not None and sid_a != sid_b
-        refs = store.fetch_refs_by_ids({sid_a, sid_b})
-        assert refs[sid_a].meta["geom_hash"] == refs[sid_b].meta["geom_hash"]
+        assert sid_b == sid_a
+        assert was_dup is True
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("symmetry-duplicate proposal" in b.text for b in logs)
+
+
+class TestCanonicalSymmetryDedup:
+    """Slice: candidates created at different absolute positions but the
+    SAME crystal under lattice translation/rotation/mirror must dedupe at
+    creation time, not just display a flag later (qu164903's corner saga)."""
+
+    def test_translation_twin_returns_existing_candidate_id(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "corner", "structure": _TWIN_A}
+        )
+        assert sid_a is not None
+        sid_b, was_dup, note = compute_mod._ensure_candidate_detail(
+            store, qid, {"name": "center", "structure": _TWIN_B}
+        )
+        assert sid_b == sid_a
+        assert was_dup is True
+        # the fresh (translation-twin) structure was never wired `serves`
+        # this quest, and never tagged `candidate` — only the original is.
+        servers = {
+            ln.src_ref_id
+            for ln in store.links_for(qid, direction="in", relation="serves")
+        }
+        assert servers == {sid_a}
+
+    def test_writes_symmetry_duplicate_note_naming_the_existing_candidate(
+        self, store: Any
+    ) -> None:
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "corner", "structure": _TWIN_A}
+        )
+        assert sid_a is not None
+        compute_mod._ensure_candidate_detail(
+            store, qid, {"name": "center", "structure": _TWIN_B}
+        )
+        handle_a = (
+            handle_registry.try_format("structure", sid_a) or f"structure:{sid_a}"
+        )
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        dup_logs = [b for b in logs if "symmetry-duplicate proposal" in b.text]
+        assert dup_logs
+        assert handle_a in dup_logs[-1].text
+        assert "translation" in dup_logs[-1].text
+
+    def test_fresh_duplicate_structure_is_soft_deleted_and_stamped(
+        self, store: Any
+    ) -> None:
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "corner", "structure": _TWIN_A}
+        )
+        assert sid_a is not None
+        compute_mod._ensure_candidate_detail(
+            store, qid, {"name": "center", "structure": _TWIN_B}
+        )
+        b_slug = compute_mod._candidate_slug(qid, _TWIN_B)
+        fresh = store.get_ref(kind="structure", id=b_slug, include_deleted=True)
+        assert fresh is not None
+        assert fresh.deleted_at is not None
+        handle_a = (
+            handle_registry.try_format("structure", sid_a) or f"structure:{sid_a}"
+        )
+        assert (fresh.meta or {}).get("symmetry_duplicate_of") == handle_a
+        # never resolves as live going forward
+        assert store.get_ref(kind="structure", id=b_slug) is None
+
+
+def _mk_legacy_candidate(
+    store: Any, quest_id: int, slug: str, spec: dict[str, Any], name: str
+) -> int:
+    """Build a candidate `structure` the way candidate-creation worked
+    BEFORE the canonical hash existed: `put` with no ``normalize=True``, the
+    `serves`/`candidate` wiring, and only the legacy absolute-position
+    `geom_hash` stamped — no `geom_hash_c` — so
+    :func:`precis.quest.frontier._flag_geom_duplicates`'s lazy backfill has
+    something to do."""
+    import json
+
+    from precis.handlers.structure import StructureHandler
+    from precis.store import Tag
+
+    StructureHandler(hub=Hub(store=store)).put(
+        id=slug, text=json.dumps(spec), title=name
+    )
+    ref = store.get_ref(kind="structure", id=slug)
+    assert ref is not None
+    with store.tx() as conn:
+        store.add_link(
+            src_ref_id=ref.id, dst_ref_id=quest_id, relation="serves", conn=conn
+        )
+        store.add_tag(ref.id, Tag.open("candidate"), set_by="system", conn=conn)
+    scene, _handles = store.structure_load(ref.id)
+    store.stamp_ref_meta(ref.id, {"geom_hash": compute_mod._geom_hash(scene)})
+    return int(ref.id)
 
 
 class TestFrontierGeomDuplicateFlag:
-    def test_later_candidate_flagged_duplicate_of_earlier(self, store: Any) -> None:
+    """:func:`precis.quest.frontier._flag_geom_duplicates` over LEGACY
+    candidates (minted before the canonical hash existed, `geom_hash` only)
+    — the lazy-backfill path: it loads the scene, computes `geom_hash_c`,
+    stamps it back, and only THEN can it see a translation twin the legacy
+    absolute-position hash missed."""
+
+    def test_translation_twin_flagged_after_lazy_backfill(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
-        sid_a = compute_mod.ensure_candidate(
-            store, qid, {"name": "a", "structure": _GEOM_A}
-        )
-        sid_b = compute_mod.ensure_candidate(
-            store, qid, {"name": "b", "structure": _GEOM_B}
-        )
-        assert sid_a is not None and sid_b is not None
+        slug_a = compute_mod._candidate_slug(qid, _TWIN_A)
+        slug_b = compute_mod._candidate_slug(qid, _TWIN_B)
+        sid_a = _mk_legacy_candidate(store, qid, slug_a, _TWIN_A, "a")
+        sid_b = _mk_legacy_candidate(store, qid, slug_b, _TWIN_B, "b")
+
+        # Legacy hash does NOT match this translation twin — confirms the
+        # fixture actually exercises the backfill, not a pre-existing match.
+        refs = store.fetch_refs_by_ids({sid_a, sid_b})
+        assert refs[sid_a].meta["geom_hash"] != refs[sid_b].meta["geom_hash"]
+        assert "geom_hash_c" not in refs[sid_a].meta
+        assert "geom_hash_c" not in refs[sid_b].meta
+
         fr = quest_frontier(store, qid)
         by_id = {c.ref_id: c for c in (fr.frontier + fr.dominated + fr.unevaluated)}
         assert "duplicate_of" not in by_id[sid_a].flags
         assert by_id[sid_b].flags.get("duplicate_of") == by_id[sid_a].handle
-        # flagged, not excluded — the dup still ranks (both unconverged here,
-        # so both land in `unevaluated`, neither dropped).
-        assert sid_b in by_id
+
+        # the backfill happened — both structures now carry a stamped
+        # geom_hash_c, and it's the SAME value (the whole point).
+        refs_after = store.fetch_refs_by_ids({sid_a, sid_b})
+        chc_a = refs_after[sid_a].meta.get("geom_hash_c")
+        chc_b = refs_after[sid_b].meta.get("geom_hash_c")
+        assert isinstance(chc_a, str) and chc_a == chc_b
+
+    def test_render_frontier_tree_also_backfills_and_flags(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        slug_a = compute_mod._candidate_slug(qid, _TWIN_A)
+        slug_b = compute_mod._candidate_slug(qid, _TWIN_B)
+        _mk_legacy_candidate(store, qid, slug_a, _TWIN_A, "a")
+        _mk_legacy_candidate(store, qid, slug_b, _TWIN_B, "b")
+
+        tree = render_frontier_tree(store, qid)
+        assert "dup-of" in tree
+
+
+# ── energy-degeneracy tripwire (post-relax convergence, distinct hashes) ──
+
+
+class TestEnergyTwinFlag:
+    def test_sub_2mev_pair_flagged_energy_twin(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        # Same element, different z — genuinely different geom_hash_c, but
+        # (by construction) the same composition → same atom_cost, so the
+        # tripwire's grouping key matches.
+        spec_a = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+        }
+        spec_b = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.62]}],
+        }
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "a", "structure": spec_a}
+        )
+        sid_b = compute_mod.ensure_candidate(
+            store, qid, {"name": "b", "structure": spec_b}
+        )
+        assert sid_a is not None and sid_b is not None and sid_a != sid_b
+        refs = store.fetch_refs_by_ids({sid_a, sid_b})
+        assert refs[sid_a].meta["geom_hash_c"] != refs[sid_b].meta["geom_hash_c"]
+        store.structure_record_run(
+            sid_a,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-10.0000,
+        )
+        store.structure_record_run(
+            sid_b,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-10.0015,
+        )
+        fr = quest_frontier(store, qid)
+        by_id = {c.ref_id: c for c in (fr.frontier + fr.dominated + fr.unevaluated)}
+        assert by_id[sid_b].flags.get("energy_twin_of") == by_id[sid_a].handle
+        assert "energy_twin_of" not in by_id[sid_a].flags
+
+    def test_skips_same_hash_pair(self, store: Any) -> None:
+        # A true geom_hash_c duplicate is already `duplicate_of`-flagged —
+        # the energy tripwire must NOT also fire for it (the "AND different
+        # geom_hash_c" gate).
+        qid = _mk_quest(store, "A striving")
+        slug_a = compute_mod._candidate_slug(qid, _TWIN_A)
+        slug_b = compute_mod._candidate_slug(qid, _TWIN_B)
+        sid_a = _mk_legacy_candidate(store, qid, slug_a, _TWIN_A, "a")
+        sid_b = _mk_legacy_candidate(store, qid, slug_b, _TWIN_B, "b")
+        # Same composition on both (single Fe atom each) → same atom_cost.
+        for sid in (sid_a, sid_b):
+            scene, _ = store.structure_load(sid)
+            composition = compute_mod._candidate_composition(scene, None)
+            assert composition is not None
+            compute_mod._stamp_atom_cost(store, sid, composition)
+        store.structure_record_run(
+            sid_a,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-10.0000,
+        )
+        store.structure_record_run(
+            sid_b,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-10.0005,
+        )
+        fr = quest_frontier(store, qid)  # backfills geom_hash_c -> same value
+        by_id = {c.ref_id: c for c in (fr.frontier + fr.dominated + fr.unevaluated)}
+        assert by_id[sid_b].flags.get("duplicate_of") == by_id[sid_a].handle
+        assert "energy_twin_of" not in by_id[sid_b].flags
+        assert "energy_twin_of" not in by_id[sid_a].flags
 
 
 # ── frontier-tree pinned dossier chunk (Slice 4c-4) ─────────────────────
@@ -4639,15 +4885,18 @@ class TestFrontierTreeDossierChunk:
         assert f"Pd [{c.handle}]:" in line
 
     def test_ruled_out_and_dup_markers_render(self, store: Any) -> None:
+        # `_TWIN_A`/`_TWIN_B` via `ensure_candidate` would now dedupe at
+        # CREATION time (the canonical hash catches this translation twin) —
+        # build them the LEGACY way (`_mk_legacy_candidate`, pre-dating the
+        # canonical hash) so two live candidates exist for the display-only
+        # `_flag_geom_duplicates` lazy-backfill path to mark "dup-of".
         from precis.store import Tag
 
         qid = _mk_quest(store, "A striving")
-        sid_a = compute_mod.ensure_candidate(
-            store, qid, {"name": "a", "structure": _GEOM_A}
-        )
-        sid_b = compute_mod.ensure_candidate(
-            store, qid, {"name": "b", "structure": _GEOM_B}
-        )
+        slug_a = compute_mod._candidate_slug(qid, _TWIN_A)
+        slug_b = compute_mod._candidate_slug(qid, _TWIN_B)
+        sid_a = _mk_legacy_candidate(store, qid, slug_a, _TWIN_A, "a")
+        sid_b = _mk_legacy_candidate(store, qid, slug_b, _TWIN_B, "b")
         assert sid_a is not None and sid_b is not None
         store.add_tag(sid_a, Tag.open("ruled-out:relax-failed"), set_by="system")
 

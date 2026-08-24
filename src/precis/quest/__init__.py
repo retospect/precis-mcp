@@ -19,6 +19,14 @@ Package-level invariants (each enforced where named):
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
   fabricates a dispatch or picks chemistry (``tick``).
+- **A periodic cell tiles — symmetry twins are one candidate.** Candidate
+  scenes are stored canonicalized (``StructureHandler.put(normalize=True)``)
+  and stamped ``geom_hash_c`` (:mod:`precis.structure.canonical`); a
+  proposal matching an existing candidate's canonical hash is soft-deleted
+  with a logbook note, never dispatched (``compute``); the frontier lazily
+  backfills the stamp on pre-cutover candidates and flags energy-degenerate
+  same-composition pairs (``frontier``). The tick prompt states the tiling
+  rules (``tick._reaction_context``).
 - **Infra failure is never a physical verdict.** A failed relax or
   autocatpath job retries once then gripes — it is never ``ruled-out:``
   (``compute``; dossier-owned-by-process).

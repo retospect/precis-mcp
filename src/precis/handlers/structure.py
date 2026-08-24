@@ -69,6 +69,7 @@ from precis.structure import (
 )
 from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
+from precis.structure.canonical import normalize_scene
 from precis.structure.cell import Cell
 from precis.structure.importers import catalysis_hub, get_adapter
 from precis.structure.preflight import PreflightReason
@@ -628,8 +629,16 @@ class StructureHandler(Handler):
         text: str | None = None,
         title: str | None = None,
         args: dict[str, Any] | None = None,
+        normalize: bool = False,
         **_kw: Any,
     ) -> Response:
+        """``normalize=True`` rewrites the materialized scene into its
+        periodic-symmetry canonical frame (:func:`precis.structure.canonical.
+        normalize_scene`) right after ops are applied, before preflight/
+        validation/save — quest candidates opt in so every stored candidate
+        for a quest lives in one canonical frame and translation/rotation/
+        mirror twins hash identically. Default off; existing callers
+        (dispatch registry included) are unaffected."""
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='structure') requires id= (the design slug)",
@@ -673,6 +682,8 @@ class StructureHandler(Handler):
             dispatch: _NeedsDispatch | None = res
         else:
             relax_result, dispatch = res, None
+        if normalize:
+            normalize_scene(scene)
         relax_summary = self._relax_summary(relax_result)
         version = (int(existing.meta.get("version", 0)) + 1) if existing else 1
         desc = str(payload.get("description") or "").strip()

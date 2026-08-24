@@ -26,6 +26,7 @@ composite's ``key`` like any other measure.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -33,6 +34,12 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
+
+#: Energy-degeneracy tripwire tolerance (eV) — sub-DFT-noise convergence gap,
+#: see :func:`_flag_energy_twins`.
+_ENERGY_TWIN_EPS = 0.002
 
 #: Default objective when a quest declares no rubric: the lowest-energy
 #: (most stable) converged candidate wins.
@@ -1048,6 +1055,10 @@ def leaderboard(
             # marks it "dup" alongside any other quality note.
             if c.flags.get("duplicate_of"):
                 quality = f"{quality} dup".strip()
+            # An energy-degeneracy tripwire hit (:func:`_flag_energy_twins`) —
+            # also flagged-only, mirroring `dup` above.
+            if c.flags.get("energy_twin_of"):
+                quality = f"{quality} etwin".strip()
             row["quality"] = quality
             out.append(row)
         return out
@@ -1112,21 +1123,71 @@ def leaderboard(
     return rows, schema
 
 
+def _lazy_geom_hash_c(store: Store, s: Any) -> str | None:
+    """Backfill ``meta.geom_hash_c`` for a candidate structure minted before
+    the periodic-symmetry canonical hash existed: load its scene, compute
+    the hash (:func:`precis.structure.canonical.geom_hash_c`), and stamp it
+    back (:meth:`Store.stamp_ref_meta`) so the backfill happens once per
+    structure — every later read (this one's own in-memory ``s.meta``
+    included) sees the stamped value with no further scene load. Never
+    raises: a load/hash/stamp failure logs at debug and falls back to
+    ``None`` (the caller drops to the legacy absolute-position
+    ``geom_hash``).
+    """
+    from precis.structure.canonical import geom_hash_c
+
+    try:
+        scene, _handles = store.structure_load(s.id)
+        chc = geom_hash_c(scene)
+    except Exception:
+        log.debug(
+            "_flag_geom_duplicates: geom_hash_c backfill failed for %s",
+            s.id,
+            exc_info=True,
+        )
+        return None
+    try:
+        store.stamp_ref_meta(s.id, {"geom_hash_c": chc})
+    except Exception:
+        log.debug(
+            "_flag_geom_duplicates: geom_hash_c stamp failed for %s",
+            s.id,
+            exc_info=True,
+        )
+    meta = getattr(s, "meta", None)
+    if isinstance(meta, dict):
+        meta["geom_hash_c"] = chc  # so _flag_energy_twins sees it too, same read
+    return chc
+
+
 def _flag_geom_duplicates(
-    candidates: Sequence[Candidate], structures: Sequence[Any]
+    store: Store, candidates: Sequence[Candidate], structures: Sequence[Any]
 ) -> None:
-    """Flag a later-created candidate that shares its ``geom_hash`` (stamped
-    at candidate-creation time — :func:`precis.quest.compute._geom_hash`) with
-    an earlier one — a proposer re-discovering the same material under a new
-    name. **Non-exclusionary**: ``flags['duplicate_of']`` is display-only (the
+    """Flag a later-created candidate that shares its geometry hash with an
+    earlier one — a proposer re-discovering the same material under a new
+    name. Prefers the periodic-symmetry-invariant ``meta.geom_hash_c``
+    (:func:`precis.structure.canonical.geom_hash_c`, stamped at
+    candidate-creation time — :func:`precis.quest.compute._ensure_candidate_detail`)
+    over the legacy absolute-position ``meta.geom_hash``
+    (:func:`precis.quest.compute._geom_hash`) — a translation/rotation/mirror
+    twin of an earlier candidate now groups with it even though its raw
+    coordinates differ. A structure minted before the canonical hash existed
+    gets it lazily backfilled here (:func:`_lazy_geom_hash_c`), falling back
+    to the legacy hash only when the backfill itself fails.
+    **Non-exclusionary**: ``flags['duplicate_of']`` is display-only (the
     earlier candidate's handle); the flagged candidate still ranks normally.
     Mutates ``candidates`` in place (``Candidate.flags`` is a plain dict, so
     this is safe on an otherwise-frozen dataclass).
     """
     by_id = {c.ref_id: c for c in candidates}
-    seen: dict[str, str] = {}  # geom_hash -> first-seen handle
+    seen: dict[str, str] = {}  # hash -> first-seen handle
     for s in sorted(structures, key=lambda s: s.id):
-        gh = (getattr(s, "meta", None) or {}).get("geom_hash")
+        meta = getattr(s, "meta", None) or {}
+        gh = meta.get("geom_hash_c")
+        if not isinstance(gh, str) or not gh:
+            gh = _lazy_geom_hash_c(store, s)
+        if not isinstance(gh, str) or not gh:
+            gh = meta.get("geom_hash")
         if not isinstance(gh, str) or not gh:
             continue
         c = by_id.get(s.id)
@@ -1137,6 +1198,69 @@ def _flag_geom_duplicates(
             seen[gh] = c.handle
         else:
             c.flags["duplicate_of"] = first
+
+
+def _flag_energy_twins(
+    candidates: Sequence[Candidate], structures: Sequence[Any]
+) -> None:
+    """Flag a later candidate whose relaxed energy lands within
+    :data:`_ENERGY_TWIN_EPS` of an earlier one of the SAME composition but a
+    DIFFERENT ``geom_hash_c`` — two nominally-distinct starting geometries
+    that converged to the same (or a symmetry-equivalent) minimum, a
+    degeneracy the geometry hash alone can't see (it only catches duplicates
+    at the *input* geometry, not post-relax convergence).
+
+    Composition is never re-materialised here — no per-candidate scene load
+    in a loop. ``atom_cost`` (stamped on ``meta`` at candidate-creation time
+    from the composition, :func:`precis.quest.compute._stamp_atom_cost`) is
+    a pure function of element counts alone and already rides on every
+    :class:`Candidate` via ``measures`` — an exact ``atom_cost`` match is a
+    cheap, reliable composition proxy over data already loaded for the
+    frontier. (The composition dict itself isn't stamped anywhere
+    :func:`_candidate_from_structure` reads, so grouping on it directly would
+    need a fresh scene load per candidate — the thing this is built to
+    avoid; a candidate missing ``atom_cost`` is simply not grouped.)
+
+    Display-only: sets ``flags['energy_twin_of']`` on the later candidate
+    (the earlier one's handle); ranking/dominance/geom-dup flagging are
+    untouched. Call this AFTER :func:`_flag_geom_duplicates` (same call
+    sites) so any lazily-backfilled ``geom_hash_c`` is already in ``meta``.
+    """
+    hash_by_id = {
+        s.id: (getattr(s, "meta", None) or {}).get("geom_hash_c") for s in structures
+    }
+    # `Candidate.measures` is already `dict[str, float]` (`_numeric` filtered
+    # at `_candidate_from_structure` time, bools included) — a plain
+    # ``is not None`` is enough here.
+    by_cost: dict[float, list[Candidate]] = {}
+    for c in candidates:
+        cost = c.measures.get("atom_cost")
+        if cost is None:
+            continue
+        by_cost.setdefault(round(cost, 6), []).append(c)
+
+    for group in by_cost.values():
+        seen: list[Candidate] = []
+        for c in sorted(group, key=lambda c: c.ref_id):
+            energy = c.measures.get("energy")
+            if energy is not None:
+                gh = hash_by_id.get(c.ref_id)
+                for prior in seen:
+                    prior_energy = prior.measures.get("energy")
+                    prior_gh = hash_by_id.get(prior.ref_id)
+                    # Both hashes must be KNOWN and different — a missing
+                    # stamp (backfill failure) is "unknown geometry", not
+                    # "different geometry", and must not fire the flag.
+                    if (
+                        prior_energy is not None
+                        and abs(energy - prior_energy) <= _ENERGY_TWIN_EPS
+                        and gh is not None
+                        and prior_gh is not None
+                        and gh != prior_gh
+                    ):
+                        c.flags["energy_twin_of"] = prior.handle
+                        break
+            seen.append(c)
 
 
 def _candidate_lineage_markers(store: Store, c: Candidate) -> list[str]:
@@ -1153,6 +1277,9 @@ def _candidate_lineage_markers(store: Store, c: Candidate) -> list[str]:
     dup_of = c.flags.get("duplicate_of")
     if dup_of:
         markers.append(f"dup-of {dup_of}")
+    twin_of = c.flags.get("energy_twin_of")
+    if twin_of:
+        markers.append(f"energy-twin {twin_of}")
     if not c.converged and not ruled:
         markers.append("unconverged")
     return markers
@@ -1210,7 +1337,8 @@ def render_frontier_tree(store: Store, quest_id: int) -> str:
         return "_(No candidates yet.)_\n"
 
     candidates = {s.id: _candidate_from_structure(store, s) for s in structures}
-    _flag_geom_duplicates(list(candidates.values()), structures)
+    _flag_geom_duplicates(store, list(candidates.values()), structures)
+    _flag_energy_twins(list(candidates.values()), structures)
     _apply_rubric_composite(
         list(candidates.values()), _rubric_composite_for(store, quest_id)
     )
@@ -1270,7 +1398,8 @@ def quest_frontier(
     objs = objectives or _objectives_for(store, quest_id)
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     candidates = [_candidate_from_structure(store, s) for s in structures]
-    _flag_geom_duplicates(candidates, structures)
+    _flag_geom_duplicates(store, candidates, structures)
+    _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
     result = pareto_split(candidates, objs)
     provisional, still_unevaluated = _provisional_split(
