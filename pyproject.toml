@@ -589,6 +589,12 @@ line-length = 88
 # in-flight work.
 extend-exclude = [".claude"]
 
+[tool.ruff.format]
+# ruff 0.16 formats python fences inside markdown by default; our LLM-facing
+# docs deliberately use compact single-quote snippets (mirroring MCP call
+# style), so keep the formatter out of prose.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW1514"]
 # PLW1514 (unspecified-encoding) is still a preview rule in ruff 0.16, so it
