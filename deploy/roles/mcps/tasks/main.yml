@@ -31,55 +31,57 @@
   ansible.builtin.set_fact:
     uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
-# TCC note: the venv python must be a *symlink* to brew's python, not a copy.
-# If it's a copy, each Ansible re-run produces a fresh cdhash and invalidates
-# every Full Disk Access grant the operator clicked in. With a symlink, the
-# grant pins to brew's python (via the cluster-fda-checklist) and is stable
-# across Ansible runs.
-- name: Ensure Homebrew python@3.14 is installed (macOS)
-  when: os_family == "darwin"
-  community.general.homebrew:
-    name: python@3.14
-    state: present
-  become: false
-
-- name: Resolve brew python@3.14 path (macOS)
+# TCC note: the venv python must be a *symlink* to python.org's framework
+# python, not a copy. python.org's macOS builds are signed by the Python
+# Software Foundation with a Developer-ID certificate, so the Full Disk
+# Access grant the operator clicks in pins to that *signature* (via the
+# cluster-fda-checklist) rather than an ad-hoc cdhash — it survives both
+# Ansible re-runs (symlink, not a copy) AND a python upgrade (Homebrew's
+# ad-hoc-signed builds mint a fresh cdhash on every `brew upgrade`; a
+# python.org series upgrade keeps the same TeamIdentifier). No brew pin
+# needed for this anymore. See roles/pythonorg.
+- name: Resolve python.org 3.14 interpreter path (macOS)
   when: os_family == "darwin"
   ansible.builtin.set_fact:
-    mcps_brew_python: /opt/homebrew/opt/python@3.14/bin/python3.14
+    mcps_python: /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14
 
-# Detect whether the venv python is a symlink to brew (correct) or a copy
-# (broken — cdhash churns on every rebuild). `python3` in a venv is always
-# a symlink (-> python3.X) regardless of mode, so we must follow to the
-# leaf and check if it escapes the venv tree.
-- name: Detect /opt/mcps/venv python mode (symlink-to-brew vs. copy)
+# Detect whether the venv python resolves into the python.org framework
+# (correct) or somewhere else (stale — brew-linked, copied, or a broken
+# symlink chain; rebuild). `python3` in a venv is always a symlink (->
+# python3.X) regardless of mode, so we must follow to the leaf and check
+# where it actually lands.
+- name: Detect /opt/mcps/venv python mode (python.org symlink vs. stale)
   when: os_family == "darwin"
   ansible.builtin.shell: |
     set -u
     resolved=$(/usr/bin/readlink -f /opt/mcps/venv/bin/python3 2>/dev/null || true)
     case "$resolved" in
-      "")                      echo missing   ;;
-      /opt/homebrew/*|/usr/*)  echo symlinked ;;
-      /opt/mcps/venv/*)        echo copied    ;;
-      *)                       echo "other:$resolved" ;;
+      "")                       echo missing ;;
+      /Library/Frameworks/*)    echo ok ;;
+      *)                        echo stale ;;    # brew-linked, copied, or broken — rebuild
     esac
   register: mcps_venv_mode
   changed_when: false
   become: true
 
-- name: Wipe /opt/mcps/venv if python is a copy (force symlink rebuild)
+# `state: absent` on a nonexistent path is a no-op, so this also correctly
+# handles a broken symlink chain (readlink resolves to "" -> mode=missing,
+# but the venv DIR still exists on disk from a deleted brew keg) — that case
+# needs the wipe too, since `creates:` on the venv-create task below would
+# otherwise treat the existing-but-broken dir as "already built" and skip.
+- name: Wipe /opt/mcps/venv if not on python.org (force symlink rebuild)
   when:
     - os_family == "darwin"
-    - mcps_venv_mode.stdout | default('') | trim == "copied"
+    - mcps_venv_mode.stdout | default('') | trim != "ok"
   ansible.builtin.file:
     path: /opt/mcps/venv
     state: absent
   become: true
 
-- name: Create MCP Python venv (symlinked to brew python, macOS)
+- name: Create MCP Python venv (symlinked to python.org python, macOS)
   when: os_family == "darwin"
   ansible.builtin.command:
-    cmd: "{{ mcps_brew_python }} -m venv --symlinks /opt/mcps/venv"
+    cmd: "{{ mcps_python }} -m venv --symlinks /opt/mcps/venv"
     creates: /opt/mcps/venv/bin/python3
   become: true
 

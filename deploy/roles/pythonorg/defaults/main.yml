@@ -1,0 +1,9 @@
+---
+# pythonorg role defaults — the two python.org macOS installers every
+# NAS-touching venv on the fleet symlinks into. See tasks/main.yml for the
+# why (cdhash vs. Developer-ID signature).
+pythonorg_versions:
+  - series: "3.14"
+    full: "3.14.7"
+  - series: "3.12"
+    full: "3.12.10"   # last 3.12 with a python.org installer (bugfix phase ended 2025-04); 3.12 needed because torch/marker-pdf/pillow don't build on 3.14

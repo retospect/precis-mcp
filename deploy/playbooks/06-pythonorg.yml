@@ -1,0 +1,20 @@
+---
+# 06-pythonorg.yml — install the python.org macOS framework interpreters
+# every NAS-touching venv symlinks into (mcps, extract_watch, precis_worker,
+# precis_embedder).
+#
+# Runs BEFORE 10a-tcc-profile (the checklist it renders lists these venv
+# pythons) and before any of the venv-building playbooks (14-mcps,
+# 19a-precis-embedder, 20b-precis-worker-collapsed, 27-extract-watch) — those
+# roles' venv-mode detection wipes and rebuilds a venv the moment its python
+# symlink doesn't resolve into /Library/Frameworks, so the interpreter must
+# already be on disk before any of them run.
+#
+# See roles/pythonorg/tasks/main.yml for the cdhash-vs-signature story and
+# docs/runbooks/fda-grant-review.md for the audit/remediation runbook.
+- name: Install python.org interpreters on macOS nodes
+  hosts: macos
+  become: true
+  roles:
+    - pythonorg
+  tags: [pythonorg, python]

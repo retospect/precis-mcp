@@ -13,9 +13,11 @@
 # Full Disk Access by hand. This role's job is to produce the exact
 # list of binaries that need clicking, per host, so nothing is forgotten.
 #
-# Sibling roles (mcps, extract_watch, hermes) ensure the venv pythons
-# listed below are *symlinks* to Homebrew interpreters, so the
-# cdhash-based grant is stable across Ansible re-runs.
+# Sibling roles (mcps, extract_watch, precis_worker, precis_embedder)
+# ensure the venv pythons listed below are *symlinks* to python.org
+# framework interpreters (Developer-ID signed by the PSF), so the grant
+# pins to the signature and survives Ansible re-runs AND python
+# upgrades — see roles/pythonorg and defaults/main.yml here.
 
 - name: Skip on non-macOS hosts
   ansible.builtin.meta: end_host

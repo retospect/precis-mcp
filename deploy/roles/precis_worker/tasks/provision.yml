@@ -18,16 +18,9 @@
     state: present
   become: false
 
-- name: Ensure Homebrew python@3.12 (macOS — pillow/marker-pdf don't build on 3.14)
-  when: os_family == "darwin"
-  community.general.homebrew:
-    name: python@3.12
-    state: present
-  become: false
-
-- name: Resolve venv python interpreter (macOS — symlink to Homebrew python3.12)
+- name: Resolve venv python interpreter (macOS — symlink to python.org python3.12)
   ansible.builtin.set_fact:
-    precis_brew_python: /opt/homebrew/opt/python@3.12/bin/python3.12
+    precis_python: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
   when: os_family == "darwin"
 
 - name: Resolve uv binary path
@@ -41,10 +34,48 @@
     mode: "0755"
   become: true
 
-- name: Create precis worker venv (macOS — symlink to Homebrew python so FDA grant survives ansible re-runs)
+# TCC note: the venv python must be a *symlink* to python.org's framework
+# python, not a copy — a symlink resolves to python.org's Developer-ID
+# signature, which is what the Full Disk Access grant pins to (survives
+# both Ansible re-runs AND a python upgrade within the series; no brew pin
+# needed for this anymore). See roles/pythonorg.
+#
+# Detect whether the venv python resolves into the python.org framework
+# (correct) or somewhere else (stale — brew-linked, copied, or a broken
+# symlink chain; rebuild). `python3` in a venv is always a symlink (->
+# python3.X) regardless of mode, so we must follow to the leaf.
+- name: Detect precis worker venv python mode (python.org symlink vs. stale)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    set -u
+    resolved=$(/usr/bin/readlink -f "{{ precis_worker_venv }}/bin/python3" 2>/dev/null || true)
+    case "$resolved" in
+      "")                       echo missing ;;
+      /Library/Frameworks/*)    echo ok ;;
+      *)                        echo stale ;;    # brew-linked, copied, or broken — rebuild
+    esac
+  register: precis_worker_venv_mode
+  changed_when: false
+  become: true
+
+# `state: absent` on a nonexistent path is a no-op, so this also correctly
+# handles a broken symlink chain (readlink resolves to "" -> mode=missing,
+# but the venv DIR still exists on disk from a deleted brew keg) — that case
+# needs the wipe too, since `creates:` on the venv-create task below would
+# otherwise treat the existing-but-broken dir as "already built" and skip.
+- name: Wipe precis worker venv if not on python.org (force symlink rebuild)
+  when:
+    - os_family == "darwin"
+    - precis_worker_venv_mode.stdout | default('') | trim != "ok"
+  ansible.builtin.file:
+    path: "{{ precis_worker_venv }}"
+    state: absent
+  become: true
+
+- name: Create precis worker venv (macOS — symlink to python.org python so FDA grant survives ansible re-runs)
   when: os_family == "darwin"
   ansible.builtin.command:
-    cmd: "{{ precis_brew_python }} -m venv --symlinks {{ precis_worker_venv }}"
+    cmd: "{{ precis_python }} -m venv --symlinks {{ precis_worker_venv }}"
     creates: "{{ precis_worker_venv }}/bin/python3"
   become: true
 

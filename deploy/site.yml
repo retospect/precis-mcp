@@ -24,6 +24,9 @@
 - name: "05 — Autofs (the fileserver NAS)"
   ansible.builtin.import_playbook: playbooks/05-autofs.yml
 
+- name: "06 — python.org interpreters (Developer-ID signed, FDA-durable)"
+  ansible.builtin.import_playbook: playbooks/06-pythonorg.yml
+
 - name: "05a — SSH tunnels"
   ansible.builtin.import_playbook: playbooks/17-ssh-tunnels.yml
 

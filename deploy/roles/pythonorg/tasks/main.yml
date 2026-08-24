@@ -1,0 +1,29 @@
+---
+# pythonorg role — install python.org's macOS framework builds and assert
+# they are Developer-ID signed.
+#
+# Why not Homebrew: macOS TCC pins a Full Disk Access grant to a binary's
+# **cdhash** when that binary is ad-hoc signed — every Homebrew python is
+# ad-hoc signed, so `brew upgrade python@3.x` mints a fresh cdhash and
+# silently orphans every FDA grant the operator clicked in (the venv's
+# python symlink resolves to a binary TCC no longer recognizes; the daemon
+# EPERM's on the NAS). python.org's macOS installers are signed by the
+# Python Software Foundation with a Developer-ID certificate, so TCC stores
+# a **signature-based** requirement instead of a cdhash — that requirement
+# survives an in-place upgrade of the same series (3.14.7 -> 3.14.8 keeps
+# the same TeamIdentifier), so the grant is one-and-done per host per
+# series. See docs/runbooks/fda-grant-review.md for the full story and the
+# 2026-08-24 migration record.
+#
+# Framework install lands at
+# /Library/Frameworks/Python.framework/Versions/<series>/bin/python<series>
+# — every NAS-touching venv role now symlinks its venv python there instead
+# of into a Homebrew keg.
+
+- name: Install + verify python.org interpreters (macOS)
+  ansible.builtin.include_tasks:
+    file: install_one.yml
+  loop: "{{ pythonorg_versions }}"
+  loop_control:
+    label: "python.org {{ item.full }}"
+  when: os_family == "darwin"

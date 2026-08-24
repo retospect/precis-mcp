@@ -71,21 +71,21 @@ Skipped (not present on this host, no action needed):
 How stable are these grants?
 ----------------------------
 
-All venv pythons on this host are **symlinks** to Homebrew-installed
-Python frameworks under /opt/homebrew/opt/python@*. macOS FDA records
-the *resolved* binary's cdhash, so:
+All venv pythons on this host are **symlinks** to python.org's framework
+Python installs under /Library/Frameworks/Python.framework/Versions/*.
+Those builds are signed by the Python Software Foundation with a
+Developer-ID certificate, so macOS FDA records a *signature-based*
+requirement rather than a cdhash, and the grant is far more durable:
 
-  - `uv pip install` / Ansible re-runs inside the venv   → grant stable
-  - `brew upgrade python@3.12` / `python@3.14`           → grant BREAKS,
-    re-add the affected venv python (this file regenerates on each
-    Ansible run so you can re-open it to see the current set).
-  - macOS major version upgrade                           → Apple re-signs
+  - `uv pip install` / Ansible re-runs inside the venv         → grant stable
+  - a python.org series upgrade (e.g. 3.14.7 -> 3.14.8)        → grant stable
+    (same TeamIdentifier; this file regenerates on each Ansible run so
+    you can re-open it to confirm the current set)
+  - macOS major version upgrade                                 → Apple re-signs
     /usr/sbin/cron etc. with the same identity → grant stable.
 
-If you want to avoid the brew-upgrade breakage entirely, pin the
-Python formulas:
-      brew pin python@3.14
-      brew pin python@3.12
+One click per Python series (3.14, 3.12) per host is permanent — no
+Homebrew pin needed, and there is no brew-upgrade breakage to avoid.
 
 Verifying grants are live
 -------------------------

@@ -19,21 +19,17 @@
     uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
 # Pinned to 3.12 because acatome-extract's deps (pillow, sentence-transformers,
-# torch) don't yet have clean macOS arm64 wheels for 3.14. Use Homebrew rather
-# than uv-managed Python: uv caches into /var/root/ when run as root, which is
-# unreachable when the LaunchDaemon drops privileges to `deploy` at exec time
-# (manifests as launchd exit status 78 / EX_CONFIG, silent failure).
-- name: Ensure Homebrew python@3.12 (macOS)
-  when: os_family == "darwin"
-  community.general.homebrew:
-    name: python@3.12
-    state: present
-  become: false
-
-- name: Resolve brew python@3.12 path
+# torch) don't yet have clean macOS arm64 wheels for 3.14. python.org's
+# framework install (roles/pythonorg) lives under /Library/Frameworks — a
+# world-readable path, so it dodges the same trap the old uv-managed-python
+# note used to warn about: `uv venv --python` caches under
+# /var/root/.local/share/uv/python when run as root, which is unreachable
+# once the LaunchDaemon drops privileges to `deploy` at exec time (manifests
+# as launchd exit status 78 / EX_CONFIG, silent failure).
+- name: Resolve python.org 3.12 interpreter path
   when: os_family == "darwin"
   ansible.builtin.set_fact:
-    brew_python312: /opt/homebrew/opt/python@3.12/bin/python3.12
+    extract_python312: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
 
 - name: Ensure extract venv directory
   ansible.builtin.file:
@@ -44,48 +40,52 @@
     mode: "0755"
   become: true
 
-# The venv python MUST be a symlink to brew's python@3.12, not a copy:
+# The venv python MUST be a symlink to python.org's python@3.12, not a copy:
 #
 #   1. If it's a copy, each `uv venv` / rebuild produces a fresh cdhash and
 #      invalidates the Full Disk Access grant that the operator clicked in
-#      (see roles/tcc_profile/README.md). Symlinks inherit brew's cdhash,
-#      which only changes on `brew upgrade python@3.12`.
+#      (see roles/tcc_profile/README.md). A symlink instead resolves to
+#      python.org's Developer-ID *signature*, which TCC keys the grant to —
+#      that survives both re-runs and a python upgrade within the series
+#      (see roles/pythonorg). No brew pin needed for this anymore.
 #   2. Earlier versions used `uv venv --python` which cached python under
 #      /var/root/.local/share/uv/python when run as root — unreachable when
 #      launchd drops privileges to `deploy` (manifests as launchd exit code
-#      78 / EX_CONFIG, silent). Brew's python in /opt/homebrew/... is world-
-#      readable, dodges the trap entirely.
+#      78 / EX_CONFIG, silent). python.org's framework python under
+#      /Library/Frameworks/... is world-readable, dodges the trap entirely.
 # Follow python3 through every symlink hop. If the final target is inside
-# /opt/homebrew (or /usr), the venv is properly symlinked to brew and the
-# FDA grant pins to brew's cdhash. If it's inside /opt/mcps/extract/venv
-# the interpreter was copied — wipe to force a --symlinks rebuild. If it
-# lives under /var/root/, a previous `uv venv --python` as root cached it
-# in root's home where launchd-dropped-to-deploy can't read it — also wipe.
+# /Library/Frameworks, the venv is properly symlinked to python.org and the
+# FDA grant pins to its Developer-ID signature. Anything else — the old
+# /opt/homebrew keg, a copied interpreter, a root-cached uv-managed python,
+# or a broken symlink chain — is stale and needs a rebuild.
 - name: Detect /opt/mcps/extract/venv python mode
   ansible.builtin.shell: |
     set -u
     resolved=$(/usr/bin/readlink -f /opt/mcps/extract/venv/bin/python3 2>/dev/null || true)
     case "$resolved" in
-      "")                               echo missing ;;
-      /opt/homebrew/*|/usr/*)           echo symlinked ;;
-      /opt/mcps/extract/venv/*)         echo copied ;;
-      /var/root/*)                      echo root-cached ;;
-      *)                                echo "other:$resolved" ;;
+      "")                       echo missing ;;
+      /Library/Frameworks/*)    echo ok ;;
+      *)                        echo stale ;;    # brew-linked, copied, root-cached, or broken — rebuild
     esac
   register: extract_venv_mode
   changed_when: false
   become: true
 
-- name: Wipe extract venv when it's copied or root-cached
-  when: extract_venv_mode.stdout | default('') | trim in ["copied", "root-cached"]
+# `state: absent` on a nonexistent path is a no-op, so this also correctly
+# handles a broken symlink chain (readlink resolves to "" -> mode=missing,
+# but the venv DIR still exists on disk) — that case needs the wipe too,
+# since `creates:` on the venv-create task below would otherwise treat the
+# existing-but-broken dir as "already built" and skip.
+- name: Wipe extract venv when not on python.org (force symlink rebuild)
+  when: extract_venv_mode.stdout | default('') | trim != "ok"
   ansible.builtin.file:
     path: /opt/mcps/extract/venv
     state: absent
   become: true
 
-- name: Create acatome-extract venv (symlinked to brew python@3.12)
+- name: Create acatome-extract venv (symlinked to python.org python@3.12)
   ansible.builtin.command:
-    cmd: "{{ brew_python312 }} -m venv --symlinks /opt/mcps/extract/venv"
+    cmd: "{{ extract_python312 }} -m venv --symlinks /opt/mcps/extract/venv"
     creates: /opt/mcps/extract/venv/bin/python3
   become: true
   become_user: deploy
@@ -98,6 +98,10 @@
   become_user: deploy
   register: extract_install
   changed_when: "'Installed' in extract_install.stdout or 'Updated' in extract_install.stdout"
+  # A venv wipe+rebuild (interpreter swap) reports 'Installed' here — bounce
+  # the daemon so it re-execs on the new interpreter instead of running on a
+  # deleted one until its next crash. Matches the worker/embedder roles.
+  notify: restart extract-watch
 
 - name: Fix extract venv ownership
   ansible.builtin.file:

@@ -415,6 +415,17 @@
 - name: "Export uv.lock -> constraints file, copy to every host (gate against fresh-resolve drift)"
   ansible.builtin.import_playbook: playbooks/03-precis-constraints.yml
 
+# ── 0d. python.org interpreters — before ANY venv-building play below ──
+# The embedder (19a) and collapsed worker (20b) roles both symlink their
+# venv python into /Library/Frameworks/Python.framework/Versions/<series>/
+# now, and their venv-mode detection wipes+rebuilds the venv the moment that
+# symlink doesn't resolve there — so the interpreter must already be on disk
+# the first time either role runs, on every host, every deploy. Idempotent
+# (skips the download+install once a host is on the target full version);
+# cheap on a converged host. See roles/pythonorg/tasks/main.yml.
+- name: "Ensure python.org interpreters (Developer-ID signed) before any venv build"
+  ansible.builtin.import_playbook: playbooks/06-pythonorg.yml
+
 # ── 1. Reinstall from GitHub HEAD ──
 # Order matters: the embedder goes FIRST. The system worker calls the
 # embedder at boot (`_build_handlers` → `EmbedHandler` → GET /model) and
