@@ -1,0 +1,45 @@
+---
+# retire-plist-backups.yml — delete the `.plist.bak-<date>` renames left behind
+# by past LaunchDaemon retirements (2026-08-23).
+#
+# Retiring a launchd daemon by hand left the old plist in place under a
+# `.bak-<date>` suffix. launchd only loads `/Library/LaunchDaemons/*.plist`, so
+# these are inert — but they are verbatim copies of the plist AT THE TIME OF
+# RETIREMENT, and the pre-§L templates embedded credentials in
+# `EnvironmentVariables` (a plaintext prod DB password in the worker-agent
+# copy; PRECIS_ANKI_PASSWORD in the worker copies). They sat 0644 until
+# 2026-08-23; they are 0600 now, which is containment, not a fix.
+#
+# Observed 2026-08-23: 3 on the gateway (com.precis.worker-agent.plist
+# .bak-20260723, com.precis.worker.plist.bak-20260619 / .bak-20260723) and 1 on
+# the second mac (com.precis.worker.plist.bak-20260619).
+#
+# Why deleting is safe: these have no rollback value. Every live plist is
+# rendered from a role template on every `site.yml` run, so the way back to any
+# previous unit is `git checkout` of the template, not a stale copy on the box.
+#
+# Idempotent (tolerates already-removed). Not wired into site.yml — a
+# permanent task guarding against files nothing recreates is cruft. Run once:
+#   ansible-playbook playbooks/retire-plist-backups.yml -i inventory/hosts.yml
+- name: Remove stale LaunchDaemon plist backups (credential-bearing residue)
+  hosts: macos
+  become: true
+  tasks:
+    - name: Find .plist.bak-* renames under /Library/LaunchDaemons
+      ansible.builtin.find:
+        paths: /Library/LaunchDaemons
+        patterns: "*.plist.bak-*"
+        file_type: file
+      register: _plist_backups
+
+    - name: Report what will be removed
+      ansible.builtin.debug:
+        msg: "{{ _plist_backups.files | map(attribute='path') | list }}"
+
+    - name: Remove them
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ _plist_backups.files }}"
+      loop_control:
+        label: "{{ item.path }}"
