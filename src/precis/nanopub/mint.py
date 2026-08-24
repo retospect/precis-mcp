@@ -72,7 +72,8 @@ def approve(
     crypto requires (the signature covers those exact bytes, underivable
     from a hub that later drifts). ``payload`` is the grounding envelope
     (``passages`` / ``fields`` / ``motivation`` / ``testable_by`` /
-    ``hanging`` / ``hypothesis`` / ``motivated_by_refs``) — every Layer-A
+    ``hanging`` / ``hypothesis`` / ``motivated_by_refs`` /
+    ``llm_models``) — every Layer-A
     gate runs NOW, against the post-reword sentence, so the review queue
     only ever holds strings that can actually mint. One exception, and it
     is deliberate: the acquisition gate
@@ -240,7 +241,13 @@ def sign(
     Gates re-run (state may have moved since approval) plus the drift
     check; a compound resolves its atoms' trusty codes into
     ``dependency_codes`` (a later change of any code is the dirty signal
-    that flips this row back to ``reviewed`` for the topo re-mint)."""
+    that flips this row back to ``reviewed`` for the topo re-mint).
+
+    ``llm_models`` is additive: the frozen envelope's ``llm_models``
+    (recorded by the proposing agent, attested at approve) always fold
+    into the pubinfo software node; this arg can only add ids on top —
+    see :func:`_fold_llm_models`. The ``llm-attribution`` gate (re-run
+    here) refuses an agent-prepared payload that names none."""
     row = store.nanopub_publish_row(hub_ref_id)
     if row is None or row.state != "reviewed":
         raise BadInput(
@@ -268,7 +275,7 @@ def sign(
         signer_orcid=signer_orcid,
         signer_name=signer_name,
     )
-    np = _build_and_sign(inp, profile, llm_models or [])
+    np = _build_and_sign(inp, profile, _fold_llm_models(row.grounding, llm_models))
 
     trig_bytes = np.rdf.serialize(format="trig").encode("utf-8")
     trusty_uri = str(np.source_uri)
@@ -418,6 +425,19 @@ def _build_and_sign(
     if not (np.has_valid_trusty and np.has_valid_signature):
         raise RuntimeError("nanopub library produced an invalid artifact")
     return np
+
+
+def _fold_llm_models(
+    grounding: dict[str, Any], override: list[str] | None
+) -> list[str]:
+    """The model ids the artifact attributes: the envelope's frozen
+    ``llm_models`` (parked by the proposing agent, attested at approve)
+    first, then any ``sign --llm-model`` additions — deduped, order
+    kept. The CLI flag is additive, never a replacement: sign must not
+    be able to silently drop the attribution approve froze."""
+    frozen = [str(m).strip() for m in (grounding or {}).get("llm_models") or []]
+    extra = [m.strip() for m in override or []]
+    return [m for m in dict.fromkeys([*frozen, *extra]) if m]
 
 
 def _software_provenance() -> dict[str, Any]:

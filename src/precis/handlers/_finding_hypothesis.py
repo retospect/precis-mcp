@@ -142,6 +142,7 @@ def put_hypothesis(
     motivation: str | None,
     testable_by: str | None,
     motivated_by: list[str] | None,
+    llm_models: list[str] | None = None,
     from_memory: str | None = None,
     set_by: str = "agent",
 ) -> Response:
@@ -173,6 +174,20 @@ def put_hypothesis(
             "is what separates a conjecture from vibes.",
             next="testable_by='conductance modulation under electrode "
             "displacement in junctions of …'",
+        )
+    # Required at THIS door, not just at the sign-time gate, because the
+    # proposing agent is the only party who knows what model authored the
+    # conjecture — a human hitting the llm-attribution refusal at approve
+    # has no way to recover the id (fi211520 shipped unattributed exactly
+    # this way).
+    models = [str(m).strip() for m in llm_models or [] if str(m).strip()]
+    if not models:
+        raise BadInput(
+            "a proposed hypothesis needs llm_models= naming the authoring "
+            "model id(s) — an agent-prepared artifact attributes its "
+            "machine author.",
+            next="llm_models=['claude-fable-5'] — the model id you are "
+            "running as; add any other model that co-authored the sentence",
         )
     if scope is not None and not isinstance(scope, dict):
         raise BadInput(
@@ -270,6 +285,10 @@ def put_hypothesis(
         # ride as a hint the reviewer promotes once its motivators are signed.
         "motivated_by_refs": [],
         "motivated_by_hint": list(tokens),
+        # Frozen into `grounding` at approve, folded into the pubinfo
+        # software node at sign; the llm-attribution gate refuses an
+        # agent-parked payload without it.
+        "llm_models": models,
     }
 
     # `mint_hub` converges on the sentence's pub_id, and applies `extra_meta`

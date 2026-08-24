@@ -37,6 +37,17 @@ class GateViolation:
     message: str
 
 
+#: ``refs.meta`` key marking a hub whose mint payload an agent prepared and
+#: parked (the hypothesis-proposal door). Mirrors — literally, as a string,
+#: because importing it would cycle (handlers import this module locally for
+#: exactly that reason) — ``handlers/_finding_hypothesis.py::
+#: META_PROPOSED_PAYLOAD``; a test pins the two equal. Its presence is what
+#: makes the ``llm-attribution`` gate bite: an agent-prepared payload must
+#: name its authoring model(s), while a payload a human typed from scratch
+#: (no parked marker) stays exempt.
+META_PROPOSED_PAYLOAD = "proposed_payload"
+
+
 #: The Phase-1 enforcement-asymmetry split
 #: (``docs/backlog/nanopub-corpus-remediation.md``): ``lint_notation`` /
 #: ``lint_claim_sentence`` ADVISE everywhere (authoring, reword) and BLOCK
@@ -160,7 +171,8 @@ def run_mint_gates(
 ) -> list[GateViolation]:
     """All Layer-A gates over one hub's frozen mint ``payload`` (the
     publish row's ``grounding`` envelope: ``passages`` / ``fields`` /
-    ``motivation`` / ``testable_by`` / ``hanging``). Returns every
+    ``motivation`` / ``testable_by`` / ``hanging`` / ``llm_models``).
+    Returns every
     violation, not just the first — the review surface shows the full
     list; mint proceeds only on an empty return.
 
@@ -284,6 +296,36 @@ def run_mint_gates(
                 "quantity-bound",
                 f"unknown quantity_bound {fields['quantity_bound']!r} "
                 f"(allowed: {', '.join(QUANTITY_BOUNDS)})",
+            )
+        )
+
+    # 17 — LLM attribution (2026-08-24, fi211520 post-mortem: the first
+    # published artifact carries no llmModel triple although an LLM
+    # authored both sentence and payload). Envelope key `llm_models` is a
+    # list of model-id strings; sign folds it into the pubinfo software
+    # node. Presence of the parked-payload marker on the hub is the
+    # "an agent prepared this" signal — those payloads MUST attribute.
+    llm_models = payload.get("llm_models")
+    if llm_models is not None and (
+        not isinstance(llm_models, list)
+        or not llm_models
+        or not all(isinstance(m, str) and m.strip() for m in llm_models)
+    ):
+        violations.append(
+            GateViolation(
+                "llm-attribution",
+                f"llm_models={llm_models!r} — must be a non-empty list of "
+                "model-id strings (e.g. ['claude-fable-5'])",
+            )
+        )
+    elif (hub_meta or {}).get(META_PROPOSED_PAYLOAD) is not None and not llm_models:
+        violations.append(
+            GateViolation(
+                "llm-attribution",
+                "agent-prepared payload (parked proposal on the hub) with no "
+                "llm_models — name the authoring model id(s) in the "
+                "envelope; a machine-written artifact that hides its author "
+                "is refused at sign",
             )
         )
 

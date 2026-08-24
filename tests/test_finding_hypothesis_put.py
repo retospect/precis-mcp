@@ -72,6 +72,7 @@ def test_proposal_mints_a_hypothesis_hub_with_motivation_edges(store: Store) -> 
         testable_by="nanoindentation of a pressed nanobud film versus pristine "
         "graphene under the same tip and load",
         motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+        llm_models=["test-model", "test-model-verifier"],
     )
 
     hub_ref_id = _hub_id(resp.body)
@@ -90,6 +91,9 @@ def test_proposal_mints_a_hypothesis_hub_with_motivation_edges(store: Store) -> 
     # handles ride as a hint for the reviewer to promote later.
     assert payload["motivated_by_refs"] == []
     assert payload["motivated_by_hint"] == [f"pc{ch1}", f"pc{ch2}"]
+    # Parked verbatim: approve freezes this into `grounding`, sign folds it
+    # into the pubinfo software node (precis:llmModel).
+    assert payload["llm_models"] == ["test-model", "test-model-verifier"]
 
     motivated = dict(_links(store, hub_ref_id, "motivated-by"))
     assert set(motivated) == {pa1, pa2}
@@ -113,6 +117,7 @@ def test_ref_level_motivator_is_accepted_without_a_passage(store: Store) -> None
         hypothesis=True,
         motivation="leap",
         testable_by="experiment",
+        llm_models=["test-model"],
         motivated_by=[f"pa{pa1}", f"pa{pa2}"],
     )
     motivated = dict(_links(store, _hub_id(resp.body), "motivated-by"))
@@ -128,6 +133,7 @@ def test_one_motivator_is_refused(store: Store) -> None:
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"pc{ch1}"],
         )
     assert pa1  # seeded, but nothing was minted
@@ -156,6 +162,7 @@ def test_two_hubs_on_one_paper_count_as_one_source(store: Store) -> None:
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"fi{hubs[0]}", f"fi{hubs[1]}"],
         )
 
@@ -178,6 +185,7 @@ def test_a_hypothesis_cannot_stack_on_other_hypotheses(store: Store) -> None:
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"fi{prior[0]}", f"fi{prior[1]}"],
         )
 
@@ -193,6 +201,7 @@ def test_a_memory_is_not_a_citable_motivator(store: Store) -> None:
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"pc{ch1}", f"me{mem}"],
         )
 
@@ -209,6 +218,30 @@ def test_missing_testable_by_is_refused(store: Store) -> None:
         )
 
 
+def test_missing_llm_models_is_refused_before_anything_is_minted(
+    store: Store,
+) -> None:
+    """The proposing agent is the only party who knows what model authored
+    the conjecture — a human at the approve form cannot recover it later,
+    so the door refuses up front (fi211520 shipped unattributed this way)."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    before = store.count_refs(kind="finding")
+
+    for bad in (None, [], ["  "]):
+        with pytest.raises(BadInput, match="llm_models"):
+            _handler(store).put(
+                title=_SENTENCE,
+                hypothesis=True,
+                motivation="leap",
+                testable_by="experiment",
+                motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+                llm_models=bad,
+            )
+
+    assert store.count_refs(kind="finding") == before
+
+
 def test_mode_conflict_with_supporters(store: Store) -> None:
     _, ch1 = _paper_with_chunk(store, "First source")
     with pytest.raises(BadInput, match="exclusive"):
@@ -217,6 +250,7 @@ def test_mode_conflict_with_supporters(store: Store) -> None:
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"pc{ch1}"],
             supporters=[{"paper": "pa1"}],
         )
@@ -232,6 +266,7 @@ def test_origin_memory_is_linked(store: Store) -> None:
         hypothesis=True,
         motivation="leap",
         testable_by="experiment",
+        llm_models=["test-model"],
         motivated_by=[f"pc{ch1}", f"pc{ch2}"],
         from_memory=f"me{mem}",
     )
@@ -267,6 +302,7 @@ def test_refuses_a_hub_already_in_the_publish_pipeline(store: Store) -> None:
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"pc{ch1}", f"pc{ch2}"],
         )
 
@@ -283,6 +319,7 @@ def test_proposal_is_idempotent_on_the_sentence(store: Store) -> None:
         "motivation": "leap",
         "testable_by": "experiment",
         "motivated_by": [f"pc{ch1}", f"pc{ch2}"],
+        "llm_models": ["test-model"],
     }
     first = _hub_id(_handler(store).put(**kw).body)
     second = _hub_id(_handler(store).put(**kw).body)
@@ -310,6 +347,7 @@ def test_a_gate_failing_sentence_is_refused_before_anything_is_minted(
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"pc{ch1}", f"pc{ch2}"],
         )
 
@@ -331,6 +369,7 @@ def test_a_hypothesis_need_not_name_an_epistemic_mode(store: Store) -> None:
         motivation="leap",
         testable_by="nanoindentation under matched tip and load",
         motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+        llm_models=["test-model"],
     )
 
     assert _hub_id(resp.body)
@@ -363,6 +402,7 @@ def test_refuses_to_converge_onto_a_pre_existing_ordinary_hub(store: Store) -> N
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
+            llm_models=["test-model"],
             motivated_by=[f"pc{ch1}", f"pc{ch2}"],
         )
 

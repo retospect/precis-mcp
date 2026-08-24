@@ -161,6 +161,7 @@ class FindingHandler(NumericRefHandler):
         motivation: str | None = None,
         testable_by: str | None = None,
         motivated_by: list[str] | None = None,
+        llm_models: list[str] | None = None,
         from_memory: str | None = None,
         parent_id: int | None = None,
         tags: list[str] | None = None,
@@ -207,9 +208,11 @@ class FindingHandler(NumericRefHandler):
         ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
-        ``testable_by=`` and ``motivated_by=`` (≥2 artifacts across ≥2 source
-        papers) to propose a nanopub hypothesis: a conjecture with no evidence
-        by type, prepared and parked for a human to approve. See
+        ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source
+        papers) and ``llm_models=`` (the authoring model id(s) — an
+        agent-prepared artifact attributes its machine author) to propose a
+        nanopub hypothesis: a conjecture with no evidence by type, prepared
+        and parked for a human to approve. See
         :func:`precis.handlers._finding_hypothesis.put_hypothesis`.
 
         Existing-id ``put`` is rejected (mutate via tag/link/delete
@@ -252,6 +255,7 @@ class FindingHandler(NumericRefHandler):
                 motivation=motivation,
                 testable_by=testable_by,
                 motivated_by=motivated_by,
+                llm_models=llm_models,
                 from_memory=from_memory,
             )
 

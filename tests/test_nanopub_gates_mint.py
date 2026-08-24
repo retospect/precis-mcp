@@ -590,6 +590,58 @@ def test_hypothesis_with_quote_is_a_hard_error(store: Any) -> None:
     assert "schema-lint" in slugs  # quote on a hypothesis
 
 
+def test_agent_parked_payload_without_llm_models_is_refused(store: Any) -> None:
+    """fi211520 post-mortem: an agent-prepared payload must name its
+    authoring model(s). The parked-proposal marker on the hub is the
+    "an agent prepared this" signal; a human-typed payload stays exempt."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    bundle = evidence.load_bundle(store, hub)
+    parked: dict[str, Any] = {gates.META_PROPOSED_PAYLOAD: {"passages": []}}
+
+    refused = {
+        v.gate
+        for v in gates.run_mint_gates(store, bundle, _payload(chunk), hub_meta=parked)
+    }
+    assert "llm-attribution" in refused
+
+    attributed = _payload(chunk, llm_models=["claude-fable-5"])
+    assert {
+        v.gate for v in gates.run_mint_gates(store, bundle, attributed, hub_meta=parked)
+    } == set()
+
+    # No parked marker = human-typed = exempt.
+    assert "llm-attribution" not in _gate_slugs(store, hub, _payload(chunk))
+
+
+def test_malformed_llm_models_is_refused_even_unparked(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows a malformed envelope key.", paper, chunk)
+    for bad in ("claude-fable-5", [], [""], [42]):
+        assert "llm-attribution" in _gate_slugs(
+            store, hub, _payload(chunk, llm_models=bad)
+        )
+
+
+def test_parked_marker_constant_mirrors_the_handler() -> None:
+    # gates.py cannot import the handler (module cycle), so the key is
+    # mirrored as a literal — this is the pin that keeps the mirror honest.
+    from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD
+
+    assert gates.META_PROPOSED_PAYLOAD == META_PROPOSED_PAYLOAD
+
+
+def test_fold_llm_models_is_additive_and_deduped() -> None:
+    # The frozen envelope's attribution can never be dropped by sign; the
+    # CLI --llm-model flag only adds.
+    fold = mint._fold_llm_models
+    assert fold({"llm_models": ["a", "b"]}, ["b", "c", "  "]) == ["a", "b", "c"]
+    assert fold({}, None) == []
+    assert fold({"llm_models": []}, ["x"]) == ["x"]
+
+
 def test_dup_pdf_sha_rows_block_mint(store: Any) -> None:
     # The ref-5937 class: two sha rows from dup ingest.
     paper, chunk, sha = _seed_paper(store)
@@ -670,6 +722,30 @@ def test_full_mint_pipeline(store: Any, monkeypatch: Any) -> None:
     body = render_nanopub_view(store, ref).body
     assert signed.trusty_uri in body
     assert trig in body
+
+
+def test_frozen_llm_models_land_in_the_signed_artifact(
+    store: Any, monkeypatch: Any
+) -> None:
+    """The auto-flow: llm_models in the approve payload → frozen into
+    `grounding` → folded into pubinfo at sign with NO --llm-model flag."""
+    priv, _pub = generate_keypair(2048)
+    monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
+
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha, llm_models=["claude-fable-5"])
+    row = mint.approve(store, hub, payload=payload, interactive=True)
+    assert row.grounding["llm_models"] == ["claude-fable-5"]
+
+    signed = mint.sign(store, hub)
+    artifact = store.nanopub_artifact(signed.artifact_id)
+    assert artifact is not None
+    trig = artifact.trig_bytes.decode("utf-8")
+    assert "llmModel" in trig
+    assert "claude-fable-5" in trig
 
 
 def test_sign_refuses_on_title_drift(store: Any, monkeypatch: Any) -> None:

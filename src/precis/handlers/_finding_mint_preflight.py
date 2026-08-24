@@ -66,7 +66,10 @@ def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Res
     resolved = payload if payload is not None else _default_payload(store, ref)
 
     bundle = ev.load_bundle(store, ref.id)
-    violations = run_mint_gates(store, bundle, resolved)
+    # hub_meta rides along so the meta-scoped gates (rejected-memo,
+    # llm-attribution's parked-proposal signal) report here exactly as
+    # they would at approve — omitting it made preflight silently softer.
+    violations = run_mint_gates(store, bundle, resolved, hub_meta=ref.meta or {})
 
     handle = handle_registry.format_handle("finding", ref.id)
     # The gates' own resolver: the header must name the type the verdict

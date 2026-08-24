@@ -752,12 +752,15 @@ def put(
     # evidence, so it takes motivated_by= (>=2 artifacts across >=2 source
     # papers, pc<id> to ground at a passage) plus motivation= (the inferential
     # leap) and testable_by= (the discriminating experiment) instead of
-    # supporters=/cited_in=. from_memory= records the note that reasoned its
+    # supporters=/cited_in=. llm_models= names the authoring model id(s) —
+    # required: an agent-prepared artifact attributes its machine author.
+    # from_memory= records the note that reasoned its
     # way here. Prepares and parks it for review; approve/sign stay human-only.
     hypothesis: bool = False,
     motivation: str | None = None,
     testable_by: str | None = None,
     motivated_by: list[str] | None = None,
+    llm_models: list[str] | None = None,
     from_memory: str | None = None,
     # citation (see precis-citation-help):
     source_handle: str | None = None,
@@ -916,6 +919,7 @@ def put(
             "motivation": motivation,
             "testable_by": testable_by,
             "motivated_by": motivated_by,
+            "llm_models": llm_models,
             "from_memory": from_memory,
             "source_handle": source_handle,
             "source_quote": source_quote,

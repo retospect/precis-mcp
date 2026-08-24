@@ -71,6 +71,7 @@ put(kind='finding', hypothesis=True,
     motivation='<what each source established; which transfer is unproven>',
     testable_by='<the measurement that would settle it either way>',
     motivated_by=['pc293', 'fi1234'],   # >=2, spanning >=2 source papers
+    llm_models=['claude-fable-5'],      # required: the model id(s) authoring this
     from_memory='me4567')               # optional: the note it came from
 ```
 
@@ -82,6 +83,13 @@ Rules the door enforces:
 - **Papers, patents, and claim hubs only** — a memory is something you
   thought *with*, not a source an artifact can cite. Name it in the
   `motivation` prose instead.
+- **`llm_models` is required** — the model id(s) you are running as (plus
+  any co-authoring model). It freezes into the envelope at approve and
+  lands as `precis:llmModel` in the signed pubinfo: a machine-written
+  artifact attributes its machine author. This holds for ANY payload an
+  agent drafts, not just this door — the `llm-attribution` gate refuses
+  an agent-parked payload without it, at approve, sign, and
+  `mint-preflight` alike.
 - Naming a passage (`pc<id>`) rather than a whole paper records *which*
   passage provoked the conjecture, as a chunk-granular `motivated-by`
   edge. Those edges are motivation, never support: `hub_refine` is
@@ -166,7 +174,12 @@ failures an extraction agent can avoid up front:
   re-hashed or acquired.
 - **Quote mechanics** — the quote must be verbatim and contiguous
   within ONE stored chunk (adjacent sentences in the same chunk may be
-  joined; never across chunks), trimmed to the bare assertion, free of
+  joined; never across chunks). **Span policy: pick the minimal
+  single-chunk span that contains every structured field** (material,
+  method, quantity, …) — one contiguous passage that states the whole
+  claim beats a scatter of lean fragments, because the artifact's public
+  reader sees only the quotes. Fall back to multiple tight quotes only
+  when no single-chunk span covers all fields. Keep it free of
   citation markers (including markdown-link residue like
   ``[\[1,2\]](#page-…)`` and superscript residue like
   ``…report.<sup>8</sup>`` — even a quote trimmed just before the tag,

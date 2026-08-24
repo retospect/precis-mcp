@@ -29,6 +29,7 @@ _HYPOTHESIS_KWARGS = (
     "motivation",
     "testable_by",
     "motivated_by",
+    "llm_models",
     "from_memory",
 )
 
@@ -59,6 +60,7 @@ def test_put_forwards_the_hypothesis_kwargs_into_dispatch(
         motivation="Both sources share a mechanism; the transfer is untested.",
         testable_by="nanoindentation of the pressed film versus pristine",
         motivated_by=["pc293", "fi1234"],
+        llm_models=["claude-fable-5"],
         from_memory="me34468",
     )
 
@@ -69,6 +71,7 @@ def test_put_forwards_the_hypothesis_kwargs_into_dispatch(
     assert (
         payload["testable_by"] == "nanoindentation of the pressed film versus pristine"
     )
+    assert payload["llm_models"] == ["claude-fable-5"]
     assert payload["from_memory"] == "me34468"
     assert "transfer is untested" in payload["motivation"]
 

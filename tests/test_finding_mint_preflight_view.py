@@ -145,12 +145,22 @@ def test_falls_back_to_the_parked_proposal(store: Store) -> None:
         motivation="leap",
         testable_by="experiment",
         motivated_by=[f"pc{chunk_a}", f"pc{chunk_b}"],
+        llm_models=["test-model"],
     )
     hub = int(resp.body.split("fi", 1)[1].split()[0])
 
     out = _handler(store).get(id=hub, view="mint-preflight")
     assert "parked/frozen payload" in out.body
     assert "PASS" in out.body
+
+    # The view passes hub_meta, so the llm-attribution gate sees the parked
+    # marker: a candidate payload that DROPS the attribution is blocked here
+    # exactly as approve would block it.
+    stripped = _handler(store).get(
+        id=hub, view="mint-preflight", payload=_hypothesis_payload()
+    )
+    assert "BLOCKED" in stripped.body
+    assert "llm-attribution" in stripped.body
 
 
 def test_non_dict_payload_is_refused(store: Store) -> None:

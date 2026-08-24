@@ -512,6 +512,7 @@ def test_finding_view_evidence_hypothesis_shows_motivated_by_not_supporters(
         motivation="Both systems share a mechanism; the transfer is untested.",
         testable_by="an experiment discriminating the two candidate mechanisms",
         motivated_by=[f"pc{ch1}", f"pa{pa2}"],
+        llm_models=["test-model"],
     )
     hub = int(resp.body.split("fi", 1)[1].split()[0])
 

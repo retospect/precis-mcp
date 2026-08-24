@@ -173,6 +173,7 @@ def _seed_hypothesis(
         "the transfer here is untested.",
         testable_by="an experiment discriminating the two candidate mechanisms",
         motivated_by=[f"pc{motivator_chunk}", f"pa{other}"],
+        llm_models=["test-model"],
     )
     hub = int(resp.body.split("fi", 1)[1].split()[0])
     return hub, other
