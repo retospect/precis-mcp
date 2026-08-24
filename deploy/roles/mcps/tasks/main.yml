@@ -103,6 +103,20 @@
   register: mcp_core
   changed_when: "'Installed' in mcp_core.stdout or 'Updated' in mcp_core.stdout"
 
+# rmscene (a remarkable-mcp dep) caps packaging<24.0, which is unsatisfiable
+# against the lockfile-exported constraint packaging==26.2 — a metadata-only
+# cap that resolves fine in practice. An overrides file (unlike a constraint)
+# REPLACES rmscene's requirement on packaging, so the resolver takes the
+# lockfile's version. Derived from constraints.txt, not hardcoded, so a lock
+# bump never drifts this file.
+- name: Derive packaging override from constraints (rmscene stale cap)
+  when: node_role in ["gateway", "scheduler"]
+  ansible.builtin.shell: |
+    set -eu
+    grep -E '^packaging==' /opt/precis/constraints.txt > /opt/mcps/etc/uv-overrides.txt
+  become: true
+  changed_when: false
+
 - name: Install research/writing MCP packages (gateway + scheduler)
   when: node_role in ["gateway", "scheduler"]
   # ``--refresh-package precis-mcp`` forces uv to ignore its
@@ -120,6 +134,7 @@
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
+      --overrides /opt/mcps/etc/uv-overrides.txt \
       'precis-mcp @ git+https://github.com/retospect/precis-mcp@main' \
       acatome-meta \
       'acatome-store[embeddings]' \
