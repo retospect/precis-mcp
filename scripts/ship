@@ -465,12 +465,13 @@ for attempt in 1 2 3; do
         # is per-process, so xdist would fragment its map. Full mode (/go, bare):
         # the whole suite at -n6. mypy + ruff run in full either way.
         if [[ "$IMPACTED" == 1 ]]; then
-            # Repo-invariant tests (migration numbering, schema-baseline drift)
-            # assert over filesystem globs, so testmon has no code-dependency
-            # edge to select them on a new migration — run them unconditionally
-            # alongside the impacted set (they're sub-second).
-            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py'
-            say "integration gate (ruff autofix · mypy · pytest --impacted + repo invariants) — ${GATE_MODE} gate"
+            # Repo-invariant tests (migration numbering, schema-baseline
+            # drift, schema design) assert over filesystem globs / the
+            # migrated schema, so testmon has no code-dependency edge to
+            # select them on a new migration — run them unconditionally
+            # alongside the impacted set (they're fast).
+            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py tests/test_schema_design.py'
+            say "integration gate (ruff autofix · mypy · import contracts · pytest --impacted + repo invariants) — ${GATE_MODE} gate"
         else
             # Full authoritative path measures coverage too: pytest-cov writes
             # /app/coverage.xml (xml only — no terminal table flooding the
@@ -481,9 +482,9 @@ for attempt in 1 2 3; do
             COV_ARGS="--cov=src --cov-report=xml:coverage.xml"
             [[ "$MUTATE" == 1 ]] && COV_ARGS+=" --cov-context=test"
             PYTEST_CMD="uv run pytest -q -n ${PYTEST_N} ${COV_ARGS}"
-            say "integration gate (ruff autofix · mypy · pytest+cov) — ${GATE_MODE} gate, -n ${PYTEST_N}"
+            say "integration gate (ruff autofix · mypy · import contracts · pytest+cov) — ${GATE_MODE} gate, -n ${PYTEST_N}"
         fi
-        run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && ${PYTEST_CMD}" \
+        run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports && ${PYTEST_CMD}" \
             || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
     fi
 

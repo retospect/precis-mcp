@@ -450,6 +450,10 @@ dev = [
     # image. Needs a dev-image rebuild to activate the grimp verbs in-container;
     # until then their tests `importorskip("grimp")`.
     "grimp>=3",
+    # Architecture contracts (`uv run lint-imports`, wired into the ship
+    # gate): mechanises the layering conventions that used to live only in
+    # prose — see [tool.importlinter] below. Built on grimp (already here).
+    "import-linter>=2.1",
     "types-pyyaml>=6.0.12.20260724",
     "lxml-stubs>=0.5.1",
     "types-tqdm>=4.70.0.20260805",
@@ -509,6 +513,71 @@ include = [
   "*.toml",
   "LICENSE",
   "CITATION.cff",
+]
+
+# Architecture contracts (`uv run lint-imports`; ship-gate step). Each
+# contract mechanises a layering rule that previously lived only in prose
+# (CLAUDE.md / package docstrings). Contracts must pass on today's graph —
+# a new violation is a design regression, not style noise. Static analysis
+# via grimp: nothing is imported, so optional/uninstalled deps are safe.
+# The smaller plugin-ish packages (asa_slack, precis_chem, precis_bio,
+# precis_pathway) are roots too so their edges are visible to contracts.
+[tool.importlinter]
+root_packages = [
+    "precis",
+    "precis_web",
+    "asa_bot",
+    "asa_slack",
+]
+
+[[tool.importlinter.contracts]]
+name = "core is surface-free: precis never imports web/discord/slack daemons"
+type = "forbidden"
+source_modules = ["precis"]
+forbidden_modules = ["precis_web", "asa_bot", "asa_slack"]
+# The one sanctioned edge: the `precis web` CLI subcommand is the web
+# app's composition root/launcher.
+ignore_imports = [
+    "precis.cli.web -> precis_web.app",
+    "precis.cli.web -> precis_web.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "surface daemons stay independent (web vs discord bridge)"
+type = "independence"
+modules = ["precis_web", "asa_bot"]
+
+[[tool.importlinter.contracts]]
+name = "slack bridge shares asa_bot runtime but never the web app"
+type = "forbidden"
+source_modules = ["asa_slack"]
+forbidden_modules = ["precis_web"]
+
+# The two intra-precis contracts are direct-import only: the package's
+# transitive graph is dense (utils → liveness → workers chains reach almost
+# everything), so a full-chain ban would indict every module. The convention
+# they encode — and the regression they catch — is a module *reaching for*
+# the higher layer by name.
+[[tool.importlinter.contracts]]
+name = "ingest below workers: the embedding/summary cascade is worker-owned"
+type = "forbidden"
+source_modules = ["precis.ingest"]
+forbidden_modules = ["precis.workers"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "store is the bottom layer of precis"
+type = "forbidden"
+source_modules = ["precis.store"]
+allow_indirect_imports = true
+forbidden_modules = [
+    "precis.workers",
+    "precis.handlers",
+    "precis.tools",
+    "precis.jobs",
+    "precis.ingest",
+    "precis.cli",
+    "precis.server",
 ]
 
 [tool.ruff]
