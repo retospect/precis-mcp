@@ -28,10 +28,12 @@ from precis.quest.frontier import (
     _apply_rubric_composite,
     _candidate_from_structure,
     _rubric_composite_for,
+    better_arrow_for,
     build_frontier_scatter,
     pareto_split,
     quest_frontier,
     render_frontier_tree,
+    viridis_color,
 )
 from precis.quest.tick import run_quest_tick
 from precis.structure import preflight as preflight_mod
@@ -262,6 +264,138 @@ class TestFrontierScatter:
         assert scatter is not None
         assert all(p["rate_readout"] is None for p in scatter.points)
         assert all(p["extra_measures"] == [] for p in scatter.points)
+
+    def test_x_y_better_set_from_objective_senses(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter(
+            [a, b], objectives=[("barrier", "min"), ("energy", "max")]
+        )
+        assert scatter is not None
+        assert scatter.x_better == "← better"  # barrier plotted on x, sense=min
+        assert scatter.y_better == "↑ better"  # energy plotted on y, sense=max
+
+    def test_x_y_better_empty_when_axis_not_a_declared_objective(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        # neither plotted axis (barrier/energy) is a declared objective here
+        scatter = build_frontier_scatter([a, b], objectives=[("log_tof", "max")])
+        assert scatter is not None
+        assert scatter.x_better == "" and scatter.y_better == ""
+
+    def test_x_y_better_default_empty_no_objectives(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        assert scatter.x_better == "" and scatter.y_better == ""
+
+    def test_params_stamped_on_confirmed_and_provisional_points(self) -> None:
+        a = Candidate(
+            1,
+            "st1",
+            "A",
+            {"barrier": 0.3, "energy": -20.0},
+            True,
+            params={"temp": 450.5, "metal": "Fe"},
+        )
+        untrusted_cand = Candidate(
+            2,
+            "st2",
+            "B",
+            {},
+            True,
+            flags={"barrier_trusted": False},
+            params={"temp": 600.0},
+        )
+        pc = ProvisionalCandidate(
+            candidate=untrusted_cand,
+            measures={"barrier": 0.5, "energy": -12.0},
+            untrusted_keys=frozenset({"barrier"}),
+            reasons=["barrier untrusted"],
+        )
+        scatter = build_frontier_scatter([a], provisional=[pc])
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["params"] == [
+            {"key": "temp", "value": "450.5"},
+            {"key": "metal", "value": "Fe"},
+        ]
+        assert by_id[2]["params"] == [{"key": "temp", "value": "600"}]
+
+    def test_params_empty_list_when_no_params(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        assert all(p["params"] == [] for p in scatter.points)
+
+    def test_z_coloring_stamps_z_and_color_only_on_points_with_a_value(
+        self,
+    ) -> None:
+        a = Candidate(
+            1, "st1", "A", {"barrier": 0.3, "energy": -20.0, "log_tof": 1.0}, True
+        )
+        b = Candidate(
+            2, "st2", "B", {"barrier": 0.9, "energy": -10.0, "log_tof": 3.0}, True
+        )
+        c = Candidate(3, "st3", "C", {"barrier": 0.5, "energy": -15.0}, True)
+        scatter = build_frontier_scatter(
+            [a, b, c], z_measure="log_tof", z_label="log TOF"
+        )
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["z"] == 1.0 and "color" in by_id[1]
+        assert by_id[2]["z"] == 3.0 and "color" in by_id[2]
+        # candidate C has no log_tof measure — neither key stamped
+        assert "z" not in by_id[3] and "color" not in by_id[3]
+        # min z (a) gets the first Viridis stop, max z (b) the last
+        assert by_id[1]["color"] == "#440154"
+        assert by_id[2]["color"] == "#fde725"
+        assert scatter.z_key == "log_tof"
+        assert scatter.z_label == "log TOF"
+        assert scatter.z_min == 1.0 and scatter.z_max == 3.0
+        assert scatter.z_stops[0] == "#440154" and scatter.z_stops[-1] == "#fde725"
+
+    def test_no_z_measure_leaves_fields_default_and_no_color_key(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        assert scatter.z_key is None
+        assert scatter.z_label == ""
+        assert scatter.z_min is None and scatter.z_max is None
+        assert scatter.z_stops == []
+        assert all("color" not in p and "z" not in p for p in scatter.points)
+
+
+class TestBetterArrowFor:
+    def test_x_axis_min_sense(self) -> None:
+        assert better_arrow_for("x", "min") == "← better"
+
+    def test_x_axis_max_sense(self) -> None:
+        assert better_arrow_for("x", "max") == "better →"
+
+    def test_y_axis_min_sense(self) -> None:
+        assert better_arrow_for("y", "min") == "↓ better"
+
+    def test_y_axis_max_sense(self) -> None:
+        assert better_arrow_for("y", "max") == "↑ better"
+
+    def test_none_or_unknown_sense_is_empty(self) -> None:
+        assert better_arrow_for("x", None) == ""
+        assert better_arrow_for("y", None) == ""
+        assert better_arrow_for("x", "bogus") == ""
+
+
+class TestViridisColor:
+    def test_endpoints_are_the_first_last_stops(self) -> None:
+        assert viridis_color(0.0) == "#440154"
+        assert viridis_color(1.0) == "#fde725"
+
+    def test_clamps_out_of_range(self) -> None:
+        assert viridis_color(-5.0) == viridis_color(0.0)
+        assert viridis_color(5.0) == viridis_color(1.0)
 
 
 # ── per-quest scatter axes (kinetics cutover) ──────────────────────────

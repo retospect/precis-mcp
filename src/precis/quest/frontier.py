@@ -165,6 +165,66 @@ def axis_label_for(key: str) -> str:
     return _AXIS_LABELS.get(key, key)
 
 
+def better_arrow_for(axis: str, sense: str | None) -> str:
+    """A short "which way is better" suffix for an axis label, or ``""``.
+
+    ``sense`` is the declared objective sense (``"min"``/``"max"``) for the
+    measure plotted on ``axis`` (``"x"``/``"y"``) — ``None``/unknown (the
+    plotted axis isn't a declared rubric objective at all) means no
+    direction is known, so the suffix is empty rather than a guess. The x
+    axis reads left-to-right as printed (``← better`` / ``better →``); the y
+    axis plots higher values higher up on screen (:func:`build_frontier_
+    scatter`'s ``_cy`` flip), so a **min**-sense measure's better direction
+    is *downward* (``↓ better``) and a **max**-sense measure's is *upward*
+    (``↑ better``) — optunacy-style hint for the quest hub scatter and its
+    PNG twin (:mod:`precis.quest.figures`)."""
+    if sense not in _VALID_SENSES:
+        return ""
+    if axis == "x":
+        return "← better" if sense == "min" else "better →"
+    return "↓ better" if sense == "min" else "↑ better"
+
+
+#: Matplotlib's "viridis" colormap, sampled at 9 evenly-spaced stops —
+#: perceptually-uniform, colorblind-safe, the same ramp optunacy uses for its
+#: z-axis coloring. :func:`viridis_color` linearly interpolates between the
+#: two nearest stops rather than pulling in matplotlib at read time (this
+#: module has no other matplotlib dependency — the PNG twin does, in
+#: :mod:`precis.quest.figures`).
+_VIRIDIS_STOPS: tuple[str, ...] = (
+    "#440154",
+    "#472d7b",
+    "#3b528b",
+    "#2c728e",
+    "#21918c",
+    "#28ae80",
+    "#5ec962",
+    "#addc30",
+    "#fde725",
+)
+
+
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def viridis_color(t: float) -> str:
+    """``#rrggbb`` for ``t`` clamped to ``[0, 1]`` — linear interpolation
+    between the two nearest :data:`_VIRIDIS_STOPS`."""
+    t = min(1.0, max(0.0, t))
+    n = len(_VIRIDIS_STOPS) - 1
+    pos = t * n
+    i = min(int(pos), n - 1)
+    frac = pos - i
+    r0, g0, b0 = _hex_to_rgb(_VIRIDIS_STOPS[i])
+    r1, g1, b1 = _hex_to_rgb(_VIRIDIS_STOPS[i + 1])
+    r = round(r0 + (r1 - r0) * frac)
+    g = round(g0 + (g1 - g0) * frac)
+    b = round(b0 + (b1 - b0) * frac)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 def plot_axes_for(
     quest_meta: dict[str, Any] | None, objectives: list[tuple[str, str]]
 ) -> tuple[str, str, str, str]:
@@ -267,6 +327,22 @@ class FrontierScatter:
     pad: float = _SVG_PAD
     x_ticks: list[dict[str, Any]] = field(default_factory=list)
     y_ticks: list[dict[str, Any]] = field(default_factory=list)
+    #: "which way is better" suffixes (:func:`better_arrow_for`) for the
+    #: plotted x/y axis — empty when the plotted measure isn't one of the
+    #: quest's declared rubric objectives (no known direction).
+    x_better: str = ""
+    y_better: str = ""
+    #: Optional z-axis (color) dimension — optunacy-style Viridis ramp
+    #: (:func:`viridis_color`). ``z_key`` is the plotted measure name (also
+    #: doubling as the "z is active" flag — ``None`` when no ``z_measure``
+    #: was given, or none of the plottable points carried a value for it);
+    #: ``z_stops`` mirrors :data:`_VIRIDIS_STOPS` for the template's CSS
+    #: gradient colorbar, empty when z isn't active.
+    z_key: str | None = None
+    z_label: str = ""
+    z_min: float | None = None
+    z_max: float | None = None
+    z_stops: list[str] = field(default_factory=list)
 
 
 def _rate_readout(measures: dict[str, float]) -> str | None:
@@ -300,6 +376,25 @@ def _extra_objective_measures(
         if isinstance(v, (int, float)):
             out.append({"key": key, "label": axis_label_for(key), "value": f"{v:g}"})
     return out
+
+
+def _format_param_value(v: Any) -> str:
+    """A param's display string for the hover-tooltip param list — ``%.4g``
+    for a real number (never a fabricated precision), ``str()`` for
+    everything else (a bool stays ``True``/``False``, not ``1``/``0``)."""
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, (int, float)):
+        return f"{v:.4g}"
+    return str(v)
+
+
+def _param_rows(params: dict[str, Any]) -> list[dict[str, str]]:
+    """``[{"key", "value"}, ...]`` over ``params`` in dict order — the
+    candidate's point in quest param space, surfaced in the hover tooltip
+    (optunacy-style rich card: identity, coordinates, parameters, other
+    objectives). Empty when the candidate carries no ``params``."""
+    return [{"key": k, "value": _format_param_value(v)} for k, v in params.items()]
 
 
 def _union_viewport(
@@ -340,6 +435,8 @@ def build_frontier_scatter(
     pad: float = _SVG_PAD,
     viewport: dict[str, tuple[float, float]] | None = None,
     objectives: Sequence[tuple[str, str]] = (),
+    z_measure: str | None = None,
+    z_label: str = "",
 ) -> FrontierScatter | None:
     """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
 
@@ -384,6 +481,17 @@ def build_frontier_scatter(
     hover tooltip can show the full objective vector, not just the plotted
     pair, without a second lookup. Default empty — every pre-existing
     caller gets no extra fields, unchanged.
+
+    ``z_measure``/``z_label`` (optional — the quest hub's ``?fz=`` picker)
+    add a third, colour-mapped dimension (optunacy-style): every plottable
+    point (either band) that carries a numeric value for ``z_measure`` gets
+    ``point["z"]`` + ``point["color"]`` (:func:`viridis_color`, normalised
+    over the SAME min/max the axis-range logic above already uses — a
+    degenerate span substitutes ``1.0`` like the x/y axes do); a point with
+    no value for it gets neither key, so the template's fill-fallback logic
+    stays simple. ``None``/no plottable point carrying a value ⇒
+    ``FrontierScatter.z_key`` stays ``None`` and no point is stamped —
+    z-coloring is fully opt-in.
     """
     plottable = [
         c
@@ -430,6 +538,35 @@ def build_frontier_scatter(
         # SVG y grows downward; flip so the higher value plots higher up.
         return pad + (1.0 - (v - y_lo) / y_range) * plot_h
 
+    # z-axis (color) — collected over the SAME plottable pool as x/y, keyed
+    # by ref_id so the point-building loops below can stamp a value/color
+    # without a second measures lookup. See the docstring's z_measure note.
+    z_values: dict[int, float] = {}
+    if z_measure:
+        for c in plottable:
+            zv = c.measures.get(z_measure)
+            if isinstance(zv, (int, float)):
+                z_values[c.ref_id] = float(zv)
+        for pc in plottable_provisional:
+            zv = pc.measures.get(z_measure)
+            if isinstance(zv, (int, float)):
+                z_values[pc.candidate.ref_id] = float(zv)
+    z_key: str | None = None
+    z_min: float | None = None
+    z_max: float | None = None
+    z_stops: list[str] = []
+    z_span = 1.0
+    if z_measure and z_values:
+        z_key = z_measure
+        z_min = min(z_values.values())
+        z_max = max(z_values.values())
+        z_span = (z_max - z_min) or 1.0
+        z_stops = list(_VIRIDIS_STOPS)
+
+    obj_sense = {k: s for k, s in objectives}
+    x_better = better_arrow_for("x", obj_sense.get(x_measure))
+    y_better = better_arrow_for("y", obj_sense.get(y_measure))
+
     plotted = (x_measure, y_measure)
     points: list[dict[str, Any]] = []
     for c in plottable:
@@ -450,7 +587,11 @@ def build_frontier_scatter(
                 c.measures, objectives, plotted
             ),
             "rate_readout": _rate_readout(c.measures),
+            "params": _param_rows(c.params),
         }
+        if c.ref_id in z_values and z_min is not None:
+            point["z"] = z_values[c.ref_id]
+            point["color"] = viridis_color((z_values[c.ref_id] - z_min) / z_span)
         if open_url_for is not None:
             point["open_url"] = open_url_for(c)
         points.append(point)
@@ -477,7 +618,11 @@ def build_frontier_scatter(
                 pc.measures, objectives, plotted
             ),
             "rate_readout": _rate_readout(pc.measures),
+            "params": _param_rows(c.params),
         }
+        if c.ref_id in z_values and z_min is not None:
+            ppoint["z"] = z_values[c.ref_id]
+            ppoint["color"] = viridis_color((z_values[c.ref_id] - z_min) / z_span)
         if open_url_for is not None:
             ppoint["open_url"] = open_url_for(c)
         points.append(ppoint)
@@ -504,6 +649,13 @@ def build_frontier_scatter(
         pad=pad,
         x_ticks=x_ticks,
         y_ticks=y_ticks,
+        x_better=x_better,
+        y_better=y_better,
+        z_key=z_key,
+        z_label=z_label if z_key else "",
+        z_min=z_min,
+        z_max=z_max,
+        z_stops=z_stops,
     )
 
 
@@ -1420,10 +1572,12 @@ __all__ = [
     "FrontierScatter",
     "ProvisionalCandidate",
     "axis_label_for",
+    "better_arrow_for",
     "build_frontier_scatter",
     "leaderboard",
     "pareto_split",
     "plot_axes_for",
     "quest_frontier",
     "render_frontier_tree",
+    "viridis_color",
 ]

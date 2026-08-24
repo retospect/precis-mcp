@@ -108,6 +108,14 @@ def render_pareto_png(scatter: FrontierScatter, *, title: str | None = None) -> 
     hollow (white face, coloured edge) otherwise; colour by band (confirmed
     blue / provisional orange / grey when not converged).
     """
+    fig = _pareto_figure(scatter, title=title)
+    return _fig_to_png(fig)
+
+
+def _pareto_figure(scatter: FrontierScatter, *, title: str | None = None) -> Figure:
+    """The :class:`matplotlib.figure.Figure` :func:`render_pareto_png`
+    rasterizes — split out so a caller (or a test) can inspect the ``Axes``
+    (e.g. its axis labels) without round-tripping through PNG bytes."""
     fig = Figure(figsize=(6.4, 4.4), dpi=200)
     ax = fig.add_subplot(111)
 
@@ -137,8 +145,14 @@ def render_pareto_png(scatter: FrontierScatter, *, title: str | None = None) -> 
             zorder=3,
         )
 
-    ax.set_xlabel(scatter.x_label)
-    ax.set_ylabel(scatter.y_label)
+    # "Which way is better" suffix (optunacy-style) — reuses the SAME
+    # scatter.x_better/y_better `better_arrow_for` already computed onto the
+    # scatter (:func:`~precis.quest.frontier.build_frontier_scatter`), so
+    # the PNG twin's labels never drift from the web scatter's mapping.
+    x_label = scatter.x_label + (f"  {scatter.x_better}" if scatter.x_better else "")
+    y_label = scatter.y_label + (f"  {scatter.y_better}" if scatter.y_better else "")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
     if title:
         ax.set_title(title, fontsize=10)
 
@@ -187,7 +201,7 @@ def render_pareto_png(scatter: FrontierScatter, *, title: str | None = None) -> 
     ax.legend(handles=legend_elems, loc="best", fontsize=6.5, frameon=True)
     ax.grid(True, linewidth=0.4, alpha=0.4)
 
-    return _fig_to_png(fig)
+    return fig
 
 
 def build_pareto_snapshot(
@@ -223,6 +237,7 @@ def build_pareto_snapshot(
         y_measure=y_measure,
         x_label=_x_label,
         y_label=_y_label,
+        objectives=objectives,
     )
     points = scatter.points if scatter is not None else []
 
@@ -326,6 +341,7 @@ def quest_pareto_figure(store: Store, quest_ref: Any) -> tuple[bytes, dict[str, 
         y_measure=y_measure,
         x_label=x_label,
         y_label=y_label,
+        objectives=objectives,
     )
     if scatter is None:
         raise ValueError(

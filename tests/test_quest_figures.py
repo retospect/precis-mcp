@@ -163,6 +163,37 @@ class TestParetoRenderer:
         assert snapshot["rows"] == []
         assert snapshot["schema"] == 1
 
+    def test_pareto_figure_axis_labels_carry_better_arrow_suffix(self) -> None:
+        """The PNG twin's axis labels carry the SAME "which way is better"
+        suffix (:func:`~precis.quest.frontier.better_arrow_for`) the web
+        scatter shows — reused off ``scatter.x_better``/``y_better``, never
+        re-derived, so the two never drift."""
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter(
+            [a, b],
+            x_label="Barrier (eV)",
+            y_label="Relaxed energy (eV)",
+            objectives=[("barrier", "min"), ("energy", "max")],
+        )
+        assert scatter is not None
+        fig = figures._pareto_figure(scatter, title="Test quest")
+        ax = fig.axes[0]
+        assert ax.get_xlabel() == "Barrier (eV)  ← better"
+        assert ax.get_ylabel() == "Relaxed energy (eV)  ↑ better"
+
+    def test_pareto_figure_no_arrow_suffix_when_sense_unknown(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter(
+            [a, b], x_label="Barrier (eV)", y_label="Relaxed energy (eV)"
+        )
+        assert scatter is not None
+        fig = figures._pareto_figure(scatter, title="Test quest")
+        ax = fig.axes[0]
+        assert ax.get_xlabel() == "Barrier (eV)"
+        assert ax.get_ylabel() == "Relaxed energy (eV)"
+
     def test_build_pareto_snapshot_follows_per_quest_kinetics_axes(self) -> None:
         """Kinetics cutover: a quest declaring ``log_tof``/``atom_cost`` as
         its first two rubric objectives plots THOSE axes, not the old

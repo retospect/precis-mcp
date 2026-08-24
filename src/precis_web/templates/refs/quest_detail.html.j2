@@ -71,14 +71,22 @@
     <label class="flex items-center gap-1">x:
       <select name="fx" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
         {% for k in frontier_axis_keys %}
-        <option value="{{ k }}" {% if k == frontier_x %}selected{% endif %}>{{ k }}</option>
+        <option value="{{ k }}" {% if k == frontier_x %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
         {% endfor %}
       </select>
     </label>
     <label class="flex items-center gap-1">y:
       <select name="fy" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
         {% for k in frontier_axis_keys %}
-        <option value="{{ k }}" {% if k == frontier_y %}selected{% endif %}>{{ k }}</option>
+        <option value="{{ k }}" {% if k == frontier_y %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="flex items-center gap-1">color:
+      <select name="fz" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+        <option value="" {% if not frontier_z %}selected{% endif %}>(none)</option>
+        {% for k in frontier_axis_keys %}
+        <option value="{{ k }}" {% if k == frontier_z %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
         {% endfor %}
       </select>
     </label>
@@ -98,9 +106,9 @@
          colour = band (blue confirmed / orange provisional / grey waiting). #}
       <path id="fs-star" d="M0,-7 L1.76,-2.43 L6.66,-2.16 L2.85,0.93 L4.11,5.66 L0,3 L-4.11,5.66 L-2.85,0.93 L-6.66,-2.16 L-1.76,-2.43 Z"/>
     </defs>
-    <text x="8" y="14" class="fill-slate-500" style="font-size: 11px;">{{ fs.y_label }}</text>
+    <text x="8" y="14" class="fill-slate-500" style="font-size: 11px;">{{ fs.y_label }}{% if fs.y_better %} <tspan class="fill-slate-400">{{ fs.y_better }}</tspan>{% endif %}</text>
     <text x="{{ fs.width - 8 }}" y="{{ fs.height - 6 }}"
-          text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ fs.x_label }}</text>
+          text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ fs.x_label }}{% if fs.x_better %} <tspan class="fill-slate-400">{{ fs.x_better }}</tspan>{% endif %}</text>
     {# axes: faint gridline + tick mark + value per pre-projected tick #}
     {% for t in fs.x_ticks %}
     <line x1="{{ t.pos }}" y1="{{ fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad }}" stroke="#e2e8f0" stroke-width="1"/>
@@ -122,7 +130,16 @@
     {# Extra objective values (every rubric objective NOT one of the two
        plotted axes) + the derived $/rate, appended to the hover tooltip so
        a point's FULL objective vector is visible without switching axes. #}
-    {% set ns = namespace(extra="") %}
+    {# optunacy-style hover card: identity, plotted coordinates, z (when
+       colouring is active), the candidate's param-space point, then the
+       other declared objectives + $/rate, then status. #}
+    {% set ns = namespace(extra="", mid="") %}
+    {% if fs.z_key and p.z is defined %}
+      {% set ns.mid = ns.mid ~ "\n" ~ fs.z_label ~ " = " ~ "%g"|format(p.z) %}
+    {% endif %}
+    {% for pr in p.params %}
+      {% set ns.mid = ns.mid ~ "\n" ~ pr.key ~ " = " ~ pr.value %}
+    {% endfor %}
     {% for m in p.extra_measures %}
       {% set ns.extra = ns.extra ~ "\n" ~ m.label ~ " = " ~ m.value %}
     {% endfor %}
@@ -132,32 +149,37 @@
     {% if p.band == "provisional" %}
       {% set pcolor = "#c2410c" %}
       {% set status = "provisional" + (", untrusted" if p.untrusted else "") + (" — provisional frontier ★" if p.on_frontier else "") %}
-      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.extra ~ "\n" ~ status ~ (("\n" ~ p.reasons|join("\n")) if p.reasons else "") %}
+      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.mid ~ ns.extra ~ "\n" ~ status ~ (("\n" ~ p.reasons|join("\n")) if p.reasons else "") %}
     {% else %}
       {% set pcolor = "#0369a1" if p.converged else "#94a3b8" %}
       {% set status = "frontier ★" if p.on_frontier else ("converged" if p.converged else "awaiting sim") %}
-      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.extra ~ "\n" ~ status %}
+      {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.mid ~ ns.extra ~ "\n" ~ status %}
     {% endif %}
     {% if p.open_url %}<a href="{{ p.open_url }}">{% endif %}
     <g class="fs-pt" data-color="{{ pcolor }}" data-cx="{{ p.cx }}" data-cy="{{ p.cy }}" data-tip="{{ tip }}" aria-label="{{ tip }}">
       {# oversize invisible hit target so the hover doesn't need pixel aim #}
       <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="11" fill="transparent" stroke="none"/>
+      {# z-axis coloring (?fz=): when this point carries a colour, the
+         marker's visible fill is the Viridis-mapped colour attribute
+         instead of the usual band/trust fill class — the stroke (band +
+         trust) is untouched either way. #}
       {% if p.band == "provisional" %}
       {% if p.on_frontier %}
-      <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}" fill="white"
+      <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}" fill="{{ p.color if p.color is defined else 'white' }}"
            stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
       {% else %}
-      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5" class="fill-white"
+      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
+              {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="fill-white"{% endif %}
               stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
       {% endif %}
       {% elif p.on_frontier %}
       <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}"
-           class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
+           {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"{% endif %}
            stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
            stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
       {% else %}
       <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
-              class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"
+              {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"{% endif %}
               stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
               stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
       {% endif %}
@@ -167,10 +189,19 @@
   </svg>
   <div id="fs-tip" class="pointer-events-none absolute z-10 hidden rounded border border-slate-300 bg-white px-2 py-1 text-[11px] leading-snug text-slate-700 shadow-md whitespace-nowrap"></div>
   </div>
+  {% if fs.z_key %}
+  <div class="flex items-center gap-2 text-xs text-slate-400 mb-1 max-w-lg">
+    <span>{{ "%g"|format(fs.z_min) }}</span>
+    <div class="h-2 flex-1 rounded" style="background: linear-gradient(to right, {{ fs.z_stops|join(', ') }})"></div>
+    <span>{{ "%g"|format(fs.z_max) }}</span>
+    <span>{{ fs.z_label }}</span>
+  </div>
+  {% endif %}
   <p class="text-xs text-slate-400 mb-3">
     star = on the frontier, circle = off it · filled blue = confirmed ·
     hollow/dashed orange = provisional (measured, unconfirmed) ·
     hollow/dashed grey = awaiting sim · hover a point for details
+    {%- if fs.z_key %} · fill colour = {{ fs.z_label }}{% endif %}
   </p>
   <script>
   (function () {

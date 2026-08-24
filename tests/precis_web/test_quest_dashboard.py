@@ -412,7 +412,10 @@ def test_frontier_fx_fy_override_valid_key(client, runtime, monkeypatch) -> None
         "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
     )
 
-    resp = client.get("/refs/quest/97?fx=selectivity_margin&fy=atom_cost")
+    # fz pinned to "(none)" — otherwise log_tof, freed from the x axis by
+    # the override, becomes the DEFAULT colour axis and shows up selected
+    # in the fz select, which is not what the last assertion is about.
+    resp = client.get("/refs/quest/97?fx=selectivity_margin&fy=atom_cost&fz=")
     assert resp.status_code == 200
     assert 'value="selectivity_margin" selected' in resp.text
     assert 'value="atom_cost" selected' in resp.text
@@ -447,6 +450,141 @@ def test_frontier_fx_fy_unknown_key_ignored(client, runtime, monkeypatch) -> Non
     assert resp.status_code == 200
     assert 'value="log_tof" selected' in resp.text
     assert 'value="atom_cost" selected' in resp.text
+
+
+def test_frontier_fz_renders_colorbar_and_select(client, runtime, monkeypatch) -> None:
+    """``?fz=<measure>`` names a valid axis key: the axis-picker form gets a
+    third ``fz`` select (pre-selecting it), and the SVG panel grows the
+    Viridis colorbar gradient strip under the plot."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min")],
+        frontier=[
+            Candidate(
+                1,
+                "st1",
+                "Fe-N4",
+                {"barrier": 0.3, "energy": -20.0, "log_tof": 1.0},
+                True,
+            ),
+            Candidate(
+                2,
+                "st2",
+                "Cu-N4",
+                {"barrier": 0.9, "energy": -10.0, "log_tof": 3.0},
+                True,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97?fz=log_tof")
+    assert resp.status_code == 200
+    assert 'name="fz"' in resp.text
+    assert '<option value="log_tof" selected' in resp.text
+    # the colorbar gradient strip + endpoint labels
+    assert "linear-gradient(to right, #440154" in resp.text
+    assert "· fill colour = " in resp.text
+
+
+def _three_objective_frontier():
+    """A frontier whose quest declares a third objective (``log_tof``) beyond
+    the two fallback axes (barrier/energy), every candidate carrying a value
+    for it — the shape the default-colour-axis tests below both need."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    return FrontierResult(
+        objectives=[
+            ("barrier", "min"),
+            ("energy", "max"),
+            ("log_tof", "max"),
+            # declared but never measured — the pickers must show it "(0)"
+            # rather than dropping it.
+            ("poison_margin", "max"),
+        ],
+        frontier=[
+            Candidate(
+                1,
+                "st1",
+                "Fe-N4",
+                {"barrier": 0.3, "energy": -20.0, "log_tof": 1.0},
+                True,
+            ),
+            Candidate(
+                2,
+                "st2",
+                "Cu-N4",
+                {"barrier": 0.9, "energy": -10.0, "log_tof": 3.0},
+                True,
+            ),
+        ],
+    )
+
+
+def test_frontier_default_fz_colors_by_first_unplotted_objective(
+    client, runtime, monkeypatch
+) -> None:
+    """A bare page load (no ``fz`` param at all) defaults the colour axis to
+    the first declared objective not already plotted on x/y — the hub opens
+    with the third dimension visible instead of an uncoloured scatter."""
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier",
+        lambda store, qid: _three_objective_frontier(),
+    )
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert '<option value="log_tof" selected' in resp.text
+    assert "linear-gradient(to right, #440154" in resp.text
+    assert "· fill colour = " in resp.text
+    # picker options carry per-measure candidate counts — both candidates
+    # measure log_tof, nothing measures the declared poison_margin.
+    assert ">log_tof (2)</option>" in resp.text
+    assert ">poison_margin (0)</option>" in resp.text
+
+
+def test_frontier_explicit_none_fz_suppresses_default_colorbar(
+    client, runtime, monkeypatch
+) -> None:
+    """The form's submitted-but-blank ``fz=`` ("(none)") means "asked for
+    none", not "never asked" — it suppresses the default colour axis even
+    when the quest declares a spare objective a bare load would colour by."""
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier",
+        lambda store, qid: _three_objective_frontier(),
+    )
+
+    resp = client.get("/refs/quest/97?fz=")
+    assert resp.status_code == 200
+    assert "linear-gradient(to right," not in resp.text
+    assert "fill colour =" not in resp.text
+
+
+def test_frontier_axis_label_arrow_suffix_renders_when_sense_known(
+    client, runtime, monkeypatch
+) -> None:
+    """A quest declaring ``rubric_objectives`` senses for the plotted axes
+    gets a "better" direction hint appended to each axis label."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min"), ("energy", "max")],
+        frontier=[
+            Candidate(1, "st1", "Fe-N4", {"barrier": 0.3, "energy": -20.0}, True),
+            Candidate(2, "st2", "Cu-N4", {"barrier": 0.9, "energy": -10.0}, True),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "← better" in resp.text  # barrier (x), sense=min
+    assert "↑ better" in resp.text  # energy (y), sense=max
 
 
 def test_quest_hub_exploration_queue_links_to_drive_stubs(client, runtime) -> None:

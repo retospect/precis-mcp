@@ -622,7 +622,9 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_scatter = None
     frontier_x: str | None = None
     frontier_y: str | None = None
+    frontier_z: str | None = None
     frontier_axis_keys: list[str] = []
+    frontier_axis_counts: dict[str, int] = {}
     try:
         fr = frontier_mod.quest_frontier(store, qid)
         frontier_has_candidates = bool(
@@ -640,15 +642,19 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         # unrecognised query value is silently ignored (falls back to the
         # quest's default), never a 400 — a stale/hand-edited link degrades
         # quietly rather than erroring the whole hub.
-        frontier_axis_keys = sorted(
-            {k for k, _ in objectives}
-            | {
-                k
-                for c in (*fr.frontier, *fr.dominated, *fr.unevaluated)
-                for k in c.measures
-            }
-            | {k for pc in fr.provisional for k in pc.measures}
-        )
+        # Keyed by axis key, valued by how many candidates (any band —
+        # provisional's merged view included) carry a value for it: the
+        # pickers label each option "atom_cost (5)" so a sparse/empty axis
+        # is self-explanatory before plotting it. A declared objective
+        # nothing has measured yet shows "(0)" rather than vanishing.
+        frontier_axis_counts = {k: 0 for k, _ in objectives}
+        for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+            for k in c.measures:
+                frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
+        for pc in fr.provisional:
+            for k in pc.measures:
+                frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
+        frontier_axis_keys = sorted(frontier_axis_counts)
         axis_key_set = set(frontier_axis_keys)
         req_fx = request.query_params.get("fx")
         req_fy = request.query_params.get("fy")
@@ -662,6 +668,25 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             y_key, y_label = default_y, default_y_label
         frontier_x = x_key
         frontier_y = y_key
+        # z-axis (color) picker — same "known axis key or ignore" rule as
+        # fx/fy above, with one asymmetry: fx/fy fall back to a default on
+        # ANY absent/bad value, but fz distinguishes "never asked" (no ``fz``
+        # param at all — a bare page load) from "asked for none" (the form's
+        # submitted-but-blank ``(none)`` select, an empty string). Only the
+        # former gets the default colour axis — the first declared rubric
+        # objective not already plotted on x/y — so the hub opens with the
+        # third dimension visible, yet an explicit "(none)" pick sticks.
+        # A quest with < 3 declared objectives simply has no default z.
+        req_fz = request.query_params.get("fz")
+        z_key: str | None = None
+        z_label = ""
+        if req_fz is None:
+            z_key = next((k for k, _s in objectives if k not in (x_key, y_key)), None)
+        elif req_fz and req_fz in axis_key_set:
+            z_key = req_fz
+        if z_key:
+            z_label = frontier_mod.axis_label_for(z_key)
+        frontier_z = z_key
         # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
         # [lo, hi]}``) — unions into the plotted range so the axis doesn't
         # keep re-scaling as new points land inside a range already widened
@@ -680,6 +705,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             y_label=y_label,
             viewport=viewport,
             objectives=objectives,
+            z_measure=z_key,
+            z_label=z_label,
         )
     except Exception:
         log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
@@ -761,6 +788,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "frontier_axis_keys": frontier_axis_keys,
             "frontier_x": frontier_x,
             "frontier_y": frontier_y,
+            "frontier_z": frontier_z,
+            "frontier_axis_counts": frontier_axis_counts,
             "gaps_text": gaps_text,
             "gaps_error": gaps_error,
             "servers_lite": servers_lite,
