@@ -13,13 +13,17 @@ description: >-
 Verbose command output is the biggest avoidable context sink in this repo's
 dev loop. `rtk` (a token-killer CLI proxy; `brew install rtk`) filters a
 command's output to just the signal — failures, compacted tables, grouped
-errors — and tees the full log to disk. We use it **manually, no auto-hook**:
-the explicit `rtk` in the command line is itself the signal that a filter is in
-play, so filtered output is never mistaken for raw.
+errors — and tees the full log to disk. On Reto's dev Mac a **global
+PreToolUse hook** already rewrites *known* commands (git/psql/grep/find/
+docker/…) to `rtk <cmd>` transparently — Bash output there is a digest even
+with no prefix. `scripts/*` wrappers pass through untouched, and CI /
+cluster `claude -p` runs have no hook. Authority on the hook, its gaps, and
+the don't-`2>/dev/null` rule: `docs/conventions/rtk.md`.
 
 ## When to reach for it
 
-Prefix the noisy command:
+Prefix manually wherever the hook doesn't cover it — `scripts/*` wrappers,
+arbitrary commands, hook-less environments:
 
     rtk err -- scripts/deploy          # arbitrary command, errors/warnings only
     rtk summary -- <cmd>               # arbitrary command, heuristic summary
