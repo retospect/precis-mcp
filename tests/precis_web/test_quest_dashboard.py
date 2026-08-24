@@ -490,6 +490,47 @@ def test_frontier_fz_renders_colorbar_and_select(client, runtime, monkeypatch) -
     assert "· fill colour = " in resp.text
 
 
+def test_frontier_contour_underlay_renders_and_fc0_suppresses(
+    client, runtime, monkeypatch
+) -> None:
+    """z active + enough z-carrying candidates ⇒ the filled-contour underlay
+    (band paths + legend caption + ``fc`` toggle) renders; ``?fc=0``
+    suppresses the underlay while leaving z coloring/colorbar untouched."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    cands = [
+        Candidate(
+            i + 1,
+            f"st{i}",
+            f"C{i}",
+            {
+                "barrier": (i * 37 % 10) / 10.0,
+                "energy": -20.0 + (i * 61 % 10),
+                "log_tof": float(i),
+            },
+            True,
+        )
+        for i in range(6)
+    ]
+    frontier = FrontierResult(objectives=[("barrier", "min")], frontier=cands)
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97?fz=log_tof")
+    assert resp.status_code == 200
+    assert 'name="fc"' in resp.text
+    assert 'fill-rule="evenodd"' in resp.text
+    assert "· background = interpolated " in resp.text
+
+    resp = client.get("/refs/quest/97?fz=log_tof&fc=0")
+    assert resp.status_code == 200
+    assert 'fill-rule="evenodd"' not in resp.text
+    assert "background = interpolated" not in resp.text
+    # z coloring itself is untouched by the contour toggle
+    assert "linear-gradient(to right, #440154" in resp.text
+
+
 def _three_objective_frontier():
     """A frontier whose quest declares a third objective (``log_tof``) beyond
     the two fallback axes (barrier/energy), every candidate carrying a value

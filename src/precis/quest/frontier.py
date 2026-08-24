@@ -30,7 +30,8 @@ import logging
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from itertools import pairwise
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -260,9 +261,11 @@ def plot_axes_for(
 _SCATTER_MIN_POINTS = 2
 
 #: Default SVG geometry (px) — a `viewBox` this size, `pad` reserved on every
-#: edge for axis labels/breathing room around the outermost points.
-_SVG_WIDTH = 480.0
-_SVG_HEIGHT = 260.0
+#: edge for axis labels/breathing room around the outermost points. Sized to
+#: render ~1:1 inside the hub template's `max-w-3xl` wrapper so the in-viewBox
+#: font sizes land at their nominal px on screen.
+_SVG_WIDTH = 760.0
+_SVG_HEIGHT = 440.0
 _SVG_PAD = 36.0
 
 #: Fraction of the data span added as padding on each side of the axis range,
@@ -271,7 +274,22 @@ _RANGE_PAD_FRACTION = 0.1
 
 #: Tick count the nice-step search aims for on each axis — the actual count
 #: varies (round steps rarely divide the range evenly) but stays close.
+#: Per-axis: the canvas is wider than tall, so x affords more ticks.
 _AXIS_TICK_TARGET = 5
+_AXIS_TICK_TARGET_X = 8
+_AXIS_TICK_TARGET_Y = 6
+
+#: Contour underlay (optunacy-style filled bands + iso-lines under the
+#: markers, :func:`_contour_underlay`) — geometry knobs. The minimum-input
+#: floor exists because an IDW field interpolated from a handful of points
+#: is fiction, not signal; below it the underlay is silently omitted.
+_CONTOUR_MIN_POINTS = 5
+_CONTOUR_GRID_NX = 60
+_CONTOUR_GRID_NY = 40
+_CONTOUR_IDW_POWER = 2.0
+#: Target count for the nice-step level search (same 1/2/5 ladder as the
+#: axis ticks) — bands = levels + the two half-open outer bands.
+_CONTOUR_LEVEL_TARGET = 8
 
 
 def _nice_ticks(lo: float, hi: float, target: int = _AXIS_TICK_TARGET) -> list[float]:
@@ -343,6 +361,124 @@ class FrontierScatter:
     z_min: float | None = None
     z_max: float | None = None
     z_stops: list[str] = field(default_factory=list)
+    #: Optional filled-contour underlay (:func:`_contour_underlay`) — drawn
+    #: beneath the gridlines/markers when z-coloring is active. ``contour_bands``
+    #: are ``{"path", "color"}`` filled band polygons (evenodd — holes are
+    #: extra subpaths); ``contour_lines`` are bare iso-line path strings.
+    #: Both empty when z is off, the caller opted out, or too few trusted
+    #: points carry a z value to interpolate honestly.
+    contour_bands: list[dict[str, str]] = field(default_factory=list)
+    contour_lines: list[str] = field(default_factory=list)
+
+
+def _svg_path(px: Any, py: Any, *, close: bool) -> str:
+    """One SVG subpath (``M … L … [Z]``) over parallel pixel-coordinate
+    sequences, vertices rounded to 0.1 px to keep the payload small."""
+    verts = " L ".join(f"{x:.1f} {y:.1f}" for x, y in zip(px, py, strict=True))
+    return f"M {verts} Z" if close else f"M {verts}"
+
+
+def _contour_underlay(
+    pts: Sequence[tuple[float, float, float]],
+    *,
+    x_lo: float,
+    x_hi: float,
+    y_lo: float,
+    y_hi: float,
+    z_min: float,
+    z_max: float,
+    to_px: Callable[[Any, Any], tuple[Any, Any]],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """``(bands, lines)`` — an optunacy-style filled-contour underlay for the
+    Pareto scatter, or ``([], [])`` when the field can't be built honestly.
+
+    ``pts`` are **trusted** data-space ``(x, y, z)`` triples (the caller
+    excludes any point whose plotted or z measure is an untrusted
+    provisional backfill — a distrusted value must not warp the field even
+    when its marker is drawn). The z field is inverse-distance-weighted
+    (power :data:`_CONTOUR_IDW_POWER`, distances normalised per axis so a
+    wide-range x doesn't drown y) onto a
+    :data:`_CONTOUR_GRID_NX`×:data:`_CONTOUR_GRID_NY` grid over the padded
+    axis range, then contoured by ``contourpy`` (matplotlib's own engine —
+    already a transitive dep; imported lazily so this module stays
+    matplotlib-free at import time). Levels come from the same 1/2/5
+    nice-step ladder as the axis ticks; band fills sample
+    :func:`viridis_color` at each band's midpoint over the SAME z
+    normalisation the markers use, so background, marker fills and the
+    colorbar share one scale. Degenerate inputs — fewer than
+    :data:`_CONTOUR_MIN_POINTS` points, a flat z span, or a collapsed axis —
+    return ``([], [])`` rather than a fabricated field.
+
+    ``to_px`` maps data-space coordinate arrays to pixel space (the caller's
+    ``_cx``/``_cy`` projection, vectorised).
+    """
+    if len(pts) < _CONTOUR_MIN_POINTS:
+        return [], []
+    z_span = z_max - z_min
+    x_range = x_hi - x_lo
+    y_range = y_hi - y_lo
+    if z_span <= 0 or x_range <= 0 or y_range <= 0:
+        return [], []
+    try:
+        import numpy as np
+        from contourpy import FillType, LineType, contour_generator
+    except ImportError:  # pragma: no cover — contourpy rides with matplotlib
+        return [], []
+
+    xs = np.array([p[0] for p in pts], dtype=float)
+    ys = np.array([p[1] for p in pts], dtype=float)
+    zs = np.array([p[2] for p in pts], dtype=float)
+    gx = np.linspace(x_lo, x_hi, _CONTOUR_GRID_NX)
+    gy = np.linspace(y_lo, y_hi, _CONTOUR_GRID_NY)
+    grid_x, grid_y = np.meshgrid(gx, gy)
+    dx = (grid_x[..., None] - xs) / x_range
+    dy = (grid_y[..., None] - ys) / y_range
+    d2 = np.maximum(dx * dx + dy * dy, 1e-12)
+    w = d2 ** (-_CONTOUR_IDW_POWER / 2.0)
+    grid_z = (w * zs).sum(axis=-1) / w.sum(axis=-1)
+
+    levels = [
+        t
+        for t in _nice_ticks(z_min, z_max, target=_CONTOUR_LEVEL_TARGET)
+        if z_min < t < z_max
+    ]
+    # Band edges span the interpolated field's own range (IDW stays inside
+    # [z_min, z_max], but clamp anyway so every cell lands in some band).
+    edges = [min(z_min, float(grid_z.min())), *levels, max(z_max, float(grid_z.max()))]
+
+    gen = contour_generator(
+        x=grid_x,
+        y=grid_y,
+        z=grid_z,
+        fill_type=FillType.OuterOffset,
+        line_type=LineType.Separate,
+    )
+    bands: list[dict[str, str]] = []
+    for lower, upper in pairwise(edges):
+        if upper <= lower:
+            continue
+        # `filled`/`lines` return type is a union over every fill/line mode;
+        # the generator above is pinned to OuterOffset/Separate — cast to
+        # that shape rather than re-narrowing per element.
+        points_list, offsets_list = cast(
+            "tuple[list[Any], list[Any]]", gen.filled(lower, upper)
+        )
+        subpaths: list[str] = []
+        for poly, offsets in zip(points_list, offsets_list, strict=True):
+            px, py = to_px(poly[:, 0], poly[:, 1])
+            for j in range(len(offsets) - 1):
+                ring = slice(offsets[j], offsets[j + 1])
+                subpaths.append(_svg_path(px[ring], py[ring], close=True))
+        if subpaths:
+            mid = (lower + upper) / 2.0
+            color = viridis_color((mid - z_min) / z_span)
+            bands.append({"path": " ".join(subpaths), "color": color})
+    lines: list[str] = []
+    for level in levels:
+        for seg in cast("list[Any]", gen.lines(level)):
+            px, py = to_px(seg[:, 0], seg[:, 1])
+            lines.append(_svg_path(px, py, close=False))
+    return bands, lines
 
 
 def _rate_readout(measures: dict[str, float]) -> str | None:
@@ -437,6 +573,7 @@ def build_frontier_scatter(
     objectives: Sequence[tuple[str, str]] = (),
     z_measure: str | None = None,
     z_label: str = "",
+    contour: bool = True,
 ) -> FrontierScatter | None:
     """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
 
@@ -492,6 +629,15 @@ def build_frontier_scatter(
     stays simple. ``None``/no plottable point carrying a value ⇒
     ``FrontierScatter.z_key`` stays ``None`` and no point is stamped —
     z-coloring is fully opt-in.
+
+    ``contour`` (default on, only meaningful when z-coloring is active)
+    adds the optunacy-style filled-contour underlay
+    (:func:`_contour_underlay` — IDW-interpolated z field, Viridis bands +
+    iso-lines on the markers' own z scale). Interpolation inputs are the
+    trusted points only: a provisional point whose plotted x/y or z value
+    is an untrusted backfill still gets its (dashed) marker, but must not
+    warp the field. Too few trusted inputs, a flat z span, or
+    ``contour=False`` ⇒ ``contour_bands``/``contour_lines`` stay empty.
     """
     plottable = [
         c
@@ -563,6 +709,44 @@ def build_frontier_scatter(
         z_span = (z_max - z_min) or 1.0
         z_stops = list(_VIRIDIS_STOPS)
 
+    # Contour underlay — trusted (x, y, z) triples only (see docstring), on
+    # the SAME z_min/z_max normalisation the marker colors above use.
+    contour_bands: list[dict[str, str]] = []
+    contour_lines: list[str] = []
+    if contour and z_measure and z_key and z_min is not None and z_max is not None:
+        contour_pts: list[tuple[float, float, float]] = []
+        for c in plottable:
+            zv = c.measures.get(z_measure)
+            if isinstance(zv, (int, float)):
+                contour_pts.append(
+                    (c.measures[x_measure], c.measures[y_measure], float(zv))
+                )
+        for pc in plottable_provisional:
+            zv = pc.measures.get(z_measure)
+            if isinstance(zv, (int, float)) and not (
+                {x_measure, y_measure, z_measure} & pc.untrusted_keys
+            ):
+                contour_pts.append(
+                    (pc.measures[x_measure], pc.measures[y_measure], float(zv))
+                )
+
+        def _to_px(vx: Any, vy: Any) -> tuple[Any, Any]:
+            return (
+                pad + (vx - x_lo) / x_range * plot_w,
+                pad + (1.0 - (vy - y_lo) / y_range) * plot_h,
+            )
+
+        contour_bands, contour_lines = _contour_underlay(
+            contour_pts,
+            x_lo=x_lo,
+            x_hi=x_hi,
+            y_lo=y_lo,
+            y_hi=y_hi,
+            z_min=z_min,
+            z_max=z_max,
+            to_px=_to_px,
+        )
+
     obj_sense = {k: s for k, s in objectives}
     x_better = better_arrow_for("x", obj_sense.get(x_measure))
     y_better = better_arrow_for("y", obj_sense.get(y_measure))
@@ -629,11 +813,11 @@ def build_frontier_scatter(
 
     x_ticks = [
         {"value": v, "pos": round(_cx(v), 2), "label": f"{v:g}"}
-        for v in _nice_ticks(x_lo, x_hi)
+        for v in _nice_ticks(x_lo, x_hi, target=_AXIS_TICK_TARGET_X)
     ]
     y_ticks = [
         {"value": v, "pos": round(_cy(v), 2), "label": f"{v:g}"}
-        for v in _nice_ticks(y_lo, y_hi)
+        for v in _nice_ticks(y_lo, y_hi, target=_AXIS_TICK_TARGET_Y)
     ]
 
     return FrontierScatter(
@@ -656,6 +840,8 @@ def build_frontier_scatter(
         z_min=z_min,
         z_max=z_max,
         z_stops=z_stops,
+        contour_bands=contour_bands,
+        contour_lines=contour_lines,
     )
 
 

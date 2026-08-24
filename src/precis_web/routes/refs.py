@@ -623,6 +623,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_x: str | None = None
     frontier_y: str | None = None
     frontier_z: str | None = None
+    frontier_c = True
     frontier_axis_keys: list[str] = []
     frontier_axis_counts: dict[str, int] = {}
     try:
@@ -687,6 +688,11 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         if z_key:
             z_label = frontier_mod.axis_label_for(z_key)
         frontier_z = z_key
+        # Contour toggle (``?fc=``) — default ON (absent or anything but
+        # "0"): the filled-contour underlay only draws when z is active
+        # anyway, and a sparse quest's misleading field is one explicit
+        # ``fc=0`` away from dismissed.
+        frontier_c = request.query_params.get("fc") != "0"
         # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
         # [lo, hi]}``) — unions into the plotted range so the axis doesn't
         # keep re-scaling as new points land inside a range already widened
@@ -707,6 +713,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             objectives=objectives,
             z_measure=z_key,
             z_label=z_label,
+            contour=frontier_c,
         )
     except Exception:
         log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
@@ -789,6 +796,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "frontier_x": frontier_x,
             "frontier_y": frontier_y,
             "frontier_z": frontier_z,
+            "frontier_c": frontier_c,
             "frontier_axis_counts": frontier_axis_counts,
             "gaps_text": gaps_text,
             "gaps_error": gaps_error,

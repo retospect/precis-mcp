@@ -90,12 +90,18 @@
         {% endfor %}
       </select>
     </label>
+    <label class="flex items-center gap-1">contour:
+      <select name="fc" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+        <option value="1" {% if frontier_c %}selected{% endif %}>on</option>
+        <option value="0" {% if not frontier_c %}selected{% endif %}>off</option>
+      </select>
+    </label>
     <button class="rounded-md border border-slate-300 bg-white text-xs px-2 py-1 text-slate-700 hover:bg-slate-50">plot</button>
   </form>
   {% endif %}
   {% if frontier_scatter %}
   {% set fs = frontier_scatter %}
-  <div id="fs-wrap" class="relative w-full max-w-lg mb-2">
+  <div id="fs-wrap" class="relative w-full max-w-3xl mb-2">
   <svg id="fs-svg" viewBox="0 0 {{ fs.width }} {{ fs.height }}"
        class="w-full h-auto" role="img"
        aria-label="Pareto scatter: {{ fs.x_label }} vs {{ fs.y_label }}">
@@ -106,6 +112,25 @@
          colour = band (blue confirmed / orange provisional / grey waiting). #}
       <path id="fs-star" d="M0,-7 L1.76,-2.43 L6.66,-2.16 L2.85,0.93 L4.11,5.66 L0,3 L-4.11,5.66 L-2.85,0.93 L-6.66,-2.16 L-1.76,-2.43 Z"/>
     </defs>
+    {# optunacy-style filled-contour underlay (?fz= active + ?fc≠0):
+       IDW-interpolated z field as Viridis bands + iso-lines, drawn FIRST so
+       gridlines and markers stay on top. Translucent so the marker grammar
+       (band/trust colors) stays readable against it. Band paths may carry
+       hole subpaths — hence evenodd. #}
+    {% if fs.contour_bands %}
+    <g opacity="0.45" pointer-events="none">
+      {% for b in fs.contour_bands %}
+      <path d="{{ b.path }}" fill="{{ b.color }}" fill-rule="evenodd" stroke="none"/>
+      {% endfor %}
+    </g>
+    {# iso-lines OUTSIDE the translucent band group — inside it their
+       stroke-opacity would compound to near-invisible #}
+    <g pointer-events="none">
+      {% for lp in fs.contour_lines %}
+      <path d="{{ lp }}" fill="none" stroke="#334155" stroke-opacity="0.3" stroke-width="1"/>
+      {% endfor %}
+    </g>
+    {% endif %}
     <text x="8" y="14" class="fill-slate-500" style="font-size: 11px;">{{ fs.y_label }}{% if fs.y_better %} <tspan class="fill-slate-400">{{ fs.y_better }}</tspan>{% endif %}</text>
     <text x="{{ fs.width - 8 }}" y="{{ fs.height - 6 }}"
           text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ fs.x_label }}{% if fs.x_better %} <tspan class="fill-slate-400">{{ fs.x_better }}</tspan>{% endif %}</text>
@@ -190,7 +215,7 @@
   <div id="fs-tip" class="pointer-events-none absolute z-10 hidden rounded border border-slate-300 bg-white px-2 py-1 text-[11px] leading-snug text-slate-700 shadow-md whitespace-nowrap"></div>
   </div>
   {% if fs.z_key %}
-  <div class="flex items-center gap-2 text-xs text-slate-400 mb-1 max-w-lg">
+  <div class="flex items-center gap-2 text-xs text-slate-400 mb-1 max-w-3xl">
     <span>{{ "%g"|format(fs.z_min) }}</span>
     <div class="h-2 flex-1 rounded" style="background: linear-gradient(to right, {{ fs.z_stops|join(', ') }})"></div>
     <span>{{ "%g"|format(fs.z_max) }}</span>
@@ -202,6 +227,7 @@
     hollow/dashed orange = provisional (measured, unconfirmed) ·
     hollow/dashed grey = awaiting sim · hover a point for details
     {%- if fs.z_key %} · fill colour = {{ fs.z_label }}{% endif %}
+    {%- if fs.contour_bands %} · background = interpolated {{ fs.z_label }} (trusted points only){% endif %}
   </p>
   <script>
   (function () {

@@ -95,10 +95,10 @@ class TestFrontierScatter:
         assert scatter is not None
         assert len(scatter.points) == 2
         by_id = {p["ref_id"]: p for p in scatter.points}
-        assert by_id[1]["cx"] == 70.0
-        assert by_id[1]["cy"] == 208.33
-        assert by_id[2]["cx"] == 410.0
-        assert by_id[2]["cy"] == 51.67
+        assert by_id[1]["cx"] == 93.33
+        assert by_id[1]["cy"] == 373.33
+        assert by_id[2]["cx"] == 666.67
+        assert by_id[2]["cy"] == 66.67
         assert scatter.x_min == 0.3 and scatter.x_max == 0.9
         assert scatter.y_min == -20.0 and scatter.y_max == -10.0
 
@@ -367,6 +367,107 @@ class TestFrontierScatter:
         assert scatter.z_min is None and scatter.z_max is None
         assert scatter.z_stops == []
         assert all("color" not in p and "z" not in p for p in scatter.points)
+
+
+class TestFrontierContour:
+    """Filled-contour underlay (optunacy-style) — bands + iso-lines."""
+
+    @staticmethod
+    def _cands(n: int = 8) -> list[Candidate]:
+        # deterministic non-collinear spread carrying a smooth z field
+        out = []
+        for i in range(n):
+            x = (i * 37 % 10) / 10.0
+            y = (i * 61 % 10) / 10.0
+            out.append(
+                Candidate(
+                    i + 1,
+                    f"st{i}",
+                    f"C{i}",
+                    {"barrier": x, "energy": y, "log_tof": x + 2 * y},
+                    True,
+                )
+            )
+        return out
+
+    def test_bands_and_lines_built_inside_the_viewbox(self) -> None:
+        scatter = build_frontier_scatter(
+            self._cands(), z_measure="log_tof", z_label="log TOF"
+        )
+        assert scatter is not None
+        assert scatter.contour_bands and scatter.contour_lines
+        for band in scatter.contour_bands:
+            assert re.fullmatch(r"#[0-9a-f]{6}", band["color"])
+            assert band["path"].startswith("M ")
+        for path in (
+            *(b["path"] for b in scatter.contour_bands),
+            *scatter.contour_lines,
+        ):
+            nums = [float(v) for v in re.findall(r"-?\d+\.?\d*", path)]
+            assert nums, path
+            xs, ys = nums[0::2], nums[1::2]
+            assert all(0.0 <= v <= scatter.width for v in xs)
+            assert all(0.0 <= v <= scatter.height for v in ys)
+
+    def test_contour_off_switch(self) -> None:
+        scatter = build_frontier_scatter(
+            self._cands(), z_measure="log_tof", contour=False
+        )
+        assert scatter is not None
+        assert scatter.z_key == "log_tof"  # z coloring itself unaffected
+        assert scatter.contour_bands == [] and scatter.contour_lines == []
+
+    def test_no_z_means_no_contour(self) -> None:
+        scatter = build_frontier_scatter(self._cands())
+        assert scatter is not None
+        assert scatter.contour_bands == [] and scatter.contour_lines == []
+
+    def test_below_min_points_floor_omits_contour_but_keeps_z(self) -> None:
+        scatter = build_frontier_scatter(self._cands(4), z_measure="log_tof")
+        assert scatter is not None
+        assert scatter.z_key == "log_tof"
+        assert all("color" in p for p in scatter.points)
+        assert scatter.contour_bands == [] and scatter.contour_lines == []
+
+    def test_untrusted_provisional_z_excluded_from_interpolation(self) -> None:
+        # 4 trusted + 1 untrusted-z provisional = 5 total z carriers, but
+        # only 4 trusted inputs — below the floor, so no field is built,
+        # while the provisional point still gets its z color stamped.
+        pc = ProvisionalCandidate(
+            candidate=Candidate(99, "st99", "P", {}, True),
+            measures={"barrier": 0.5, "energy": 0.5, "log_tof": 9.0},
+            untrusted_keys=frozenset({"log_tof"}),
+            reasons=["barrier untrusted"],
+        )
+        scatter = build_frontier_scatter(
+            self._cands(4), provisional=[pc], z_measure="log_tof"
+        )
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert "color" in by_id[99]
+        assert scatter.contour_bands == [] and scatter.contour_lines == []
+
+    def test_trusted_provisional_z_feeds_interpolation(self) -> None:
+        pc = ProvisionalCandidate(
+            candidate=Candidate(99, "st99", "P", {}, True),
+            measures={"barrier": 0.5, "energy": 0.5, "log_tof": 1.5},
+            untrusted_keys=frozenset({"max_force"}),  # not a plotted/z key
+            reasons=["no converged relax yet"],
+        )
+        scatter = build_frontier_scatter(
+            self._cands(4), provisional=[pc], z_measure="log_tof"
+        )
+        assert scatter is not None
+        assert scatter.contour_bands and scatter.contour_lines
+
+    def test_flat_z_span_omits_contour(self) -> None:
+        cands = [
+            Candidate(c.ref_id, c.handle, c.name, {**c.measures, "log_tof": 2.0}, True)
+            for c in self._cands()
+        ]
+        scatter = build_frontier_scatter(cands, z_measure="log_tof")
+        assert scatter is not None
+        assert scatter.contour_bands == [] and scatter.contour_lines == []
 
 
 class TestBetterArrowFor:
