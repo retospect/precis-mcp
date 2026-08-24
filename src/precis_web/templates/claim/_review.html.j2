@@ -116,7 +116,16 @@
             </td></tr>
             <tr><td class="text-slate-400 pr-3 py-0.5">batch</td><td class="font-mono">{{ np.row.batch_id or '—' }}{% if np.proof_state %} · proof {{ np.proof_state }}{% endif %}</td></tr>
             {% if np.row.published_at %}
-            <tr><td class="text-slate-400 pr-3 py-0.5">published</td><td>{{ np.row.published_at.strftime('%Y-%m-%d') }} → {{ np.row.registry_url }}</td></tr>
+            {% set np_code = np.row.trusty_uri.rsplit('/', 1)[-1] if np.row.trusty_uri else None %}
+            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">published</td><td>{{ np.row.published_at.strftime('%Y-%m-%d') }}
+              {% if np_code %}
+              · <a class="text-emerald-700 hover:underline" href="{{ np.row.trusty_uri }}" target="_blank" rel="noopener">w3id ↗</a>
+              · <a class="text-emerald-700 hover:underline" href="{{ np.row.registry_url.rstrip('/') }}/{{ np_code }}" target="_blank" rel="noopener">registry ↗</a>
+              · <a class="text-emerald-700 hover:underline" href="https://nanodash.knowledgepixels.com/explore?id={{ np.row.trusty_uri | urlencode }}" target="_blank" rel="noopener">nanodash ↗</a>
+              {% else %}
+              → {{ np.row.registry_url }}
+              {% endif %}
+            </td></tr>
             {% endif %}
           </tbody>
         </table>

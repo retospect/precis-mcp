@@ -226,6 +226,16 @@ def test_publish_live_posts_exact_bytes_and_flips_state(
     assert refreshed.registry_url == registry.DEFAULT_REGISTRY_URL
 
 
+def test_published_row_state_note_is_nonblocking(store: Any, monkeypatch: Any) -> None:
+    hub = _publishable_hub(
+        store, monkeypatch, "DFT finds the published-note claim holds."
+    )
+    registry.publish(store, hub, live=True, interactive=True, post=lambda u, b: None)
+    state_issues = [i for i in publish_preflight(store, hub) if i.check == "state"]
+    assert state_issues and not any(i.blocking for i in state_issues)
+    assert "already published" in state_issues[0].message
+
+
 def test_publish_blocked_on_preflight(store: Any, monkeypatch: Any) -> None:
     hub, _row = _signed_hub(
         store, monkeypatch, "DFT finds the blocked-publish claim holds."

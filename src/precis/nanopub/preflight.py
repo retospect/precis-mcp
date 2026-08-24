@@ -19,7 +19,10 @@ reversible, so the preflight's job is to be *loud*, not clever:
   alone publishes nothing. Validity-window-vs-signature-time and the
   allowlist-as-published-artifact are deferred (spec, Publish-time gates
   #3/#4).
-* **State/identity checks** — state must be ``anchored``; live title
+* **State/identity checks** — state must be ``anchored`` (a terminal
+  post-publish state — ``published``/``superseded``/``retracted`` —
+  yields a non-blocking note instead: the POST is behind us, but drift
+  and trust keep running as post-publish health signals); live title
   must still hash to the frozen ``claim_sha``; a compound's dependency
   codes must be unchanged and every dependency already ``published``
   (publish order follows mint order: atoms → compounds → citers);
@@ -187,7 +190,23 @@ def publish_preflight(
             )
         ]
 
-    if row.state != "anchored":
+    if row.state in ("published", "superseded", "retracted"):
+        # Terminal post-publish states: the POST already happened, so
+        # "not anchored" is no longer a reason against publishing —
+        # surface the fact as a note, keep the remaining checks (drift,
+        # trust) running as post-publish health signals.
+        issues.append(
+            PreflightIssue(
+                check="state",
+                message=(
+                    f"already {row.state} — preflight gates the registry "
+                    "POST, which is behind us; from here, change = "
+                    "supersede/retract"
+                ),
+                blocking=False,
+            )
+        )
+    elif row.state != "anchored":
         issues.append(
             PreflightIssue(
                 check="state",
