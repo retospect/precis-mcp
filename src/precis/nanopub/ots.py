@@ -45,6 +45,12 @@ log = logging.getLogger(__name__)
 
 DEFAULT_CALENDAR = "https://alice.btc.calendar.opentimestamps.org"
 
+#: Wall-clock cap on one calendar round-trip. The opentimestamps client
+#: defaults to ``timeout=None`` (urllib blocks forever); an unreachable
+#: calendar hung ``anchor --live`` for 12 h on 2026-08-23 (gr248596).
+#: A stamp/upgrade is one small HTTP exchange — seconds when healthy.
+CALENDAR_TIMEOUT_S = 30
+
 #: A batch whose latest proof is still pending after this many days
 #: trips the stuck-pending alert (calendar upgrades normally land in
 #: hours to ~a day).
@@ -86,13 +92,15 @@ def _deserialize(data: bytes, msg: bytes) -> Timestamp:
 def _default_submit(calendar_url: str, digest: bytes) -> Timestamp:
     from opentimestamps.calendar import RemoteCalendar
 
-    return RemoteCalendar(calendar_url).submit(digest)
+    return RemoteCalendar(calendar_url).submit(digest, timeout=CALENDAR_TIMEOUT_S)
 
 
 def _default_fetch_upgrade(calendar_url: str, commitment: bytes) -> Timestamp:
     from opentimestamps.calendar import RemoteCalendar
 
-    return RemoteCalendar(calendar_url).get_timestamp(commitment)
+    return RemoteCalendar(calendar_url).get_timestamp(
+        commitment, timeout=CALENDAR_TIMEOUT_S
+    )
 
 
 def stamp_batch(
