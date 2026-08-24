@@ -27,7 +27,8 @@
 #                             (a docs/config-only diff runs a light ruff + doc-
 #                             pointer gate instead). Red gate aborts (never red).
 #                             --impacted (/land) narrows pytest to testmon's
-#                             affected-tests set; full suite otherwise (/go).
+#                             affected-tests set; full suite otherwise (/go);
+#                             --quick (/qland) skips the gate entirely.
 #                    · ship   squash `commit-tree` onto origin/main + a
 #                             `--force-with-lease` CAS push. If main advanced
 #                             during the gate (ancestor check) or the lease is
@@ -43,6 +44,11 @@
 #         scripts/ship            # falls back to a generated message
 #         scripts/ship --impacted "…"   # /land: testmon-selected pytest, not the
 #                                        # full suite (also via PRECIS_SHIP_IMPACTED=1)
+#         scripts/ship --quick "…"      # /qland: NO gate at all — commit → sync →
+#                                        # squash-merge only (also via
+#                                        # PRECIS_SHIP_QUICK=1). For burst-landing
+#                                        # many worktrees; main is unvalidated until
+#                                        # the next full gate (/go or bare ship).
 #
 # Plain git, no git-town: this repo runs flat feature branches on main, so the
 # only thing git-town did here was `fetch + merge main`. Its `ship` does
@@ -63,7 +69,20 @@ BRANCH="$(git branch --show-current)"
 # map, so the first impacted ship is a full run and later ones are the fast
 # selection. mypy + ruff always run in full regardless of this flag.
 IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
-if [[ "${1:-}" == "--impacted" ]]; then IMPACTED=1; shift; fi
+# --quick (/qland): skip the gate ENTIRELY — no ruff/mypy/pytest, no gate
+# container, no gate slot. Everything else (ship lock, sync/merge, squash CAS
+# push, branch reset, local-main ff) runs unchanged, so the merge machinery
+# stays race-safe; only validation is deferred. Use for burst-landing many
+# in-flight worktrees, then run ONE full-gate integration (/go) over the
+# merged main.
+QUICK="${PRECIS_SHIP_QUICK:-0}"
+while :; do
+    case "${1:-}" in
+        --impacted) IMPACTED=1; shift ;;
+        --quick)    QUICK=1; shift ;;
+        *) break ;;
+    esac
+done
 
 MSG="${1:-}"
 CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -142,6 +161,18 @@ if [[ -n "$(git status --porcelain)" ]]; then
 ${CO_AUTHOR}"
 fi
 
+# Gate-slot admission (gr202193): cap concurrent gate containers fleet-wide
+# so sibling gates queue instead of OOM-killing each other against the
+# shared Docker VM ceiling. Acquired/released inside run_gate. Sourced even
+# on a --quick ship (which never gates): the exit trap below calls
+# gate_slot_release unconditionally, and release is a no-op when no slot is
+# held.
+source "${WORKTREE}/scripts/lib/gate-slot.sh"
+
+GATE_MODE=bind
+if [[ "$QUICK" == 1 ]]; then
+    say "quick ship (--quick) — gate SKIPPED: no ruff/mypy/pytest, no gate containers"
+else
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || die "compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)."
 
@@ -150,10 +181,6 @@ INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 # colliding on the default project `dev` (gr176375). See
 # scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
-# Gate-slot admission (gr202193): cap concurrent gate containers fleet-wide
-# so sibling gates queue instead of OOM-killing each other against the
-# shared Docker VM ceiling. Acquired/released inside run_gate.
-source "${WORKTREE}/scripts/lib/gate-slot.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
@@ -183,7 +210,6 @@ fi
 # ships too. If it can't start we fall back to the classic per-run
 # `compose run -v $WORKTREE:/app precis-dev` bind gate, so this optimisation
 # can never block a ship.
-GATE_MODE=bind
 say "starting warm gate container (precis-gate)"
 if compose up -d --wait precis-gate >/dev/null 2>&1; then
     GATE_MODE=warm
@@ -191,6 +217,7 @@ if compose up -d --wait precis-gate >/dev/null 2>&1; then
 else
     echo "WARNING: precis-gate didn't start — gate falls back to the per-run bind-mount container"
 fi
+fi  # end of non-quick gate-infra setup
 
 # Mirror the worktree into the warm container's native /app. `git archive
 # HEAD` streams exactly the committed tree (no .git, no caches, portable across
@@ -347,22 +374,8 @@ for attempt in 1 2 3; do
     git merge --no-edit origin/main \
         || die "merge conflict integrating origin/main — resolve in ${WORKTREE}, then 'git add -A && git commit' and re-run scripts/ship."
 
-    # Classify the change: a docs/config-only ship can't break the test
-    # suite, so it skips the ~3-min mypy+pytest gate and runs only ruff + the
-    # doc-pointer test (seconds). Heuristic: `merge-base..HEAD` shows only
-    # HEAD's own changes, so a misclassification can only under-scope toward
-    # "not docs-only" (safe → full gate).
     git fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
-    DOCS_ONLY=1
-    [[ -z "$CHANGED" ]] && DOCS_ONLY=0   # empty diff → play safe, full gate
-    while IFS= read -r f; do
-        [[ -z "$f" ]] && continue
-        case "$f" in
-            *.md | docs/* | .claude/* | .gitignore | LICENSE | CITATION.cff | SECURITY.md) ;;
-            *) DOCS_ONLY=0; break ;;
-        esac
-    done <<< "$CHANGED"
 
     # Pre-ship advisories (never block the ship — `|| true`): a migration-number
     # collision across worktrees when this ship touches migrations, and orphaned
@@ -374,6 +387,25 @@ for attempt in 1 2 3; do
     case "$CHANGED" in
         *docs/backlog/*) scripts/backlog-lint || true ;;
     esac
+
+    if [[ "$QUICK" == 1 ]]; then
+        say "quick ship — gate skipped (validation deferred to the next full gate: /go or bare scripts/ship)"
+    else
+
+    # Classify the change: a docs/config-only ship can't break the test
+    # suite, so it skips the ~3-min mypy+pytest gate and runs only ruff + the
+    # doc-pointer test (seconds). Heuristic: `merge-base..HEAD` shows only
+    # HEAD's own changes, so a misclassification can only under-scope toward
+    # "not docs-only" (safe → full gate).
+    DOCS_ONLY=1
+    [[ -z "$CHANGED" ]] && DOCS_ONLY=0   # empty diff → play safe, full gate
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            *.md | docs/* | .claude/* | .gitignore | LICENSE | CITATION.cff | SECURITY.md) ;;
+            *) DOCS_ONLY=0; break ;;
+        esac
+    done <<< "$CHANGED"
 
     # One gate invocation for the whole check. `ruff --fix`/`format` normalise
     # the source in-place (the mount in bind mode, the container's native copy
@@ -426,6 +458,8 @@ for attempt in 1 2 3; do
         say "amended ruff auto-fixes into the branch"
     fi
 
+    fi  # end of non-quick gate section
+
     # Squash-merge to main via plumbing. If main moved during the gate (the
     # ancestor check fails) or the CAS lease is rejected, loop: re-sync picks
     # up the new main, re-gate, re-push — never force a stale tree over it.
@@ -437,6 +471,15 @@ for attempt in 1 2 3; do
     fi
     OLD_MAIN="$(git rev-parse origin/main)"
     TREE="$(git rev-parse 'HEAD^{tree}')"
+    # Nothing-new guard: when the branch's tree already equals origin/main's
+    # (everything here was already landed — e.g. a /go run purely to gate +
+    # deploy after a /qland burst), don't manufacture an empty squash commit;
+    # in full mode the gate above still validated the integrated main.
+    if [[ "$TREE" == "$(git rev-parse "${OLD_MAIN}^{tree}")" ]]; then
+        say "nothing new to ship — tree identical to origin/main (already landed); skipping the push"
+        shipped=1
+        break
+    fi
     NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
 ${MSG:-ship(${BRANCH}): squash-merge to main}
 
@@ -494,6 +537,9 @@ fi
 git fetch -q origin main
 say "shipped — main is now:"
 git log --oneline -1 origin/main
+if [[ "$QUICK" == 1 ]]; then
+    printf '\n\033[33m⚡ UNGATED ship — no ruff/mypy/pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
+fi
 
 # ── 8. deploy-lag summary (best-effort; skips silently if .deploy-state is
 # absent — e.g. never deployed from this worktree) ───────────────────────

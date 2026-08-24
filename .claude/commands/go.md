@@ -56,6 +56,11 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship "<message>"
    ```
+   This is also the settle-up step after a `/qland` burst: those merges were
+   ungated, so this full gate validates the *integrated* `main`. When the
+   tree is already identical to `origin/main` (everything qlanded), the
+   script gates it and skips the push instead of minting an empty commit —
+   proceed to deploy on its green exit as usual.
 
 6. **Handle a red ship.** The script only exits non-zero on something it can't
    do mechanically. **Do NOT deploy if ship failed.**

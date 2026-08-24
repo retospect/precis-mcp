@@ -15,9 +15,13 @@ Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
 Work happens in worktrees (`claude -w <name>`). **`/land`** = ship
 (`scripts/ship --impacted`: commit WIP → sync main → container gate ruff +
 mypy + impacted pytest → squash-merge to `main`). **`/go`** = ship with the
-full suite + `scripts/deploy`. Both abort+report on gate failure and are
-idempotent — fix and re-run. Merge target is `main` (no `master`). Red gate:
-the failure is printed above the `✖` — read *that*, never `scripts/ship`.
+full suite + `scripts/deploy`. **`/qland`** = ungated burst-land
+(`scripts/ship --quick`: commit WIP → sync → squash-merge, NO gate) for when
+many trees are in flight and gates congest — qland them one by one, then one
+`/go` gates the integrated `main` + deploys (ship skips the push when the
+tree already equals main). All abort+report on failure and are idempotent —
+fix and re-run. Merge target is `main` (no `master`). Red gate: the failure
+is printed above the `✖` — read *that*, never `scripts/ship`.
 
 Many sibling sessions run at once: scan the injected `scripts/inflight` table
 for overlap; once your task is clear, write one line to `.claude/purpose`.
