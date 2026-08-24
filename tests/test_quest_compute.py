@@ -409,6 +409,65 @@ class TestFrontierContour:
             assert all(0.0 <= v <= scatter.width for v in xs)
             assert all(0.0 <= v <= scatter.height for v in ys)
 
+    def test_idw_field_exact_values(self) -> None:
+        """Pin the interpolation itself with hand-computed values — the
+        contoured SVG output alone can't distinguish a mirrored, axis-swapped,
+        or mis-weighted field from a correct one (mutation-pass finding on
+        the original ship: those mutants survived every structural test)."""
+        import numpy as np
+
+        from precis.quest.frontier import _idw_field
+
+        pts = [(0.0, 0.2, 0.0), (1.0, 0.4, 1.0)]
+        grid_x = np.array([[0.5, 0.25, 0.0]])
+        grid_y = np.array([[0.3, 0.2, 0.2]])
+        out = _idw_field(pts, grid_x, grid_y, x_range=1.0, y_range=1.0)
+        # (0.5, 0.3) is equidistant from both points → the exact mean
+        assert out[0, 0] == pytest.approx(0.5)
+        # (0.25, 0.2): d² = 0.25² vs 0.75² + 0.2² — hand-computed IDW weights
+        w_far = 1 / 0.6025
+        assert out[0, 1] == pytest.approx(w_far / (16.0 + w_far))
+        # (0.0, 0.2) sits exactly on the first point → its own z
+        assert out[0, 2] == pytest.approx(0.0, abs=1e-6)
+        # per-axis normalisation: doubling x_range halves every dx
+        out2 = _idw_field(pts, grid_x, grid_y, x_range=2.0, y_range=1.0)
+        w_near = 1 / 0.125**2
+        w_far2 = 1 / (0.375**2 + 0.04)
+        assert out2[0, 1] == pytest.approx(w_far2 / (w_near + w_far2))
+
+    def test_field_orientation_tracks_the_data(self) -> None:
+        """End-to-end orientation pin: with z increasing in x only, the
+        lowest-z band's ink must sit left of the highest-z band's (a flipped
+        pixel projection would invert it). All axis/z spans are < 1, which
+        also pins the degenerate-span guards at exactly 0 (a ``<= 1`` guard
+        would wrongly suppress this field)."""
+        cands = [
+            Candidate(
+                i + 1,
+                f"st{i}",
+                f"C{i}",
+                {
+                    "barrier": 0.1 + 0.07 * i,
+                    "energy": 0.1 + 0.08 * ((i * 3) % 7),
+                    "log_tof": 0.1 + 0.09 * i,
+                },
+                True,
+            )
+            for i in range(8)
+        ]
+        scatter = build_frontier_scatter(cands, z_measure="log_tof")
+        assert scatter is not None
+        assert scatter.contour_bands and scatter.contour_lines
+
+        def mean_x(path: str) -> float:
+            xs = [float(v) for v in re.findall(r"-?\d+\.?\d*", path)][0::2]
+            return sum(xs) / len(xs)
+
+        # bands are emitted in ascending z order — low-z ink left of high-z
+        assert mean_x(scatter.contour_bands[0]["path"]) < mean_x(
+            scatter.contour_bands[-1]["path"]
+        )
+
     def test_contour_off_switch(self) -> None:
         scatter = build_frontier_scatter(
             self._cands(), z_measure="log_tof", contour=False

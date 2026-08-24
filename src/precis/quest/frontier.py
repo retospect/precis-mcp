@@ -378,6 +378,32 @@ def _svg_path(px: Any, py: Any, *, close: bool) -> str:
     return f"M {verts} Z" if close else f"M {verts}"
 
 
+def _idw_field(
+    pts: Sequence[tuple[float, float, float]],
+    grid_x: Any,
+    grid_y: Any,
+    *,
+    x_range: float,
+    y_range: float,
+) -> Any:
+    """Inverse-distance-weighted z over ``(grid_x, grid_y)`` coordinate
+    arrays (power :data:`_CONTOUR_IDW_POWER`; distances normalised per axis
+    so a wide-range x doesn't drown y). Split from :func:`_contour_underlay`
+    so the interpolation itself is pinned by exact-value unit tests — the
+    contoured output alone can't distinguish a mirrored/mis-weighted field
+    from a correct one (mutation-pass finding on the original ship)."""
+    import numpy as np
+
+    xs = np.array([p[0] for p in pts], dtype=float)
+    ys = np.array([p[1] for p in pts], dtype=float)
+    zs = np.array([p[2] for p in pts], dtype=float)
+    dx = (np.asarray(grid_x)[..., None] - xs) / x_range
+    dy = (np.asarray(grid_y)[..., None] - ys) / y_range
+    d2 = np.maximum(dx * dx + dy * dy, 1e-12)
+    w = d2 ** (-_CONTOUR_IDW_POWER / 2.0)
+    return (w * zs).sum(axis=-1) / w.sum(axis=-1)
+
+
 def _contour_underlay(
     pts: Sequence[tuple[float, float, float]],
     *,
@@ -425,17 +451,10 @@ def _contour_underlay(
     except ImportError:  # pragma: no cover — contourpy rides with matplotlib
         return [], []
 
-    xs = np.array([p[0] for p in pts], dtype=float)
-    ys = np.array([p[1] for p in pts], dtype=float)
-    zs = np.array([p[2] for p in pts], dtype=float)
     gx = np.linspace(x_lo, x_hi, _CONTOUR_GRID_NX)
     gy = np.linspace(y_lo, y_hi, _CONTOUR_GRID_NY)
     grid_x, grid_y = np.meshgrid(gx, gy)
-    dx = (grid_x[..., None] - xs) / x_range
-    dy = (grid_y[..., None] - ys) / y_range
-    d2 = np.maximum(dx * dx + dy * dy, 1e-12)
-    w = d2 ** (-_CONTOUR_IDW_POWER / 2.0)
-    grid_z = (w * zs).sum(axis=-1) / w.sum(axis=-1)
+    grid_z = _idw_field(pts, grid_x, grid_y, x_range=x_range, y_range=y_range)
 
     levels = [
         t
