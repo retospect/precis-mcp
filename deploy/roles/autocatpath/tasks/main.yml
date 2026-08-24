@@ -70,18 +70,6 @@
     or 'Updated' in (autocatpath_install.stdout + autocatpath_install.stderr)
   notify: restart precis-worker (autocatpath)
 
-# triton's CUDA-kernel JIT (the cuequivariance MACE path below) compiles a C
-# shim that includes Python.h at RUN time — without the dev headers every
-# MACE single-point dies with "fatal error: Python.h: No such file or
-# directory" and the seed job fails 100% deterministically (gr246592;
-# first exercised by autocatpath 0.17's ledger/poison pre-relax steps).
-- name: Install Python dev headers for triton's runtime CUDA JIT (ML-backend node only)
-  when: inventory_hostname in (precis_capabilities.autocatpath_mace | default([]))
-  ansible.builtin.apt:
-    name: python3.12-dev
-    state: present
-  become: true
-
 # cuequivariance GPU accel for MACE. Without it, MACE prints "Cuequivariance
 # acceleration will be disabled." and runs its equivariant tensor-products on a
 # slow fallback — on the GB10 (Grace-Blackwell, aarch64, torch cu130) that made a
