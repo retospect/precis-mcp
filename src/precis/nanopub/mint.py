@@ -423,16 +423,19 @@ def _build_and_sign(
 def _software_provenance() -> dict[str, Any]:
     """Structured software provenance, resolved live at mint (never
     hardcoded): package version + deployed sha. The sha resolution reuses
-    the status surface's env-first chain (``PRECIS_GIT_SHA`` baked into
-    images; live-checkout git state otherwise)."""
+    the status surface's chain (``PRECIS_GIT_SHA`` baked into images →
+    live-checkout git state → the installed wheel's ``direct_url.json``,
+    which is the only signal a pip-from-git venv like prod's has —
+    gr249771 froze ``"unknown"`` into an artifact by stopping short of
+    it)."""
     from precis import __version__
 
     sha = os.environ.get("PRECIS_GIT_SHA", "").strip() or None
     if not sha or sha.lower() == "unknown":
         try:
-            from precis.handlers.skill import _SOURCE_GIT_INFO
+            from precis.handlers.skill import _DIST_GIT_INFO, _SOURCE_GIT_INFO
 
-            sha = _SOURCE_GIT_INFO.get("git_sha")
+            sha = _SOURCE_GIT_INFO.get("git_sha") or _DIST_GIT_INFO.get("git_sha")
         except Exception:  # pragma: no cover - status surface unavailable
             sha = None
     return {"name": "precis", "version": __version__, "sha": sha or "unknown"}

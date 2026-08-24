@@ -65,19 +65,20 @@ _OFF_FRONTIER_MARKER_SIZE = 45.0
 def _precis_provenance() -> dict[str, Any]:
     """``{"version", "sha"}`` for the running precis build.
 
-    Mirrors :func:`precis.nanopub.mint._software_provenance`'s env-first
-    resolution chain (``PRECIS_GIT_SHA`` baked into images, else live-
-    checkout git state) without importing the (heavier) nanopub package —
-    this module has no other nanopub dependency.
+    Mirrors :func:`precis.nanopub.mint._software_provenance`'s resolution
+    chain (``PRECIS_GIT_SHA`` baked into images → live-checkout git state
+    → the installed wheel's ``direct_url.json``) without importing the
+    (heavier) nanopub package — this module has no other nanopub
+    dependency.
     """
     from precis import __version__
 
     sha = os.environ.get("PRECIS_GIT_SHA", "").strip() or None
     if not sha or sha.lower() == "unknown":
         try:
-            from precis.handlers.skill import _SOURCE_GIT_INFO
+            from precis.handlers.skill import _DIST_GIT_INFO, _SOURCE_GIT_INFO
 
-            sha = _SOURCE_GIT_INFO.get("git_sha")
+            sha = _SOURCE_GIT_INFO.get("git_sha") or _DIST_GIT_INFO.get("git_sha")
         except Exception:  # pragma: no cover - status surface unavailable
             sha = None
     return {"version": __version__, "sha": sha}

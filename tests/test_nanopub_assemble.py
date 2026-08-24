@@ -227,3 +227,18 @@ def test_keygen_floor_and_fingerprint() -> None:
     priv, pub = generate_keypair(2048)
     assert len(fingerprint(pub)) == 64
     assert MIN_KEY_BITS == 2048
+
+
+def test_software_sha_falls_back_to_dist_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # gr249771: prod's pip-from-git venv has no env var and no checkout —
+    # the installed wheel's direct_url.json commit must still resolve, or
+    # artifacts freeze deployedSha "unknown" forever.
+    import precis.handlers.skill as skill_mod
+    from precis.nanopub.mint import _software_provenance
+
+    monkeypatch.delenv("PRECIS_GIT_SHA", raising=False)
+    monkeypatch.setattr(skill_mod, "_SOURCE_GIT_INFO", {})
+    monkeypatch.setattr(skill_mod, "_DIST_GIT_INFO", {"git_sha": "cafe" * 10})
+    assert _software_provenance()["sha"] == "cafe" * 10
