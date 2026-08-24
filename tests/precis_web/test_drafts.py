@@ -1946,7 +1946,7 @@ def test_provenance_state_sourced_pending_unsourced() -> None:
 
 
 def test_provenance_state_computational_evidence() -> None:
-    """qu164903-dossier-audit-residuals slice A item 1: a paragraph citing a
+    """qu164903 dossier audit, slice A item 1: a paragraph citing a
     simulation structure ([stNNN]) — or a calc/math/pathway record — is real
     grounding, not "cites nothing"; it must classify as "sourced", not
     the red "unsourced" bar. A handle-less numeric paragraph (no citation at
@@ -1993,7 +1993,7 @@ def test_cited_sources_filters_by_kind_not_href_shape(monkeypatch) -> None:
 
 
 def test_cited_sources_includes_computational_evidence(monkeypatch) -> None:
-    """qu164903-dossier-audit-residuals slice A item 4: the "Cited sources"
+    """qu164903 dossier audit, slice A item 4: the "Cited sources"
     rail widens past ``kind == "paper"`` to also surface a cited simulation
     structure / calc / math / pathway record — real evidence the writer
     grounded the paragraph in, just not a literature source."""

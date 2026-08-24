@@ -389,6 +389,45 @@ def test_handle_form_citation_resolves(
     assert "Multifunctional nanobuds" in text  # resolved entry
 
 
+def test_computed_evidence_handle_renders_as_text(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A bracket-handle cite of a computational-evidence kind (a simulation
+    structure, ``[st<id>]``) is real grounding, not a bibliography entry —
+    it must render as plain text (handle, or display-form surface text)
+    rather than being silently dropped."""
+    from precis.utils import handle_registry
+
+    art = hub.live_store.insert_ref(
+        kind="structure", slug="pd-relaxed", title="Pd relaxed cell", meta={}
+    )
+    handle = handle_registry.format_handle("structure", art.id)  # 'st<ref_id>'
+    assert handle.startswith("st")
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="dc-evi", title="T", project=pid)
+    draft.put(
+        id="dc-evi",
+        chunk_kind="paragraph",
+        text=(
+            f"The relaxed geometry [{handle}] and the "
+            f"[computed relaxation]({handle}) confirm the bond length."
+        ),
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dc-evi")
+    out = tmp_path / "dc-evi.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert handle in text  # bare bracket handle rendered as plain text
+    assert "computed relaxation" in text  # display-form surface text kept
+
+
 def test_endnote_citations_emit_cwyw_fields(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:

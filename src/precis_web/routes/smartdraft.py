@@ -25,6 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from precis.store._tags_ops import _escape_like
 from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
+from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
 from precis_web import draft_eyes, smartdraft
 from precis_web.claim_render import (
     cite_heads_in,
@@ -427,21 +428,10 @@ def _document_shape_stats(store: Store, ref_id: int) -> dict[str, Any]:
 
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store
-#: Non-paper kinds that still count as a cited "source" for this rail —
-#: computational evidence (a simulation structure, a calc/math worksheet,
-#: a computed reaction pathway), mirroring
-#: :data:`precis_web.routes.drafts._COMPUTED_EVIDENCE_KINDS` (docs/backlog/
-#: qu164903-dossier-audit-residuals.md, slice A item 4). None of these
-#: kinds expose a chunk form (no ``CHUNK_CODES`` entry in
-#: ``handle_registry``), so ``is_chunk`` is always False for them already —
-#: unlike ``paper``, there's no chunk-vs-record distinction to filter on.
-_COMPUTED_EVIDENCE_KINDS = frozenset({"structure", "calc", "math", "pathway"})
-
-
 def _cited_sources(store: Any, text: str) -> list[RefChip]:
     """The paper (``pc``/``pa``) AND computational-evidence
-    (:data:`_COMPUTED_EVIDENCE_KINDS`) sources the focus block cites, as
-    hover-preview chips (gripe 56635) — reuses the classic ``/drafts``
+    (:data:`precis.utils.mentions.COMPUTED_EVIDENCE_KINDS`) sources the
+    focus block cites, as hover-preview chips (gripe 56635) — reuses the classic ``/drafts``
     reader's block-scoped cite parser (:func:`precis_web.routes.drafts.
     _ref_chips`) rather than re-implementing cite parsing, then narrows its
     output to just the citation chips this rail wants (that parser also
@@ -465,7 +455,7 @@ def _cited_sources(store: Any, text: str) -> list[RefChip]:
     return [
         c
         for c in chips
-        if not c.is_chunk and (c.kind == "paper" or c.kind in _COMPUTED_EVIDENCE_KINDS)
+        if not c.is_chunk and (c.kind == "paper" or c.kind in COMPUTED_EVIDENCE_KINDS)
     ]
 
 

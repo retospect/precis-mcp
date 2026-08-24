@@ -50,6 +50,12 @@ the partition table below it. Shares its classifier
 (:func:`precis.export.retraction.summarize_doi_completeness`) with the
 Hygiene footer's own DOI line so the two surfaces can't drift on
 wording. Advisory only, same as every other signal in this view.
+
+**Deliberately excluded.** Computational-evidence handles
+(:data:`~precis.utils.mentions.COMPUTED_EVIDENCE_KINDS` — a cited
+simulation structure, calc/math worksheet, or computed pathway) are NOT
+mined by this view: it is specifically the paper-fetch lifecycle
+(to-fetch/re-ground/promote/done), and those kinds have no such lifecycle.
 """
 
 from __future__ import annotations

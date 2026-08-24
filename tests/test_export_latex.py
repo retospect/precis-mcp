@@ -193,6 +193,23 @@ def test_record_handle_renders_nothing() -> None:
     assert "me5" not in out and ctx.cited == []
 
 
+def test_computed_evidence_handle_renders_as_text() -> None:
+    # A bracket-handle cite of a computational-evidence kind (a simulation
+    # structure, [st12]) is real grounding, not a bibliography entry — it
+    # renders as plain text instead of being silently dropped.
+    out, ctx = _inline("as computed in [st12] here")
+    assert "st12" in out
+    assert ctx.cited == []  # not a bibliography \cite — no key minted
+
+
+def test_computed_evidence_handle_display_form_uses_surface() -> None:
+    # A display-link cite ([text](st12)) keeps the authored surface text,
+    # not the raw handle.
+    out, _ = _inline("see [the DFT relaxation](st12) here")
+    assert "the DFT relaxation" in out
+    assert "st12" not in out
+
+
 def test_legacy_pilcrow_xref_maps_to_dc() -> None:
     # A legacy [¶abc123] still resolves via the base-58 → dc map.
     out, _ = _inline("see [¶abc123]", legacy_to_dc={"abc123": "dc41"}, known={"dc41"})

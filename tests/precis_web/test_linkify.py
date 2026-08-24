@@ -668,7 +668,7 @@ def test_compact_patent_chunk_handle_is_circle_p() -> None:
 
 
 def test_compact_structure_handle_is_atom_sigil() -> None:
-    # qu164903-dossier-audit-residuals slice A item 3: a cited simulation
+    # qu164903 dossier audit, slice A item 3: a cited simulation
     # structure ([stNNN], a record handle — structure has no chunk code)
     # collapses to a compact ⚛ sigil in the draft reader, not the verbose
     # "st245406" mid-prose.

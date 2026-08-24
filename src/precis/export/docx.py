@@ -62,7 +62,7 @@ from precis.export.latex import (
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
-from precis.utils.mentions import parse_pin_suffix
+from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS, parse_pin_suffix
 from precis.utils.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -715,10 +715,13 @@ def _render_target(
         return
     # universal handle: ``[pc10]`` / ``[pa5]`` (a paper) and
     # ``[pt7]`` (a patent) are citations; ``[fi3]`` a finding cite; ``[dc41]``
-    # an intra-draft cross-ref; a record handle for a thought (``[me5]``) is
-    # provenance-only. The LaTeX exporter resolves these — the docx path used
-    # to drop them all, so handle-cited drafts (e.g. everything imported from
-    # LaTeX) rendered with no citations and no References section at all.
+    # an intra-draft cross-ref; a computational-evidence handle
+    # (:data:`precis.utils.mentions.COMPUTED_EVIDENCE_KINDS`, e.g. ``[st12]``)
+    # renders as plain text (real grounding, not a bibliography entry); a
+    # record handle for a thought (``[me5]``) is provenance-only. The LaTeX
+    # exporter resolves these — the docx path used to drop them all, so
+    # handle-cited drafts (e.g. everything imported from LaTeX) rendered
+    # with no citations and no References section at all.
     parsed = handle_registry.parse(tgt)
     if parsed is not None:
         kind, is_chunk, pk = parsed
@@ -735,6 +738,15 @@ def _render_target(
             for slug in _finding_cite_keys_pinned(tgt, pin, ctx):
                 _cite(slug, ctx, paragraph)
             _render_trust_mark(ctx, pk, paragraph)
+            return
+        if kind in COMPUTED_EVIDENCE_KINDS:
+            # Computational evidence (a simulation structure, a calc/math
+            # worksheet, a computed reaction pathway) — real grounding, just
+            # not a bibliography entry, so write the authored display text
+            # (or the literal handle) as plain text instead of dropping the
+            # citation (mirrors export/latex.py's ``_render_target``).
+            ctx.last_cite = None
+            paragraph.add_run(surface or tgt)
             return
         # draft cross-ref / other record handle → not a citation.
         ctx.last_cite = None

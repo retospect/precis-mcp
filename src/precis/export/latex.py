@@ -604,8 +604,11 @@ def _render_target(
     warning — never a dangling ``\\cref`` (which would compile to a ``??``
     and break determinism / linkcheck)."""
     # universal handle: ``[dc41]`` (this draft) → cross-ref;
-    # ``[pc10]`` / ``[pa5]`` (a paper) → a citation; a record handle for a
-    # thought (``[me5]``) is provenance-only → dropped.
+    # ``[pc10]`` / ``[pa5]`` (a paper) → a citation; a computational-evidence
+    # handle (:data:`precis.utils.mentions.COMPUTED_EVIDENCE_KINDS`, e.g.
+    # ``[st12]``) renders as plain text (real grounding, not a bibliography
+    # entry); a record handle for a thought (``[me5]``) is provenance-only
+    # → dropped.
     parsed = handle_registry.parse(tgt)
     if parsed is not None:
         kind, is_chunk, _pk = parsed
@@ -630,6 +633,13 @@ def _render_target(
             return _render_finding_cite(tgt, pin, ctx)
         if kind == "draft" and is_chunk:
             return _draft_xref(tgt, surface, ctx)
+        if kind in mentions.COMPUTED_EVIDENCE_KINDS:
+            # Computational evidence (a simulation structure, a calc/math
+            # worksheet, a computed reaction pathway) — real grounding, just
+            # not a bibliography entry, so render as plain text (authored
+            # display text, or the literal handle) same as the legacy-handle
+            # downgrade below, instead of silently dropping the citation.
+            return _encode_unicode(_latex_escape(surface or tgt))
         return ""  # other record/chunk handle — provenance only
     if tgt.startswith("¶"):  # legacy base-58 chunk handle
         dc = ctx.legacy_to_dc.get(tgt[1:])

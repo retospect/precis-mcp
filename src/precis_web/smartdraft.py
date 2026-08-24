@@ -1074,15 +1074,22 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
     """``True`` unless ``text`` carries a cite token that fails to resolve
     (a dead/merged-away ``[pc<id>]``) or whose cited paper isn't held (a
     stub with zero body blocks — the same "to-fetch" signal
-    ``handlers/_citations_view.py`` partitions on) — item 5c. Deliberately
-    read-time, NOT sha-pinned: a paper can vanish from the corpus without
-    the paragraph's own text changing, so a ledger checker would rot
-    silently — this is recomputed on every render instead, never stored.
-    Reuses ``_citations_view``'s token scanner rather than re-parsing the
-    cite grammar; ``cache`` (shared across one render's blocks) avoids a
-    repeat store hit for a paper cited from several paragraphs."""
+    ``handlers/_citations_view.py`` partitions on) — item 5c. Also covers a
+    computational-evidence handle (:data:`precis.utils.mentions.
+    COMPUTED_EVIDENCE_KINDS`, e.g. ``[st12]``): its cited ref must simply
+    exist (right kind, not deleted) — these kinds have no fetch/body-block
+    lifecycle, so the "held" (``count_blocks > 0``) check doesn't apply to
+    them. Deliberately read-time, NOT sha-pinned: a paper can vanish from
+    the corpus without the paragraph's own text changing, so a ledger
+    checker would rot silently — this is recomputed on every render
+    instead, never stored. Reuses ``_citations_view``'s token scanner
+    rather than re-parsing the cite grammar; ``cache`` (shared across one
+    render's blocks) avoids a repeat store hit for a ref cited from several
+    paragraphs — ref_ids are one global sequence across kinds, so a
+    computational-evidence entry can't collide with a paper entry."""
     from precis.handlers._citations_view import _iter_chunk_tokens
     from precis.utils import handle_registry
+    from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
 
     for _raw, tag, payload in _iter_chunk_tokens(text or ""):
         if tag != "handle":
@@ -1093,6 +1100,21 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
         if parsed is None:
             continue  # a well-formed handle of some other kind — not a cite
         kind, is_chunk, pk = parsed
+        if kind in COMPUTED_EVIDENCE_KINDS:
+            if is_chunk:
+                resolved = store.resolve_handle(payload)
+                if resolved is None or resolved.kind != kind:
+                    return False  # dead/merged-away chunk cite
+                ref_id = resolved.ref_id
+            else:
+                ref_id = pk
+            exists = cache.get(ref_id)
+            if exists is None:
+                exists = store.get_ref(kind=kind, id=ref_id) is not None
+                cache[ref_id] = exists
+            if not exists:
+                return False  # cited computational ref doesn't exist
+            continue
         if kind != "paper":
             continue
         if is_chunk:

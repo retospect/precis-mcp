@@ -11,6 +11,7 @@ from precis_web.smartdraft import (
     _left_toc,
     build_outline,
     build_view,
+    cite_integrity_ok,
     focus_index,
     pressures,
     search_chunks,
@@ -456,3 +457,35 @@ def test_an_in_place_text_edit_invalidates_the_node_cache(hub) -> None:
     second = sd.build_nodes(store, ref_id)
     assert second is not first  # version changed → rebuilt
     assert any("must not miss" in (n.text or "") for n in second)
+
+
+# ── cite_integrity_ok — computational-evidence handles ─────────────────
+
+
+def test_cite_integrity_ok_structure_handle_exists(hub) -> None:
+    # A [st<id>] cite is computational evidence, not a paper — it has no
+    # fetch/body-block lifecycle, so existence alone (not "held") is the bar.
+    store = hub.store
+    ref = store.insert_ref(
+        kind="structure", slug="ci-relaxed", title="relaxed cell", meta={}
+    )
+    handle = handle_registry.format_handle("structure", ref.id)
+    assert cite_integrity_ok(store, f"see [{handle}] here", {}) is True
+
+
+def test_cite_integrity_ok_structure_handle_missing(hub) -> None:
+    # A [st<id>] cite whose structure ref doesn't exist fails integrity.
+    store = hub.store
+    handle = handle_registry.format_handle("structure", 999999999)
+    assert cite_integrity_ok(store, f"see [{handle}] here", {}) is False
+
+
+def test_cite_integrity_ok_paper_stub_still_fails(hub) -> None:
+    # No regression: a paper cite whose ref exists but is a zero-block stub
+    # (never fetched) still fails — the "held" check stays paper-only.
+    store = hub.store
+    ref = store.insert_ref(
+        kind="paper", slug="ci-stub-paper", title="a stub", provider="manual"
+    )
+    handle = handle_registry.format_handle("paper", ref.id)
+    assert cite_integrity_ok(store, f"see [{handle}] here", {}) is False

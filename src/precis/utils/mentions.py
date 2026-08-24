@@ -125,6 +125,20 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
 #: opt-out lever.
 LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 
+#: Kinds whose refs are computational evidence that *sources* a claim
+#: the way a corpus paper does — a cited simulation structure
+#: (``[stNNN]``), calc/math worksheet, or computed reaction pathway.
+#: Consumers: the web provenance state (``routes/drafts.py``), the
+#: "Cited sources" rail (``routes/smartdraft.py``), the latex/docx
+#: export renders, and ``cite_integrity_ok``. Only kinds with a
+#: registered handle code can actually appear as a bracket cite today —
+#: ``structure`` always (code ``st``), ``pathway`` only when its plugin
+#: registers a code; ``calc``/``math`` have none yet and are listed here
+#: for forward parity with the web provenance class.
+COMPUTED_EVIDENCE_KINDS: frozenset[str] = frozenset(
+    {"structure", "calc", "math", "pathway"}
+)
+
 
 # ---------------------------------------------------------------------------
 # Draft inline-reference grammar — the bracket / sigil forms

@@ -45,7 +45,7 @@ def test_extract_gates_on_allowlist_and_low_signal() -> None:
 
 
 def test_extract_handles_structure() -> None:
-    """gr/qu164903-dossier-audit-residuals slice A item 2: ``structure`` was
+    """qu164903 dossier audit, slice A item 2: ``structure`` was
     missing from LINKIFY_KINDS (drifted from ``_REFS_BROWSABLE_KINDS`` in
     ``routes/refs.py``), so a bare ``structure:245406`` mention rendered
     literal instead of resolving."""
