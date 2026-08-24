@@ -312,13 +312,46 @@ is the grounding `[pc<id>]` paper chunk and you should always supply
 it** — it lands on the edge as `src_chunk_id`, so the edge cites the
 passage (`pc<id>`), not just the paper (`pa<id>`). List the same paper's
 different supporting passages as separate supporters (same `paper`,
-different `source_handle`) to attach the whole set. Omit it only when
-you genuinely can't name the chunk; the edge then stays coarse
-ref-level. Mints the hub (or converges onto an existing one for
-identical claim content, via the content-hash `pub_id`) and attaches
-each supporter's evidence edge idempotently — a re-`put` of the same
-spec attaches nothing twice (the dedup key includes the grounding
-chunk). Cite the resulting `[fi<id>]` afterward.
+different `source_handle`) to attach the whole set. Mints the hub (or
+converges onto an existing one for identical claim content, via the
+content-hash `pub_id`) and attaches each supporter's evidence edge
+idempotently — a re-`put` of the same spec attaches nothing twice (the
+dedup key includes the grounding chunk). Cite the resulting `[fi<id>]`
+afterward.
+
+**Don't have a chunk handle? Search for one — don't fall back to
+ref-level.** Whatever paper you happen to be holding is not the corpus.
+Query the whole corpus for the passage that carries this claim's
+specifics, then ground the edge on what you read:
+
+```python
+search(kind="paper", q="<the claim's most distinctive phrase>")
+search(kind="paper", q="<claim terms> <the technique you'd expect>")
+get(id="pc<id>")  # read it before you attach it — excerpts are clipped
+```
+
+Two queries, because the passage naming a *method* often doesn't repeat
+the claim's wording. Search is hybrid lexical + semantic over the whole
+corpus, so a rare token (a compound name, a number, a DOI) ranks high —
+quote the most distinctive phrase you have. [[precis-check-source-help]]
+is the full find → read-surrounds → judge loop; run it before attaching,
+not after.
+
+**What you link is what the next agent can see, and that is a smaller
+world than you think.** Measured over the live claim cohort
+(2026-08-24): of the claims that no later pass could repair — every one
+rejected for having no honest technique available — **70% had a usable
+passage sitting in the corpus, unlinked**, and only 3% failed because
+the corpus lacked the source at all. The rate was much the same whether
+the hub's existing evidence was a read passage or a bare paper
+reference (73% vs 68%), so this is not about edge granularity: each of
+those passes could only read what was already attached, and inherited
+the link set as the boundary of the knowable. Naming the passage at
+attach time is far cheaper than reconstructing it later.
+
+**"I found nothing" is only true if you searched.** Absence in the
+linked set is not absence in the corpus — the two are different claims
+and only the second justifies giving up on a hub.
 
 The `precis taproot mint` CLI is the batch equivalent — many claims
 from one spec file:
