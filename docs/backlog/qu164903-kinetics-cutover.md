@@ -90,6 +90,29 @@ over once catpath 0.17 exists.
    `qu164903-loop-fixes-followthrough` in memory; don't double-clear an
    already-empty value), ship, redeploy.
 
+## Post-batch cleanup (added 2026-08-24, after the live cutover)
+
+- **Wipe-window casualties**: a handful of aggregates raced the engine
+  wipe/redeploy windows on 2026-08-23 evening and succeeded WITHOUT usable
+  kinetics — notes `engine 0.13.0 lacks kinetics` (ran mid-revert) or no
+  kinetics keys at all (ran on pre-s3 precis code). Their idem keys are
+  consumed, so they never self-heal. After the current batch drains, count
+  them (`kind='job'`, `job_type='autocatpath_aggregate'`, succeeded, note
+  LIKE 'engine 0.13%' or missing `kinetics_trusted`) and re-run just those
+  candidates. Cheapest correct lever: install the 0.17 wheel into
+  melchior's venvs too (fixes the engine-version token dispatch stamps
+  into idem keys — melchior's pure-[catalyst] autocatpath is still 0.13),
+  then `redispatch` — but ONLY once the batch has drained, because the new
+  version token re-keys EVERYTHING and would orphan in-flight work.
+- **TOF ≈ 0 candidates read as untrusted, not measured-dead**: barriers
+  ~1.7–2 eV give true TOFs (~1e-16 s⁻¹) below the ODE solver's numeric
+  floor, so the solver returns ±1e-12 noise and the positivity gate stamps
+  `tof non-positive (solver anomaly)`. Honest but means dead-slow designs
+  sit in the provisional band instead of being dominated on a tiny
+  log_tof. If most of the batch lands there, consider a catpath-side
+  floor/verdict ("below solver resolution ⇒ report upper bound") — an
+  engine change, not precis.
+
 ## Explicitly NOT in scope
 
 - Any catpath engine code — that repo cuts its own release on its own
