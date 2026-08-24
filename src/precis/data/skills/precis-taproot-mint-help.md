@@ -339,19 +339,26 @@ not after.
 
 **What you link is what the next agent can see, and that is a smaller
 world than you think.** Measured over the live claim cohort
-(2026-08-24): of the claims that no later pass could repair — every one
-rejected for having no honest technique available — **70% had a usable
-passage sitting in the corpus, unlinked**, and only 3% failed because
-the corpus lacked the source at all. The rate was much the same whether
-the hub's existing evidence was a read passage or a bare paper
-reference (73% vs 68%), so this is not about edge granularity: each of
-those passes could only read what was already attached, and inherited
-the link set as the boundary of the knowable. Naming the passage at
-attach time is far cheaper than reconstructing it later.
+(2026-08-24, n=60): of the claims that no later pass could repair —
+every one rejected for having no honest technique available — **83% had
+a usable passage sitting in the corpus, unlinked**, and *none* failed
+because the corpus lacked the source. The rest were claims no instrument
+establishes (design rules, recited constants, combinatorial results),
+not gaps in coverage. The rate did not depend on whether the hub's
+existing evidence was a read passage or a bare paper reference, so this
+is not about edge granularity: each of those passes could only read what
+was already attached, and inherited the link set as the boundary of the
+knowable. Naming the passage at attach time is far cheaper than
+reconstructing it later.
 
-**"I found nothing" is only true if you searched.** Absence in the
-linked set is not absence in the corpus — the two are different claims
-and only the second justifies giving up on a hub.
+**"I found nothing" is only true if you searched, with a search that
+works.** Absence in the linked set is not absence in the corpus — the
+two are different claims and only the second justifies giving up on a
+hub. An earlier pass over this same cohort put the rescuable fraction at
+70% with 3% absent; those numbers were an artifact of a silently
+degraded embedder, and the honest figures above are what a working
+search returns. Before you conclude a passage does not exist, confirm
+your search can find one that does.
 
 The `precis taproot mint` CLI is the batch equivalent — many claims
 from one spec file:
