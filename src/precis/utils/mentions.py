@@ -109,6 +109,13 @@ LINKIFY_KINDS: frozenset[str] = frozenset(
         "skill",
         "provenance",
         "random",
+        # Atomistic simulation structure + its reaction-energetics pathway —
+        # both drifted from _REFS_BROWSABLE_KINDS (routes/refs.py); realigned
+        # so ``structure:NNN`` / ``pathway:NNN`` / ``[[…]]`` resolve instead
+        # of rendering literal, and the computational-evidence provenance
+        # class (routes/drafts.py) sees them as citations.
+        "structure",
+        "pathway",
     }
 )
 

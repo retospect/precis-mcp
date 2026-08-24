@@ -622,9 +622,13 @@ def _md_inline(escaped: str) -> str:
 #:   * paper  → ``§`` — a cited section (same glyph as the ``[§slug~n]`` form)
 #:   * patent → ``Ⓟ`` — a cited patent passage (full-size circled P, U+24C5,
 #:     not the small ``℗`` sound-recording mark)
+#:   * structure → ``⚛`` — a cited simulation structure (``[stNNN]``,
+#:     U+269B ATOM SYMBOL); without an entry here compact mode fell through
+#:     to the verbose handle (``st245406``) mid-prose (docs/backlog/
+#:     qu164903-dossier-audit-residuals.md, slice A item 3)
 #: Notes / dreams etc. are never inline chunk refs (they surface in the
 #: sidebar Connections panel), so they need no entry here.
-_CHUNK_SIGIL: dict[str, str] = {"paper": "§", "patent": "Ⓟ"}
+_CHUNK_SIGIL: dict[str, str] = {"paper": "§", "patent": "Ⓟ", "structure": "⚛"}
 _CHUNK_SIGIL_DEFAULT = "¶"
 
 

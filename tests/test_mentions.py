@@ -44,6 +44,25 @@ def test_extract_gates_on_allowlist_and_low_signal() -> None:
     assert handles == [("memory", "1", None)]
 
 
+def test_extract_handles_structure() -> None:
+    """gr/qu164903-dossier-audit-residuals slice A item 2: ``structure`` was
+    missing from LINKIFY_KINDS (drifted from ``_REFS_BROWSABLE_KINDS`` in
+    ``routes/refs.py``), so a bare ``structure:245406`` mention rendered
+    literal instead of resolving."""
+    assert "structure" in mentions.LINKIFY_KINDS
+    handles = mentions.extract_handles("see structure:245406 for the geometry")
+    assert ("structure", "245406", None) in handles
+
+
+def test_extract_handles_pathway() -> None:
+    """``pathway`` is browsable (``/refs/pathway/<id>``) and counts as
+    computational evidence in the provenance classifier — it must linkify,
+    same drift as ``structure``."""
+    assert "pathway" in mentions.LINKIFY_KINDS
+    handles = mentions.extract_handles("energetics in pathway:198000")
+    assert ("pathway", "198000", None) in handles
+
+
 def test_chunk_to_pos() -> None:
     assert mentions.chunk_to_pos("~12") == 12
     assert mentions.chunk_to_pos("~1..5") is None  # range, not one chunk

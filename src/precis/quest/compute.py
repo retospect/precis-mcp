@@ -30,6 +30,7 @@ import logging
 import math
 import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -1646,6 +1647,22 @@ _ADSORBATE_DETACHED = "detached"
 #: A barrier off a mis-bound endpoint is as untrustworthy as one off a desorbed one.
 _WRONG_BINDING_SITE = "wrong-site"
 
+#: A surface elementary-step barrier above this magnitude (eV) is nonphysical,
+#: not just "large" — the qu164903 audit's corner saga saw 12-14 eV readings
+#: rank alongside sub-eV ones. N2's total dissociation energy (~9.8 eV) is
+#: about the strongest bond scale a catalysis step could plausibly touch, so
+#: 8.0 eV sits comfortably below every real artifact seen and above every
+#: real barrier. See :func:`_flag_absurd_barrier`.
+_BARRIER_ABSURD_EV = 8.0
+
+#: Two candidates sharing the same canonical ``geom_hash_c`` (the SAME crystal
+#: under lattice translation/rotation/mirror, :func:`precis.structure.canonical.geom_hash_c`)
+#: are the same physical system — their barriers at the same ladder tier must
+#: agree within measurement noise. A gap wider than this (eV) is not chemistry,
+#: it's irreproducibility (qu164903: st239974 vs st243092, 0.479 vs 4.99 eV for
+#: translation twins). See :func:`_flag_barrier_twin_disagreement`.
+_TWIN_BARRIER_TOL_EV = 0.5
+
 
 def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     """Derive the trust verdict on a harvested barrier from its pathway's meta.
@@ -1679,6 +1696,139 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
         "barrier_wrong_site": n_wrong_site,
         "barrier_low_confidence": bool(meta.get("low_confidence")),
     }
+
+
+def _flag_absurd_barrier(measures: dict[str, Any]) -> bool:
+    """Auto-untrust ``measures['barrier']`` when its magnitude sits beyond
+    :data:`_BARRIER_ABSURD_EV` — a nonphysical reading, not a merely large one.
+
+    Mutates ``measures`` in place (stamps ``barrier_trusted=False`` and
+    ``barrier_absurd=True``) and returns whether it fired. This OVERRIDES a
+    ``True`` verdict :func:`_pathway_quality` may already have written —
+    warning-free is not the same as physically plausible — but never resets
+    an existing ``False`` back to ``True``: this guard only ever adds
+    distrust, on top of whatever the warning-based verdict already found.
+    """
+    barrier = _num_measure(measures.get("barrier"))
+    if barrier is None or abs(barrier) <= _BARRIER_ABSURD_EV:
+        return False
+    measures["barrier_trusted"] = False
+    measures["barrier_absurd"] = True
+    return True
+
+
+def _latest_converged_relax_run(
+    runs: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """The most recent CONVERGED run in ``runs`` (:meth:`Store.structure_runs`'
+    most-recent-first order), or ``None`` when there is no converged run at
+    all — kept separate from the raw list so :func:`harvest_measures` doesn't
+    re-derive "latest converged" scan logic at each barrier landing."""
+    for r in runs:
+        if r.get("converged"):
+            return r
+    return None
+
+
+def _flag_barrier_twin_disagreement(
+    store: Store,
+    quest_id: int,
+    structures: list[Any],
+    s: Any,
+    candidate_meta: dict[str, Any],
+    handle: str,
+) -> None:
+    """Untrust a freshly-landed barrier (and its symmetry twin's) when two
+    candidates that are the SAME crystal (matching ``geom_hash_c``) disagree
+    on the barrier at the same ladder tier by more than
+    :data:`_TWIN_BARRIER_TOL_EV` — the qu164903 corner-saga defect: 0.479 eV
+    and 4.99 eV reported for one structure, narrated as chemistry instead of
+    measurement noise.
+
+    Only compares candidates where BOTH sides carry a non-null
+    ``geom_hash_c`` (the lazy canonical-hash backfill may not have run yet —
+    silently skipped, not treated as a mismatch) and BOTH carry a numeric
+    ``barrier`` at the SAME ``barrier_tier`` (a screening-tier reading is not
+    comparable to a verify-tier one). Re-fetches the other candidates' refs
+    fresh (rather than trusting ``structures``, captured once at the top of
+    :func:`harvest_measures`) so a twin harvested earlier in THIS SAME pass
+    is compared against its just-written barrier, not a stale one.
+
+    Idempotent: if ``s`` already carries ``barrier_twin_disagreement``
+    pointing at this same twin, no duplicate stamp/note — a harvest that
+    reruns without either side re-measuring must not spam the logbook.
+    Defensive like the rest of the harvest loop: any lookup failure is a
+    silent no-op, never a crash (caller wraps this in ``try/except`` too).
+    """
+    geom_hash_c = candidate_meta.get("geom_hash_c")
+    if not geom_hash_c:
+        return
+    barrier = _num_measure(candidate_meta.get("barrier"))
+    if barrier is None:
+        return
+    tier = candidate_meta.get("barrier_tier")
+    if tier is None:
+        # Pre-ladder legacy reading with no tier stamp — not comparable
+        # (two Nones must not count as "the same tier").
+        return
+    others = [o for o in structures if o.id != s.id]
+    if not others:
+        return
+    from precis.utils import handle_registry
+
+    fresh = store.fetch_refs_by_ids({o.id for o in others})
+    for o in others:
+        other_ref = fresh.get(o.id)
+        if other_ref is None:
+            continue
+        other_meta = other_ref.meta or {}
+        if (
+            not other_meta.get("geom_hash_c")
+            or other_meta.get("geom_hash_c") != geom_hash_c
+        ):
+            continue
+        other_barrier = _num_measure(other_meta.get("barrier"))
+        if other_barrier is None or other_meta.get("barrier_tier") != tier:
+            continue
+        if abs(barrier - other_barrier) <= _TWIN_BARRIER_TOL_EV:
+            continue
+        other_handle = (
+            handle_registry.try_format("structure", other_ref.id)
+            or f"structure:{other_ref.id}"
+        )
+        if (
+            candidate_meta.get("barrier_twin_disagreement") == other_handle
+            or other_meta.get("barrier_twin_disagreement") == handle
+        ):
+            # Already flagged against this same twin — either on our own
+            # (possibly stale) local view, or on the twin's FRESH meta: when
+            # both twins land fresh barriers in ONE harvest pass, the twin
+            # processed first stamps both sides, but this side's
+            # ``candidate_meta`` snapshot predates that write — the twin's
+            # reverse stamp is the truth that stops a same-pass dup note.
+            continue
+        store.stamp_ref_meta(
+            s.id,
+            {"barrier_trusted": False, "barrier_twin_disagreement": other_handle},
+        )
+        store.stamp_ref_meta(
+            other_ref.id,
+            {"barrier_trusted": False, "barrier_twin_disagreement": handle},
+        )
+        candidate_meta["barrier_trusted"] = False
+        candidate_meta["barrier_twin_disagreement"] = other_handle
+        append_entry(
+            store,
+            quest_id,
+            text=(
+                f"symmetry-identical structures disagree: [{handle}] "
+                f"barrier={barrier:g} eV vs [{other_handle}] "
+                f"barrier={other_barrier:g} eV — measurement irreproducibility, "
+                "both untrusted, re-measure before ranking"
+            ),
+            entry_type="result",
+            by=MEASURED_BY,
+        )
 
 
 def _fresh_autocatpath_jobs(
@@ -2343,6 +2493,22 @@ def harvest_measures(
     ``atom_cost`` backfill) also widens ``quest.meta.frontier_viewport``
     (:func:`_ratchet_frontier_viewport`) so the frontier scatter's axes
     cover it without a human having to notice and pin a wider range by hand.
+
+    Every freshly-landed barrier also runs three sanity guards (qu164903's
+    corner saga — a barrier pipeline once emitted 0.479 eV and 4.99 eV for
+    the SAME structure, narrated as chemistry): a magnitude beyond
+    :data:`_BARRIER_ABSURD_EV` auto-untrusts
+    (:func:`_flag_absurd_barrier`, overriding a clean
+    :func:`_pathway_quality` verdict but never un-flagging an already-untrusted
+    one); a barrier measured off a candidate whose latest converged relax
+    "converged" in 0 steps gets ``barrier_unrelaxed_geometry`` — a WARNING
+    only, the barrier still ranks — since an unrelaxed geometry is suspect but
+    not proven wrong; and two candidates sharing the same canonical
+    ``geom_hash_c`` (the same crystal under lattice symmetry) whose barriers
+    disagree by more than :data:`_TWIN_BARRIER_TOL_EV` at the same ladder
+    tier both get untrusted (:func:`_flag_barrier_twin_disagreement`) — that
+    disagreement is measurement irreproducibility, not two different
+    materials.
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -2424,6 +2590,21 @@ def harvest_measures(
                         measures.update(_pathway_quality(pw_meta))
                 except Exception:
                     pass
+            # Guard 2 (absurd magnitude): overrides `_pathway_quality`'s
+            # verdict, never the reverse — see `_flag_absurd_barrier`.
+            absurd = _flag_absurd_barrier(measures)
+            # Guard 3 (unrelaxed geometry): a WARNING, not an untrust — the
+            # barrier still ranks, but the logbook flags it for scrutiny.
+            # "No runs / no converged run" is unknown, not zero-step, so it
+            # must never false-positive a legacy candidate.
+            latest_relax = _latest_converged_relax_run(runs)
+            unrelaxed = (
+                _num_measure(measures.get("barrier")) is not None
+                and latest_relax is not None
+                and latest_relax.get("n_steps") == 0
+            )
+            if unrelaxed:
+                measures["barrier_unrelaxed_geometry"] = True
             tier = _pathway_tier(pw_meta)
             _canonicalize_barrier(candidate_meta, measures, tier)
             _bump_tier_stamp(candidate_meta, measures, tier)
@@ -2444,6 +2625,44 @@ def harvest_measures(
                 by=MEASURED_BY,
             )
             harvested += 1
+            if absurd:
+                append_entry(
+                    store,
+                    quest_id,
+                    text=(
+                        f"nonphysical barrier for [{handle}] ({name}): {b_s} "
+                        f"exceeds {_BARRIER_ABSURD_EV:g} eV — auto-untrusted"
+                    ),
+                    entry_type="result",
+                    by=MEASURED_BY,
+                )
+            if unrelaxed:
+                append_entry(
+                    store,
+                    quest_id,
+                    text=(
+                        f"barrier for [{handle}] ({name}) measured on a geometry "
+                        "whose relax converged in 0 steps — likely never actually "
+                        "relaxed; verify before trusting the ranking"
+                    ),
+                    entry_type="result",
+                    by=MEASURED_BY,
+                )
+            # Guard 1 (symmetry-twin disagreement): the fresh barrier is now
+            # on disk (`store.stamp_ref_meta` just above), so a same-crystal
+            # twin harvested in an EARLIER pass sees it, and one harvested
+            # LATER in this same pass compares against it. Defensive: a
+            # lookup failure here must never crash the harvest.
+            try:
+                _flag_barrier_twin_disagreement(
+                    store, quest_id, structures, s, candidate_meta, handle
+                )
+            except Exception:
+                log.debug(
+                    "harvest_measures: barrier-twin check failed for %s",
+                    s.id,
+                    exc_info=True,
+                )
         if cp_seen > cp_upto:
             store.stamp_ref_meta(s.id, {"quest_autocatpath_harvested_upto": cp_seen})
 

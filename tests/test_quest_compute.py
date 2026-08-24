@@ -2880,6 +2880,341 @@ class TestAutocatpathHarvest:
         assert "tof_untrusted_value" not in meta
 
 
+# ── barrier sanity guards (qu164903 dossier-audit residuals, slice B) ──
+
+
+class TestBarrierAbsurdMagnitudeGuard:
+    """Guard 2: a barrier past `_BARRIER_ABSURD_EV` is nonphysical, not just
+    large — auto-untrusted with a machine-readable flag + logbook note."""
+
+    def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    def test_12ev_barrier_untrusted_and_flagged_absurd(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(store, sid, {"result": {"barrier": 12.0}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_absurd"] is True
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("nonphysical barrier" in b.text for b in logs)
+        assert any("auto-untrusted" in b.text for b in logs)
+
+    def test_clean_pathway_but_absurd_magnitude_overrides_trust(
+        self, store: Any
+    ) -> None:
+        """`_pathway_quality` would have said trusted (no warnings) — the
+        absurd-magnitude guard must still override True → False."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={"warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 14.0}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_absurd"] is True
+
+    def test_normal_barrier_not_flagged_absurd(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.7}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier_absurd" not in meta
+
+    def test_large_negative_barrier_flagged_absurd(self, store: Any) -> None:
+        """The guard checks MAGNITUDE: a -50 eV reading (sign/unit bug
+        upstream) is as nonphysical as +50 and must not slip past a signed
+        ``<=`` comparison."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(store, sid, {"result": {"barrier": -50.0}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_absurd"] is True
+
+
+class TestBarrierUnrelaxedGeometryGuard:
+    """Guard 3: a barrier measured off a candidate whose latest converged
+    relax "converged" in 0 steps is a WARNING (not an untrust) — the
+    ranking still uses it, but the flag tells a reviewer to check it."""
+
+    def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    def test_zero_step_relax_flags_unrelaxed_geometry(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=0,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.355}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_unrelaxed_geometry"] is True
+        # this guard only ever WARNS — never touches barrier_trusted itself
+        assert "barrier_trusted" not in meta
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("converged in 0 steps" in b.text for b in logs)
+
+    def test_normal_relax_not_flagged(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=12,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.5}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier_unrelaxed_geometry" not in meta
+
+    def test_no_relax_runs_does_not_flag(self, store: Any) -> None:
+        """No runs at all = unknown, not zero-step — must not false-positive
+        a legacy candidate that never had a relax recorded."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.5}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier_unrelaxed_geometry" not in meta
+
+
+class TestBarrierTwinDisagreementGuard:
+    """Guard 1: two candidates that are the SAME crystal (matching
+    ``geom_hash_c``) whose barriers disagree beyond `_TWIN_BARRIER_TOL_EV`
+    at the same ladder tier both get untrusted — qu164903's corner saga
+    (0.479 eV vs 4.99 eV for translation twins, narrated as chemistry)."""
+
+    def _candidate(self, store: Any, qid: int, name: str, frac: list[float]) -> int:
+        spec = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Fe", "frac": frac}],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": spec}
+        )
+        assert sid is not None
+        return sid
+
+    def _autocatpath_job(self, store: Any, sid: int, barrier: float) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", "result": {"barrier": barrier}},
+            parent_id=sid,
+        ).id
+
+    def test_disagreeing_twins_both_untrusted_with_one_note(self, store: Any) -> None:
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving")
+        sid_a = self._candidate(store, qid, "a", [0.0, 0.0, 0.5])
+        sid_b = self._candidate(store, qid, "b", [0.0, 0.0, 0.62])
+        store.stamp_ref_meta(sid_a, {"geom_hash_c": "twin-hash"})
+        store.stamp_ref_meta(sid_b, {"geom_hash_c": "twin-hash"})
+
+        self._autocatpath_job(store, sid_a, 0.5)
+        compute_mod.harvest_measures(store, qid)  # A lands first — no twin yet
+        self._autocatpath_job(store, sid_b, 4.99)
+        compute_mod.harvest_measures(store, qid)  # B lands — twin disagreement fires
+
+        meta_a = store.fetch_refs_by_ids({sid_a})[sid_a].meta or {}
+        meta_b = store.fetch_refs_by_ids({sid_b})[sid_b].meta or {}
+        assert meta_a["barrier_trusted"] is False
+        assert meta_b["barrier_trusted"] is False
+        handle_a = handle_registry.try_format("structure", sid_a)
+        handle_b = handle_registry.try_format("structure", sid_b)
+        assert meta_a["barrier_twin_disagreement"] == handle_b
+        assert meta_b["barrier_twin_disagreement"] == handle_a
+
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        disagree_logs = [
+            b for b in logs if "symmetry-identical structures disagree" in b.text
+        ]
+        assert len(disagree_logs) == 1
+        assert handle_a in disagree_logs[0].text
+        assert handle_b in disagree_logs[0].text
+        assert "0.5" in disagree_logs[0].text
+        assert "4.99" in disagree_logs[0].text
+
+    def test_missing_geom_hash_c_on_one_side_skips(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid_a = self._candidate(store, qid, "a", [0.0, 0.0, 0.5])
+        sid_b = self._candidate(store, qid, "b", [0.0, 0.0, 0.62])
+        store.stamp_ref_meta(sid_a, {"geom_hash_c": "twin-hash"})
+        # sid_b deliberately left without geom_hash_c — lazy backfill not run.
+
+        self._autocatpath_job(store, sid_a, 0.5)
+        compute_mod.harvest_measures(store, qid)
+        self._autocatpath_job(store, sid_b, 4.99)
+        compute_mod.harvest_measures(store, qid)
+
+        meta_a = store.fetch_refs_by_ids({sid_a})[sid_a].meta or {}
+        meta_b = store.fetch_refs_by_ids({sid_b})[sid_b].meta or {}
+        assert "barrier_twin_disagreement" not in meta_a
+        assert "barrier_twin_disagreement" not in meta_b
+        assert "barrier_trusted" not in meta_a
+        assert "barrier_trusted" not in meta_b
+
+    def test_agreeing_twins_not_flagged(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid_a = self._candidate(store, qid, "a", [0.0, 0.0, 0.5])
+        sid_b = self._candidate(store, qid, "b", [0.0, 0.0, 0.62])
+        store.stamp_ref_meta(sid_a, {"geom_hash_c": "twin-hash"})
+        store.stamp_ref_meta(sid_b, {"geom_hash_c": "twin-hash"})
+
+        self._autocatpath_job(store, sid_a, 0.5)
+        compute_mod.harvest_measures(store, qid)
+        self._autocatpath_job(store, sid_b, 0.52)
+        compute_mod.harvest_measures(store, qid)
+
+        meta_a = store.fetch_refs_by_ids({sid_a})[sid_a].meta or {}
+        meta_b = store.fetch_refs_by_ids({sid_b})[sid_b].meta or {}
+        assert "barrier_twin_disagreement" not in meta_a
+        assert "barrier_twin_disagreement" not in meta_b
+
+    def test_second_harvest_is_idempotent_no_duplicate_note(self, store: Any) -> None:
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving")
+        sid_a = self._candidate(store, qid, "a", [0.0, 0.0, 0.5])
+        sid_b = self._candidate(store, qid, "b", [0.0, 0.0, 0.62])
+        store.stamp_ref_meta(sid_a, {"geom_hash_c": "twin-hash"})
+        store.stamp_ref_meta(sid_b, {"geom_hash_c": "twin-hash"})
+
+        self._autocatpath_job(store, sid_a, 0.5)
+        compute_mod.harvest_measures(store, qid)
+        self._autocatpath_job(store, sid_b, 4.99)
+        compute_mod.harvest_measures(store, qid)  # first disagreement fires here
+
+        # A different, later autocatpath job lands on A again — still
+        # disagrees with B's barrier, but against the SAME twin — must not
+        # re-file the disagreement note a second time.
+        self._autocatpath_job(store, sid_a, 0.55)
+        compute_mod.harvest_measures(store, qid)
+
+        handle_b = handle_registry.try_format("structure", sid_b)
+        meta_a = store.fetch_refs_by_ids({sid_a})[sid_a].meta or {}
+        assert meta_a["barrier_twin_disagreement"] == handle_b
+
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        disagree_logs = [
+            b for b in logs if "symmetry-identical structures disagree" in b.text
+        ]
+        assert len(disagree_logs) == 1
+
+    def test_both_twins_fresh_in_one_pass_single_note(self, store: Any) -> None:
+        """Both twins land fresh barriers in the SAME harvest call (one of
+        them already carrying a prior-pass barrier): the twin processed first
+        stamps both sides, and the second twin's guard must see the FRESH
+        reverse stamp on the other side — its own ``candidate_meta`` snapshot
+        predates that write. One note, not two."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving")
+        sid_a = self._candidate(store, qid, "a", [0.0, 0.0, 0.5])
+        sid_b = self._candidate(store, qid, "b", [0.0, 0.0, 0.62])
+        store.stamp_ref_meta(sid_a, {"geom_hash_c": "twin-hash"})
+        store.stamp_ref_meta(sid_b, {"geom_hash_c": "twin-hash"})
+
+        # B's first barrier lands alone — A has none yet, no twin to check.
+        self._autocatpath_job(store, sid_b, 4.99)
+        compute_mod.harvest_measures(store, qid)
+        # Now BOTH get a fresh job, harvested in ONE pass: A's iteration
+        # fires the disagreement (vs B's on-disk 4.99) and stamps both; B's
+        # iteration still holds a pre-stamp snapshot of its own meta and a
+        # fresh disagreeing barrier — the reverse stamp on A must stop a
+        # second note.
+        self._autocatpath_job(store, sid_a, 0.5)
+        self._autocatpath_job(store, sid_b, 5.1)
+        compute_mod.harvest_measures(store, qid)
+
+        handle_a = handle_registry.try_format("structure", sid_a)
+        handle_b = handle_registry.try_format("structure", sid_b)
+        meta_a = store.fetch_refs_by_ids({sid_a})[sid_a].meta or {}
+        meta_b = store.fetch_refs_by_ids({sid_b})[sid_b].meta or {}
+        assert meta_a["barrier_trusted"] is False
+        assert meta_b["barrier_trusted"] is False
+        assert meta_a["barrier_twin_disagreement"] == handle_b
+        assert meta_b["barrier_twin_disagreement"] == handle_a
+
+        logs = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        disagree_logs = [
+            b for b in logs if "symmetry-identical structures disagree" in b.text
+        ]
+        assert len(disagree_logs) == 1
+
+
 class TestTierLadderHarvest:
     """The tier-ladder half of harvest: a completed screening run stamps
     ``tier`` with no barrier at all (catpath omits it — nothing here

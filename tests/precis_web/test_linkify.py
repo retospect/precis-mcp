@@ -667,6 +667,16 @@ def test_compact_patent_chunk_handle_is_circle_p() -> None:
     assert ">pk7</a>" not in out
 
 
+def test_compact_structure_handle_is_atom_sigil() -> None:
+    # qu164903-dossier-audit-residuals slice A item 3: a cited simulation
+    # structure ([stNNN], a record handle — structure has no chunk code)
+    # collapses to a compact ⚛ sigil in the draft reader, not the verbose
+    # "st245406" mid-prose.
+    out = str(linkify_refs("see [st245406] for the relaxed geometry", compact=True))
+    assert ">⚛</a>" in out and 'href="/r/structure/245406"' in out
+    assert ">st245406</a>" not in out
+
+
 def test_compact_universal_record_handle_stays_verbose() -> None:
     # A *record* handle (``me5``) isn't a paragraph pointer — it keeps its
     # label even in compact mode (only chunk handles collapse to ¶).

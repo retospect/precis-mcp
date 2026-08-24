@@ -427,17 +427,28 @@ def _document_shape_stats(store: Store, ref_id: int) -> dict[str, Any]:
 
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store
+#: Non-paper kinds that still count as a cited "source" for this rail —
+#: computational evidence (a simulation structure, a calc/math worksheet,
+#: a computed reaction pathway), mirroring
+#: :data:`precis_web.routes.drafts._COMPUTED_EVIDENCE_KINDS` (docs/backlog/
+#: qu164903-dossier-audit-residuals.md, slice A item 4). None of these
+#: kinds expose a chunk form (no ``CHUNK_CODES`` entry in
+#: ``handle_registry``), so ``is_chunk`` is always False for them already —
+#: unlike ``paper``, there's no chunk-vs-record distinction to filter on.
+_COMPUTED_EVIDENCE_KINDS = frozenset({"structure", "calc", "math", "pathway"})
+
+
 def _cited_sources(store: Any, text: str) -> list[RefChip]:
-    """The paper (``pc``/``pa``) sources the focus block cites, as
+    """The paper (``pc``/``pa``) AND computational-evidence
+    (:data:`_COMPUTED_EVIDENCE_KINDS`) sources the focus block cites, as
     hover-preview chips (gripe 56635) — reuses the classic ``/drafts``
     reader's block-scoped cite parser (:func:`precis_web.routes.drafts.
     _ref_chips`) rather than re-implementing cite parsing, then narrows its
-    output to just the paper *citation* chips (that parser also yields
-    intra-draft ``¶`` xrefs / other-kind mentions, which this rail doesn't
-    want). Each chip is a :func:`precis_web.linkify.popover_chip` — its
-    anchor already carries ``target=\"_blank\" rel=\"noopener\"`` (no
-    ``data-dc``), so it opens the paper reader in a new tab and the
-    no-reload nav interceptor leaves it alone.
+    output to just the citation chips this rail wants (that parser also
+    yields intra-draft ``¶`` xrefs / other-kind mentions). Each chip is a
+    :func:`precis_web.linkify.popover_chip` — its anchor already carries
+    ``target=\"_blank\" rel=\"noopener\"`` (no ``data-dc``), so it opens the
+    source in a new tab and the no-reload nav interceptor leaves it alone.
 
     Filters on each chip's structured ``(kind, is_chunk)``
     (:class:`precis_web.routes.drafts.RefChip`) rather than string-sniffing
@@ -451,7 +462,11 @@ def _cited_sources(store: Any, text: str) -> list[RefChip]:
         return kind == "paper" and _paper_pdf_missing(store, ident)
 
     chips = _ref_chips(text or "", is_missing=is_missing)
-    return [c for c in chips if c.kind == "paper" and not c.is_chunk]
+    return [
+        c
+        for c in chips
+        if not c.is_chunk and (c.kind == "paper" or c.kind in _COMPUTED_EVIDENCE_KINDS)
+    ]
 
 
 def _flag_chips(flags: list[dict[str, Any]]) -> list[Any]:

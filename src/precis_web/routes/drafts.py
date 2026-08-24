@@ -436,9 +436,23 @@ def _cite_candidates(text: str) -> tuple[set[str], set[str]]:
     return handles, slugs
 
 
+#: Kinds whose citation is computational evidence rather than a corpus
+#: paper/patent — a cited simulation structure (``[stNNN]``), calc/math
+#: worksheet, or computed reaction pathway. Real grounding (someone ran
+#: something and the paragraph points at it), just not a literature
+#: source, so it folds into the "sourced" state below rather than getting
+#: its own colour: the reader template
+#: (``smartdraft/_block.html.j2``'s ``sd-prov-*``/``sd-dot-*`` CSS) only
+#: distinguishes three states, and a paragraph citing only these is
+#: emphatically not "cites nothing" (docs/backlog/
+#: qu164903-dossier-audit-residuals.md, slice A).
+_COMPUTED_EVIDENCE_KINDS = frozenset({"structure", "calc", "math", "pathway"})
+
+
 def provenance_state(text: str) -> str:
     """A paragraph's grounding provenance, for the smartdraft reader's
-    per-paragraph colour marker: ``"sourced"`` (cites a corpus paper/patent),
+    per-paragraph colour marker: ``"sourced"`` (cites a corpus paper/patent,
+    or computational evidence — :data:`_COMPUTED_EVIDENCE_KINDS`),
     ``"pending"`` (cites a ``[fi<id>]`` finding — a source still being
     chased), or ``"unsourced"`` (no citation at all). Keys off each chip's
     ``kind`` from :func:`_ref_chips` rather than re-parsing the citation
@@ -447,7 +461,7 @@ def provenance_state(text: str) -> str:
     as ``"sourced"`` — a chunk citation is real grounding evidence."""
     chips = _ref_chips(text)
     kinds = {c.kind for c in chips}
-    if kinds & {"paper", "patent"}:
+    if kinds & ({"paper", "patent"} | _COMPUTED_EVIDENCE_KINDS):
         return "sourced"
     if "finding" in kinds:
         return "pending"

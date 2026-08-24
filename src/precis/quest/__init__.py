@@ -31,7 +31,10 @@ Package-level invariants (each enforced where named):
   autocatpath job retries once then gripes — it is never ``ruled-out:``
   (``compute``; dossier-owned-by-process).
 - **Untrusted measures don't rank — but they stay visible.** A pathway with
-  NEB-not-converged / adsorbate-detached warnings, or a kinetics solve whose
+  NEB-not-converged / adsorbate-detached warnings, a nonphysical barrier
+  (> ``compute._BARRIER_ABSURD_EV``), a symmetry-twin pair whose barriers
+  disagree (same ``geom_hash_c``+tier, Δ > ``compute._TWIN_BARRIER_TOL_EV``
+  — both sides untrusted), or a kinetics solve whose
   guard bracket disagrees / TOF is non-finite (``kinetics_trusted``), is
   excluded from the
   confirmed frontier and can never graduate (``compute._pathway_quality`` →

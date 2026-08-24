@@ -1945,6 +1945,22 @@ def test_provenance_state_sourced_pending_unsourced() -> None:
     assert provenance_state(f"[{patent_chunk}] foo") == "sourced"
 
 
+def test_provenance_state_computational_evidence() -> None:
+    """qu164903-dossier-audit-residuals slice A item 1: a paragraph citing a
+    simulation structure ([stNNN]) — or a calc/math/pathway record — is real
+    grounding, not "cites nothing"; it must classify as "sourced", not
+    the red "unsourced" bar. A handle-less numeric paragraph (no citation at
+    all) must stay "unsourced"."""
+    from precis.utils import handle_registry
+    from precis_web.routes.drafts import provenance_state
+
+    structure = handle_registry.format_handle("structure", 245406, chunk=False)
+    assert provenance_state(f"[{structure}] the relaxed geometry") == "sourced"
+    # A handle-less numeric paragraph (e.g. a bare barrier reading with no
+    # citation at all) stays unsourced — the acceptance-criteria contrast.
+    assert provenance_state("0.479 eV, measured twice.") == "unsourced"
+
+
 def test_cited_sources_filters_by_kind_not_href_shape(monkeypatch) -> None:
     """gr171761: ``_cited_sources`` selects chips by their structured
     ``(kind, is_chunk)`` tag, not by sniffing ``'href="/r/paper/'`` out of
@@ -1974,6 +1990,34 @@ def test_cited_sources_filters_by_kind_not_href_shape(monkeypatch) -> None:
 
     result = smartdraft._cited_sources(object(), "irrelevant text")
     assert result == [weird_paper_chip]
+
+
+def test_cited_sources_includes_computational_evidence(monkeypatch) -> None:
+    """qu164903-dossier-audit-residuals slice A item 4: the "Cited sources"
+    rail widens past ``kind == "paper"`` to also surface a cited simulation
+    structure / calc / math / pathway record — real evidence the writer
+    grounded the paragraph in, just not a literature source."""
+    from markupsafe import Markup
+
+    import precis_web.routes.drafts as drafts_mod
+    from precis_web.routes import smartdraft
+    from precis_web.routes.drafts import RefChip
+
+    paper_chip = RefChip("paper", False, Markup('<a href="/r/paper/1">p</a>'))
+    structure_chip = RefChip(
+        "structure", False, Markup('<a href="/r/structure/245406">st</a>')
+    )
+    calc_chip = RefChip("calc", False, Markup('<a href="/r/calc/9">c</a>'))
+    memory_chip = RefChip("memory", False, Markup('<a href="/r/memory/5">m</a>'))
+    fake_chips = [paper_chip, structure_chip, calc_chip, memory_chip]
+
+    def _fake_ref_chips(text: str, is_missing=None) -> list[RefChip]:
+        return fake_chips
+
+    monkeypatch.setattr(drafts_mod, "_ref_chips", _fake_ref_chips)
+
+    result = smartdraft._cited_sources(object(), "irrelevant text")
+    assert result == [paper_chip, structure_chip, calc_chip]
 
 
 class _FakeRef:
