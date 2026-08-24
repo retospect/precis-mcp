@@ -30,12 +30,16 @@ The first runs **before** anything is written, because a proposing agent
 cannot delete what it minted — a hub refused after the fact would sit in
 the human queue forever:
 
-* **The sentence lints clean.** `gates.py::check_claim_sentence` is a pure
-  function, so unlike the rest of `run_mint_gates` (which needs an evidence
-  bundle, and therefore a hub) it can run pre-mint. It is also the gate that
-  actually bites: `no-epistemic-mode` alone blocks 1,419 of 1,524 live hubs.
-  The remaining mint gates are satisfied here by construction — no passages,
-  no fields — so this is the whole of what can fail.
+* **The sentence lints clean, under HYPOTHESIS rules.** `gates.py::
+  check_claim_sentence` is a pure function, so unlike the rest of
+  `run_mint_gates` (which needs an evidence bundle, and therefore a hub) it
+  can run pre-mint. The call passes `artifact_type=ARTIFACT_HYPOTHESIS`, so
+  the epistemic pair does not apply (`gates.py::
+  _ARTIFACT_LINT_EXEMPTIONS`) — a conjecture has no measurement to name,
+  and `testable_by=` carries the discriminating experiment instead. Passing
+  nothing would silently re-impose the strict `claim` set, which is the
+  default. The remaining mint gates are satisfied here by construction — no
+  passages, no fields — so this is the whole of what can fail.
 
 * **≥2 motivators across ≥2 distinct source papers.** A conjecture that
   leaps from a single source is a restatement of that source, not a
@@ -229,17 +233,25 @@ def put_hypothesis(
     # `hypothesis-proposed` forever. The remaining mint gates are satisfied
     # by construction here (no passages, no fields), so this is the whole
     # of the check that can fail.
-    lint = check_claim_sentence(sentence)
+    #
+    # `artifact_type` must be passed: the blocking set is scoped by it, and
+    # the default is the strict `claim` set. Without it this door demanded
+    # the epistemic pair from a conjecture — the category error td244962
+    # names, and the reason the old `next=` hint here told proposers to
+    # name "the technique that would test it" inside the sentence. That
+    # experiment belongs in `testable_by=`, which is separately mandatory.
+    lint = check_claim_sentence(sentence, artifact_type=ARTIFACT_HYPOTHESIS)
     if lint:
         raise BadInput(
             "the claim sentence fails the mint gates:\n"
             + "\n".join(f"  - [{v.gate}] {v.message}" for v in lint),
             next=(
-                "reword and re-propose — nothing was written. The sentence "
-                "must carry an evidence verb (predicts/shows/measures/"
-                "observes/demonstrates/finds) AND the technique that would "
-                "test it (DFT, NEGF, MD, TEM, STM, c-AFM, Raman, XRD, XPS, "
-                "NMR, nanoindentation, …)"
+                "reword and re-propose — nothing was written. A hypothesis "
+                "is exempt from the epistemic pair (no measurement exists "
+                "yet — name the discriminating experiment in testable_by= "
+                "instead), but the admissibility, grammar and notation "
+                "rules still apply: one falsifiable assertion, no author "
+                "names, no dangling reference, terminal period, UTF-8 canon"
             ),
         )
 

@@ -79,13 +79,32 @@ def test_clean_hypothesis_payload_passes(store: Store) -> None:
 
 
 def test_sentence_without_an_epistemic_mode_is_blocked(store: Store) -> None:
-    """The bar that makes a dream's hypothesis name its own experiment."""
+    """The publishable-standard bar, reached through the view. Asserted with
+    a CLAIM payload: the epistemic pair asks how a finding was established,
+    which only a claim can answer — see the hypothesis case below."""
+    hub = _bare_hub(store, _NO_MODE)
+    resp = _handler(store).get(
+        id=hub,
+        view="mint-preflight",
+        # `hanging` so the ungrounded-claim arm stays quiet and the sentence
+        # gate is the only thing this asserts on.
+        payload={"passages": [], "fields": {}, "hanging": True},
+    )
+    assert "BLOCKED" in resp.body
+    assert "no-epistemic-mode" in resp.body
+
+
+def test_hypothesis_is_not_asked_to_name_an_epistemic_mode(store: Store) -> None:
+    """td244962: the pair is a category error for a conjecture — nothing has
+    established it yet, and `testable_by` (separately mandatory above) is
+    where its discriminating experiment lives. Same sentence, same view,
+    different artifact type, opposite verdict."""
     hub = _bare_hub(store, _NO_MODE)
     resp = _handler(store).get(
         id=hub, view="mint-preflight", payload=_hypothesis_payload()
     )
-    assert "BLOCKED" in resp.body
-    assert "no-epistemic-mode" in resp.body
+    assert "PASS" in resp.body
+    assert "no-epistemic-mode" not in resp.body
 
 
 def test_hypothesis_carrying_a_passage_is_blocked(store: Store) -> None:

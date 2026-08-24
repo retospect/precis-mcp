@@ -53,7 +53,7 @@ def _default_payload(store: Store, ref: Ref) -> dict[str, Any]:
 def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Response:
     """Run `run_mint_gates` against ``payload`` and render the violations."""
     from precis.nanopub import evidence as ev
-    from precis.nanopub.gates import run_mint_gates
+    from precis.nanopub.gates import resolve_artifact_type, run_mint_gates
 
     if payload is not None and not isinstance(payload, dict):
         raise BadInput(
@@ -69,7 +69,9 @@ def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Res
     violations = run_mint_gates(store, bundle, resolved)
 
     handle = handle_registry.format_handle("finding", ref.id)
-    artifact = "hypothesis" if resolved.get("hypothesis") else bundle.artifact_type
+    # The gates' own resolver: the header must name the type the verdict
+    # above was produced under, since the blocking set is scoped by it.
+    artifact = resolve_artifact_type(bundle, resolved)
     header = f"mint-preflight {handle} ({artifact})"
     source = (
         "supplied payload"

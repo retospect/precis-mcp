@@ -87,10 +87,15 @@ Rules the door enforces:
   edge. Those edges are motivation, never support: `hub_refine` is
   deliberately blind to them, because widening a guess by searching for
   evidence that agrees with it is a confirmation engine.
-- The sentence faces the same blocking lint as any claim — an evidence
-  verb **and** an epistemic mode, so it names the technique that would
-  test it. (The reference `.trig` above predates that gate and its own
-  sentence would fail it; copy the shape, not the sentence.)
+- The sentence faces the blocking lint, **minus the epistemic pair**.
+  `no-epistemic-mode` and `no-evidence-verb` ask how a finding was
+  established, and a conjecture has no answer — so naming a technique in
+  the sentence would name one that never ran. Put the discriminating
+  experiment in `testable_by` instead, which the door requires anyway.
+  Everything else still applies: one falsifiable assertion, no author
+  names, no dangling reference, terminal period, UTF-8 canon. The
+  reference `.trig` above is the witness — copy its sentence *and* its
+  shape.
 
 The door **prepares**; it never approves. It lints the sentence first
 and refuses without writing anything if it fails, so a rejected

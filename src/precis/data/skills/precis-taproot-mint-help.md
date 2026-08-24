@@ -73,6 +73,14 @@ Authoring stays frictionless; nothing ungoverned reaches *publishable*,
 but a hub can sit `candidate` indefinitely with an advisory flag
 unresolved.
 
+**The blocking set is scoped by artifact type** (`gates.py::
+_ARTIFACT_LINT_EXEMPTIONS`) — a scope, not a loosening. A `hypothesis`
+does not face `no-epistemic-mode`/`no-evidence-verb`: that pair asks how
+a finding was established and a conjecture was established by nothing
+yet, so its mode lives in the type plus the mandatory `testable_by`.
+`claim` and `compound` face the full set, and an unlisted type inherits
+it — the default is strict, so a new artifact type fails closed.
+
 **Expect refusal at approve, not malfunction.** Measured 2026-08-23 over
 the strict cohort (`TAPROOT:claim` + `STATUS:canonical`, n=1,267): 83
 hubs (6.6%) lint clean. Common blockers: `no-epistemic-mode` (1,052),

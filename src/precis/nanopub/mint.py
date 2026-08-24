@@ -197,9 +197,9 @@ def approve(
     from precis.taproot.canon import claim_sha
 
     if row is None:
-        artifact_type = (
-            "hypothesis" if payload.get("hypothesis") else bundle.artifact_type
-        )
+        # Same resolver the gates just ran with — the stored type must be
+        # the type that was gated.
+        artifact_type = gates.resolve_artifact_type(bundle, payload)
         row = store.nanopub_create_publish_row(hub_ref_id, artifact_type=artifact_type)
     ok = store.nanopub_approve(
         row.id,

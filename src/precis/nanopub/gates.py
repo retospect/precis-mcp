@@ -97,6 +97,57 @@ _BLOCKING_LINT_CODES: frozenset[str] = frozenset(
     }
 )
 
+#: Blocking codes that do not apply to a given artifact type — a *scope*
+#: table, not a loosening of ``_BLOCKING_LINT_CODES`` (a ``claim`` still
+#: faces the full set, and any type absent here does too: the default is
+#: strict, so a new artifact type fails closed).
+#:
+#: ``hypothesis`` is exempt from the epistemic pair because the pair asks
+#: "how was this established?" and a hypothesis, by definition, was not.
+#: No measurement exists yet: the mode lives in the artifact type plus
+#: ``precis:testableBy``, which ``run_mint_gates`` already requires by
+#: schema-lint — so the requirement moves to a field that can actually be
+#: checked rather than being dropped. Enforcing it on the sentence is
+#: worse than useless: the cheapest way to satisfy "name a technique that
+#: showed this" for a conjecture is to write one that did not, which
+#: manufactures exactly the false attribution the gate exists to prevent.
+#: Witness: ``docs/reference/nanopub-example/qi-hypothesis-scaled-
+#: switching.trig``, this repo's own reference hypothesis, fails the gate
+#: today on ``no-epistemic-mode`` alone.
+#:
+#: ``compound`` is deliberately NOT listed. It has the same shape of
+#: argument (a compound cites no paper — its trust derives worst-of-atoms,
+#: and the ``compound-shape`` gate already requires the ``conjunct-of``
+#: atoms that carry the modes), so exempting it from ``no-epistemic-mode``
+#: is a one-line addition here. It is left strict pending a decision,
+#: because unlike a hypothesis a compound *does* assert something
+#: established, and the failure mode of exempting it — a conjunction that
+#: names no mode at all — has not been measured against the corpus.
+_ARTIFACT_LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
+    "hypothesis": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
+}
+
+
+def resolve_artifact_type(bundle: ev.HubBundle, payload: dict[str, Any]) -> str:
+    """Which of the three artifact types this mint is —
+    ``'claim' | 'compound' | 'hypothesis'``.
+
+    :attr:`~precis.nanopub.evidence.HubBundle.artifact_type` only ever says
+    ``claim`` or ``compound``: those are derived from the hub's edges
+    (``conjunct-of`` or not). ``hypothesis`` is a mint-time shape with no
+    edge to derive it from, so it is known only from the payload.
+
+    One function because three call sites need the same answer and now
+    *disagreeing* would be a silent defect rather than a cosmetic one:
+    :func:`run_mint_gates` scopes the blocking lint by this value, while
+    :func:`precis.nanopub.mint.approve` stores it on the publish row and the
+    ``mint-preflight`` view prints it. A preflight that says ``hypothesis``
+    over gates run as ``claim`` is exactly the sort of lie a shared resolver
+    makes impossible."""
+    if payload.get("hypothesis"):
+        return "hypothesis"
+    return bundle.artifact_type
+
 
 def run_mint_gates(
     store: Store,
@@ -133,10 +184,15 @@ def run_mint_gates(
     # 1 — contradicts-edge gate (first; SQL-cheap; worst-of applies).
     violations += check_contradicts(store, bundle)
 
+    # Resolved before the sentence lint, not just before the schema arm:
+    # the blocking set is scoped by artifact type
+    # (`_ARTIFACT_LINT_EXEMPTIONS`).
+    artifact_type = resolve_artifact_type(bundle, payload)
+
     # claim-sentence lint, blocking half (2026-08-19 corpus remediation,
     # Phase 1). Advisory codes are deliberately not surfaced here — see
     # check_claim_sentence's docstring.
-    violations += check_claim_sentence(bundle.sentence)
+    violations += check_claim_sentence(bundle.sentence, artifact_type=artifact_type)
 
     # 2 + 16 — eligibility / rejection memo.
     if (hub_meta or {}).get("taproot_rejected"):
@@ -149,9 +205,6 @@ def run_mint_gates(
             )
         )
 
-    artifact_type = bundle.artifact_type
-    if payload.get("hypothesis"):
-        artifact_type = "hypothesis"
     passages = list(payload.get("passages") or [])
     fields = dict(payload.get("fields") or {})
     hanging = bool(payload.get("hanging"))
@@ -394,7 +447,9 @@ def check_primary_source(
     return out
 
 
-def check_claim_sentence(sentence: str) -> list[GateViolation]:
+def check_claim_sentence(
+    sentence: str, *, artifact_type: str = "claim"
+) -> list[GateViolation]:
     """Claim-sentence lint's blocking half (``docs/backlog/nanopub-corpus-
     remediation.md`` Phase 1) — the notation and admissibility/grammar
     lints run everywhere as advice (``lint_notation``,
@@ -421,17 +476,26 @@ def check_claim_sentence(sentence: str) -> list[GateViolation]:
     only via the advisory lint surfaces (authoring/reword, ``precis
     taproot lint``).
 
+    ``artifact_type`` scopes the blocking set per
+    ``_ARTIFACT_LINT_EXEMPTIONS`` — a ``hypothesis`` does not face the
+    epistemic pair, because it was established by nothing yet and its mode
+    lives in ``precis:testableBy`` instead. The default is ``'claim'``, the
+    strict set, so a caller that forgets to pass a type fails closed.
+
     Never raises: an empty/missing sentence returns no violations rather
     than failing the gate (a hub with a blank title has other problems a
     schema-lint-style gate should catch, not this one)."""
     out: list[GateViolation] = []
     if not sentence:
         return out
+    blocking = _BLOCKING_LINT_CODES - _ARTIFACT_LINT_EXEMPTIONS.get(
+        artifact_type, frozenset()
+    )
     warnings = lint_notation(sentence) + lint_claim_sentence(sentence)
     seen: set[str] = set()
     for w in warnings:
         code = w.split(":", 1)[0].strip()
-        if code not in _BLOCKING_LINT_CODES or code in seen:
+        if code not in blocking or code in seen:
             continue
         seen.add(code)
         out.append(

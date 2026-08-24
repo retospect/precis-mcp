@@ -302,8 +302,11 @@ def test_a_gate_failing_sentence_is_refused_before_anything_is_minted(
 
     with pytest.raises(BadInput, match="fails the mint gates"):
         _handler(store).put(
-            # No epistemic-mode token, so `no-epistemic-mode` blocks.
-            title="The elastic modulus rises by 12% under uniaxial strain.",
+            # `author-name` — a code a hypothesis still faces. The specimen
+            # used to be an epistemic-pair failure, which td244962 retired:
+            # the pair asks how a finding was established and a conjecture
+            # has no answer, so it no longer applies to this type.
+            title="DFT shows Smith 2020 measured a gap of 1.5 eV.",
             hypothesis=True,
             motivation="leap",
             testable_by="experiment",
@@ -311,6 +314,26 @@ def test_a_gate_failing_sentence_is_refused_before_anything_is_minted(
         )
 
     assert store.count_refs(kind="finding") == before
+
+
+def test_a_hypothesis_need_not_name_an_epistemic_mode(store: Store) -> None:
+    """td244962: the epistemic pair is a category error for a conjecture —
+    no measurement exists yet, and requiring the sentence to name one makes
+    the cheapest way to pass the door a technique that never ran. The
+    discriminating experiment goes in `testable_by`, which this door
+    already requires."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+
+    resp = _handler(store).put(
+        title="The elastic modulus rises by 12% under uniaxial strain.",
+        hypothesis=True,
+        motivation="leap",
+        testable_by="nanoindentation under matched tip and load",
+        motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+    )
+
+    assert _hub_id(resp.body)
 
 
 def test_refuses_to_converge_onto_a_pre_existing_ordinary_hub(store: Store) -> None:
