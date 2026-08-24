@@ -131,6 +131,19 @@
     name: autocatpath
     tasks_from: wheelhouse
 
+# Same reasoning one step earlier: the engine also needs OS-level build
+# prerequisites at RUN time (Triton JITs a .c file on first kernel use). Those
+# live in playbook 44, which is a standalone entry point in neither site.yml nor
+# this flow — so a GPU node that drifts, or one newly added to the capability,
+# would install and verify clean and then fail on its first real seed. Pulling
+# the one task file in here makes a plain redeploy self-healing. Cheap and
+# quiet: apt no-ops when present and notifies no restart handler.
+- name: Ensure the autocatpath OS prerequisites (Triton JIT build headers)
+  when: inventory_hostname in (precis_capabilities.autocatpath | default([]))
+  ansible.builtin.include_role:
+    name: autocatpath
+    tasks_from: prereqs
+
 # ── §L control cutover: seed service_config from TODAY's live plist flag
 # state, BEFORE the plist/unit below is re-rendered without the ENABLE
 # flags — so the very first cutover deploy is behaviour-preserving. Uses

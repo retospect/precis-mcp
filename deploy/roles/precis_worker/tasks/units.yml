@@ -19,6 +19,11 @@
   ansible.builtin.template:
     src: precis-worker.plist.j2
     dest: /Library/LaunchDaemons/com.precis.worker.plist
+    # Mode kept in lockstep with roles/service_unit — that role, not this
+    # one, renders the LIVE plist (20b uses tasks_from: provision, which
+    # skips this file). This path only runs via the standalone
+    # playbooks/20-precis-worker.yml; matching modes means it cannot
+    # reintroduce a world-readable credential if anyone runs it.
     mode: "0640"
     owner: root
     group: deploy

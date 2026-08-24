@@ -76,12 +76,24 @@
   become: true
   changed_when: false
 
+# 0640 root:<run_as>, NOT 0644. A launchd plist inlines its whole environment
+# in <EnvironmentVariables>, and several of these carry live credentials
+# (PRECIS_ANKI_PASSWORD on the worker; a DSN with a password on older hosts) —
+# at 0644 every local account could read them. Owner stays root (launchd
+# requires it); the group is the service account so precis-web's env inspector,
+# which runs as that user and reads plists by label
+# (precis_web/routes/env.py::_PLIST_DIR), keeps working. This role is the
+# ONLY live renderer of these files — playbook 20b invokes precis_worker with
+# `tasks_from: provision`, deliberately skipping its units.yml — so fixing the
+# mode anywhere else is silently reverted by the next deploy (2026-08-23).
 - name: "service_unit[{{ service_unit_name }}]: render LaunchDaemon (macOS)"
   when: os_family == "darwin"
   ansible.builtin.template:
     src: launchd.plist.j2
     dest: "/Library/LaunchDaemons/com.precis.{{ service_unit_name }}.plist"
-    mode: "0644"
+    owner: root
+    group: "{{ service_unit_run_as }}"
+    mode: "0640"
   become: true
   register: _service_unit_plist
 

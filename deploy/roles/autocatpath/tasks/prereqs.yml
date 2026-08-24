@@ -1,0 +1,65 @@
+---
+# OS-level prerequisites for running the autocatpath engine — NOT for installing
+# it. Triton (shipped inside torch) JIT-compiles `cuda_utils.c` with
+# /usr/bin/gcc the FIRST time a kernel runs, and that compile needs the CPython
+# headers: it passes -I/usr/include/python3.X and #includes <Python.h>.
+#
+# A node with the venv but without the matching `python3.X-dev` therefore
+# installs, imports and verifies clean, then fails at RUN time — every DFT term
+# in the seed dies with `fatal error: Python.h: No such file or directory`, the
+# seed job fails, and the pathway lands `status: failed / "seed jobs failed"`
+# with no hint that a MISSING OS PACKAGE, not the engine, was the cause.
+# Observed 2026-08-23: 34 pathways lost in one 9-minute window when a GPU node
+# joined the pool without the headers (the other two had had them since June).
+#
+# Shared by TWO callers, same as wheelhouse.yml:
+#   - roles/autocatpath/tasks/main.yml   (playbook 44, explicit provisioning)
+#   - roles/precis_worker/tasks/provision.yml  (redeploy-precis.yml, EVERY deploy)
+# The second is what makes this self-healing: playbook 44 is a standalone entry
+# point in neither site.yml nor redeploy-precis.yml, so a host that drifts (or a
+# newly-added GPU node) would otherwise wait for someone to remember to run it.
+# Safe on that path because it is cheap and quiet: `apt` with a warm cache is a
+# no-op when the package is present, and NOTHING here notifies a restart handler
+# — a deploy must never bounce a worker mid-solve (a detached autocatpath seed
+# runs for hours).
+#
+# Versioned off the venv's own interpreter rather than the `python3-dev`
+# meta-package: that meta-package tracks the DISTRO default, so on any node
+# where the venv is built from a non-default interpreter it would install
+# headers for the wrong X.Y and leave the same runtime failure in place.
+
+- name: Detect the worker venv's Python X.Y (for the matching dev headers)
+  ansible.builtin.command: >-
+    {{ autocatpath_worker_venv }}/bin/python -c
+    "import sys; print('%d.%d' % sys.version_info[:2])"
+  become: true
+  register: autocatpath_py_xy
+  changed_when: false
+
+- name: Install the CPython headers + compiler Triton's runtime JIT needs
+  ansible.builtin.apt:
+    name:
+      - "python{{ autocatpath_py_xy.stdout | trim }}-dev"
+      - gcc
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+# Prove the headers are USABLE, not merely that a package is installed. The
+# existing "verify the engine imports" check passed on a node that then failed
+# every seed, because the break is a runtime JIT *compile*, not an import —
+# nothing in the install path had ever invoked gcc. This reproduces exactly
+# what Triton does on first kernel use (include <Python.h>, -I the interpreter's
+# own include dir) and costs a few milliseconds, so a broken node reddens the
+# play it broke in instead of 34 pathways later.
+- name: Verify Triton's JIT can compile against the CPython headers
+  ansible.builtin.shell: |
+    set -e
+    inc="$({{ autocatpath_worker_venv }}/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    printf '#include <Python.h>\nint main(void){return 0;}\n' > "$tmp/probe.c"
+    gcc -I"$inc" -c "$tmp/probe.c" -o "$tmp/probe.o"
+  become: true
+  changed_when: false

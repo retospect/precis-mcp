@@ -24,38 +24,11 @@
       in the web venv + PRECIS_AUTOCATPATH_ENABLED) — wire that via roles/precis_web,
       not here. See roles/autocatpath/README.md.
 
-# Triton (shipped inside torch) JIT-compiles `cuda_utils.c` with /usr/bin/gcc
-# the FIRST time a kernel runs, and that compile needs the CPython headers:
-# it passes -I/usr/include/python3.X and #includes <Python.h>. A node with the
-# venv but without the matching `python3.X-dev` therefore installs, imports and
-# verifies clean here, then fails at RUN time — every DFT term in the seed dies
-# with `fatal error: Python.h: No such file or directory`, the seed job fails,
-# and the pathway lands `status: failed / "seed jobs failed"` with no hint that
-# a MISSING OS PACKAGE, not the engine, was the cause. Observed 2026-08-23:
-# 34 pathways lost in one 9-minute window when a GPU node joined the pool
-# without the headers (the other two nodes had had them since June).
-#
-# Versioned off the venv's own interpreter rather than the `python3-dev`
-# meta-package: the meta-package tracks the DISTRO default, so on any node
-# where the venv is built from a non-default interpreter it would install
-# headers for the wrong X.Y and leave the same failure in place.
-- name: Detect the worker venv's Python X.Y (for the matching dev headers)
-  ansible.builtin.command: >-
-    {{ autocatpath_worker_venv }}/bin/python -c
-    "import sys; print('%d.%d' % sys.version_info[:2])"
-  become: true
-  register: autocatpath_py_xy
-  changed_when: false
-
-- name: Install the CPython headers + compiler Triton's runtime JIT needs
-  ansible.builtin.apt:
-    name:
-      - "python{{ autocatpath_py_xy.stdout | trim }}-dev"
-      - gcc
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
-  become: true
+# OS prerequisites (CPython headers for Triton's runtime JIT). Shared with
+# roles/precis_worker/tasks/provision.yml so a plain redeploy self-heals a
+# drifted node — see prereqs.yml for the full story.
+- name: Install the autocatpath OS prerequisites
+  ansible.builtin.include_tasks: prereqs.yml
 
 - name: Install precis-mcp[{{ autocatpath_extras }}] (pulls the autocatpath engine) into the precis worker venv
   ansible.builtin.shell: |
