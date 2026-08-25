@@ -3,11 +3,12 @@ read-only salience carve-out.
 
 The function itself is exercised on every search by the ordinary handler
 suites; these tests pin the part 0137 adds: that a role holding no UPDATE
-grant on ``chunks`` (an ``agent_ro`` / ``precis-ro`` / ``write:none``
-connection) can still call it, because SECURITY DEFINER runs the UPDATE
-with the *owner's* privileges. Without that, every read verb's access
-accounting hard-fails under a read-only role and semantic search errors
-out instead of serving hits. Mirrors ``test_gripe_carveout.py`` (0079).
+grant on ``chunks`` (a ``write:none`` envelope, which ``envelope.py::
+db_role`` resolves to ``agent_ro``) can still call it, because SECURITY
+DEFINER runs the UPDATE with the *owner's* privileges. Without that,
+every read verb's access accounting hard-fails under a read-only role
+and search errors out instead of serving hits. Mirrors
+``test_gripe_carveout.py`` (0079).
 """
 
 from __future__ import annotations
