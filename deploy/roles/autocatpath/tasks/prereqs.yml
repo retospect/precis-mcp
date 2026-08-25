@@ -18,15 +18,64 @@
 # The second is what makes this self-healing: playbook 44 is a standalone entry
 # point in neither site.yml nor redeploy-precis.yml, so a host that drifts (or a
 # newly-added GPU node) would otherwise wait for someone to remember to run it.
-# Safe on that path because it is cheap and quiet: `apt` with a warm cache is a
-# no-op when the package is present, and NOTHING here notifies a restart handler
-# — a deploy must never bounce a worker mid-solve (a detached autocatpath seed
-# runs for hours).
+# NOTHING here notifies a restart handler — a deploy must never bounce a worker
+# mid-solve (a detached autocatpath seed runs for hours).
+#
+# "apt with a warm cache is a no-op" was the original justification for running
+# this on EVERY deploy. That assumption failed on 2026-08-25 (gr256499): apt on
+# one GPU node deadlocked — 0% CPU, method workers holding no sockets, every
+# configured mirror answering curl in under 4s — and hung the whole cluster
+# deploy for 37+ minutes with no error, twice. An apt call is not cheap when apt
+# is wedged, and an unbounded one in a deploy path can only be discovered by
+# waiting forever. Two guards follow from that, independent of what wedged apt:
+#
+#   1. GATE — the JIT compile probe below runs FIRST and decides whether the
+#      install is needed at all. It is the same probe that used to run only as
+#      a post-install verify, so the criterion is unchanged; it just decides
+#      instead of merely confirming. On an already-provisioned node (the
+#      overwhelmingly common case — these headers change only when the venv's
+#      interpreter does) apt is never invoked, so a wedged apt cannot block a
+#      deploy that had no package work to do.
+#   2. TIMEOUT — when the install IS needed, it is bounded. A deadlocked apt
+#      now reddens its own task in 5 minutes instead of hanging indefinitely.
+#      Hanging is strictly worse than failing: a red task names the host and
+#      the task, which is what the operator needs.
 #
 # Versioned off the venv's own interpreter rather than the `python3-dev`
 # meta-package: that meta-package tracks the DISTRO default, so on any node
 # where the venv is built from a non-default interpreter it would install
 # headers for the wrong X.Y and leave the same runtime failure in place.
+
+# The probe proves the headers are USABLE, not merely that a package is
+# installed. The older "verify the engine imports" check passed on a node that
+# then failed every seed, because the break is a runtime JIT *compile*, not an
+# import — nothing in the install path had ever invoked gcc. This reproduces
+# exactly what Triton does on first kernel use (include <Python.h>, -I the
+# interpreter's own include dir) and costs a few milliseconds.
+#
+# Defined once and used twice: as the gate (does this node need anything?) and,
+# only when the gate said yes, as the post-install verify. Same criterion both
+# times — a node is "provisioned" iff Triton's compile works, which is the only
+# property any of this exists to guarantee.
+- name: Define the Triton-JIT compile probe (gates the install, then verifies it)
+  ansible.builtin.set_fact:
+    autocatpath_jit_probe: |
+      set -e
+      inc="$({{ autocatpath_worker_venv }}/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      printf '#include <Python.h>\nint main(void){return 0;}\n' > "$tmp/probe.c"
+      gcc -I"$inc" -c "$tmp/probe.c" -o "$tmp/probe.o"
+
+- name: Check whether Triton's JIT can ALREADY compile (skips apt entirely if so)
+  ansible.builtin.shell: "{{ autocatpath_jit_probe }}"
+  become: true
+  register: autocatpath_jit_precheck
+  changed_when: false
+  failed_when: false
+  # Runs even under --check: it only compiles a throwaway .c into a temp dir,
+  # and skipping it would leave `.rc` undefined, erroring every `when` below.
+  check_mode: false
 
 - name: Detect the worker venv's Python X.Y (for the matching dev headers)
   ansible.builtin.command: >-
@@ -35,6 +84,7 @@
   become: true
   register: autocatpath_py_xy
   changed_when: false
+  when: autocatpath_jit_precheck.rc != 0
 
 - name: Install the CPython headers + compiler Triton's runtime JIT needs
   ansible.builtin.apt:
@@ -45,21 +95,18 @@
     update_cache: true
     cache_valid_time: 3600
   become: true
+  when: autocatpath_jit_precheck.rc != 0
+  # Bound it: a deadlocked apt must redden this task, never hang the deploy
+  # (gr256499). 300s is generous for two packages off a warm cache — anything
+  # slower than that is a wedged apt, not a slow one.
+  timeout: 300
 
-# Prove the headers are USABLE, not merely that a package is installed. The
-# existing "verify the engine imports" check passed on a node that then failed
-# every seed, because the break is a runtime JIT *compile*, not an import —
-# nothing in the install path had ever invoked gcc. This reproduces exactly
-# what Triton does on first kernel use (include <Python.h>, -I the interpreter's
-# own include dir) and costs a few milliseconds, so a broken node reddens the
-# play it broke in instead of 34 pathways later.
+# Only meaningful when we actually installed something: if the pre-check passed
+# we have already proven this node compiles, and re-running the identical probe
+# would prove nothing new. A broken node still reddens the play it broke in
+# rather than 34 pathways later.
 - name: Verify Triton's JIT can compile against the CPython headers
-  ansible.builtin.shell: |
-    set -e
-    inc="$({{ autocatpath_worker_venv }}/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    printf '#include <Python.h>\nint main(void){return 0;}\n' > "$tmp/probe.c"
-    gcc -I"$inc" -c "$tmp/probe.c" -o "$tmp/probe.o"
+  ansible.builtin.shell: "{{ autocatpath_jit_probe }}"
   become: true
   changed_when: false
+  when: autocatpath_jit_precheck.rc != 0
