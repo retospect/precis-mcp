@@ -14,7 +14,8 @@ Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
 
 Work happens in worktrees (`claude -w <name>`). **`/land`** = ship
 (`scripts/ship --impacted`: commit WIP → sync main → container gate ruff +
-mypy + import contracts + impacted pytest → squash-merge to `main`). **`/go`** = ship with the
+mypy + import contracts + impacted pytest + squawk on new migration SQL →
+squash-merge to `main`). **`/go`** = ship with the
 full suite + diff-coverage gate (changed src lines need tests) +
 `scripts/deploy`, plus a budgeted advisory mutation pass
 (`scripts/mutate-diff`). **`/qland`** = ungated burst-land

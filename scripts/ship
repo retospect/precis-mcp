@@ -415,6 +415,28 @@ for attempt in 1 2 3; do
         *docs/backlog/*) scripts/backlog-lint || true ;;
     esac
 
+    # Squawk on this ship's NEW migration SQL (sealed files are frozen and
+    # never re-linted). Blocking, unlike the advisories above: it catches
+    # the operational hazards the schema-design tests can't (NOT NULL
+    # without default, table-rewriting type changes). Rules mooted by the
+    # single-writer migration window are excluded in .squawk.toml. Runs
+    # even in --quick mode: it's host-side and ~1s, and a migration that
+    # qlands unchecked is sealed before the settle-up /go could lint it.
+    # PRECIS_SQUAWK=0 is the deliberate escape hatch; a missing uvx WARNs
+    # rather than blocks (same posture as the diff-coverage gate).
+    NEW_MIGRATIONS="$(git diff --name-only --diff-filter=A "$(git merge-base origin/main HEAD)" HEAD \
+        | grep -E '^src/precis/migrations/[0-9]+_[^/]+\.sql$' || true)"
+    if [[ -n "$NEW_MIGRATIONS" && "${PRECIS_SQUAWK:-1}" != 0 ]]; then
+        if command -v uvx >/dev/null 2>&1; then
+            say "squawk — migration SQL lint (new files only)"
+            # shellcheck disable=SC2086
+            uvx -q --from 'squawk-cli>=2' squawk $NEW_MIGRATIONS \
+                || die "squawk found migration hazards — fix them (or, deliberately, PRECIS_SQUAWK=0) and re-run scripts/ship."
+        else
+            echo "WARNING: uvx missing — skipping the squawk migration lint"
+        fi
+    fi
+
     if [[ "$QUICK" == 1 ]]; then
         say "quick ship — gate skipped (validation deferred to the next full gate: /go or bare scripts/ship)"
     else

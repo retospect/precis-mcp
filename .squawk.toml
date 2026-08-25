@@ -1,0 +1,17 @@
+# Squawk (migration SQL lint) — run by scripts/ship on the NEW migration
+# files a ship adds; sealed migrations are frozen and never re-linted.
+# Rule docs: https://squawkhq.com/docs/rules
+pg_version = "17.0"
+excluded_rules = [
+    # Migrations run in the deploy's single-writer window (the migrator
+    # applies them while the daemons bounce), so lock-contention rules
+    # are noise here:
+    "require-concurrent-index-creation",
+    "require-lock-timeout",
+    "require-statement-timeout",
+    # House style: serial PKs predate identity columns, and BIGINT is
+    # already used where range matters — INT survives for small counters
+    # (e.g. 0128's leaf_count/leaf_index).
+    "prefer-identity",
+    "prefer-bigint-over-int",
+]
