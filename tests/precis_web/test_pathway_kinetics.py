@@ -85,8 +85,24 @@ def test_verdict_disagreeing_bracket_is_not_determined_and_dead() -> None:
         )
     )
     assert v["tone"] == "dead"
-    assert v["headline"].startswith("Not determined: 2 steps")
+    # exact headline: both plural slots ("steps", "change" not "changes")
+    assert v["headline"] == (
+        "Not determined: 2 steps with no computed barrier change the answer."
+    )
+    # the bracket line names the missing steps, never the fallback text
+    assert "Missing: a, b." in v["lines"][0]
     assert "provisional" in v["lines"][0]
+    one = kinetics_verdict(_record(tof_bracket={"load_bearing": ["a"], "agree": False}))
+    assert one["headline"] == (
+        "Not determined: 1 step with no computed barrier changes the answer."
+    )
+
+
+def test_verdict_bracket_without_agree_key_stays_trusted() -> None:
+    # an old record whose bracket predates the agree flag defaults to trusted
+    v = kinetics_verdict(_record(tof_bracket={"tof_slow": 1e-9, "tof_fast": 2.0}))
+    assert v["headline"].startswith("Turns over")
+    assert v["tone"] == "ok"
 
 
 def test_verdict_reads_magnitude_then_direction() -> None:
@@ -173,6 +189,18 @@ def test_verdict_selectivity_side_products() -> None:
     # fully selective (target only) -> no selectivity line
     clean = kinetics_verdict(_record(production={"NH3": 3e-4}, selectivity=1.0))
     assert not any("Not fully selective" in x for x in clean["lines"])
+
+
+def test_verdict_product_species_parsed_from_decorated_state_names() -> None:
+    # "NH3~n2@top" names the species NH3 (site/instance decorations stripped)
+    v = kinetics_verdict(_record(coverages={"NH3~n2@top": 0.8, "*": 0.2}))
+    assert any("Product-inhibited" in x for x in v["lines"])
+
+
+def test_verdict_nonfinite_coverage_dropped_not_compared() -> None:
+    # a drifted record with an inf coverage must not win the MARI slot
+    v = kinetics_verdict(_record(coverages={"A@top": float("inf"), "H@fcc": 0.6}))
+    assert any("saturated in H@fcc" in x for x in v["lines"])
 
 
 def test_verdict_null_coverage_dropped_not_compared() -> None:
