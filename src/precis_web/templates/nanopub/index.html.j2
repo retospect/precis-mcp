@@ -124,7 +124,7 @@
         {% endif %}
         <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
            target="np-review" href="/claim/fi{{ n.row.ref_id }}?embed=1">fi{{ n.row.ref_id }}</a>
-        <span class="text-sm truncate" title="{{ n.row.title }}">{{ n.row.title }}</span>
+        <span class="np-title text-sm leading-snug" title="{{ n.row.title }}">{{ n.row.title }}</span>
         {% if n.row.trusty_uri %}
         <span class="font-mono text-xs text-slate-400 shrink-0"
               title="{{ n.row.trusty_uri }}">{{ n.row.trusty_uri.rsplit('/', 1)[-1][:14] }}…</span>
@@ -230,6 +230,12 @@
 
 <style>
   .tree-node.selected { background: #ecfdf5; }
+  /* Two-line clamp instead of one-line truncate: at ~500px pane width a
+     single line eats all but the first few words of a claim sentence
+     (hover still shows the full title). overflow:hidden also zeroes the
+     flex min-width, so the span shrinks instead of overflowing the row. */
+  .np-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  iframe.np-loading { opacity: .45; transition: opacity .15s; }
   .np-steps { line-height: 0; }
   .np-dot { display: inline-block; width: 5px; height: 5px; border-radius: 9999px; background: #cbd5e1; margin-right: 2px; }
   .np-dot.on { background: #0284c7; }
@@ -238,17 +244,40 @@
   .np-divider:hover, .np-divider.dragging { background: #a7f3d0; }
 </style>
 <script>
+  // One loader for every way a pane gets content. Dims the pane until its
+  // load event so a slow claim page reads as "loading", not a dead click.
+  const loadPane = (paneId, src, row) => {
+    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
+    if (row) row.classList.add("selected");
+    const frame = document.getElementById(paneId);
+    frame.classList.add("np-loading");
+    frame.addEventListener("load", () => frame.classList.remove("np-loading"), { once: true });
+    frame.removeAttribute("srcdoc");
+    frame.src = src;
+  };
+
+  // Pane-targeted links (the fi<id> anchors, evidence links, the disputed
+  // strip) drive the pane iframe directly instead of trusting the
+  // browser's named-target resolution: Safari has intermittently dropped
+  // link-target navigation onto srcdoc-initialized frames — the same
+  // flakiness class the framed claim page's own interceptor documents —
+  // and a miss looks like a dead click. target= stays on the anchors for
+  // middle-click/cmd-click new-tab correctness (modified clicks fall
+  // through to the browser untouched).
+  document.addEventListener("click", ev => {
+    const a = ev.target.closest('a[target="np-review"], a[target="np-paper"]');
+    if (!a || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    ev.preventDefault();
+    loadPane(a.target, a.href, a.closest(".tree-node"));
+  });
+
   // Row click = load the row's target pane (bigger hit area than the
-  // links, which carry target= for middle-click/new-tab correctness).
+  // links).
   document.querySelectorAll(".tree-node").forEach(n => n.addEventListener("click", ev => {
-    if (ev.target.closest("a")) return;                 // in-row links navigate
+    if (ev.target.closest("a")) return;                 // handled above / navigates
     if (!ev.target.closest(".tree-caret")) ev.preventDefault();  // only the caret folds
     if (!n.dataset.src) return;
-    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
-    n.classList.add("selected");
-    const frame = document.getElementById(n.dataset.pane);
-    frame.removeAttribute("srcdoc");
-    frame.src = n.dataset.src;
+    loadPane(n.dataset.pane, n.dataset.src, n);
   }));
 
   // Draggable dividers: each resizes the pane on its left; the last pane

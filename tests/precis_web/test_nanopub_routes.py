@@ -49,6 +49,18 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert f'data-src="/claim/fi{hub}?embed=1"' in resp.text
     assert 'name="np-review"' in resp.text
     assert 'name="np-paper"' in resp.text
+    # Pane links are driven by the page's own loader, never by bare
+    # named-target resolution (Safari intermittently drops link-target
+    # navigation onto srcdoc frames — a dead click). The anchors keep
+    # target= for middle-click/new-tab, and the interceptor must cover
+    # both panes.
+    assert "const loadPane" in resp.text
+    assert 'a[target="np-review"], a[target="np-paper"]' in resp.text
+    assert f'target="np-review" href="/claim/fi{hub}?embed=1"' in resp.text
+    # Claim titles wrap to a two-line clamp instead of a one-line truncate
+    # (a 500px pane showed only the first few words of a claim sentence).
+    assert 'class="np-title' in resp.text
+    assert ".np-title" in resp.text
     # The old tree URL redirects home.
     tree = client.get("/nanopub/tree", follow_redirects=False)
     assert tree.status_code == 307 and tree.headers["location"] == "/nanopub"
