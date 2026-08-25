@@ -19,3 +19,9 @@ Design hazard to answer before building: if a model assigns `claim_type` and
 `claim_type` grants a lint exemption, the gate becomes something the model
 configures. Keep the exemption table static and per-type
 (`_ARTIFACT_LINT_EXEMPTIONS`), or gate the write.
+
+Second field for the same extractor pass: **modality** (experimental /
+computational / theoretical, plus whether the source performed the work or
+reports another's). Orthogonal to `claim_type` — a DFT elastic-constant
+result is measurement-sorted and computational-modality. Sizing and the two
+failure modes: `taproot-claim-modality-axis.md`.

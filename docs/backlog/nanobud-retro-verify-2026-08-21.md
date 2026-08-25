@@ -405,6 +405,38 @@ not row replacement. A finding hub retitle *does* replace the row (`2612007` →
 `UPDATE chunks SET text = …`, which leaves `content_sha` untouched and makes the
 stale embedding **permanent and invisible** — the worker will never re-claim it.
 
+## What the judge calibration says about this pass (2026-08-25)
+
+`llm-judge-reliability.md` measured the grounding judge against a
+30-edge human gold set. Two results bear directly on the numbers above,
+and they point the *opposite* way from where attention has gone:
+
+- **Rejections are the trustworthy verdict.** Across 30 adjudicated
+  edges the judges produced **zero false alarms** — every flagged defect
+  was a real defect. So the 30 rejects here, and the 5 from the
+  auto-`yes` pushback, are very likely all genuine. Deleting them was
+  right and does not need re-litigating.
+- **Releases are the untrustworthy verdict.** 3 of 11 judge-`NONE`
+  verdicts (27%) hid a real defect on that sample. The analog here is
+  the **209 released edges** (52 `yes` + 157 scoped `partial`): they are
+  exactly the "judge said it's fine" bucket, and nothing has sampled
+  them. That sample was disagreement-enriched so 27% is an upper bound,
+  but even a third of it over 209 edges is ~20 bad releases sitting past
+  the publish gate.
+
+**Therefore, before signing:** draw a random sample of the 209 released
+edges (~25–30) and adjudicate them the way the gold set was built. That
+is the highest-value remaining check on this paper's soundness — higher
+than re-examining the rejects, and higher than the individual repairs
+below, because it is the only bucket where a silent error survives to
+publication. The frozen instrument
+(`docs/runbooks/grounding-verifier-instrument.md`) and the scoring script
+(`llm-judge-reliability-data/score_vs_gold.py`) both apply unchanged.
+
+Also inherited from that item: **do not add majority voting** to a
+re-check pass — on the gold set a single judge beat the 3-way modal
+(87% vs 80%), because consensus suppressed correct minority findings.
+
 ## Still open
 
 - **`fi191021` — re-attach its 3 sources.** They were deleted in A; the claim now
