@@ -56,7 +56,7 @@ the ranking with `mode=`:
 |---|---|---|
 | `'hybrid'` *(default)* | RRF of lexical + semantic. | General recall — concepts *and* keywords. |
 | `'lexical'` | Postgres FTS only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
-| `'semantic'` | Embedding cosine only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does, and keyword noise is hurting precision. Degrades to lexical if the embedder is unavailable. |
+| `'semantic'` | Embedding cosine only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does, and keyword noise is hurting precision. No embedder wired → degrades to lexical; embedder wired but failing → a loud error (retry, or accept the degrade explicitly with `mode='hybrid'`) — never a silent zero-hit answer. |
 | `'verbatim'` | Chunks whose per-chunk **KeyBERT keywords** contain **all** your query words (GIN `@>` containment; embedder-independent). No relevance gradient — newest chunk first. | You want only chunks a topic model actually tagged with your term(s) — a topical filter tighter than FTS. Each query word must appear as a *distinct* keyword, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). Empty query returns nothing. |
 
 ```python

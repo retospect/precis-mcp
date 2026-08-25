@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Upstream
 from precis.format import render_agent_table
 from precis.handlers._paper_format import _clean_inline_text, _format_authors
 from precis.handlers._paper_text import _chunk_keywords_or_caption, _scrub_block_text
@@ -282,16 +282,21 @@ def _dedup_card_hits(
     ]
 
 
-def _embed_query_batch(embedder: Any | None, texts: list[str]) -> list[list[float]]:
+def _embed_query_batch(
+    embedder: Any | None, texts: list[str], mode: str | None = None
+) -> list[list[float]]:
     """Embed several search texts in ONE batch call, degrading to ``[]``.
 
     Broad retrieval embeds ``q`` + up to 8 rephrasings + up to 8 HyDE
     answers; one ``embed(texts)`` round trip replaces up to 17 serial
     ``embed_one`` calls (each of which would pay its own failure /
     timeout). The degrade contract mirrors
-    :func:`precis.utils.embed_query.embed_query`: a missing OR failing
-    embedder returns ``[]`` — the caller runs lexical-only — and never
-    propagates. The failure is logged at WARNING with the traceback.
+    :func:`precis.utils.embed_query.query_vec_for`: a missing embedder,
+    or a failing one under the default/hybrid mode, returns ``[]`` — the
+    caller runs lexical-only, logged at WARNING with the traceback. An
+    explicit ``mode='semantic'`` with a wired-but-failing embedder raises
+    :class:`~precis.errors.Upstream` instead (gripe #254606: silent zero
+    hits read as "no matches in the corpus").
     """
     import logging
 
@@ -301,13 +306,18 @@ def _embed_query_batch(embedder: Any | None, texts: list[str]) -> list[list[floa
         return []
     try:
         vecs = embedder.embed(texts)
-    except Exception:
+    except Exception as exc:
         log.warning(
-            "broad search: batch embed failed for %d texts; "
-            "falling back to lexical-only",
+            "broad search: batch embed failed for %d texts",
             len(texts),
             exc_info=True,
         )
+        if (mode or "").strip().lower() == "semantic":
+            raise Upstream(
+                "query embedder unavailable — the explicit mode='semantic' "
+                "leg cannot run (zero hits here would be a false answer)",
+                next="retry, or use mode='hybrid' to accept lexical-only degrade",
+            ) from exc
         return []
     return [v for v in vecs if v is not None]
 
@@ -688,14 +698,16 @@ class FusedBlockSearch:
             # Semantic legs embed q + each reformulation + each HyDE
             # answer — in ONE batch call (q is NOT embedded separately;
             # up to 17 serial embed_one round trips collapsed). A missing
-            # OR failing embedder degrades the whole broad search to its
-            # lexical legs (empty vecs) — mirroring :func:`embed_query` —
-            # and ``mode='lexical'`` skips embedding entirely.
+            # embedder, or a failing one under hybrid/default, degrades
+            # the broad search to its lexical legs (empty vecs); an
+            # explicit mode='semantic' with a failing embedder raises
+            # (see :func:`_embed_query_batch`), and ``mode='lexical'``
+            # skips embedding entirely.
             q_texts = [q, *extra_queries]
             query_vecs: list[list[float]] = []
             if (mode or "hybrid").strip().lower() not in ("lexical", "verbatim"):
                 query_vecs = _embed_query_batch(
-                    self.embedder, [q, *extra_queries, *hyde_answers]
+                    self.embedder, [q, *extra_queries, *hyde_answers], mode
                 )
             # Probe one row past the page so ``broad_has_more`` is exact
             # for the next-page trailer, then slice back to page_size.
@@ -719,10 +731,11 @@ class FusedBlockSearch:
             hits = probe[:page_size]
         else:
             # Compute the query embedding for the semantic leg. A missing
-            # OR failing embedder degrades to lexical-only (query_vec=None)
-            # rather than 500 the whole search — the lexical leg still
-            # answers (gripe #38684: search q='*' returned a 500). See
-            # :func:`embed_query`.
+            # embedder, or a failing one under hybrid/default, degrades to
+            # lexical-only (query_vec=None) rather than 500 the whole
+            # search — the lexical leg still answers (gripe #38684). An
+            # explicit mode='semantic' with a failing embedder raises
+            # instead (gripe #254606). See :func:`query_vec_for`.
             query_vec = query_vec_for(self.embedder, q, mode)
             hits = self.store.blocks.search_blocks(
                 q=q,
