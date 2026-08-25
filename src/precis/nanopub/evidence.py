@@ -271,6 +271,9 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
     outbound_ids = {link.dst_ref_id for link in outbound}
 
     refs_by_id = store.fetch_refs_by_ids(inbound_ids | outbound_ids)
+    # DOIs live in ref_identifiers (id_kind='doi') — refs.meta['doi'] is a
+    # legacy location a handful of rows still carry, kept as fallback only.
+    ids_by_ref = store.identifiers_for_refs(list(inbound_ids | outbound_ids))
 
     def _source(ref_id: int, role: str, via: str) -> EvidenceSource | None:
         ref = refs_by_id.get(ref_id)
@@ -281,7 +284,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
             kind=ref.kind,
             title=ref.title,
             year=ref.year,
-            doi=(ref.meta or {}).get("doi"),
+            doi=ids_by_ref.get(ref.id, {}).get("doi") or (ref.meta or {}).get("doi"),
             pdf_sha256=ref.pdf_sha256,
             role=role,
             via=via,
@@ -369,13 +372,14 @@ def _awaiting_sources(store: Store, hub_ref_id: int) -> list[EvidenceSource]:
         {link.dst_ref_id for link in links}, include_deleted=False
     )
     unheld = refs_without_body_chunks(store, list(stubs))
+    ids_by_ref = store.identifiers_for_refs(list(stubs))
     return [
         EvidenceSource(
             ref_id=ref.id,
             kind=ref.kind,
             title=ref.title,
             year=ref.year,
-            doi=(ref.meta or {}).get("doi"),
+            doi=ids_by_ref.get(ref.id, {}).get("doi") or (ref.meta or {}).get("doi"),
             pdf_sha256=ref.pdf_sha256,
             role=_AWAITS_EVIDENCE,
             via="outbound",

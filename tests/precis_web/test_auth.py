@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from precis.users import PasswordRecord, WebUser, hash_password
 from precis_web.app import create_app
+from precis_web.auth import SESSION_COOKIE, SessionTokens
 from precis_web.config import WebConfig
 
 
@@ -498,3 +499,110 @@ def test_end_to_end_against_a_real_users_table(store) -> None:
 
     user = store.get_web_user("reto")
     assert user is not None and user.last_login_at is not None
+
+
+# ── the session cookie (Safari won't replay Basic into iframes) ──────
+
+
+def test_basic_auth_mints_the_session_cookie() -> None:
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    resp = client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    cookie = resp.headers.get("set-cookie", "")
+    assert cookie.startswith(f"{SESSION_COOKIE}=")
+    assert "HttpOnly" in cookie and "SameSite=Lax" in cookie
+
+
+def test_the_cookie_signs_in_without_basic() -> None:
+    rec = hash_password("pw")
+    store = FakeUserStore(user=_user(), record=rec)
+    client = _client(store)
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    # The TestClient jar replays the cookie; no Authorization header at
+    # all — the iframe-subnavigation shape Safari actually sends.
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code in (302, 303, 307)
+
+
+def test_a_still_valid_cookie_is_not_reissued() -> None:
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    resp = client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    assert "set-cookie" not in resp.headers
+
+
+def test_a_tampered_cookie_challenges() -> None:
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    client.cookies.set(SESSION_COOKIE, f"{2**33}.{'0' * 64}.reto")
+    resp = client.get("/drive", follow_redirects=False)
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"].startswith("Basic realm=")
+
+
+def test_a_disabled_users_cookie_is_locked_out() -> None:
+    """Same contract as the scrypt cache: the roster row decides on
+    every request, so a disable bites the cookie holder immediately."""
+    rec = hash_password("pw")
+    store = FakeUserStore(user=_user(), record=rec)
+    client = _client(store)
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    store.user = _user(disabled=True)
+    resp = client.get("/drive", follow_redirects=False)
+    assert resp.status_code == 401
+
+
+def test_logout_clears_the_cookie_and_never_reissues_on_401() -> None:
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    # Kill the jar so the logout POST carries Basic but no valid cookie —
+    # the shape where a naive gate would mint a fresh session onto the
+    # very response that revokes one.
+    client.cookies.clear()
+    resp = client.post("/account/logout", headers=_basic("reto", "pw"))
+    assert resp.status_code == 401
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert f"{SESSION_COOKIE}=" in set_cookie
+    assert "Max-Age=0" in set_cookie
+
+
+def test_expired_token_is_refused() -> None:
+    tokens = SessionTokens(ttl=-1)
+    assert tokens.verify(tokens.issue("reto")) is None
+
+
+def test_token_survives_dotted_logins() -> None:
+    tokens = SessionTokens()
+    assert tokens.verify(tokens.issue("reto.stamm@example.com")) == (
+        "reto.stamm@example.com"
+    )
+    assert tokens.verify(None) is None
+    assert tokens.verify("garbage") is None
+
+
+def test_a_bad_basic_header_denies_even_beside_a_valid_cookie() -> None:
+    """Post-rotation shape: the browser replays a stale Basic credential
+    while still holding a valid session cookie. The explicit credential
+    is the one judged — a crisp 401 re-prompt now, not a mystery denial
+    when the cookie expires hours later."""
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    resp = client.get("/", follow_redirects=False, headers=_basic("reto", "stale"))
+    assert resp.status_code == 401
+
+
+def test_cookie_requests_do_not_touch_last_login() -> None:
+    """The touch write rides Basic only — cookie traffic is per-iframe
+    frequency, and per-request UPDATEs are the amplification the
+    credential cache exists to prevent."""
+    rec = hash_password("pw")
+    store = FakeUserStore(user=_user(), record=rec)
+    client = _client(store)
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    touched = len(store.touched)
+    client.get("/", follow_redirects=False)
+    client.get("/", follow_redirects=False)
+    assert len(store.touched) == touched

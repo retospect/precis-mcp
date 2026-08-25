@@ -27,21 +27,25 @@ _SNIP = "anisotropy can reach a 400 1 ratio"
 def _seed_paper(
     store: Any,
     *,
-    doi: str = "10.1103/PhysRevLett.109.195502",
+    doi: str | None = None,
     sha: str | None = None,
     chunk_text: str = f"Tensorial analysis. {_QUOTE}, in stark contrast.",
     section: list[str] | None = None,
 ) -> tuple[int, int, str]:
-    """A paper ref with meta.doi, one body chunk, and a pdf_sha256
-    identifier row (unique per paper — the identifiers PK is
-    ``(id_kind, id_value)``). Returns ``(ref_id, chunk_id, sha)``."""
+    """A paper ref with a ``ref_identifiers`` DOI row (prod's canonical
+    DOI location — ``refs.meta['doi']`` is a legacy spot ~3 rows carry),
+    one body chunk, and a pdf_sha256 identifier row. Defaults are unique
+    per paper — the identifiers PK is ``(id_kind, id_value)``. Returns
+    ``(ref_id, chunk_id, sha)``."""
     ref_id = seed_ref(store, title="Anisotropic Elastic Properties", kind="paper")
     if sha is None:
         sha = f"{ref_id:064x}"
+    if doi is None:
+        doi = f"10.1103/PhysRevLett.109.{ref_id}"
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE refs SET meta = jsonb_build_object('doi', %s::text) "
-            "WHERE ref_id = %s",
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', %s, %s, 'test')",
             (doi, ref_id),
         )
         row = conn.execute(

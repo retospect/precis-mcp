@@ -32,6 +32,17 @@ trivial CPU-exhaustion lever. Verified ``(login, sha256(password))``
 pairs are cached for :data:`_CACHE_TTL` in a bounded dict; the cache
 keys on the password digest, so a changed password can only ever *fail*
 against a stale entry, never succeed.
+
+**The session cookie exists for Safari.** Shipping Safari won't reliably
+replay cached Basic credentials into iframe subnavigations, which
+blanked the workbench panes and the PDF reader. Every
+Basic-authenticated response therefore sets a signed ``SameSite=Lax``
+session cookie (:class:`SessionTokens`) the gate accepts as an
+alternative credential; cookies always ride same-origin iframe
+requests. The roster row still decides on every cookie request
+(:func:`authorize_session_login`), so disable/rm bite immediately, and
+``POST /account/logout`` clears the cookie alongside its Basic
+realm-rotation challenge.
 """
 
 from __future__ import annotations
@@ -41,7 +52,9 @@ import binascii
 import hashlib
 import hmac
 import logging
+import secrets
 import time
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -89,6 +102,72 @@ def _is_self_auth(path: str) -> bool:
 
 _CACHE_TTL = 300.0
 _CACHE_MAX = 512
+
+#: Session cookie riding alongside Basic auth. Shipping Safari refuses to
+#: replay cached Basic credentials into iframe subnavigations (the
+#: workbench panes and the PDF reader load blank while the top-level page
+#: works fine); cookies have no such carve-out — a same-origin iframe
+#: request always carries them. So the gate issues a signed, HttpOnly,
+#: ``SameSite=Lax`` cookie on every Basic-authenticated response and
+#: accepts it as an alternative credential. ``Lax`` means it never rides
+#: a cross-site POST, preserving the CSRF posture
+#: :func:`check_same_origin` documents. The signing secret is
+#: process-local and unpersisted: after a web restart the cookie goes
+#: stale, the next top-level navigation re-sends Basic (browsers always
+#: do) and mints a fresh one — no config, no schema, nothing to rotate.
+SESSION_COOKIE = "precis_session"
+_SESSION_TTL = 12 * 3600.0
+
+
+class SessionTokens:
+    """Mint and verify the session cookie's signed tokens.
+
+    Format ``expires.hexsig.login`` — expiry and login are authenticated
+    by the HMAC, and :func:`verify` recomputes over the *parsed* fields
+    so a token only verifies if it round-trips exactly.
+    """
+
+    def __init__(self, *, ttl: float = _SESSION_TTL) -> None:
+        self._secret = secrets.token_bytes(32)
+        self._ttl = ttl
+
+    def _pack(self, expires: int, login: str) -> str:
+        sig = hmac.new(
+            self._secret, f"{expires}.{login}".encode(), hashlib.sha256
+        ).hexdigest()
+        return f"{expires}.{sig}.{login}"
+
+    def issue(self, login: str) -> str:
+        return self._pack(int(time.time() + self._ttl), login)
+
+    def verify(self, token: str | None) -> str | None:
+        """The token's login when valid and unexpired, else ``None``."""
+        if not token:
+            return None
+        expires_s, _, rest = token.partition(".")
+        _sig, _, login = rest.partition(".")
+        if not (expires_s.isdigit() and login):
+            return None
+        expires = int(expires_s)
+        if expires <= time.time():
+            return None
+        if not hmac.compare_digest(self._pack(expires, login), token):
+            return None
+        return login
+
+
+def _session_cookie_value(headers: dict[bytes, bytes]) -> str | None:
+    raw = headers.get(b"cookie")
+    if not raw:
+        return None
+    jar = SimpleCookie()
+    try:
+        jar.load(raw.decode("latin-1", "replace"))
+    except CookieError:
+        return None
+    morsel = jar.get(SESSION_COOKIE)
+    return morsel.value if morsel is not None else None
+
 
 #: Methods that don't change state, and so don't need the cross-site
 #: check. HEAD/OPTIONS ride along with GET.
@@ -200,10 +279,10 @@ def check_same_origin(scope: Scope, headers: dict[bytes, bytes]) -> None:
     the gate is what creates the exposure: the browser attaches the
     cached ``Authorization`` header to *any* request to this origin,
     including a form on an attacker's page auto-submitting to
-    ``/console`` or ``/secrets``. There are no cookies to mark
-    ``SameSite`` and no session to hang a token on, so the check is the
-    stateless one — compare the browser's stated origin against the one
-    it addressed.
+    ``/console`` or ``/secrets``. The session cookie is ``SameSite=Lax``
+    so it never accompanies a cross-site POST, but the Basic header has
+    no such attribute — so the check stays the stateless one: compare
+    the browser's stated origin against the one it addressed.
 
     A request with neither ``Origin`` nor ``Referer`` is allowed
     through. That is not a hole: browsers always send ``Origin`` on a
@@ -321,12 +400,40 @@ def authenticate(
     return user
 
 
+def authorize_session_login(store: Any, login: str) -> WebUser:
+    """Authorize a login vouched for by a valid session token.
+
+    The HMAC already proved *we* issued the token, so there is no
+    password to verify — but the roster row is still read and still
+    decides, exactly like :func:`authenticate`'s cache-hit path: a
+    ``precis users disable`` / ``rm`` locks the cookie holder out on
+    their next request, not at token expiry.
+
+    Deliberately does NOT ``touch_web_user_login``: cookie traffic is the
+    high-frequency kind (every iframe pane load), and a per-request
+    UPDATE is exactly the write amplification the credential cache keeps
+    off the Basic path. The cookie only exists because a Basic-
+    authenticated request minted it — and browsers re-send Basic on
+    every top-level navigation — so ``last_login_at`` stays fresh
+    through :func:`authenticate` without a second writer.
+    """
+    require_roster(store)
+    found = store.get_web_user_credentials(login)
+    if found is None:
+        raise AuthError(401, "invalid credentials", challenge=True)
+    user, _record = found
+    if not user.enabled:
+        raise AuthError(401, "account disabled", challenge=True)
+    return user
+
+
 class BasicAuthMiddleware:
     """Pure-ASGI gate wrapping the entire app (routes + static mounts)."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
         self.cache = CredentialCache()
+        self.sessions = SessionTokens()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -341,6 +448,7 @@ class BasicAuthMiddleware:
         raw = headers.get(b"authorization")
         creds = parse_basic_header(raw.decode("latin-1") if raw else None)
         store = self._store(scope)
+        fresh_cookie: str | None = None
 
         try:
             import anyio
@@ -350,23 +458,68 @@ class BasicAuthMiddleware:
             check_same_origin(scope, headers)
             if store is None:
                 raise AuthError(503, "precis-web has no database connection")
-            if creds is None:
+            session_login = self.sessions.verify(_session_cookie_value(headers))
+            if creds is not None:
+                # Basic wins when both are presented: it re-verifies the
+                # password, and (re)mints the cookie when the one sent is
+                # absent, stale, or for someone else. That means a BAD
+                # Basic credential denies even beside a still-valid
+                # cookie — deliberately: after a password rotation the
+                # browser keeps replaying the old Basic header, and
+                # falling back to the cookie would mask that until the
+                # cookie expired hours later, turning a crisp re-prompt
+                # into a mystery 401 at 3am. An explicitly presented
+                # credential is always the one judged.
+                login, password = creds
+                user = await anyio.to_thread.run_sync(
+                    lambda: authenticate(store, login, password, cache=self.cache)
+                )
+                if scope["type"] == "http" and session_login != user.login:
+                    fresh_cookie = self._cookie_header(scope, user.login)
+            elif session_login is not None:
+                user = await anyio.to_thread.run_sync(
+                    lambda: authorize_session_login(store, session_login)
+                )
+            else:
                 # Roster first, so a fresh deploy explains itself instead
                 # of prompting for credentials that don't exist yet.
                 await anyio.to_thread.run_sync(lambda: require_roster(store))
                 raise AuthError(401, "authentication required", challenge=True)
-
-            login, password = creds
-            user = await anyio.to_thread.run_sync(
-                lambda: authenticate(store, login, password, cache=self.cache)
-            )
         except AuthError as exc:
             await _send_error(send, exc, websocket=scope["type"] == "websocket")
             return
 
         scope.setdefault("state", {})
         scope["state"]["web_user"] = user
-        await self.app(scope, receive, send)
+        if fresh_cookie is None:
+            await self.app(scope, receive, send)
+            return
+
+        cookie = fresh_cookie
+
+        async def send_with_cookie(message: Message) -> None:
+            # Never on a 401: that's the sign-out path (see
+            # routes/account.py::logout), and re-minting a session on the
+            # very response that revokes one would undo the sign-out.
+            if (
+                message["type"] == "http.response.start"
+                and message.get("status") != 401
+            ):
+                MutableHeaders(raw=message.setdefault("headers", [])).append(
+                    "set-cookie", cookie
+                )
+            await send(message)
+
+        await self.app(scope, receive, send_with_cookie)
+
+    def _cookie_header(self, scope: Scope, login: str) -> str:
+        attrs = (
+            f"{SESSION_COOKIE}={self.sessions.issue(login)}; Path=/; "
+            f"Max-Age={int(_SESSION_TTL)}; HttpOnly; SameSite=Lax"
+        )
+        if scope.get("scheme") == "https":
+            attrs += "; Secure"
+        return attrs
 
     @staticmethod
     def _store(scope: Scope) -> Any:
@@ -418,10 +571,13 @@ async def _send_error(send: Send, exc: AuthError, *, websocket: bool = False) ->
 
 __all__ = [
     "REALM",
+    "SESSION_COOKIE",
     "AuthError",
     "BasicAuthMiddleware",
     "CredentialCache",
+    "SessionTokens",
     "authenticate",
+    "authorize_session_login",
     "check_same_origin",
     "current_user",
     "parse_basic_header",

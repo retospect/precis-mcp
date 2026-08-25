@@ -80,7 +80,7 @@ from precis.users import (
     validate_password,
     verify_password,
 )
-from precis_web.auth import REALM, current_user
+from precis_web.auth import REALM, SESSION_COOKIE, current_user
 from precis_web.deps import get_store, get_web_config, templates
 
 log = logging.getLogger(__name__)
@@ -302,6 +302,10 @@ async def logout(request: Request) -> Response:
                 "charset=UTF-8"
             ),
             "Cache-Control": "no-store",
+            # The session cookie signs in without Basic, so it must die
+            # with the sign-out — the gate never mints on a 401, so this
+            # deletion is not raced by a re-issue on the same response.
+            "Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0",
         },
     )
 

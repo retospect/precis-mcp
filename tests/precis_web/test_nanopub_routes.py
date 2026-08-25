@@ -139,6 +139,25 @@ def test_approve_prefill_suggests_quote_and_unique_snip(
     assert "this anisotropy can reach a 400 1 ratio" in resp.text
 
 
+def test_prefill_doi_comes_from_ref_identifiers(
+    client: TestClient, runtime_with_store
+) -> None:
+    """DOIs live in ``ref_identifiers(id_kind='doi')`` — in prod,
+    ``refs.meta['doi']`` is a legacy spot 3 of ~33k papers carry. The
+    evidence bundle must read the identifiers table or every prefill
+    passage ships ``"doi": ""`` and the mint gate (which refuses
+    DOI-less passages) blocks publishing entirely."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store, doi="10.5555/regress.1")
+    hub = _seed_hub(store, "A doi-carrying claim.", paper, chunk)
+    resp = client.get(f"/nanopub/fi{hub}")
+    assert resp.status_code == 200
+    # The approve prefill's passage carries the identifiers-table DOI…
+    assert "10.5555/regress.1" in resp.text
+    # …and so does the evidence DAG's source-node DOI link.
+    assert "https://doi.org/10.5555/regress.1" in resp.text
+
+
 def test_prefill_covers_derived_from_lineage_anchor(
     client: TestClient, runtime_with_store
 ) -> None:

@@ -17,7 +17,11 @@ and ``/podcast`` (authenticates itself, additionally accepting a per-user
 enclosure URLs). An empty roster fails *closed* with a 503 naming the
 ``precis users add`` line to run. A cross-site state-changing request is
 refused 403 (``Origin``/``Referer`` must match) — Basic auth makes every
-mutating route a CSRF target, with no cookie to mark ``SameSite``.
+mutating route a CSRF target, and its ambient header has no ``SameSite``
+to mark. A signed ``SameSite=Lax`` session cookie rides alongside Basic
+(minted on Basic-authenticated responses, accepted as an alternative):
+shipping Safari won't replay Basic credentials into iframe
+subnavigations, and the workbench/PDF panes went blank without it.
 The clickjack that check cannot close is shut by
 ``security_headers.py`` (outermost, so it rides the 401 too): framing is
 same-origin, **not** ``DENY``/``'none'`` — the UI frames its own pages
@@ -29,8 +33,8 @@ profile (including the ORCID iD nanopubs signed here are attributed to),
 sign-out, and the podcast subscribe URL (shown whole, copyable: the row
 holds only the token's digest, so the readable copy comes from the
 vault); roster management stays in the CLI. Sign-out is a 401 with a
-fresh challenge, not a session delete — Basic auth has no session, so
-the browser's own prompt is the door.
+fresh challenge plus a session-cookie delete — the challenge evicts the
+browser's cached Basic credential, the delete revokes the cookie.
 
 Nav (template ``templates/base.html.j2``; badge counts
 ``nav.py::nav_badges``):
