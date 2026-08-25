@@ -52,10 +52,16 @@ def _proj(hub: Hub) -> int:
     return hub.live_store.insert_ref(kind="todo", slug=None, title="Proj").id
 
 
+#: A body passage that passes ``backfill._has_grounding_prose`` — a terminated,
+#: mostly-lowercase sentence. A two-word stub reads as title/author front
+#: matter and is refused as evidence grounding (gripe 245842).
+_PROSE = "The measured ribbons remain semiconducting at room temperature."
+
+
 def _pc_of(store: Store, *, paper_title: str = "src paper") -> tuple[int, str]:
     """A paper + one chunk on it; return ``(paper_ref_id, 'pc<chunk_id>')``."""
     paper = seed_ref(store, title=paper_title, kind="paper")
-    chunk_id = seed_chunk(store, ref_id=paper, text="grounding passage")
+    chunk_id = seed_chunk(store, ref_id=paper, text=_PROSE)
     return paper, f"pc{chunk_id}"
 
 

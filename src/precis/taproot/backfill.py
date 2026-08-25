@@ -23,6 +23,18 @@ Two citation forms are backfilled, from the two grammars in the draft prose:
     and rewrite ``[pa]`` → ``[fi<hub>]`` — for whole-paper claims with no single
     grounding passage.
 
+**Grounding prose is a precondition, both arms** (gripe 245842). An evidence
+edge grounded on a paper's title/author front-matter block says "this paper
+exists", not "this passage supports the claim" — a vacuous "bibliography-stub"
+hub. A title block is short and dense with exactly the citing span's topic
+words, so it *wins* :func:`_default_locate`'s unigram overlap; filtering it out
+of the candidate pool (:func:`_read_paper_chunks`) is what stops the ``[pa]``
+arm re-grounding there, and :func:`_ungroundable_handles` re-checks the ``[pc]``
+arm, whose handle names its chunk outright. Both degrade to a **skip** that
+leaves the prose untouched (``reground-nomatch`` / ``ungroundable``), never to a
+wrong grounding. The test is prose-presence, not ``ord``: an abstract is often
+``ord`` 0-2 and grounds fine, and a numeric table grounds a numeric claim.
+
 Motivation. Most claims in the corpus were first written with raw
 ``[pc<id>]`` / ``[pa<id>]`` paper citations, before taproot claim hubs existed.
 This module walks a draft chunk's existing paper cites and, for each, runs
@@ -182,6 +194,9 @@ class GroupPlan:
     #: ``"reground-nomatch"`` — a fetched ``[pa]`` for which the locate found no
     #: supporting passage (no write, prose left ``[pa]``; re-ground by hand or
     #: ``--ref-level`` to promote whole-paper);
+    #: ``"ungroundable"`` — every ``[pc]`` supporter names a chunk with no
+    #: groundable prose (a title/author front-matter block), so there is no
+    #: passage to attach evidence to (no write, prose left ``[pc…]``);
     #: ``"error"`` — a write failed for this group (isolated; batch continues);
     #: else the cascade action: ``"attach"`` / ``"new"`` /
     #: ``"new_contradicts"`` / ``"needs_review"``.
@@ -190,13 +205,15 @@ class GroupPlan:
     #: ``hub_ref_id``/``note`` above — the compound's when the extraction
     #: decomposed (:attr:`compound_plan` non-``None``), else the lone atom's
     #: (an already-atomic extraction has no compound, step-1 invariant).
-    #: ``None`` for no-claim / unresolved / stub-fetch-first / reground(-nomatch).
+    #: ``None`` for no-claim / unresolved / ungroundable / stub-fetch-first /
+    #: reground(-nomatch).
     claim: CanonicalClaim | None = None
     placement: Placement | None = None
     #: Every atom's ``(claim, Placement)`` pair from :func:`_run_cascade`'s
     #: per-atom cascade tail, in extraction order — handed to
     #: :func:`precis.taproot.hub.apply_extraction` as its ``atoms=`` arg.
-    #: Empty for no-claim / unresolved / stub-fetch-first / reground(-nomatch).
+    #: Empty for no-claim / unresolved / ungroundable / stub-fetch-first /
+    #: reground(-nomatch).
     atom_plans: list[tuple[CanonicalClaim, Placement]] = field(default_factory=list)
     #: The compound's own ``(claim, Placement)`` pair, or ``None`` when the
     #: extraction didn't decompose (a lone atom has no compound).
@@ -277,6 +294,144 @@ _MERGE_CONFIRM_DEFAULT = merge_confirm
 
 _TOKEN_RE = re.compile(r"\w+")
 
+#: A markdown table row (``| … | … |``). A grounding chunk that is a pure
+#: numeric table carries no sentence but IS legitimate evidence for a numeric
+#: claim, so a table escapes the prose test below.
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)
+
+#: Rows a chunk needs before it counts as a table (header + rule + one datum).
+_MIN_TABLE_ROWS = 3
+
+#: A sentence terminator: ``.``/``!``/``?`` followed by whitespace or end of
+#: text. Splitting here over-splits at initials and abbreviations, which
+#: :func:`_prose_sentences` re-joins.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])(?=\s|$)")
+
+#: A blank line — the paragraph boundary. Front matter is line-structured
+#: (title line, author line, affiliation line), so a paragraph never spans
+#: from the title into the correspondence footnote.
+_PARA_SPLIT_RE = re.compile(r"\n\s*\n")
+
+#: A trailing single capital: the ``S.`` of "Anton S. Anisimov", not the end
+#: of a sentence. An author list is nothing but these.
+_INITIAL_RE = re.compile(r"(?:^|\s)[A-Z]\.$")
+
+#: A trailing word whose period is an abbreviation mark, not a terminator.
+_TRAILING_WORD_RE = re.compile(r"(?:^|[\s(\[])([A-Za-z]+)\.$")
+_ABBREVIATIONS: frozenset[str] = frozenset(
+    {
+        "al",
+        "et",
+        "eg",
+        "ie",
+        "cf",
+        "vs",
+        "etc",
+        "fig",
+        "figs",
+        "eq",
+        "eqs",
+        "ref",
+        "refs",
+        "tab",
+        "vol",
+        "no",
+        "nos",
+        "pp",
+        "ed",
+        "eds",
+        "ca",
+        "approx",
+        "dr",
+        "prof",
+        "st",
+        "inc",
+        "corp",
+        "dept",
+        "univ",
+    }
+)
+
+#: Words a terminated run needs before it counts as an assertion rather than a
+#: title fragment, an author line, or a caption label.
+_MIN_PROSE_WORDS = 8
+
+#: Above this share of capitalised words a "sentence" is a name list or a
+#: title restatement, not prose — the backstop for a front-matter block that
+#: is NOT blank-line separated, so :func:`_prose_sentences` cannot split the
+#: title off the correspondence footnote. Measured over the live grounding
+#: chunks this catches nothing the terminator rule misses, so it is set loose
+#: (an author list runs 0.85+) to leave headroom for acronym-dense body prose
+#: — "CRISPR-Cas9 targeting of BRCA1 and TP53 in HeLa cells…" is real prose.
+_MAX_CAPITALISED = 0.7
+
+
+def _is_false_terminator(run: str) -> bool:
+    """Does ``run`` end at an initial or an abbreviation rather than at the
+    end of a sentence? ("Anton S." / "Vol." / "et al.")"""
+    s = run.rstrip()
+    if not s.endswith("."):
+        return False  # ! and ? are never abbreviation marks
+    if _INITIAL_RE.search(s):
+        return True
+    m = _TRAILING_WORD_RE.search(s)
+    return bool(m and m.group(1).lower() in _ABBREVIATIONS)
+
+
+def _prose_sentences(text: str) -> list[str]:
+    """The *terminated* sentences of ``text``, per paragraph, with the false
+    terminators an initial or an abbreviation produces re-joined.
+
+    A trailing run with no terminator is **not** a sentence and is dropped —
+    that is exactly what a title line and an author line are.
+    """
+    out: list[str] = []
+    for para in _PARA_SPLIT_RE.split(text):
+        buf = ""
+        for part in _SENT_SPLIT_RE.split(para):
+            buf += part
+            if not buf.rstrip().endswith((".", "!", "?")):
+                continue  # unterminated so far — keep accumulating
+            if _is_false_terminator(buf):
+                continue  # initial / abbreviation: the sentence continues
+            out.append(buf)
+            buf = ""
+    return out
+
+
+def _has_grounding_prose(text: str) -> bool:
+    """Can a claim be honestly grounded *at this chunk*? (gripe 245842)
+
+    True when the chunk carries at least one **assertion** — a terminated
+    sentence of at least :data:`_MIN_PROSE_WORDS` words that is not mostly
+    capitalised — or when it is a **table** (a numeric table asserts through
+    its cells and is legitimate evidence for a numeric claim).
+
+    False for a paper's title/author front-matter block: a title is a noun
+    phrase with no terminator, an author list is initials, and neither
+    asserts anything. Grounding an evidence edge there mints a vacuous
+    "bibliography-stub" hub — the edge says "this paper exists", not "this
+    passage supports the claim". Note this rejects a front-matter block whose
+    *title* happens to be a full sentence ("Glymphatic dysfunction … is
+    related to …"): titles carry no terminator, so they never survive
+    :func:`_prose_sentences`.
+
+    Deliberately a **prose** test, not an ``ord`` test: a paper's abstract is
+    often ``ord`` 0-2 and is fine grounding, and over-rejecting is cheap here
+    (the caller degrades to ``reground-nomatch``/``ungroundable`` — a skip
+    that leaves the prose untouched — never to a wrong grounding).
+    """
+    if len(_TABLE_ROW_RE.findall(text)) >= _MIN_TABLE_ROWS:
+        return True
+    for sentence in _prose_sentences(text):
+        words = [w for w in _TOKEN_RE.findall(sentence) if w[0].isalpha()]
+        if len(words) < _MIN_PROSE_WORDS:
+            continue
+        capitalised = sum(1 for w in words if w[0].isupper())
+        if capitalised / len(words) <= _MAX_CAPITALISED:
+            return True
+    return False
+
 
 def _default_locate(
     span: str, chunks: list[tuple[int, int, str]]
@@ -307,15 +462,61 @@ def _default_locate(
 
 
 def _read_paper_chunks(store: Store, ref_id: int) -> list[tuple[int, int, str]]:
-    """Live body chunks ``(chunk_id, ord, text)`` of a paper ref, ord order.
-    Read-only; the candidate pool a re-ground's :data:`LocateFn` picks from."""
+    """The **groundable** live body chunks ``(chunk_id, ord, text)`` of a paper
+    ref, ord order. Read-only; the candidate pool a re-ground's
+    :data:`LocateFn` picks from.
+
+    Prose-less chunks (a title/author front-matter block) are filtered out
+    here rather than left for the locate to reject: a title block is short and
+    dense with exactly the claim's topic words, so it *wins* the unigram
+    overlap in :func:`_default_locate` and the Tier.MEDIUM confirm sees no
+    alternative to compare it against (gripe 245842). An empty pool degrades
+    the caller to ``reground-nomatch`` — the prose is left as ``[pa]``, which
+    is the honest outcome when the paper offers no groundable passage.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT chunk_id, ord, text FROM chunks "
             "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL ORDER BY ord",
             (ref_id,),
         ).fetchall()
-    return [(int(cid), int(ordv), str(txt)) for cid, ordv, txt in rows]
+    return [
+        (int(cid), int(ordv), str(txt))
+        for cid, ordv, txt in rows
+        if _has_grounding_prose(str(txt))
+    ]
+
+
+def _ungroundable_handles(store: Store, handles: list[str]) -> set[str]:
+    """The subset of ``pc<chunk_id>`` handles whose chunk carries no
+    groundable prose (gripe 245842).
+
+    The ``[pa]`` arm is guarded at the candidate pool, but a ``[pc]`` cite
+    names its chunk outright — including one an *earlier* backfill run wrote
+    by re-grounding onto a title block — so the ``[pc]`` arm has to re-check
+    at plan time rather than trust the handle. A **retired** chunk counts as
+    ungroundable too: the handle still resolves, but the text is dead.
+    """
+    chunk_ids = {int(h[2:]): h for h in handles if _PC_HANDLE_RE.match(h)}
+    if not chunk_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, text FROM chunks "
+            "WHERE chunk_id = ANY(%s) AND retired_at IS NULL",
+            (list(chunk_ids),),
+        ).fetchall()
+    # A retired chunk resolves upstream (``resolve_paper_ref_id`` filters
+    # ``refs.deleted_at``, not ``chunks.retired_at``) but is dead text: a
+    # re-chunk retires the row and inserts a replacement, so grounding an edge
+    # on the old id cites content no reader can reach. Absent from the live
+    # rows ⇒ ungroundable, same as prose-less.
+    live = {int(cid): str(txt) for cid, txt in rows}
+    return {
+        handle
+        for cid, handle in chunk_ids.items()
+        if cid not in live or not _has_grounding_prose(live[cid])
+    }
 
 
 # ── segmentation ─────────────────────────────────────────────────────────
@@ -682,6 +883,28 @@ def _plan_group(
             locate_fn=locate_fn,
         )
 
+    # [pc] arm: the handle names its grounding chunk outright, so a title/
+    # author front-matter chunk can arrive here directly — hand-written, or
+    # left in the prose by an earlier run's re-ground (before the candidate
+    # pool was filtered). Drop those supporters, mirroring the promote-collapse
+    # for a broken pc above (the group collapses to one [fi] either way, so no
+    # citeable loss); when that empties the list there is nothing left to
+    # ground, so skip rather than mint an evidence-less hub (gripe 245842).
+    prose_less = _ungroundable_handles(store, [h for h, _ in supporters])
+    if prose_less:
+        supporters = [(h, rid) for h, rid in supporters if h not in prose_less]
+        if not supporters:
+            return GroupPlan(
+                group=group,
+                action="ungroundable",
+                note=(
+                    "every [pc] supporter names a chunk with no groundable "
+                    f"prose (title/author front matter): {sorted(prose_less)} "
+                    "— group skipped, prose left as [pc…]. Re-ground onto the "
+                    "paper's body passage."
+                ),
+            )
+
     return _run_cascade(
         store,
         embedder,
@@ -960,8 +1183,8 @@ def apply_chunk(
             _record_reground_citations(store, plan, set_by=set_by)
             continue
         if not plan.atom_plans and plan.compound_plan is None:
-            # no-claim / unresolved / stub-fetch-first / reground-nomatch —
-            # prose left untouched ([pc…] or [pa…]).
+            # no-claim / unresolved / ungroundable / stub-fetch-first /
+            # reground-nomatch — prose left untouched ([pc…] or [pa…]).
             continue
 
         # Isolate each group's writes: a mid-loop failure (transient DB /

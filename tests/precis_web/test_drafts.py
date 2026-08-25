@@ -2379,7 +2379,13 @@ def _seed_convert_draft(runtime_with_store) -> tuple[str, str]:
 
     store = runtime_with_store.hub.store
     paper = seed_ref(store, title="src paper", kind="paper")
-    pc = seed_chunk(store, ref_id=paper, text="grounding passage")
+    # Real body prose: a two-word stub reads as title/author front matter and
+    # is refused as evidence grounding (gripe 245842).
+    pc = seed_chunk(
+        store,
+        ref_id=paper,
+        text="The measured ribbons remain semiconducting at room temperature.",
+    )
 
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft = DraftHandler(hub=runtime_with_store.hub)

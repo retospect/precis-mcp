@@ -21,6 +21,7 @@ from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 from precis.taproot.backfill import (
+    _has_grounding_prose,
     apply_chunk,
     plan_chunk,
     segment_cite_groups,
@@ -209,6 +210,100 @@ def test_segment_pc_after_pa_zero_gap_is_own_group() -> None:
     ]
 
 
+# ── grounding-prose gate (pure, gripe 245842) ────────────────────────────
+
+#: A real paper's title/author front-matter block: a title with no terminator,
+#: then an author list whose only periods are initials.
+_FRONT_MATTER = """**Printed Touch Sensors Using Carbon NanoBud Material**
+
+*Anton S. Anisimov, David P. Brown, Bjorn F. Mikladal, Kunjal Parikh,
+Erkki Soininen, Martti Sonninen, Dewei Tian, Ilkka Varjos*
+
+> **Canatu Oy, Helsinki, Finland, Intel Corporation, Santa Clara, USA**"""
+
+
+def test_prose_gate_rejects_title_author_front_matter() -> None:
+    assert not _has_grounding_prose(_FRONT_MATTER)
+
+
+def test_prose_gate_rejects_a_title_that_is_a_full_sentence() -> None:
+    # The claim-shaped title is the trap: it asserts, and it lexically matches
+    # the citing span better than any body passage. A title carries no
+    # terminator, so it is not a sentence and never grounds.
+    assert not _has_grounding_prose(
+        "Glymphatic dysfunction evidenced by DTI-ALPS is related to obstructive "
+        "sleep apnea intensity in newly diagnosed Parkinson's disease\n\n"
+        "Jiri Nepozitek, Stanislav Marecek, Veronika Rottova, Petr Dusek"
+    )
+
+
+def test_prose_gate_rejects_correspondence_footnote_under_front_matter() -> None:
+    # The one terminated run in a front-matter block is the correspondence
+    # note — too short, and the block above it is a name list.
+    assert not _has_grounding_prose(
+        "A Novel Hybrid Carbon Material\n\n"
+        "Albert G. Nasibulin, Peter V. Pikhitsa, Esko I. Kauppinen\n\n"
+        "*To whom correspondence should be addressed."
+    )
+
+
+def test_prose_gate_rejects_single_line_front_matter() -> None:
+    # No blank line to split the title off the footnote, so the whole block is
+    # one "sentence" — the capitalised-share backstop is what rejects it.
+    assert not _has_grounding_prose(
+        "A Novel Hybrid Carbon Material Albert G. Nasibulin, Peter V. Pikhitsa, "
+        "Hua Jiang, David P. Brown, Esko I. Kauppinen. "
+        "To whom correspondence should be addressed."
+    )
+
+
+def test_prose_gate_accepts_acronym_dense_body_prose() -> None:
+    # The backstop must not swallow real prose in a biomedical corpus.
+    assert _has_grounding_prose(
+        "CRISPR-Cas9 targeting of BRCA1 and TP53 in HeLa cells increased "
+        "apoptosis significantly."
+    )
+
+
+def test_prose_gate_accepts_an_abstract() -> None:
+    assert _has_grounding_prose(
+        "> **Abstract:** Synthesis, properties, structural peculiarities, and "
+        "applications of nanobuds and related nanostructures are discussed."
+    )
+
+
+def test_prose_gate_accepts_front_matter_followed_by_abstract_prose() -> None:
+    # The Dunlap-1992 shape: journal header + title + author + affiliation, then
+    # the abstract in the SAME chunk. One assertion is enough to ground.
+    assert _has_grounding_prose(
+        "15 JULY 1992-I\n\nConnecting carbon tubules\n\nB. I. Dunlap\n\n"
+        "Naval Research Laboratory, Washington, D.C. 20375-5000\n\n"
+        "Two possible joints between different types of carbon tubules are "
+        "discussed."
+    )
+
+
+def test_prose_gate_accepts_a_numeric_table() -> None:
+    # A table asserts through its cells and is legitimate evidence for a
+    # numeric claim, so it escapes the sentence test.
+    assert _has_grounding_prose(
+        "| Structure | Binding energy (eV) | Band gap (eV) |\n"
+        "|-----------|--------------------|---------------|\n"
+        "| I PGNB    | -3.34              | 0.31          |\n"
+        "| II PGNB   | -3.78              | 0.12          |"
+    )
+
+
+def test_prose_gate_ignores_abbreviation_and_initial_terminators() -> None:
+    # "Vol." / "No." / "B. I." are not sentence ends: a header line that splits
+    # into short runs must not add up to an assertion.
+    assert not _has_grounding_prose("NANO LETTERS 2009 Vol. 9, No. 1 250-256")
+
+
+def test_prose_gate_rejects_a_sentence_too_short_to_assert() -> None:
+    assert not _has_grounding_prose("Results are shown.")
+
+
 # ── DB-backed fixtures ───────────────────────────────────────────────────
 
 
@@ -252,10 +347,17 @@ def _finding_count(store: Store) -> int:
     return int(row[0]) if row else 0
 
 
+#: A body passage that passes ``_has_grounding_prose`` — a terminated,
+#: mostly-lowercase sentence. Chunk fixtures must look like real body prose:
+#: a two-word stub reads as title/author front matter and is (correctly)
+#: refused as evidence grounding (gripe 245842).
+_PROSE = "The measured ribbons remain semiconducting at room temperature."
+
+
 def _pc_of(store: Store, *, paper_title: str = "src paper") -> tuple[int, str]:
     """A paper + one chunk on it; return (paper_ref_id, 'pc<chunk_id>')."""
     paper = seed_ref(store, title=paper_title, kind="paper")
-    chunk_id = seed_chunk(store, ref_id=paper, text="grounding passage")
+    chunk_id = seed_chunk(store, ref_id=paper, text=_PROSE)
     return paper, f"pc{chunk_id}"
 
 
@@ -263,7 +365,7 @@ def _fetched_pa(store: Store, *, paper_title: str = "fetched paper") -> tuple[in
     """A FETCHED paper (has ≥1 body chunk) cited whole; return
     (paper_ref_id, 'pa<ref_id>')."""
     paper = seed_ref(store, title=paper_title, kind="paper")
-    seed_chunk(store, ref_id=paper, text="some body passage")
+    seed_chunk(store, ref_id=paper, text=_PROSE)
     return paper, f"pa{paper}"
 
 
@@ -275,7 +377,7 @@ def _stub_pa(store: Store, *, paper_title: str = "stub paper") -> tuple[int, str
 
 
 def _fetched_pa_c(
-    store: Store, *, paper_title: str = "fetched paper", text: str = "some body passage"
+    store: Store, *, paper_title: str = "fetched paper", text: str = _PROSE
 ) -> tuple[int, str, int]:
     """A FETCHED paper cited whole, exposing its chunk_id — return
     (paper_ref_id, 'pa<ref_id>', chunk_id). For re-ground tests that assert the
@@ -944,7 +1046,8 @@ def test_apply_reground_records_claim_passage_citation(
     # Assert the binding is persisted as a citation audit record: the claim is
     # the cite-group span, the source is the located passage.
     paper, pa, chunk_id = _fetched_pa_c(
-        hub.live_store, text="ribbons conduct at room temperature"
+        hub.live_store,
+        text="The ribbons conduct at room temperature under ambient pressure.",
     )
     _set_slug(hub.live_store, paper, "ribbons24")
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
@@ -971,7 +1074,10 @@ def test_apply_reground_records_claim_passage_citation(
     # The claim is the prose the citation grounds, not a bare handle.
     assert "Ribbons are semiconducting" in meta["claim"]
     # The source is the located passage, verbatim.
-    assert meta["source_quote"] == "ribbons conduct at room temperature"
+    assert (
+        meta["source_quote"]
+        == "The ribbons conduct at room temperature under ambient pressure."
+    )
     # No score is invented — the locate returns a decision, not a confidence.
     assert meta["source_handle"] == "ribbons24~0"
     assert meta.get("verifier_confidence") is None
@@ -1153,9 +1259,11 @@ def test_apply_reground_multi_supporter_partial_nomatch_skips_whole_run(
     # NOT pa2 skips the WHOLE run (reground-nomatch, no write) — a partial
     # rewrite would collapse the run's span and erase pa2's token (append-only).
     _, good, _gc = _fetched_pa_c(
-        hub.live_store, paper_title="good", text="clean passage"
+        hub.live_store, paper_title="good", text=f"A clean passage: {_PROSE}"
     )
-    _, bad, _bc = _fetched_pa_c(hub.live_store, paper_title="bad", text="NOMATCH here")
+    _, bad, _bc = _fetched_pa_c(
+        hub.live_store, paper_title="bad", text=f"NOMATCH here, but still: {_PROSE}"
+    )
     dc = _seed_draft_para(draft, hub, f"A jointly-supported claim [{good}][{bad}].")
     links_before = _links_count(hub.live_store)
 
@@ -1589,3 +1697,163 @@ def test_apply_not_claims_memo_lands_on_compound_hub_meta(
     entry = next(iter(memo.values()))
     assert entry["text"] == "enables next-gen tech"
     assert entry["reason"] == "forward-looking"
+
+
+# ── prose-less grounding is refused (gripe 245842) ───────────────────────
+
+
+def test_apply_pc_on_front_matter_chunk_is_ungroundable(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A [pc] naming a title/author block would mint a "bibliography-stub" hub:
+    # an edge that says "this paper exists", not "this passage supports the
+    # claim". Skip the group, leave the prose alone.
+    paper = seed_ref(hub.live_store, title="front-matter paper", kind="paper")
+    fm = seed_chunk(hub.live_store, ref_id=paper, ord=0, text=_FRONT_MATTER)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [pc{fm}].")
+    links_before = _links_count(hub.live_store)
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_never_called,  # never reached — no groundable supporter
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    assert result.plans[0].action == "ungroundable"
+    assert result.rewritten_text is None
+    assert _links_count(hub.live_store) == links_before
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_apply_pc_on_retired_chunk_is_ungroundable(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A retired chunk still resolves (handle resolution filters refs.deleted_at,
+    # not chunks.retired_at) but is dead text — a re-chunk retires the row and
+    # inserts a replacement, so the old id cites content no reader can reach.
+    paper = seed_ref(hub.live_store, title="rechunked paper", kind="paper")
+    old = seed_chunk(hub.live_store, ref_id=paper, ord=0, text=_PROSE)
+    with hub.live_store.pool.connection() as conn:
+        conn.execute("UPDATE chunks SET retired_at = now() WHERE chunk_id = %s", (old,))
+        conn.commit()
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [pc{old}].")
+    links_before = _links_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    assert result.plans[0].action == "ungroundable"
+    assert result.rewritten_text is None
+    assert _links_count(hub.live_store) == links_before
+
+
+def test_apply_pc_run_drops_only_the_prose_less_supporter(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A mixed run still grounds: the front-matter supporter drops (the run
+    # collapses to one [fi] either way, so no citeable loss) and the body
+    # passage carries the evidence edge.
+    fm_paper = seed_ref(hub.live_store, title="front-matter paper", kind="paper")
+    fm = seed_chunk(hub.live_store, ref_id=fm_paper, ord=0, text=_FRONT_MATTER)
+    good_paper, good_pc = _pc_of(hub.live_store, paper_title="body paper")
+    dc = _seed_draft_para(
+        draft, hub, f"Ribbons are semiconducting [pc{fm}][{good_pc}]."
+    )
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "new"
+    assert [h for h, _ in plan.supporters] == [good_pc]
+    assert result.rewritten_text is not None
+    assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
+    with hub.live_store.pool.connection() as conn:
+        srcs = [
+            r[0]
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE dst_ref_id = %s", (plan.hub_ref_id,)
+            ).fetchall()
+        ]
+    assert fm_paper not in srcs
+    assert good_paper in srcs
+
+
+def test_reground_locate_never_sees_the_front_matter_chunk(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The original defect: a title block is short and dense with the claim's
+    # topic words, so it WINS the unigram overlap. Filtering the candidate pool
+    # means even a "pick the first chunk" locate lands on the body passage.
+    paper = seed_ref(hub.live_store, title="fetched paper", kind="paper")
+    seed_chunk(hub.live_store, ref_id=paper, ord=0, text=_FRONT_MATTER)
+    body = seed_chunk(hub.live_store, ref_id=paper, ord=1, text=_PROSE)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [pa{paper}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,  # picks chunks[0] — the pool's first entry
+    )
+
+    assert result.plans[0].action == "reground"
+    assert result.plans[0].reground_targets == [body]
+    assert result.rewritten_text is not None
+    assert f"[pc{body}]" in result.rewritten_text
+
+
+def test_reground_on_a_front_matter_only_paper_is_nomatch(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # Filtering can empty the pool. The honest outcome is a skip that leaves
+    # the [pa] in place — never a grounding on the only chunk there is.
+    paper = seed_ref(hub.live_store, title="front-matter only", kind="paper")
+    seed_chunk(hub.live_store, ref_id=paper, ord=0, text=_FRONT_MATTER)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [pa{paper}].")
+    links_before = _links_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
+    )
+
+    assert result.plans[0].action == "reground-nomatch"
+    assert result.rewritten_text is None
+    assert _links_count(hub.live_store) == links_before

@@ -94,6 +94,17 @@ paper is fetched:
   run re-grounds all-or-nothing: any supporter failing to locate leaves
   the whole run untouched (never erase a token).
 
+**Grounding needs prose, both arms.** A paper's title/author front-matter
+block asserts nothing, so an evidence edge grounded there says only "this
+paper exists" — a bibliography-stub hub. Those chunks are filtered out of the
+locate's candidate pool, so a `[pa]` never re-grounds onto one (an all-front-
+matter paper yields `reground-nomatch`), and a `[pc]` naming one is dropped as
+a supporter — when that leaves no supporter the group is skipped with action
+`ungroundable`, prose untouched. Abstracts and numeric tables ground fine; the
+test is prose, not position, so a low-`ord` chunk is not automatically
+suspect. Seeing `ungroundable` means: find the paper's real body passage and
+re-cite, or drop the cite.
+
 A re-ground also **records what it claimed**. The locate has already judged
 that the cite-group span is supported by the chosen passage, so applying it
 mints a `citation` audit record per located supporter — claim = the span (*a

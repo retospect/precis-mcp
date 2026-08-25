@@ -230,6 +230,12 @@ the LLM cascade runs on the cluster worker, never in the MCP handler). A
 fetched-``[pa]`` re-ground also mints a ``citation`` audit record per located
 supporter (tagged ``origin:draft-backfill``), so the intermediate ``[pc]``
 carries the claim the locate proved instead of a bare pointer.
+Evidence grounding requires **prose**: a chunk with no assertion (a paper's
+title/author front-matter block) is refused as a grounding passage in both
+arms — filtered out of the re-ground candidate pool, and dropped as a ``[pc]``
+supporter (action ``ungroundable`` when that leaves none). An edge grounded
+there would say "this paper exists", not "this passage supports the claim".
+Abstracts and numeric tables ground fine; the test is prose, not ``ord``.
 
 Read surfaces: ``get(kind='finding', view='evidence')`` (originators /
 corroborators / contradicts tables); the default ``finding`` search cohort
