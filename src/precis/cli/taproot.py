@@ -214,6 +214,16 @@ def add_parser(subparsers: Any) -> None:
         "cohort. Default: every repairable edge in the corpus.",
     )
     re_.add_argument(
+        "--cohort",
+        choices=("no-passage", "prose-less", "both"),
+        default="no-passage",
+        help="Which broken shape to repair. 'no-passage' (default): the edge "
+        "anchors no passage at all (src_chunk_id NULL). 'prose-less': the edge "
+        "anchors a passage that cannot be evidence -- a title/author "
+        "front-matter block (gripe 245842). 'both' runs the union, link_id "
+        "order. Same repair either way.",
+    )
+    re_.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -1044,6 +1054,7 @@ def _run_repair_evidence(args: argparse.Namespace) -> None:
     from precis.taproot.repair_evidence import (
         repair_edge,
         select_broken_evidence_edges,
+        select_prose_less_evidence_edges,
     )
     from precis.utils.llm.router import Tier
 
@@ -1061,9 +1072,23 @@ def _run_repair_evidence(args: argparse.Namespace) -> None:
     meter.bind_store(store)
     try:
         draft_ref_id = _resolve_draft_ref_id(store, args.draft) if args.draft else None
-        edges = select_broken_evidence_edges(
-            store, draft_ref_id=draft_ref_id, limit=args.limit
-        )
+        cohort = getattr(args, "cohort", "no-passage")
+        edges = []
+        if cohort in ("no-passage", "both"):
+            edges += select_broken_evidence_edges(
+                store, draft_ref_id=draft_ref_id, limit=args.limit
+            )
+        if cohort in ("prose-less", "both"):
+            edges += select_prose_less_evidence_edges(
+                store, draft_ref_id=draft_ref_id, limit=args.limit
+            )
+        if cohort == "both":
+            # Two disjoint SQL predicates (src_chunk_id NULL vs NOT NULL), so
+            # the union needs no dedup -- only a stable order, and the limit
+            # re-applied across the union rather than per cohort.
+            edges.sort(key=lambda e: e.link_id)
+            if args.limit is not None:
+                edges = edges[: args.limit]
         for edge in edges:
             try:
                 result = repair_edge(

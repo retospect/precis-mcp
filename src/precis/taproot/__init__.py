@@ -235,7 +235,11 @@ title/author front-matter block) is refused as a grounding passage in both
 arms — filtered out of the re-ground candidate pool, and dropped as a ``[pc]``
 supporter (action ``ungroundable`` when that leaves none). An edge grounded
 there would say "this paper exists", not "this passage supports the claim".
-Abstracts and numeric tables ground fine; the test is prose, not ``ord``.
+Abstracts and numeric tables ground fine; the test is prose, not ``ord``. The
+predicate is :mod:`.grounding`, shared rather than duplicated: it also gates
+:func:`.reground.candidate_passages`, so re-grounding, chase and evidence
+repair never *offer* a title page as a candidate. Edges already grounded on one
+are the ``prose-less`` cohort of ``precis taproot repair-evidence``.
 
 Read surfaces: ``get(kind='finding', view='evidence')`` (originators /
 corroborators / contradicts tables); the default ``finding`` search cohort

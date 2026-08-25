@@ -44,7 +44,7 @@ Two independent axes, one Python predicate and three regexes:
 
 | axis | signal | source |
 |---|---|---|
-| grounding | `taproot.backfill._has_grounding_prose(chunk_text)` | the gate itself — reuse it, don't re-implement |
+| grounding | `taproot.grounding.has_grounding_prose(chunk_text)` | the gate itself — reuse it, don't re-implement |
 | claim: meta | `^(the\|this) (passage\|chunk\|text\|excerpt\|section\|paper)\b` | text-about-text |
 | claim: fragment | starts lowercase, or with `subsequently\|and\|which\|where\|then\|later\|also` | cite-group segmentation cut mid-sentence |
 | claim: anaphoric | `^(the same (group\|authors\|team)\|they\|these authors)\b` | narrative subject; the world-claim twin usually already exists |
@@ -57,10 +57,14 @@ Bucketing:
   proper subject) and merge; these are near-duplicates that defeated
   `block()`'s ANN because a narrative restatement embeds differently. Feed them
   to `docs/backlog/claim-hub-dedup-sweep.md`.
-- **REGROUND** — claim is assertive but `_has_grounding_prose` is False. Look
-  for the passage **in the same paper first**: the title matched precisely
+- **REGROUND** — claim is assertive but `has_grounding_prose` is False. Run
+  `precis taproot repair-evidence --cohort prose-less --draft <dr>` (dry-run by
+  default; `--apply` to write). It re-verifies the hub's claim against **only**
+  the source the edge already names, so the passage is found in the paper the
+  edge asserts — which is what you want here: the title matched precisely
   because the claim restates that paper's own result, so its body almost always
-  carries it. Only widen to other papers on a genuine no-match.
+  carries it. A source with no supporting passage is recorded and *nothing* is
+  written — neither the edge nor the claim.
 - **ok** — everything else.
 
 ## 3. Measured baseline (2026-08-25, before any remediation)
@@ -91,7 +95,11 @@ Two things that baseline showed, worth carrying forward:
 
 ## 4. Related
 
-- The grounding gate: gripe 245842, `precis.taproot.backfill._has_grounding_prose`.
+- The grounding gate: gripe 245842, `precis.taproot.grounding.has_grounding_prose`
+  — enforced in `backfill` (both cite arms), in
+  `reground.candidate_passages` (so re-grounding, chase and evidence repair
+  never offer a title page), and selectable as `repair-evidence --cohort
+  prose-less`.
 - The fragment cause: `docs/backlog/taproot-backfill-fragment-claims.md`.
 - The evidence-side mirror (a paper's lit-review paragraph accepted as
   evidence): `docs/backlog/taproot-evidence-section-gating.md`.

@@ -84,6 +84,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.taproot.canon import CanonicalClaim, _parse_json_object
+from precis.taproot.grounding import has_grounding_prose
 from precis.taproot.migrate import _content_words, _normalize_number_text
 from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
@@ -273,18 +274,26 @@ def candidate_passages(
     """The top-``k`` candidate passages for one atom out of one paper's
     body chunks — pure function, no DB/model call.
 
-    Excludes any chunk whose ``section_path`` is a hearsay section
-    (:func:`is_hearsay_section`) before ranking, then ranks the rest by
-    :func:`_overlap_score` descending (ties broken by ``chunk_ord``
-    ascending, for determinism), keeping only chunks that score above
-    zero. ``chunks`` is expected to already be one paper's live body chunks
-    (``ord >= 0``, ``retired_at IS NULL`` — :func:`_fetch_body_chunks`'s
+    Excludes two kinds of chunk before ranking — both answering *this
+    passage cannot be evidence*: a hearsay ``section_path``
+    (:func:`is_hearsay_section` — the paper cites the work, it didn't do it)
+    and a chunk with no assertion at all
+    (:func:`~precis.taproot.grounding.has_grounding_prose` — a title/author
+    front-matter block, which the paper names itself in rather than asserting
+    anything, gripe 245842). Front matter is the more dangerous of the two
+    here precisely because it is short and dense with the atom's own topic
+    words, so it *wins* :func:`_overlap_score` against real body prose.
+
+    Ranks the rest by :func:`_overlap_score` descending (ties broken by
+    ``chunk_ord`` ascending, for determinism), keeping only chunks that score
+    above zero. ``chunks`` is expected to already be one paper's live body
+    chunks (``ord >= 0``, ``retired_at IS NULL`` — :func:`_fetch_body_chunks`'s
     contract); this function does not re-check either condition.
     """
     scored = [
         (c, _overlap_score(atom_sentence, c.text))
         for c in chunks
-        if not is_hearsay_section(c.section_path)
+        if not is_hearsay_section(c.section_path) and has_grounding_prose(c.text)
     ]
     scored = [(c, s) for c, s in scored if s > 0]
     scored.sort(key=lambda cs: (-cs[1], cs[0].chunk_ord))
@@ -292,14 +301,24 @@ def candidate_passages(
 
 
 def _hearsay_only_signal(atom_sentence: str, all_chunks: Sequence[PaperChunk]) -> bool:
-    """True iff *some* chunk in ``all_chunks`` — hearsay sections included
-    — would score as a candidate for this atom. Called only when
+    """True iff *some* prose chunk in ``all_chunks`` — hearsay sections
+    included — would score as a candidate for this atom. Called only when
     :func:`candidate_passages` (which excludes hearsay) came back empty for
     this atom x paper, to tell "nothing in this paper matches at all"
     (``no-passage``) apart from "the only matching material sat in an
     excluded section" (``hearsay-only``) — the delta the design doc's
-    apply-integration section names."""
-    return any(_overlap_score(atom_sentence, c.text) > 0 for c in all_chunks)
+    apply-integration section names.
+
+    Prose-less chunks are excluded here too, and deliberately: they are the
+    OTHER thing :func:`candidate_passages` drops, so counting them would
+    report a paper whose only lexical match is its own title page as
+    ``hearsay-only`` — naming the wrong exclusion. Such a paper has no usable
+    passage, which is exactly ``no-passage``."""
+    return any(
+        _overlap_score(atom_sentence, c.text) > 0
+        for c in all_chunks
+        if has_grounding_prose(c.text)
+    )
 
 
 # ── verify_atoms_batch — the real LLM call, MEDIUM tier ─────────────────

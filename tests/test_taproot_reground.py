@@ -92,11 +92,55 @@ def test_candidate_passages_excludes_hearsay_sections() -> None:
     assert [c.chunk_id for c in cands] == [1]
 
 
+def test_candidate_passages_excludes_front_matter_that_outranks_body_prose() -> None:
+    # The gripe-245842 shape, and why the exclusion cannot be left to ranking:
+    # the title block is SHORT and made almost entirely of the atom's own topic
+    # words, so it beats the real result sentence on overlap every time.
+    atom = "Graphene exhibits a tensile strength of 130 GPa."
+    chunks = [
+        _pc(
+            1,
+            0,
+            "Tensile Strength of Graphene\n\nA. B. Lee, C. D. Park\n\n"
+            "Department of Physics",
+        ),
+        _pc(
+            2,
+            7,
+            "We measured the elastic properties of free-standing monolayers and "
+            "found a tensile strength of 130 GPa.",
+            "Results",
+        ),
+    ]
+    cands = candidate_passages(atom, chunks)
+    assert [c.chunk_id for c in cands] == [2]
+
+
+def test_candidate_passages_keeps_a_numeric_table() -> None:
+    # A table has no sentence but is legitimate evidence for a numeric claim.
+    atom = "The binding energy of the I PGNB configuration is -3.34 eV."
+    table = _pc(
+        1,
+        13,
+        "| Structure | Binding energy (eV) |\n"
+        "|-----------|--------------------|\n"
+        "| I PGNB    | -3.34              |\n"
+        "| II PGNB   | -3.78              |",
+        "Results",
+    )
+    assert [c.chunk_id for c in candidate_passages(atom, [table])] == [1]
+
+
 def test_candidate_passages_ranks_by_overlap_descending() -> None:
     atom = "The catalyst achieves 92% yield at RT."
     chunks = [
-        _pc(1, 0, "irrelevant text about something else entirely."),
-        _pc(2, 1, "The catalyst achieves a 92% yield at room temperature (RT)."),
+        _pc(1, 0, "irrelevant prose about something else entirely, at length."),
+        _pc(
+            2,
+            1,
+            "The catalyst achieves a 92% yield at room temperature (RT) in "
+            "every run we performed.",
+        ),
     ]
     cands = candidate_passages(atom, chunks)
     assert cands[0].chunk_id == 2
@@ -113,7 +157,10 @@ def test_candidate_passages_folds_unicode_notation_against_ascii_atom() -> None:
 
 def test_candidate_passages_respects_top_k() -> None:
     atom = "X shows high strength."
-    chunks = [_pc(i, i, f"X shows high strength in sample {i}.") for i in range(10)]
+    chunks = [
+        _pc(i, i, f"X shows high strength in sample {i} of the measured set.")
+        for i in range(10)
+    ]
     cands = candidate_passages(atom, chunks, k=3)
     assert len(cands) == 3
 
@@ -192,7 +239,17 @@ def test_verify_atoms_hearsay_only_reason() -> None:
     candidate_passages excludes it, but the delta against the full
     (hearsay-included) chunk set signals hearsay-only, not no-passage."""
     atoms = [_claim("X shows high strength.")]
-    chunks = [_pc(1, 0, "X shows high strength.", "Related Work")]
+    # Real prose: the chunk has to survive the grounding-prose gate, or it is
+    # excluded as front matter and the reason is no-passage, not hearsay-only.
+    chunks = [
+        _pc(
+            1,
+            0,
+            "Earlier work by Lee and co-workers shows that X has high strength "
+            "under ambient conditions.",
+            "Related Work",
+        )
+    ]
     result = verify_atoms(
         store=_FAKE_STORE,
         hub_ref_id=1,
@@ -202,6 +259,24 @@ def test_verify_atoms_hearsay_only_reason() -> None:
         verify_batch_fn=_never_verify,
     )
     assert result.atoms[0].reason == "hearsay-only"
+    assert not result.atoms[0].grounded
+
+
+def test_verify_atoms_front_matter_only_is_no_passage_not_hearsay() -> None:
+    """The paper's only matching text is its own title page. That is not a
+    hearsay section, so naming it ``hearsay-only`` would point the operator at
+    the wrong exclusion — the paper simply has no usable passage."""
+    atoms = [_claim("X shows high strength.")]
+    chunks = [_pc(1, 0, "High Strength in X\n\nA. B. Lee\n\nDept of Physics")]
+    result = verify_atoms(
+        store=_FAKE_STORE,
+        hub_ref_id=1,
+        atoms=atoms,
+        collect_papers_fn=lambda s, h: [100],
+        fetch_body_chunks_fn=lambda s, pid: chunks,
+        verify_batch_fn=_never_verify,
+    )
+    assert result.atoms[0].reason == "no-passage"
     assert not result.atoms[0].grounded
 
 
@@ -258,7 +333,7 @@ def test_verify_atoms_rejects_hallucinated_quote_not_in_passage() -> None:
     model DID claim support, so this is the validation-failure reason, not
     the plain "the model said unsupported" one."""
     atoms = [_claim("X shows high conductivity.")]
-    chunks = [_pc(1, 0, "X shows high strength in this material.")]
+    chunks = [_pc(1, 0, "X shows high strength in this material under load.")]
     verify_fn = _verify_map({atoms[0].sentence: (0, "X shows high conductivity", None)})
     result = verify_atoms(
         store=_FAKE_STORE,
@@ -280,8 +355,8 @@ def test_verify_atoms_rejects_quote_not_unique_across_paper() -> None:
     "model said unsupported"."""
     atoms = [_claim("X shows the marker property.")]
     chunks = [
-        _pc(1, 0, "X shows the marker property in sample A."),
-        _pc(2, 1, "X shows the marker property in sample B."),
+        _pc(1, 0, "X shows the marker property in sample A of this run."),
+        _pc(2, 1, "X shows the marker property in sample B of this run."),
     ]
     verify_fn = _verify_map(
         {atoms[0].sentence: (0, "X shows the marker property", None)}
@@ -384,7 +459,7 @@ def test_verify_atoms_quote_validation_failed_vs_verify_rejected_same_hub() -> N
     the two reasons must not collapse into each other."""
     atom_invalid = _claim("X shows high conductivity.")
     atom_rejected = _claim("X shows an invented property nobody measured.")
-    chunks = [_pc(1, 0, "X shows high strength in this material.")]
+    chunks = [_pc(1, 0, "X shows high strength in this material under load.")]
     verify_fn = _verify_map(
         {atom_invalid.sentence: (0, "X shows high conductivity", None)}
     )

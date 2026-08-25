@@ -7,6 +7,24 @@ A July batch left 369 evidence edges whose ``meta`` reads, verbatim,
 nobody ever identified. The writing path is fixed; this is a **bounded
 backfill over a known cohort**, not a live bug.
 
+**Two cohorts, one repair.** The pass now selects two broken shapes, both
+repaired by the same :func:`repair_edge` (which is ``link_id``-driven and does
+not care what ``src_chunk_id`` held before):
+
+* **A — anchors no passage** (:func:`select_broken_evidence_edges`, the
+  original July batch): ``src_chunk_id IS NULL`` and
+  ``meta->'source_handle' = 'null'::jsonb``.
+* **B — anchors a passage that cannot be evidence**
+  (:func:`select_prose_less_evidence_edges`, gripe 245842): a grounding on a
+  paper's title/author front-matter block. Selected by the same clauses except
+  the prose test itself, which is a Python predicate
+  (:func:`~precis.taproot.grounding.has_grounding_prose`) and so filters in
+  Python — which is also why cohort B's ``limit`` applies *after* the filter,
+  a prefix of the filtered cohort rather than of the candidate scan.
+
+The two SQL predicates are disjoint on ``src_chunk_id``, so ``--cohort both``
+unions them without dedup.
+
 **The pass, in order:**
 
 1. :func:`select_broken_evidence_edges` — the cohort SQL: an evidence edge
@@ -57,6 +75,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from precis.taproot.canon import CanonicalClaim
+from precis.taproot.grounding import has_grounding_prose
 from precis.taproot.reground import (
     AtomVerifyResult,
     FetchChunksFn,
@@ -217,6 +236,73 @@ _DRAFT_CLAUSE = """
                 AND dl.dst_ref_id = l.dst_ref_id
            )
 """
+
+
+#: Cohort B — the edge names a chunk, but that chunk cannot be evidence:
+#: a title/author front-matter block (gripe 245842), or a row that is no longer
+#: live. Selected the same way as cohort A except the prose test itself, which
+#: is a Python predicate and not expressible in SQL — so this SQL returns the
+#: chunk text and :func:`select_prose_less_evidence_edges` filters in Python.
+#:
+#: The join is a LEFT join **on purpose**: an edge whose ``src_chunk_id`` points
+#: at a retired or deleted row would otherwise fall between the two cohorts —
+#: cohort A wants ``src_chunk_id IS NULL`` and an inner join here would drop it
+#: silently — leaving an edge anchored on text no reader can reach with nothing
+#: that ever selects it. A missing row yields ``text = NULL``, which fails the
+#: prose test, so it lands in this cohort and gets re-grounded.
+_PROSE_LESS_COHORT_SQL = """
+    SELECT l.link_id, l.dst_ref_id, l.src_ref_id, s.kind, l.relation, c.text
+      FROM links l
+      JOIN refs s ON s.ref_id = l.src_ref_id AND s.deleted_at IS NULL
+      JOIN refs h ON h.ref_id = l.dst_ref_id AND h.deleted_at IS NULL
+      LEFT JOIN chunks c
+             ON c.chunk_id = l.src_chunk_id AND c.retired_at IS NULL
+     WHERE s.kind IN ('paper', 'patent')
+       AND l.relation IN ('establishes', 'corroborates', 'contradicts')
+       AND l.src_chunk_id IS NOT NULL
+       {draft_clause}
+     ORDER BY l.link_id
+"""
+
+
+def select_prose_less_evidence_edges(
+    store: Store, *, draft_ref_id: int | None = None, limit: int | None = None
+) -> list[BrokenEdge]:
+    """Cohort B: evidence edges grounded on a chunk that asserts nothing.
+
+    The mirror of :func:`select_broken_evidence_edges`. Cohort A's edge names
+    no passage at all; this one names a passage that cannot support anything —
+    a paper's title/author front-matter block, or a chunk row that is no longer
+    live (retired by a re-chunk, or deleted). Both are repaired identically by
+    :func:`repair_edge`, which is ``link_id``-driven and does not care whether
+    ``src_chunk_id`` was NULL or merely wrong.
+
+    ``limit`` is applied in **Python**, after the prose filter, so a limited
+    run is a stable prefix of the *filtered* cohort rather than of the
+    candidate scan (SQL cannot evaluate
+    :func:`~precis.taproot.grounding.has_grounding_prose`). Cohort A limits in
+    SQL because its predicate is fully expressible there.
+    """
+    params: dict[str, Any] = {}
+    draft_clause = ""
+    if draft_ref_id is not None:
+        draft_clause = _DRAFT_CLAUSE
+        params["draft"] = draft_ref_id
+    sql = _PROSE_LESS_COHORT_SQL.format(draft_clause=draft_clause)
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    out = [
+        BrokenEdge(
+            link_id=int(r[0]),
+            hub_ref_id=int(r[1]),
+            source_ref_id=int(r[2]),
+            source_kind=str(r[3]),
+            relation=str(r[4]),
+        )
+        for r in rows
+        if not has_grounding_prose(str(r[5] or ""))
+    ]
+    return out[:limit] if limit is not None else out
 
 
 def select_broken_evidence_edges(

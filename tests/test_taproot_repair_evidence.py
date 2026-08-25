@@ -27,6 +27,7 @@ from precis.taproot.reground import AtomVerifyResult
 from precis.taproot.repair_evidence import (
     repair_edge,
     select_broken_evidence_edges,
+    select_prose_less_evidence_edges,
 )
 from precis.utils import handle_registry
 from tests.conftest import _active_dsn
@@ -93,6 +94,107 @@ def _rejects(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
 
 def _never_verify(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
     raise AssertionError("verify_batch_fn should not have been called")
+
+
+_FRONT_MATTER = (
+    "Printed Touch Sensors Using Carbon NanoBud Material\n\n"
+    "Anton S. Anisimov, David P. Brown, Bjorn F. Mikladal\n\n"
+    "Canatu Oy, Helsinki, Finland"
+)
+
+
+def _seed_grounded_edge(
+    store: Any, *, passage: str, claim: str = _CLAIM
+) -> tuple[int, int, int, int]:
+    """A hub + source paper + an edge that DOES anchor ``passage``.
+    Returns ``(hub_ref_id, paper_ref_id, chunk_id, link_id)``."""
+    paper = seed_ref(store, title="Anisimov 2018", kind="paper")
+    chunk_id = seed_chunk(store, ref_id=paper, text=passage, ord=0)
+    hub = mint_hub(store, CanonicalClaim(sentence=claim, scope={}))
+    link = store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub,
+        relation="corroborates",
+        src_pos=0,
+        meta={"caveats": [], "support": "yes", "source_handle": f"pc{chunk_id}"},
+    )
+    return hub, paper, chunk_id, int(link.id)
+
+
+# ── cohort B — grounded on a chunk that asserts nothing ─────────────────
+
+
+def test_prose_less_cohort_selects_a_front_matter_grounding(store: Any) -> None:
+    _hub, _paper, _chunk, link_id = _seed_grounded_edge(store, passage=_FRONT_MATTER)
+    assert [e.link_id for e in select_prose_less_evidence_edges(store)] == [link_id]
+
+
+def test_prose_less_cohort_skips_a_real_body_passage(store: Any) -> None:
+    _seed_grounded_edge(store, passage=_PASSAGE)
+    assert select_prose_less_evidence_edges(store) == []
+
+
+def test_prose_less_cohort_excludes_cohort_a(store: Any) -> None:
+    # Cohort A anchors NO passage; the two SQL predicates are disjoint on
+    # src_chunk_id, so a --cohort both union needs no dedup.
+    _seed_broken_edge(store)
+    assert select_prose_less_evidence_edges(store) == []
+
+
+def test_prose_less_cohort_catches_an_edge_anchored_on_a_retired_chunk(
+    store: Any,
+) -> None:
+    # Between the two cohorts otherwise: cohort A wants src_chunk_id NULL, and
+    # an inner join here would drop the row silently — leaving an edge anchored
+    # on text no reader can reach with nothing that ever selects it.
+    _hub, _paper, chunk_id, link_id = _seed_grounded_edge(store, passage=_PASSAGE)
+    assert select_prose_less_evidence_edges(store) == []
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s", (chunk_id,)
+        )
+        conn.commit()
+    assert [e.link_id for e in select_prose_less_evidence_edges(store)] == [link_id]
+
+
+def test_prose_less_cohort_limit_applies_after_the_prose_filter(store: Any) -> None:
+    # The limit is a prefix of the FILTERED cohort, not of the candidate scan
+    # -- a SQL LIMIT would have burned the budget on good edges.
+    _seed_grounded_edge(store, passage=_PASSAGE)
+    a = _seed_grounded_edge(store, passage=_FRONT_MATTER)
+    _seed_grounded_edge(store, passage=_PASSAGE)
+    b = _seed_grounded_edge(store, passage=_FRONT_MATTER)
+    got = [e.link_id for e in select_prose_less_evidence_edges(store, limit=2)]
+    assert got == sorted([a[3], b[3]])
+
+
+def test_repair_edge_repoints_a_front_matter_grounding(store: Any) -> None:
+    # The end-to-end shape gripe 245842 leaves behind: repair_edge is
+    # link_id-driven, so it moves an edge that was grounded on the WRONG
+    # chunk, not only one that was grounded on nothing.
+    paper = seed_ref(store, title="Anisimov 2018", kind="paper")
+    fm = seed_chunk(store, ref_id=paper, text=_FRONT_MATTER, ord=0)
+    body = seed_chunk(store, ref_id=paper, text=_PASSAGE, ord=1)
+    hub = mint_hub(store, CanonicalClaim(sentence=_CLAIM, scope={}))
+    link = store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub,
+        relation="corroborates",
+        src_pos=0,
+        meta={"caveats": [], "support": "yes", "source_handle": f"pc{fm}"},
+    )
+    result = repair_edge(
+        store,
+        hub,
+        paper,
+        int(link.id),
+        apply=True,
+        verify_batch_fn=_supported(1, "tensile strength of 130 GPa"),
+    )
+    assert result.status == "grounded"
+    src_chunk_id, meta = _link_row(store, int(link.id))
+    assert src_chunk_id == body
+    assert meta["source_handle"] == f"pc{body}"
 
 
 # ── repair_edge — the write path ────────────────────────────────────────
