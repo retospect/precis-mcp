@@ -1,20 +1,22 @@
 ---
 status: draft
-title: nanopub approve-form prefill leaves doi (and sometimes sha) blank despite the paper having both
+title: nanopub approve-form prefill picks tangential quotes over the load-bearing sentence
 model: sonnet
 ---
 
-# Approve prefill omits the DOI it already knows
+# Approve prefill quote selection needs work
 
-Live pattern (2026-08-17): during the 13-hub batch review of the nanobud
-draft's claim hubs, the hub page's prefilled approve payload had
-`"doi": ""` on essentially every passage — for papers whose DOI is
-present in `ref_identifiers` (`id_kind='doi'`) and whose
-`refs.pdf_sha256` is set. Every human/agent reviewer has to re-look up
-and paste in a value the system already has, and a reviewer who trusts
-the prefill submits a payload that fails the `[grounding]` DOI gate.
+**DOI part FIXED by 3f3e2130** (2026-08-25): `nanopub/evidence.py::_source`
+and `_awaiting_sources` now resolve `doi` from `ref_identifiers`
+(`id_kind='doi'`) first, falling back to the legacy `refs.meta['doi']` —
+covered by
+`tests/precis_web/test_nanopub_routes.py::test_prefill_doi_comes_from_ref_identifiers`.
+The blank-DOI-blocks-the-mint-gate failure described below no longer
+applies; what's left open is the quote-selection sub-issue.
 
-Also seen in the same sweep (same prefill code path, lower frequency):
+Still open, from the same 2026-08-17 batch review of the nanobud draft's
+claim hubs (same prefill code path as the now-fixed DOI bug, lower
+frequency):
 
 - prefill picks tangential quotes (figure captions, table header rows)
   over the load-bearing sentence in the same chunk, and can emit a quote
@@ -24,29 +26,5 @@ Also seen in the same sweep (same prefill code path, lower frequency):
 are gone: 9d0b9206 dropped the cap and syncs the full hub title on
 approve, so this sub-item no longer applies.)
 
-Fix: the prefill builder should resolve doi from `ref_identifiers` and
-sha from `refs.pdf_sha256` per passage (they're both already loaded for
-the gate preview), and prefer quote candidates that pass the
-citation-marker gate and contain the claim's numeric literals when the
-claim has any.
-
-Update 2026-08-19 — **code site pinned, and the blast radius is the whole
-corpus.** `nanopub/evidence.py::_source` builds every `EvidenceSource`
-with `doi=(ref.meta or {}).get("doi")` — meta only, no `ref_identifiers`
-fallback. `pdf_sha_rows` in the same module already does the right thing
-(it unions `refs.pdf_sha256` with `ref_identifiers WHERE
-id_kind='pdf_sha256'`), so the two anchors are read inconsistently.
-
-Prod distribution (2026-08-19, 30655 papers): **3** have
-`meta->>'doi'`; **27846** have a `ref_identifiers` row with
-`id_kind='doi'`; **27843** have the identifier row and no meta value; **0**
-have meta without the identifier row. So the meta lookup misses ~99.99% of
-the DOI corpus — spot-checked NULL on pa1222 / pa2713 / pa2823 / pa2862 /
-pa42501, all of which do hold a DOI. DOI is a `ref_identifiers`
-phenomenon; `meta->>'doi'` is vestigial.
-
-Consequence beyond the prefill: the assembled provenance graph carries no
-DOI, so a correctly-grounded hub fails the `[grounding]` DOI mint gate.
-Give `_source`'s `doi=` the same `ref_identifiers` fallback
-`pdf_sha_rows` uses, and grep for other `meta->>'doi'` / `meta.get("doi")`
-readers while in there.
+Fix: prefer quote candidates that pass the citation-marker gate and
+contain the claim's numeric literals when the claim has any.

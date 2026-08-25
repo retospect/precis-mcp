@@ -158,6 +158,29 @@ def test_prefill_doi_comes_from_ref_identifiers(
     assert "https://doi.org/10.5555/regress.1" in resp.text
 
 
+def test_prefill_doi_falls_back_to_legacy_meta(
+    client: TestClient, runtime_with_store
+) -> None:
+    """The 3-of-33k prod shape: no identifiers row, DOI parked on
+    ``refs.meta['doi']``. The fallback must still surface it."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM ref_identifiers WHERE ref_id=%s AND id_kind='doi'",
+            (paper,),
+        )
+        conn.execute(
+            "UPDATE refs SET meta = coalesce(meta, '{}'::jsonb) || "
+            "jsonb_build_object('doi', '10.9999/legacy.7') WHERE ref_id=%s",
+            (paper,),
+        )
+    hub = _seed_hub(store, "A legacy-doi claim.", paper, chunk)
+    resp = client.get(f"/nanopub/fi{hub}")
+    assert resp.status_code == 200
+    assert "10.9999/legacy.7" in resp.text
+
+
 def test_prefill_covers_derived_from_lineage_anchor(
     client: TestClient, runtime_with_store
 ) -> None:

@@ -606,3 +606,24 @@ def test_cookie_requests_do_not_touch_last_login() -> None:
     client.get("/", follow_redirects=False)
     client.get("/", follow_redirects=False)
     assert len(store.touched) == touched
+
+
+def test_a_removed_users_valid_cookie_gets_a_challenge() -> None:
+    """A cookie that verifies but names a login no longer on the roster
+    must challenge (WWW-Authenticate), not just deny — the browser's
+    re-prompt is the recovery path."""
+    rec = hash_password("pw")
+    store = FakeUserStore(user=_user(), record=rec)
+    client = _client(store)
+    client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    store.user = _user(login="other")  # roster non-empty; reto is gone
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"].startswith("Basic realm=")
+
+
+def test_malformed_tokens_are_refused_not_crashed() -> None:
+    tokens = SessionTokens()
+    assert tokens.verify("abc.x.y") is None  # non-numeric expiry
+    assert tokens.verify(f"{2**33}.x.") is None  # empty login
+    assert tokens.verify(f"{2**33}.x") is None  # missing login field
