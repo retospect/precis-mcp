@@ -1072,7 +1072,7 @@ def _run_repair_evidence(args: argparse.Namespace) -> None:
     meter.bind_store(store)
     try:
         draft_ref_id = _resolve_draft_ref_id(store, args.draft) if args.draft else None
-        cohort = getattr(args, "cohort", "no-passage")
+        cohort = args.cohort
         edges = []
         if cohort in ("no-passage", "both"):
             edges += select_broken_evidence_edges(

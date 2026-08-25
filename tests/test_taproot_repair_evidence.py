@@ -129,6 +129,16 @@ def test_prose_less_cohort_selects_a_front_matter_grounding(store: Any) -> None:
     assert [e.link_id for e in select_prose_less_evidence_edges(store)] == [link_id]
 
 
+def test_prose_less_cohort_maps_every_field_of_the_edge(store: Any) -> None:
+    # link_id alone is not enough: a transposed column here would send
+    # repair_edge at the wrong hub or the wrong source paper.
+    hub, paper, _chunk, link_id = _seed_grounded_edge(store, passage=_FRONT_MATTER)
+    (edge,) = select_prose_less_evidence_edges(store)
+    assert (edge.link_id, edge.hub_ref_id, edge.source_ref_id) == (link_id, hub, paper)
+    assert edge.source_kind == "paper"
+    assert edge.relation == "corroborates"
+
+
 def test_prose_less_cohort_skips_a_real_body_passage(store: Any) -> None:
     _seed_grounded_edge(store, passage=_PASSAGE)
     assert select_prose_less_evidence_edges(store) == []
@@ -525,6 +535,7 @@ def _cli_args(**overrides: Any) -> argparse.Namespace:
         "taproot_cmd": "repair-evidence",
         "dry_run": False,
         "apply": False,
+        "cohort": "no-passage",
         "draft": None,
         "limit": None,
         "tier": "medium",
@@ -573,6 +584,49 @@ def test_cli_dry_run_is_the_default_and_writes_nothing(
     assert "DRY-RUN" in capsys.readouterr().err
     # Nothing written -- the edge is still passage-less.
     assert _link_row(store, link_id) == before_row
+
+
+def test_cli_cohort_prose_less_selects_only_the_front_matter_edge(
+    store: Any, monkeypatch: Any, tmp_path: Any
+) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    _h, _p, _c, passage_less_link = _seed_broken_edge(store)  # cohort A
+    _h2, _p2, _c2, front_matter_link = _seed_grounded_edge(store, passage=_FRONT_MATTER)
+    _patch_verify(monkeypatch, "tensile strength of 130 GPa")
+    out = tmp_path / "proposal.jsonl"
+
+    taproot_cli.run(_cli_args(out=str(out), cohort="prose-less"))
+
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [r["link_id"] for r in rows] == [front_matter_link]
+    assert passage_less_link not in [r["link_id"] for r in rows]
+
+
+def test_cli_cohort_both_unions_the_two_shapes(
+    store: Any, monkeypatch: Any, tmp_path: Any
+) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    _h, _p, _c, passage_less_link = _seed_broken_edge(store)
+    _h2, _p2, _c2, front_matter_link = _seed_grounded_edge(store, passage=_FRONT_MATTER)
+    _patch_verify(monkeypatch, "tensile strength of 130 GPa")
+    out = tmp_path / "proposal.jsonl"
+
+    taproot_cli.run(_cli_args(out=str(out), cohort="both"))
+
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert sorted(r["link_id"] for r in rows) == sorted(
+        [passage_less_link, front_matter_link]
+    )
 
 
 def test_cli_apply_repairs_the_original_row(
