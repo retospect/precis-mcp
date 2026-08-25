@@ -38,14 +38,39 @@ directions — that is a reliability problem wearing an accuracy costume.
    calibration number, and gives every future rubric revision a fixed
    yardstick (dev/test separation — today the 18-hub pilot is both).
 
-## Cheap first slice
+## Cheap first slice — measured 2026-08-25 (grounding verifier); gold set + drift axis remain open
 
-Pick the grounding verifier only (highest-stakes judge, richest existing
-data). One script: sample ~50 already-verdicted hubs, re-run ×3 on the
-deployed rung + ×1 on the adjacent cheaper rung, emit a one-page agreement
-table. No schema, no worker — a read-mostly batch like the retro-verify
-passes. The decision rule for scaling the 922-hub run should cite this
-number.
+Ran on 52 hub-edge pairs from the `dr42995` cohort (22 edges from 20
+exemplar hubs the audit had flagged + 30 seeded-random, `setseed(0.17)`),
+scored independently by 3× opus (test-retest) and 1× sonnet (cross-rung)
+under a frozen instrument. Raw verdicts, roster, and the analysis script:
+`llm-judge-reliability-data/`; the instrument (reconstructed and now
+durable — the original shard prompt was lost with the `verdicts_*.jsonl`
+files): `docs/runbooks/grounding-verifier-instrument.md`.
+
+| level | test-retest (Fleiss, 3× opus) | cross-rung (Cohen, sonnet vs opus modal) |
+|---|---|---|
+| repair lane (benign / claim-edit / edge-repair) | **0.88** (47/52 unanimous) | **0.83** |
+| disposition (8 labels) | **0.86** (46/52 unanimous, zero 3-way splits) | 0.83 |
+| passage verdict (8 labels) | 0.79 | 0.65 |
+
+Per-label (disposition): WRONG_SOURCE 0.90, CLAIM_DEFECT 0.89, NONE 0.86,
+NEEDS_SECOND_EDGE 0.79. Singletons (FRONT_MATTER_ANCHOR, PARTIAL_MINOR)
+are unmeasurable at n=1.
+
+**Reading**: the verifier is reliable where decisions are made — the
+repair-lane call is near-ceiling on the deployed rung, and the audit's
+headline rates carry error bars small enough to act on. The cross-rung
+0.65 on passage verdict is almost entirely the SUPPORTED↔ADJACENT_CHUNK
+boundary (6 of 14 disagreements), which is benign↔benign; sonnet's
+disposition disagreements skew toward *more* findings (3× NONE→
+CLAIM_DEFECT), i.e. false alarms, not misses — relevant to
+`router-coverage-and-downshift.md`: downshifting this judge costs review
+time, not detection.
+
+**Caveats**: same-day replicates (no drift axis); exemplar hubs have been
+partially repaired since the audit, so no comparison against the audit's
+own labels was attempted (replicates were blind to them); n=52.
 
 ## Related
 
