@@ -90,10 +90,39 @@ scripts/prod-psql "SELECT host, meta->>'nas_ok' AS nas_ok FROM host_heartbeat;"
   the owning role (`mcps`, `extract_watch`, `precis_worker`, or
   `precis_embedder`); its venv-mode detection wipes and rebuilds against the
   python.org interpreter automatically.
-- **Ungranted resolved interpreter** (path with `auth_value=0`, or absent): grant
-  it in **System Settings → Privacy & Security → Full Disk Access → `+` → ⌘⇧G**,
-  paste the resolved real path, toggle **ON**. TCC can't be set from the CLI
-  (SIP-protected; unsigned MDM/PPPC profiles are rejected on macOS 26).
+- **Ungranted resolved interpreter** (path with `auth_value=0`, or absent):
+  first run the **launchd NAS probe** below — a deliberately-denied daemon
+  attempt makes TCC auto-register the binary as a toggled-OFF row, so the
+  operator only flips a switch instead of fighting the file picker inside
+  `.framework` bundles (the picker offers `Versions/X.Y/Python`, the dylib,
+  which TCC never matches — the grant must be on `bin/pythonX.Y`, the exec'd
+  binary). Then **System Settings → Privacy & Security → Full Disk Access**,
+  toggle the entry **ON** (quit/reopen Settings first; the pane caches). TCC
+  can't be set from the CLI (SIP-protected; unsigned MDM/PPPC profiles are
+  rejected on macOS 26). Re-run the probe after: `NAS-READ-OK` is the proof —
+  it exercises the real daemon context, which no ssh/login shell can.
+
+  ```sh
+  # one-shot launchd job: force-register (denied) or verify (granted) a python
+  V=3.14 L=nasprobe && sudo tee /tmp/$L.plist >/dev/null <<PL && sudo launchctl bootstrap system /tmp/$L.plist && sleep 5 && cat /tmp/$L.out /tmp/$L.err; sudo launchctl bootout system/$L; sudo rm -f /tmp/$L.*
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0"><dict>
+    <key>Label</key><string>$L</string>
+    <key>ProgramArguments</key><array>
+      <string>/Library/Frameworks/Python.framework/Versions/$V/bin/python$V</string>
+      <string>-c</string>
+      <string>import os;print("NAS-READ-OK:",os.listdir("/opt/nas/botshome")[:3])</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>/tmp/$L.out</string>
+    <key>StandardErrorPath</key><string>/tmp/$L.err</string>
+  </dict></plist>
+  PL
+  ```
+
+  (`launchctl submit` looks like it would do this in one line but is a silent
+  no-op on macOS 26 — the bootstrap-a-plist dance is required.)
 - **After granting**, restart the daemons so they re-exec under the new grant
   (TCC is evaluated at launch): `sudo launchctl kickstart -k system/com.precis.watch`
   (and `com.precis.worker`, etc.). A grant added while a daemon runs is NOT
@@ -124,3 +153,8 @@ Then append a dated line to the `## Log` below.
   (Developer-ID signed); FDA grants no longer break on python upgrades.
   Trigger: gateway web daemon lockout after an unpinned brew upgrade of
   python@3.14 (3.14.6→3.14.7).
+- **2026-08-25** — Cutover complete: all 6 grants (3 Macs × 3.12+3.14) in and
+  probe-verified `NAS-READ-OK` from daemon context; all daemons kickstarted.
+  Added the launchd NAS-probe procedure above (force-register + verify) after
+  learning the FDA file picker steers operators to the framework dylib, which
+  TCC never matches.
