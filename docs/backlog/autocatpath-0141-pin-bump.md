@@ -21,6 +21,15 @@ prio: high
 > unreleased engine is hand-installed over the pin. That is why the
 > 2026-08-21 un-suspension did not need this bump.
 
+> **UPDATE 2026-08-25 — target moved to ≥0.18 (catpath `df96471`).** The
+> engine now emits per-gas `production` rates + `selectivity` in the
+> kinetics record and per-gas defaulted-pressure warnings, and the web
+> pathway page's kinetics panel (f26056a7, `precis_web/pathway_kinetics.py`)
+> already renders both — but no prod record will carry them until a ≥0.18
+> catpath release is cut, the pin bumped, and BOTH deploy steps run
+> (`scripts/deploy` + `44-autocatpath.yml`). Until then the panel simply
+> omits the selectivity strip (by design, no error).
+
 ## Motivation / why
 
 The `PRECIS_AUTOCATPATH_VERSION=0.14.1` env override on melchior's worker
