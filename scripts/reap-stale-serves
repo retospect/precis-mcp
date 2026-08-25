@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# scripts/reap-stale-serves — SessionStart sweep that TERMs session MCP
+# servers (`/opt/mcps/bin/precis serve`) that have been REPLACED under the
+# same Claude session.
+#
+# The leak this closes: on `/mcp` reconnect, Claude Code spawns a fresh
+# stdio server for the session but never closes the old one's stdin
+# socketpair. The old server's transport reader sits in a blocking read()
+# that will never see EOF, its parent pid never changes, and nothing else
+# signals it — so it survives as a ~250–500 MB zombie per reconnect
+# (observed 2026-08-25: two stale servers, each beside a live newer
+# sibling). Its DB connections are already reaped server-side by pgbouncer
+# (sockets in CLOSED); the cost is RAM and process clutter.
+#
+# The criterion is state-based and precise: TWO serve processes sharing one
+# ppid (the Claude session pid). Claude Code runs exactly one precis stdio
+# server per session, so the older of any same-parent pair is by definition
+# replaced. Singletons are live sessions' servers and are never touched.
+# ppid<=1 is skipped entirely: launchd/systemd-managed daemons legitimately
+# parent there, and telling an orphaned session server from a managed one
+# needs a judgment this sweep doesn't have (first-pass scope decision,
+# 2026-08-25 — revisit only after confirming nothing managed runs from
+# /opt/mcps).
+#
+# The match string rides in the environment, not argv, so ps never shows it
+# on this sweep's own awk and the sweep cannot pattern-match itself.
+#
+# Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (shared with the other reapers).
+# Usage: scripts/reap-stale-serves [--dry-run]
+# PRECIS_REAP_SERVE_CMD overrides the matched command substring (tests).
+set -uo pipefail
+
+[ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
+
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+command -v ps >/dev/null 2>&1 || exit 0
+
+export REAP_SERVE_CMD="${PRECIS_REAP_SERVE_CMD:-/opt/mcps/bin/precis serve}"
+
+# For each ppid owning >=2 matching processes, emit every pid except the
+# youngest (smallest elapsed time; pid as tiebreak — larger pid is the later
+# fork on every platform we run on).
+# -ww: without a tty ps truncates COMMAND to 80 cols, and the interpreter
+# path alone pushes `/opt/mcps/...` past that — the sweep would silently
+# never match anything.
+stale_pids=$(ps -axwwo pid,ppid,etime,command 2>/dev/null | awk '
+    function etime_secs(e,    d, parts, n, s, i) {
+        # etime is [[dd-]hh:]mm:ss on both BSD and procps ps.
+        d = 0
+        if (e ~ /-/) { split(e, dd, "-"); d = dd[1]; e = dd[2] }
+        n = split(e, parts, ":")
+        s = 0
+        for (i = 1; i <= n; i++) s = s * 60 + parts[i]
+        return d * 86400 + s
+    }
+    NR == 1 { next }
+    {
+        pid = $1; ppid = $2; et = $3
+        $1 = $2 = $3 = ""
+        if (index($0, ENVIRON["REAP_SERVE_CMD"]) == 0) next
+        if (ppid + 0 <= 1) next
+        secs = etime_secs(et)
+        if (!(ppid in best) || secs < best[ppid] ||
+            (secs == best[ppid] && pid + 0 > best_pid[ppid] + 0)) {
+            if (ppid in best) stale = stale " " best_pid[ppid]
+            best[ppid] = secs
+            best_pid[ppid] = pid
+        } else {
+            stale = stale " " pid
+        }
+    }
+    END { if (stale != "") print stale }
+')
+
+if [ -z "${stale_pids// /}" ]; then
+    echo "reap-stale-serves: nothing to reap"
+    exit 0
+fi
+
+if [ "$DRY_RUN" = 1 ]; then
+    echo "reap-stale-serves --dry-run: would reap:${stale_pids}"
+    exit 0
+fi
+
+reaped=""
+for pid in $stale_pids; do
+    # Best-effort: a sibling session's sweep may have won the race.
+    kill "$pid" 2>/dev/null && reaped="$reaped $pid"
+done
+echo "reap-stale-serves: reaped:${reaped:- nothing (raced)}"
+exit 0
