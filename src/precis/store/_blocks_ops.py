@@ -1729,6 +1729,10 @@ class BlockStore:
         (docs/backlog/dreaming.md, §Access accounting). Metadata-only —
         never touches ``chunks.text`` — so it's the one write permitted
         on the search path (thresholds.md relaxed for metadata bumps).
+        SECURITY DEFINER since migration 0137, so it also works from a
+        read-only connection (``agent_ro`` / the ``precis-ro`` session
+        server / a ``write:none`` envelope) — without that, every read
+        verb's access accounting would hard-fail under such a role.
 
         No-op when:
 
