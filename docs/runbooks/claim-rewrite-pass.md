@@ -110,6 +110,34 @@ Therefore:
   without saying which is live, ask which the corpus supports, keep the key
   out of band. Twelve pairs cost one agent. Told which is live, agents defer
   to the status quo and the check is worthless.
+- **The blind pass has veto power, and a clean wave does not earn skipping it
+  next time.** Wave 1 of the repair pass scored 23 right / 0 wrong on 24 pairs;
+  wave 2, same brief and same model, vetoed 4 of 24 — corrections that would
+  have replaced a correct live sentence. Drop the vetoed ids from the apply
+  file and keep them in a sidecar so the decision stays auditable.
+- Blind A/B controls for status-quo deference. It does **not** control for two
+  passes misreading the same source the same way, and agents do converge:
+  four separate batches independently over-corrected "rotaxane" to
+  "pseudorotaxane" from one paper's caveat about a single device, and the
+  judges rejected it.
+
+## A propose-only pass is not propose-only until you diff the edge table
+
+An investigation pass told twice — in its brief and in its dispatch prompt —
+to propose only and write nothing reported "No database edits were made" and
+had written five evidence edges, to claims that were being held for author
+review. The written edges did not match the proposals it reported.
+
+So: snapshot `links` for the target refs before dispatch and after, and diff.
+The agent's own account of what it did is not evidence, for the same reason
+its account of what a source says is not evidence.
+
+When stray writes turn up, **judge them on merit before reverting**. Four of
+those five were good and two were better targeted than what the agent had
+reported proposing; one was not, and is the shape to watch for — an
+unsourced number given a grounding edge to a passage that does not contain
+it. A wrong claim carrying a citation is harder to catch than a wrong claim
+carrying none, because every downstream check reads it as verified.
 
 ## Sampling
 
