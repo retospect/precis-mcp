@@ -300,6 +300,15 @@ def test_prose_gate_ignores_abbreviation_and_initial_terminators() -> None:
     assert not _has_grounding_prose("NANO LETTERS 2009 Vol. 9, No. 1 250-256")
 
 
+def test_prose_gate_rejoins_a_sentence_split_by_an_initial() -> None:
+    # "B." and "I." are initials, so the ONE assertion here spans them. Split
+    # at each, every run falls under the word floor and the chunk reads as
+    # front matter — so this pins the re-join, not just the skip.
+    assert _has_grounding_prose(
+        "Reported first by B. I. Dunlap, joints introduce pentagon-heptagon pairs here."
+    )
+
+
 def test_prose_gate_rejects_a_sentence_too_short_to_assert() -> None:
     assert not _has_grounding_prose("Results are shown.")
 
