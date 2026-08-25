@@ -92,6 +92,29 @@ missing, or whose sentence equals what is already live.
   about technique will volunteer content defects, which reads like data but
   has no denominator — the campaign's "~13% content errors" was exactly this,
   and only became a real number when asked directly with a fixed sample.
+- **Read every corroborating chunk, not the first-listed one.** A wave-4
+  proposal was vetoed for conflating Rothemund's 2D origami with Douglas's 3D
+  work because it stopped at the first edge. Added to every brief from wave 5
+  on, and it paid immediately: one agent found a second corroborator that did
+  not support its claim at all, another kept two near-identical
+  phosphorene–fullerene papers apart.
+- **Forbid nested subagents explicitly.** A wave-5 propose agent spawned its
+  own helpers; three such agents make nine concurrent consumers of the single
+  shared `precis serve`, which is the wedge condition
+  (auto-memory `mcp-fleet-concurrency-limit`). The fleet cap means nothing if
+  agents may fan out beneath it. `DO NOT SPAWN SUBAGENTS. Do this work
+  yourself in this agent.`
+- **Carry a live-outage stop rule while `gr254606` is open.** With an explicit
+  `mode='semantic'`, a failed query embed returns *empty* rather than an
+  error, so a saturated embedder looks exactly like "the corpus has no
+  source". Tell agents: prefer default (hybrid) search, re-run any zero-hit
+  query once, and if obvious keywords also return nothing, STOP the batch and
+  report an outage — never mark a claim UNVERIFIABLE on empty results alone.
+  This killed a whole wave-3 dispatch mid-flight before it was added.
+- **An abstract can overstate its own paper.** A wave-7 claim faithfully
+  inherited its source abstract's "positions and quantities" where the
+  paper's Figure 5 refutes the position half. The full-chunk rule exists for
+  this, not only for clipped tables.
 
 ## Correction layers
 
@@ -139,11 +162,47 @@ unsourced number given a grounding edge to a passage that does not contain
 it. A wrong claim carrying a citation is harder to catch than a wrong claim
 carrying none, because every downstream check reads it as verified.
 
+## Reading the blind pass without fooling yourself
+
+Two wave-3 near-misses, both of which would have produced a confidently wrong
+number if taken at face value:
+
+- **Check the key's side balance per batch before believing a lopsided
+  result.** Per-pair randomisation is correct, but a fixed seed dealt all
+  eight pairs of one batch with the proposal on side A; that judge's 8/8 "A"
+  was indistinguishable from a positional habit. Re-running those eight with
+  the sides swapped, for a fresh judge, settled it — the verdicts flipped with
+  the content. A batch whose sides are constant measures nothing.
+- **Keep re-judge artifacts out of the scorer's glob.** `score_jobG.py` globs
+  `jobG_out_w<N>_*.tsv`; a `..._3flip.tsv` sitting there was scored against the
+  *original* key and reported 8 good corrections as WRONG (33%). Moving it
+  aside restored the true 22/24.
+
+Two more, cheap and worth doing every wave: the judges' own verdict tallies
+should sum to the key's A/B distribution, and a judge's prose about *which
+side was live* is a guess — it cannot know. Score the TSV against the key.
+
+**`NEITHER` is not auto-dropped.** `drop_rejects.py` removes only `WRONG`. A
+`NEITHER` means the corpus contradicts both sentences — the wave-3 case had a
+live claim saying 113 residues and a proposal saying 116 where the source says
+138 — so applying it swaps one wrong number for another. Remove it by hand and
+file the real fix. `EITHER` has been applied where the proposal adds
+source-supported detail and no judge preferred the live sentence.
+
 ## Sampling
 
 Draw the audit sample from claims the previous audit did **not** read — an
 agent that has seen a claim is not a fresh judge of it — with a fixed seed
 recorded in the builder script. Report the denominator with the rate.
+
+**A rate is a property of a source cluster, not of the corpus.** Measured over
+all 642 claims, the FIX rate ran 55 · 30 · 62 · 45 · 38 · 6 · 14 percent by
+wave: molecular-electronics papers 45–62%, catalysis/DFT/2D-materials/clinical
+papers 6–14%, with five of one wave's ten batches finding nothing at all (and
+those agents were demonstrably not lax — they checked traps like a paper that
+switches Mn salts mid-study, and cleared them). Do not restate td249939's 12%
+sample as a uniform corpus rate; target the dirty cluster instead of sweeping
+evenly.
 
 ## What the gates do and do not cover
 
