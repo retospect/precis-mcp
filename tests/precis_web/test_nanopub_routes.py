@@ -57,6 +57,12 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert "const loadPane" in resp.text
     assert 'a[target="np-review"], a[target="np-paper"]' in resp.text
     assert f'target="np-review" href="/claim/fi{hub}?embed=1"' in resp.text
+    # Placeholders are injected into about:blank frames, never srcdoc:
+    # Safari drops programmatic src navigation onto srcdoc-initialized
+    # frames (webkit.org/b/243385 class) — the panes look dead.
+    assert "srcdoc=" not in resp.text
+    assert "iframe[data-placeholder]" in resp.text
+    assert resp.text.count("data-placeholder=") == 2
     # Claim titles wrap to a two-line clamp instead of a one-line truncate
     # (a 500px pane showed only the first few words of a claim sentence).
     assert 'class="np-title' in resp.text
@@ -98,9 +104,18 @@ def test_hub_page_shows_state_and_action(
     assert resp.status_code == 200
     assert "A reviewable claim." in resp.text
     assert "Approve" in resp.text  # unminted → approve action
-    # Framed in the workbench, paper links retarget to the paper pane.
+    # Framed in the workbench, paper links retarget to the paper pane —
+    # but claim links do NOT: other-claim links replace THIS pane
+    # (location.assign) and self-links are swallowed, so the review pane
+    # is never mirrored into the paper pane as a duplicate column.
     assert 'window.name === "np-review"' in resp.text
     assert '"np-paper"' in resp.text
+    assert (
+        'toPaperPane = a.target === "precis-paper" || u.pathname.startsWith("/papers/");'
+        in resp.text
+    )
+    assert "u.pathname === location.pathname" in resp.text
+    assert "location.assign(u)" in resp.text
     # Non-hub → the claim page's own friendly "no claim hub" stub (200),
     # not a 404 — the merged page's degrade-gracefully policy, not an error.
     other = _seed_paper(store)[0]

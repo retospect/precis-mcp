@@ -254,38 +254,46 @@
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  // Inside the workbench the review iframe is named np-review; paper AND
-  // claim-page links belong in the sibling paper pane, so this pane stays
-  // pinned to the reviewed claim. Delegated + capture so it also covers
-  // the detail links rendered below after a node click (targetless
-  // /papers/ or /claim/ hrefs) AND — unlike the pre-merge hub page, which
-  // never carried this reader markup — the evidence/citer rows above,
-  // whose links carry target="precis-paper" (the shared paper-reading
-  // window every non-embedded surface reuses) regardless of path shape:
-  // named-target resolution from a NESTED browsing context (this iframe)
-  // is unreliable across browsers and a miss silently opens a stray
-  // window, so anything marked for that window is intercepted here too,
-  // navigating the parent's np-paper iframe directly (same-origin, so
-  // reachable) instead of trying a same-named nested context.
+  // Inside the workbench the review iframe is named np-review. Routing
+  // (delegated + capture so it covers the evidence/citer rows above AND
+  // the detail links rendered below after a node click):
+  //   - paper links (target="precis-paper" — the shared paper-reading
+  //     window every non-embedded surface reuses — or /papers/ paths) →
+  //     the sibling np-paper pane. Named-target resolution from a NESTED
+  //     browsing context is unreliable across browsers and a miss
+  //     silently opens a stray window, so the parent's np-paper iframe
+  //     is navigated directly (same-origin, so reachable) instead.
+  //   - other-claim links (fi-cites, DAG nodes, conjunct/refines) → THIS
+  //     pane: the paper pane is for sources; mirroring a claim page into
+  //     it reads as a duplicate of the center column.
+  //   - self-links (the shown claim's own /claim/fi<id>) → swallowed
+  //     (a fragment still scrolls): a reload would just flash the pane.
   // Standalone pages (no frame name) keep default navigation.
   if (window.name === "np-review") {
     document.addEventListener("click", e => {
       const a = e.target.closest("a[href]");
       // A bare "#review" fragment (the state chip above) is an in-page
       // scroll, never a navigation away — must not be swept into the
-      // paper-pane redirect below.
+      // pane routing below.
       if (!a || a.host !== location.host || (a.getAttribute("href") || "").startsWith("#")) return;
       try {
         const u = new URL(a.href);
-        const toPaperPane = a.target === "precis-paper"
-          || u.pathname.startsWith("/papers/") || u.pathname.startsWith("/claim/");
-        if (!toPaperPane) return;
+        const toPaperPane = a.target === "precis-paper" || u.pathname.startsWith("/papers/");
+        if (!toPaperPane && !u.pathname.startsWith("/claim/")) return;
         u.searchParams.set("embed", "1");
+        if (!toPaperPane) {
+          e.preventDefault();
+          if (u.pathname === location.pathname) {
+            if (u.hash) location.hash = u.hash;
+            return;
+          }
+          location.assign(u);
+          return;
+        }
         let frame = null;
         try { frame = window.parent.document.getElementById("np-paper"); } catch {}
         if (frame) {
           e.preventDefault();
-          frame.removeAttribute("srcdoc");
           frame.src = u;
         } else {
           a.href = u;

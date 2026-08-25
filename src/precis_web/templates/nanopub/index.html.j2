@@ -213,9 +213,14 @@
     <div class="np-divider" data-pane="pane-tree"></div>
 
     <div id="pane-review" class="min-w-0" style="width: 36%">
+      {# Placeholders are injected into the about:blank frames by the
+         script below, NOT declared via srcdoc: Safari has dropped
+         programmatic src navigation onto srcdoc-initialized frames
+         (webkit.org/b/243385 class), and a dropped navigation looks
+         like a dead click. #}
       <iframe name="np-review" id="np-review" title="claim review"
               class="w-full h-full rounded-lg border border-slate-200 bg-white"
-              srcdoc="&lt;p style='font: 13px system-ui; color: #94a3b8; padding: 1.5rem'&gt;Click a claim on the left — its review page (state, evidence DAG, approve/sign action) loads here.&lt;/p&gt;"></iframe>
+              data-placeholder="Click a claim on the left — its review page (state, evidence DAG, approve/sign action) loads here."></iframe>
     </div>
 
     <div class="np-divider" data-pane="pane-review"></div>
@@ -223,7 +228,7 @@
     <div id="pane-paper" class="min-w-0 flex-1">
       <iframe name="np-paper" id="np-paper" title="paper reader"
               class="w-full h-full rounded-lg border border-slate-200 bg-white"
-              srcdoc="&lt;p style='font: 13px system-ui; color: #94a3b8; padding: 1.5rem'&gt;Click an evidence paper — its reader loads here.&lt;/p&gt;"></iframe>
+              data-placeholder="Click an evidence paper — its reader loads here."></iframe>
     </div>
   </div>
 </div>
@@ -244,6 +249,17 @@
   .np-divider:hover, .np-divider.dragging { background: #a7f3d0; }
 </style>
 <script>
+  // Write the "click something" hints into the still-blank frames (see
+  // the srcdoc-avoidance note on the iframes themselves).
+  document.querySelectorAll("#np-panes iframe[data-placeholder]").forEach(f => {
+    const d = f.contentDocument;
+    if (!d) return;
+    const p = d.createElement("p");
+    p.style.cssText = "font: 13px system-ui; color: #94a3b8; padding: 1.5rem";
+    p.textContent = f.dataset.placeholder;
+    d.body.appendChild(p);
+  });
+
   // One loader for every way a pane gets content. Dims the pane until its
   // load event so a slow claim page reads as "loading", not a dead click.
   const loadPane = (paneId, src, row) => {
@@ -252,7 +268,6 @@
     const frame = document.getElementById(paneId);
     frame.classList.add("np-loading");
     frame.addEventListener("load", () => frame.classList.remove("np-loading"), { once: true });
-    frame.removeAttribute("srcdoc");
     frame.src = src;
   };
 
