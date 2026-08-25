@@ -164,6 +164,13 @@ compute's captured stdout/stderr tail — and the strip notes which node it
 stepper walks sibling pathways for the same substrate→target reaction
 (ranked by `rate_Ea`), carrying the selected state across so you can park
 on one step and compare candidates.
+When the run solved microkinetics (`results.kinetics`), a Kinetics card
+renders the catpath report's panel: the fixed-rule verdict, TOF /
+5–95 % band / span-limit table, excluded-step bracket guard, a collapsed
+"kinetic equations solved" section (master equation, per-kind rate-constant
+forms, this run's ODE system with the numbered rate constants), X_RC/X_TRC
+bars, steady-state coverages, and the solve warnings; a `kinetics_error`
+shows as a did-not-run note instead.
 Clicking an atom lists its element-grouped relationships and bonds ranked
 by Pauling bond order `s = exp((R0−d)/0.37)` (MIC distances; same panel on
 `/structure/{slug}`). The selection follows the active state: stepping or

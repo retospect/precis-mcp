@@ -58,6 +58,7 @@ from precis_web.deps import (
 )
 from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
+from precis_web.pathway_kinetics import kinetics_payload
 from precis_web.routes.structure import _geom_payload
 
 if TYPE_CHECKING:
@@ -1962,6 +1963,20 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         "warnings": warnings_list,
     }
 
+    # Kinetics panel — the catpath report's microkinetics panel, off the
+    # raw ``kinetics.solve`` record ``precis_pathway.runner.run_kinetics``
+    # folded into ``meta.results``. ``kinetics`` is the trimmed payload the
+    # vendored panel script renders (None -> panel omitted);
+    # ``kinetics_error`` is the runner's did-not-run reason, shown instead.
+    try:
+        kinetics = kinetics_payload(results)
+    except Exception:
+        # A record shape the trim didn't anticipate must cost the panel,
+        # never the page.
+        log.warning("pathway %s: kinetics payload failed", ref.id, exc_info=True)
+        kinetics = None
+    kinetics_error = results.get("kinetics_error")
+
     # CHE potential lever — the
     # explorer's U-slider readout strip. Every field is optional; on a
     # legacy pathway all five stay None (the slider itself is hidden by
@@ -2058,6 +2073,8 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
             "body_text": body_text,
             "results_summary": results_summary,
             "results_electro": results_electro,
+            "kinetics": kinetics,
+            "kinetics_error": kinetics_error,
             "diagram": diagram,
             "state_ids": state_ids,
             "state_sections": state_sections,

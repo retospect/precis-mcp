@@ -1725,3 +1725,89 @@ def test_pathway_ghost_overlay_absent_on_non_verify_pathway(client, runtime) -> 
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "ghost: null" in resp.text
+
+
+# ── Kinetics panel (meta.results.kinetics -> vendored report panel) ─────
+
+
+def test_pathway_detail_kinetics_panel_payload_and_renderer(client, runtime) -> None:
+    """A pathway whose run folded a kinetics record into ``meta.results``
+    ships the trimmed payload (verdict included) in the #kinetics-data JSON
+    tag plus the vendored renderer — never the raw record (the solver's
+    ``skipped_steps``/``unreachable_states`` internals stay server-side)."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "status": "ready",
+            "results": {
+                "target": "NH3",
+                "kinetics": {
+                    "conditions": {"temperature": 500.0, "pressures": {"NO": 0.05}},
+                    "product": "NH3",
+                    "tof": 3.2e-4,
+                    "mari_seed": "NO@fcc",
+                    "coverages": {"NO@fcc": 0.61, "*": 0.39},
+                    "skipped_steps": ["internal-only"],
+                    "drc": {"X_RC": {"NO*->NOH*": 0.8}},
+                    "transitions": [
+                        {
+                            "name": "NO* -> NOH*",
+                            "from": "NO@fcc",
+                            "to": "NOH@fcc",
+                            "kind": "step",
+                            "dG_eV": 0.3,
+                            "barrier_eV": 0.9,
+                            "k_f": 10.0,
+                            "k_b": 1.0,
+                            "net_rate": 3e-4,
+                            "gas": None,
+                        }
+                    ],
+                    "warnings": ["one solve warning"],
+                },
+            },
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="kinetics-data"' in resp.text
+    assert "/static/pathway-kinetics.js" in resp.text
+    m = re.search(
+        r'<script type="application/json" id="kinetics-data">(.*?)</script>',
+        resp.text,
+        re.S,
+    )
+    assert m is not None
+    payload = json.loads(m.group(1))
+    assert set(payload) == {"ml"}
+    assert payload["ml"]["verdict"]["headline"].startswith("Turns over")
+    assert payload["ml"]["warnings"] == ["one solve warning"]
+    assert "skipped_steps" not in payload["ml"]
+    assert "gas" not in payload["ml"]["transitions"][0]
+
+
+def test_pathway_detail_no_kinetics_no_panel(client, runtime) -> None:
+    """A kinetics-less pathway (older run, kinetics-less slice) omits the
+    panel and its renderer entirely — no empty shell."""
+    _seed_pathway(runtime.store, meta={"results": {"target": "NH3"}}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "kinetics-data" not in resp.text
+    assert "pathway-kinetics.js" not in resp.text
+
+
+def test_pathway_detail_kinetics_error_shows_reason(client, runtime) -> None:
+    """``run_kinetics`` never fails the run — its failure lands as
+    ``results.kinetics_error``, and the page says so instead of silently
+    dropping the section."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"kinetics_error": "engine 0.4.1 lacks kinetics"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "kinetics did not run" in resp.text
+    assert "engine 0.4.1 lacks kinetics" in resp.text
+    assert "kinetics-data" not in resp.text

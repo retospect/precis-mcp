@@ -428,6 +428,58 @@
   {% endif %}
 </section>
 
+{# ── Kinetics — the catpath report's microkinetics panel, rendered off
+   meta['results'].kinetics by the vendored pathway-kinetics.js (payload
+   trimmed + verdict synthesised server-side in pathway_kinetics.py).
+   Absent on a pathway whose run recorded no kinetics. ─────────────────── #}
+{% if kinetics or kinetics_error %}
+<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  {% if kinetics %}
+  <style>
+    /* scoped port of the catpath report's kinetics-panel CSS (report.py
+       _PAGE_TOP), #kinetics-prefixed so it can't leak into the page;
+       list-style/font-weight re-stated where Tailwind's preflight resets
+       what the report's plain page inherited */
+    #kinetics h2 { font-size: .875rem; font-weight: 600; color: #334155; margin: 0 0 .5rem; }
+    #kinetics h3 { font-size: .8rem; font-weight: 600; color: #334155; margin: 1rem 0 .3rem; }
+    #kinetics .caption { color: #666; font-size: .75rem; margin-bottom: .75rem; }
+    #kinetics table { border-collapse: collapse; font-size: .8rem; margin: .25rem 0; }
+    #kinetics td, #kinetics th { border: 1px solid #ddd; padding: 3px 8px; text-align: left; }
+    #kinetics th { font-weight: 600; }
+    #kinetics .kbar { display: flex; gap: .5rem; align-items: center; font-size: .8rem; margin: 2px 0; }
+    #kinetics .kbar .kname { flex: none; width: 180px; overflow-wrap: anywhere; }
+    #kinetics .kbar .ktrack { flex: none; width: 220px; background: #f0f0f0; border-radius: 2px; height: 12px; }
+    #kinetics .kbar .kfill { display: block; height: 12px; border-radius: 2px; }
+    #kinetics .kbar .kval { font-variant-numeric: tabular-nums; color: #555; }
+    #kinetics .kguard { background: #fff3f0; border: 1px solid #d9822b; color: #7a2e0e; border-radius: 4px; padding: .5rem .7rem; margin: .5rem 0; font-size: .85rem; max-width: 60rem; }
+    #kinetics .term { border-bottom: 1px dotted #999; cursor: help; }
+    #kinetics .verdict { border-radius: 4px; padding: .6rem .8rem; margin: .5rem 0 1rem; max-width: 60rem; border: 1px solid #ccd; background: #f6f8fc; }
+    #kinetics .verdict.ok { border-color: #2f855a; background: #f2f9f5; }
+    #kinetics .verdict.warn { border-color: #b8912b; background: #fdfaf0; }
+    #kinetics .verdict.dead { border-color: #d9822b; background: #fff3f0; }
+    #kinetics .verdict .vhead { font-weight: 600; }
+    #kinetics .verdict ul { margin: .35rem 0 0 1.1rem; font-size: .85rem; list-style: disc; }
+    #kinetics .verdict .vcav { margin-top: .4rem; font-size: .8rem; color: #666; }
+    #kinetics .verdict .vrule { margin-top: .45rem; font-size: .72rem; color: #888; }
+    #kinetics details.kx { margin: .6rem 0; font-size: .85rem; max-width: 60rem; }
+    #kinetics details.kx summary { cursor: pointer; color: #2b6cb0; }
+    #kinetics details.kx table { font-size: .8rem; }
+    #kinetics details.keq h4 { font-size: .85rem; font-weight: 600; margin: .8rem 0 .25rem; }
+    /* hand-set HTML math; each equation is one non-wrapping line that
+       scrolls sideways rather than folding */
+    #kinetics details.keq .eq { margin: .25rem 0; padding: .15rem .4rem; background: #f8f8f8; border-radius: 3px; white-space: nowrap; overflow-x: auto; font-variant-numeric: tabular-nums; }
+    #kinetics .kwlist { margin: .4rem 0 0 1.1rem; color: #555; list-style: disc; }
+    #kinetics .kwlist li { margin: .15rem 0; overflow-wrap: anywhere; }
+  </style>
+  <div id="kinetics" class="text-sm text-slate-700"></div>
+  <script type="application/json" id="kinetics-data">{{ kinetics | tojson }}</script>
+  {% else %}
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Kinetics</h2>
+  <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">&#9888; kinetics did not run: {{ kinetics_error }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {# ── Body — the pathway_body markdown chunk (methods prose) ─────────── #}
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2 text-slate-700">Methods</h2>
@@ -440,6 +492,7 @@
 {% endblock %}
 
 {% block scripts %}
+{% if kinetics %}<script src="/static/pathway-kinetics.js" defer></script>{% endif %}
 <script src="https://unpkg.com/3dmol@2.4.2/build/3Dmol-min.js"></script>
 <script>
 (function () {
