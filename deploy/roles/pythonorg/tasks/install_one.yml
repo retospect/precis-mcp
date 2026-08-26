@@ -102,7 +102,12 @@
   when: not pythonorg_ca_store.stat.exists
   become: true
   ansible.builtin.command:
-    cmd: "/Applications/Python {{ item.series }}/Install Certificates.command"
+    # argv, not cmd: a string cmd is shlex-split on whitespace, and this
+    # path contains spaces — the split form execs "/Applications/Python"
+    # (rc=2, no output), which is how caspar's empty 3.14 store dodged
+    # the 2026-08-26 rollout while every stat-guarded host skipped it.
+    argv:
+      - "/Applications/Python {{ item.series }}/Install Certificates.command"
   changed_when: true
 
 # Assert with a live handshake, not just the symlink's existence: a cert.pem
