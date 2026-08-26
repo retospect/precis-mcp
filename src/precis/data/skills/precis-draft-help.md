@@ -778,7 +778,8 @@ of a held paper) or the export marks a stub + warns.
   **export .docx** link downloads immediately, with render-time
   acronym first-use expansion + an auto acronyms list.
 - **reMarkable** — web's **→ reMarkable** button (needs a device
-  credential in the secrets vault, `REMARKABLE_RMAPI_CONFIG`, never
+  credential: the signed-in user's own pairing from `/account`, else
+  the deployment-wide vault secret `REMARKABLE_RMAPI_CONFIG` — never
   `app_settings`) uploads a reMarkable-mode PDF: RM2 page geometry
   (wide pen margin), and every citation renders as a numbered
   `\footnote` — human cite + bibliography number + the referenced

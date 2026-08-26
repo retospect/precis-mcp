@@ -484,6 +484,152 @@ def test_the_account_page_is_never_cached() -> None:
     assert r.headers["cache-control"] == "no-store"
 
 
+# ── reMarkable pairing ──────────────────────────────────────────────
+
+
+def test_remarkable_pair_success_stores_the_per_user_credential(
+    monkeypatch: pytest.MonkeyPatch, vault
+) -> None:
+    from precis.export import remarkable as rm_mod
+
+    monkeypatch.setattr(
+        rm_mod, "register_device", lambda code: "devicetoken: paired-token\n"
+    )
+    r = _client(FakeStore()).post(
+        "/account/remarkable",
+        data={"action": "pair", "code": "abcd1234"},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/account?saved=1"
+    assert vault["REMARKABLE_RMAPI_CONFIG:reto"] == "devicetoken: paired-token\n"
+
+
+def test_remarkable_pair_rejected_code_renders_inline_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.export import remarkable as rm_mod
+
+    def _boom(code: str) -> str:
+        raise rm_mod.PairingError("reMarkable rejected that code — try a fresh one.")
+
+    monkeypatch.setattr(rm_mod, "register_device", _boom)
+    r = _client(FakeStore()).post(
+        "/account/remarkable",
+        data={"action": "pair", "code": "abcd1234"},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert "rejected that code" in r.text
+
+
+def test_remarkable_pair_blank_code_is_refused_without_calling_register(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.export import remarkable as rm_mod
+
+    called: list[str] = []
+
+    def _record(code: str) -> str:
+        called.append(code)
+        return "x"
+
+    monkeypatch.setattr(rm_mod, "register_device", _record)
+    r = _client(FakeStore()).post(
+        "/account/remarkable", data={"action": "pair", "code": "  "}, headers=_auth()
+    )
+    assert r.status_code == 200
+    assert not called
+
+
+def test_remarkable_save_stores_a_pasted_bare_token(vault) -> None:
+    # No "token" substring — a bare secret, not something that already
+    # looks like an rmapi config line — so it must be wrapped.
+    r = _client(FakeStore()).post(
+        "/account/remarkable",
+        data={"action": "save", "config": "abc123deadbeef"},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert vault["REMARKABLE_RMAPI_CONFIG:reto"] == "devicetoken: abc123deadbeef\n"
+
+
+def test_remarkable_save_keeps_a_full_config_body_verbatim(vault) -> None:
+    # The route strips the textarea's own trailing newline before storing —
+    # a paste artefact, not meaningful content — so compare against that.
+    body = "devicetoken: a\nusertoken: b\n"
+    r = _client(FakeStore()).post(
+        "/account/remarkable",
+        data={"action": "save", "config": body},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert vault["REMARKABLE_RMAPI_CONFIG:reto"] == body.strip()
+
+
+def test_remarkable_save_blank_is_refused() -> None:
+    r = _client(FakeStore()).post(
+        "/account/remarkable", data={"action": "save", "config": "  "}, headers=_auth()
+    )
+    assert r.status_code == 200
+    assert "Paste a config" in r.text
+
+
+def test_remarkable_unpair_deletes_the_vault_entry(vault) -> None:
+    client = _client(FakeStore())
+    vault["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: t\n"
+    r = client.post(
+        "/account/remarkable",
+        data={"action": "unpair"},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "REMARKABLE_RMAPI_CONFIG:reto" not in vault
+
+
+def test_remarkable_unpair_vault_failure_degrades_legibly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.export import remarkable as rm_mod
+
+    monkeypatch.setattr(rm_mod, "clear_user_config", lambda store, login: False)
+    r = _client(FakeStore()).post(
+        "/account/remarkable", data={"action": "unpair"}, headers=_auth()
+    )
+    assert r.status_code == 200
+    assert "could not be" in r.text
+
+
+def test_account_page_shows_paired_status(vault) -> None:
+    vault["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: t\n"
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert "paired" in r.text.lower()
+
+
+def test_account_page_shows_deployment_fallback_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No per-user device yet, but a deployment-wide credential exists — the
+    page must say sends fall back to it, not "not configured"."""
+    monkeypatch.setenv("REMARKABLE_TOKEN", "global-device")
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert "shared device" in r.text
+
+
+def test_remarkable_auth_off_refuses_writes() -> None:
+    store = FakeStore()
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=False),
+    )
+    r = TestClient(app).post("/account/remarkable", data={"action": "unpair"})
+    assert r.status_code == 503
+
+
 # ── auth off ─────────────────────────────────────────────────────────
 
 

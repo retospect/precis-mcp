@@ -221,7 +221,9 @@ async def reader(
     # lines, the genre picker's options + current genre/brief, and the
     # auto-author toggle state.
     from precis.export.remarkable import remarkable_configured
+    from precis_web.auth import current_user
 
+    _remarkable_user = current_user(request)
     _, owner_ws = _owner_workspace(store, ref)
 
     # Whole-draft review-ledger status (migration 0086) — ONE query
@@ -290,7 +292,9 @@ async def reader(
             "abbrevs": abbrevs,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
             # ── Tools pane (right-rail bottom) — classic-reader parity ──
-            "remarkable_ready": remarkable_configured(store),
+            "remarkable_ready": remarkable_configured(
+                store, login=_remarkable_user.login if _remarkable_user else None
+            ),
             "author_lines": _draft_author_lines(ref),
             "doctypes": _DOC_TYPES,
             "cur_doctype": str(owner_ws.get("doc_type") or ""),

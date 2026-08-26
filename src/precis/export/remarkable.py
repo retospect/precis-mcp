@@ -8,13 +8,20 @@ rather than reimplement the moving-target cloud protocol in Python, and
 because a bundled binary needs no Python client that breaks on the next
 sync-protocol bump.
 
-Auth — the device credential lives in the secrets vault or the
-environment, never in plaintext ``app_settings``:
+Auth — per-user first, deployment-wide fallback, both in the secrets vault
+or the environment, never in plaintext ``app_settings``:
 
+* ``REMARKABLE_RMAPI_CONFIG:<login>`` — one signed-in user's own paired
+  device, self-service from ``/account`` (:func:`register_device` exchanges
+  a one-time pairing code for this; the account page's "advanced" box also
+  accepts a pasted config/token for when pairing has drifted). Checked
+  first when a ``login`` is given — a user who paired their own tablet is
+  never silently overridden by the deployment-wide device.
 * ``REMARKABLE_RMAPI_CONFIG`` — the body of an ``rmapi`` config file
   (produced once by interactive ``rmapi`` registration; at minimum
   ``devicetoken: <token>`` — rmapi refreshes the short-lived usertoken
   itself). Written verbatim to a temp file pointed at by ``RMAPI_CONFIG``.
+  Deployment-wide fallback for users who haven't paired their own.
 * ``REMARKABLE_TOKEN`` — fallback: a bare device token (the
   cluster-provisioned ``vault_remarkable_token``), wrapped into a minimal
   config.
@@ -41,6 +48,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,7 +60,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: Secret holding the full ``rmapi`` config body (preferred).
+#: Secret holding the full ``rmapi`` config body (preferred), deployment-wide.
 _CONFIG_SECRET = "REMARKABLE_RMAPI_CONFIG"
 #: Fallback secret: a bare device token (cluster ``vault_remarkable_token``).
 _TOKEN_SECRET = "REMARKABLE_TOKEN"
@@ -66,6 +74,35 @@ _FOLDER_RE = re.compile(r"^/[A-Za-z0-9 _/-]*$")
 #: A document's visible name on the tablet — sanitised from the draft title.
 _NAME_SANITISE = re.compile(r"[^A-Za-z0-9 _.-]+")
 
+#: reMarkable's one-time-code → device-token registration endpoint. Fixed
+#: (not agent-supplied), overridable via ``PRECIS_RMAPI_REGISTER_URL`` for
+#: tests and the day this URL drifts.
+_REGISTER_URL_DEFAULT = "https://my.remarkable.com/token/json/2/device/new"
+
+#: The 8-character one-time pairing code from
+#: https://my.remarkable.com/device/desktop/connect — case-insensitive.
+_PAIRING_CODE_RE = re.compile(r"^[a-z0-9]{8}$")
+
+
+class PairingError(RuntimeError):
+    """A :func:`register_device` exchange failed.
+
+    The message is written to be shown to the user directly (rendered
+    inline on ``/account``, never a 500) — a rejected or expired one-time
+    code, or the registration endpoint being unreachable.
+    """
+
+
+def user_config_secret(login: str) -> str:
+    """Vault name holding one user's own paired ``rmapi`` config body.
+
+    Same colon-prefixed-per-login shape as
+    :func:`precis.users.feed_token_secret_name`: no shell exports a name
+    with a colon in it, so a per-user credential can't be shadowed by a
+    stray environment variable of the deployment-wide name.
+    """
+    return f"{_CONFIG_SECRET}:{login}"
+
 
 def _rmapi_bin() -> str:
     """The rmapi binary — overridable via ``PRECIS_RMAPI_BIN`` (a stub
@@ -78,20 +115,39 @@ def have_rmapi() -> bool:
     return shutil.which(_rmapi_bin()) is not None
 
 
-def remarkable_configured(store: Store | None = None) -> bool:
+def remarkable_configured(
+    store: Store | None = None, *, login: str | None = None
+) -> bool:
     """True when a reMarkable credential is available (vault/env). This is
     the gate for the web button and CLI — a bare token or a full config
-    both count. Does **not** check the binary (report that separately so a
+    both count, and so does ``login``'s own paired device when one is
+    given. Does **not** check the binary (report that separately so a
     misconfigured host gives a precise error, not a silent no-op)."""
+    if login and secrets.is_available(user_config_secret(login), store=store):
+        return True
     return secrets.is_available(_CONFIG_SECRET, store=store) or secrets.is_available(
         _TOKEN_SECRET, store=store
     )
 
 
-def _config_body(store: Store | None) -> str | None:
-    """The rmapi config file body to write, from the vault/env. The full
-    config wins; otherwise a bare device token is wrapped into a minimal
-    one. ``None`` when neither is configured."""
+def user_remarkable_configured(store: Store | None, login: str) -> bool:
+    """True when ``login`` has paired their *own* device — no deployment-wide
+    fallback. For ``/account``'s status line, which must say "paired" only
+    when this user actually did the pairing, not when the shared device
+    happens to be covering for them."""
+    return secrets.is_available(user_config_secret(login), store=store)
+
+
+def _config_body(store: Store | None, login: str | None = None) -> str | None:
+    """The rmapi config file body to write, from the vault/env.
+
+    ``login``'s own paired device wins when given and present; then the
+    deployment-wide full config; then a bare deployment-wide device token
+    wrapped into a minimal one. ``None`` when nothing is configured."""
+    if login:
+        body = secrets.get_secret(user_config_secret(login), store=store)
+        if body:
+            return body if "token" in body else f"devicetoken: {body.strip()}\n"
     body = secrets.get_secret(_CONFIG_SECRET, store=store)
     if body:
         return body if "token" in body else f"devicetoken: {body.strip()}\n"
@@ -99,6 +155,95 @@ def _config_body(store: Store | None) -> str | None:
     if token:
         return f"devicetoken: {token.strip()}\n"
     return None
+
+
+def set_user_config(store: Store, login: str, body: str) -> None:
+    """Store ``login``'s own paired device credential.
+
+    ``body`` may be a full ``rmapi`` config or a bare device token — pasted
+    from the "advanced" box on ``/account`` or produced by
+    :func:`register_device`; normalised into a config body the same way
+    :func:`_config_body` resolves a bare token, so both shapes work.
+    """
+    normalised = body if "token" in body else f"devicetoken: {body.strip()}\n"
+    secrets.set_secret(user_config_secret(login), normalised, store=store)
+
+
+def clear_user_config(store: Store, login: str) -> bool:
+    """Unpair ``login``'s own device — remove the vault entry.
+
+    Returns ``False`` on a vault outage, mirroring
+    :func:`precis.users.forget_feed_token`: say so rather than let a
+    "revoked" credential silently keep working.
+    """
+    try:
+        secrets.delete_secret(user_config_secret(login), store=store)
+    except Exception:  # pragma: no cover - vault outage
+        log.warning(
+            "remarkable: paired device for %s cleared but still in the vault",
+            login,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
+def register_device(code: str, *, timeout_s: float = 15.0) -> str:
+    """Exchange a one-time pairing code for a reMarkable device-config body.
+
+    ``code`` is the 8-character code shown at
+    https://my.remarkable.com/device/desktop/connect — validated (8
+    alphanumeric characters), lowercased, and stripped before use. POSTs to
+    the reMarkable device-registration endpoint (a FIXED module constant,
+    not agent-supplied input — this is not an SSRF surface, so a direct
+    ``httpx`` call is used rather than ``safe_fetch``) with an empty bearer
+    token, exactly as ``rmapi``'s own registration does.
+
+    The reMarkable sync protocol churns and this repo does not attempt to
+    speak the rest of it — this one registration call is the only piece we
+    speak natively. If it drifts, the "advanced" paste-a-config-or-token
+    box on ``/account`` still works (register elsewhere, paste the result
+    here).
+
+    Raises :class:`PairingError` with a message safe to show the user on a
+    non-200 response or a network error. One-time codes are single-use and
+    expire quickly, so a rejected code most often means: generate a fresh
+    one and retry promptly.
+    """
+    normalised = code.strip().lower()
+    if not _PAIRING_CODE_RE.match(normalised):
+        raise PairingError(
+            "that doesn't look like an 8-character pairing code — copy a "
+            "fresh one from https://my.remarkable.com/device/desktop/connect"
+        )
+    url = os.environ.get("PRECIS_RMAPI_REGISTER_URL") or _REGISTER_URL_DEFAULT
+    import httpx
+
+    try:
+        resp = httpx.post(
+            url,
+            json={
+                "code": normalised,
+                "deviceDesc": "desktop-linux",
+                "deviceID": str(uuid.uuid4()),
+            },
+            headers={"Authorization": "Bearer "},
+            timeout=timeout_s,
+        )
+    except httpx.HTTPError as exc:
+        raise PairingError(
+            f"could not reach the reMarkable pairing service: {exc}"
+        ) from exc
+    if resp.status_code != 200:
+        raise PairingError(
+            f"reMarkable rejected that code (status {resp.status_code}) — "
+            "one-time codes are single-use and expire within a few minutes; "
+            "generate a fresh one and try again."
+        )
+    token = resp.text.strip()
+    if not token:
+        raise PairingError("reMarkable's pairing service returned an empty token")
+    return f"devicetoken: {token}\n"
 
 
 def _safe_name(name: str) -> str:
@@ -127,6 +272,7 @@ def send_pdf(
     folder: str = "/",
     display_name: str | None = None,
     store: Store | None = None,
+    login: str | None = None,
     timeout_s: int | None = None,
 ) -> SendResult:
     """Upload a compiled PDF to the reMarkable cloud under ``folder``.
@@ -136,7 +282,9 @@ def send_pdf(
     when the binary or credential is missing (a configuration gap, not a
     failed upload). ``display_name`` sets the document's visible title on the
     tablet (defaults to the PDF's stem); the file is staged under that name
-    so the tablet doesn't show ``main``.
+    so the tablet doesn't show ``main``. ``login``, when given, resolves
+    that user's own paired device first (see :func:`_config_body`) before
+    falling back to the deployment-wide credential.
     """
     pdf_path = Path(pdf_path)
     name = _safe_name(display_name or pdf_path.stem)
@@ -159,7 +307,7 @@ def send_pdf(
             output="",
             error=f"unsafe reMarkable folder: {folder!r}",
         )
-    body = _config_body(store)
+    body = _config_body(store, login)
     if body is None:
         return SendResult(
             ok=False,
@@ -399,10 +547,16 @@ def send_via_container(
 
 
 __all__ = [
+    "PairingError",
     "SendResult",
     "build_container_argv",
+    "clear_user_config",
     "have_rmapi",
+    "register_device",
     "remarkable_configured",
     "send_pdf",
     "send_via_container",
+    "set_user_config",
+    "user_config_secret",
+    "user_remarkable_configured",
 ]

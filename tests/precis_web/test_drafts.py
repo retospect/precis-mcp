@@ -1374,6 +1374,57 @@ def test_remarkable_send_400s_without_credential(
     assert r.status_code == 400
 
 
+def test_remarkable_send_threads_the_signed_in_login_into_job_params(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """A signed-in user's login rides the job so it resolves *their* paired
+    device first — proves the route reads ``current_user`` and forwards it
+    as ``params.user``, not just gating on a global credential."""
+    from precis.users import WebUser
+
+    def _fake_user(request):
+        return WebUser(
+            id=1,
+            login="reto",
+            abbrev="rs",
+            full_name=None,
+            email=None,
+            disabled_at=None,
+            last_login_at=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+    monkeypatch.setattr(drafts_mod, "current_user", _fake_user)
+    # The route gates with login="reto" — a per-user credential (no global
+    # one) must be enough to pass, and must be what lands in job params.
+    from precis import secrets as vault_mod
+
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    box = {"REMARKABLE_RMAPI_CONFIG:reto": "devicetoken: t\n"}
+    monkeypatch.setattr(vault_mod, "is_available", lambda n, *, store=None: n in box)
+
+    r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "remarkable_send"
+    assert args["params"]["user"] == "reto"
+
+
+def test_remarkable_send_omits_user_param_when_signed_out(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """Auth off / nobody signed in → no ``params.user`` at all, same
+    deployment-wide-only behaviour as before this feature existed."""
+    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "remarkable_send"
+    assert "user" not in args["params"]
+
+
 # ── hand-driven working set: pen/eye marks + request-ws ──
 
 

@@ -13,10 +13,14 @@ import stat
 import sys
 import textwrap
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from precis.export import remarkable as rm
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 _needs_posix_stub = pytest.mark.skipif(
     sys.platform == "win32",
@@ -46,6 +50,182 @@ def test_remarkable_configured_reads_credential(monkeypatch) -> None:
     assert rm.remarkable_configured(store=None) is False
     monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
     assert rm.remarkable_configured(store=None) is True
+
+
+# ── per-user pairing (vault-backed; env can't hold a colon name) ────
+
+
+class _FakeVaultStore:
+    """A minimal ``store`` stand-in so ``secrets.get/set/delete_secret``
+    (which take ``store=``) have something to thread — the real reveal
+    path is monkeypatched below, this object's identity is never used."""
+
+
+def _fake_store() -> Store:
+    return cast("Store", _FakeVaultStore())
+
+
+@pytest.fixture
+def vault_box(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """In-memory stand-in for :mod:`precis.secrets`, patched at the module
+    the helpers import from — mirrors ``tests/precis_web/test_account.py``.
+    A per-user secret name carries a colon, which no env var can hold, so
+    this is the only way to exercise the per-user path in tests."""
+    from precis import secrets as vault_mod
+
+    box: dict[str, str] = {}
+    monkeypatch.setattr(
+        vault_mod,
+        "get_secret",
+        lambda n, *, store=None, default=None: box.get(n, default),
+    )
+    monkeypatch.setattr(
+        vault_mod, "set_secret", lambda n, v, *, store: box.__setitem__(n, v)
+    )
+    monkeypatch.setattr(
+        vault_mod, "delete_secret", lambda n, *, store: box.pop(n, None)
+    )
+    monkeypatch.setattr(
+        vault_mod, "is_available", lambda n, *, store=None: box.get(n) is not None
+    )
+    return box
+
+
+def test_user_config_secret_is_colon_scoped() -> None:
+    assert rm.user_config_secret("reto") == "REMARKABLE_RMAPI_CONFIG:reto"
+
+
+def test_per_user_config_beats_global(vault_box: dict[str, str]) -> None:
+    store = _fake_store()
+    vault_box["REMARKABLE_RMAPI_CONFIG"] = "devicetoken: global-token\n"
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: retos-own-token\n"
+    assert rm._config_body(store, "reto") == "devicetoken: retos-own-token\n"
+    # A different login with no paired device of its own falls through to
+    # the deployment-wide config.
+    assert rm._config_body(store, "someone-else") == "devicetoken: global-token\n"
+
+
+def test_login_none_keeps_global_behaviour(vault_box: dict[str, str]) -> None:
+    store = _fake_store()
+    vault_box["REMARKABLE_TOKEN"] = "bare-token"
+    assert rm._config_body(store, None) == "devicetoken: bare-token\n"
+    assert rm.remarkable_configured(store) is True
+    assert rm.remarkable_configured(store, login=None) is True
+
+
+def test_remarkable_configured_per_user_and_global(vault_box: dict[str, str]) -> None:
+    store = _fake_store()
+    assert rm.remarkable_configured(store, login="reto") is False
+    assert rm.user_remarkable_configured(store, "reto") is False
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: t\n"
+    assert rm.remarkable_configured(store, login="reto") is True
+    assert rm.user_remarkable_configured(store, "reto") is True
+    # No global fallback bleeds into the per-user-only check.
+    assert rm.user_remarkable_configured(store, "someone-else") is False
+    assert rm.remarkable_configured(store, login="someone-else") is False
+
+
+def test_set_and_clear_user_config(vault_box: dict[str, str]) -> None:
+    store = _fake_store()
+    rm.set_user_config(store, "reto", "bare-pasted-secret")
+    assert (
+        vault_box["REMARKABLE_RMAPI_CONFIG:reto"] == "devicetoken: bare-pasted-secret\n"
+    )
+    assert rm.clear_user_config(store, "reto") is True
+    assert "REMARKABLE_RMAPI_CONFIG:reto" not in vault_box
+
+
+def test_set_user_config_keeps_a_full_config_body_verbatim(
+    vault_box: dict[str, str],
+) -> None:
+    store = _fake_store()
+    body = "devicetoken: abc\nusertoken: def\n"
+    rm.set_user_config(store, "reto", body)
+    assert vault_box["REMARKABLE_RMAPI_CONFIG:reto"] == body
+
+
+def test_clear_user_config_reports_vault_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(name, *, store):
+        raise RuntimeError("vault down")
+
+    monkeypatch.setattr(rm.secrets, "delete_secret", _boom)
+    assert rm.clear_user_config(_fake_store(), "reto") is False
+
+
+# ── send_pdf threading login ─────────────────────────────────────────
+
+
+@_needs_posix_stub
+def test_send_pdf_prefers_the_users_own_device(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
+    monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi(tmp_path)))
+    monkeypatch.setenv("REMARKABLE_TOKEN", "global-token")
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: retos-token\n"
+    res = rm.send_pdf(_pdf(tmp_path), store=_fake_store(), login="reto")
+    assert res.ok
+
+
+# ── device pairing exchange ──────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+def test_register_device_rejects_a_malformed_code() -> None:
+    with pytest.raises(rm.PairingError, match="8-character"):
+        rm.register_device("short")
+
+
+def test_register_device_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx as _httpx
+
+    seen: dict[str, Any] = {}
+
+    def _post(url, *, json, headers, timeout):
+        seen["url"] = url
+        seen["json"] = json
+        seen["headers"] = headers
+        return _FakeResponse(200, "the-device-token")
+
+    monkeypatch.setattr(_httpx, "post", _post)
+    monkeypatch.setenv("PRECIS_RMAPI_REGISTER_URL", "https://example.test/register")
+
+    body = rm.register_device("AbC12dEf")
+    assert body == "devicetoken: the-device-token\n"
+    assert seen["url"] == "https://example.test/register"
+    assert seen["json"]["code"] == "abc12def"  # lowercased
+    assert seen["headers"]["Authorization"] == "Bearer "
+
+
+def test_register_device_rejected_code_raises_pairing_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx as _httpx
+
+    monkeypatch.setattr(
+        _httpx, "post", lambda *a, **kw: _FakeResponse(400, "invalid code")
+    )
+    with pytest.raises(rm.PairingError, match="single-use"):
+        rm.register_device("aaaaaaaa")
+
+
+def test_register_device_network_error_raises_pairing_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx as _httpx
+
+    def _boom(*a, **kw):
+        raise _httpx.ConnectError("nope")
+
+    monkeypatch.setattr(_httpx, "post", _boom)
+    with pytest.raises(rm.PairingError, match="could not reach"):
+        rm.register_device("aaaaaaaa")
 
 
 def test_send_pdf_skips_without_binary(tmp_path, monkeypatch) -> None:

@@ -59,6 +59,13 @@ parses `result.json` into a `SendResult`. `send_pdf` dispatches here whenever
 
 ## One-time device registration (S0 ops, Reto-gated)
 
+Individual users can now self-service pair their *own* tablet at
+`/account` (`precis.export.remarkable.register_device`, backed by the same
+one-time-code exchange as `rmapi`'s own registration) — that path needs no
+ops work and stores the credential per-login, ahead of the deployment-wide
+device below. This section is about the shared fallback device the
+deployment offers everyone who hasn't paired their own.
+
 `rmapi` needs a device token, minted once from an interactive pairing:
 
 1. On any machine, run `rmapi` and paste the 8-letter code from

@@ -14,8 +14,11 @@ device credential is configured), or by an agent::
         params={'draft': '<slug>'})
 
 The destination folder is the ``remarkable.target_folder`` app_setting
-(default ``/Precis``); the device credential lives in the secrets vault
-(``REMARKABLE_RMAPI_CONFIG`` / ``REMARKABLE_TOKEN``), never in app_settings.
+(default ``/Precis``); the device credential lives in the secrets vault,
+per-user first — ``params.user`` (the signed-in login the web route
+threads through) resolves ``REMARKABLE_RMAPI_CONFIG:<login>``, paired
+self-service at ``/account`` — falling back to the deployment-wide
+``REMARKABLE_RMAPI_CONFIG`` / ``REMARKABLE_TOKEN``, never in app_settings.
 """
 
 from __future__ import annotations
@@ -39,6 +42,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "draft": {"type": "string"},
         # Override the app_settings destination folder for this one send.
         "folder": {"type": "string"},
+        # The signed-in login to resolve a per-user paired device for —
+        # threaded by the web route; absent for agent-started sends.
+        "user": {"type": "string"},
     },
     "required": ["draft"],
     "additionalProperties": False,
@@ -67,6 +73,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     params = (ctx.meta or {}).get("params") or {}
     slug = str(params.get("draft") or "").strip()
+    login = str(params.get("user") or "").strip() or None
     if not slug:
         ctx.record_failure("remarkable_send: params.draft is required")
         return
@@ -74,10 +81,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if ref is None:
         ctx.record_failure(f"remarkable_send: no draft {slug!r}")
         return
-    if not remarkable_configured(ctx.store):
+    if not remarkable_configured(ctx.store, login=login):
         ctx.record_failure(
-            "remarkable_send: no reMarkable credential configured — set "
-            "REMARKABLE_RMAPI_CONFIG (or REMARKABLE_TOKEN) in the vault (/secrets)."
+            "remarkable_send: no reMarkable credential configured — pair "
+            "your tablet at /account, or set REMARKABLE_RMAPI_CONFIG (or "
+            "REMARKABLE_TOKEN) in the vault (/secrets) for a deployment-wide "
+            "device."
         )
         return
 
@@ -132,7 +141,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
             return
         ctx.append_chunk("job_event", f"uploading {cres.pdf.name!r} to reMarkable")
-        sres = send_pdf(cres.pdf, folder=folder, display_name=title, store=ctx.store)
+        sres = send_pdf(
+            cres.pdf, folder=folder, display_name=title, store=ctx.store, login=login
+        )
 
     if sres.ok:
         ctx.append_chunk(

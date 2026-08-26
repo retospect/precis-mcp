@@ -100,3 +100,49 @@ def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("no draft" in f for f in ctx.failures)
+
+
+def test_dispatch_fails_without_credential_mentions_account_pairing(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """The failure message points at self-service pairing, not just the vault."""
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    slug = _project_and_draft(hub)
+    spec = get_job_type("remarkable_send")
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+    assert any("/account" in f for f in ctx.failures), ctx.failures
+
+
+def test_dispatch_threads_the_user_param_into_the_credential_gate(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """A per-user vault credential (no global one) must satisfy the gate
+    when ``params.user`` names that login — proves the job threads
+    ``params.user`` into ``remarkable_configured(..., login=...)``."""
+    from precis import secrets as vault_mod
+
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    box = {"REMARKABLE_RMAPI_CONFIG:reto": "devicetoken: t\n"}
+    monkeypatch.setattr(
+        vault_mod,
+        "get_secret",
+        lambda n, *, store=None, default=None: box.get(n, default),
+    )
+    # Latexmk is not installed on the test host, so dispatch fails a step
+    # *after* the credential gate — proving the gate itself passed.
+    monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
+    slug = _project_and_draft(hub)
+    spec = get_job_type("remarkable_send")
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+    assert any("latexmk" in f for f in ctx.failures), ctx.failures
+    assert not any("credential" in f for f in ctx.failures), ctx.failures

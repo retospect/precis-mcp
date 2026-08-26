@@ -1040,9 +1040,7 @@ def test_six_char_chunk_handle_unaffected_by_claim_pattern() -> None:
 
 
 def test_pending_head_renders_hollow_diamond_compact() -> None:
-    out = str(
-        linkify_refs("see [fi123]", compact=True, pending_claims={"fi123": 123})
-    )
+    out = str(linkify_refs("see [fi123]", compact=True, pending_claims={"fi123": 123}))
     assert "◇" in out
     assert 'href="/r/finding/123"' in out
     assert 'hx-get="/preview/finding/123"' in out
@@ -1053,9 +1051,7 @@ def test_pending_head_renders_hollow_diamond_compact() -> None:
 
 
 def test_pending_head_noncompact_shows_head_text_not_diamond() -> None:
-    out = str(
-        linkify_refs("[fi123]", compact=False, pending_claims={"fi123": 123})
-    )
+    out = str(linkify_refs("[fi123]", compact=False, pending_claims={"fi123": 123}))
     assert "◇" not in out
     assert ">fi123<" in out
     assert 'href="/r/finding/123"' in out
@@ -1084,9 +1080,7 @@ def test_head_in_neither_map_stays_generic_finding_anchor() -> None:
     prior verbose generic finding anchor — the pending feature is additive,
     not a default-on."""
     out = str(
-        linkify_refs(
-            "[fi123]", compact=True, claims=frozenset(), pending_claims={}
-        )
+        linkify_refs("[fi123]", compact=True, claims=frozenset(), pending_claims={})
     )
     assert 'href="/r/finding/123"' in out
     assert "◇" not in out

@@ -22,6 +22,14 @@ Three things live here today:
   token's digest, so the readable copy comes from the vault
   (:func:`precis.users.recall_feed_token`); when the vault can't produce
   one, the page falls back to "mint to see a link".
+* **reMarkable pairing** — self-service send-to-tablet, the per-user
+  half of :mod:`precis.export.remarkable`. Pairing exchanges an 8-character
+  one-time code (from ``my.remarkable.com/device/desktop/connect``) for a
+  device token via :func:`precis.export.remarkable.register_device`, stored
+  in the vault under this login's own name — never shared with, or
+  overridden by, the deployment-wide device other accounts might fall back
+  to. An "advanced" box also accepts a pasted config/token directly, for
+  when the pairing endpoint has drifted or the device was paired elsewhere.
 
 **Changing your password signs you out, and that is not a bug.** HTTP
 Basic has no session to re-issue: the browser holds the old credential
@@ -144,6 +152,21 @@ def _render(
     """
     if feed_url is None:
         feed_url = _feed_url(request, user) if user else ""
+    remarkable_paired = False
+    remarkable_fallback = False
+    if user is not None:
+        from precis.export.remarkable import (
+            remarkable_configured,
+            user_remarkable_configured,
+        )
+
+        store = get_store(request)
+        remarkable_paired = user_remarkable_configured(store, user.login)
+        if not remarkable_paired:
+            # Deployment-wide device, checked with no login — a per-user
+            # secret must never satisfy this check, or an already-paired
+            # user's own device would look like "everyone's fallback".
+            remarkable_fallback = remarkable_configured(store)
     return templates.TemplateResponse(
         request,
         "account/index.html.j2",
@@ -153,6 +176,8 @@ def _render(
             "error": error,
             "notice": notice,
             "feed_url": feed_url,
+            "remarkable_paired": remarkable_paired,
+            "remarkable_fallback": remarkable_fallback,
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
@@ -356,6 +381,74 @@ async def feed_token(request: Request, action: str = Form("rotate")) -> Response
         feed_url=f"{_base_url(request)}/podcast/feed.xml?t={token}",
         notice=notice,
     )
+
+
+@router.post("/remarkable", response_class=HTMLResponse)
+def remarkable(
+    request: Request,
+    action: str = Form(...),
+    code: str = Form(""),
+    config: str = Form(""),
+) -> Response:
+    """Pair, replace, or unpair this user's own reMarkable device.
+
+    Deliberately a plain (non-``async``) handler: :func:`register_device`
+    makes a blocking ``httpx`` call, and FastAPI runs a sync ``def`` route
+    in starlette's threadpool rather than on the event loop, so the pairing
+    round-trip to reMarkable's servers doesn't stall every other request
+    while it waits.
+
+    ``action=pair`` exchanges the one-time code; ``action=save`` stores a
+    pasted config/token directly (the "advanced" box, for when pairing has
+    drifted); ``action=unpair`` deletes the stored credential. A
+    :class:`~precis.export.remarkable.PairingError` renders inline as an
+    error, never a 500 — a rejected code is an expected outcome, not a bug.
+    """
+    from precis.export.remarkable import (
+        PairingError,
+        clear_user_config,
+        register_device,
+        set_user_config,
+    )
+
+    user = _require_self(request)
+    store = get_store(request)
+
+    if action == "unpair":
+        if not clear_user_config(store, user.login):
+            return _render(
+                request,
+                user=_fresh(request, user),
+                # Unlike the feed-token revoke (where a row-side kill has
+                # already broken the link), the vault entry here IS the
+                # credential — a failed delete means nothing was unpaired.
+                error=(
+                    "Still paired: the credential could not be deleted from "
+                    "the vault — try again. Check the precis-web log."
+                ),
+            )
+        return RedirectResponse("/account?saved=1", status_code=303)
+
+    if action == "save":
+        body = config.strip()
+        if not body:
+            return _render(
+                request, user=user, error="Paste a config body or device token."
+            )
+        set_user_config(store, user.login, body)
+        return RedirectResponse("/account?saved=1", status_code=303)
+
+    if action == "pair":
+        if not code.strip():
+            return _render(request, user=user, error="Enter the one-time code.")
+        try:
+            body = register_device(code)
+        except PairingError as exc:
+            return _render(request, user=user, error=str(exc))
+        set_user_config(store, user.login, body)
+        return RedirectResponse("/account?saved=1", status_code=303)
+
+    return _render(request, user=user, error=f"unknown reMarkable action {action!r}")
 
 
 def _feed_url(request: Request, user: WebUser) -> str:
