@@ -118,6 +118,31 @@ class SmartDraftFakeStore(FakeStore):
             _sd_chunk(8, "paragraph", "STL parts cure under UV light.", 1),
             # Mentions neither surface — must NOT show up as an occurrence.
             _sd_chunk(9, "paragraph", "Unrelated paragraph about topology.", 1),
+            # A consecutive RUN of two glossary terms — item 3's "Abbreviations"
+            # fold groups a run of ``chunk_kind='term'`` rows in the left TOC
+            # into one collapsible ``<details>`` instead of two ordinary rows.
+            _sd_chunk(
+                10,
+                "term",
+                "additive manufacturing",
+                1,
+                meta={
+                    "registry": "glossary",
+                    "short": "additive manufacturing",
+                    "abbrev": "AM",
+                },
+            ),
+            _sd_chunk(
+                11,
+                "term",
+                "computer-aided design",
+                1,
+                meta={
+                    "registry": "glossary",
+                    "short": "computer-aided design",
+                    "abbrev": "CAD",
+                },
+            ),
         ]
 
     def get_ref(self, *, kind, id):
@@ -186,6 +211,52 @@ class SmartDraftFakeStore(FakeStore):
         # The fixture figure (chunk_id=5) is a real blob-backed image (the
         # medium resolver) — mirrors DraftFakeStore's FIGFIG.
         return "fixturesha0005" if chunk_id == 5 else None
+
+    def defined_terms(self, ref_id):
+        """Mirrors ``precis.store._draft_ops.DraftStore.defined_terms`` —
+        the rich ``{surface: TermEntry}`` map ``_abbrevs_cached``
+        (``routes/drafts.py``) reads, built off this fixture's own ``term``
+        chunks (6, 10, 11) rather than a real ``string_agg`` scan. No inline
+        Schwartz-Hearst pass — the fixture's prose never carries an
+        unmarked ``Long Form (ABBR)`` first-use — so this is explicit
+        ``term`` leaves only, same precedence as the real method."""
+        out: dict[str, dict[str, object]] = {}
+        for c in self._chunks:
+            if c.chunk_kind != "term":
+                continue
+            definition = (c.text or "").strip()
+            if not definition:
+                continue
+            m = c.meta or {}
+            entry: dict[str, object] = {"definition": definition}
+            for key in (
+                "registry",
+                "callout",
+                "mpn",
+                "manufacturer",
+                "url",
+                "ordering",
+                "abbrev",
+            ):
+                val = m.get(key)
+                if val is not None and val != "":
+                    entry[key] = val
+            surfaces: list[str] = []
+            short_form = m.get("short")
+            if short_form:
+                surfaces.append(str(short_form))
+            for sf in m.get("surface_forms") or []:
+                if sf:
+                    surfaces.append(str(sf))
+            mpn = m.get("mpn")
+            if mpn:
+                surfaces.append(str(mpn))
+            abbrev = m.get("abbrev")
+            if abbrev:
+                surfaces.append(str(abbrev))
+            for surface in surfaces:
+                out[surface] = entry
+        return out
 
 
 @pytest.fixture
@@ -722,8 +793,19 @@ def test_smartdraft_indicator_machine_green_derives_via_section(
     r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc2}")
     assert r.status_code == 200
     assert 'class="sd-review sd-review-dot machine"' in r.text
-    seg = r.text[r.text.index('sd-review-dot machine"') :]
-    tooltip = seg[seg.index('title="') : seg.index('"', seg.index('title="') + 7)]
+    # Scope to the FOCUS block (id="mid-focus") — chunk 1's own doc-mode
+    # widget (also "machine": its own structure/adversarial/toc) renders
+    # earlier in the page and must not be mistaken for chunk 2's; then walk
+    # BACKWARD from the class match to the same <button>'s own ``title=``
+    # (which precedes ``class=`` in the tag) rather than forward, since a
+    # forward scan can now land on a later block's ``sd_dc_id`` "click to
+    # copy" title (feature B) instead of a review tooltip.
+    focus_seg = r.text[r.text.index('id="mid-focus"') :]
+    class_idx = focus_seg.index('sd-review-dot machine"')
+    prefix = focus_seg[:class_idx]
+    title_start = prefix.rindex('title="') + len('title="')
+    title_end = focus_seg.index('"', title_start)
+    tooltip = focus_seg[title_start:title_end]
     assert "✓ flow" in tooltip and "✓ cites" in tooltip
     assert "✓ structure (via section)" in tooltip
     assert "✓ adversarial (via section)" in tooltip
@@ -1163,6 +1245,164 @@ def test_smartdraft_reader_table_focus_uses_shared_table_editor(
     # the recovered table renders as a real <table>, not raw pipe-markdown
     assert "<table" in body
     assert "<th" in body and ">A<" in body and ">B<" in body
+
+
+def test_smartdraft_reader_chunk_ids_render_without_debug_flag(
+    smartdraft_client: TestClient,
+) -> None:
+    """item 1: the per-chunk dc-id span in the middle reading pane is no
+    longer gated on ``debug=1`` — it always renders, on both the focus
+    block and a full-document non-focus neighbour, with no ``debug`` param
+    on the request at all. Each id is also a click-to-copy affordance now
+    (``sd_block.sd_dc_id`` — feature B), so the assertions pin the whole
+    clickable span, not just the bare handle."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)  # heading, focus
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)  # non-focus doc block
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    body = r.text
+    # the focus block's id span (view.html.j2's generic full-mode branch)
+    assert (
+        '<span class="font-mono text-sky-500 cursor-pointer" title="click to copy" '
+        f"onclick=\"sdCopyDc(event, '{dc1}')\">{dc1}</span>"
+    ) in body
+    # the non-focus doc-mode neighbour's id span (sd_doc_block, _block.html.j2)
+    assert (
+        '<span class="font-mono text-[9px] text-sky-500 cursor-pointer" '
+        f'title="click to copy" onclick="sdCopyDc(event, \'{dc2}\')">{dc2} </span>'
+    ) in body
+
+
+def test_smartdraft_reader_highlights_defined_abbrev_in_non_focus_block(
+    smartdraft_client: TestClient,
+) -> None:
+    """Feature A: the classic ``/drafts`` reader highlighted a defined
+    term/abbreviation (``<abbr class="pa">``, hover popover) in prose via
+    ``linkify_refs(..., abbrevs=...)`` — smartdraft never passed ``abbrevs=``
+    at all, so the highlight was silently absent everywhere in the sole
+    reader (the reported gripe: "abbrev mouseover highlighting for LLM is
+    unavailable"). This pins the fix on a NON-focus doc-mode block (chunk 7
+    mentions the "stereolithography" surface defined by the term chunk 6),
+    and on the ``/blocks`` lazy-hydration fragment, which must highlight
+    identically to the initial render."""
+    from precis_web.routes import drafts as drafts_mod
+
+    # A prior test in this (or another) module may have already populated
+    # the module-level (ref_id, version) cache for this fixture's draft
+    # under a DIFFERENT backing store (e.g. BigDraftFakeStore, which has no
+    # term chunks at all) — the fake pool always reports version 0, so the
+    # cache key never changes across fixtures. Clear it so this test's
+    # assertions reflect THIS fixture's terms, not a stale/empty map.
+    drafts_mod._ABBREV_CACHE.clear()
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)  # heading, focus
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    body = r.text
+    assert '<abbr class="pa"' in body
+    assert "stereolithography" in body  # the defined surface text still shows
+
+    dc7 = handle_registry.format_handle("draft", 7, chunk=True)
+    r2 = smartdraft_client.get(f"/smartdraft/sdt/blocks?dcs={dc7}")
+    assert r2.status_code == 200
+    assert '<abbr class="pa"' in r2.text
+
+
+def test_smartdraft_chunk_id_click_to_copy_affordance(
+    smartdraft_client: TestClient,
+) -> None:
+    """Feature B: clicking a chunk-id span copies the handle
+    (``sdCopyDc(event, dc)``) — every middle-pane id carries the
+    ``onclick``/``title`` affordance, on both the initial render and the
+    ``/blocks`` hydration fragment (a hydrated block must still be able to
+    call it, so the helper is a plain top-level function, defined exactly
+    once on the page)."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    body = r.text
+    assert "onclick=\"sdCopyDc(event, '" in body
+    assert 'title="click to copy"' in body
+    assert body.count("function sdCopyDc(") == 1
+
+    dc4 = handle_registry.format_handle("draft", 4, chunk=True)  # table chunk
+    r2 = smartdraft_client.get(f"/smartdraft/sdt/blocks?dcs={dc4}")
+    assert r2.status_code == 200
+    assert "onclick=\"sdCopyDc(event, '" in r2.text
+
+
+def test_smartdraft_export_pane_citation_health_has_segment_toggles(
+    smartdraft_client: TestClient,
+) -> None:
+    """Feature C: the export pane's citation-health summary
+    (previously a flat ``x-text="retraction.summary"`` line) now breaks
+    into segments, four of which (the full cited-paper set, missing DOI,
+    never checked, DOI never validated) are click-toggles that expand an
+    inline scrollable paper list. Pure static/template check — the toggle
+    markup and JS bucket keys are always present regardless of live
+    retraction data (an Alpine feature keyed off the JSON
+    ``_retraction_report_json`` now ships, routes/drafts.py)."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    body = r.text
+    assert "data-retraction-toggle" in body
+    assert "data-retraction-list" in body
+    assert "toggleBucket(seg.key)" in body
+    for key in ("papers", "missing_doi", "unchecked", "doi_unvalidated"):
+        assert f"'{key}'" in body
+    # paper-list rows use the linkify /r/paper/<slug> idiom, new tab
+    assert "'/r/paper/' + p.slug" in body
+    assert 'target="_blank" rel="noopener"' in body
+
+
+def test_smartdraft_full_doc_table_chunk_renders_real_table_when_not_focused(
+    smartdraft_client: TestClient,
+) -> None:
+    """item 2: a table chunk that ISN'T the focus (full-document mode, a
+    ``sd_doc_block`` neighbour) renders the SAME read-only ``<table>`` the
+    focused table branch does — not the raw pipe-markdown text — and stays a
+    single ``<div data-dc>`` block (no nested ``<div>``, per ``_dc_block``'s
+    assumption)."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)  # heading, focus
+    dc4 = handle_registry.format_handle("draft", 4, chunk=True)  # table chunk
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    seg = _dc_block(r.text, dc4)
+    assert "<table" in seg
+    assert "<th" in seg and ">A<" in seg and ">B<" in seg
+    assert "<td" in seg and ">1<" in seg and ">2<" in seg
+    assert "| --- |" not in seg  # not the raw pipe-markdown source text
+    assert seg.count("<div") == 1  # no nested <div> inside the block
+
+
+def test_smartdraft_reader_glossary_terms_fold_into_abbreviations_details(
+    smartdraft_client: TestClient,
+) -> None:
+    """item 3: a consecutive run of ``chunk_kind='term'`` rows in the left
+    TOC folds into one ``Abbreviations (N)`` foldable ``<details>`` — closed
+    by default, ``open`` when the focus is one of the grouped terms."""
+    dc10 = handle_registry.format_handle("draft", 10, chunk=True)
+    dc11 = handle_registry.format_handle("draft", 11, chunk=True)
+    # relevance=0 → the full outline (every chunk kept, nothing collapsed by
+    # the fisheye pressure filter), so the two-term run is unambiguous.
+    r = smartdraft_client.get("/smartdraft/sdt?relevance=0")
+    assert r.status_code == 200
+    body = r.text
+    assert "Abbreviations (2)" in body
+    idx = body.index("Abbreviations (2)")
+    start = body.rindex("<details", 0, idx)
+    tag = body[start : body.index(">", start)]
+    assert "open" not in tag  # closed by default — focus is elsewhere
+    assert f'data-dc="{dc10}"' in body
+    assert f'data-dc="{dc11}"' in body
+
+    r2 = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc10}")
+    assert r2.status_code == 200
+    body2 = r2.text
+    idx2 = body2.index("Abbreviations (2)")
+    start2 = body2.rindex("<details", 0, idx2)
+    tag2 = body2[start2 : body2.index(">", start2)]
+    assert "open" in tag2  # focus is one of the grouped terms
 
 
 def test_needs_items_reads_dict_keys_not_attributes(monkeypatch) -> None:

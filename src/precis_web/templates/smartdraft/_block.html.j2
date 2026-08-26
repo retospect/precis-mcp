@@ -10,9 +10,12 @@
    via the delegated handler in view.html.j2 (which explicitly skips a click
    landing inside .sd-review/.sd-review-menu, below, so the indicator/dropdown
    don't also trigger a focus-nav). #}
-{# Human-readable reason behind a grounding-provenance colour — shared by the
-   block's left-border bar (title below) and the TOC dot (view.html.j2), so
-   hovering either red marker answers "why is this red". #}
+{# Human-readable reason behind a grounding-provenance colour — used by the
+   TOC dot (view.html.j2) hover, so hovering it answers "why is this red".
+   The middle-pane block itself only shows the provenance as a left-border
+   colour (``sd-prov-*``, set below) — no ``title`` — a whole-paragraph
+   browser tooltip on every prose block was found superfluous and it fought
+   the abbr hover popovers (linkify._highlight_abbrevs). #}
 {% macro prov_title(provenance) -%}
 {%- if provenance == 'sourced' -%}sourced — cites a corpus paper/patent
 {%- elif provenance == 'pending' -%}pending — cites a finding; the source is still being chased
@@ -20,10 +23,61 @@
 {%- else -%}{{ provenance }}{%- endif -%}
 {%- endmacro %}
 
-{% macro sd_doc_block(n, display, debug, claims, review, ident) -%}
+{# Read-only render of a table chunk's ``{header, rows, caption}`` payload —
+   the SAME markup the focused table branch (view.html.j2) and the
+   full-document/tail-head doc blocks (below) share, so a table reads
+   identically whether it's the focus or just passing through. Deliberately
+   emits ONLY table elements (table/caption/thead/tbody/tr/th/td) — no
+   wrapping <div> — because every caller inlines this inside its own single
+   ``<div data-dc>`` block, and a test (``_dc_block`` in
+   test_smartdraft_reader.py) assumes exactly one <div> per rendered block; a
+   nested <div> here would break that "find the block's closing </div>"
+   assumption. A caller that wants horizontal overflow scrolling puts it on
+   THIS <table> itself (``block overflow-x-auto``) rather than wrapping. #}
+{% macro sd_table(table, claims, abbrevs=none) -%}
+<table class="w-full border-collapse text-sm">
+  {% if table.caption %}
+  <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ table.caption | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}</caption>
+  {% endif %}
+  <thead><tr>
+    {% for h in table.header %}
+    <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}</th>
+    {% endfor %}
+  </tr></thead>
+  <tbody>
+    {% for row in table.rows %}
+    <tr class="even:bg-slate-50">
+      {% for cell in row %}
+      <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{%- endmacro %}
+
+{# The clickable chunk-id idiom shared by every middle-pane block (the
+   doc-mode block below, the tail/head neighbour and the ±2 summary line in
+   view.html.j2, and the three amber-bar focus branches there): click →
+   copy the dc handle to the clipboard (``sdCopyDc``, defined once in
+   view.html.j2's script — a plain top-level function so it's still callable
+   after the /blocks hydration fragment injects more of these). The helper
+   itself does ``stopPropagation``/``preventDefault`` on the click, so this
+   is safe to nest inside a ``<div data-dc>`` block's delegated focus-nav
+   click handler OR inside an ``<a href>`` (the ±2 summary line) without
+   triggering either. ``cls`` lets a caller match its surrounding size (the
+   amber focus bar uses a plain, un-suffixed size); ``trail`` is trailing
+   text (a space) kept INSIDE the span so callers that used to write
+   ``{{ n.dc }} `` (id + literal space) render byte-identical markup. #}
+{% macro sd_dc_id(dc, cls='font-mono text-[9px] text-sky-500', trail=' ') -%}
+<span class="{{ cls }} cursor-pointer" title="click to copy" onclick="sdCopyDc(event, '{{ dc }}')">{{ dc }}{{ trail }}</span>
+{%- endmacro %}
+
+{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none) -%}
 {%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}"{% if n.provenance %} title="{{ prov_title(n.provenance) }}"{% endif %}>{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+{%- set is_tbl = n.is_table and n.table -%}
+<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{{ sd_dc_id(n.dc) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}{% endif %}</div>
 {%- endmacro %}
 
 {# The per-block review indicator + dropdown

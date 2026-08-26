@@ -101,6 +101,7 @@ from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput, NotFound
 from precis.export._data_package import collect_entry
+from precis.handlers._prio_tag import PRIO_TAG_TO_INT
 from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
 from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sha
 
@@ -1149,6 +1150,11 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
         "summary": report.summary(),
         "blocks_export": report.blocks_export,
         "total": len(report.papers),
+        # The full cited-paper set — the export pane's citation-health
+        # summary (smartdraft/view.html.j2) links its leading "N cited
+        # papers" segment to this list, alongside the per-bucket sublists
+        # already shipped below (missing_doi / unchecked / doi_unvalidated).
+        "papers": [_retraction_paper_json(p) for p in report.papers],
         "retracted": [_retraction_paper_json(p) for p in report.retracted],
         "soft": [_retraction_paper_json(p) for p in report.soft],
         "unchecked": [_retraction_paper_json(p) for p in report.unchecked],
@@ -1980,6 +1986,12 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
         "kind": "todo",
         "text": text,
         "meta": meta,
+        # Human-authored asks jump the default (prio=5) queue — the user is
+        # actively waiting, unlike a background prio=8 mint. TodoHandler.put
+        # takes ``prio`` as a direct int kwarg (unlike gripe/quest, it does
+        # NOT translate a PRIO: tag on the tags= list — see
+        # handlers/_prio_tag.py), so we pass the translated column value.
+        "prio": PRIO_TAG_TO_INT["PRIO:high"],
     }
     project = _project_id(store, ref.id)
     if project is not None:

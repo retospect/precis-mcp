@@ -38,9 +38,11 @@ from precis_web.linkify import popover_chip
 from precis_web.routes.drafts import (
     _DOC_TYPES,
     RefChip,
+    _abbrevs_cached,
     _connection_chips,
     _draft_author_lines,
     _draft_ref,
+    _draft_version,
     _owner_workspace,
     _review_status_by_chunk,
 )
@@ -108,6 +110,19 @@ async def reader(
 
     # Build the nodes once; search + view share them.
     nodes = smartdraft.build_nodes(store, ref.id, marks=marks)
+
+    # Defined-term/abbreviation hover highlighting (linkify._highlight_abbrevs)
+    # — reuses the classic reader's whole-draft term map + its
+    # ``(ref_id, version)`` cache (``_abbrevs_cached``), keyed off
+    # ``_draft_version`` (one ``MAX(chunk_events.event_id)`` aggregate) rather
+    # than smartdraft's own ``_cache_version`` (a full string_agg over every
+    # live chunk, already paid once per request inside ``build_nodes`` above):
+    # cheaper, and correct — abbrevs depend only on chunk CONTENT
+    # (``defined_terms``), which ``_draft_version`` already bumps on any
+    # create/edit/move/retire; it just skips the chunk-tag count
+    # ``_cache_version`` folds in for its own (tag-search-signal) purposes,
+    # which has no bearing on term definitions.
+    abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
 
     # Search (RRF over the active signals). Embed the query once, degrading to
     # lexical-only if the embedder is down; surface that so it isn't silent.
@@ -269,6 +284,7 @@ async def reader(
             "flags": flags,
             "claims": claims,
             "claims_evidence": claims_evidence,
+            "abbrevs": abbrevs,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
             # ── Tools pane (right-rail bottom) — classic-reader parity ──
             "remarkable_ready": remarkable_configured(store),
@@ -326,12 +342,17 @@ async def blocks(
     review_by_dc = smartdraft.review_payloads_for(
         sel, _review_status_by_chunk(store, ref.id), store
     )
+    # Same abbrev-highlighting map the initial render uses (see reader()'s
+    # note) — a scrolled-to hydrated block must highlight defined terms
+    # identically to a server-rendered one.
+    abbrevs = _abbrevs_cached(store, ref.id, _draft_version(store, ref.id))
     return templates.TemplateResponse(
         request,
         "smartdraft/_blocks.html.j2",
         {
             "nodes": sel,
             "claims": claims,
+            "abbrevs": abbrevs,
             "review_by_dc": review_by_dc,
             "ident": ident,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),

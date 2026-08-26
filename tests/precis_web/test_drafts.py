@@ -1190,6 +1190,10 @@ def test_retraction_status_route_reads_only_no_network(
     assert data["total"] == 2
     assert [p["slug"] for p in data["retracted"]] == ["smith2024"]
     assert [p["slug"] for p in data["unchecked"]] == ["ghost404"]
+    # The full cited-paper set (item C) — the export pane's citation-health
+    # summary links its leading "N cited papers" segment to this list, not
+    # just the retracted/unchecked sublists.
+    assert [p["slug"] for p in data["papers"]] == ["smith2024", "ghost404"]
 
 
 def test_retraction_status_route_surfaces_doi_completeness(
@@ -1460,6 +1464,7 @@ def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
     assert args["meta"]["working_set"]["edit_hint"] == ["dc2"]  # the pen hint
     assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
     assert "llm_select" not in args["meta"]  # no structured knob → no dict
+    assert args["prio"] == 3  # human-authored ask jumps the default queue
 
 
 def test_request_ws_defaults_to_big_tier_when_model_omitted(tmp_path) -> None:

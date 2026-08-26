@@ -103,6 +103,46 @@
 {%- endif -%}
 {% endmacro %}
 
+{# A run of consecutive glossary-term rows (``ChunkNode.is_term`), folded
+   into one ``<details>`` — a draft glossary tail otherwise reads as an
+   unbroken run of ordinary always-visible TOC rows. Styled with the same
+   ``sd-sec``/``sd-sum``/``sd-tw``/``sd-htext`` idiom the heading-outline
+   ``<details>`` above uses, so it reads as "one more foldable section", not
+   a bespoke widget. Open only when the focus (or, with an active search, a
+   hit) is one of the grouped terms — closed otherwise, since a long
+   glossary run is exactly the kind of thing you want out of the way by
+   default. #}
+{% macro term_group(rows, hit_dcs) %}
+{%- set ns = namespace(open=false) -%}
+{%- for row in rows -%}
+  {%- if row.node.dc == focus_dc or (q and row.node.dc in hit_dcs) -%}{% set ns.open = true %}{%- endif -%}
+{%- endfor %}
+<details {% if ns.open %}open{% endif %} class="sd-sec">
+  <summary class="sd-sum">
+    <span class="sd-tw">▸</span>
+    <span class="sd-htext">Abbreviations ({{ rows | length }})</span>
+  </summary>
+  {% for row in rows %}{{ toc_body_row(row, hit_dcs) }}{% endfor %}
+</details>
+{%- endmacro %}
+
+{# Renders one section's body rows, folding any consecutive run of term rows
+   (see ``term_group`` above) into a single collapsible group instead of a
+   sequence of ordinary rows — the wrapper both ``sec.body`` loop sites
+   (heading sections and the pre-first-heading fallback) share. #}
+{% macro toc_body_rows(rows, hit_dcs) %}
+{%- set ns = namespace(run=[]) -%}
+{%- for row in rows -%}
+  {%- if row.node is not none and row.node.is_term -%}
+    {%- set ns.run = ns.run + [row] -%}
+  {%- else -%}
+    {%- if ns.run -%}{{ term_group(ns.run, hit_dcs) }}{% set ns.run = [] %}{%- endif -%}
+    {{ toc_body_row(row, hit_dcs) }}
+  {%- endif -%}
+{%- endfor -%}
+{%- if ns.run -%}{{ term_group(ns.run, hit_dcs) }}{%- endif -%}
+{% endmacro %}
+
 <style>
   /* Named classes for the high-count outline/TOC rows — each replaces ~350
      chars of repeated Tailwind utilities, so a 1897-heading draft's response
@@ -488,11 +528,11 @@
                class="sd-htext">{% if debug %}<span class="sd-dc">{{ sec.heading.dc }}</span> {% endif %}{{ sec.heading.summary }}</a>
             {%- if sec.heading.pinned %}<span class="sd-badge">📌</span>{% endif -%}
           </summary>
-          {% for row in sec.body %}{{ toc_body_row(row, hit_dcs) }}{% endfor %}
+          {{ toc_body_rows(sec.body, hit_dcs) }}
           {% if sec.children %}{{ loop(sec.children) }}{% endif %}
         </details>
         {% else %}
-          {% for row in sec.body %}{{ toc_body_row(row, hit_dcs) }}{% endfor %}
+          {{ toc_body_rows(sec.body, hit_dcs) }}
           {% if sec.children %}{{ loop(sec.children) }}{% endif %}
         {% endif %}
       {% else %}
@@ -522,7 +562,7 @@
         {% set _seed = n.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')"
@@ -533,28 +573,10 @@
           {% call draft_editors.draft_table_editor(ident, n.base58, n.sha, _seed) %}
           {% if n.table %}
           <div class="overflow-x-auto">
-            <table class="w-full border-collapse text-sm">
-              {% if n.table.caption %}
-              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ n.table.caption | linkify_refs(markdown=True, compact=True, claims=claims) }}</caption>
-              {% endif %}
-              <thead><tr>
-                {% for h in n.table.header %}
-                <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, claims=claims) }}</th>
-                {% endfor %}
-              </tr></thead>
-              <tbody>
-                {% for row in n.table.rows %}
-                <tr class="even:bg-slate-50">
-                  {% for cell in row %}
-                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims) }}</td>
-                  {% endfor %}
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+            {{ sd_block.sd_table(n.table, claims, abbrevs) }}
           </div>
           {% else %}
-          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</p>
+          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}</p>
           {% endif %}
           {% endcall %}
         </div>
@@ -588,7 +610,7 @@
            edits. #}
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')"
@@ -604,7 +626,7 @@
                figcaption accepts. #}
             <figcaption class="mt-1.5 text-sm text-slate-700">
               {% call draft_editors.draft_edit(ident, n.base58, n.sha, true, false, n.text, rows=4, block_keys=false) %}
-              <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</span>
+              <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}</span>
               <button @click="startEdit()" class="mt-0.5 text-[10px] text-slate-400 hover:text-sky-600"
                       title="edit this figure's caption (key: i)">✎ edit caption</button>
               {% endcall %}
@@ -619,7 +641,7 @@
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           {% call draft_editors.draft_edit(ident, n.base58, n.sha, n.editable, n.is_heading, n.text, rows=10) %}
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')"
@@ -631,7 +653,7 @@
             </div>
           </div>
           {# rendered view (with links) #}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}</div>
           {# tag row (the T search signal) — chips + type-ahead add #}
           <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
             <span class="text-slate-400">🏷</span>
@@ -651,7 +673,7 @@
         {% elif m.mode == 'doc' %}
         {# full-doc mode: a chunk in the server-rendered window around the focus,
            verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
-        {{ sd_block.sd_doc_block(n, m.display, debug, claims, review_by_dc.get(n.dc), ident) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs) }}
         {% elif m.mode == 'skel' %}
         {# full-doc lazy spacer: a distant chunk, sized by its height estimate
            and hydrated to a real doc block on scroll (IntersectionObserver →
@@ -661,12 +683,17 @@
         <div data-dc="{{ n.dc }}" data-ph class="block rounded px-2 py-1" style="min-height: {{ m.est }}px"></div>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
-           head flows out). <div> not <a> for the same nested-anchor reason as
-           the doc-mode block above. #}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+           head flows out) — except a table chunk, which always renders in
+           full (a table is already bounded, so there's no truncated form to
+           show). <div> not <a> for the same nested-anchor reason as the
+           doc-mode block above. #}
+        {% set _is_tbl = n.is_table and n.table %}
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ sd_block.sd_dc_id(n.dc) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs) }}{% endif %}</div>
         {% else %}
-        {# ±2 neighbour: one-line summary #}
-        <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}· {{ m.display }}</a>
+        {# ±2 neighbour: one-line summary — the dc span sits inside this <a>, so
+           sdCopyDc's stopPropagation/preventDefault (see sd_dc_id) matter here:
+           without them a click on the id would also navigate the link. #}
+        <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{{ sd_block.sd_dc_id(n.dc) }}· {{ m.display }}</a>
         {% endif %}
       {% else %}
         <div class="text-slate-400">Empty draft.</div>
@@ -902,11 +929,56 @@
              retraction: null,
              retractionChecking: false,
              retractionError: null,
+             // Feature C: which citation-health bucket's paper list is
+             // currently expanded below the summary line (null = none; at
+             // most one open at a time). Keys are the same JSON keys
+             // ``_retraction_report_json`` ships (routes/drafts.py) —
+             // ``papers`` (the full cited set) / ``missing_doi`` /
+             // ``unchecked`` / ``doi_unvalidated``.
+             expandedBucket: null,
              async loadRetraction() {
                try {
                  const r = await fetch('/drafts/{{ ident }}/retraction-status');
                  this.retraction = await r.json();
                } catch (e) { /* best-effort — export still works without this */ }
+             },
+             // The citation-health summary line, broken into segments —
+             // same wording/order as the server's DraftRetractionReport.
+             // summary() (precis.export.retraction), but four segments
+             // (papers / missing_doi / unchecked / doi_unvalidated) are
+             // click-toggles that expand their paper list below; the rest
+             // (retracted / with-notices / DOI-invalid) stay plain text —
+             // retracted already gets its own blocking box below, and the
+             // others have no dedicated list in this pane.
+             retractionSegments() {
+               const r = this.retraction;
+               if (!r) return [];
+               const n = (key) => (r[key] || []).length;
+               const mk = (key, label, clickable) => (
+                 { key, label, n: n(key), clickable }
+               );
+               const bits = [
+                 mk('retracted', 'retracted', false),
+                 mk('soft', 'with notices', false),
+                 mk('missing_doi', 'missing DOI', true),
+                 mk('doi_invalid', 'DOI invalid', false),
+                 mk('unchecked', 'never checked', true),
+                 mk('doi_unvalidated', 'DOI never validated', true),
+               ].filter((b) => b.n > 0);
+               const segs = [
+                 { key: 'papers', text: r.total + ' cited papers', clickable: true, prefix: '' },
+               ];
+               bits.forEach((b, i) => segs.push({
+                 key: b.key, text: b.n + ' ' + b.label, clickable: b.clickable,
+                 prefix: i === 0 ? ' — ' : ', ',
+               }));
+               if (!bits.length) {
+                 segs.push({ key: null, text: 'all clean', clickable: false, prefix: ', ' });
+               }
+               return segs;
+             },
+             toggleBucket(key) {
+               this.expandedBucket = this.expandedBucket === key ? null : key;
              },
              async checkRetraction() {
                this.retractionChecking = true;
@@ -942,7 +1014,35 @@
            blocking notice + override once a cite is known-retracted. #}
         <template x-if="retraction && retraction.total > 0">
           <div class="space-y-1">
-            <p class="text-slate-400" x-text="retraction.summary"></p>
+            {# Citation-health summary (item C) — same wording/order as the
+               server's ``summary()``, but built client-side from the JSON
+               so four buckets (papers / missing_doi / unchecked /
+               doi_unvalidated) can be click-toggled open into their paper
+               list just below, instead of being flat unreachable text. #}
+            <p class="text-slate-400">
+              <template x-for="seg in retractionSegments()" :key="seg.key + '.' + seg.text">
+                <span>
+                  <span x-text="seg.prefix"></span>
+                  <span x-show="seg.clickable"
+                        class="cursor-pointer underline decoration-dotted hover:decoration-solid"
+                        :class="expandedBucket === seg.key ? 'text-sky-700' : ''"
+                        :data-retraction-toggle="seg.key"
+                        @click="toggleBucket(seg.key)"
+                        x-text="seg.text"></span>
+                  <span x-show="!seg.clickable" x-text="seg.text"></span>
+                </span>
+              </template>
+            </p>
+            <template x-if="expandedBucket">
+              <div class="max-h-40 overflow-y-auto rounded border border-slate-200 bg-white p-1"
+                   data-retraction-list>
+                <template x-for="p in (retraction[expandedBucket] || [])" :key="p.ref_id">
+                  <a :href="'/r/paper/' + p.slug" target="_blank" rel="noopener"
+                     class="block truncate rounded px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 hover:text-sky-700"
+                     :title="p.title" x-text="p.title || p.slug"></a>
+                </template>
+              </div>
+            </template>
             <template x-if="retraction.blocks_export">
               <div class="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-rose-700">
                 <p class="font-semibold">
@@ -1792,6 +1892,24 @@ function smartClearPins() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'clear' }),
   }).then(() => window.__sdRefresh()).catch(() => {});
+}
+// Click-to-copy a chunk id (sd_block.sd_dc_id, _block.html.j2) — every id
+// span/button across the reader (doc-mode blocks, tail/head neighbours, the
+// ±2 summary line, the amber focus bar) shares this ONE inline-onclick
+// helper, a plain top-level function (not inside an IIFE) so it is still
+// callable from a block the /blocks hydration fragment injects later.
+// stopPropagation/preventDefault are load-bearing: without them the click
+// also bubbles into the block's delegated data-dc focus-nav handler, or (the
+// ±2 summary line) follows the enclosing <a href>.
+function sdCopyDc(event, dc) {
+  event.stopPropagation();
+  event.preventDefault();
+  const el = event.currentTarget;
+  const orig = el.textContent;
+  navigator.clipboard.writeText(dc).then(() => {
+    el.textContent = '✓ copied';
+    setTimeout(() => { el.textContent = orig; }, 800);
+  }).catch(() => {});
 }
 // ── Review status (indicator + dropdown + rollup) ──────────────────────
 // Every action below just POSTs the shared JSON endpoint then refreshes the

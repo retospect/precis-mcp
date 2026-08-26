@@ -3758,6 +3758,17 @@ def test_gripes_list_carries_the_filing_form(client) -> None:
     assert "File gripe" in resp.text
 
 
+def test_gripes_list_links_to_the_repo_backlog(client) -> None:
+    resp = client.get("/gripes")
+    assert resp.status_code == 200
+    assert (
+        'href="https://github.com/retospect/precis-mcp/tree/main/docs/backlog"'
+        in resp.text
+    )
+    assert 'target="_blank"' in resp.text
+    assert 'rel="noopener"' in resp.text
+
+
 def test_gripes_filing_dispatches_put_and_redirects(runtime, client) -> None:
     """The create path: ``put`` with no id, text carrying the attribution."""
     resp = client.post(
