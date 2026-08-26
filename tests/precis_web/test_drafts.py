@@ -1410,6 +1410,9 @@ def test_remarkable_send_threads_the_signed_in_login_into_job_params(
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["job_type"] == "remarkable_send"
     assert args["params"]["user"] == "reto"
+    # Login-scoped idem_key — a signed-in user's send must not coalesce
+    # with another user's (or the shared) send of the same draft.
+    assert args["idem_key"] == "remarkable_send:nt:reto"
 
 
 def test_remarkable_send_omits_user_param_when_signed_out(
@@ -1423,6 +1426,8 @@ def test_remarkable_send_omits_user_param_when_signed_out(
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["job_type"] == "remarkable_send"
     assert "user" not in args["params"]
+    # Signed-out send falls back to the shared idem_key, not None/empty.
+    assert args["idem_key"] == "remarkable_send:nt:shared"
 
 
 # ── hand-driven working set: pen/eye marks + request-ws ──

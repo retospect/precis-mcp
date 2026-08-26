@@ -9,6 +9,7 @@ checks the environment first).
 
 from __future__ import annotations
 
+import logging
 import stat
 import sys
 import textwrap
@@ -146,12 +147,19 @@ def test_set_user_config_keeps_a_full_config_body_verbatim(
 
 def test_clear_user_config_reports_vault_failure(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _boom(name, *, store):
         raise RuntimeError("vault down")
 
     monkeypatch.setattr(rm.secrets, "delete_secret", _boom)
-    assert rm.clear_user_config(_fake_store(), "reto") is False
+    with caplog.at_level(logging.WARNING, logger=rm.log.name):
+        assert rm.clear_user_config(_fake_store(), "reto") is False
+    # The warning must carry the traceback (exc_info=True) — this is the
+    # ONLY signal an operator gets that the vault entry is still live
+    # despite the "unpaired" outcome, so it must not be silently dropped.
+    assert caplog.records
+    assert caplog.records[-1].exc_info  # truthy tuple, not None/False
 
 
 # ── send_pdf threading login ─────────────────────────────────────────

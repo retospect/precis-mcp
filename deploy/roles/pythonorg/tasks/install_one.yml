@@ -117,6 +117,17 @@
 # else. Endpoint is python.org itself — reachable from every host that just
 # downloaded the installer from it.
 - name: "Assert python.org {{ item.series }} can verify TLS"
+  # Serialize + retry: a cert failure is instant and deterministic, but the
+  # handshake rides live egress — every host firing this at the same wall-
+  # clock second stalls the shared uplink (2026-08-26: melchior, then
+  # caspar+balthazar in lockstep, all timing out at exactly 30s while a
+  # lone by-hand handshake passed instantly). One host at a time, with
+  # retries, keeps a transient stall from failing the whole deploy.
+  throttle: 1
+  retries: 3
+  delay: 5
+  register: pythonorg_tls_assert
+  until: pythonorg_tls_assert.rc == 0
   ansible.builtin.command:
     cmd: >-
       /Library/Frameworks/Python.framework/Versions/{{ item.series }}/bin/python{{ item.series }}

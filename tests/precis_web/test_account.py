@@ -620,6 +620,18 @@ def test_account_page_shows_deployment_fallback_status(
     assert "shared device" in r.text
 
 
+def test_account_page_shows_unpaired_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No per-user device and no deployment-wide fallback — the signed-in
+    but unpaired user must see the "pair your tablet" invite, not the
+    paired or fallback banners."""
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert "Pair your reMarkable tablet" in r.text
+    assert "Your tablet is paired" not in r.text
+    assert "shared device" not in r.text
+
+
 def test_remarkable_auth_off_refuses_writes() -> None:
     store = FakeStore()
     app = create_app(
@@ -652,3 +664,33 @@ def test_with_auth_off_the_page_explains_itself_and_refuses_writes() -> None:
         == 503
     )
     assert store.password_writes == 0
+
+
+def test_with_auth_off_the_remarkable_flags_default_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No signed-in user means ``_render`` never has a login to check a
+    device against — both flags must default False, not stay whatever a
+    stray edit left them at. The template happens to hide the reMarkable
+    section entirely for this case, so this checks the context ``_render``
+    hands the template directly rather than the rendered HTML."""
+    from precis_web.routes import account as account_mod
+
+    captured: dict[str, object] = {}
+    real_response = account_mod.templates.TemplateResponse
+
+    def _spy(request, name, context, *args, **kwargs):
+        captured.update(context)
+        return real_response(request, name, context, *args, **kwargs)
+
+    monkeypatch.setattr(account_mod.templates, "TemplateResponse", _spy)
+
+    store = FakeStore()
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=False),
+    )
+    r = TestClient(app).get("/account")
+    assert r.status_code == 200
+    assert captured["remarkable_paired"] is False
+    assert captured["remarkable_fallback"] is False
