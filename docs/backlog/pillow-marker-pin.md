@@ -1,5 +1,5 @@
 ---
-snooze-until: 2026-08-24
+snooze-until: 2026-09-09
 ---
 
 # Dependabot pillow #56–67 blocked on marker-pdf's Pillow<11 cap
@@ -18,3 +18,6 @@ pin (Dependabot #44) — recheck alongside. Blocked upstream.
 `sys_platform == 'win32'` fork; every darwin/linux fork still pins 10.4.0
 because marker-pdf 2.0.0 (still latest on PyPI) requires `pillow<11,>=10.1.0`.
 No newer marker-pdf release exists. Lock reverted; still blocked.
+
+2026-08-26: rechecked PyPI — marker-pdf latest is still 2.0.0 with
+`pillow<11,>=10.1.0`. Still blocked; snoozed +2 weeks.

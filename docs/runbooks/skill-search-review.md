@@ -100,6 +100,21 @@ fraction of the catalogue.
 
 Newest first. One line per pass: date, corpus size, headline, what shipped.
 
+- **2026-08-26** — Second audit. 49 searches over 32d (21 local incl.
+  subagent sidechains — a path the first pass's glob missed — plus 28 prod);
+  zero blocked/rejected (the 07-20 permission noise is gone). Top-1 ~41%,
+  top-3 ~56% (n=34, directional). Shipped this pass: `precis-alert-help`
+  producers table gained the `review:tool-starved:<reviewer>` /
+  `review:empty:<reviewer>` rows + stale "reviewers stay on memory" prose
+  fixed (a prod agent burned 4 reformulations failing to find these);
+  `precis-dispatch-help` gained a "Host capabilities (what an executor
+  advertises)" H2 alias (one phrasing of the clones_dir query cluster lost
+  to a semantic false-positive in settings-help). Filed: gr259665 (matcher:
+  rare slug-unique identity token gets no coverage-bar relief — 'taproot'
+  query never surfaced precis-taproot-help) and gr259666 (search table's
+  section column shows a bare heading, agents paste it as a `~` selector →
+  BadInput; pair it with its `~N` index). Positive control: `health digest`
+  ranks top-1 every time.
 - **2026-07-25** — First audit. 56 skill searches over 20d (30 local dev, 26
   prod); only 27 executed (22 blocked by a transient 2026-07-20 permission
   window, 6 user-rejected, 1 hang). Top-1 hit 5/11 among selects. Root cause:

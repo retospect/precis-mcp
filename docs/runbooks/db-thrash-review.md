@@ -89,6 +89,34 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
 
 Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict.
 
+- **2026-08-26** — Healthy; re-confirms 2026-08-23 (which the DUE detector
+  missed — the 08-22/08-23 entries had been appended newest-LAST; log order
+  fixed this pass). One 7 s IO-wait `chunk_embeddings` select, no long-runners.
+  Seq-scans stable vs 08-23 (`worker_logs` 4.5 GB, `ref_tags` 133k scans on a
+  93 MB table — rational planner choice). Drop candidates unchanged:
+  `llm_call_log` request/response hash indexes (~159 MB combined, lifetime
+  idx_scan=0) — still awaiting the verify-then-drop migration. Dead bloat all
+  <5% (max `pdf_locations` 4.7%); `chunk_embeddings` still shows no
+  last_autovacuum but 0.5% dead — keep on watch.
+- **2026-08-23** — Healthy; re-confirms 2026-08-22. No long-runners; dead
+  bloat all <5% (worker_logs 3.2%, autovac current). Drop candidates
+  unchanged: `llm_call_log` request/response hash indexes (~140 MB, lifetime
+  idx_scan=0) — still awaiting the verify-then-drop migration. New
+  observations: `app_settings` 2.9M cumulative seq scans on 13 rows — a
+  13-row table seq-scans by design, but the volume says a caller polls
+  `live_config` hot (see `docs/backlog/db-resident-settings.md`, cache TTL
+  angle); `chunk_tags`/`chunk_embeddings` show no autovacuum in
+  pg_stat_user_tables — dead ratios are fine (2.7%/0.4%), watch next pass.
+  `tag_embeddings_vector_hnsw` shows idx_scan=0 this window but was
+  deliberately kept 2026-08-07 (backs ANN below size threshold) — do not
+  re-flag.
+- **2026-08-22** — Healthy. No active long-runners (empty pg_stat_activity).
+  Seq-scan tables stable; `worker_logs` down to 4.5 GB (from 7.1 GB — sweeper
+  GC working). Still-unused drop candidates: `llm_call_log` request/response
+  hash indexes (136 MB combined, lifetime idx_scan=0) — verify no live queries
+  on those columns, then drop via forward migration. Dead bloat all <5%,
+  vacuum nominal. Fleet note: melchior `llm_summarize` logged 66 transient
+  summarizer 504s against 117k chunk_summaries written — noisy-but-working.
 - **2026-08-07** — Healthy. No active long-runners (two samples, both empty).
   Last pass's fixes verified holding: `worker_logs` oldest row = 30d, 0 rows
   past 31d (sweeper GC working; 7.1 GB is just retention volume), no bloat
@@ -106,24 +134,3 @@ Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict
   full-enum. Filed: `worker_logs` unbounded → added 30-day sweeper GC. No bloat
   (all dead_pct <5%). Kept `chunks_keywords_gin` (backs `mode='verbatim'`) +
   `tag_embeddings_vector_hnsw` (live, just below the ANN size threshold).
-
-- **2026-08-22** — Healthy. No active long-runners (empty pg_stat_activity).
-  Seq-scan tables stable; `worker_logs` down to 4.5 GB (from 7.1 GB — sweeper
-  GC working). Still-unused drop candidates: `llm_call_log` request/response
-  hash indexes (136 MB combined, lifetime idx_scan=0) — verify no live queries
-  on those columns, then drop via forward migration. Dead bloat all <5%,
-  vacuum nominal. Fleet note: melchior `llm_summarize` logged 66 transient
-  summarizer 504s against 117k chunk_summaries written — noisy-but-working.
-
-- **2026-08-23** — Healthy; re-confirms 2026-08-22. No long-runners; dead
-  bloat all <5% (worker_logs 3.2%, autovac current). Drop candidates
-  unchanged: `llm_call_log` request/response hash indexes (~140 MB, lifetime
-  idx_scan=0) — still awaiting the verify-then-drop migration. New
-  observations: `app_settings` 2.9M cumulative seq scans on 13 rows — a
-  13-row table seq-scans by design, but the volume says a caller polls
-  `live_config` hot (see `docs/backlog/db-resident-settings.md`, cache TTL
-  angle); `chunk_tags`/`chunk_embeddings` show no autovacuum in
-  pg_stat_user_tables — dead ratios are fine (2.7%/0.4%), watch next pass.
-  `tag_embeddings_vector_hnsw` shows idx_scan=0 this window but was
-  deliberately kept 2026-08-07 (backs ANN below size threshold) — do not
-  re-flag.

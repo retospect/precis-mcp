@@ -102,19 +102,24 @@ put(
 ```python
 put(
     kind="finding",
-    text="""Citation drift in dc207 (Results > Kinetics):
-
-The claim "we observed 12% Faradaic efficiency..." cites [pc1843].
+    title="Citation drift in dc207 (Results > Kinetics): 12% FE "
+    "claim vs pc1843's ~10%",
+    body="""The claim "we observed 12% Faradaic efficiency..." cites [pc1843].
 
 pc1843's actual text reads:
 "a Faradaic efficiency of approximately 10% was measured"
 
 Severity: SUBSTANTIVE — the cited chunk supports ~10%, not 12%. The
 claim's quantitative core breaks.""",
-    link="pc1843",
-    rel="cited-without-support",
+    cited_in="pc1843",
+    tags=["AUDIT:cited-without-support"],
 )
 ```
+
+`title=`, `body=`, and `cited_in=` (the chunk handle the claim cites)
+are all **mandatory** — `text=`/`link=`/`rel=` are not finding
+parameters, and there is no `cited-without-support` link relation;
+carry that classification in the `AUDIT:` tag as shown.
 
 Findings stay open until the writer's next tick resolves them.
 The `all_child_findings_resolved` auto_check evaluator (T3.1)

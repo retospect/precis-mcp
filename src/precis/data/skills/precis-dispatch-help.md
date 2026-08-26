@@ -161,10 +161,14 @@ move — asa-bot or human pulls the lever each time.
 
 ## The executor / job_type registry
 
+## Host capabilities (what an executor advertises)
+
 Executors live in `src/precis/workers/executors/__init__.py`
 (`EXECUTOR_PROVIDES`); job_types live in
 `src/precis/workers/job_types/__init__.py` (the `_REGISTRY` +
-lazy loaders).
+lazy loaders). Each executor advertises the capabilities it
+provides (e.g. `clones_dir`); a job_type's requirements must be a
+subset at submit.
 
 Executors today: `claude_inproc` (offline `claude -p`, provides
 `{claude_bin, git, clones_dir, claude_config_mount}`), `ssh_node`

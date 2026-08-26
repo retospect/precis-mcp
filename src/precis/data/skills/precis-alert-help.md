@@ -106,12 +106,16 @@ condition has cleared, so manual resolution is rarely needed.
 | `nursery:long-wait` | nursery (`waiting-for:*` > 7d) | info |
 | `nursery:stuck-doable` | nursery (dispatch-candidate leaf idle > 24h) | info |
 | `nursery:stalled-recurring` | nursery (recurring's last child stuck) | warn |
+| `review:tool-starved:<reviewer>` | LLM reviewer pass (wrote plausible prose but never called a precis tool — config/credential failure shape) | warn |
+| `review:empty:<reviewer>` | LLM reviewer pass (silent-empty: 0 tool calls, no output, $0) | warn |
 
 The producer surface is generic (`precis.alerts.raise_alert`): more
 passes can adopt it — failed worker passes, the sweeper's claim
-orphans, quota exhaustion — without schema changes. The LLM reviewers
-(`structural` / `deep_review`) stay on `kind='memory'`: their output is
-*reflection*, not a detected condition.
+orphans, quota exhaustion — without schema changes. The LLM reviewers'
+*digests* stay on `kind='memory'` (their output is *reflection*, not a
+detected condition), but their failure modes DO raise alerts: a
+tool-starved or silent-empty pass raises the per-reviewer sources
+above and auto-resolves on the next real digest.
 
 ## Related skills
 
