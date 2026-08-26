@@ -114,15 +114,27 @@ def cite_heads_in(text: str) -> list[str]:
     return out
 
 
-def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
-    """The cite heads in ``texts`` that resolve to a live ``TAPROOT:claim``
-    hub — the ``claims`` side-channel a reader threads into
+def claim_cite_head_sets(
+    store: Store, texts: Iterable[str]
+) -> tuple[frozenset[str], dict[str, int]]:
+    """The cite heads in ``texts`` split into ``(hubs, pending)`` from ONE
+    resolution pass across the window: each distinct head is resolved once
+    (first to a ref_id, then the hub check runs as a single bulk query over
+    every distinct ref_id — :func:`~precis.taproot.seniority.
+    is_claim_hub_bulk` — rather than one ``is_claim_hub`` round trip per
+    head, OPEN-ITEMS.md's "/smartdraft reader" batch B).
+
+    ``hubs`` is the ``claims`` side-channel a reader threads into
     :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
-    cite renders as a claim anchor. Each distinct head is resolved once
-    across the window (first to a ref_id, then the hub check runs as ONE
-    bulk query over every distinct ref_id — :func:`~precis.taproot.
-    seniority.is_claim_hub_bulk` — rather than one ``is_claim_hub`` round
-    trip per head, OPEN-ITEMS.md's "/smartdraft reader" batch B)."""
+    cite renders as a filled ``◆`` claim anchor. ``pending`` is its hollow-
+    ``◇`` twin: ``{head: ref_id}`` for heads that resolve but AREN'T a hub —
+    a claim still in the chase, not yet canonical. No extra kind lookup is
+    needed to tell those apart from a non-finding cite: :func:`
+    _resolve_head_ref_id` only ever resolves to a ``finding`` ref (the
+    ``fi`` handle code decodes to that kind by construction, and
+    :func:`~precis.utils.pub_id_lookup.lookup_pub_id_finding` filters to it
+    in SQL), so every resolved-but-not-hub head is, by construction, a
+    pending finding."""
     head_ref: dict[str, int] = {}
     for text in texts:
         for head in cite_heads_in(text):
@@ -132,9 +144,22 @@ def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
             if ref_id is not None:
                 head_ref[head] = ref_id
     if not head_ref:
-        return frozenset()
+        return frozenset(), {}
     hub_flags = is_claim_hub_bulk(store, head_ref.values())
-    return frozenset(h for h, rid in head_ref.items() if hub_flags.get(rid))
+    hubs = frozenset(h for h, rid in head_ref.items() if hub_flags.get(rid))
+    pending = {h: rid for h, rid in head_ref.items() if not hub_flags.get(rid)}
+    return hubs, pending
+
+
+def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
+    """The cite heads in ``texts`` that resolve to a live ``TAPROOT:claim``
+    hub — the ``claims`` side-channel a reader threads into
+    :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
+    cite renders as a claim anchor. Thin wrapper over
+    :func:`claim_cite_head_sets` (its ``hubs`` half) — kept for the callers
+    that only ever wanted the hub set, not the pending one."""
+    hubs, _pending = claim_cite_head_sets(store, texts)
+    return hubs
 
 
 def _unacq_map(paper_refs: dict[int, Any] | None) -> dict[int, dict[str, Any]]:

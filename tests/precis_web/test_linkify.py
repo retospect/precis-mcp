@@ -1032,6 +1032,68 @@ def test_six_char_chunk_handle_unaffected_by_claim_pattern() -> None:
     assert "/claim/" not in out
 
 
+# ── `pending_claims` — the hollow ◇ twin (claim in chase, not a hub yet) ──
+# A head that resolves to a finding but ISN'T a hub renders hollow/muted
+# when present in `pending_claims`, links straight to the finding (no
+# `/claim` page exists yet), and never carries `data-claim-head` (the
+# diamond↔rail sync is hubs-only).
+
+
+def test_pending_head_renders_hollow_diamond_compact() -> None:
+    out = str(
+        linkify_refs("see [fi123]", compact=True, pending_claims={"fi123": 123})
+    )
+    assert "◇" in out
+    assert 'href="/r/finding/123"' in out
+    assert 'hx-get="/preview/finding/123"' in out
+    assert "text-violet-400" in out
+    assert 'title="claim in chase — not yet canonical"' in out
+    assert "data-claim-head" not in out
+    assert "/claim/" not in out
+
+
+def test_pending_head_noncompact_shows_head_text_not_diamond() -> None:
+    out = str(
+        linkify_refs("[fi123]", compact=False, pending_claims={"fi123": 123})
+    )
+    assert "◇" not in out
+    assert ">fi123<" in out
+    assert 'href="/r/finding/123"' in out
+
+
+def test_hub_head_wins_over_pending_when_in_both_maps() -> None:
+    """A head present in BOTH `claims` and `pending_claims` (shouldn't
+    happen in practice — `claim_cite_head_sets` partitions them — but the
+    hub branch is checked first) still renders the filled ◆ hub anchor,
+    unchanged."""
+    out = str(
+        linkify_refs(
+            "[fi123]",
+            compact=True,
+            claims=frozenset({"fi123"}),
+            pending_claims={"fi123": 123},
+        )
+    )
+    assert "◆" in out
+    assert 'data-claim-head="fi123"' in out
+    assert 'href="/claim/fi123"' in out
+
+
+def test_head_in_neither_map_stays_generic_finding_anchor() -> None:
+    """A head absent from both `claims` and `pending_claims` keeps the
+    prior verbose generic finding anchor — the pending feature is additive,
+    not a default-on."""
+    out = str(
+        linkify_refs(
+            "[fi123]", compact=True, claims=frozenset(), pending_claims={}
+        )
+    )
+    assert 'href="/r/finding/123"' in out
+    assert "◇" not in out
+    assert "◆" not in out
+    assert "data-claim-head" not in out
+
+
 # ---- gr171760: the page-wide delegated popover registry --------------
 #
 # The registry itself is a browser-side singleton (``window.__refPopover``

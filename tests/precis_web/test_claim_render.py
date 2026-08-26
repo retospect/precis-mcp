@@ -13,7 +13,12 @@ from precis.dispatch import Hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry
-from precis_web.claim_render import _render_quote, render_claim_evidence
+from precis_web.claim_render import (
+    _render_quote,
+    claim_cite_head_sets,
+    hub_cite_heads,
+    render_claim_evidence,
+)
 
 _CLAIM = CanonicalClaim(
     sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
@@ -157,6 +162,54 @@ def test_render_claim_evidence_acquirable_supporter_row_unmarked(hub: Hub) -> No
     assert data is not None
     row = data["corroborators"][0]
     assert row["unacquirable"] is False
+
+
+# ---------------------------------------------------------------------------
+# ``claim_cite_head_sets`` — the (hubs, pending) split feeding the smartdraft
+# reader's hollow-◇/filled-◆ claim-cite rendering (linkify.py's
+# ``pending_claims``/``claims`` side-channels).
+# ---------------------------------------------------------------------------
+
+
+def test_claim_cite_head_sets_splits_hub_pending_and_unresolved(hub: Hub) -> None:
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    hub_head = handle_registry.format_handle("finding", claim_hub)
+    plain_finding = store.insert_ref(
+        kind="finding", slug=None, title="Not yet a hub"
+    ).id
+    pending_head = handle_registry.format_handle("finding", plain_finding)
+    unresolved_head = "zzzzzz"  # 6-char pub_id-shaped token, no matching ref
+
+    texts = [f"see [{hub_head}] and [{pending_head}] and [{unresolved_head}]"]
+    hubs, pending = claim_cite_head_sets(store, texts)
+
+    assert hubs == frozenset({hub_head})
+    assert pending == {pending_head: plain_finding}
+    assert unresolved_head not in hubs
+    assert unresolved_head not in pending
+
+
+def test_claim_cite_head_sets_empty_when_no_heads(hub: Hub) -> None:
+    store = hub.live_store
+    hubs, pending = claim_cite_head_sets(store, ["no cites here"])
+    assert hubs == frozenset()
+    assert pending == {}
+
+
+def test_hub_cite_heads_is_the_hubs_half_of_claim_cite_head_sets(hub: Hub) -> None:
+    """`hub_cite_heads` is a thin wrapper — its output must equal the
+    ``hubs`` half of `claim_cite_head_sets` over the SAME text, hub and
+    pending heads both present."""
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    hub_head = handle_registry.format_handle("finding", claim_hub)
+    plain_finding = store.insert_ref(kind="finding", slug=None, title="Chase").id
+    pending_head = handle_registry.format_handle("finding", plain_finding)
+    texts = [f"[{hub_head}] [{pending_head}]"]
+
+    hubs, _pending = claim_cite_head_sets(store, texts)
+    assert hub_cite_heads(store, texts) == hubs == frozenset({hub_head})
 
 
 # ---------------------------------------------------------------------------

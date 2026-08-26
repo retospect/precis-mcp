@@ -29,7 +29,7 @@ from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
 from precis_web import draft_eyes, smartdraft
 from precis_web.claim_render import (
     cite_heads_in,
-    hub_cite_heads,
+    claim_cite_head_sets,
     render_claims_evidence,
 )
 from precis_web.deps import get_runtime, get_store, templates
@@ -201,7 +201,9 @@ async def reader(
     # linkify call in the template; the right-rail "Claims" panel lists
     # their evidence via the batch entry point (`render_claims_evidence`)
     # so N distinct hubs cost a handful of bulk queries, not N x ~16.
-    claims = hub_cite_heads(store, [n.text or "" for n in rendered_nodes])
+    claims, pending_claims = claim_cite_head_sets(
+        store, [n.text or "" for n in rendered_nodes]
+    )
     # The rail's Claims panel lists hubs in reading order — first appearance
     # in the middle pane, not frozenset iteration order
     # (render_claims_evidence preserves its input order).
@@ -283,6 +285,7 @@ async def reader(
             "links_in": links_in,
             "flags": flags,
             "claims": claims,
+            "pending_claims": pending_claims,
             "claims_evidence": claims_evidence,
             "abbrevs": abbrevs,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
@@ -335,7 +338,7 @@ async def blocks(
     # Violet claim-hub cites, resolved once for just this window (the reader
     # does the same for its middle pane) so a hydrated block's [fi…]/pub_id
     # cites render as claim anchors identically to the initial render.
-    claims = hub_cite_heads(store, [n.text or "" for n in sel])
+    claims, pending_claims = claim_cite_head_sets(store, [n.text or "" for n in sel])
     # Review-status payload for just this hydrated window (item 4 — the
     # /blocks payload must carry the same per-chunk review dict as the
     # initial render, or a scrolled-to indicator would silently stay blank).
@@ -352,6 +355,7 @@ async def blocks(
         {
             "nodes": sel,
             "claims": claims,
+            "pending_claims": pending_claims,
             "abbrevs": abbrevs,
             "review_by_dc": review_by_dc,
             "ident": ident,

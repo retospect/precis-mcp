@@ -42,16 +42,20 @@ kind" stub. Cheap, no per-render dependency on the live ``Hub``.
 
 Claim rendering (R2): a caller may pass a ``claims`` side-channel — the
 frozenset of Taproot hub-cite heads in the render window — and a bracket
-cite whose head is in it renders as a violet claim anchor
+cite whose head is in it renders as a filled violet ``◆`` claim anchor
 (:func:`_render_claim_hub`): click → ``/claim/<head>``, hover →
 ``/preview/claim/<head>``. ``claims`` defaults to ``None`` (off) outside
 the smartdraft/paper readers, so every other surface renders unchanged.
+A sibling ``pending_claims`` map covers a head that resolves to a finding
+but isn't (yet) a hub — "claim in chase, not yet canonical" — rendering
+instead as a hollow, muted-violet ``◇`` linking straight to the finding.
 """
 
 from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Mapping
 from html import escape
 
 from markupsafe import Markup
@@ -161,6 +165,15 @@ _CITE_EXTERNAL_CLS = "text-amber-600 underline decoration-dotted hover:decoratio
 #: ``/claim`` page.
 _CLAIM_ANCHOR_CLS = "text-violet-700 underline decoration-dotted hover:decoration-solid"
 _CLAIM_SIGIL = "◆"
+
+#: A finding cite whose head resolves but ISN'T (yet) a hub — "claim in
+#: chase, not yet canonical". Same violet family as a hub cite, muted, and
+#: hollow rather than filled — the ◆/◇ pairing reads at a glance as
+#: "landed" vs "still being chased" without a reader needing to hover.
+_CLAIM_PENDING_ANCHOR_CLS = (
+    "text-violet-400 underline decoration-dotted hover:decoration-solid"
+)
+_CLAIM_PENDING_SIGIL = "◇"
 
 #: Named window target for a paper citation (the claim-UX paper-at-position
 #: behaviour): successive clicks on paper cites reuse ONE side window instead of
@@ -492,6 +505,7 @@ def _render_claim_hub(
     head: str,
     *,
     claims: frozenset[str] | None,
+    pending_claims: Mapping[str, int] | None = None,
     compact: bool = False,
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
@@ -500,29 +514,49 @@ def _render_claim_hub(
     pinned) whose ``head`` is a known hub for this window → a violet claim
     anchor: hover shows the claim + its evidence, click opens ``/claim``.
 
-    A head that ISN'T a hub (or a call site with no ``claims`` map) falls
-    back to the ordinary rendering of the bare ``head`` — the export-only
-    pin (`>`/`+` …) is dropped either way (a reader shows the cite, not the
-    bibliography directive), so ``[fi42>pa5]`` renders identically to
-    ``[fi42]``, and nothing that used to be a plain finding anchor / literal
-    changes.
+    A head that resolves to a finding but ISN'T (yet) a hub — present in
+    ``pending_claims`` instead — renders as the hollow, muted-violet ``◇``
+    twin: "claim in chase, not yet canonical". It links straight to the
+    finding (``/r/finding/<id>``), not ``/claim/<head>`` — there is no hub
+    page to show yet — and carries no ``data-claim-head`` (the smartdraft
+    diamond↔rail sync is hubs-only; a pending cite has no rail row).
+
+    A head in neither map (or a call site with no ``claims``/``pending_claims``
+    at all) falls back to the ordinary rendering of the bare ``head`` — the
+    export-only pin (`>`/`+` …) is dropped in every branch (a reader shows
+    the cite, not the bibliography directive), so ``[fi42>pa5]`` renders
+    identically to ``[fi42]``, and nothing that used to be a plain finding
+    anchor / literal changes.
     """
-    if claims is None or head not in claims:
-        return _render_bare_bracket(
-            head, compact=compact, local=local, callouts=callouts
+    if claims is not None and head in claims:
+        safe_head = escape(head)
+        label = _CLAIM_SIGIL if compact else escape(head)
+        return _anchor_html(
+            href=f"/claim/{safe_head}",
+            preview_url=f"/preview/claim/{safe_head}",
+            label=label,
+            anchor_cls=_CLAIM_ANCHOR_CLS,
+            # Smartdraft's diamond↔rail sync + docked claim pane (smartdraft-
+            # claim-ux slice 2) key off this attribute — additive, so every
+            # other cite kind's anchor markup is unchanged.
+            extra_attrs=f'data-claim-head="{safe_head}"',
         )
-    safe_head = escape(head)
-    label = _CLAIM_SIGIL if compact else escape(head)
-    return _anchor_html(
-        href=f"/claim/{safe_head}",
-        preview_url=f"/preview/claim/{safe_head}",
-        label=label,
-        anchor_cls=_CLAIM_ANCHOR_CLS,
-        # Smartdraft's diamond↔rail sync + docked claim pane (smartdraft-
-        # claim-ux slice 2) key off this attribute — additive, so every
-        # other cite kind's anchor markup is unchanged.
-        extra_attrs=f'data-claim-head="{safe_head}"',
-    )
+    if pending_claims and head in pending_claims:
+        ref_id = pending_claims[head]
+        label = _CLAIM_PENDING_SIGIL if compact else escape(head)
+        return _anchor_html(
+            # Straight to the finding record — same href/preview shape the
+            # record-handle branch of `_render_universal_handle` uses for a
+            # `finding` (it isn't in `_CHUNK_SIGIL`, so it never takes that
+            # branch's compact-sigil path either; a hub's `/claim/<head>` page
+            # doesn't exist yet for this ref).
+            href=f"/r/finding/{ref_id}",
+            preview_url=f"/preview/finding/{ref_id}",
+            label=label,
+            anchor_cls=_CLAIM_PENDING_ANCHOR_CLS,
+            extra_attrs='title="claim in chase — not yet canonical"',
+        )
+    return _render_bare_bracket(head, compact=compact, local=local, callouts=callouts)
 
 
 def _render_compact_cite(
@@ -844,6 +878,7 @@ def linkify_refs(
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
     claims: frozenset[str] | None = None,
+    pending_claims: Mapping[str, int] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -883,6 +918,13 @@ def linkify_refs(
     the set — or ``None`` (every non-reader call site) — keeps its prior
     rendering, so this is a no-op until a reader opts in.
 
+    ``pending_claims`` — the sibling ``{head: ref_id}`` map for heads that
+    resolve to a finding but AREN'T (yet) a hub: "claim in chase, not yet
+    canonical". A matching cite renders as the hollow, muted-violet ``◇``
+    twin of the filled ``◆`` claim anchor, linking straight to the finding
+    (``/r/finding/<id>``) rather than a ``/claim`` page. ``None`` (every
+    non-reader call site) keeps prior rendering, same as ``claims``.
+
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
@@ -896,6 +938,7 @@ def linkify_refs(
         local=local,
         callouts=callouts,
         claims=claims,
+        pending_claims=pending_claims,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -948,6 +991,7 @@ def _linkify_prose(
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
     claims: frozenset[str] | None = None,
+    pending_claims: Mapping[str, int] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -981,6 +1025,7 @@ def _linkify_prose(
             return _render_claim_hub(
                 m.group("claimhead"),
                 claims=claims,
+                pending_claims=pending_claims,
                 compact=compact,
                 local=local,
                 callouts=callouts,
