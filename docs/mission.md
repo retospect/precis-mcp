@@ -64,6 +64,20 @@ part, and write up the result, or take a rough idea and just do the
 things. Because the system does not sleep and gets real feedback, it can
 iterate untiringly. The tool is at https://github.com/retospect/precis-mcp.
 
+## The thinking-for-compute trade (design principle)
+
+Substitute thinking time for simulation time: one hour at the library is
+worth a month in the laboratory or the simulator. Work runs as small
+chunks — idea → probe → evaluate — a tight, narrow, iterative loop,
+never "run all 100k iterations of this potential thing and look at the
+result in three months." The machinery encodes it: pathway previews
+frame a reaction network at zero compute so a bad network is argued with
+before it costs anything; quests hold one proposal in flight (WIP=1);
+the tier ladder ranks on cheap thermodynamics before any barrier is
+bought; literature grounding runs inside the loop so the next probe is
+informed by what the field already measured. Bulk substrates (OC25,
+BEAST DB, Catalysis-Hub) are consumed, not imitated.
+
 ## Pull-quotes (slide-sized)
 
 - "An untiring research collaborator: it never sleeps and works from
@@ -74,6 +88,8 @@ iterate untiringly. The tool is at https://github.com/retospect/precis-mcp.
   them."
 - "Built for LLM vision, not a flattened 2D projection recovered by
   image recognition."
+- "One hour at the library is worth a month in the simulator: idea →
+  probe → evaluate, in tight loops — never 100k iterations fired blind."
 
 ## Facts (refresh before quoting)
 

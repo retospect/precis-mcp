@@ -302,6 +302,14 @@ put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 Idempotent (already-held / already-wanted is a no-op). Full contract +
 backlog view in `precis-stubs-help`.
 
+**A slow put is backoff, not a wedge.** Minting a stub resolves the
+identifier against Semantic Scholar, and S2 rate-limits burst traffic —
+after several rapid puts, the next one can sit in auto-backoff for
+minutes before returning. The server handles requests serially, so an
+unrelated call issued behind it waits too. Don't re-issue the put (it's
+idempotent, but re-sending just re-queues work); space out bulk stub
+minting and let the slow call finish.
+
 ## Find the paper to request — walk a citation graph
 ## What does this paper cite? Who cites it?
 
