@@ -152,6 +152,23 @@
     - reload precis worker (macos)
     - reload precis worker (linux)
 
+# The venv must be able to VERIFY TLS, not just import ssl — the openai_compat
+# transport (98% of small-tier LLM traffic) rides stdlib urlopen and dies with
+# CERTIFICATE_VERIFY_FAILED when the interpreter's CA store is empty, as the
+# python.org framework builds ship (gr255538: 2-day fleet outage that every
+# deploy exited green through). Raw handshake against the real endpoint —
+# raises SSLCertVerificationError on a broken CA store, passes on any
+# reachable cert-valid endpoint. Runs every deploy on every OS; it's one
+# round-trip.
+- name: Assert worker venv can verify TLS to OpenRouter
+  ansible.builtin.command:
+    cmd: >-
+      {{ precis_worker_venv }}/bin/python
+      -c "import ssl, socket;
+      ssl.create_default_context().wrap_socket(socket.create_connection(('openrouter.ai', 443), timeout=30),
+      server_hostname='openrouter.ai').close()"
+  changed_when: false
+
 # The constraints-pinned --upgrade above reverts autocatpath to the pin on
 # engine hosts — re-apply any private wheelhouse wheel (pre-PyPI releases)
 # so a redeploy can't wipe it. Empty wheelhouse = clean skip. See

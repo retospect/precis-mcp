@@ -79,7 +79,48 @@
       ({{ pythonorg_codesign.stderr | regex_search('TeamIdentifier=[^\n]*') }}).
     quiet: true
 
-# (e) Clean up the downloaded pkg — only meaningful when an install ran.
+# (e) Populate the CA store — runs EVERY time, like the signature assertion.
+# A python.org framework build ships with etc/openssl/ EMPTY: it neither uses
+# the macOS keychain nor bundles a cert.pem, so ssl.create_default_context()
+# has nothing to verify against and every https urlopen fails with
+# CERTIFICATE_VERIFY_FAILED. The .pkg leaves the fix as a manual double-click
+# ("Install Certificates.command"), which nobody runs on a headless host —
+# this is exactly what took out 98% of small-tier LLM traffic for 2 days when
+# the 2026-08-24 migration landed without it (gr255538). The command is
+# idempotent (pip-upgrades certifi into the framework site-packages and
+# symlinks etc/openssl/cert.pem at it), so run it whenever cert.pem is absent.
+# NOTE: fixing the store does NOT heal already-running daemons — stdlib
+# urllib builds its module-global opener's SSLContext once, at the process's
+# FIRST https urlopen (urllib.request.HTTPSHandler.__init__), so a process
+# that dialed out before the fix keeps its cert-less context until restarted.
+- name: "Check python.org {{ item.series }} CA store"
+  ansible.builtin.stat:
+    path: "/Library/Frameworks/Python.framework/Versions/{{ item.series }}/etc/openssl/cert.pem"
+  register: pythonorg_ca_store
+
+- name: "Populate python.org {{ item.series }} CA store (Install Certificates.command)"
+  when: not pythonorg_ca_store.stat.exists
+  become: true
+  ansible.builtin.command:
+    cmd: "/Applications/Python {{ item.series }}/Install Certificates.command"
+  changed_when: true
+
+# Assert with a live handshake, not just the symlink's existence: a cert.pem
+# pointing at a deleted certifi bundle would pass a stat and still fail every
+# TLS connection. A raw ssl handshake (no HTTP layer) is exactly the check —
+# it raises SSLCertVerificationError on an empty/broken CA store and nothing
+# else. Endpoint is python.org itself — reachable from every host that just
+# downloaded the installer from it.
+- name: "Assert python.org {{ item.series }} can verify TLS"
+  ansible.builtin.command:
+    cmd: >-
+      /Library/Frameworks/Python.framework/Versions/{{ item.series }}/bin/python{{ item.series }}
+      -c "import ssl, socket;
+      ssl.create_default_context().wrap_socket(socket.create_connection(('www.python.org', 443), timeout=30),
+      server_hostname='www.python.org').close()"
+  changed_when: false
+
+# (f) Clean up the downloaded pkg — only meaningful when an install ran.
 - name: "Remove downloaded python.org {{ item.full }} installer pkg"
   when: not pythonorg_up_to_date
   ansible.builtin.file:
