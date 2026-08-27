@@ -123,7 +123,8 @@ surfaces (web: `/refs/quest/<id>/logbook`, smartdraft), but
 `handlers/quest.py::get` default-view inlines **every** logbook entry by
 design ("the logbook shows by default"). Fix: default render = digest
 (striving + gaps-style health line + dossier narrative + trusted frontier +
-logbook *tail* with count and a `view='log'` pointer) — the logbook itself
+logbook *tail* with count and a `view='logbook'` pointer — `view='log'`
+stays the generic ref-events ledger) — the logbook itself
 stays append-only forever; it's the lab notebook and the provenance record,
 never compacted or destroyed. Likewise the ~180× trust boilerplate: each
 distinct rejection/untrust reason ("adsorbate detached", "wrong binding
@@ -188,7 +189,7 @@ with evidence handles — these become the minted findings) · dated chronicle
 era's numbers**) · current-state header · one dedup'd structure table
 (collapse frontier+leaderboard; 2-char trust flags) · links pruned to the
 ~30 load-bearing papers, retyped `supports`/`cites`. Raw logbook survives
-as archival `view='log'`; the default render becomes the compacted form.
+as archival `view='logbook'`; the default render becomes the compacted form.
 
 Graph note beyond the decisions above: **Measurement must be first-class**,
 separate from Structure — values get re-measured, diverge across replicates,

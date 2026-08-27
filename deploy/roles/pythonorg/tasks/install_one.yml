@@ -104,7 +104,7 @@
   ansible.builtin.command:
     # argv, not cmd: a string cmd is shlex-split on whitespace, and this
     # path contains spaces — the split form execs "/Applications/Python"
-    # (rc=2, no output), which is how caspar's empty 3.14 store dodged
+    # (rc=2, no output), which is how one host's empty 3.14 store dodged
     # the 2026-08-26 rollout while every stat-guarded host skipped it.
     argv:
       - "/Applications/Python {{ item.series }}/Install Certificates.command"
@@ -119,8 +119,8 @@
 - name: "Assert python.org {{ item.series }} can verify TLS"
   # Serialize + retry: a cert failure is instant and deterministic, but the
   # handshake rides live egress — every host firing this at the same wall-
-  # clock second stalls the shared uplink (2026-08-26: melchior, then
-  # caspar+balthazar in lockstep, all timing out at exactly 30s while a
+  # clock second stalls the shared uplink (2026-08-26: one host, then
+  # two more in lockstep, all timing out at exactly 30s while a
   # lone by-hand handshake passed instantly). One host at a time, with
   # retries, keeps a transient stall from failing the whole deploy.
   throttle: 1

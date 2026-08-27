@@ -74,6 +74,23 @@ class TestLogbook:
         # a milestone is a deed
         assert "1 deed" in body
 
+    def test_default_render_shows_tail_only_full_logbook_behind_view(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst, tail-vs-full logbook"))
+        for i in range(14):
+            h.put(id=qid, text=f"entry number {i}", entry="note")
+        body = h.get(id=qid).body
+        assert "entry number 13" in body  # last entry — always in the tail
+        assert "entry number 0" not in body  # first entry — truncated away
+        assert "14 entries" in body  # total count still shown
+        assert "view='logbook'" in body  # hint to the full notebook
+
+        full = h.get(id=qid, view="logbook").body
+        assert "entry number 0" in full
+        assert "entry number 13" in full
+
     def test_cost_entries_sum_into_the_tote(self, store: Any) -> None:
         h = _handler(store)
         qid = _created_id(h.put(text="Bio/o-chem NO→NH₃ route"))

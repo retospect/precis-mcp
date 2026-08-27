@@ -216,7 +216,10 @@ class TestUnknownViewError:
     links/log/raw — and warn off the two shapes callers actually guess
     (``logbook``/``deeds``, both saturated through the skill prose)."""
 
-    def test_guessed_logbook_view_enumerates_quest_views(self, store: Any) -> None:
+    def test_guessed_deeds_view_enumerates_quest_views(self, store: Any) -> None:
+        # 'logbook' is now a real view (the full notebook); 'deeds' remains a
+        # guessed, unrecognised one — it's just the milestone-typed slice of
+        # the log, not its own view.
         import pytest
 
         from precis.errors import Unsupported
@@ -224,10 +227,10 @@ class TestUnknownViewError:
         h = _handler(store)
         qid = _created_id(h.put(text="A striving"))
         with pytest.raises(Unsupported) as ei:
-            h.get(id=qid, view="logbook")
+            h.get(id=qid, view="deeds")
         err = ei.value
-        # the five quest views are named (not just links/log/raw)
-        for v in ("tree", "gaps", "dossier", "frontier", "leaderboard"):
+        # the six quest views are named (not just links/log/raw)
+        for v in ("tree", "gaps", "dossier", "frontier", "leaderboard", "logbook"):
             assert v in (err.options or [])
         hint = " ".join(err.next if isinstance(err.next, list) else [err.next or ""])
         assert "logbook" in hint and "deeds" in hint and "view='log'" in hint

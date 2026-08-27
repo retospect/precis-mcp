@@ -84,6 +84,11 @@ _split_prio = split_prio
 #: set kills cycles, this caps the depth of sub-quest expansion.
 _MAX_TREE_DEPTH = 4
 
+#: Default-render logbook tail length — matches the web hub's ``entries[-10:]``
+#: (``src/precis_web/routes/refs.py``) so the digest and the hub agree on
+#: "recent". The full notebook lives behind ``view='logbook'``.
+_TAIL_SIZE = 10
+
 
 def _status_of(tags: list[Tag]) -> str | None:
     """Extract the ``STATUS:`` value from a tag list (``active`` / …)."""
@@ -104,6 +109,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "dossier",
     "frontier",
     "leaderboard",
+    "logbook",
 )
 
 
@@ -440,21 +446,25 @@ class QuestHandler(NumericRefHandler):
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_leaderboard(ref))
+        if view == "logbook" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_logbook(ref))
         # An unrecognised view on a concrete id would otherwise fall through to
         # NumericRefHandler.get, whose error lists only links/log/raw — hiding
-        # the five quest views above. "logbook"/"deeds" are the two shapes a
-        # caller reaches for (the skill prose is saturated with both words), so
-        # name them explicitly: the logbook shows by default, deeds are a
-        # filtered slice of view='log'. (Tooling-log audit: recurring guess.)
+        # the six quest views above. "deeds" is a shape a caller reaches for
+        # (the skill prose is saturated with the word), so name it explicitly:
+        # deeds are a filtered slice of view='log'. (Tooling-log audit:
+        # recurring guess.)
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='quest'",
                 options=[*_QUEST_CONCRETE_VIEWS, *_BASE_VIEWS],
                 next=[
-                    "quest views: tree, gaps, dossier, frontier, leaderboard "
-                    "(quest-specific) · links, log, raw (generic)",
-                    "no 'logbook'/'deeds' view — the logbook shows by default "
-                    "(get(kind='quest', id=N)); use view='log' for the raw ledger",
+                    "quest views: tree, gaps, dossier, frontier, leaderboard, "
+                    "logbook (quest-specific) · links, log, raw (generic)",
+                    "no 'deeds' view — default get(kind='quest', id=N) shows a "
+                    "digest with a logbook tail; view='logbook' is the full lab "
+                    "notebook; view='log' is the raw ref-events ledger",
                 ],
             )
         return super().get(id=id, view=view, q=q, **_kw)
@@ -573,7 +583,12 @@ class QuestHandler(NumericRefHandler):
         """Lifetime spend sunk into the quest — the sum of entry costs."""
         return sum(float((b.meta or {}).get("cost", 0) or 0) for b in entries)
 
-    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
+    def _render_header(
+        self, ref: Ref, tags: list[Tag], entries: list[Block]
+    ) -> list[str]:
+        """Header/meta/statement + logbook counts line — shared by the default
+        digest (tail) and ``view='logbook'`` (full), so the two can't drift.
+        """
         status = _status_of(tags) or "active"
         meta = ref.meta or {}
         lines = [f"# quest {ref.id}: {ref.title.splitlines()[0]}"]
@@ -590,8 +605,6 @@ class QuestHandler(NumericRefHandler):
         rest = ref.title.split("\n", 1)
         if len(rest) > 1 and rest[1].strip():
             lines += ["", rest[1].rstrip()]
-        # Logbook timeline.
-        entries = self._log_entries(ref.id)
         if entries:
             deeds = sum(
                 1 for b in entries if (b.meta or {}).get("entry_type") == "milestone"
@@ -601,18 +614,51 @@ class QuestHandler(NumericRefHandler):
             if tote:
                 head += f", tote {tote:g}"
             lines += ["", head]
-            for b in entries:
-                bmeta = b.meta or {}
-                etype = bmeta.get("entry_type", "note")
-                by = bmeta.get("by", "?")
-                # Full timestamp (date + UTC time to the minute) — the logbook
-                # is the quest's append-only lab notebook, so entries want a
-                # real clock, not just a date, to read as a chronological record.
-                stamp = b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else "?"
-                cost = bmeta.get("cost")
-                cost_s = f" cost={cost:g}" if cost else ""
-                lines.append(f"\n### {etype} · {stamp} · {by}{cost_s}")
-                lines.append(b.text)
+        return lines
+
+    @staticmethod
+    def _render_log_entries(entries: list[Block]) -> list[str]:
+        """Render a slice of logbook entries in the standard entry format
+        (entry_type · timestamp · by · cost, then text) — used both by the
+        default digest's tail and ``view='logbook'``'s full listing.
+        """
+        lines: list[str] = []
+        for b in entries:
+            bmeta = b.meta or {}
+            etype = bmeta.get("entry_type", "note")
+            by = bmeta.get("by", "?")
+            # Full timestamp (date + UTC time to the minute) — the logbook
+            # is the quest's append-only lab notebook, so entries want a
+            # real clock, not just a date, to read as a chronological record.
+            stamp = b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else "?"
+            cost = bmeta.get("cost")
+            cost_s = f" cost={cost:g}" if cost else ""
+            lines.append(f"\n### {etype} · {stamp} · {by}{cost_s}")
+            lines.append(b.text)
+        return lines
+
+    def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
+        entries = self._log_entries(ref.id)
+        lines = self._render_header(ref, tags, entries)
+        if entries:
+            tail = entries[-_TAIL_SIZE:]
+            lines += self._render_log_entries(tail)
+            remaining = len(entries) - len(tail)
+            if remaining > 0:
+                lines.append(
+                    f"\n… {remaining} more entries — view='logbook' for the "
+                    "complete lab notebook."
+                )
+        return "\n".join(lines)
+
+    def _render_logbook(self, ref: Ref) -> str:
+        """`view='logbook'` — the full append-only lab notebook (all entries),
+        with no tail truncation.
+        """
+        tags = self.store.tags_for(ref.id)
+        entries = self._log_entries(ref.id)
+        lines = self._render_header(ref, tags, entries)
+        lines += self._render_log_entries(entries)
         return "\n".join(lines)
 
     def _render_tree(
