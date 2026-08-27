@@ -1664,6 +1664,59 @@ _BARRIER_ABSURD_EV = 8.0
 _TWIN_BARRIER_TOL_EV = 0.5
 
 
+def _pathway_quality_v1(results: dict[str, Any]) -> dict[str, Any]:
+    """Derive SEPARATE barrier/selectivity trust verdicts from catpath's
+    structured per-step trust records (``results['trust_schema'] == 1`` —
+    catpath ``docs/backlog/per-step-trust-records.md``), instead of regexing
+    ``warnings`` prose.
+
+    ``results`` is the pathway's own ``meta['results']`` (catpath's
+    ``results.json`` payload, stored verbatim by
+    :func:`precis_pathway.persist.pathway_meta`). This function TRUSTS
+    ``results['trust_summary']`` rather than re-deriving the fatal-fail scan
+    itself — that scan is catpath's (scoped to the reported route's
+    ``route_steps``/nodes) and re-deriving it here would be a second,
+    driftable copy of the same rule.
+
+    The barrier and selectivity verdicts are read out of SEPARATE
+    ``trust_summary`` entries on purpose: an off-route fork competitor can
+    legitimately leave ``selectivity`` unavailable (a branch fraction can't
+    be computed against an untrusted comparison) without the route's own
+    barrier being untrustworthy at all — the qu164903 collapse (192/192
+    candidates untrusted from ONE flagged off-route edge) this whole path
+    exists to fix. ``barrier_blocked_by``/``selectivity_blocked_by`` carry
+    the fatal-fail record ids / blocker dicts verbatim — they are citable
+    evidence handles, never rewritten here.
+
+    ``marginal`` verdicts (and any ``severity: warn`` fail) never untrust
+    anything — ``trust_summary`` itself only ever counts ``severity: fatal``
+    fails scoped to the route, so nothing here re-litigates that; marginals
+    are surfaced as ``barrier_marginal_count`` for visibility only
+    (``relax_convergence: marginal`` is expected to be common and
+    uncalibrated on day one).
+    """
+    trust_summary = results.get("trust_summary")
+    trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
+    barrier = trust_summary.get("barrier")
+    barrier = barrier if isinstance(barrier, dict) else {}
+    selectivity = trust_summary.get("selectivity")
+    selectivity = selectivity if isinstance(selectivity, dict) else {}
+
+    records = results.get("trust")
+    records = records if isinstance(records, list) else []
+    marginal_count = sum(
+        1 for r in records if isinstance(r, dict) and r.get("verdict") == "marginal"
+    )
+
+    return {
+        "barrier_trusted": bool(barrier.get("available")),
+        "barrier_blocked_by": list(barrier.get("blocked_by") or []),
+        "selectivity_trusted": bool(selectivity.get("available")),
+        "selectivity_blocked_by": list(selectivity.get("blocked_by") or []),
+        "barrier_marginal_count": marginal_count,
+    }
+
+
 def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     """Derive the trust verdict on a harvested barrier from its pathway's meta.
 
@@ -1675,6 +1728,20 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     NEB edge, a desorbed adsorbate, and a wrong-site (mis-bound) endpoint;
     ``barrier_trusted`` is False iff any of those counts is nonzero.
 
+    Version-gated on ``meta['results']['trust_schema']`` (catpath's structured
+    per-step trust records, ``docs/backlog/per-step-trust-records.md``
+    upstream): ``== 1`` delegates to :func:`_pathway_quality_v1`, which
+    separates the barrier verdict from selectivity instead of collapsing both
+    into one boolean, stitching ``barrier_low_confidence`` back in from this
+    same top-level meta (the low-confidence flag isn't part of the trust-
+    records contract). Absent (older catpath, no ``results`` or no
+    ``trust_schema`` key) falls through to the regex path below UNCHANGED —
+    prod may run pre-trust-records catpath for a while, so both paths must
+    keep working. Any OTHER value (newer than this reader understands) is
+    treated the same as absent — fall back, never guess — with a
+    ``barrier_trust_note`` explaining why (this is a pure function with no
+    logger to reach for).
+
     The verdict lands on the candidate **structure** ref only:
     :func:`harvest_measures` stamps these keys onto the structure's meta and
     never back onto the ``pathway`` ref it read them from —
@@ -1684,18 +1751,37 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     mirrored structure carries the correct verdict (gr194391 — this asymmetry
     once drove a full false-alarm root-cause hunt).
     """
+    results = meta.get("results")
+    results = results if isinstance(results, dict) else None
+    schema = results.get("trust_schema") if results is not None else None
+    if schema == 1:
+        assert results is not None  # narrows for mypy: schema came from it
+        out = _pathway_quality_v1(results)
+        out["barrier_low_confidence"] = bool(meta.get("low_confidence"))
+        return out
+
     warnings = meta.get("warnings")
     warnings = warnings if isinstance(warnings, list) else []
     n_neb_failed = sum(1 for w in warnings if _NEB_NOT_CONVERGED in str(w))
     n_desorbed = sum(1 for w in warnings if _ADSORBATE_DETACHED in str(w))
     n_wrong_site = sum(1 for w in warnings if _WRONG_BINDING_SITE in str(w))
-    return {
+    out = {
         "barrier_trusted": n_neb_failed == 0 and n_desorbed == 0 and n_wrong_site == 0,
         "barrier_neb_failed": n_neb_failed,
         "barrier_desorbed": n_desorbed,
         "barrier_wrong_site": n_wrong_site,
         "barrier_low_confidence": bool(meta.get("low_confidence")),
     }
+    if schema is not None:
+        # A trust_schema present but not == 1: newer than this reader
+        # understands. Never guess at the shape — fall back to the regex
+        # path (above) and say why, since this function has no logger.
+        out["barrier_trust_note"] = (
+            f"pathway results carry trust_schema={schema!r}, newer than this "
+            "reader (understands only schema 1) — fell back to the regex "
+            "warning path"
+        )
+    return out
 
 
 def _flag_absurd_barrier(measures: dict[str, Any]) -> bool:

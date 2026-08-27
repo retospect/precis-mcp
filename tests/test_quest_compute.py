@@ -27,6 +27,7 @@ from precis.quest.frontier import (
     ProvisionalCandidate,
     _apply_rubric_composite,
     _candidate_from_structure,
+    _provisional_reasons,
     _rubric_composite_for,
     better_arrow_for,
     build_frontier_scatter,
@@ -1992,6 +1993,193 @@ class TestGeneralizedFrontier:
         assert on_frontier[ids[1]] is False  # barrier=0.9, dominated by ids[0]
 
 
+# ── structured trust-records split: barrier-trust vs selectivity-trust ──
+
+
+class TestSelectivityTrustSplit:
+    """The v1 trust-records path (compute._pathway_quality_v1) stamps
+    ``selectivity_trusted`` SEPARATELY from ``barrier_trusted`` — the pop
+    logic here (:func:`_candidate_from_structure`'s collapse) must exclude
+    barrier-derived and selectivity-derived measures independently, not as
+    one all-or-nothing bundle."""
+
+    def test_selectivity_untrusted_only_keeps_barrier_pops_selectivity_scalars(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        blocked_by = [
+            {
+                "fork": "M",
+                "competitor": "S",
+                "on_route": False,
+                "reasons": ["M->S#s0#detachment"],
+            }
+        ]
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.5,
+                "span": 1.1,
+                "U_L": -0.9,
+                "U_opt": -0.7,
+                "span_at_Uopt": 1.0,
+                "P_side": 0.4,
+                "selectivity_margin": 0.2,
+                "trap_margin": 0.3,
+                "poison_margin": -0.1,
+                "barrier_trusted": True,
+                "selectivity_trusted": False,
+                "selectivity_blocked_by": blocked_by,
+            },
+        )
+        c = _cand(store, sid)
+        for k in ("barrier", "span", "U_L", "U_opt", "span_at_Uopt"):
+            assert k in c.measures, k
+        for k in ("P_side", "selectivity_margin", "trap_margin", "poison_margin"):
+            assert k not in c.measures, k
+            assert f"{k}_untrusted_value" in c.flags
+        assert c.flags["barrier_trusted"] is True
+        assert c.flags["selectivity_trusted"] is False
+        assert c.flags["selectivity_blocked_by"] == blocked_by
+
+    def test_barrier_untrusted_only_keeps_selectivity_scalars(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.5,
+                "U_L": -0.9,
+                "P_side": 0.4,
+                "selectivity_margin": 0.2,
+                "barrier_trusted": False,
+                "barrier_blocked_by": ["R->M#s0#detachment"],
+                "selectivity_trusted": True,
+            },
+        )
+        c = _cand(store, sid)
+        assert "barrier" not in c.measures
+        assert "U_L" not in c.measures
+        assert "P_side" in c.measures
+        assert "selectivity_margin" in c.measures
+        assert c.flags["barrier_untrusted_value"] == 0.5
+
+    def test_selectivity_key_absent_falls_back_to_barrier_gate(
+        self, store: Any
+    ) -> None:
+        """A candidate harvested under the regex fallback never gets
+        ``selectivity_trusted`` on its meta at all — the pop logic must fall
+        back to the SAME ``barrier_trusted`` gate the collapse always used,
+        byte-for-byte, for every pre-trust-records pathway."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.5,
+                "U_L": -0.9,
+                "P_side": 0.4,
+                "selectivity_margin": 0.2,
+                "barrier_trusted": False,
+            },
+        )
+        c = _cand(store, sid)
+        assert "selectivity_trusted" not in c.flags
+        for k in ("barrier", "U_L", "P_side", "selectivity_margin"):
+            assert k not in c.measures, k
+
+
+class TestProvisionalReasonsSelectivityBlockers:
+    def test_selectivity_blocker_prose_names_competitor_fork_and_record(
+        self,
+    ) -> None:
+        blocked_by = [
+            {
+                "fork": "M",
+                "competitor": "S",
+                "on_route": False,
+                "reasons": ["M->S#s0#detachment"],
+            }
+        ]
+        c = Candidate(
+            1,
+            "st1",
+            "A",
+            {},
+            True,
+            flags={
+                "barrier_trusted": True,
+                "selectivity_trusted": False,
+                "selectivity_blocked_by": blocked_by,
+            },
+        )
+        reasons = _provisional_reasons(c, [], {})
+        assert reasons == [
+            "selectivity unavailable: competitor S at fork M, off-route "
+            "(M->S#s0#detachment)"
+        ]
+
+    def test_selectivity_blocker_prose_capped_at_three(self) -> None:
+        blocked_by = [
+            {
+                "fork": "M",
+                "competitor": f"S{i}",
+                "on_route": False,
+                "reasons": [f"M->S{i}#s0#detachment"],
+            }
+            for i in range(5)
+        ]
+        c = Candidate(
+            1,
+            "st1",
+            "A",
+            {},
+            True,
+            flags={"selectivity_trusted": False, "selectivity_blocked_by": blocked_by},
+        )
+        reasons = _provisional_reasons(c, [], {})
+        assert len(reasons) == 3
+
+    def test_barrier_untrusted_prose_unchanged_when_selectivity_also_unavailable(
+        self,
+    ) -> None:
+        # Both untrusted: barrier prose (existing) + selectivity prose (new)
+        # both surface, independently.
+        c = Candidate(
+            1,
+            "st1",
+            "A",
+            {},
+            True,
+            flags={
+                "barrier_trusted": False,
+                "barrier_neb_failed": 1,
+                "selectivity_trusted": False,
+                "selectivity_blocked_by": [
+                    {
+                        "fork": "M",
+                        "competitor": "S",
+                        "on_route": True,
+                        "reasons": ["M->S#s0#detachment"],
+                    }
+                ],
+            },
+        )
+        reasons = _provisional_reasons(c, [], {})
+        assert "barrier untrusted: NEB not converged" in reasons
+        assert any("selectivity unavailable" in r and "on-route" in r for r in reasons)
+
+
 # ── kinetics cutover: kinetics_trusted/kinetics_note/drc_top/atom_cost_dearest ──
 
 
@@ -3038,6 +3226,167 @@ class TestAutocatpathHarvest:
         assert meta["kinetics_note"] == "engine 0.13.0 lacks kinetics"
         assert "tof" not in meta
         assert "tof_untrusted_value" not in meta
+
+
+# ── structured per-step trust records (catpath trust_schema == 1,          ──
+# ── docs/backlog/per-step-trust-records.md upstream) — _pathway_quality's  ──
+# ── version-gated v1 path, separating barrier trust from selectivity       ──
+# ── trust so an off-route competitor's flag never poisons the barrier      ──
+# ── verdict (the qu164903 collapse: 192/192 candidates untrusted from ONE  ──
+# ── flagged off-route edge).                                               ──
+
+
+def _trust_rec(**kw: Any) -> dict[str, Any]:
+    """A per-step trust record shaped like catpath's contract (docs/handoff/
+    precis-trust-consumer.md, pinned against catpath's own
+    tests/test_trust_records.py) — only the fields ``_pathway_quality_v1``
+    reads, not the full ``autocatpath.trust.record()`` computation."""
+    rec: dict[str, Any] = {
+        "seed": 0,
+        "check": "detachment",
+        "verdict": "pass",
+        "severity": "fatal",
+        "evidence": {},
+        "attempt": 1,
+    }
+    rec.update(kw)
+    return rec
+
+
+class TestPathwayQualityTrustRecords:
+    def test_offroute_competitor_leaves_barrier_trusted_selectivity_unavailable(
+        self,
+    ) -> None:
+        """The qu164903 acceptance case (catpath
+        test_offroute_competitor_blocks_selectivity_not_barrier): a clean
+        on-route barrier plus an OFF-route fork competitor's fatal fail —
+        selectivity is (legitimately) withheld, blockers named verbatim, but
+        the barrier stays trusted so the candidate reaches the Pareto set."""
+        blocked_by = [
+            {
+                "fork": "M",
+                "competitor": "S",
+                "on_route": False,
+                "reasons": ["M->S#s0#detachment"],
+            }
+        ]
+        results = {
+            "trust_schema": 1,
+            "route_steps": ["R->M", "M->P"],
+            "trust_summary": {
+                "barrier": {"available": True, "blocked_by": []},
+                "selectivity": {"available": False, "blocked_by": blocked_by},
+            },
+            "trust": [
+                _trust_rec(
+                    step="R->M",
+                    check="neb_convergence",
+                    verdict="pass",
+                    id="R->M#s0#neb_convergence",
+                ),
+                _trust_rec(step="M->S", verdict="fail", id="M->S#s0#detachment"),
+            ],
+            "P_side": None,
+            "P_side_blockers": [
+                {"fork": "M", "competitor": "S", "reasons": ["M->S#s0#detachment"]}
+            ],
+        }
+        meta = {"results": results, "warnings": [], "low_confidence": False}
+        out = compute_mod._pathway_quality(meta)
+        assert out["barrier_trusted"] is True
+        assert out["barrier_blocked_by"] == []
+        assert out["selectivity_trusted"] is False
+        assert out["selectivity_blocked_by"] == blocked_by
+        assert out["selectivity_blocked_by"][0]["reasons"] == ["M->S#s0#detachment"]
+        assert out["barrier_low_confidence"] is False
+
+    def test_onroute_fatal_fail_untrusts_barrier_no_regression(self) -> None:
+        results = {
+            "trust_schema": 1,
+            "route_steps": ["R->M", "M->P"],
+            "trust_summary": {
+                "barrier": {
+                    "available": False,
+                    "blocked_by": ["R->M#s0#detachment"],
+                },
+                "selectivity": {"available": True, "blocked_by": []},
+            },
+            "trust": [
+                _trust_rec(step="R->M", verdict="fail", id="R->M#s0#detachment"),
+            ],
+        }
+        meta = {"results": results}
+        out = compute_mod._pathway_quality(meta)
+        assert out["barrier_trusted"] is False
+        assert out["barrier_blocked_by"] == ["R->M#s0#detachment"]
+        assert out["selectivity_trusted"] is True
+
+    def test_trust_schema_absent_falls_back_to_regex_path_unchanged(self) -> None:
+        meta = {
+            "warnings": [
+                "NO->N+O seed=0 NEB not converged",
+                "NH3 seed=0 geometry: adsorbate atom 41 detached from slab (3.89 A)",
+            ],
+            "low_confidence": True,
+        }
+        out = compute_mod._pathway_quality(meta)
+        assert out == {
+            "barrier_trusted": False,
+            "barrier_neb_failed": 1,
+            "barrier_desorbed": 1,
+            "barrier_wrong_site": 0,
+            "barrier_low_confidence": True,
+        }
+        assert "selectivity_trusted" not in out
+        assert "barrier_trust_note" not in out
+
+    def test_trust_schema_newer_than_understood_falls_back_with_note(self) -> None:
+        meta = {
+            "results": {
+                "trust_schema": 2,
+                "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
+            },
+            "warnings": [],
+            "low_confidence": False,
+        }
+        out = compute_mod._pathway_quality(meta)
+        # no warnings -> the regex path (which is what ran) says trusted
+        assert out["barrier_trusted"] is True
+        assert "selectivity_trusted" not in out
+        assert "barrier_trust_note" in out
+        assert "trust_schema=2" in out["barrier_trust_note"]
+
+    def test_marginal_only_artifact_stays_trusted_with_count(self) -> None:
+        """``marginal``/``severity: warn`` never untrust anything — surfaced
+        as a count only."""
+        results = {
+            "trust_schema": 1,
+            "route_steps": ["R->M"],
+            "trust_summary": {
+                "barrier": {"available": True, "blocked_by": []},
+                "selectivity": {"available": True, "blocked_by": []},
+            },
+            "trust": [
+                _trust_rec(
+                    state="M",
+                    step="R->M",
+                    check="relax_convergence",
+                    verdict="marginal",
+                    severity="warn",
+                    id="M@R->M#s0#relax_convergence",
+                ),
+                _trust_rec(
+                    step="R->M",
+                    check="neb_convergence",
+                    verdict="pass",
+                    id="R->M#s0#neb_convergence",
+                ),
+            ],
+        }
+        meta = {"results": results}
+        out = compute_mod._pathway_quality(meta)
+        assert out["barrier_trusted"] is True
+        assert out["barrier_marginal_count"] == 1
 
 
 # ── barrier sanity guards (qu164903 dossier-audit residuals, slice B) ──

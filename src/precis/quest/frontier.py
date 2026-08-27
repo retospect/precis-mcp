@@ -1110,6 +1110,21 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         flags["barrier_desorbed"] = meta.get("barrier_desorbed")
     if "barrier_wrong_site" in meta:
         flags["barrier_wrong_site"] = meta.get("barrier_wrong_site")
+    # Structured trust-records path (catpath trust_schema == 1,
+    # compute._pathway_quality_v1): SEPARATE from barrier_trusted above —
+    # an unavailable selectivity (e.g. an off-route fork competitor) must
+    # never poison the barrier verdict. Absent on a candidate harvested under
+    # the regex fallback (no trust_schema on its pathway).
+    if "selectivity_trusted" in meta:
+        flags["selectivity_trusted"] = bool(meta.get("selectivity_trusted"))
+    if "barrier_blocked_by" in meta:
+        flags["barrier_blocked_by"] = meta.get("barrier_blocked_by")
+    if "selectivity_blocked_by" in meta:
+        flags["selectivity_blocked_by"] = meta.get("selectivity_blocked_by")
+    if "barrier_marginal_count" in meta:
+        flags["barrier_marginal_count"] = meta.get("barrier_marginal_count")
+    if "barrier_trust_note" in meta:
+        flags["barrier_trust_note"] = meta.get("barrier_trust_note")
     if "adsorption_barrier" in meta:
         flags["adsorption_barrier"] = meta.get("adsorption_barrier")
     if "barrier_screen" in meta:
@@ -1179,26 +1194,42 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
-    # span, plus the CHE electro scalars U_L/U_L_abs/U_opt/span_at_Uopt/
-    # P_side — all measured over the SAME pathway, see
-    # compute._AUTOCATPATH_ELECTRO_KEYS) from ranking entirely so none of
-    # them can dominate or be dominated; each falls to `unevaluated` via the
-    # existing "missing a declared objective" path. The raw values survive in
-    # `flags` so the leaderboard can still show what was measured, just
-    # marked excluded.
+    # span, plus the CHE electro scalars U_L/U_L_abs/U_opt/span_at_Uopt,
+    # which are onset potentials computed over the route's OWN span, so they
+    # go bad with the same barrier) from ranking entirely so none of them can
+    # dominate or be dominated; each falls to `unevaluated` via the existing
+    # "missing a declared objective" path. The raw values survive in `flags`
+    # so the leaderboard can still show what was measured, just marked
+    # excluded.
     if flags.get("barrier_trusted") is False:
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)
         if excluded_barrier is not None:
             flags["barrier_untrusted_value"] = excluded_barrier
+        for k in ("U_L", "U_L_abs", "U_opt", "span_at_Uopt"):
+            excluded = measures.pop(k, None)
+            if excluded is not None:
+                flags[f"{k}_untrusted_value"] = excluded
+
+    # Selectivity/poisoning scalars are measured by comparing the route
+    # against OTHER (possibly off-route) forks, so they must be excludable
+    # independently of the barrier — the entire point of the separated
+    # trust-records verdict (compute._pathway_quality_v1) is that a barrier
+    # can be trusted while its selectivity is legitimately unavailable
+    # (an off-route competitor's own trust failure), and that must NOT
+    # exclude the barrier from ranking. Gate on `selectivity_trusted` when a
+    # candidate's pathway carried it (trust_schema == 1); a candidate
+    # harvested under the regex fallback never gets that key at all, so it
+    # falls back to the SAME `barrier_trusted` gate the collapse always used
+    # — byte-for-byte unchanged behaviour for every pre-trust-records
+    # pathway.
+    if "selectivity_trusted" in flags:
+        selectivity_untrusted = flags.get("selectivity_trusted") is False
+    else:
+        selectivity_untrusted = flags.get("barrier_trusted") is False
+    if selectivity_untrusted:
         for k in (
-            "U_L",
-            "U_L_abs",
-            "U_opt",
-            "span_at_Uopt",
             "P_side",
-            # selectivity/poisoning scalars — measured over the same
-            # untrusted pathway, so they are excluded with it
             "selectivity_margin",
             "trap_margin",
             "poison_margin",
@@ -1279,6 +1310,22 @@ def _provisional_reasons(
             reasons.append("barrier untrusted: wrong binding site")
         if not reasons:
             reasons.append("barrier untrusted")
+    if c.flags.get("selectivity_trusted") is False:
+        blockers = c.flags.get("selectivity_blocked_by")
+        blockers = blockers if isinstance(blockers, list) else []
+        named = [b for b in blockers if isinstance(b, dict)][:3]
+        for b in named:
+            competitor = b.get("competitor", "?")
+            fork = b.get("fork", "?")
+            route_note = "on-route" if b.get("on_route") else "off-route"
+            record_ids = b.get("reasons")
+            rid = ", ".join(record_ids) if isinstance(record_ids, list) else "?"
+            reasons.append(
+                f"selectivity unavailable: competitor {competitor} at fork "
+                f"{fork}, {route_note} ({rid})"
+            )
+        if not named:
+            reasons.append("selectivity unavailable")
     if not c.converged:
         reasons.append("no converged relax")
     missing = [k for k in objective_keys if k not in merged]

@@ -120,6 +120,68 @@ def warnings_toon(meta: dict[str, Any]) -> str:
     return toon.dump(rows, schema=["warning"])
 
 
+def _trust_subject(rec: dict[str, Any]) -> str:
+    """A trust record's step/state — matches catpath's own id-context
+    convention (``state@step``, trust.record()): a state-relax record gives
+    both ``state`` and ``step`` (the step context it relaxed for), a step
+    (NEB) record only ``step``."""
+    state, step = rec.get("state"), rec.get("step")
+    if state and step:
+        return f"{state}@{step}"
+    return str(state or step or "?")
+
+
+def _trust_evidence(rec: dict[str, Any]) -> str:
+    ev = rec.get("evidence")
+    if not isinstance(ev, dict) or not ev:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in ev.items())
+
+
+def trust_toon(meta: dict[str, Any]) -> str:
+    """Per-step structured trust records (catpath ``trust_schema == 1``,
+    ``docs/backlog/per-step-trust-records.md`` upstream) as a TOON table
+    grouped by step/state — the artifact answers "which step, which check,
+    which evidence" directly, no prose regex. Record ids render VERBATIM
+    (:mod:`precis.quest.compute` ``_pathway_quality_v1`` cites them as
+    handles; they are designed to be stable). A pathway harvested before the
+    trust-records contract existed (``results`` carries no ``trust_schema``,
+    or an older/absent one) gets a guidance message instead of an empty or
+    misleadingly-silent table — never guess at a shape this reader doesn't
+    understand.
+    """
+    results = meta.get("results")
+    results = results if isinstance(results, dict) else {}
+    if results.get("trust_schema") != 1:
+        return (
+            "this pathway predates per-step trust records (its results carry "
+            "no trust_schema == 1) — re-run it against a current autocatpath "
+            "to get this view; try view='warnings' for the prose fallback."
+        )
+    records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
+    if not records:
+        return "trust_schema=1 but no trust records on this pathway."
+
+    rows = [
+        {
+            "step": _trust_subject(r),
+            "seed": r.get("seed"),
+            "check": r.get("check"),
+            "verdict": r.get("verdict"),
+            "severity": r.get("severity"),
+            "evidence": _trust_evidence(r),
+            "id": r.get("id"),
+        }
+        for r in sorted(
+            records,
+            key=lambda r: (_trust_subject(r), r.get("seed") or 0, r.get("check") or ""),
+        )
+    ]
+    return toon.dump(
+        rows, schema=["step", "seed", "check", "verdict", "severity", "evidence", "id"]
+    )
+
+
 def analysis_text(meta: dict[str, Any]) -> str:
     graph = meta.get("graph") or {}
     root, target = _roots(meta)

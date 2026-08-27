@@ -85,6 +85,7 @@ class PathwayHandler(Handler):
             "intermediates",
             "steps",
             "kinetics",
+            "trust",
             "warnings",
             "profile",
             "mermaid",
@@ -340,7 +341,7 @@ class PathwayHandler(Handler):
             return Response(body=self._compare(store, ref, meta))
 
         computed = bool(meta.get("graph"))
-        if v in ("analysis", "steps", "kinetics", "warnings") and not computed:
+        if v in ("analysis", "steps", "kinetics", "trust", "warnings") and not computed:
             return Response(
                 body=f"pathway '{id}' not computed yet (status "
                 f"{meta.get('status', '?')}). Run it (put without mode='preview') "
@@ -358,6 +359,10 @@ class PathwayHandler(Handler):
             from .toon_views import kinetics_text
 
             return Response(body=kinetics_text(meta))
+        if v == "trust":
+            from .toon_views import trust_toon
+
+            return Response(body=trust_toon(meta))
         if v == "warnings":
             from .toon_views import warnings_toon
 
