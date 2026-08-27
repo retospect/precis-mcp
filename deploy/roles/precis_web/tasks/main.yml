@@ -10,7 +10,11 @@
   ansible.builtin.set_fact:
     uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
-- name: Install precis-mcp[web,pcb] into shared MCP venv
+# estimate: the ms chemistry-workup kind (mendeleev/pymatgen/tblite — light,
+# torch-free) — lives in the shared MCP venv so get(kind='estimate') serves
+# from the gateway; without the extra the handler boots but every get()
+# errors "install [estimate]" (the extra-gap class).
+- name: Install precis-mcp[web,pcb,estimate] into shared MCP venv
   # Gated on the redeploy pre-flight (`precis_deploy_changed`, step 0b) so a
   # same-sha redeploy skips the uv resolve; undefined → install (fail-safe for
   # a standalone 38/14 run). `-e precis_force_install=true` overrides.
@@ -44,7 +48,7 @@
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       {{ '' if _precis_web_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[web,pcb] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+      'precis-mcp[web,pcb,estimate] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so

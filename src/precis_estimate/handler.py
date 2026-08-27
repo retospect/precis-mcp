@@ -36,14 +36,20 @@ an opaque `ModuleNotFoundError` traceback.
 
 from __future__ import annotations
 
+import copy
+import json
 import re
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from precis.errors import BadInput, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.structure import OpError, apply_ops
+from precis.structure.cache import structure_sha
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.dispatch import Hub
@@ -53,19 +59,30 @@ if TYPE_CHECKING:
 #: composition panel" — there's only one view today.
 _PANEL_VIEWS = ("panel",)
 
+#: Slice-2 views over a structure handle (``id='st<...>'``) — the plain
+#: workup panel (``None``/``'panel'``, same names as the composition tier)
+#: plus ``'compare'`` (needs ``args={'against': 'st<...>'}``). ``whatif``
+#: is not a *view* — it's ``args={'ops': [...]}`` on the plain panel or on
+#: ``compare``'s primary side, see the module docstring.
+_STRUCTURE_VIEWS = ("compare",)
+
 #: Named here (not built) so the unknown-view error can point at what's
 #: coming without silently pretending it exists. See the module docstring
 #: and docs/backlog/estimate-kind-ms-chemistry-workup.md.
 _PLANNED_VIEWS = (
-    "structure",
-    "whatif",
-    "compare",
     "shape",
     "orbitals",
     "spin",
     "kinetics",
     "card",
 )
+
+#: Marks a ``_canonical_key`` query string as the slice-2 structure-tier
+#: composite (a canonical JSON payload the handler built in ``get()``, not
+#: user-facing text) rather than a slice-1 composition token string. Chosen
+#: to be unambiguous against any real composition query (which is always
+#: bare element symbols — never starts with this).
+_STRUCT_KEY_PREFIX = "estimate-structure-v1:"
 
 #: A composition token is one or more element symbols, either given
 #: individually (space/comma separated: ``'Pd Zr H'``, ``'Pd, Zr'``) or
@@ -135,9 +152,14 @@ def _parse_composition(query: str) -> list[str]:
 
 class EstimateHandler(CacheBackedHandler):
     """``estimate`` — the ms chemistry-workup panel. Slice 1: composition
-    tier only (element-property lookup + pairwise alloying heuristics, no
-    geometry needed). Cache-pinned (a fixed composition always workups the
-    same, deterministic — see `math` for the same pattern)."""
+    tier (element-property lookup + pairwise alloying heuristics, no
+    geometry needed). Slice 2: structure-coupled workup
+    (``id='st<...>'``) — geometry lint, coordination/strain, symmetry,
+    dedup-vs-quest, and own-campaign BEP scaling
+    (:mod:`precis_estimate.compute.structure`), plus a structural what-if
+    (``args={'ops': [...]}``) and a two-structure ``view='compare'``. Both
+    tiers are cache-pinned (deterministic for a fixed input — see `math`
+    for the same pattern)."""
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="estimate",
@@ -145,12 +167,20 @@ class EstimateHandler(CacheBackedHandler):
         description=(
             "Millisecond semi-empirical chemistry workup — a "
             "hypothesis-generator, NOT admissible for rulings (measure "
-            "before citing as fact). Slice 1: composition-tier only — "
+            "before citing as fact). Composition tier — "
             "get(kind='estimate', q='Pd Zr H') (or 'PdZrH', 'Pd, Zr') "
             "returns per-element descriptors (electronegativity, covalent "
             "radius, magmom, d-electron count, Hammer-Norskov d-band "
-            "center where known) plus pairwise alloying heuristics. See "
-            "precis-estimate-help."
+            "center where known) plus pairwise alloying heuristics. "
+            "Structure tier — get(kind='estimate', id='st<...>') runs "
+            "geometry lint + coordination/strain + spglib symmetry + a "
+            "StructureMatcher dedup + own-campaign BEP scaling on a held "
+            "structure design; args={'ops': [...]} applies a what-if "
+            "mutation first (a structure/ops.py op list, on a copy — the "
+            "held design is untouched); args={'quest': 'qu<...>'} grounds "
+            "dedup/BEP in that quest's served structures; "
+            "view='compare', args={'against': 'st<...>'} runs both and "
+            "adds a numeric delta table. See precis-estimate-help."
         ),
         supports_get=True,
         supports_search=True,
@@ -164,9 +194,12 @@ class EstimateHandler(CacheBackedHandler):
     # Deterministic for a fixed composition — pin the cache, like `math`.
     ttl_seconds: ClassVar[int | None] = None
     attribution: ClassVar[str] = (
-        "ms element-descriptor tier (mendeleev + ase.data + Hammer-Norskov "
-        "vendored d-band table) - hypothesis-generating only, "
-        "inadmissible for rulings; measure before citing as fact."
+        "ms chemistry workup (composition tier: mendeleev + ase.data + "
+        "Hammer-Norskov vendored d-band table; structure tier: preflight "
+        "geometry lint + invariants coordination/strain + spglib symmetry "
+        "+ pymatgen StructureMatcher dedup + own-campaign BEP scaling) - "
+        "hypothesis-generating only, inadmissible for rulings; measure "
+        "before citing as fact."
     )
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "Pd Zr H"
@@ -179,28 +212,104 @@ class EstimateHandler(CacheBackedHandler):
         # `hub.store`/`hub.embedder`, neither of which touches mendeleev.
         super().__init__(hub=hub)
 
-    # -- view gate ---------------------------------------------------------
+    # -- view gate + structure-tier routing ---------------------------------
     def get(
         self,
         *,
         id: str | int | None = None,
         q: str | None = None,
         view: str | None = None,
+        args: dict[str, Any] | None = None,
         **kw: Any,
     ) -> Response:
         v = (view or "").strip().lower()
-        if v and v not in _PANEL_VIEWS and not self._is_listing_request(id, q):
+        allowed = (*_PANEL_VIEWS, *_STRUCTURE_VIEWS)
+        if v and v not in allowed and not self._is_listing_request(id, q):
             raise Unsupported(
-                f"unknown view {view!r} for kind='estimate' - slice 1 ships "
-                "the default composition panel only",
-                options=[*_PANEL_VIEWS, *_PLANNED_VIEWS],
+                f"unknown view {view!r} for kind='estimate'",
+                options=[*allowed, *_PLANNED_VIEWS],
                 next=(
-                    "get(kind='estimate', q='Pd Zr H') - default "
-                    "composition-tier panel",
-                    f"planned (slice 2, not built yet): {', '.join(_PLANNED_VIEWS)}",
+                    "get(kind='estimate', q='Pd Zr H') - composition-tier panel",
+                    "get(kind='estimate', id='st123') - structure-tier panel",
+                    f"planned (slice 3, not built yet): {', '.join(_PLANNED_VIEWS)}",
                 ),
             )
+
+        parsed = (
+            handle_registry.parse(id) if isinstance(id, str) and id.strip() else None
+        )
+        if parsed is not None and parsed[0] == "structure" and not parsed[1]:
+            return self._get_structure(
+                ref_id=parsed[2], view=v or "panel", args=args or {}, **kw
+            )
+        if v == "compare":
+            raise BadInput(
+                "view='compare' needs id='st<...>' (a structure handle)",
+                next="get(kind='estimate', id='st123', view='compare', "
+                "args={'against': 'st456'})",
+            )
         return super().get(id=id, q=q, view=view, **kw)
+
+    # -- structure-tier request assembly ------------------------------------
+
+    def _resolve_ref_arg(self, kind: str, raw: Any) -> int | None:
+        """Coerce an ``args=`` value (handle string / slug / bare id) naming
+        another ref to its ref_id, or ``None`` when the arg was omitted.
+        Raises :class:`NotFound` on a value that was given but doesn't
+        resolve — never silently drops it."""
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return None
+        ref = resolve_live_slug_ref(self.store, kind=kind, id=raw)
+        return int(ref.id)
+
+    def _get_structure(
+        self, *, ref_id: int, view: str, args: dict[str, Any], **kw: Any
+    ) -> Response:
+        """Assemble the slice-2 composite cache key (structure ref id +
+        content-identity sha + ops + quest + against) and hand it to the
+        base cache flow like any other query — ``_fetch`` decodes it back
+        on a miss (see :func:`_STRUCT_KEY_PREFIX`)."""
+        ref = self.store.get_ref(kind="structure", id=ref_id)
+        if ref is None:
+            raise NotFound(
+                f"structure ref {ref_id} not found",
+                next="search(kind='structure', q='...')",
+            )
+        base_scene, _handles = self.store.structure_load(ref_id)
+        sha = structure_sha(base_scene)
+
+        ops = args.get("ops")
+        if ops is not None and not isinstance(ops, list):
+            raise BadInput("args['ops'] must be a list of op dicts")
+
+        quest_ref_id = self._resolve_ref_arg("quest", args.get("quest"))
+
+        against: dict[str, Any] | None = None
+        if view == "compare":
+            against_raw = args.get("against")
+            if not against_raw:
+                raise BadInput(
+                    "view='compare' needs args={'against': 'st<...>'}",
+                    next="get(kind='estimate', id='st123', view='compare', "
+                    "args={'against': 'st456'})",
+                )
+            against_ref_id = self._resolve_ref_arg("structure", against_raw)
+            assert against_ref_id is not None  # non-empty raw ⇒ resolved or raised
+            against_scene, _ = self.store.structure_load(against_ref_id)
+            against = {"ref": against_ref_id, "sha": structure_sha(against_scene)}
+
+        payload = {
+            "ref": ref_id,
+            "sha": sha,
+            "view": view,
+            "ops": ops or [],
+            "quest": quest_ref_id,
+            "against": against,
+        }
+        key = _STRUCT_KEY_PREFIX + json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        return super().get(id=key, view=view, **kw)
 
     # -- cache-base hooks ----------------------------------------------
 
@@ -208,17 +317,27 @@ class EstimateHandler(CacheBackedHandler):
         """Composition identity, order-independent: sorted, deduplicated,
         space-joined element symbols. ``'Pd Zr H'`` / ``'PdZrH'`` /
         ``'H, Zr, Pd'`` all canonicalise to the same key (and so share one
-        cache row)."""
+        cache row). A slice-2 structure-tier composite key (built by
+        :meth:`_get_structure`, already canonical JSON) passes through
+        unchanged — recognised by its :data:`_STRUCT_KEY_PREFIX`."""
+        if query.startswith(_STRUCT_KEY_PREFIX):
+            return query
         return " ".join(_parse_composition(query))
 
     def _recover_key(self, ref: Ref, cache: CacheEntry) -> str | None:
         """Support `mode='refresh'` by slug — mirrors `math`'s
         `_input_query`-in-meta pattern (results are deterministic, so a
-        refresh only matters after a code/vendored-table change)."""
+        refresh only matters after a code/vendored-table change).
+        Structure-tier entries don't stash `symbols` — refresh-by-slug
+        isn't supported for them yet (re-`get` by id= re-keys automatically
+        whenever the structure's content sha or the ops/quest/against args
+        change)."""
         symbols = (cache.meta or {}).get("symbols")
         return " ".join(symbols) if symbols else None
 
     def _fetch(self, key: str) -> FetchResult:
+        if key.startswith(_STRUCT_KEY_PREFIX):
+            return self._fetch_structure(json.loads(key[len(_STRUCT_KEY_PREFIX) :]))
         symbols = key.split()
         try:
             import mendeleev  # noqa: F401
@@ -240,4 +359,74 @@ class EstimateHandler(CacheBackedHandler):
             model="ms-element-descriptors-v1",
             cost_usd=0.0,
             meta={"symbols": symbols, "tier": "composition"},
+        )
+
+    def _load_ops_scene(self, ref_id: int, ops: list[dict[str, Any]]) -> Any:
+        """The design's live scene, with ``ops`` applied on a COPY (the
+        what-if mutation never touches the held design). An :class:`OpError`
+        surfaces as :class:`BadInput` naming the bad op — the design doc's
+        "ops errors surface as BadInput" contract."""
+        scene, _handles = self.store.structure_load(ref_id)
+        if not ops:
+            return scene
+        mutant = copy.deepcopy(scene)
+        try:
+            apply_ops(mutant, ops)
+        except OpError as exc:
+            raise BadInput(f"estimate what-if op error: {exc}") from exc
+        return mutant
+
+    def _fetch_structure(self, spec: dict[str, Any]) -> FetchResult:
+        # No dep import at module scope — pymatgen is lazily imported inside
+        # compute/structure.py's dedup path only, mirroring mendeleev above.
+        from precis_estimate.compute.structure import render_compare, structure_workup
+
+        ref_id = int(spec["ref"])
+        ref = self.store.get_ref(kind="structure", id=ref_id)
+        if ref is None:
+            raise NotFound(f"structure ref {ref_id} not found")
+        name = str(ref.slug or ref_id)
+        scene = self._load_ops_scene(ref_id, spec.get("ops") or [])
+        quest_ref_id = spec.get("quest")
+
+        against = spec.get("against")
+        if against is not None:
+            against_ref_id = int(against["ref"])
+            against_ref = self.store.get_ref(kind="structure", id=against_ref_id)
+            if against_ref is None:
+                raise NotFound(f"structure ref {against_ref_id} not found")
+            against_name = str(against_ref.slug or against_ref_id)
+            against_scene, _ = self.store.structure_load(against_ref_id)
+            body = render_compare(
+                name,
+                scene,
+                against_name,
+                against_scene,
+                store=self.store,
+                quest_ref_id=quest_ref_id,
+            )
+            title = f"estimate: compare {name} vs {against_name}"
+            meta = {
+                "tier": "structure",
+                "view": "compare",
+                "ref": ref_id,
+                "against": against_ref_id,
+            }
+        else:
+            body = structure_workup(
+                scene, store=self.store, quest_ref_id=quest_ref_id, title=name
+            )
+            title = f"estimate: {name} (structure tier)"
+            meta = {
+                "tier": "structure",
+                "view": spec.get("view") or "panel",
+                "ref": ref_id,
+            }
+
+        return FetchResult(
+            title=title,
+            body_blocks=[BlockInsert(pos=0, text=body)],
+            model="ms-structure-workup-v1",
+            cost_usd=0.0,
+            meta=meta,
         )
