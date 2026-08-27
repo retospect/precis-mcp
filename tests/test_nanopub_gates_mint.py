@@ -1008,3 +1008,23 @@ def test_approve_needs_the_interactive_door(store: Any) -> None:
     hub = _seed_hub(store, "Batch-approved claim.", paper, chunk)
     with pytest.raises(PermissionError):
         mint.approve(store, hub, payload=_payload(chunk))
+
+
+def test_advisory_lint_is_exactly_the_nonblocking_half() -> None:
+    """``advisory_lint`` returns the lint warnings the mint gate does NOT
+    enforce, and only those: a sentence carrying both a blocking code
+    (e-notation) and an advisory one (tilde-approximation) splits cleanly
+    — the advisory list carries the tilde note, the blocking code stays
+    with ``check_claim_sentence``, neither leaks into the other, and an
+    empty sentence yields no advisories."""
+    from precis.nanopub.gates import advisory_lint, check_claim_sentence
+
+    s = "DFT shows the barrier is ~0.5 eV with a rate of 1e-6 per second."
+    advisories = advisory_lint(s)
+    codes = [w.split(":", 1)[0].strip() for w in advisories]
+    assert "tilde-approximation" in codes
+    assert "e-notation" not in codes  # blocking — never advisory
+    assert len(codes) == len(set(codes))  # de-duplicated
+    blocking_msgs = " ".join(v.message for v in check_claim_sentence(s))
+    assert "e-notation" in blocking_msgs
+    assert advisory_lint("") == []

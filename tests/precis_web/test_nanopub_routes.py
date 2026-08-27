@@ -491,6 +491,11 @@ def test_claim_page_shows_maturity_ladder_and_full_gate_list(
     assert "passing (dry-run)" in resp.text
     assert "✓" in resp.text
     assert "○" in resp.text
+    # The dry-run ran against the REAL prefilled grounding (quote + snip
+    # derived from the seeded chunk), so this well-grounded hub shows no
+    # failing gate at all — an empty/wrong payload would red grounding
+    # and schema-lint here.
+    assert "✖" not in resp.text
 
     approved = client.post(
         f"/nanopub/fi{hub}/approve",
