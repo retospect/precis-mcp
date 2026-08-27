@@ -34,21 +34,21 @@
    nested <div> here would break that "find the block's closing </div>"
    assumption. A caller that wants horizontal overflow scrolling puts it on
    THIS <table> itself (``block overflow-x-auto``) rather than wrapping. #}
-{% macro sd_table(table, claims, abbrevs=none, pending_claims=none, refuted_claims=none) -%}
+{% macro sd_table(table, claims, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
 <table class="w-full border-collapse text-sm">
   {% if table.caption %}
-  <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ table.caption | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}</caption>
+  <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ table.caption | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</caption>
   {% endif %}
   <thead><tr>
     {% for h in table.header %}
-    <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}</th>
+    <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</th>
     {% endfor %}
   </tr></thead>
   <tbody>
     {% for row in table.rows %}
     <tr class="even:bg-slate-50">
       {% for cell in row %}
-      <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}</td>
+      <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</td>
       {% endfor %}
     </tr>
     {% endfor %}
@@ -73,11 +73,11 @@
 <span class="{{ cls }} cursor-pointer" title="click to copy" onclick="sdCopyDc(event, '{{ dc }}')">{{ dc }}{{ trail }}</span>
 {%- endmacro %}
 
-{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none) -%}
+{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
 {%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
 {%- set is_tbl = n.is_table and n.table -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{{ sd_dc_id(n.dc) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}{% endif %}</div>
+<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{{ sd_dc_id(n.dc) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
 {%- endmacro %}
 
 {# The per-block review indicator + dropdown

@@ -747,6 +747,16 @@ def put(
     # claim HUB instead of a chase finding — title=/body= carry the claim
     # sentence. Supplying both supporters= and cited_in= errors (two modes).
     supporters: list[dict[str, Any]] | None = None,
+    # finding acquisition-mode (see precis-finding-help): wants= (a list of
+    # {'doi':…} / {'arxiv':…} / {'title':…,'url':…} descriptors, >=1) +
+    # provenance= (a ref/chunk handle for where the claim came from) INSTEAD
+    # of cited_in= — mints STATUS:acquiring plus one DREAM:acquire paper stub
+    # per descriptor for a claim whose supporting paper isn't in the corpus
+    # yet. Declared at the verb level so strict-schema MCP clients don't
+    # strip them — without this, the door was unreachable over MCP even
+    # though FindingHandler.put fully implemented it (gr262482/gr250273).
+    wants: list[dict[str, Any]] | None = None,
+    provenance: str | None = None,
     # finding hypothesis-proposal (see precis-nanopub-help): hypothesis=True
     # proposes a nanopub HYPOTHESIS — a conjecture, which by type carries no
     # evidence, so it takes motivated_by= (>=2 artifacts across >=2 source
@@ -912,6 +922,8 @@ def put(
             "scope": scope,
             "cited_in": cited_in,
             "supporters": supporters,
+            "wants": wants,
+            "provenance": provenance,
             # False is the "not this mode" value and would be stripped by
             # _invoke_handler's None-filter anyway; pass it through only when
             # set so the handler's default stands.
@@ -996,6 +1008,14 @@ def edit(
     # todo (see precis-tasks-help): edit(mode='replace', body='…') sets/rewrites
     # the optional details body; combine with text= to rewrite the task line too.
     body: str | None = None,
+    # paper (see precis-paper-help): edit(kind='paper', doi=…) / edit(kind=
+    # 'paper', arxiv=…) upgrades a title-only stub's identifier (replaces the
+    # ref's alias via Store.set_ref_identifier) — the repair path for a stub
+    # minted without one, instead of an agent minting a duplicate DOI stub.
+    # Declared at the verb level so strict-schema MCP clients don't strip
+    # them — PaperHandler.edit already accepted both (gr262482/gr250273).
+    doi: str | None = None,
+    arxiv: str | None = None,
     find: str | None = None,
     before: str | None = None,
     after: str | None = None,
@@ -1119,6 +1139,8 @@ def edit(
         "text": text,
         "title": title,
         "body": body,
+        "doi": doi,
+        "arxiv": arxiv,
         "find": find,
         "before": before,
         "after": after,

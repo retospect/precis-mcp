@@ -201,7 +201,7 @@ async def reader(
     # linkify call in the template; the right-rail "Claims" panel lists
     # their evidence via the batch entry point (`render_claims_evidence`)
     # so N distinct hubs cost a handful of bulk queries, not N x ~16.
-    claims, pending_claims, refuted_claims = claim_cite_head_sets(
+    claims, pending_claims, refuted_claims, hypothesis_claims = claim_cite_head_sets(
         store, [n.text or "" for n in rendered_nodes]
     )
     # The rail's Claims panel lists hubs in reading order — first appearance
@@ -289,6 +289,7 @@ async def reader(
             "claims": claims,
             "pending_claims": pending_claims,
             "refuted_claims": refuted_claims,
+            "hypothesis_claims": hypothesis_claims,
             "claims_evidence": claims_evidence,
             "abbrevs": abbrevs,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
@@ -343,7 +344,7 @@ async def blocks(
     # Violet claim-hub cites, resolved once for just this window (the reader
     # does the same for its middle pane) so a hydrated block's [fi…]/pub_id
     # cites render as claim anchors identically to the initial render.
-    claims, pending_claims, refuted_claims = claim_cite_head_sets(
+    claims, pending_claims, refuted_claims, hypothesis_claims = claim_cite_head_sets(
         store, [n.text or "" for n in sel]
     )
     # Review-status payload for just this hydrated window (item 4 — the
@@ -364,6 +365,7 @@ async def blocks(
             "claims": claims,
             "pending_claims": pending_claims,
             "refuted_claims": refuted_claims,
+            "hypothesis_claims": hypothesis_claims,
             "abbrevs": abbrevs,
             "review_by_dc": review_by_dc,
             "ident": ident,

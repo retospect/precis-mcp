@@ -65,6 +65,15 @@ priority claim on an idea. The sentence stays declarative and unhedged
 — epistemic status lives in the *type*, so a later confirming claim can
 carry the same sentence and converge on the same content address.
 
+Because status lives in the type rather than the prose, it is **read from
+the DB at render time, never written into the text**. A hypothesis cite is
+a plain `[fi<id>]` on disk but renders with its own sigil at every cite
+site, and `motivation`/`testable_by` render as a falsification line in the
+agent-facing finding view, the draft fisheye and `/claim`. Precedence is
+**refuted → hypothesis → canonical → pending**: a refuted hypothesis renders
+red, since do-not-repropose outranks the epistemic mark. Nothing needs
+rewriting when a hypothesis is later refuted or promoted.
+
 ```
 put(kind='finding', hypothesis=True,
     title='<claim sentence — same grammar as any claim, see below>',

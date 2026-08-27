@@ -205,6 +205,7 @@ def _claim_block(
     pin: tuple[str, list[int]] | None = None,
     pin_labels: dict[int, str] | None = None,
     claim_links: ClaimLinks | None = None,
+    falsification: dict[str, str] | None = None,
 ) -> str:
     """The Claims explosion for one cited hub — the claim line plus its
     derived evidence, capped like the rest of the ring (§6: no silent
@@ -224,7 +225,35 @@ def _claim_block(
     the note. Purely a render annotation — no resolution/dedup decision
     happens here, that's ``precis resolve``'s job for the actual ``.bib``
     output; the ring is read-only reflection of the author's choice.
+
+    ``falsification`` — non-``None`` (and only ever non-``None``) for a hub
+    marked ``refs.meta.artifact_type == 'hypothesis'``
+    (:func:`~precis.handlers._finding_hypothesis.hypothesis_prose`):
+    ``{"motivation": …, "testable_by": …}``. A hypothesis has zero evidence
+    edges *by definition* (the mint gates reject one arriving with
+    grounding passages), so rendering "(no evidence derived yet)" here
+    would read identically to an ordinary hub nobody has chased yet — this
+    renders the falsification prose in place of the evidence lines
+    instead, tagged ``[finding·HYPOTHESIS]`` on the header line
+    (docs/backlog/hypothesis-cites-render-not-stored.md). Pins/claim-links
+    are meaningless against a hub with no evidence, so this branch returns
+    early — before the pin-line logic below — but still appends the
+    ``refines``/``refined by`` claim-links tail, same as every other hub.
     """
+    if falsification is not None:
+        handle = handle_registry.format_handle("finding", ref.id)
+        title = " ".join((getattr(ref, "title", None) or "").split())
+        if len(title) > 90:
+            title = title[:89].rstrip() + "…"
+        lines = [f"{handle} [finding·HYPOTHESIS] {title}" if title else handle]
+        motivation = falsification.get("motivation") or "(not recorded)"
+        testable_by = falsification.get("testable_by") or "(not recorded)"
+        lines.append(f"  motivation:    {motivation}")
+        lines.append(f"  falsified by:  {testable_by}")
+        if claim_links is not None:
+            lines += _claim_links_lines(claim_links, cap=cap)
+        return "\n".join(lines)
+
     pin_op, pinned_ref_ids = pin if pin is not None else (None, [])
     pinned_set = set(pinned_ref_ids)
     pin_labels = pin_labels or {}
@@ -432,6 +461,8 @@ def _render_claims_group(
             title = " ".join((getattr(pref, "title", None) or "").split())
             pin_labels[ref_id] = f"{handle} — {title}" if title else handle
 
+    from precis.handlers._finding_hypothesis import hypothesis_prose
+
     entries: list[tuple[int, str]] = []
     for hub_ref_id, op, _handles in hub_cites:
         ref = refs.get(hub_ref_id)
@@ -450,6 +481,7 @@ def _render_claims_group(
                     pin=pin,
                     pin_labels=pin_labels,
                     claim_links=claim_links,
+                    falsification=hypothesis_prose(store, ref),
                 ),
             )
         )

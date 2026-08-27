@@ -54,7 +54,15 @@ A second sibling ``refuted_claims`` map covers a head tagged
 (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") — rendering
 instead as a filled RED ``◆`` linking to the refuted finding itself; it
 wins over both the live and pending renderings when a head is (unusually)
-in more than one map.
+in more than one map. A third sibling ``hypothesis_claims`` frozenset
+covers a head whose hub carries ``refs.meta.artifact_type == 'hypothesis'``
+— a conjecture, not a finding
+(docs/backlog/hypothesis-cites-render-not-stored.md) — rendering instead
+as a distinct fuchsia ``◈`` linking to ``/claim/<head>`` (still a hub, so
+still ``/claim``); it loses only to ``refuted_claims`` (a refuted
+hypothesis is dead regardless of type). Nothing is ever stored in the cite
+itself — status is derived at render time from the DB, the same
+living-cite discipline ``STATUS:refuted`` already uses.
 """
 
 from __future__ import annotations
@@ -192,6 +200,23 @@ _CLAIM_REFUTED_ANCHOR_CLS = (
     "text-red-600 underline decoration-dotted hover:decoration-solid"
 )
 _CLAIM_REFUTED_SIGIL = "◆"
+
+#: A finding cite whose head resolves to a hub marked ``refs.meta.
+#: artifact_type == 'hypothesis'`` — a conjecture, not a finding
+#: (docs/backlog/hypothesis-cites-render-not-stored.md). Distinct
+#: fuchsia so it reads apart from every other cite family (sky paper, amber
+#: external, violet claim, red refuted). Still a HUB — it carries
+#: ``data-claim-head`` and links to ``/claim/<head>`` like the canonical
+#: branch, since a hypothesis hub is a hub; only its epistemic status
+#: differs. Loses to ``refuted_claims`` (a refuted hypothesis is dead
+#: regardless of type) but wins over the plain canonical ``claims`` branch —
+#: :func:`~precis_web.claim_render.claim_cite_head_sets` already carves a
+#: hypothesis head out of ``claims`` so the two can never actually collide,
+#: but the precedence is enforced here too, belt-and-suspenders.
+_CLAIM_HYPOTHESIS_ANCHOR_CLS = (
+    "text-fuchsia-700 underline decoration-dotted hover:decoration-solid"
+)
+_CLAIM_HYPOTHESIS_SIGIL = "◈"
 
 #: Named window target for a paper citation (the claim-UX paper-at-position
 #: behaviour): successive clicks on paper cites reuse ONE side window instead of
@@ -525,6 +550,7 @@ def _render_claim_hub(
     claims: frozenset[str] | None,
     pending_claims: Mapping[str, int] | None = None,
     refuted_claims: Mapping[str, int] | None = None,
+    hypothesis_claims: frozenset[str] | None = None,
     compact: bool = False,
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
@@ -542,6 +568,20 @@ def _render_claim_hub(
     §"Refuted lifecycle") — "red = the claim as stated is dead", not "this
     document is wrong".
 
+    A head whose hub carries ``refs.meta.artifact_type == 'hypothesis'`` —
+    present in ``hypothesis_claims`` — renders next (checked SECOND, still
+    ahead of the plain canonical branch): a distinct fuchsia ``◈``, linking
+    to ``/claim/<head>`` exactly like the canonical branch (a hypothesis
+    hub IS a hub — :func:`~precis.taproot.hub.mint_hub` tags it
+    ``TAPROOT:claim`` unconditionally), carrying ``data-claim-head`` so the
+    smartdraft diamond↔rail sync still works, and
+    ``title="hypothesis — motivation, not evidence"``
+    (docs/backlog/hypothesis-cites-render-not-stored.md — status is derived
+    at render time from the DB, never stored in the cite itself, the same
+    living-cite discipline ``STATUS:refuted`` already uses). Loses to
+    ``refuted_claims`` — a refuted hypothesis is dead regardless of type —
+    but wins over the plain ``claims`` branch.
+
     A head that resolves to a finding but ISN'T (yet) a hub — present in
     ``pending_claims`` instead — renders as the hollow, muted-violet ``◇``
     twin: "claim in chase, not yet canonical". It links straight to the
@@ -550,12 +590,12 @@ def _render_claim_hub(
     diamond↔rail sync is hubs-only; a pending cite has no rail row).
 
     A head in neither map (or a call site with no
-    ``claims``/``pending_claims``/``refuted_claims`` at all) falls back to
-    the ordinary rendering of the bare ``head`` — the export-only pin
-    (`>`/`+` …) is dropped in every branch (a reader shows the cite, not
-    the bibliography directive), so ``[fi42>pa5]`` renders identically to
-    ``[fi42]``, and nothing that used to be a plain finding anchor /
-    literal changes.
+    ``claims``/``pending_claims``/``refuted_claims``/``hypothesis_claims``
+    at all) falls back to the ordinary rendering of the bare ``head`` — the
+    export-only pin (`>`/`+` …) is dropped in every branch (a reader shows
+    the cite, not the bibliography directive), so ``[fi42>pa5]`` renders
+    identically to ``[fi42]``, and nothing that used to be a plain finding
+    anchor / literal changes.
     """
     if refuted_claims and head in refuted_claims:
         ref_id = refuted_claims[head]
@@ -566,6 +606,22 @@ def _render_claim_hub(
             label=label,
             anchor_cls=_CLAIM_REFUTED_ANCHOR_CLS,
             extra_attrs='title="refuted — see ruling"',
+        )
+    if hypothesis_claims is not None and head in hypothesis_claims:
+        safe_head = escape(head)
+        label = _CLAIM_HYPOTHESIS_SIGIL if compact else escape(head)
+        return _anchor_html(
+            href=f"/claim/{safe_head}",
+            preview_url=f"/preview/claim/{safe_head}",
+            label=label,
+            anchor_cls=_CLAIM_HYPOTHESIS_ANCHOR_CLS,
+            # Same rail-sync hook as the canonical branch — a hypothesis
+            # hub is a hub — plus a title distinguishing its epistemic
+            # status (spec wording: "motivation, not evidence").
+            extra_attrs=(
+                f'data-claim-head="{safe_head}" '
+                'title="hypothesis — motivation, not evidence"'
+            ),
         )
     if claims is not None and head in claims:
         safe_head = escape(head)
@@ -919,6 +975,7 @@ def linkify_refs(
     claims: frozenset[str] | None = None,
     pending_claims: Mapping[str, int] | None = None,
     refuted_claims: Mapping[str, int] | None = None,
+    hypothesis_claims: frozenset[str] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -973,6 +1030,19 @@ def linkify_refs(
     when a head is (unusually) present in more than one map. ``None``
     (every non-reader call site) keeps prior rendering, same as ``claims``.
 
+    ``hypothesis_claims`` — the fourth sibling set: hub-cite heads whose hub
+    carries ``refs.meta.artifact_type == 'hypothesis'`` — a conjecture
+    minted with motivation instead of evidence, never a stored handle
+    prefix (docs/backlog/hypothesis-cites-render-not-stored.md). A matching
+    cite renders as a distinct fuchsia ``◈``, linking to ``/claim/<head>``
+    like the plain ``claims`` branch (a hypothesis hub is still a hub) but
+    carrying ``title="hypothesis — motivation, not evidence"``. Loses to
+    ``refuted_claims`` (a refuted hypothesis is dead regardless of type);
+    :func:`~precis_web.claim_render.claim_cite_head_sets` already carves a
+    hypothesis head out of its ``hubs``/``claims`` set so the two never
+    actually collide. ``None`` (every non-reader call site) keeps prior
+    rendering, same as ``claims``.
+
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
@@ -988,6 +1058,7 @@ def linkify_refs(
         claims=claims,
         pending_claims=pending_claims,
         refuted_claims=refuted_claims,
+        hypothesis_claims=hypothesis_claims,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -1042,6 +1113,7 @@ def _linkify_prose(
     claims: frozenset[str] | None = None,
     pending_claims: Mapping[str, int] | None = None,
     refuted_claims: Mapping[str, int] | None = None,
+    hypothesis_claims: frozenset[str] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -1077,6 +1149,7 @@ def _linkify_prose(
                 claims=claims,
                 pending_claims=pending_claims,
                 refuted_claims=refuted_claims,
+                hypothesis_claims=hypothesis_claims,
                 compact=compact,
                 local=local,
                 callouts=callouts,

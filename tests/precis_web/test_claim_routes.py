@@ -845,6 +845,57 @@ def test_claim_view_non_refuted_shows_no_banner(
     assert "ruling unknown" not in r.text
 
 
+# ── Hypothesis falsification prose (docs/backlog/
+# hypothesis-cites-render-not-stored.md) ──
+
+
+def test_claim_view_hypothesis_shows_falsification_fields(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A hub minted a ``hypothesis`` shows real motivation/falsified-by
+    fields, not just the raw JSON dump in the review textarea."""
+    from precis.handlers._finding_hypothesis import (
+        ARTIFACT_HYPOTHESIS,
+        META_ARTIFACT_TYPE,
+        META_PROPOSED_PAYLOAD,
+    )
+
+    store = hub.live_store
+    hyp_hub = mint_hub(
+        store,
+        _CLAIM,
+        extra_meta={
+            META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS,
+            META_PROPOSED_PAYLOAD: {
+                "motivation": "Both systems share a mechanism; untested transfer.",
+                "testable_by": "an experiment discriminating the two mechanisms",
+            },
+        },
+    )
+    fi_handle = handle_registry.format_handle("finding", hyp_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Hypothesis" in r.text
+    assert "motivation, not evidence" in r.text
+    assert "Both systems share a mechanism; untested transfer." in r.text
+    assert "an experiment discriminating the two mechanisms" in r.text
+
+
+def test_claim_view_non_hypothesis_shows_no_falsification_fields(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A plain (non-hypothesis) claim page carries no falsification box."""
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "motivation, not evidence" not in r.text
+
+
 # ── POST /claim/<head>/unacquirable — the claim-level softener write door ──
 
 

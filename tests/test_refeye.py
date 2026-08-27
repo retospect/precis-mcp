@@ -226,6 +226,50 @@ def test_ring_claims_group_skips_non_hub_finding(hub: Hub, plan: PlanHandler) ->
     assert ring == "— no references —"
 
 
+def test_ring_claims_group_marks_hypothesis_with_falsification(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A hub minted a ``hypothesis`` (``refs.meta.artifact_type``) has zero
+    evidence edges by definition — the Claims block renders its
+    motivation/falsification prose in place of the (necessarily absent)
+    evidence lines, tagged ``[finding·HYPOTHESIS]``
+    (docs/backlog/hypothesis-cites-render-not-stored.md)."""
+    from precis.handlers._finding_hypothesis import (
+        ARTIFACT_HYPOTHESIS,
+        META_ARTIFACT_TYPE,
+        META_PROPOSED_PAYLOAD,
+    )
+
+    store = hub.live_store
+    hyp_hub = mint_hub(
+        store,
+        _CLAIM,
+        extra_meta={
+            META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS,
+            META_PROPOSED_PAYLOAD: {
+                "motivation": "Both systems share a mechanism; the transfer is untested.",
+                "testable_by": "an experiment discriminating the two mechanisms",
+            },
+        },
+    )
+    pub_id = _hub_pub_id(store, hyp_hub)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This is a conjecture: [{pub_id}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "[finding·HYPOTHESIS]" in ring
+    assert "motivation:" in ring
+    assert "Both systems share a mechanism; the transfer is untested." in ring
+    assert "falsified by:" in ring
+    assert "an experiment discriminating the two mechanisms" in ring
+    # No evidence lines — a hypothesis has none by definition.
+    assert "no evidence derived yet" not in ring
+    assert "★" not in ring
+
+
 def test_ring_claims_group_caps_originators_with_overflow(
     hub: Hub, plan: PlanHandler
 ) -> None:

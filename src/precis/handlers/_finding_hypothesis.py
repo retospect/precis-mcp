@@ -391,6 +391,46 @@ def put_hypothesis(
     )
 
 
+def hypothesis_prose(store: Store, ref: Any) -> dict[str, str] | None:
+    """The falsification prose — ``{"motivation": …, "testable_by": …}`` —
+    for a hypothesis hub's already-fetched ``ref``. ``None`` unless ``ref``
+    is marked :data:`ARTIFACT_HYPOTHESIS`; either value may be the empty
+    string if the payload is present but that field wasn't (degrades
+    gracefully rather than raising — see below).
+
+    Reads whichever of the two homes this prose currently lives in
+    (docs/backlog/hypothesis-cites-render-not-stored.md): the **approved**
+    ``nanopub_publish.grounding`` envelope once a human approves (frozen at
+    review time — :func:`precis.nanopub.mint.approve` — and it survives a
+    later reword/reopen), else the still-**proposed**
+    ``refs.meta[META_PROPOSED_PAYLOAD]`` an agent parked at
+    :func:`put_hypothesis` mint time. The approved copy wins when both
+    exist (it is the reviewed, frozen wording). ``store`` may lack the
+    nanopub mixin (a bare ``FakeStore`` in a reader test) — ``getattr``
+    degrades to the proposed payload only, never raises.
+    """
+    meta = getattr(ref, "meta", None) or {}
+    if meta.get(META_ARTIFACT_TYPE) != ARTIFACT_HYPOTHESIS:
+        return None
+    payload: dict[str, Any] = {}
+    row_fn = getattr(store, "nanopub_publish_row", None)
+    if row_fn is not None:
+        try:
+            row = row_fn(ref.id)
+        except Exception:
+            row = None
+        if row is not None and row.grounding:
+            payload = row.grounding
+    if not payload:
+        proposed = meta.get(META_PROPOSED_PAYLOAD)
+        if isinstance(proposed, dict):
+            payload = proposed
+    return {
+        "motivation": str(payload.get("motivation") or "").strip(),
+        "testable_by": str(payload.get("testable_by") or "").strip(),
+    }
+
+
 def _link_origin(store: Store, *, hub_ref_id: int, from_memory: str | None) -> None:
     """Best-effort ``origin --related-to--> hub`` edges: the dream memory that
     reasoned its way here, and the agentlog tick that ran it.
@@ -439,5 +479,6 @@ __all__ = [
     "META_ARTIFACT_TYPE",
     "META_PROPOSED_PAYLOAD",
     "PROPOSED_TAG",
+    "hypothesis_prose",
     "put_hypothesis",
 ]

@@ -182,21 +182,23 @@ def test_claim_cite_head_sets_splits_hub_pending_and_unresolved(hub: Hub) -> Non
     unresolved_head = "zzzzzz"  # 6-char pub_id-shaped token, no matching ref
 
     texts = [f"see [{hub_head}] and [{pending_head}] and [{unresolved_head}]"]
-    hubs, pending, refuted = claim_cite_head_sets(store, texts)
+    hubs, pending, refuted, hypothesis = claim_cite_head_sets(store, texts)
 
     assert hubs == frozenset({hub_head})
     assert pending == {pending_head: plain_finding}
     assert refuted == {}
+    assert hypothesis == frozenset()
     assert unresolved_head not in hubs
     assert unresolved_head not in pending
 
 
 def test_claim_cite_head_sets_empty_when_no_heads(hub: Hub) -> None:
     store = hub.live_store
-    hubs, pending, refuted = claim_cite_head_sets(store, ["no cites here"])
+    hubs, pending, refuted, hypothesis = claim_cite_head_sets(store, ["no cites here"])
     assert hubs == frozenset()
     assert pending == {}
     assert refuted == {}
+    assert hypothesis == frozenset()
 
 
 def test_claim_cite_head_sets_splits_out_refuted(hub: Hub) -> None:
@@ -213,11 +215,48 @@ def test_claim_cite_head_sets_splits_out_refuted(hub: Hub) -> None:
     refuted_head = handle_registry.format_handle("finding", refuted_finding)
     texts = [f"see [{refuted_head}]"]
 
-    hubs, pending, refuted = claim_cite_head_sets(store, texts)
+    hubs, pending, refuted, hypothesis = claim_cite_head_sets(store, texts)
 
     assert hubs == frozenset()
     assert pending == {}
     assert refuted == {refuted_head: refuted_finding}
+    assert hypothesis == frozenset()
+
+
+def test_claim_cite_head_sets_splits_out_hypothesis(hub: Hub) -> None:
+    """A hub marked ``refs.meta.artifact_type == 'hypothesis'`` lands in the
+    ``hypothesis`` set, carved OUT of ``hubs`` — precedence refuted →
+    hypothesis → hubs → pending
+    (docs/backlog/hypothesis-cites-render-not-stored.md)."""
+    store = hub.live_store
+    hyp_hub = mint_hub(store, _CLAIM, extra_meta={"artifact_type": "hypothesis"})
+    hyp_head = handle_registry.format_handle("finding", hyp_hub)
+    texts = [f"see [{hyp_head}]"]
+
+    hubs, pending, refuted, hypothesis = claim_cite_head_sets(store, texts)
+
+    assert hubs == frozenset()
+    assert pending == {}
+    assert refuted == {}
+    assert hypothesis == frozenset({hyp_head})
+
+
+def test_claim_cite_head_sets_refuted_wins_over_hypothesis(hub: Hub) -> None:
+    """A refuted hypothesis lands in ``refuted``, not ``hypothesis`` — the
+    do-not-repropose signal outranks the epistemic one."""
+    from precis.store.types import Tag
+
+    store = hub.live_store
+    hyp_hub = mint_hub(store, _CLAIM, extra_meta={"artifact_type": "hypothesis"})
+    store.add_tag(hyp_hub, Tag.closed("STATUS", "refuted"), replace_prefix=True)
+    hyp_head = handle_registry.format_handle("finding", hyp_hub)
+    texts = [f"see [{hyp_head}]"]
+
+    hubs, pending, refuted, hypothesis = claim_cite_head_sets(store, texts)
+
+    assert refuted == {hyp_head: hyp_hub}
+    assert hypothesis == frozenset()
+    assert hubs == frozenset()
 
 
 def test_hub_cite_heads_is_the_hubs_half_of_claim_cite_head_sets(hub: Hub) -> None:
@@ -231,7 +270,7 @@ def test_hub_cite_heads_is_the_hubs_half_of_claim_cite_head_sets(hub: Hub) -> No
     pending_head = handle_registry.format_handle("finding", plain_finding)
     texts = [f"[{hub_head}] [{pending_head}]"]
 
-    hubs, _pending, _refuted = claim_cite_head_sets(store, texts)
+    hubs, _pending, _refuted, _hypothesis = claim_cite_head_sets(store, texts)
     assert hub_cite_heads(store, texts) == hubs == frozenset({hub_head})
 
 

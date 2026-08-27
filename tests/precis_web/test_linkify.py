@@ -1158,6 +1158,90 @@ def test_head_absent_from_refuted_map_stays_generic() -> None:
     assert "text-red-600" not in out
 
 
+# ── `hypothesis_claims` — the fuchsia ◈ twin (a hub minted as a conjecture,
+# docs/backlog/hypothesis-cites-render-not-stored.md) ──────────────────────
+# A head whose hub is `refs.meta.artifact_type == 'hypothesis'` renders a
+# distinct fuchsia diamond, links to `/claim/<head>` (still a hub), carries
+# `data-claim-head` (the rail sync), and loses only to `refuted_claims`.
+
+
+def test_hypothesis_head_renders_hypothesis_sigil_compact() -> None:
+    out = str(
+        linkify_refs(
+            "see [fi123]", compact=True, hypothesis_claims=frozenset({"fi123"})
+        )
+    )
+    assert "◈" in out
+    assert 'href="/claim/fi123"' in out
+    assert 'hx-get="/preview/claim/fi123"' in out
+    assert "text-fuchsia-700" in out
+    assert 'title="hypothesis — motivation, not evidence"' in out
+    assert 'data-claim-head="fi123"' in out
+
+
+def test_hypothesis_head_noncompact_shows_head_text_not_diamond() -> None:
+    out = str(
+        linkify_refs("[fi123]", compact=False, hypothesis_claims=frozenset({"fi123"}))
+    )
+    assert "◈" not in out
+    assert ">fi123<" in out
+    assert 'href="/claim/fi123"' in out
+
+
+def test_hypothesis_wins_over_canonical_claim() -> None:
+    """A head in both `claims` and `hypothesis_claims` (shouldn't happen in
+    practice — `claim_cite_head_sets` partitions them — but the hypothesis
+    branch is checked first) renders the fuchsia hypothesis anchor, not the
+    plain violet claim anchor."""
+    out = str(
+        linkify_refs(
+            "[fi123]",
+            compact=True,
+            claims=frozenset({"fi123"}),
+            hypothesis_claims=frozenset({"fi123"}),
+        )
+    )
+    assert "text-fuchsia-700" in out
+    assert "text-violet-700" not in out
+    assert 'href="/claim/fi123"' in out
+
+
+def test_refuted_wins_over_hypothesis_claim() -> None:
+    """A head in both `hypothesis_claims` and `refuted_claims` renders red —
+    a refuted hypothesis is dead regardless of type."""
+    out = str(
+        linkify_refs(
+            "[fi123]",
+            compact=True,
+            hypothesis_claims=frozenset({"fi123"}),
+            refuted_claims={"fi123": 123},
+        )
+    )
+    assert "text-red-600" in out
+    assert "text-fuchsia-700" not in out
+    assert 'href="/r/finding/123"' in out
+    assert "/claim/" not in out
+
+
+def test_head_absent_from_hypothesis_map_stays_generic() -> None:
+    """`hypothesis_claims` is additive, same as the other side-channels — a
+    head absent from it (and `None`, the default everywhere but a reader)
+    keeps prior rendering. A plain hub cite (`claims` only) is byte-
+    identical to before this feature."""
+    out = str(
+        linkify_refs(
+            "see [fi123]",
+            compact=True,
+            claims=frozenset({"fi123"}),
+            hypothesis_claims=frozenset(),
+        )
+    )
+    assert "◈" not in out
+    assert "text-fuchsia-700" not in out
+    assert "◆" in out
+    assert 'href="/claim/fi123"' in out
+
+
 # ---- gr171760: the page-wide delegated popover registry --------------
 #
 # The registry itself is a browser-side singleton (``window.__refPopover``

@@ -525,6 +525,39 @@ def test_finding_view_evidence_hypothesis_shows_motivated_by_not_supporters(
     # Never rendered as if it were the ordinary role sections.
     assert "originators (establishes)" not in ev.body
     assert "corroborators" not in ev.body
+    # The falsification prose — testable_by= surfaced under its own
+    # heading (docs/backlog/hypothesis-cites-render-not-stored.md).
+    assert "## falsified by" in ev.body
+    assert "an experiment discriminating the two candidate mechanisms" in ev.body
+
+
+def test_finding_view_evidence_hypothesis_falsification_degrades_when_absent(
+    store: Any,
+) -> None:
+    """A hypothesis hub whose proposed payload lacks ``testable_by`` (should
+    not happen via the ``put_hypothesis`` door, which requires it, but the
+    render must never raise on an oddly-shaped/legacy payload) renders the
+    section with a placeholder rather than blowing up."""
+    from precis.handlers._finding_hypothesis import (
+        ARTIFACT_HYPOTHESIS,
+        META_ARTIFACT_TYPE,
+        META_PROPOSED_PAYLOAD,
+    )
+
+    handler = _make_handler(store)
+    hub = mint_hub(
+        store,
+        _CLAIM,
+        extra_meta={
+            META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS,
+            META_PROPOSED_PAYLOAD: {"motivation": "leap"},
+        },
+    )
+
+    ev = handler.get(id=hub, view="evidence")
+
+    assert "## falsified by" in ev.body
+    assert "(not recorded)" in ev.body
 
 
 def test_finding_view_evidence_marks_only_zero_block_papers_unfetched(

@@ -140,16 +140,45 @@ def _refuted_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
     return {int(row[0]) for row in rows}
 
 
+def _hypothesis_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
+    """The subset of ``ref_ids`` marked a hypothesis in ``refs.meta`` — same
+    bulk-query shape as :func:`_refuted_ref_ids_bulk`, so a window's cite-head
+    resolution stays O(1) queries regardless of head count. Reads
+    ``meta->>'artifact_type'`` directly (rather than
+    ``handlers/_finding_hypothesis.py::hypothesis_prose``'s per-ref check) —
+    the durable marker `taproot/canon.py::not_hypothesis_predicate_sql`
+    already reads the same way, and it is set unconditionally at mint time,
+    unlike the ``hypothesis-proposed`` tag (dropped at triage) or
+    ``nanopub_publish.artifact_type`` (only exists once approved)."""
+    from precis.handlers._finding_hypothesis import ARTIFACT_HYPOTHESIS
+
+    ids = sorted({int(r) for r in ref_ids})
+    if not ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id FROM refs
+            WHERE ref_id = ANY(%(ids)s) AND kind = 'finding'
+              AND deleted_at IS NULL
+              AND meta->>'artifact_type' = %(hypothesis_artifact)s
+            """,
+            {"ids": ids, "hypothesis_artifact": ARTIFACT_HYPOTHESIS},
+        ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
 def claim_cite_head_sets(
     store: Store, texts: Iterable[str]
-) -> tuple[frozenset[str], dict[str, int], dict[str, int]]:
-    """The cite heads in ``texts`` split into ``(hubs, pending, refuted)``
-    from ONE resolution pass across the window: each distinct head is
-    resolved once (first to a ref_id, then the hub check runs as a single
-    bulk query over every distinct ref_id — :func:`~precis.taproot.
+) -> tuple[frozenset[str], dict[str, int], dict[str, int], frozenset[str]]:
+    """The cite heads in ``texts`` split into ``(hubs, pending, refuted,
+    hypothesis)`` from ONE resolution pass across the window: each distinct
+    head is resolved once (first to a ref_id, then the hub check runs as a
+    single bulk query over every distinct ref_id — :func:`~precis.taproot.
     seniority.is_claim_hub_bulk` — rather than one ``is_claim_hub`` round
     trip per head, OPEN-ITEMS.md's "/smartdraft reader" batch B). The
-    refuted check (:func:`_refuted_ref_ids_bulk`) is a second bulk query
+    refuted check (:func:`_refuted_ref_ids_bulk`) and the hypothesis check
+    (:func:`_hypothesis_ref_ids_bulk`) are each a second/third bulk query
     over the same resolved id set — still O(1) queries for the whole
     window, not O(heads).
 
@@ -160,15 +189,24 @@ def claim_cite_head_sets(
     a claim still in the chase, not yet canonical. ``refuted`` is the red-◆
     twin: ``{head: ref_id}`` for heads carrying ``STATUS:refuted`` — the
     do-not-repropose ledger (docs/backlog/quest-dossier-dialectic.md
-    §"Refuted lifecycle"). The three sets are mutually exclusive — a
-    refuted head is carved OUT of ``hubs``/``pending`` here, not left to
-    the anchor layer's precedence check (:func:`~precis_web.linkify.
-    _render_claim_hub` still checks ``refuted_claims`` first, belt-and-
-    suspenders, for callers that build their own maps some other way). No
-    extra kind lookup is needed to tell a pending head apart from a
-    non-finding cite: :func:`_resolve_head_ref_id` only ever resolves to a
-    ``finding`` ref (the ``fi`` handle code decodes to that kind by
-    construction, and :func:`~precis.utils.pub_id_lookup.
+    §"Refuted lifecycle"). ``hypothesis`` is the fourth twin: heads whose hub
+    carries ``refs.meta.artifact_type == 'hypothesis'`` — a conjecture, not
+    a finding (docs/backlog/hypothesis-cites-render-not-stored.md) — feeding
+    :func:`~precis_web.linkify.linkify_refs`'s ``hypothesis_claims``.
+
+    The four sets are mutually exclusive — precedence **refuted → hypothesis
+    → hubs → pending**: a refuted head is carved out of every other set here
+    (a refuted hypothesis is dead regardless of its type), and a hypothesis
+    head is carved out of ``hubs`` (it IS still a live claim hub by
+    construction — ``mint_hub`` tags ``TAPROOT:claim`` unconditionally — but
+    reported separately here so the anchor layer never has to re-derive
+    "hub AND hypothesis"). This is not left to the anchor layer's precedence
+    check alone (:func:`~precis_web.linkify._render_claim_hub` still checks
+    ``refuted_claims`` first, belt-and-suspenders, for callers that build
+    their own maps some other way). No extra kind lookup is needed to tell a
+    pending head apart from a non-finding cite: :func:`_resolve_head_ref_id`
+    only ever resolves to a ``finding`` ref (the ``fi`` handle code decodes
+    to that kind by construction, and :func:`~precis.utils.pub_id_lookup.
     lookup_pub_id_finding` filters to it in SQL), so every resolved
     head that's neither a hub nor refuted is, by construction, a pending
     finding."""
@@ -181,13 +219,19 @@ def claim_cite_head_sets(
             if ref_id is not None:
                 head_ref[head] = ref_id
     if not head_ref:
-        return frozenset(), {}, {}
+        return frozenset(), {}, {}, frozenset()
     hub_flags = is_claim_hub_bulk(store, head_ref.values())
     refuted_ids = _refuted_ref_ids_bulk(store, head_ref.values())
+    hypothesis_ids = _hypothesis_ref_ids_bulk(store, head_ref.values())
     hubs = frozenset(
         h
         for h, rid in head_ref.items()
-        if hub_flags.get(rid) and rid not in refuted_ids
+        if hub_flags.get(rid) and rid not in refuted_ids and rid not in hypothesis_ids
+    )
+    hypothesis = frozenset(
+        h
+        for h, rid in head_ref.items()
+        if hub_flags.get(rid) and rid not in refuted_ids and rid in hypothesis_ids
     )
     refuted = {h: rid for h, rid in head_ref.items() if rid in refuted_ids}
     pending = {
@@ -195,17 +239,18 @@ def claim_cite_head_sets(
         for h, rid in head_ref.items()
         if not hub_flags.get(rid) and rid not in refuted_ids
     }
-    return hubs, pending, refuted
+    return hubs, pending, refuted, hypothesis
 
 
 def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
-    """The cite heads in ``texts`` that resolve to a live ``TAPROOT:claim``
-    hub — the ``claims`` side-channel a reader threads into
+    """The cite heads in ``texts`` that resolve to a live, non-hypothesis
+    ``TAPROOT:claim`` hub — the ``claims`` side-channel a reader threads into
     :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
     cite renders as a claim anchor. Thin wrapper over
     :func:`claim_cite_head_sets` (its ``hubs`` half) — kept for the callers
-    that only ever wanted the hub set, not the pending/refuted ones."""
-    hubs, _pending, _refuted = claim_cite_head_sets(store, texts)
+    that only ever wanted the hub set, not the pending/refuted/hypothesis
+    ones."""
+    hubs, _pending, _refuted, _hypothesis = claim_cite_head_sets(store, texts)
     return hubs
 
 

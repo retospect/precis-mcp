@@ -18,6 +18,22 @@
   {% endif %}
 </p>
 
+{# Hypothesis falsification prose (docs/backlog/
+   hypothesis-cites-render-not-stored.md): real fields, not the raw
+   json.dumps the review textarea below still shows — `motivation` (why the
+   leap) and `testable_by` (the discriminating experiment), the two things
+   `nanopub/gates.py::run_mint_gates` demands in place of grounding passages
+   for this artifact type. `hypothesis` is `None` for every ordinary hub. #}
+{% if hypothesis %}
+<div class="mt-3 rounded-md bg-fuchsia-50 border border-fuchsia-200 px-3 py-2 text-xs text-fuchsia-800">
+  <p class="font-semibold">◈ Hypothesis — motivation, not evidence</p>
+  <p class="mt-1"><span class="font-semibold">motivation:</span>
+    {{ hypothesis.motivation if hypothesis.motivation else '(not recorded)' }}</p>
+  <p class="mt-1"><span class="font-semibold">falsified by:</span>
+    {{ hypothesis.testable_by if hypothesis.testable_by else '(not recorded)' }}</p>
+</div>
+{% endif %}
+
 {# Refuted lifecycle (docs/backlog/quest-dossier-dialectic.md §"Refuted
    lifecycle"): red = the claim AS STATED is dead, not "this document is
    wrong" — so this reads as a verdict on the sentence above, distinct from

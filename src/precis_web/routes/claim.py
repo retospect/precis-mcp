@@ -110,6 +110,7 @@ def claim_page_context(store: Any, head: str) -> dict[str, Any]:
     #   • refuted — the red banner shape (see :func:`_refuted_ruling`), None
     #               unless the hub carries STATUS:refuted.
     _publish_row_fn = getattr(store, "nanopub_publish_row", None)
+    hub_ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
     return {
         **data,
         "missing": False,
@@ -120,7 +121,22 @@ def claim_page_context(store: Any, head: str) -> dict[str, Any]:
         "passages_by_paper": _passages_by_paper(data["chunks"]),
         "np": hub_context(store, hub_ref_id) if _publish_row_fn else None,
         "refuted": _refuted_ruling(store, hub_ref_id),
+        "hypothesis": _hypothesis_fields(store, hub_ref),
     }
+
+
+def _hypothesis_fields(store: Any, hub_ref: Any) -> dict[str, str] | None:
+    """``{"motivation": …, "testable_by": …}`` for the claim page's
+    falsification-prose fields — real fields, not the raw ``json.dumps`` the
+    review textarea shows (:func:`~precis_web.nanopub_render._suggested_payload`,
+    left untouched). ``None`` unless ``hub_ref`` is marked a hypothesis
+    (docs/backlog/hypothesis-cites-render-not-stored.md). ``hub_ref`` may be
+    ``None`` (a store hiccup) — degrades to no section rather than raising."""
+    if hub_ref is None:
+        return None
+    from precis.handlers._finding_hypothesis import hypothesis_prose
+
+    return hypothesis_prose(store, hub_ref)
 
 
 def _passages_by_paper(chunks: list[dict[str, Any]]) -> dict[str, list[dict]]:

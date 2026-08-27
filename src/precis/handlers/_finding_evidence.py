@@ -51,7 +51,11 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     exists to catch. So this hub type gets its own section instead of the
     plain "no evidence edges yet" line: its ``motivated-by`` edges
     (:data:`~precis.taproot.hub.MOTIVATION_RELATION`), under a "motivated
-    by" heading, spelled out as motivation rather than support.
+    by" heading, spelled out as motivation rather than support — followed
+    by a "falsified by" section naming the discriminating experiment from
+    ``testable_by=`` (:func:`~precis.handlers._finding_hypothesis.
+    hypothesis_prose`), the other half of "conjecture, not finding"
+    (docs/backlog/hypothesis-cites-render-not-stored.md).
     """
     from precis.export._patent_cite import format_patent_bibliography_entry
     from precis.format import render_agent_table
@@ -74,6 +78,7 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
                 "motivation instead of evidence by definition"
             )
             header += _motivation_section(store, ref.id)
+            header += _falsification_section(store, ref)
         else:
             header.append("no evidence edges yet for this claim hub")
         return Response(body="\n".join(header))
@@ -172,6 +177,22 @@ def _motivation_section(store: Store, hub_ref_id: int) -> list[str]:
         )
     lines.append(render_agent_table(rows, schema=["source", "title", "passage"]))
     return lines
+
+
+def _falsification_section(store: Store, ref: Ref) -> list[str]:
+    """The "## falsified by" lines for a hypothesis hub: the discriminating
+    experiment named in ``testable_by=`` at propose time (or the reviewer's
+    reword, once approved) — the other half of ``_motivation_section``'s
+    "why was this guessed", answering "how would we know it's wrong"
+    (docs/backlog/hypothesis-cites-render-not-stored.md). Reuses
+    :func:`~precis.handlers._finding_hypothesis.hypothesis_prose` rather
+    than re-deriving the payload lookup a second time.
+    """
+    from precis.handlers._finding_hypothesis import hypothesis_prose
+
+    prose = hypothesis_prose(store, ref) or {}
+    testable_by = prose.get("testable_by") or ""
+    return ["", "## falsified by", "", testable_by if testable_by else "(not recorded)"]
 
 
 def _independent_supporter_counts(

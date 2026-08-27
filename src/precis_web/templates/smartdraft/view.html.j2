@@ -573,10 +573,10 @@
           {% call draft_editors.draft_table_editor(ident, n.base58, n.sha, _seed) %}
           {% if n.table %}
           <div class="overflow-x-auto">
-            {{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}
+            {{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}
           </div>
           {% else %}
-          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}</p>
+          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</p>
           {% endif %}
           {% endcall %}
         </div>
@@ -626,7 +626,7 @@
                figcaption accepts. #}
             <figcaption class="mt-1.5 text-sm text-slate-700">
               {% call draft_editors.draft_edit(ident, n.base58, n.sha, true, false, n.text, rows=4, block_keys=false) %}
-              <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}</span>
+              <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</span>
               <button @click="startEdit()" class="mt-0.5 text-[10px] text-slate-400 hover:text-sky-600"
                       title="edit this figure's caption (key: i)">✎ edit caption</button>
               {% endcall %}
@@ -653,7 +653,7 @@
             </div>
           </div>
           {# rendered view (with links) #}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}</div>
+          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</div>
           {# tag row (the T search signal) — chips + type-ahead add #}
           <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
             <span class="text-slate-400">🏷</span>
@@ -673,7 +673,7 @@
         {% elif m.mode == 'doc' %}
         {# full-doc mode: a chunk in the server-rendered window around the focus,
            verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
-        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}
         {% elif m.mode == 'skel' %}
         {# full-doc lazy spacer: a distant chunk, sized by its height estimate
            and hydrated to a real doc block on scroll (IntersectionObserver →
@@ -688,7 +688,7 @@
            show). <div> not <a> for the same nested-anchor reason as the
            doc-mode block above. #}
         {% set _is_tbl = n.is_table and n.table %}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ sd_block.sd_dc_id(n.dc) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}{% endif %}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ sd_block.sd_dc_id(n.dc) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
         {% else %}
         {# ±2 neighbour: one-line summary — the dc span sits inside this <a>, so
            sdCopyDc's stopPropagation/preventDefault (see sd_dc_id) matter here:

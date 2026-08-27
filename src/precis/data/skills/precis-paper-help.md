@@ -123,7 +123,12 @@ tokens high, so either works for a unique string. Searching a DOI this way
 finds *citing* papers; use `get(kind='paper', id='<DOI>')` to fetch the
 paper itself. A paper whose metadata is missing (a bad-import stub) can be
 unfindable; repair it with `edit(kind='paper', id='<slug>', title=…,
-authors=[…], year=…)`, which rebuilds the card.
+authors=[…])`, which rebuilds the card. A title-only stub's *identifier* is
+repairable the same way — `edit(kind='paper', id='<slug>', doi='10.…')` (or
+`arxiv=`) upgrades it in place, so prefer that over minting a second,
+DOI-bearing stub and orphaning the first. ⚠ `year=` is accepted by the
+handler but not yet exposed on the `edit` wire schema, so it is silently
+dropped — see `docs/backlog/mcp-verb-kwarg-parity.md`.
 
 ## See additional papers after a search
 ## Page through more search results
