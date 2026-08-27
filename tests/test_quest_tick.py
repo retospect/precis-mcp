@@ -1870,6 +1870,25 @@ class TestPromptAndView:
         body = h.get(id=qid, view="dossier").body
         assert "Living" in body and "synthesis here" in body
 
+    def test_gap_line_carries_its_citable_handle(self, store: Any) -> None:
+        """dossier-dialectic "Tick diet fixes": ``Gap.handle`` must reach the
+        prompt in bracket form — the tick is a single tool-less LLM call, so
+        a gap is only citable in the rewritten dossier if its handle is
+        handed to it here."""
+        from precis.handlers.concept import ConceptHandler
+
+        ch = ConceptHandler(hub=Hub(store=store))
+        m = re.search(r"\bcn(\d+)\b", ch.put(text="a hard concept").body)
+        assert m is not None
+        cid = int(m.group(1))
+
+        qid = _mk_quest(store, "Needs a hard idea understood")
+        store.add_link(src_ref_id=cid, dst_ref_id=qid, relation="serves")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "low-mastery" in prompt
+        assert f"[cn{cid}]" in prompt
+
     def test_prompt_shows_ledger_ruled_out_entries_not_open(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         append_ledger_entry(store, qid, "ruled-out", "Pd(111) bare — beaten on barrier")
@@ -2191,6 +2210,31 @@ class TestReviewLogbookTail:
         old_entry = "logbook entry number 2"  # outside the trailing-8 window
         assert old_entry not in local_prompt
         assert old_entry in review_prompt
+
+    def test_logbook_line_carries_its_ql_handle(self, store: Any) -> None:
+        """dossier-dialectic "Tick diet fixes": each logbook tail line must
+        carry its own ``[ql<id>]`` handle so the tick can cite a specific
+        prior entry (e.g. "belief weakened when the replicate diverged
+        [ql…]") instead of only restating it in prose."""
+        from precis.quest.logbook import append_entry
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving")
+        append_entry(
+            store, qid, text="a citable entry", entry_type="observation", by="agent"
+        )
+        blocks = [
+            b
+            for b in store.blocks.list_blocks_for_ref(qid)
+            if b.chunk_kind == tick_mod.LOG_KIND
+        ]
+        assert len(blocks) == 1
+        expected_handle = handle_registry.try_format("quest", blocks[0].id, chunk=True)
+        assert expected_handle == f"ql{blocks[0].id}"
+
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert f"[{expected_handle}]" in prompt
 
 
 class TestFrontierAlwaysOn:
@@ -2858,3 +2902,38 @@ class TestFrontierSummaryProvisional:
         assert len(lines) == 10
         assert "st99" in lines[0]  # on_frontier sorts first despite worst value
         assert "(+3 more provisional)" in text
+
+
+class TestServersSummaryHandles:
+    """dossier-dialectic "Tick diet fixes": ``_servers_summary`` lists what
+    serves the quest per-item, not just per-kind counts+titles — so the tick
+    can cite a specific server rather than only naming its kind."""
+
+    def test_servers_summary_line_carries_a_per_item_handle(self, store: Any) -> None:
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A striving with a served paper")
+        paper = seed_ref(store, title="A served paper")
+        store.add_link(src_ref_id=paper, dst_ref_id=qid, relation="serves")
+
+        from precis.utils import handle_registry
+
+        expected_handle = handle_registry.try_format("paper", paper)
+        assert expected_handle is not None
+
+        lines = tick_mod._servers_summary(store, qid)
+        assert any(f"[{expected_handle}]" in ln for ln in lines)
+
+    def test_wired_into_the_tick_prompt(self, store: Any) -> None:
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A striving with a served paper")
+        paper = seed_ref(store, title="A served paper")
+        store.add_link(src_ref_id=paper, dst_ref_id=qid, relation="serves")
+
+        from precis.utils import handle_registry
+
+        expected_handle = handle_registry.try_format("paper", paper)
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert f"[{expected_handle}]" in prompt

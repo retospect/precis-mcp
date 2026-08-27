@@ -299,7 +299,14 @@ class QuestTickOutcome:
 
 
 def _logbook_tail(store: Store, quest_id: int, n: int = _LOGBOOK_TAIL) -> list[str]:
-    """The last ``n`` logbook entries, formatted one per line (oldest first)."""
+    """The last ``n`` logbook entries, formatted one per line (oldest first).
+
+    Each line carries the entry's own ``[ql<id>]`` handle (the logbook chunk
+    code, ``handle_registry.CHUNK_CODES["quest"]``) — the tick is a single
+    tool-less LLM call, so a logbook entry is only citable in the rewritten
+    dossier ("belief weakened when the replicate diverged [ql…]") if its
+    handle is handed to it here.
+    """
     entries = [
         b
         for b in store.blocks.list_blocks_for_ref(quest_id)
@@ -314,21 +321,28 @@ def _logbook_tail(store: Store, quest_id: int, n: int = _LOGBOOK_TAIL) -> list[s
         cost = meta.get("cost")
         cost_s = f" cost={cost:g}" if cost else ""
         first = (b.text or "").splitlines()[0] if b.text else ""
-        lines.append(f"- [{etype} · {stamp} · {by}{cost_s}] {first[:160]}")
+        handle = handle_registry.try_format("quest", b.id, chunk=True)
+        handle_s = f" [{handle}]" if handle else ""
+        lines.append(f"- [{etype} · {stamp} · {by}{cost_s}] {first[:160]}{handle_s}")
     return lines
 
 
 def _servers_summary(store: Store, quest_id: int) -> list[str]:
-    """One line per server kind: count + a couple of titles."""
+    """One line per server kind: count + a couple of ``[handle] title`` items.
+
+    Per-item handles (not just titles) — the tick's single LLM call can only
+    cite what's served if the citable handle is in-context.
+    """
     live = gaps_mod._live_servers(store, quest_id)
-    by_kind: dict[str, list[str]] = {}
+    by_kind: dict[str, list[tuple[str, str]]] = {}
     for r in live:
-        title = (r.title or "").splitlines()[0] if r.title else ""
-        by_kind.setdefault(r.kind, []).append(title[:50])
+        title = (r.title or "").splitlines()[0][:50] if r.title else ""
+        handle = handle_registry.try_format(r.kind, r.id) or f"{r.kind}:{r.id}"
+        by_kind.setdefault(r.kind, []).append((handle, title))
     out: list[str] = []
     for kind in sorted(by_kind):
-        titles = [t for t in by_kind[kind] if t][:3]
-        sample = ("; ".join(titles)) if titles else ""
+        items = by_kind[kind][:3]
+        sample = "; ".join(f"[{h}] {t}" if t else f"[{h}]" for h, t in items)
         out.append(f"- {kind} ({len(by_kind[kind])}): {sample}")
     return out
 
@@ -888,7 +902,9 @@ def build_tick_prompt(
     gaps = gaps_mod.quest_gaps(store, qid)
     momentum = gaps_mod.quest_momentum(store, qid)
 
-    gap_lines = [f"- {g.kind}: {g.detail}" for g in gaps] or ["- (none)"]
+    gap_lines = [
+        f"- {g.kind}: {g.detail}" + (f" [{g.handle}]" if g.handle else "") for g in gaps
+    ] or ["- (none)"]
     tail = _logbook_tail(
         store, qid, n=_LOGBOOK_TAIL_REVIEW if review else _LOGBOOK_TAIL
     ) or ["- (no logbook entries yet)"]
@@ -1058,8 +1074,10 @@ tables. INLINE markup does render and is welcome where it earns its place: \
 use it for formulae and chemical species, e.g. `$NH_3$`, `$C_{{60}}$`). \
 Reference anything by copying its exact handle in square brackets from the \
 context above: `[st<id>]` a candidate structure (the frontier table), \
-`[pc<id>]`/`[pa<id>]` literature (see above), `[fi<id>]` a finding — never \
-invent one: parentheses don't linkify and a made-up handle resolves to nothing. \
+`[pc<id>]`/`[pa<id>]` literature (see above), `[fi<id>]` a finding, \
+`[cn<id>]` a served concept (the gaps section), `[ql<id>]` a logbook entry \
+(the recent-logbook section) — never invent one: parentheses don't linkify \
+and a made-up handle resolves to nothing. \
 EVERY quantitative value carries its handle inline — including comparison \
 numbers recalled from earlier ticks. A number you cannot source from the \
 context above, flag as unsourced rather than stating bare.
