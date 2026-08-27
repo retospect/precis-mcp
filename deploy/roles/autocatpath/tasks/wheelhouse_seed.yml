@@ -14,12 +14,13 @@
 # install. Idempotent — a host with no `-e autocatpath_wheel=` still gets
 # the directory; a missing/empty wheelhouse leaves --find-links a no-op.
 
+# No owner/group pin: root's primary group is `root` on Linux but `wheel`
+# on macOS, and this file serves both — become:true already lands root
+# ownership with the platform's own default group.
 - name: Ensure the autocatpath wheelhouse
   ansible.builtin.file:
     path: "{{ autocatpath_wheelhouse }}"
     state: directory
-    owner: root
-    group: root
     mode: "0755"
   become: true
 
@@ -28,7 +29,5 @@
   ansible.builtin.copy:
     src: "{{ autocatpath_wheel }}"
     dest: "{{ autocatpath_wheelhouse }}/"
-    owner: root
-    group: root
     mode: "0644"
   become: true

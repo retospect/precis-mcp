@@ -149,6 +149,7 @@
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
       {{ '' if _precis_worker_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
+      --no-sources \
       {{ _precis_worker_find_links }} \
       'precis-mcp[paper{% if _precis_worker_is_autocatpath_plugin | bool %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true

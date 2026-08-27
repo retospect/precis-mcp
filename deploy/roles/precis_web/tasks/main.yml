@@ -106,6 +106,7 @@
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
       --constraints /opt/precis/constraints.txt \
+      --no-sources \
       --find-links {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} \
       'precis-mcp[catalyst] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true

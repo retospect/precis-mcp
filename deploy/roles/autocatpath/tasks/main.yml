@@ -37,11 +37,18 @@
 - name: Seed the autocatpath wheelhouse (controller wheel, before the primary install)
   ansible.builtin.include_tasks: wheelhouse_seed.yml
 
+# --no-sources: precis-mcp's pyproject carries [tool.uv.sources] pointing
+# autocatpath at the PRIVATE catpath repo (for lock/dev-image resolution),
+# and uv honors that table even when building precis-mcp from a git URL —
+# a cluster host has no GitHub credentials, so without this flag the
+# install dies fetching catpath. Ignoring sources makes the resolver fall
+# through to --find-links, i.e. the wheelhouse wheel: the intended channel.
 - name: Install precis-mcp[{{ autocatpath_extras }}] (pulls the autocatpath engine) into the precis worker venv
   ansible.builtin.shell: |
     {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
       --constraints /opt/precis/constraints.txt \
+      --no-sources \
       --find-links {{ autocatpath_wheelhouse }} \
       'precis-mcp[{{ autocatpath_extras }}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref | default("main") }}'
   become: true
