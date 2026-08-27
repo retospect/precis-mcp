@@ -167,6 +167,71 @@ ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-dep
 }
 rm -f /tmp/precis-deploy-ping.$$
 
+# ── 1a. autocatpath wheel (gr263082) ────────────────────────────────────
+# Same reason the ping above aborts: a partial redeploy mixes code versions.
+# autocatpath is release-gated off PyPI past 0.13.0, so the only channel to a
+# host is `--find-links /opt/precis/wheels`, seeded from a controller-side
+# wheel passed as `-e autocatpath_wheel=<path>`. Nothing ever set that, so a
+# floor bump in THIS repo's pyproject (the >=0.18.0 move) silently outran the
+# newest built wheel (0.17.0) and the `precis-mcp[paper,catalyst]` install
+# died on the autocatpath_plugin hosts alone, mid-run, after four other hosts
+# had already moved. Resolve the wheel here, before touching anything.
+#
+# Building is in scope on purpose. The floor lives in this repo and the
+# artifact lives in the catpath checkout, so they drift by construction; a fix
+# that still needs a hand-run `uv build` after every bump just relocates the
+# same failure to the next one. Version equality with the floor is what keeps
+# this honest — a checkout too old to satisfy the floor is reported, never
+# built and hoped over.
+#
+#   PRECIS_CATPATH_DIR            — catpath checkout (default ~/catpath)
+#   PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 — bypass entirely (hosts already seeded
+#                                   by hand, or a fleet with no plugin hosts)
+if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
+    && "${PRECIS_DEPLOY_EXTRA_VARS:-}" != *autocatpath_wheel* ]]; then
+    source "${REPO_ROOT}/scripts/lib/autocatpath-wheel.sh"
+    _CATPATH_DIR="${PRECIS_CATPATH_DIR:-${HOME}/catpath}"
+    _FLOOR="$(autocatpath_floor "${REPO_ROOT}/pyproject.toml" || true)"
+
+    if [[ -z "$_FLOOR" ]]; then
+        : # no autocatpath floor declared — nothing to seed
+    else
+        _WHEEL="$(newest_autocatpath_wheel "${_CATPATH_DIR}/dist" || true)"
+        if [[ -z "$_WHEEL" ]] || ! version_ge "$(autocatpath_wheel_version "$_WHEEL")" "$_FLOOR"; then
+            # No local wheel clears the floor — try to build one, but only
+            # from a checkout that actually declares a satisfying version.
+            _PROJ_V="$(autocatpath_project_version "${_CATPATH_DIR}/pyproject.toml" || true)"
+            [[ -n "$_PROJ_V" ]] || die "autocatpath floor is >=${_FLOOR} but no wheel that new exists in ${_CATPATH_DIR}/dist and there is no catpath checkout there to build one from. Set PRECIS_CATPATH_DIR, or PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 if the hosts are already seeded. (gr263082)"
+            version_ge "$_PROJ_V" "$_FLOOR" || die "autocatpath floor is >=${_FLOOR} but the catpath checkout at ${_CATPATH_DIR} is only ${_PROJ_V} — pull/bump catpath and release the wheel first. (gr263082)"
+
+            # Only build from a checkout that matches what the release machine
+            # would build. catpath reuses one version number across many
+            # commits — 0.18.0 already spans nine, including a minimum-image
+            # convention fix — so the wheel FILENAME cannot tell a stale build
+            # from a current one. Two wheels named autocatpath-0.18.0 can carry
+            # different code, and the wheelhouse keeps whichever landed last.
+            # Checkout state is therefore the only signal available, and a
+            # deploy is the wrong place to be relaxed about it: refuse rather
+            # than ship a plausible-looking wheel nobody can later identify.
+            git -C "$_CATPATH_DIR" fetch -q origin 2>/dev/null || true
+            [[ -z "$(git -C "$_CATPATH_DIR" status --porcelain 2>/dev/null)" ]] \
+                || die "catpath at ${_CATPATH_DIR} has uncommitted changes — a wheel built from it would be named autocatpath-${_PROJ_V} but contain code no one else has. Commit/stash there, or build the wheel on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
+            _BEHIND="$(git -C "$_CATPATH_DIR" rev-list --count 'HEAD..@{upstream}' 2>/dev/null || echo 0)"
+            [[ "$_BEHIND" == "0" ]] \
+                || die "catpath at ${_CATPATH_DIR} is ${_BEHIND} commit(s) behind its upstream, all still labelled ${_PROJ_V} — building here would ship a wheel that silently differs from the released one. Pull catpath first, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
+
+            say "building autocatpath ${_PROJ_V} wheel (floor >=${_FLOOR}, nothing that new in ${_CATPATH_DIR}/dist)"
+            (cd "$_CATPATH_DIR" && uv build --wheel --out-dir dist) \
+                || die "autocatpath wheel build failed in ${_CATPATH_DIR} — the cluster cannot resolve autocatpath>=${_FLOOR} without it. (gr263082)"
+            _WHEEL="$(newest_autocatpath_wheel "${_CATPATH_DIR}/dist" || true)"
+            [[ -n "$_WHEEL" ]] && version_ge "$(autocatpath_wheel_version "$_WHEEL")" "$_FLOOR" \
+                || die "built autocatpath in ${_CATPATH_DIR} but still no wheel >=${_FLOOR} in dist/. (gr263082)"
+        fi
+        say "autocatpath wheel → $(basename "$_WHEEL") (floor >=${_FLOOR})"
+        EXTRA_ARGS+=(-e autocatpath_wheel="$_WHEEL")
+    fi
+fi
+
 # ── 2. deploy ───────────────────────────────────────────────────────────
 CANARY="${PRECIS_DEPLOY_CANARY:-}"
 if [[ -z "$CANARY" ]]; then
