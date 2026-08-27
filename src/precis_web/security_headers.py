@@ -20,10 +20,12 @@ defence is refusing to be framed by *another origin*, which is what
 ``X-Frame-Options`` and CSP ``frame-ancestors`` do.
 
 **Same-origin framing is allowed on purpose** (``'self'`` /
-``SAMEORIGIN``, not ``'none'`` / ``DENY``). The UI frames itself: the
-/nanopub workbench's review + paper panes load ``?embed=1`` pages, and the
-document reader frames ``/static/pdfjs/web/viewer.html``. ``'none'``
-blanked all three (shipped 2026-08-22, reported the next day). ``'self'``
+``SAMEORIGIN``, not ``'none'`` / ``DENY``). The UI still frames itself in
+one place: the document reader frames ``/static/pdfjs/web/viewer.html``.
+(The /nanopub workbench used to frame two more — its review and paper
+panes — but those are now swapped-in fragments in one document.)
+``'none'`` blanked the lot (shipped 2026-08-22, reported the next day).
+``'self'``
 costs nothing defensively — a clickjack needs the *attacker's* page to be
 the framing ancestor, and no attacker-controlled page is served from this
 origin.

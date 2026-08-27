@@ -3050,17 +3050,17 @@ async def refresh_figure_data_package(
 
 
 @router.get("/c/{handle}")
-async def goto_chunk(
-    request: Request, handle: str, embed: str | None = None
-) -> Response:
+async def goto_chunk(request: Request, handle: str) -> Response:
     """Resolve a chunk handle → redirect to where it lives. A draft chunk
     (``dc<id>`` / ``¶<base58>``) lands in the draft reader anchored at the
     chunk; any **other** chunk handle (``pc<id>`` paper, ``mc``/``lc``/…)
     redirects through the ``/r/<kind>/<id>`` resolver at that chunk (e.g. a
     paper → its PDF page). The click target of every ``¶``/``§`` anchor.
-    ``?embed=1`` threads through to the redirect target (framed-pane
-    clicks, same contract as the ``/r`` resolver)."""
-    emb = f"embed={embed}" if embed else ""
+
+    Nothing is threaded onto the redirect target — a workbench pane asks
+    for chrome-less HTML with an ``HX-Request`` header that survives this
+    303, so the pane bit rides the request, not the URL (same contract as
+    the ``/r`` resolver)."""
     store = get_store(request)
     chunk = store.drafts.get_draft_chunk(handle)
     if chunk is not None:
@@ -3069,21 +3069,20 @@ async def goto_chunk(
         # The sole draft reader is /smartdraft; focus by the chunk's dc<id>
         # handle (its query-param anchor scheme, not a #c-<base58> hash).
         return RedirectResponse(
-            url=f"/smartdraft/{ident}?focus={chunk.dc}" + (f"&{emb}" if emb else ""),
+            url=f"/smartdraft/{ident}?focus={chunk.dc}",
             status_code=303,
         )
     uc = store.drafts.universal_chunk(handle)
     if uc is not None:
         # paper chunks carry an ord the /r resolver maps to a PDF page;
         # other kinds just land on the record.
-        params = [
-            f"chunk={uc['ord']}"
+        query = (
+            f"?chunk={uc['ord']}"
             if uc["kind"] == "paper" and uc["ord"] is not None
             else ""
-        ]
-        query = "&".join(p for p in (*params, emb) if p)
+        )
         return RedirectResponse(
-            url=f"/r/{uc['kind']}/{uc['ref_id']}" + (f"?{query}" if query else ""),
+            url=f"/r/{uc['kind']}/{uc['ref_id']}{query}",
             status_code=303,
         )
     return templates.TemplateResponse(

@@ -170,21 +170,18 @@ async def nanopub_tree() -> RedirectResponse:
 
 
 @router.get("/nanopub/fi{hub_id}", response_model=None)
-async def nanopub_hub(request: Request, hub_id: int) -> HTMLResponse | RedirectResponse:
+async def nanopub_hub(request: Request, hub_id: int) -> HTMLResponse:
     """The workbench **deep link**: the full workbench (nav, tree, three
     panes) with the review pane preloaded on ``fi<hub_id>`` — what a
     cmd-click / copied link from the tree lands on, so a shared claim URL
     always arrives with its navigation context, never the bare claim page.
 
-    ``?embed=1`` still redirects to the framed claim page: that flag means
-    "I am inside a pane already", and a pane must never nest the whole
-    workbench."""
-    if request.query_params.get("embed") == "1":
-        return RedirectResponse(
-            url=f"/claim/fi{hub_id}?{request.url.query}", status_code=307
-        )
+    The panes are divs, so ``preload_src`` is the URL the shell swaps into
+    the review pane on load, not an iframe ``src``. There is no longer an
+    ``?embed=1`` escape hatch here: nothing nests the workbench, so nothing
+    needs telling that it is already inside a pane."""
     ctx = _index_context(request)
-    ctx["preload_src"] = f"/claim/fi{hub_id}?embed=1"
+    ctx["preload_src"] = f"/claim/fi{hub_id}"
     return templates.TemplateResponse(request, "nanopub/index.html.j2", ctx)
 
 
@@ -206,13 +203,16 @@ async def nanopub_trig(request: Request, code: str) -> Response:
 # ── interactive doors (a person clicked; integrity lives below) ──────
 
 
-def _back_to_hub(request: Request, hub_id: int) -> RedirectResponse:
-    """Post-action redirect, keeping ``?embed=1`` when the form was
-    submitted from inside the /nanopub review pane. Lands on the claim
-    page (nanopub-light-up merge) — never the old ``/nanopub/fi<id>`` URL,
-    which would just bounce through the redirect a second time."""
-    suffix = "?embed=1" if request.query_params.get("embed") == "1" else ""
-    return RedirectResponse(url=f"/claim/fi{hub_id}{suffix}", status_code=303)
+def _back_to_hub(hub_id: int) -> RedirectResponse:
+    """Post-action redirect. Lands on the claim page (nanopub-light-up
+    merge) — never the old ``/nanopub/fi<id>`` URL, which would just bounce
+    through the redirect a second time.
+
+    A submit from inside the workbench's review pane needs no marker on
+    this URL any more: the pane posts with ``HX-Request``, the browser
+    replays that header across this 303, and ``claim_view`` answers with
+    the chrome-less fragment the pane swaps in."""
+    return RedirectResponse(url=f"/claim/fi{hub_id}", status_code=303)
 
 
 @router.post("/nanopub/fi{hub_id}/approve", response_model=None)
@@ -256,7 +256,7 @@ async def nanopub_approve(
         return templates.TemplateResponse(
             request, "claim/view.html.j2", ctx, status_code=400
         )
-    return _back_to_hub(request, hub_id)
+    return _back_to_hub(hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/sign", response_model=None)
@@ -301,7 +301,7 @@ async def nanopub_sign(
         )
     except (BadInput, PermissionError) as exc:
         return _error(request, "Sign refused", str(exc), 400)
-    return _back_to_hub(request, hub_id)
+    return _back_to_hub(hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/reopen", response_model=None)
@@ -315,7 +315,7 @@ async def nanopub_reopen(request: Request, hub_id: int) -> Response:
             "only a reviewed/signed (pre-anchor) row reopens",
             400,
         )
-    return _back_to_hub(request, hub_id)
+    return _back_to_hub(hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/signoff/{link_id}", response_model=None)
@@ -338,7 +338,7 @@ async def nanopub_signoff(
         return _error(request, "Sign-off refused", str(exc), 400)
     if not ok:
         return _error(request, "Sign-off refused", f"no evidence edge {link_id}", 400)
-    return _back_to_hub(request, hub_id)
+    return _back_to_hub(hub_id)
 
 
 def _parse_ref(value: str, prefixes: tuple[str, ...]) -> int:
@@ -391,7 +391,7 @@ async def nanopub_evidence_add(
         )
     except BadInput as exc:
         return _error(request, "Add refused", str(exc), 400)
-    return _back_to_hub(request, hub_id)
+    return _back_to_hub(hub_id)
 
 
 @router.post("/nanopub/fi{hub_id}/evidence/{link_id}/remove", response_model=None)
@@ -408,4 +408,4 @@ async def nanopub_evidence_remove(
             f"no evidence edge {link_id} on fi{hub_id}",
             400,
         )
-    return _back_to_hub(request, hub_id)
+    return _back_to_hub(hub_id)

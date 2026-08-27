@@ -44,14 +44,15 @@ def test_the_401_challenge_carries_them_too() -> None:
 def test_an_authenticated_page_carries_them() -> None:
     """Same-origin framing, deliberately — ``DENY``/``'none'`` blanks the app.
 
-    The UI frames its own pages: /nanopub's workbench loads its review and
-    paper panes as ``?embed=1`` iframes, and the document reader frames
-    ``/static/pdfjs/web/viewer.html``. ``frame-ancestors 'none'`` (shipped
-    2026-08-22) left all three as empty boxes with a console CSP refusal.
-    Same-origin gives up nothing: a clickjack needs the *attacker's* page
-    as the framing ancestor, and this origin serves none. So the two
-    framing values below are exact on purpose — don't tighten them back to
-    ``DENY``/``'none'`` without fixing those three panes first.
+    The UI still frames one of its own pages: the document reader frames
+    ``/static/pdfjs/web/viewer.html``. (/nanopub's review and paper panes
+    were framed too until they became swapped-in fragments in a single
+    document.) ``frame-ancestors 'none'`` (shipped 2026-08-22) left every
+    such pane an empty box with a console CSP refusal. Same-origin gives up
+    nothing: a clickjack needs the *attacker's* page as the framing
+    ancestor, and this origin serves none. So the two framing values below
+    are exact on purpose — don't tighten them back to ``DENY``/``'none'``
+    while the PDF viewer is still framed.
     """
     resp = _client().get("/", follow_redirects=False, headers=_basic("reto", "pw"))
     assert resp.status_code in (200, 302, 303, 307)

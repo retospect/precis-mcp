@@ -2254,21 +2254,21 @@ def test_triaged_detail_opens_meta_tab(client, runtime) -> None:
     runtime.store.triaged_ref_ids.add(10)
     resp = client.get("/papers/smith2024")
     assert resp.status_code == 200
-    assert ", 'Meta')" in resp.text  # paperDoc(…, initialTab='Meta')
+    assert ", 'Meta'," in resp.text  # paperDoc(…, initialTab='Meta', inPane)
 
 
 def test_detail_tab_query_param_selects_meta(client) -> None:
     """``?tab=meta`` opens the Meta tab even on a non-triaged paper."""
     resp = client.get("/papers/smith2024", params={"tab": "meta"})
     assert resp.status_code == 200
-    assert ", 'Meta')" in resp.text
+    assert ", 'Meta'," in resp.text
 
 
 def test_detail_defaults_to_navigate_tab(client) -> None:
     """A plain paper opens on Navigate."""
     resp = client.get("/papers/smith2024")
     assert resp.status_code == 200
-    assert ", 'Navigate')" in resp.text
+    assert ", 'Navigate'," in resp.text
 
 
 def test_paper_tags_route_removes_tag_and_returns_to_meta(client, runtime) -> None:

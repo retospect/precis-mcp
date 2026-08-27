@@ -24,8 +24,8 @@ shipping Safari won't replay Basic credentials into iframe
 subnavigations, and the workbench/PDF panes went blank without it.
 The clickjack that check cannot close is shut by
 ``security_headers.py`` (outermost, so it rides the 401 too): framing is
-same-origin, **not** ``DENY``/``'none'`` — the UI frames its own pages
-(/nanopub's ``?embed=1`` panes, the reader's PDF.js viewer).
+same-origin, **not** ``DENY``/``'none'`` — the UI frames one of its own
+pages (the reader's PDF.js viewer; /nanopub's panes are plain divs now).
 ``PRECIS_WEB_AUTH=off`` disables the gate for local development only.
 ``/account``
 (``routes/account.py``) is the signed-in user's own page — password,

@@ -29,11 +29,15 @@
  * call it (mirrors the classic /drafts reader's draftDoc, since retired).
  * Loaded before Alpine starts on DOMContentLoaded.
  */
-function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
+function paperDoc(paperId, citedOrd, hasPdf, initialTab, inPane) {
   return {
     paperId,
     hasPdf,
-    sidebarOpen: true,
+    // Open on a full page, CLOSED in a workbench pane: the sidebar's 352px
+    // default is a third of a full-width reader but nearly ALL of the
+    // /nanopub paper pane, which left the document itself a sliver. The
+    // toggle still opens it for anyone who wants to navigate in place.
+    sidebarOpen: !inPane,
     // Sidebar/PDF split width (px), drag-resizable via the divider handle
     // and persisted to localStorage. 352px = the old fixed 22rem default.
     sidebarW: 352,

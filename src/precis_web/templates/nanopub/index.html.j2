@@ -72,8 +72,8 @@
   <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
     <span class="font-semibold">◆ Disputed — adjudicate first (oldest on top):</span>
     {% for r in disputed %}
-    <a class="inline-block ml-2 hover:underline" target="np-review"
-       href="/nanopub/fi{{ r.ref_id }}" data-src="/claim/fi{{ r.ref_id }}?embed=1"
+    <a class="inline-block ml-2 hover:underline" data-pane="np-review"
+       href="/nanopub/fi{{ r.ref_id }}" data-src="/claim/fi{{ r.ref_id }}"
        title="{{ r.title }}">
       <span class="font-mono">fi{{ r.ref_id }}</span>{% if r.disputed_since %}
       <span class="text-rose-500">(since {{ r.disputed_since.strftime('%Y-%m-%d') }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
@@ -111,7 +111,7 @@
   <li class="mt-1">
     <details {% if n.children %}open{% endif %} class="group">
       <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-100"
-               data-pane="np-review" data-src="/claim/fi{{ n.row.ref_id }}?embed=1">
+               data-pane="np-review" data-src="/claim/fi{{ n.row.ref_id }}">
         {% if n.children or n.evidence %}
         <span class="tree-caret text-slate-400 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
         {% else %}
@@ -124,10 +124,13 @@
         {% endif %}
         {# href = the workbench deep link (/nanopub/fi<id> — cmd-click /
            copy-link gets the full workbench, nav + tree included);
-           data-src = what actually loads into the pane on a plain click. #}
+           data-src = what actually gets swapped into the pane on a plain
+           click. data-pane names the destination; there is no target= any
+           more, because the panes are divs in this document rather than
+           named frames (a named target is exactly what Safari drops). #}
         <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
-           target="np-review" href="/nanopub/fi{{ n.row.ref_id }}"
-           data-src="/claim/fi{{ n.row.ref_id }}?embed=1">fi{{ n.row.ref_id }}</a>
+           data-pane="np-review" href="/nanopub/fi{{ n.row.ref_id }}"
+           data-src="/claim/fi{{ n.row.ref_id }}">fi{{ n.row.ref_id }}</a>
         <span class="np-title text-sm leading-snug" title="{{ n.row.title }}">{{ n.row.title }}</span>
         {% if n.row.trusty_uri %}
         <span class="font-mono text-xs text-slate-400 shrink-0"
@@ -140,8 +143,8 @@
       <ul class="ml-6 border-l border-slate-200 pl-3">
         {% for e in n.evidence %}
         <li class="tree-node mt-0.5 flex items-center gap-2 rounded px-2 py-0.5 text-xs text-slate-500 cursor-pointer hover:bg-slate-100"
-            {% if e.kind == 'finding' %}data-pane="np-review" data-src="/claim/fi{{ e.ref_id }}?embed=1"
-            {% elif e.kind == 'paper' %}data-pane="np-paper" data-src="/papers/{{ e.ref_id }}?embed=1"{% endif %}>
+            {% if e.kind == 'finding' %}data-pane="np-review" data-src="/claim/fi{{ e.ref_id }}"
+            {% elif e.kind == 'paper' %}data-pane="np-paper" data-src="/papers/{{ e.ref_id }}"{% endif %}>
           <span class="w-3"></span>
           <span class="font-mono px-1 rounded cursor-help
             {% if e.relation == 'contradicts' %}bg-rose-50 text-rose-600
@@ -149,12 +152,12 @@
             {% else %}bg-slate-100 text-slate-500{% endif %}"
             title="{% if e.relation == 'contradicts' %}This source disputes the claim — publication is blocked until the dispute is adjudicated.{% elif e.relation == 'establishes' %}This source's passage directly asserts the claim — its primary grounding.{% elif e.relation == 'corroborates' %}This source's passage independently supports the claim.{% elif e.relation == 'derived-from' %}The claim was derived from this source, grounded through its pinned passage.{% else %}{{ e.relation }}{% endif %}">{{ e.relation }}</span>
           {% if e.kind == 'finding' %}
-          <a class="truncate hover:underline" target="np-review"
-             href="/nanopub/fi{{ e.ref_id }}" data-src="/claim/fi{{ e.ref_id }}?embed=1"
+          <a class="truncate hover:underline" data-pane="np-review"
+             href="/nanopub/fi{{ e.ref_id }}" data-src="/claim/fi{{ e.ref_id }}"
              title="{{ e.title }}">{{ e.title }}</a>
           {% elif e.kind == 'paper' %}
-          <a class="truncate hover:underline" target="np-paper"
-             href="/papers/{{ e.ref_id }}?embed=1" title="{{ e.title }}">{{ e.title }}</a>
+          <a class="truncate hover:underline" data-pane="np-paper"
+             href="/papers/{{ e.ref_id }}" title="{{ e.title }}">{{ e.title }}</a>
           {% else %}
           <a class="truncate hover:underline" href="/refs/{{ e.kind }}/{{ e.ref_id }}"
              title="{{ e.title }}">{{ e.title }}</a>
@@ -218,23 +221,25 @@
     <div class="np-divider" data-pane="pane-tree"></div>
 
     <div id="pane-review" class="min-w-0" style="width: 36%">
-      {# Placeholders are injected into the about:blank frames by the
-         script below, NOT declared via srcdoc: Safari has dropped
-         programmatic src navigation onto srcdoc-initialized frames
-         (webkit.org/b/243385 class), and a dropped navigation looks
-         like a dead click. #}
-      <iframe name="np-review" id="np-review" title="claim review"
-              class="w-full h-full rounded-lg border border-slate-200 bg-white"
-              {% if preload_src %}src="{{ preload_src }}"{% endif %}
-              data-placeholder="Click a claim on the left — its review page (state, evidence DAG, approve/sign action) loads here."></iframe>
+      {# Panes are DIVS, not iframes. Everything the workbench needs to do to
+         a pane — navigate it, read what it shows, route a click out of it —
+         had to cross a frame boundary before, and every mechanism for doing
+         that (named targets, parent-document reach, the chrome-less query
+         flag, Basic auth replay into a subframe) is one Safari drops or
+         refuses. In one document a pane load is an innerHTML swap and a
+         click is just a click. #}
+      <div id="np-review" role="region" aria-label="claim review"
+           class="w-full h-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-4"
+           {% if preload_src %}data-preload="{{ preload_src }}"{% endif %}
+           data-placeholder="Click a claim on the left — its review page (state, evidence DAG, approve/sign action) loads here."></div>
     </div>
 
     <div class="np-divider" data-pane="pane-review"></div>
 
     <div id="pane-paper" class="min-w-0 flex-1">
-      <iframe name="np-paper" id="np-paper" title="paper reader"
-              class="w-full h-full rounded-lg border border-slate-200 bg-white"
-              data-placeholder="Click an evidence paper — its reader loads here."></iframe>
+      <div id="np-paper" role="region" aria-label="paper reader"
+           class="w-full h-full overflow-hidden rounded-lg border border-slate-200 bg-white px-4"
+           data-placeholder="Click an evidence paper — its reader loads here."></div>
     </div>
   </div>
 </div>
@@ -246,7 +251,8 @@
      (hover still shows the full title). overflow:hidden also zeroes the
      flex min-width, so the span shrinks instead of overflowing the row. */
   .np-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-  iframe.np-loading { opacity: .45; transition: opacity .15s; }
+  .np-loading { opacity: .45; transition: opacity .15s; }
+  .np-hint { font: 13px system-ui; color: #94a3b8; padding: 1.5rem; }
   .np-steps { line-height: 0; }
   .np-dot { display: inline-block; width: 5px; height: 5px; border-radius: 9999px; background: #cbd5e1; margin-right: 2px; }
   .np-dot.on { background: #0284c7; }
@@ -254,87 +260,169 @@
   .np-divider { width: 7px; flex: none; cursor: col-resize; border-radius: 4px; margin: 0 1px; }
   .np-divider:hover, .np-divider.dragging { background: #a7f3d0; }
 </style>
+{# Loaded once for the whole workbench, not per swap: the paper fragment
+   omits its own <script src> in pane mode (see _reader/reader.html.j2), so
+   the ``paperDoc`` global is defined exactly once no matter how many papers
+   the user opens. No `defer` — it must exist before Alpine walks a pane. #}
+<script src="/static/paper-viewer.js"></script>
 <script>
-  // Write the "click something" hints into the still-blank frames (see
-  // the srcdoc-avoidance note on the iframes themselves). A frame the
-  // server preloaded (the /nanopub/fi<id> deep link) is skipped — it is
-  // already navigating to real content.
-  const placeholder = f => {
-    const d = f.contentDocument;
-    if (!d || !d.body || d.body.firstChild) return;
-    const p = d.createElement("p");
-    p.style.cssText = "font: 13px system-ui; color: #94a3b8; padding: 1.5rem";
-    p.textContent = f.dataset.placeholder;
-    d.body.appendChild(p);
+  // Panes are plain divs in THIS document, so a pane load is an innerHTML
+  // swap. Everything below is same-document DOM work; nothing reaches
+  // across a frame boundary, uses a named target, or threads a
+  // chrome-less flag through the URL.
+
+  const hint = pane => {
+    pane.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "np-hint";
+    p.textContent = pane.dataset.placeholder;
+    pane.appendChild(p);
   };
-  document.querySelectorAll("#np-panes iframe[data-placeholder]").forEach(f => {
-    if (f.getAttribute("src")) return;
-    placeholder(f);
+
+  // Server-rendered markup dropped in by innerHTML is inert until Alpine
+  // and htmx are told about it — the reader shell is one big x-data scope
+  // and the claim body carries hx-get popovers. (Both no-ops if the
+  // library is absent, matching paper-viewer.js::_loadRefs.)
+  const afterSwap = node => {
+    if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(node);
+    if (window.htmx) window.htmx.process(node);
+  };
+
+  // One loader for every way a pane gets content. Dims the pane while the
+  // request is in flight so a slow claim reads as "loading", not as a dead
+  // click — the failure mode this whole refactor is chasing.
+  const loadPane = (paneId, src, row) => {
+    const pane = document.getElementById(paneId);
+    if (!pane) return;
+    if (row) {
+      document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
+      row.classList.add("selected");
+    }
+    pane.classList.add("np-loading");
+    // Hover-preview cards are x-teleport'd to <body>, so they sit OUTSIDE
+    // the pane and an innerHTML replacement cannot reach them — without
+    // this they accumulate as orphans pointing at unloaded content
+    // (smartdraft's swapFrom reaps them for the same reason).
+    document.querySelectorAll("body > .ref-popover").forEach(el => el.remove());
+    return fetch(src, { headers: { "HX-Request": "true" }, credentials: "same-origin", cache: "no-store" })
+      .then(r => r.text())
+      .then(html => { pane.innerHTML = html; afterSwap(pane); })
+      .catch(() => { pane.innerHTML = '<p class="np-hint">could not load — try again</p>'; })
+      .finally(() => pane.classList.remove("np-loading"));
+  };
+
+  // Which pane a URL belongs in. Claims are reviewed, documents are read;
+  // the permalink resolvers /c/<chunk> and /r/paper/<id> 303 onto a
+  // document, so they are paper-bound too.
+  const paneFor = (href, target) => {
+    let u;
+    try { u = new URL(href, location.href); } catch { return null; }
+    if (u.host !== location.host) return null;
+    if (target === "precis-paper" || u.pathname.startsWith("/papers/")
+        || u.pathname.startsWith("/c/") || u.pathname.startsWith("/r/paper/")) return "np-paper";
+    if (u.pathname.startsWith("/claim/")) return "np-review";
+    return null;
+  };
+
+  const syncUrl = src => {
+    const m = /^\/claim\/fi(\d+)/.exec(src);
+    if (!m) return;
+    history.pushState({ np: src }, "", "/nanopub/fi" + m[1]);
+    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
+    const row = document.querySelector('.tree-node[data-src="/claim/fi' + m[1] + '"]');
+    if (row) row.classList.add("selected");
+  };
+
+  // ONE delegated click handler for the whole workbench: tree rows, the
+  // pane-hinted anchors, and every link inside a loaded pane. Modified
+  // clicks (cmd/ctrl/shift/middle) fall through to the browser untouched,
+  // which is why the anchors keep a real href.
+  document.addEventListener("click", ev => {
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    const a = ev.target.closest("a[href], a[data-src]");
+    if (a) {
+      // An explicit data-pane (tree + evidence links) wins; otherwise
+      // classify by destination, but only for links inside a pane.
+      let pane = a.dataset.pane || null;
+      if (!pane && a.closest("#np-review, #np-paper")) pane = paneFor(a.href, a.target);
+      if (!pane) {
+        // A cross-host link inside a pane must leave the workbench rather
+        // than navigate it away (publishers deny framing; we no longer
+        // frame, but replacing the workbench with a paywall is worse).
+        if (a.closest("#np-review, #np-paper") && a.host && a.host !== location.host) {
+          a.target = "_blank"; a.rel = "noopener";
+        }
+        return;
+      }
+      const src = a.dataset.src || a.getAttribute("href");
+      if (!src || src.startsWith("#")) return;
+      ev.preventDefault();
+      loadPane(pane, src, a.closest(".tree-node"));
+      if (pane === "np-review") syncUrl(src);
+      return;
+    }
+    // Row click = load the row's pane (a bigger hit area than the link).
+    const n = ev.target.closest(".tree-node");
+    if (!n || !n.dataset.src) return;
+    if (!ev.target.closest(".tree-caret")) ev.preventDefault();  // only the caret folds
+    loadPane(n.dataset.pane, n.dataset.src, n);
+    if (n.dataset.pane === "np-review") syncUrl(n.dataset.src);
+  }, true);  // capture: must claim the click before base.html.j2's
+             // named-window opener, which skips defaultPrevented clicks.
+
+  // Forms inside a pane (ask-a-follow-up, the unacquirable declaration,
+  // approve/sign) used to post inside the iframe and get redirected back
+  // into it. In one document an unintercepted submit would navigate the
+  // whole workbench away, so post out-of-band and swap the reply — the
+  // 303 lands on /claim/<head>, and HX-Request survives the redirect, so
+  // what comes back is the fragment.
+  document.addEventListener("submit", ev => {
+    const form = ev.target.closest("form");
+    if (!form) return;
+    const pane = form.closest("#np-review, #np-paper");
+    if (!pane) return;
+    ev.preventDefault();
+    const body = new FormData(form);
+    if (ev.submitter && ev.submitter.name) body.append(ev.submitter.name, ev.submitter.value);
+    pane.classList.add("np-loading");
+    fetch(form.getAttribute("action") || location.href, {
+      method: (form.getAttribute("method") || "POST").toUpperCase(),
+      body: body,
+      headers: { "HX-Request": "true" },
+      credentials: "same-origin",
+    })
+      .then(r => r.text())
+      .then(html => { pane.innerHTML = html; afterSwap(pane); })
+      .catch(() => { pane.innerHTML = '<p class="np-hint">could not submit — try again</p>'; })
+      .finally(() => pane.classList.remove("np-loading"));
   });
 
-  // A pane a page vacated (base.html.j2's self-correcting placement sends
-  // a claim that landed in the paper pane back to the review pane and
-  // blanks the one it left) would otherwise read as a white void — give it
-  // its hint back instead.
-  document.querySelectorAll("#np-panes iframe[data-placeholder]").forEach(f => {
-    f.addEventListener("load", () => {
-      let blank = false;
-      try { blank = f.contentWindow.location.href === "about:blank"; } catch { blank = false; }
-      if (blank) placeholder(f);
+  // Back/forward across claims the user opened in the review pane.
+  window.addEventListener("popstate", ev => {
+    const src = (ev.state && ev.state.np) || null;
+    const m = /^\/nanopub\/fi(\d+)/.exec(location.pathname);
+    const target = src || (m ? "/claim/fi" + m[1] : null);
+    const review = document.getElementById("np-review");
+    if (!target) { if (review) hint(review); return; }
+    loadPane("np-review", target, document.querySelector('.tree-node[data-src="' + target + '"]'));
+  });
+
+  // Initial state: a /nanopub/fi<id> deep link preloads its claim, the
+  // bare index shows both hints.
+  //
+  // On DOMContentLoaded, not inline: Alpine and htmx are loaded with
+  // `defer`, so at parse time neither exists yet and afterSwap would
+  // silently no-op on the preloaded claim — leaving its popovers and any
+  // x-data scope inert. Deferred scripts have run by DOMContentLoaded.
+  document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll("#np-panes [data-placeholder]").forEach(pane => {
+      if (pane.dataset.preload) {
+        loadPane(pane.id, pane.dataset.preload, document.querySelector('.tree-node[data-src="' + pane.dataset.preload + '"]'));
+      } else {
+        hint(pane);
+      }
     });
   });
-
-  // One loader for every way a pane gets content. Dims the pane until its
-  // load event so a slow claim page reads as "loading", not a dead click.
-  const loadPane = (paneId, src, row) => {
-    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
-    if (row) row.classList.add("selected");
-    const frame = document.getElementById(paneId);
-    frame.classList.add("np-loading");
-    frame.addEventListener("load", () => frame.classList.remove("np-loading"), { once: true });
-    frame.src = src;
-  };
-
-  // Pane-targeted links (the fi<id> anchors, evidence links, the disputed
-  // strip) drive the pane iframe directly instead of trusting the
-  // browser's named-target resolution: Safari has intermittently dropped
-  // link-target navigation onto srcdoc-initialized frames — the same
-  // flakiness class the framed claim page's own interceptor documents —
-  // and a miss looks like a dead click. target= stays on the anchors for
-  // middle-click/cmd-click new-tab correctness (modified clicks fall
-  // through to the browser untouched).
-  document.addEventListener("click", ev => {
-    const a = ev.target.closest('a[target="np-review"], a[target="np-paper"]');
-    if (!a || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
-    ev.preventDefault();
-    // data-src = the framed (?embed=1) pane URL; href stays the standalone
-    // deep link so cmd-click / copy-link get the full workbench.
-    loadPane(a.target, a.dataset.src || a.href, a.closest(".tree-node"));
-  });
-
-  // Deep-link sync: the browser URL mirrors whatever claim the review
-  // pane shows (/nanopub/fi<id>), so reload / copy-link / share lands
-  // back here with the same claim loaded — and the tree highlights it
-  // even when the pane navigated itself (an fi-cite clicked inside).
-  const reviewFrame = document.getElementById("np-review");
-  reviewFrame.addEventListener("load", () => {
-    let m = null;
-    try { m = reviewFrame.contentWindow.location.pathname.match(/^\/claim\/fi(\d+)/); } catch {}
-    if (!m) return;
-    history.replaceState(null, "", "/nanopub/fi" + m[1]);
-    document.querySelectorAll(".tree-node.selected").forEach(x => x.classList.remove("selected"));
-    const row = document.querySelector('.tree-node[data-src^="/claim/fi' + m[1] + '?"]');
-    if (row) row.classList.add("selected");
-  });
-
-  // Row click = load the row's target pane (bigger hit area than the
-  // links).
-  document.querySelectorAll(".tree-node").forEach(n => n.addEventListener("click", ev => {
-    if (ev.target.closest("a")) return;                 // handled above / navigates
-    if (!ev.target.closest(".tree-caret")) ev.preventDefault();  // only the caret folds
-    if (!n.dataset.src) return;
-    loadPane(n.dataset.pane, n.dataset.src, n);
-  }));
 
   // Draggable dividers: each resizes the pane on its left; the last pane
   // flexes. Widths persist per pane in localStorage.

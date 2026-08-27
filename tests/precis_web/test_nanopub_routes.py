@@ -45,28 +45,29 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert resp.status_code == 200
     assert f"fi{hub}" in resp.text
     assert "unminted" in resp.text
-    # Hub rows load the review pane; the two iframes are the panes.
-    assert f'data-src="/claim/fi{hub}?embed=1"' in resp.text
-    assert 'name="np-review"' in resp.text
-    assert 'name="np-paper"' in resp.text
-    # Pane links are driven by the page's own loader, never by bare
-    # named-target resolution (Safari intermittently drops link-target
-    # navigation onto srcdoc frames — a dead click). The anchors keep
-    # target= for middle-click/new-tab, and the interceptor must cover
-    # both panes.
+    # Hub rows load the review pane. The panes are DIVS in this document,
+    # not iframes: every mechanism a framed pane needed (named targets,
+    # window.parent reach, ?embed=1 threading, Basic-auth replay into a
+    # subframe) is one Safari drops or refuses, and each was a dead click.
+    assert f'data-src="/claim/fi{hub}"' in resp.text
+    assert 'id="np-review"' in resp.text
+    assert 'id="np-paper"' in resp.text
+    assert "<iframe" not in resp.text
+    # No pane URL carries ?embed=1 any more — a pane asks for chrome-less
+    # HTML with a header, so nothing has to be threaded through the URL.
+    assert "embed=1" not in resp.text
+    # Pane links are driven by the page's own loader. data-pane names the
+    # destination; there is no target= to be dropped.
     assert "const loadPane" in resp.text
-    assert 'a[target="np-review"], a[target="np-paper"]' in resp.text
+    assert 'data-pane="np-review"' in resp.text
+    assert 'target="np-review"' not in resp.text
     # The anchor href is the workbench deep link (cmd-click keeps the nav
-    # context); data-src is what a plain click loads into the pane.
-    assert f'target="np-review" href="/nanopub/fi{hub}"' in resp.text
-    assert "a.dataset.src || a.href" in resp.text
-    # The browser URL follows the review pane (deep-link sync).
-    assert "history.replaceState" in resp.text
-    # Placeholders are injected into about:blank frames, never srcdoc:
-    # Safari drops programmatic src navigation onto srcdoc-initialized
-    # frames (webkit.org/b/243385 class) — the panes look dead.
-    assert "srcdoc=" not in resp.text
-    assert "iframe[data-placeholder]" in resp.text
+    # context); data-src is what a plain click swaps into the pane.
+    assert f'data-pane="np-review" href="/nanopub/fi{hub}"' in resp.text
+    assert "a.dataset.src" in resp.text
+    # The browser URL follows the review pane, and back/forward work.
+    assert "history.pushState" in resp.text
+    assert 'window.addEventListener("popstate"' in resp.text
     assert resp.text.count("data-placeholder=") == 2
     # Claim titles wrap to a two-line clamp instead of a one-line truncate
     # (a 500px pane showed only the first few words of a claim sentence).
@@ -79,43 +80,52 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     # the review pane preloaded on that claim (nav + tree included).
     deep = client.get(f"/nanopub/fi{hub}", follow_redirects=False)
     assert deep.status_code == 200
-    # A real src= attribute on the review iframe (leading space excludes
-    # the tree rows' data-src= attributes); the bare index has none.
-    assert f' src="/claim/fi{hub}?embed=1"' in deep.text
-    assert ' src="/claim/' not in resp.text
-    assert 'name="np-review"' in deep.text
-    # …but with ?embed=1 (inside a pane already) it still redirects to the
-    # framed claim page — a pane must never nest the workbench.
-    redirected_embed = client.get(f"/nanopub/fi{hub}?embed=1", follow_redirects=False)
-    assert redirected_embed.status_code == 307
-    assert redirected_embed.headers["location"] == f"/claim/fi{hub}?embed=1"
+    # The preload is an URL the shell swaps in on load, not an iframe src;
+    # the bare index has none.
+    assert f'data-preload="/claim/fi{hub}"' in deep.text
+    assert "data-preload=" not in resp.text
+    assert 'id="np-review"' in deep.text
 
 
-def test_embed_mode_hides_the_site_chrome(
+def test_an_htmx_request_gets_the_chromeless_fragment(
     client: TestClient, runtime_with_store
 ) -> None:
+    """A workbench pane asks for a claim with a header, not a URL flag.
+
+    Branching on ``HX-Request`` rather than on ``?embed=1`` (or a distinct
+    /fragment URL) is what keeps the permalink resolvers working: /c/<handle>
+    and /r/paper/<id> 303 INTO the claim and paper routes, and the browser
+    replays the header across a same-origin redirect where a query param
+    would have to be threaded by hand through every hop.
+    """
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "An embedded claim.", paper, chunk)
     full = client.get(f"/claim/fi{hub}")
-    framed = client.get(f"/claim/fi{hub}?embed=1")
+    frag = client.get(f"/claim/fi{hub}", headers={"HX-Request": "true"})
     assert "<header" in full.text
-    assert "<header" not in framed.text
-    assert "An embedded claim." in framed.text
-    # The embed stamper sends external links out of the pane (publishers
-    # deny framing) and keeps same-host links embed-sticky — that
-    # retargeting line renders ONLY in embed mode.
-    assert 'a.target = "_blank"' in framed.text
-    assert 'a.target = "_blank"' not in full.text
-    # The named-window opener, by contrast, rides EVERY page: Safari
-    # silently drops <a target="precis-paper"> navigation when the window
-    # doesn't exist yet, so paper/paper-chunk clicks on standalone pages
-    # (the smartdraft reader, a claim page in its own tab) were dead
-    # clicks — window.open creates AND reuses the named window instead.
-    for page in (full, framed):
-        assert "window.open(a.href, t)" in page.text
-        assert 'window.open(a.href, "_blank")' in page.text
-        assert 't === "np-review" || t === "np-paper"' in page.text
+    assert "<header" not in frag.text
+    assert "<html" not in frag.text
+    # Same content either way — the fragment IS the full page's body.
+    assert "An embedded claim." in frag.text
+    assert "An embedded claim." in full.text
+    # The paper reader answers the same way, and drops its own <script src>
+    # in pane mode (the shell loads paper-viewer.js once).
+    paper_frag = client.get(f"/papers/{paper}", headers={"HX-Request": "true"})
+    assert "<header" not in paper_frag.text
+    assert "/static/paper-viewer.js" not in paper_frag.text
+    assert "/static/paper-viewer.js" in client.get(f"/papers/{paper}").text
+    # ?embed=1 is gone: it must not suppress the chrome any more. (Not an
+    # exact-text compare — each render mints fresh popover ids.)
+    assert "<header" in client.get(f"/claim/fi{hub}?embed=1").text
+    # The named-window opener still rides EVERY page — it serves
+    # target="precis-paper" links outside the workbench (the smartdraft
+    # reader, a claim page in its own tab), where Safari silently drops an
+    # <a target="name"> navigation to a window that doesn't exist yet.
+    assert "window.open(a.href, t)" in full.text
+    assert 'window.open(a.href, "_blank")' in full.text
+    # …but it no longer knows anything about pane names.
+    assert "np-review" not in full.text
 
 
 def test_hub_page_shows_state_and_action(
@@ -128,38 +138,21 @@ def test_hub_page_shows_state_and_action(
     assert resp.status_code == 200
     assert "A reviewable claim." in resp.text
     assert "Approve" in resp.text  # unminted → approve action
-    # Framed in the workbench (?embed=1 → base.html.j2's embed script),
-    # links route by DESTINATION: paper-destined links (precis-paper
-    # target, /papers/, /c/pc…) load the np-paper pane, claim links the
-    # np-review pane; a link whose destination IS this pane navigates in
-    # place (location.assign) and self-links are swallowed — the review
-    # pane is never mirrored into the paper pane as a duplicate column.
-    # Covers EVERY embedded page (the paper pane's own pa/pc links were
-    # dead in Safari when routing lived on claim pages only).
-    framed = client.get(f"/claim/fi{hub}?embed=1")
-    assert 'const NP_PANES = ["np-review", "np-paper"];' in framed.text
-    assert 'a.target === "precis-paper"' in framed.text
-    assert 'u.pathname.startsWith("/papers/")' in framed.text
-    # Every chunk permalink is paper-destined, not just the pc<id> shape:
-    # /c/<handle> and /r/paper/<id> resolve server-side, so classifying on
-    # the pc prefix alone sent the other handles (mc/lc/…) into the REVIEW
-    # pane, where the resolved document replaced the claim being reviewed.
-    assert 'u.pathname.startsWith("/c/")' in framed.text
-    assert 'u.pathname.startsWith("/r/paper/")' in framed.text
-    assert 'u.pathname.startsWith("/claim/") ? "np-review" : null' in framed.text
-    assert "u.pathname === location.pathname" in framed.text
-    assert "location.assign(u)" in framed.text
-    # An anchor carrying its OWN target (a popover's target="_blank"
-    # chunk permalink) is never hijacked into a pane — only target-less
-    # links and the pane-owned targets are routed.
-    assert (
-        'const routable = !a.target || a.target === "precis-paper" '
-        "|| NP_PANES.includes(a.target);" in framed.text
-    )
-    # The routing rides base.html.j2's embed script, so the framed PAPER
-    # page carries it too — that is the fix, not an incidental.
-    framed_paper = client.get(f"/papers/{paper}?embed=1")
-    assert 'const NP_PANES = ["np-review", "np-paper"];' in framed_paper.text
+    # Routing by DESTINATION now lives in the workbench itself, because the
+    # panes are its own divs: paper-destined links (a precis-paper target,
+    # /papers/, and the permalink resolvers /c/<handle> and /r/paper/<id>,
+    # which 303 onto a document) swap the paper pane; claim links swap the
+    # review pane. Nothing is emitted onto the claim page to make this work.
+    workbench = client.get("/nanopub")
+    assert 'u.pathname.startsWith("/papers/")' in workbench.text
+    assert 'u.pathname.startsWith("/c/")' in workbench.text
+    assert 'u.pathname.startsWith("/r/paper/")' in workbench.text
+    assert 'u.pathname.startsWith("/claim/")' in workbench.text
+    assert 'target === "precis-paper"' in workbench.text
+    # The claim page carries no pane-routing script of its own — that
+    # duplication (routing on claim pages only) is what left the paper
+    # pane's own pa/pc links dead.
+    assert "np-paper" not in resp.text
     # Non-hub → the claim page's own friendly "no claim hub" stub (200),
     # not a 404 — the merged page's degrade-gracefully policy, not an error.
     other = _seed_paper(store)[0]
@@ -168,39 +161,36 @@ def test_hub_page_shows_state_and_action(
     assert "No claim hub" in resp.text
 
 
-def test_framed_pages_correct_their_own_pane_placement(
+def test_no_page_reaches_across_a_frame_boundary(
     client: TestClient, runtime_with_store
 ) -> None:
-    """A page that lands in the wrong workbench pane moves itself.
+    """The whole class of cross-frame mechanism is gone, not just its bugs.
 
-    The click router picks a pane from the PRE-navigation URL, but the
-    permalink routes resolve their kind server-side — so a claim can end
-    up in the paper pane, where it reads as the review column duplicated
-    (gr264349, reported against the deployed workbench). The placement is
-    therefore also enforced by the page itself, which makes a misroute
-    self-healing no matter which link caused it.
+    Framed panes needed named-target navigation, ``window.parent`` reach,
+    and a self-correcting placement pass to undo misroutes (gr264349 —
+    a claim landing in the paper pane read as the review column
+    duplicated). None of it survives a single-document workbench, and this
+    pins that none of it comes back.
     """
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "A misrouted claim.", paper, chunk)
-    framed_claim = client.get(f"/claim/fi{hub}?embed=1")
-    framed_paper = client.get(f"/papers/{paper}?embed=1")
-    for page in (framed_claim, framed_paper):
-        # Claims are reviewed, papers are read; a page in neither pane's
-        # remit stays where it landed rather than guessing.
-        assert 'p.startsWith("/claim/") ? "np-review"' in page.text
-        assert 'p.startsWith("/papers/") ? "np-paper" : null' in page.text
-        assert "want && want !== window.name" in page.text
-        # Move to the right pane, then vacate the wrong one — leaving the
-        # page in both is exactly the duplicate column being fixed.
-        assert "f.src = location.href; location.replace" in page.text
-        assert '"about:blank"' in page.text
-    # Standalone (unframed) pages are not in a workbench and must not
-    # reach for a parent document at all.
-    assert (
-        'p.startsWith("/claim/") ? "np-review"'
-        not in client.get(f"/claim/fi{hub}").text
-    )
+    pages = [
+        client.get("/nanopub"),
+        client.get(f"/nanopub/fi{hub}"),
+        client.get(f"/claim/fi{hub}"),
+        client.get(f"/papers/{paper}"),
+    ]
+    for page in pages:
+        assert "window.parent" not in page.text
+        assert "window.name" not in page.text
+        assert "about:blank" not in page.text
+        assert "srcdoc" not in page.text
+    # The workbench itself frames nothing at all now. (The one iframe that
+    # legitimately remains is the vendored pdf.js viewer on the paper
+    # reader, and only when a PDF is actually on disk — the seeded paper
+    # here has none, so test_papers_nav.py pins that one.)
+    assert "<iframe" not in client.get("/nanopub").text
 
 
 def test_approve_prefill_suggests_quote_and_unique_snip(
@@ -687,11 +677,11 @@ def test_tree_nests_conjunct_atom_under_compound(
     assert "A compound tree claim." in resp.text
     # Evidence leaves target the paper pane via the paper reader, not the
     # kindless /refs/<id> shape (which 400s).
-    assert f'data-src="/papers/{paper}?embed=1"' in resp.text
+    assert f'data-src="/papers/{paper}"' in resp.text
     assert f"/refs/{paper}" not in resp.text
     # Both hubs load the review pane.
-    assert f'data-src="/claim/fi{compound}?embed=1"' in resp.text
-    assert f'data-src="/claim/fi{atom}?embed=1"' in resp.text
+    assert f'data-src="/claim/fi{compound}"' in resp.text
+    assert f'data-src="/claim/fi{atom}"' in resp.text
 
 
 def test_tree_cycle_is_cut_not_recursed(client: TestClient, runtime_with_store) -> None:
@@ -770,22 +760,37 @@ def test_draft_filter_keeps_full_subtree_of_a_cited_compound(
     assert "— 2 claims" in resp.text
 
 
-def test_resolver_threads_embed_for_framed_panes(
+def test_resolvers_thread_nothing_and_answer_htmx_with_a_fragment(
     client: TestClient, runtime_with_store
 ) -> None:
-    """The np-review pane routes evidence clicks through /r and /c into
-    the framed paper pane with ?embed=1 — the resolvers must carry it
-    through their 303s or the pane regains full site chrome."""
+    """The paper pane routes evidence clicks through /r and /c, and those
+    resolvers now carry NOTHING on their 303s.
+
+    The pane bit rides the request instead: an ``HX-Request`` header is
+    replayed by the browser across a same-origin redirect, so following the
+    chain end-to-end lands on the chrome-less reader. That is what makes it
+    safe to delete the query-param threading these two routes used to do by
+    hand at every hop.
+    """
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
+    hx = {"HX-Request": "true"}
 
-    resp = client.get(f"/r/paper/{paper}?embed=1", follow_redirects=False)
+    resp = client.get(f"/r/paper/{paper}", follow_redirects=False)
     assert resp.status_code == 303
-    assert "embed=1" in resp.headers["location"]
+    assert "embed" not in resp.headers["location"]
 
-    resp = client.get(f"/c/pc{chunk}?embed=1", follow_redirects=False)
+    resp = client.get(f"/c/pc{chunk}", follow_redirects=False)
     assert resp.status_code == 303
-    assert "embed=1" in resp.headers["location"]
+    assert "embed" not in resp.headers["location"]
+
+    # End-to-end through the redirect chain: chrome-less either way in.
+    for url in (f"/r/paper/{paper}", f"/c/pc{chunk}"):
+        followed = client.get(url, headers=hx)
+        assert followed.status_code == 200
+        assert "<header" not in followed.text
+    # …and full pages without the header.
+    assert "<header" in client.get(f"/r/paper/{paper}").text
 
 
 def test_draft_filter_unknown_id_is_a_friendly_notice_not_a_500(

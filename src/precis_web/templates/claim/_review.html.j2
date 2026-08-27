@@ -279,11 +279,13 @@
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  // Workbench pane routing (paper links → np-paper pane, claim links →
-  // np-review pane) lives in base.html.j2's embed script now — it must
-  // cover EVERY embedded page (the paper pane's own pa/pc links were
-  // falling back to Safari's silently-dropped named-target navigation
-  // when it lived here, claim pages only).
+  // Workbench pane routing (paper links to the reading pane, claim links
+  // to the review pane) is not here, and not in base.html.j2 either: the
+  // panes are divs in the workbench's own document, so
+  // nanopub/index.html.j2 routes every click itself. Nothing this file
+  // renders needs to know whether it is being shown in a pane — which is
+  // why a claim page mentions no pane name at all, a property its tests
+  // pin.
   document.querySelectorAll(".np-node").forEach(n => n.addEventListener("click", () => {
     const d = NP_DETAIL[n.dataset.id];
     if (!d) return;

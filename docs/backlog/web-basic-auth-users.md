@@ -263,6 +263,6 @@ Two findings, both fixed in `4bfe8a99`:
    `SecurityHeadersMiddleware` (`X-Frame-Options: SAMEORIGIN` + CSP
    `frame-ancestors 'self'`, plus `nosniff` / `Referrer-Policy` / HSTS),
    installed outermost so it covers the 401 challenge and `/static`.
-   Same-origin, not `DENY`/`'none'`: the UI frames its own pages
-   (/nanopub's `?embed=1` panes, the reader's PDF.js viewer), and
-   `'none'` blanked all three.
+   Same-origin, not `DENY`/`'none'`: the UI frames the reader's PDF.js
+   viewer (and, until the workbench went single-document, /nanopub's two
+   panes), and `'none'` blanked every one of them.

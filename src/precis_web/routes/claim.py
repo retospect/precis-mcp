@@ -162,6 +162,20 @@ async def claim_view(request: Request, head: str) -> HTMLResponse:
     nanopub mixin — the review-and-sign section (state, DAG, approve/sign
     action)."""
     ctx = claim_page_context(get_store(request), head)
+    # htmx-aware (the ``flags.py`` pattern): the /nanopub workbench swaps
+    # this claim straight into its review pane, so an htmx request gets the
+    # body WITHOUT page chrome — the same ``claim/_body.html.j2`` the full
+    # page includes, off the same context, so a swapped pane is
+    # byte-identical to a server-rendered one.
+    #
+    # Branching on the header rather than on a distinct /fragment URL is what
+    # makes the permalink resolvers work: /c/<handle> and /r/paper/<id> 303
+    # INTO this route, and the browser replays HX-Request across a
+    # same-origin redirect. A separate fragment URL would be unreachable
+    # through those chains without re-introducing the ?embed=1-style query
+    # threading this refactor removes.
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(request, "claim/_body.html.j2", ctx)
     return templates.TemplateResponse(request, "claim/view.html.j2", ctx)
 
 

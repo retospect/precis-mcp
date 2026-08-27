@@ -27,9 +27,9 @@
   #pdf-frame{border:0}
 </style>
 
-<div x-data="paperDoc({{ doc.id }}, {{ doc.cited_ord }}, {{ doc.pdf_on_disk | lower }}, '{{ doc.initial_tab }}')"
+<div x-data="paperDoc({{ doc.id }}, {{ doc.cited_ord }}, {{ doc.pdf_on_disk | lower }}, '{{ doc.initial_tab }}', {{ doc.in_pane | default(false) | lower }})"
      x-init="init()"
-     class="flex flex-col" style="height: calc(100vh - 4.5rem)">
+     class="flex flex-col" style="height: {% if doc.in_pane %}100%{% else %}calc(100vh - 4.5rem){% endif %}">
 
   {# compact header strip — title + canonical handle + sidebar toggle #}
   <div class="flex items-center gap-3 py-2">
@@ -285,5 +285,12 @@
 </div>
 
 {# NB: no `defer` — see paper-viewer.js note; a deferred load would miss
-   Alpine's DOM walk and the reader would silently die. #}
+   Alpine's DOM walk and the reader would silently die.
+
+   Skipped in a workbench pane: the pane swaps this fragment in repeatedly,
+   and the shell already loaded the script once (nanopub/index.html.j2). A
+   re-fetched <script src> per swap would re-register the ``paperDoc``
+   Alpine component on every paper the user opens. #}
+{% if not doc.in_pane %}
 <script src="/static/paper-viewer.js"></script>
+{% endif %}

@@ -450,6 +450,8 @@ def _render_detail(
     list_url: str | None = None,
     list_label: str | None = None,
     extra: dict[str, Any] | None = None,
+    template: str = "papers/detail.html.j2",
+    in_pane: bool = False,
 ) -> HTMLResponse:
     """Render the paper detail page. Shared by ``detail`` and the triage
     lookup so an S2 result can re-render the page with the edit form
@@ -626,7 +628,10 @@ def _render_detail(
         doc["list_label"] = list_label
     if extra:
         context.update(extra)
-    return templates.TemplateResponse(request, "papers/detail.html.j2", context)
+    # In a workbench pane the reader is not a page: it has no site header to
+    # subtract from the viewport, and it fills its container instead.
+    doc["in_pane"] = in_pane
+    return templates.TemplateResponse(request, template, context)
 
 
 #: The skills plugin group compound-handle chunk selector: an optional ``pa<ref_id>~``
@@ -765,12 +770,19 @@ async def detail(
         store.touch_viewed(ref.id)
     except Exception:
         pass
+    # htmx-aware (the ``flags.py`` pattern) — see the twin branch in
+    # ``claim.py::claim_view`` for why this keys off the header and not a
+    # separate /fragment URL: /c/<handle> and /r/paper/<id> 303 into here,
+    # and HX-Request survives a same-origin redirect.
+    in_pane = request.headers.get("HX-Request") == "true"
     return _render_detail(
         request,
         ref,
         triage=bool(triage),
         cited=_cited_chunk(store, ref.id, chunk),
         initial_tab=tab.strip().capitalize(),
+        template="_reader/reader.html.j2" if in_pane else "papers/detail.html.j2",
+        in_pane=in_pane,
     )
 
 
