@@ -11,6 +11,7 @@ Imports precis, so this module is handler-side (not part of the precis-free
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from precis.format import toon
@@ -197,6 +198,90 @@ def step_view(meta: dict[str, Any], pw_handle: str, edge: dict[str, Any]) -> str
     if a or b:
         lines.append(f"structures: {a or '?'} → {b or '?'}")
         lines.append(_structure_hint("structures", "each side's (source→target)"))
+    return "\n".join(lines)
+
+
+# ── microkinetics digest (Eyring rates, honest v1) ───────────────────────
+# CODATA-adjacent constants — good enough for an order-of-magnitude digest,
+# not a metrology claim.
+_KB_EV_PER_K = 8.617e-5  # Boltzmann constant, eV/K
+_H_EV_S = 4.136e-15  # Planck constant, eV·s
+
+
+def _eyring_rate(barrier_eV: Any, T_k: float = 300.0) -> float:
+    """Eyring transition-state-theory rate constant k = (k_B·T/h)·exp(−Ea/k_B·T)
+    for an electronic barrier (no ZPE/entropy correction — see the caveat line
+    in :func:`kinetics_text`). ``float('nan')`` for a missing barrier, so
+    downstream formatting renders '—' instead of raising."""
+    if barrier_eV is None:
+        return float("nan")
+    kt = _KB_EV_PER_K * T_k
+    try:
+        return (kt / _H_EV_S) * math.exp(-float(barrier_eV) / kt)
+    except (OverflowError, ValueError):
+        return float("nan")
+
+
+def _ea_str(x: Any) -> str:
+    return "—" if x is None else f"{float(x):.2f}"
+
+
+def _rate_str(x: float) -> str:
+    return "—" if math.isnan(x) else f"{x:.2e}"
+
+
+def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
+    """Microkinetics digest for a computed pathway (Simulation step deep-links,
+    docs/backlog/quest-dossier-dialectic.md): Eyring rates + residence times +
+    the rate-limiting step, so a dossier can cite ``pw<id>~<label>`` and argue
+    "the slow step is [...], τ ≈ ...".
+
+    Honest v1 only: no steady-state coverages, no degree-of-rate-control — both
+    need a full microkinetic solve (site balance, reverse rates) this view does
+    not attempt; faking them would be worse than not having them.
+    """
+    graph = meta.get("graph") or {}
+    root, target = _roots(meta)
+    path = analysis.reaction_path(graph, root, target)
+    steps = analysis._path_steps(graph, path) or analysis._reaction_edges(graph)
+
+    rows = []
+    for e in steps:
+        ea = e.get("barrier")
+        k = _eyring_rate(ea, T_k)
+        tau = 1.0 / k if k == k and k > 0 else float("nan")  # k==k rejects nan
+        rows.append(
+            {
+                "reaction": f"{e['source']}→{e['target']}",
+                "Ea_eV": _ea_str(ea),
+                "k_f_/s": _rate_str(k),
+                "tau_s": _rate_str(tau),
+                "conf": _conf(e.get("low_confidence")),
+            }
+        )
+    table = toon.dump(rows, schema=["reaction", "Ea_eV", "k_f_/s", "tau_s", "conf"])
+
+    lines = [
+        f"{root} → {target} — microkinetics (Eyring TST, T = {T_k:.0f} K)",
+        "",
+        table,
+        "",
+    ]
+    rl = analysis.rate_limiting(graph, root, target)
+    if rl:
+        k_rl = _eyring_rate(rl["ea"], T_k)
+        tau_rl = 1.0 / k_rl if k_rl == k_rl and k_rl > 0 else float("nan")
+        flag = "  [LOW CONFIDENCE]" if rl["low_confidence"] else ""
+        lines.append(
+            f"Rate-limiting step: {rl['step']} (Ea = {_ea_str(rl['ea'])} eV, "
+            f"τ ≈ {_rate_str(tau_rl)} s){flag}"
+        )
+        lines.append("")
+    lines.append(
+        "Barriers are electronic (NEB, no ZPE/entropy). Eyring pre-exponential "
+        "A = k_B·T/h ≈ 6.2e12 /s at 300 K; residence times ignore reverse "
+        "reactions and surface-coverage effects."
+    )
     return "\n".join(lines)
 
 
