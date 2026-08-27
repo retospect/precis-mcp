@@ -152,3 +152,56 @@ lock_pid_for() {
     [ -n "$pid" ] || return 1
     printf '%s' "$pid"
 }
+
+# reassert_session_lock <worktree-path> [starting-pid]
+#
+# Re-acquire <worktree-path>'s session lock if — and only if — nothing alive
+# currently holds it. Prints the pid it locked to on success, nothing
+# otherwise; always returns 0 (best-effort by design, see below).
+#
+# Why this exists (docs/backlog/reaper-removed-live-session-worktree.md,
+# proposal 3): scripts/inflight reads worktree liveness ONLY from the lock
+# reason, and a lockless + clean + merged tree buckets `safe_remove`, which
+# any sibling session's SessionStart reaper then deletes. Shipping is exactly
+# what makes a tree clean + merged, so scripts/ship OPENS that window — and if
+# the lock was already dropped out from under a still-live session (gr256469's
+# nested `claude -p` did precisely that, twice, costing 1337 and 1497 tracked
+# files), the reap lands seconds after the squash push. ship runs INSIDE the
+# live session, so it is the one caller that both knows the session is alive
+# and knows the window just opened.
+#
+# Never STEALS. A lock naming a pid that is alive right now is left exactly
+# as-is: it is either this session's already (nothing to do) or an unrelated
+# session's (not ours to move). Only an absent, unparseable, or dead-pid lock
+# is claimed — the same "can't prove it's free, don't touch it" rule the two
+# hooks follow, for the same reason: a stale lock is self-healing, a stolen
+# one is data loss.
+#
+# Best-effort throughout, and deliberately so — every failure path here is a
+# silent no-op rather than an error, because the asymmetry runs the other way
+# from the hooks': failing to lock costs an un-reaped worktree at worst, while
+# failing the SHIP would cost the work itself. Never let this abort a caller.
+reassert_session_lock() {
+    local wt=$1 start=${2:-${PPID:-}} held session_pid
+    [ -n "${PRECIS_NO_AUTOREAP:-}" ] && return 0
+    [ -n "$wt" ] || return 0
+    case "$wt" in
+        */.claude/worktrees/*) ;;
+        *) return 0 ;;   # primary checkout / unrecognized layout — never locked
+    esac
+
+    held=$(lock_pid_for "$wt" 2>/dev/null) || held=""
+    if [ -n "$held" ] && kill -0 "$held" 2>/dev/null; then
+        return 0
+    fi
+
+    session_pid=$(find_session_pid "$start" 2>/dev/null) || session_pid=""
+    [ -n "$session_pid" ] || return 0
+    kill -0 "$session_pid" 2>/dev/null || return 0
+
+    git -C "$wt" worktree unlock "$wt" >/dev/null 2>&1 || true
+    if git -C "$wt" worktree lock "$wt" --reason "pid $session_pid" >/dev/null 2>&1; then
+        printf '%s' "$session_pid"
+    fi
+    return 0
+}

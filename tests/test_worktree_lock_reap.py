@@ -723,3 +723,202 @@ def test_session_end_reap_holds_when_shared_lib_is_missing(
     finally:
         outer.kill()
         outer.wait(timeout=10)
+
+
+def _reassert(
+    lib: Path, worktree: Path, start_pid: int, cwd: Path, **env_extra: str
+) -> subprocess.CompletedProcess[str]:
+    """Drive ``reassert_session_lock`` straight out of the staged lib.
+
+    ``start_pid`` is handed in explicitly rather than faked up through a
+    process tree: ``find_session_pid`` starts its walk AT that pid, so passing
+    a live ``comm == claude`` process's own pid resolves on the first hop.
+    That keeps these tests about the re-assertion policy (steal / don't steal)
+    instead of re-testing the ancestry walk, which the tests above already pin.
+    """
+    env = _test_env()
+    env.update(env_extra)
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{lib}"; reassert_session_lock "{worktree}" "{start_pid}"',
+        ],
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_reassert_session_lock_relocks_a_lockless_shipped_tree(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The point of proposal 3 in
+    ``docs/backlog/reaper-removed-live-session-worktree.md``: ``scripts/ship``
+    leaves a tree clean + merged, which is exactly the ``safe_remove`` shape a
+    sibling session's reaper deletes. If the lock has gone missing while the
+    session is still alive, ship must put it back.
+
+    The fixture's B is already in that post-ship state, so asserting the
+    bucket flips away from ``safe_remove`` is what makes this a test of the
+    actual exposure rather than of the lock string alone.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    lib = primary / "scripts" / "lib" / "session-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    assert _lock_reason_for(primary, b) is None
+    before = _bucket_for(
+        _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout, b
+    )
+    assert before["bucket"] == "safe_remove", (
+        "fixture must start in the exposed state for this test to mean anything"
+    )
+
+    session = subprocess.Popen(
+        [str(claude_bin), "-c", "sleep 120; true"], env=_test_env()
+    )
+    try:
+        result = _reassert(lib, b, session.pid, cwd=primary)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(session.pid), result.stderr
+
+        assert _lock_reason_for(primary, b) == f"pid {session.pid}"
+        after = _bucket_for(
+            _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout, b
+        )
+        assert after["bucket"] != "safe_remove"
+    finally:
+        session.kill()
+        session.wait(timeout=10)
+
+
+def test_reassert_session_lock_never_steals_a_live_lock(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A lock naming a pid that is alive right now is left strictly alone — it
+    is either this session's already (nothing to do) or an unrelated
+    session's, and moving one out from under a live session is the failure
+    mode this whole file exists to prevent. Same asymmetry as the hooks: a
+    stale lock self-heals, a stolen one loses work.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    lib = primary / "scripts" / "lib" / "session-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    holder = subprocess.Popen(["sleep", "120"], env=_test_env())
+    session = subprocess.Popen(
+        [str(claude_bin), "-c", "sleep 120; true"], env=_test_env()
+    )
+    try:
+        _git(primary, "worktree", "lock", str(b), "--reason", f"pid {holder.pid}")
+
+        result = _reassert(lib, b, session.pid, cwd=primary)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "", "must not report having taken a lock it left alone"
+        assert _lock_reason_for(primary, b) == f"pid {holder.pid}"
+    finally:
+        for proc in (holder, session):
+            proc.kill()
+            proc.wait(timeout=10)
+
+
+def test_reassert_session_lock_reclaims_a_dead_lock(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The mirror of the test above, and the reason it can't simply bail on
+    "a lock exists": the state that actually shows up in practice is a lock
+    naming a pid that has since died (a nested ``claude -p`` that exited, a
+    killed background task). That is not a live claim on the tree, so ship
+    reclaims it.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    lib = primary / "scripts" / "lib" / "session-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    dead = subprocess.Popen(["true"], env=_test_env())
+    dead.wait(timeout=10)
+    assert _wait_for(lambda: not _pid_alive(dead.pid), timeout=5.0)
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {dead.pid}")
+
+    session = subprocess.Popen(
+        [str(claude_bin), "-c", "sleep 120; true"], env=_test_env()
+    )
+    try:
+        result = _reassert(lib, b, session.pid, cwd=primary)
+        assert result.returncode == 0, result.stderr
+        assert _lock_reason_for(primary, b) == f"pid {session.pid}"
+    finally:
+        session.kill()
+        session.wait(timeout=10)
+
+
+def test_reassert_session_lock_honours_the_no_autoreap_escape_hatch(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """``PRECIS_NO_AUTOREAP=1`` turns off the whole reap apparatus, so there is
+    nothing for a lock to protect against — all three reapers no-op on it and
+    this must too, or a nested ``claude -p`` running a ship would start
+    writing locks the reapers have been told to ignore.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    lib = primary / "scripts" / "lib" / "session-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    session = subprocess.Popen(
+        [str(claude_bin), "-c", "sleep 120; true"], env=_test_env()
+    )
+    try:
+        result = _reassert(lib, b, session.pid, cwd=primary, PRECIS_NO_AUTOREAP="1")
+        assert result.returncode == 0, result.stderr
+        assert _lock_reason_for(primary, b) is None
+    finally:
+        session.kill()
+        session.wait(timeout=10)
+
+
+def test_reassert_session_lock_noops_on_the_primary_checkout(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Only trees under ``.claude/worktrees/`` are ever locked — the primary
+    checkout is never reaped and ``session-start-lock.sh`` skips it too. ship
+    runs from the primary whenever a repo isn't using worktrees at all, so
+    this path is reachable and must stay quiet rather than locking it.
+    """
+    primary = repo_trio["primary"]
+    lib = primary / "scripts" / "lib" / "session-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    session = subprocess.Popen(
+        [str(claude_bin), "-c", "sleep 120; true"], env=_test_env()
+    )
+    try:
+        result = _reassert(lib, primary, session.pid, cwd=primary)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+        assert _lock_reason_for(primary, primary) is None
+    finally:
+        session.kill()
+        session.wait(timeout=10)
+
+
+def test_ship_wires_the_lock_re_assertion_at_both_windows() -> None:
+    """The lib function is inert unless ``scripts/ship`` actually calls it, and
+    a shell script draws no coverage signal from the gate — so pin the wiring
+    directly. Two calls, deliberately: one up front (repairing a lock already
+    lost before this run, so the exposure never spans the whole gate) and one
+    after the branch reset, which is the moment the tree becomes clean +
+    merged and therefore removable.
+    """
+    ship = (REPO_ROOT / "scripts" / "ship").read_text(encoding="utf-8")
+    assert "scripts/lib/session-lock.sh" in ship, "ship must source the shared lib"
+    assert ship.count("\n_relock\n") == 2, (
+        "expected exactly two _relock call sites in scripts/ship "
+        "(pre-gate repair + post-reset window)"
+    )

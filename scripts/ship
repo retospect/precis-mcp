@@ -132,9 +132,40 @@ _deploy_lag_stats() {
     printf '%s %s\n' "$count" "$oldest"
 }
 
+# ── session-lock re-assertion ────────────────────────────────────────────
+# Shipping is exactly what makes a worktree clean + merged, which is exactly
+# the state a sibling session's SessionStart reaper removes when no live lock
+# is present — so ship OPENS the window that cost two sessions their tracked
+# files (docs/backlog/reaper-removed-live-session-worktree.md, proposal 3).
+# ship runs INSIDE the live session, so it can prove the session is alive at
+# the moment the window opens and re-take the lock from its own parent chain.
+# Full rules (never steals a live lock, best-effort, never fails a caller) are
+# on reassert_session_lock in scripts/lib/session-lock.sh.
+#
+# Guarded source, same pattern the hooks use: an older checkout without the lib
+# simply gets no re-assertion. A ship must never fail over its own lock
+# bookkeeping — losing the lock costs a worktree, losing the ship costs the work.
+if [[ -f "${WORKTREE}/scripts/lib/session-lock.sh" ]]; then
+    source "${WORKTREE}/scripts/lib/session-lock.sh"
+fi
+_relock() {
+    command -v reassert_session_lock >/dev/null 2>&1 || return 0
+    local got
+    got="$(reassert_session_lock "$WORKTREE" "${PPID:-}" || true)"
+    if [[ -n "$got" ]]; then
+        say "re-asserted session lock → pid ${got} (tree had no live lock; clean+merged buckets safe_remove)"
+    fi
+    return 0
+}
+
 # ── 1. sanity ───────────────────────────────────────────────────────────
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
+
+# A lock lost BEFORE this run (a nested `claude -p`, a killed background task)
+# leaves the tree exposed the instant the squash lands; repair it up front
+# rather than only at the end, so the exposure never spans the whole gate.
+_relock
 
 # ── 1a. deploy-lag warning (loud, WARN-only — the "begin of next ship burst"
 # moment; never blocks) ───────────────────────────────────────────────────
@@ -595,6 +626,10 @@ if [[ -z "$(git status --porcelain)" ]]; then
 else
     echo "WARNING: worktree dirty after ship — skipping branch reset (run 'git reset --hard origin/main' when clean)."
 fi
+
+# The window is now genuinely open: this tree is merged into main and (after
+# the reset above) clean. This is the call proposal 3 is actually about.
+_relock
 
 # ── 6. fast-forward the local main ──────────────────────────────────────
 # The CAS push moved refs/heads/main on the REMOTE only; the local main

@@ -115,14 +115,31 @@ reapers honour that flag, so a nested model call can no longer reap at
 SessionEnd, reap via the SessionStart backstop, or release the real session's
 lock. Hardening of the two hook bugs themselves is tracked in gripe 256469.
 
-### What is still open — and it is the item below, not that fix
+### Proposal 3 is now implemented — ship re-asserts the lock
 
-Both fixes above only stop *nested `claude`* from zeroing the lock. The
-exposure this document was opened for is untouched: **any** worktree that is
-lockless + clean + merged is removable by the next `SessionStart` of **any
-sibling session**, with no check that a live session is sitting in it. The
-lock is a single point of failure being used as a liveness proof, and today
-showed it can be dropped by something as ordinary as an LLM call. Proposals
-1-3 above (grace period / `.claude/purpose` tripwire / re-lock after ship)
-remain the live design question, and today raises their priority: this is now
-two data-loss events in ten days from the same weak signal.
+Reto picked proposal 3 on 2026-08-27. `scripts/ship` sources the shared lib
+and calls `reassert_session_lock` (`scripts/lib/session-lock.sh`) twice: once
+up front, so a lock already lost before the run doesn't leave the tree exposed
+across the whole gate, and once immediately after the step-5 branch reset —
+the moment the tree becomes clean + merged and therefore `safe_remove`. ship
+is the right place because it runs *inside* the live session, so it can prove
+the session is alive exactly when the window opens.
+
+It never steals: a lock naming a live pid is left alone (ours already, or
+someone else's and not ours to move), and only an absent, unparseable or
+dead-pid lock is claimed. Best-effort throughout — losing the lock costs a
+worktree, failing the ship costs the work.
+
+Note what this does *not* cover, and why it's still only a partial answer: it
+closes the window ship itself opens, but a lock dropped by anything else at
+any other time still leaves a clean+merged tree exposed until the next ship.
+
+### What is still open
+
+The exposure this document was opened for is narrowed, not closed: **any**
+worktree that is lockless + clean + merged is removable by the next
+`SessionStart` of **any** sibling session, with no check that a live session
+is sitting in it. The lock remains a single point of failure being used as a
+liveness proof, and 08-25 showed it can be dropped by something as ordinary as
+an LLM call. Proposals 1 and 2 (grace period / `.claude/purpose` tripwire)
+remain available if a third event lands from a window ship doesn't cover.
