@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from precis.utils import handle_registry
 from precis_web.claim_render import (
     claim_citers,
     claim_full_sentence,
@@ -39,6 +40,43 @@ from precis_web.nanopub_render import hub_context
 from precis_web.routes.refs import _followup_discussions
 
 router = APIRouter(tags=["claim"])
+
+
+def _refuted_ruling(store: Any, hub_ref_id: int) -> dict[str, Any] | None:
+    """``None`` unless ``hub_ref_id`` carries the ``STATUS:refuted`` control
+    tag (the do-not-repropose ledger, docs/backlog/quest-dossier-dialectic.md
+    §"Refuted lifecycle") — then the superseding-ruling shape the claim page
+    banner needs: ``ruling_id``/``ruling_title``/``ruling_url``, all ``None``
+    when refuted but the ruling link is missing (banner still shows, just
+    says "ruling unknown" rather than erroring).
+
+    Looks for an outbound ``superseded-by`` link first, then ``retracted-by``
+    (the two relation shapes the refuted-lifecycle write path uses), and
+    takes the first link target that's itself a finding — the negative
+    ruling is minted as an established finding, per the design doc."""
+    if not store.has_tag(hub_ref_id, "STATUS", "refuted"):
+        return None
+    for relation in ("superseded-by", "retracted-by"):
+        links = store.links_for(hub_ref_id, direction="out", relation=relation)
+        if not links:
+            continue
+        targets = store.fetch_refs_by_ids([link.dst_ref_id for link in links])
+        ruling = next(
+            (
+                targets[link.dst_ref_id]
+                for link in links
+                if targets.get(link.dst_ref_id) is not None
+                and targets[link.dst_ref_id].kind == "finding"
+            ),
+            None,
+        )
+        if ruling is not None:
+            return {
+                "ruling_id": ruling.id,
+                "ruling_title": ruling.title,
+                "ruling_url": f"/claim/{handle_registry.format_handle('finding', ruling.id)}",
+            }
+    return {"ruling_id": None, "ruling_title": None, "ruling_url": None}
 
 
 def claim_page_context(store: Any, head: str) -> dict[str, Any]:
@@ -67,6 +105,8 @@ def claim_page_context(store: Any, head: str) -> dict[str, Any]:
     #               panel, action box, …). getattr: reader tests drive this
     #               route with FakeStores that predate the nanopub mixin —
     #               degrade by dropping the section, not the page.
+    #   • refuted — the red banner shape (see :func:`_refuted_ruling`), None
+    #               unless the hub carries STATUS:refuted.
     _publish_row_fn = getattr(store, "nanopub_publish_row", None)
     return {
         **data,
@@ -75,6 +115,7 @@ def claim_page_context(store: Any, head: str) -> dict[str, Any]:
         "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
         "discussions": _followup_discussions(store, hub_ref_id),
         "np": hub_context(store, hub_ref_id) if _publish_row_fn else None,
+        "refuted": _refuted_ruling(store, hub_ref_id),
     }
 
 

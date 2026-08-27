@@ -772,6 +772,69 @@ def test_claim_view_mixed_paper_labels_contradiction_not_support(
     assert "(contradictor)" in r.text  # B attributed to contradictor, not support
 
 
+# ── Refuted lifecycle: the red banner (docs/backlog/quest-dossier-
+# dialectic.md §"Refuted lifecycle") ──
+
+
+def test_claim_view_refuted_shows_red_banner_with_ruling(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A hub tagged ``STATUS:refuted`` and linked ``superseded-by`` a ruling
+    finding shows the red banner naming that ruling."""
+    from precis.store.types import Tag
+
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    ruling = store.insert_ref(
+        kind="finding", slug=None, title="Pd/C does not catalyze this at RT"
+    ).id
+    store.add_link(src_ref_id=claim_hub, dst_ref_id=ruling, relation="superseded-by")
+    store.add_tag(claim_hub, Tag.closed("STATUS", "refuted"), replace_prefix=True)
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Refuted" in r.text
+    assert "the claim as stated is dead" in r.text
+    assert "Pd/C does not catalyze this at RT" in r.text
+    ruling_handle = handle_registry.format_handle("finding", ruling)
+    assert f'href="/claim/{ruling_handle}"' in r.text
+
+
+def test_claim_view_refuted_without_link_shows_ruling_unknown(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A hub tagged ``STATUS:refuted`` with no superseding-ruling link still
+    shows the banner, but says the ruling is unknown rather than erroring."""
+    from precis.store.types import Tag
+
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    store.add_tag(claim_hub, Tag.closed("STATUS", "refuted"), replace_prefix=True)
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Refuted" in r.text
+    assert "ruling unknown" in r.text
+
+
+def test_claim_view_non_refuted_shows_no_banner(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A plain (non-refuted) claim page carries no red banner."""
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "the claim as stated is dead" not in r.text
+    assert "ruling unknown" not in r.text
+
+
 # ── POST /claim/<head>/unacquirable — the claim-level softener write door ──
 
 
