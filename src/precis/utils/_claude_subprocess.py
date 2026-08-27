@@ -102,6 +102,32 @@ def exit_detail(stdout: str, stderr: str, *, limit: int = 400) -> str:
     return out[-limit:] if len(out) > limit else out
 
 
+#: Marks the subprocess env as a NESTED model call rather than a user session.
+#:
+#: A ``claude -p`` we spawn inherits the caller's cwd and therefore the
+#: caller's project hook config, so when that one-shot session ends it fires
+#: the project's **SessionEnd** hooks against the CALLER's tree. In this repo
+#: that hook is ``scripts/hooks/session-end-reap.sh``: it asks
+#: ``scripts/inflight`` for the worktree's bucket and runs ``git worktree
+#: remove`` when the answer is ``safe_remove``. So a single big-tier LLM call
+#: made from inside a clean, already-merged worktree DELETES that worktree
+#: out from under the live session — 1497 files on 2026-08-25 (gripe 256469).
+#: The hook's dirty/unmerged guards hold; its *live* guard does not, because
+#: the nested session is not the one that took the SessionStart lock.
+#:
+#: A nested model call is not a user session and must never run session
+#: lifecycle hooks. Set at this chokepoint rather than per call site for the
+#: same reason the OAuth bootstrap is — so no caller can forget it.
+_NESTED_SESSION_ENV: dict[str, str] = {"PRECIS_NO_AUTOREAP": "1"}
+
+
+def disarm_session_hooks(env: dict[str, str]) -> None:
+    """Mark ``env`` (in place) as a nested ``claude`` call — see
+    :data:`_NESTED_SESSION_ENV`. Always applied to a COPY by the runners
+    below, never to a caller's dict."""
+    env.update(_NESTED_SESSION_ENV)
+
+
 def run_claude(
     argv: list[str],
     *,
@@ -145,6 +171,7 @@ def run_claude(
     # (2026-07-12 incident). Central chokepoint: every claude -p goes through
     # here. Idempotent + override-safe (an env token already set wins).
     env = dict(env) if env is not None else dict(os.environ)
+    disarm_session_hooks(env)
     if bootstrap_oauth:
         ensure_oauth_token(env)
     try:
@@ -217,8 +244,11 @@ async def run_claude_async(
       (mirrors ``subprocess.CompletedProcess`` closely enough for every
       downstream reader, which only touches those two attributes).
     """
-    if env is None:
-        env = dict(os.environ)
+    # COPY before injecting, matching run_claude's documented contract — a
+    # caller that passes an isolated/restricted dict must not see it silently
+    # gain vars this function sets (this path previously mutated it in place).
+    env = dict(env) if env is not None else dict(os.environ)
+    disarm_session_hooks(env)
     ensure_oauth_token(env)
 
     try:

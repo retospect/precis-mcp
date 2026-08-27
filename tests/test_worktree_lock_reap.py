@@ -32,6 +32,25 @@ Confirms:
   ``safe_remove``, per ``scripts/inflight``'s ``session_field``).
 
 No DB / MCP fixtures involved — pure git + the three shipped scripts.
+
+Also covers gr256469's follow-up bugs, both about a NESTED `claude -p` (one
+inherits the caller's cwd + hook wiring, so its own SessionStart/SessionEnd
+fire this repo's hooks too) stepping on the REAL session's lock:
+
+- ``session-start-lock.sh`` run from underneath an already-locked live outer
+  session must leave that lock alone instead of re-locking to itself
+  (``test_nested_session_start_does_not_steal_outer_lock``).
+- ``session-end-reap.sh`` run as a nested session must not drop a live
+  outer session's lock (nor, therefore, reap the tree out from under it)
+  (``test_nested_session_end_does_not_unlock_or_reap_outer_session``) — but
+  a lock naming an actually-dead pid must still be released and the tree
+  still reaped normally (``test_session_end_reap_still_reaps_dead_lock``),
+  proving the fix doesn't neuter legitimate cleanup.
+
+These exercise the real ``scripts/lib/session-lock.sh`` + real
+``scripts/hooks/session-end-reap.sh`` (also staged byte-for-byte, alongside
+the three already listed above) under the same synthetic-process-tree
+technique.
 """
 
 from __future__ import annotations
@@ -55,6 +74,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INFLIGHT_SRC = REPO_ROOT / "scripts" / "inflight"
 REAP_SRC = REPO_ROOT / "scripts" / "reap-worktrees"
 LOCK_HOOK_SRC = REPO_ROOT / "scripts" / "hooks" / "session-start-lock.sh"
+SESSION_END_HOOK_SRC = REPO_ROOT / "scripts" / "hooks" / "session-end-reap.sh"
+SESSION_LOCK_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "session-lock.sh"
 
 
 def _test_env() -> dict[str, str]:
@@ -174,13 +195,25 @@ def repo_trio(tmp_path: Path) -> dict[str, Path]:
 
     scripts_dir = primary / "scripts"
     hooks_dir = scripts_dir / "hooks"
+    lib_dir = scripts_dir / "lib"
     hooks_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
     shutil.copy2(LOCK_HOOK_SRC, hooks_dir / "session-start-lock.sh")
+    shutil.copy2(SESSION_END_HOOK_SRC, hooks_dir / "session-end-reap.sh")
+    # scripts/lib/session-lock.sh: sourced (guarded, `[ -f ... ] && source
+    # ...`) by both hooks above. Staging it here is what makes the
+    # gr256469 nested-session guards in those hooks actually engage in this
+    # throwaway repo instead of silently no-op'ing (the guarded source
+    # degrading gracefully for an older checkout without the file) — the new
+    # nested-session tests below would go green for the wrong reason
+    # (guard never firing at all) if this were left unstaged.
+    shutil.copy2(SESSION_LOCK_LIB_SRC, lib_dir / "session-lock.sh")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
     (hooks_dir / "session-start-lock.sh").chmod(0o755)
+    (hooks_dir / "session-end-reap.sh").chmod(0o755)
     (primary / "README.md").write_text("root\n", encoding="utf-8")
     _git(primary, "add", "-A")
     _git(primary, "commit", "-q", "-m", "initial")
@@ -395,3 +428,298 @@ sleep 120
     assert not b.exists()
     wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
     assert str(b) not in wt_list
+
+
+def test_nested_session_start_does_not_steal_outer_lock(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr256469: a nested `claude -p`'s own SessionStart fires this hook
+    too, from underneath the real interactive session that already holds
+    the lock. The ancestry walk from THAT invocation resolves to the
+    nested process itself (the nearest comm==claude ancestor) — so without
+    the lock_pid_for/is_ancestor guard, the unconditional unlock-then-lock
+    below steals the lock from the live outer session and hands it to the
+    nested one-shot, which exits moments later and leaves a dead-lock a
+    sibling's reaper then deletes the still-live tree out from under. This
+    is the exact mechanism behind gr256469's 1497-file loss.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = b / "scripts" / "hooks" / "session-start-lock.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    outer_pid_file = scratch / "outer.pid"
+    nested_pid_file = scratch / "nested.pid"
+
+    # Nested: also comm==claude (a real nested `claude -p` presents that
+    # way too), records its own pid, then fires the same hook again — the
+    # shape that broke the pre-fix unconditional unlock/lock.
+    nested_inner = scratch / "nested_inner.sh"
+    nested_inner.write_text(
+        f"""echo $$ > "{nested_pid_file}"
+bash "{hook}"
+""",
+        encoding="utf-8",
+    )
+    nested_inner.chmod(0o755)
+
+    # Outer: a durable comm==claude process that locks B to ITSELF first
+    # (the real starting state — an interactive session already holds the
+    # lock) and only THEN spawns the nested comm==claude child as a genuine
+    # OS child of itself, mirroring a nested `claude -p` inheriting the
+    # outer session's cwd/hook wiring and running underneath it in the
+    # process tree.
+    outer_inner = scratch / "outer_inner.sh"
+    outer_inner.write_text(
+        f"""echo $$ > "{outer_pid_file}"
+bash "{hook}"
+"{claude_bin}" "{nested_inner}"
+sleep 60
+""",
+        encoding="utf-8",
+    )
+    outer_inner.chmod(0o755)
+
+    proc = subprocess.Popen(
+        [str(claude_bin), str(outer_inner)],
+        cwd=str(b),
+        env=_test_env(),
+    )
+    try:
+        assert _wait_for(lambda: outer_pid_file.exists()), "outer pid never recorded"
+        outer_pid = int(outer_pid_file.read_text(encoding="utf-8").strip())
+        assert outer_pid == proc.pid
+
+        assert _wait_for(lambda: _lock_reason_for(primary, b) == f"pid {outer_pid}"), (
+            "outer session-start-lock.sh never locked B to itself"
+        )
+
+        assert _wait_for(lambda: nested_pid_file.exists()), "nested pid never recorded"
+        nested_pid = int(nested_pid_file.read_text(encoding="utf-8").strip())
+        assert nested_pid != outer_pid
+
+        # The nested claude_bin process is run in the foreground of
+        # outer_inner.sh (no trailing `&`), so it's gone once outer_inner
+        # moves on to `sleep 60` — give it a moment to actually finish.
+        assert _wait_for(lambda: not _pid_alive(nested_pid), timeout=10.0), (
+            "nested claude process never exited"
+        )
+
+        reason = _lock_reason_for(primary, b)
+        assert reason == f"pid {outer_pid}", (
+            f"expected the lock to still name the OUTER session pid "
+            f"{outer_pid}, got {reason!r} (nested pid was {nested_pid}) — "
+            "the nested SessionStart invocation stole the lock"
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+    _git(primary, "worktree", "unlock", str(b))
+
+
+def test_nested_session_end_does_not_unlock_or_reap_outer_session(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr256469: mirrors the SessionStart guard above for SessionEnd. A
+    nested `claude -p`'s own SessionEnd also fires session-end-reap.sh —
+    while the REAL interactive session that holds the lock is still alive
+    and sitting in the tree. The pre-fix hook unconditionally unlocked
+    BEFORE its bucket check, so by the time inflight ran, the tree looked
+    unlocked+merged+clean and got removed out from under the still-live
+    outer session. B is already merged+clean (see repo_trio) — exactly the
+    trigger shape scripts/ship leaves a just-shipped worktree in.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = b / "scripts" / "hooks" / "session-end-reap.sh"
+    claude_bin = _make_fake_claude_binary(tmp_path)
+
+    # Outer: any live process standing in for the real interactive session.
+    # Doesn't need comm==claude itself — the SessionEnd guard only compares
+    # the LOCK's pid against the pid the nested hook resolves to, it never
+    # walks looking for an ancestor the way the SessionStart guard does.
+    outer = subprocess.Popen(["sleep", "120"], env=_test_env())
+    try:
+        outer_pid = outer.pid
+        _git(primary, "worktree", "lock", str(b), "--reason", f"pid {outer_pid}")
+        assert _lock_reason_for(primary, b) == f"pid {outer_pid}"
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        nested_pid_file = scratch / "nested.pid"
+        payload_file = scratch / "payload.json"
+        payload_file.write_text(
+            json.dumps({"reason": "logout", "cwd": str(b)}), encoding="utf-8"
+        )
+
+        inner = scratch / "inner.sh"
+        inner.write_text(
+            f"""echo $$ > "{nested_pid_file}"
+cat "{payload_file}" | bash "{hook}"
+""",
+            encoding="utf-8",
+        )
+        inner.chmod(0o755)
+
+        nested = subprocess.Popen(
+            [str(claude_bin), str(inner)],
+            cwd=str(b),
+            env=_test_env(),
+        )
+        try:
+            nested.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            nested.kill()
+            nested.wait(timeout=10)
+            raise
+
+        assert nested_pid_file.exists(), "nested pid never recorded"
+
+        # The outer session's lock must be untouched...
+        reason = _lock_reason_for(primary, b)
+        assert reason == f"pid {outer_pid}", (
+            f"expected the lock to still name the OUTER session pid "
+            f"{outer_pid}, got {reason!r} — the nested SessionEnd dropped it"
+        )
+        # ...and B must still be there: the nested SessionEnd must have
+        # exited before ever reaching the unlock / reap-bucket check.
+        assert b.exists()
+        wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
+        assert str(b) in wt_list
+    finally:
+        outer.terminate()
+        try:
+            outer.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            outer.kill()
+            outer.wait(timeout=10)
+    _git(primary, "worktree", "unlock", str(b))
+
+
+def test_session_end_reap_still_reaps_dead_lock(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Guards against over-correcting gr256469's fix into a hook that never
+    reaps anything: a lock naming an ACTUALLY DEAD pid (the ordinary
+    stale-lock case scripts/inflight already flips to dead-lock/safe_remove)
+    must still be released, and B still reaped, by a normal (non-nested)
+    session-end-reap.sh run.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = primary / "scripts" / "hooks" / "session-end-reap.sh"
+
+    dead = subprocess.Popen(["true"], env=_test_env())
+    dead.wait(timeout=10)
+    dead_pid = dead.pid
+    assert _wait_for(lambda: not _pid_alive(dead_pid), timeout=5.0)
+
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {dead_pid}")
+    assert _lock_reason_for(primary, b) == f"pid {dead_pid}"
+
+    payload = json.dumps({"reason": "logout", "cwd": str(b)})
+    result = subprocess.run(
+        ["bash", str(hook)],
+        cwd=str(primary),
+        input=payload,
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert not b.exists()
+    wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
+    assert str(b) not in wt_list
+
+
+def test_session_end_reap_holds_when_it_cannot_identify_itself(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr256469, fail-safe direction: the lock names a LIVE pid and
+    ``find_session_pid`` cannot resolve this invocation to any session at all
+    (no ``claude`` ancestor in the chain — a detached/reparented hook, a ``ps``
+    failure, or simply more than 25 hops). "Can't tell whose lock this is"
+    must resolve to "don't touch it", never to "unlock anyway".
+
+    The two outcomes are not symmetric, which is what makes this worth a test:
+    holding a lock we shouldn't is self-healing (the pid dies, the next run
+    reclaims the tree via the dead-lock path above), while releasing one we
+    shouldn't is the 1497-file loss. An identity check that bails only on a
+    positive mismatch — ``[ -n "$OWN" ] && [ "$OWN" != "$LOCK" ]`` — passes the
+    nested test above yet still unlocks and reaps here.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = primary / "scripts" / "hooks" / "session-end-reap.sh"
+
+    outer = subprocess.Popen(["sleep", "120"], env=_test_env())
+    try:
+        outer_pid = outer.pid
+        _git(primary, "worktree", "lock", str(b), "--reason", f"pid {outer_pid}")
+
+        # Run the hook straight from the test process: nothing in this
+        # ancestry is a `claude`, so find_session_pid yields nothing.
+        result = subprocess.run(
+            ["bash", str(hook)],
+            cwd=str(primary),
+            input=json.dumps({"reason": "logout", "cwd": str(b)}),
+            env=_test_env(),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+        assert _lock_reason_for(primary, b) == f"pid {outer_pid}"
+        assert b.exists()
+    finally:
+        outer.kill()
+        outer.wait(timeout=10)
+
+
+def test_session_end_reap_holds_when_shared_lib_is_missing(
+    repo_trio: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """gr256469, second fail-safe direction. This hook ``cd``s to the PRIMARY
+    checkout, so its ``scripts/lib/session-lock.sh`` source resolves THERE —
+    not in the worktree the hook shipped from. A worktree running ahead of
+    main therefore has the new hook but an old primary with no lib, and the
+    ownership guard has no reader for the lock at all.
+
+    With no way to tell a genuinely-unlocked tree from one it merely cannot
+    read, the hook must hold. The cost is an un-reaped worktree: visible,
+    harmless, and self-correcting the moment the lib reaches the primary.
+    """
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = primary / "scripts" / "hooks" / "session-end-reap.sh"
+    lib = primary / "scripts" / "lib" / "session-lock.sh"
+    assert lib.exists(), "fixture must stage the lib for its removal to mean anything"
+    lib.unlink()
+
+    outer = subprocess.Popen(["sleep", "120"], env=_test_env())
+    try:
+        outer_pid = outer.pid
+        _git(primary, "worktree", "lock", str(b), "--reason", f"pid {outer_pid}")
+
+        result = subprocess.run(
+            ["bash", str(hook)],
+            cwd=str(primary),
+            input=json.dumps({"reason": "logout", "cwd": str(b)}),
+            env=_test_env(),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+        assert _lock_reason_for(primary, b) == f"pid {outer_pid}"
+        assert b.exists()
+    finally:
+        outer.kill()
+        outer.wait(timeout=10)

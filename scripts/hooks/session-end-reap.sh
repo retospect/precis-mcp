@@ -16,9 +16,10 @@
 # untouched, so unshipped work is never lost.
 #
 # Also releases the `git worktree lock` acquired at SessionStart by
-# scripts/hooks/session-start-lock.sh — unconditionally, before the bucket
-# check, so a live#<pid> session that's genuinely ending doesn't keep
-# looking "locked+alive" to the next inflight/reap-worktrees run.
+# scripts/hooks/session-start-lock.sh — before the bucket check, so a
+# live#<pid> session that's genuinely ending doesn't keep looking
+# "locked+alive" to the next inflight/reap-worktrees run. NOT unconditional
+# though (gr256469): see the ownership guard below, right before the unlock.
 #
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op.
 # Fire-and-forget: SessionEnd's exit code/stdout aren't read by the harness —
@@ -64,10 +65,60 @@ command -v git >/dev/null 2>&1 || exit 0
 # case. Guarded — an older primary checkout without the helper simply skips it.
 [ -f scripts/lib/compose-project.sh ] && source scripts/lib/compose-project.sh
 
-# Release the SessionStart lock (scripts/hooks/session-start-lock.sh)
-# unconditionally — this is a genuine end-of-session, so whatever
-# inflight/reap-worktrees decide next (this run or a sibling's) must see this
-# worktree unlocked, not still parsed as `live#<pid>`.
+# find_session_pid/lock_pid_for/is_ancestor: shared with
+# session-start-lock.sh, see scripts/lib/session-lock.sh. Same guarded
+# source as compose-project.sh above — an older checkout without this file
+# just leaves the functions undefined, and the `command -v` guard below
+# degrades that into "always unlock", today's pre-fix behaviour.
+[ -f scripts/lib/session-lock.sh ] && source scripts/lib/session-lock.sh
+
+# gr256469: a nested `claude -p` (e.g. spawned by an LLM-call subprocess)
+# inherits THIS worktree's cwd and hook wiring, so its own SessionEnd also
+# fires this script — while the REAL interactive session that holds the lock
+# is still very much alive and sitting in the tree. Unconditionally unlocking
+# here (the pre-fix behaviour) drops the real session's lock out from under
+# it: the tree then looks unlocked+merged+clean to the very next
+# inflight/reap-worktrees run (this one's own bucket check below, or a
+# sibling's), which deletes it while the real session is still using it —
+# the exact mechanism behind gr256469's 1497-file loss.
+#
+# So: only unlock (and only then fall through to the reap/bucket check) if
+# this ending session actually OWNS the lock — i.e. the lock is absent,
+# unparseable, or names a pid that's already dead (all of which mean nothing
+# alive depends on it), or names exactly THIS session's own pid (a genuine
+# self-inflicted end). If it names a DIFFERENT, still-alive pid, we are not
+# that session: leave the lock and the tree alone and get out now, before
+# touching anything else.
+# The guard FAILS SAFE, deliberately, in both directions: if we cannot prove
+# the live lock is ours, we leave it alone. The two outcomes are not
+# symmetric — leaving a lock behind is self-healing (its pid dies, the next
+# run sees a dead lock and reclaims the tree normally), whereas dropping a
+# live session's lock is the 1497-file data loss this guard exists to stop.
+# So "can't tell" must resolve to "don't touch", never to "unlock anyway".
+# Concretely that covers: the shared lib missing (an older primary checkout —
+# note this script cd's to PRIMARY, so the source below resolves THERE, not
+# in the worktree the hook shipped from), and find_session_pid failing to
+# identify us at all. The cost of a false hold is an un-reaped worktree,
+# which is visible, harmless and self-correcting.
+LOCK_PID=""
+OWN_PID=""
+if command -v lock_pid_for >/dev/null 2>&1; then
+    LOCK_PID=$(lock_pid_for "$REPO_ROOT") || LOCK_PID=""
+fi
+if command -v find_session_pid >/dev/null 2>&1; then
+    OWN_PID=$(find_session_pid "${PPID:-}") || OWN_PID=""
+fi
+if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    # Live lock: proceed ONLY on a positive identity match with this session.
+    if ! { [ -n "$OWN_PID" ] && [ "$OWN_PID" = "$LOCK_PID" ]; }; then
+        exit 0
+    fi
+elif ! command -v lock_pid_for >/dev/null 2>&1; then
+    # No lib, so LOCK_PID above is "" for want of a reader, not because the
+    # tree is genuinely unlocked — we can't distinguish those. Hold.
+    exit 0
+fi
+
 git worktree unlock "$REPO_ROOT" >/dev/null 2>&1 || true
 
 [ -x scripts/inflight ] || exit 0

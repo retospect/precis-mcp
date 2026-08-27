@@ -103,3 +103,42 @@ Two things that baseline showed, worth carrying forward:
 - The fragment cause: `docs/backlog/taproot-backfill-fragment-claims.md`.
 - The evidence-side mirror (a paper's lit-review paragraph accepted as
   evidence): `docs/backlog/taproot-evidence-section-gating.md`.
+
+## Cohort B catches truncation artifacts, not just front matter
+
+`has_grounding_prose` requires a *terminated* sentence, so a chunk that is
+real body prose but was **cut off mid-sentence by chunking** also fails the
+gate and lands in the `prose-less` cohort. Measured example (2026-08-25):
+chunk 746754 (`ravi2020vitamin~35`, ord 35) is 325 chars of genuine
+inner-filter-effect prose that ends `"…( $\Phi_F 0.54 \rightarrow 0.30$  for"`
+— no terminator anywhere, so `_prose_sentences` returns nothing.
+
+This is the predicate behaving as documented (it over-rejects, and
+over-rejection degrades to a skip, never to a wrong grounding) — but it means
+**a cohort-B hit is not by itself evidence of a bibliography-stub edge**.
+Read the anchored chunk before treating a hit as a defect:
+
+- **front matter** (title/author block, `ord` 0-2) → the real defect; repair.
+- **truncated body prose** → the existing grounding may be fine. Repair only
+  if the proposed passage is independently better, and check that no *other*
+  edge on the hub is the sole carrier of an aspect of the claim you would drop
+  by repointing. (For `fi191319` the repoint was safe only because a sibling
+  edge at 746753 carries the IFE half of the claim on its own.)
+
+## A proposed target that already has an edge is a no-op, not an error
+
+`_apply_grounding` catches `UniqueViolation` and reports it — the broken row
+is left in place and the batch continues. So `--apply` over a cohort where one
+edge's best passage is already grounded by a *sibling* edge is safe to run;
+that edge simply reports the duplicate-twin status and stays broken. The
+follow-up is a **delete** of the redundant stub edge, not a repoint. Check for
+this before applying:
+
+```sql
+SELECT link_id, src_chunk_id, meta->>'support', meta->>'origin'
+FROM links WHERE dst_ref_id = <hub> AND relation = 'corroborates'
+ORDER BY src_chunk_id;
+```
+
+Seen on `fi191268`: the front-matter stub (link 938700, chunk 718093) proposes
+chunk 718134, which link 992199 already grounds.

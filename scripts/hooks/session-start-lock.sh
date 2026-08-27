@@ -25,11 +25,15 @@
 # that's already gone by the time anything checks `kill -0`, producing an
 # immediate `dead-lock#<pid>` that a sibling session's reaper then deletes
 # out from under the still-live session. Exactly the bug this hook exists to
-# fix. See `find_session_pid` below for the discriminator used instead.
+# fix. See `find_session_pid` in scripts/lib/session-lock.sh for the
+# discriminator used instead.
 #
 # No-op for the PRIMARY checkout (only worktrees under .claude/worktrees/
 # are ever locked) and idempotent (unlock-then-lock), so a restarted/resumed
-# session just refreshes its own lock instead of erroring on "already locked".
+# session just refreshes its own lock instead of erroring on "already locked"
+# — UNLESS this invocation is itself a nested `claude -p` running underneath
+# the session that already holds the lock (gr256469): see the
+# lock_pid_for/is_ancestor guard below, right before the unlock/lock pair.
 #
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (matches reap-worktrees /
 # session-end-reap.sh — no point locking for a liveness check nothing acts on).
@@ -52,59 +56,40 @@ case "$HERE" in
     *) exit 0 ;;   # not the recognized worktree layout — be conservative
 esac
 
-# Walk the parent chain from $PPID (the hook script's own parent) up to the
-# durable `claude` / `claude -w <name>` process this session lives and dies
-# with. Bounded (25 hops) so a broken /proc or a ps failure can't spin.
-#
-# Discriminator, in order:
-#
-#   1. `comm` (the process's own executable basename — e.g. "claude",
-#      "bash", "node" — NOT the full command line with its args/paths)
-#      is exactly "claude". This is what the native/binary Claude Code
-#      install (e.g. Homebrew's /opt/homebrew/bin/claude) presents as, and
-#      it can't be spoofed by a path substring: `comm` never contains a
-#      worktree's own ".claude/worktrees/<name>" path, only the exec name.
-#
-#   2. Fallback for an npm/node-shim install, where the OS-level process is
-#      literally "node" (the `claude` shebang script re-execs it) and #1
-#      never matches: check that same process's full argv for the npm
-#      package path "@anthropic-ai/claude-code". That's a fixed install-path
-#      token — far more specific than a bare "claude" substring — that would
-#      never coincidentally appear in this repo's own worktree paths (which
-#      live under .claude/worktrees/<name>, nowhere near a node_modules
-#      package path).
-#
-# Either way this only matches the process itself, never a transient
-# wrapper that merely mentions "claude"/the repo path somewhere in argv.
-find_session_pid() {
-    local pid=$1 i comm base args ppid
-    for i in $(seq 1 25); do
-        [ -z "${pid:-}" ] && return 1
-        case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-        [ "$pid" -le 1 ] && return 1
+# find_session_pid (the discriminator walk described above) plus
+# lock_pid_for/is_ancestor (gr256469's nested-session guard, right below) now
+# live in scripts/lib/session-lock.sh, shared with session-end-reap.sh so the
+# two hooks' notion of "whose session is this" can't drift apart. Guarded
+# source, same pattern session-end-reap.sh already uses for
+# scripts/lib/compose-project.sh: an older checkout without this file just
+# leaves find_session_pid undefined, and the `|| exit 0` below turns that
+# into a clean no-op instead of an error.
+[ -f scripts/lib/session-lock.sh ] && source scripts/lib/session-lock.sh
 
-        comm=$(ps -o comm= -p "$pid" 2>/dev/null)
-        base=${comm##*/}
-        if [ "$base" = "claude" ]; then
-            printf '%s' "$pid"
-            return 0
-        fi
-        if [ "$base" = "node" ]; then
-            args=$(ps -o args= -p "$pid" 2>/dev/null)
-            case "$args" in
-                *"@anthropic-ai/claude-code"*)
-                    printf '%s' "$pid"
-                    return 0
-                    ;;
-            esac
-        fi
-
-        ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
-        [ -z "$ppid" ] && return 1
-        pid=$ppid
-    done
-    return 1
-}
+# gr256469: a nested `claude -p` (e.g. spawned by an LLM-call subprocess)
+# inherits THIS worktree's cwd and hook wiring, so its own SessionStart also
+# fires this script — from underneath the real, already-locked interactive
+# session. Run from that nested invocation, the walk below resolves to the
+# nested `claude -p` itself (the nearest comm==claude ancestor), not the real
+# session further up — so the unconditional unlock/lock pair that follows
+# would silently steal the lock from the live outer session and hand it to
+# the nested one-shot, which exits moments later and leaves a dead-lock a
+# sibling's reaper then deletes the (still-live!) tree out from under.
+#
+# If the tree is ALREADY locked to a pid that is (a) alive right now and (b)
+# an ancestor of this hook invocation, we ARE that nested case: leave the
+# existing lock alone and exit, rather than re-locking to ourselves.
+# Anything else — no lock, an unparseable reason, a dead pid, or a live pid
+# that ISN'T our ancestor (e.g. a stale lock from an unrelated session, or
+# this same session simply re-running its own SessionStart on resume) — falls
+# through unchanged to today's idempotent unlock-then-lock below.
+if command -v lock_pid_for >/dev/null 2>&1 && command -v is_ancestor >/dev/null 2>&1; then
+    EXISTING_LOCK_PID=$(lock_pid_for "$HERE") || EXISTING_LOCK_PID=""
+    if [ -n "$EXISTING_LOCK_PID" ] && kill -0 "$EXISTING_LOCK_PID" 2>/dev/null \
+        && is_ancestor "$EXISTING_LOCK_PID" "${PPID:-}"; then
+        exit 0
+    fi
+fi
 
 SESSION_PID=$(find_session_pid "${PPID:-}") || exit 0
 [ -z "$SESSION_PID" ] && exit 0

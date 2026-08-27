@@ -245,3 +245,143 @@ def test_run_claude_async_surfaces_stdout_when_stderr_is_empty(
         )
 
     assert '"is_error":true' in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# gripe 256469 — a nested ``claude -p`` must not run session-lifecycle hooks
+# against the CALLER's worktree. Without PRECIS_NO_AUTOREAP the nested
+# session's SessionEnd fires scripts/hooks/session-end-reap.sh, which runs
+# ``git worktree remove`` on a clean+merged tree: one big-tier LLM call
+# deleted 1497 tracked files out from under a live session on 2026-08-25.
+# --------------------------------------------------------------------------
+
+#: The env var scripts/hooks/session-end-reap.sh checks first thing.
+_NO_AUTOREAP = "PRECIS_NO_AUTOREAP"
+
+
+def test_run_claude_disarms_session_reap_hook(tmp_path: Path, monkeypatch) -> None:
+    """Every ``run_claude`` subprocess is marked as a nested call, so the
+    project's SessionEnd reaper no-ops instead of removing the caller's
+    worktree (gr256469)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _vault(monkeypatch, None)
+    monkeypatch.delenv(_NO_AUTOREAP, raising=False)
+
+    stub = tmp_path / "claude_stub.sh"
+    dump = tmp_path / "env.out"
+    _write_env_dump_stub(stub, dump)
+
+    caller_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home)}
+
+    run_claude(
+        [str(stub)],
+        binary=str(stub),
+        label="claude -p (test)",
+        timeout_s=10.0,
+        error_cls=ClaudeProcessError,
+        env=caller_env,
+    )
+
+    assert f"{_NO_AUTOREAP}=1" in dump.read_text(encoding="utf-8")
+    # copy-not-mutate holds for this injection too
+    assert _NO_AUTOREAP not in caller_env
+
+
+def test_run_claude_disarms_reap_even_for_isolated_env_callers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The guard is NOT tied to the OAuth bootstrap: a caller that opts out of
+    token injection (``bootstrap_oauth=False``, fix_gripe's sandboxed
+    ``env_base``) still spawns a real nested ``claude`` and so still must not
+    be able to reap the caller's tree."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _vault(monkeypatch, "sk-ant-oat01-REAL-WORKER-TOKEN")
+    monkeypatch.delenv(_NO_AUTOREAP, raising=False)
+
+    stub = tmp_path / "claude_stub.sh"
+    dump = tmp_path / "env.out"
+    _write_env_dump_stub(stub, dump)
+
+    isolated_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home)}
+
+    run_claude(
+        [str(stub)],
+        binary=str(stub),
+        label="claude -p (test)",
+        timeout_s=10.0,
+        error_cls=ClaudeProcessError,
+        env=isolated_env,
+        bootstrap_oauth=False,
+    )
+
+    dumped = dump.read_text(encoding="utf-8")
+    assert f"{_NO_AUTOREAP}=1" in dumped
+    assert ENV_VAR not in dumped  # isolation still intact
+    assert _NO_AUTOREAP not in isolated_env
+
+
+def test_run_claude_async_disarms_session_reap_hook(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same guarantee on the async runner — the ``claude_p``/``claude_agent``
+    streaming path spawns just as real a nested session."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _vault(monkeypatch, None)
+    monkeypatch.delenv(_NO_AUTOREAP, raising=False)
+
+    stub = tmp_path / "claude_stub.sh"
+    dump = tmp_path / "env.out"
+    _write_env_dump_stub(stub, dump)
+
+    caller_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home)}
+
+    asyncio.run(
+        run_claude_async(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env=caller_env,
+        )
+    )
+
+    assert f"{_NO_AUTOREAP}=1" in dump.read_text(encoding="utf-8")
+
+
+def test_run_claude_async_copies_caller_env(tmp_path: Path, monkeypatch) -> None:
+    """``run_claude_async`` must honour the same copy-not-mutate contract
+    ``run_claude`` documents — it previously injected into the caller's dict in
+    place, so an isolated ``env_base`` silently gained the OAuth token."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _vault(monkeypatch, "sk-ant-oat01-FROM-VAULT")
+    monkeypatch.delenv(_NO_AUTOREAP, raising=False)
+
+    stub = tmp_path / "claude_stub.sh"
+    dump = tmp_path / "env.out"
+    _write_env_dump_stub(stub, dump)
+
+    caller_env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home)}
+
+    asyncio.run(
+        run_claude_async(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env=caller_env,
+        )
+    )
+
+    # the subprocess got both injections ...
+    dumped = dump.read_text(encoding="utf-8")
+    assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT" in dumped
+    assert f"{_NO_AUTOREAP}=1" in dumped
+    # ... while the caller's own dict stayed exactly as it was handed over.
+    assert ENV_VAR not in caller_env
+    assert _NO_AUTOREAP not in caller_env
