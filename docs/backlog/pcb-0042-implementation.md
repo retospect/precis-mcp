@@ -1,5 +1,12 @@
 # PCB (ADR 0042) — open slices
 
+> **Routing story superseded:** `pcb-guided-place-route.md` (in-house
+> LLM-guided topological place+route, sketch-as-canonical) now owns
+> placement/routing/DRC/export-order. Freerouting demotes to escape
+> hatch; Slice 9's "route round-trip" phase wording is superseded by
+> that spec's slice 9. This file's residuals get rewritten when its
+> slice 1 ships.
+
 ## Slice 3 — `datasheet` kind (thin, capped)  ☐
 *labels: enhancement · ADR 0042 §7*
 
