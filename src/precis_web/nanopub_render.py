@@ -93,6 +93,16 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
 
     withheld = withheld_edges(store, hub_id)
     preflight = publish_preflight(store, hub_id, row=row) if state is not None else []
+    suggested_payload = _suggested_payload(store, row, bundle, hub_meta)
+    # Pre-approve (unminted/candidate): the mint gates haven't run for
+    # real yet, but they are pure reads — dry-run them against the live
+    # sentence + the prefilled grounding so the gates panel shows how the
+    # claim stacks up NOW, not a wall of "pending".
+    dryrun = (
+        _mint_dryrun(store, hub_id, bundle, hub_meta, suggested_payload)
+        if state in (None, "candidate")
+        else None
+    )
     return {
         "hub_id": hub_id,
         "bundle": bundle,
@@ -107,10 +117,49 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
-        "suggested_payload": _suggested_payload(store, row, bundle, hub_meta),
+        "suggested_payload": suggested_payload,
         "graph": _graph(store, bundle, row, display_artifact_type),
         "ladder": _ladder(state, row, disputed=disputed),
-        "gates": _gate_report(state, preflight),
+        "gates": _gate_report(state, preflight, dryrun=dryrun),
+    }
+
+
+def _mint_dryrun(
+    store: Any,
+    hub_id: int,
+    bundle: Any,
+    hub_meta: dict[str, Any],
+    payload_json: str,
+) -> dict[str, Any] | None:
+    """Read-only rehearsal of the Layer-A mint gates for a pre-approve
+    hub: the same :func:`precis.nanopub.gates.run_mint_gates` call approve
+    makes, against the live sentence and the approve form's prefilled
+    payload (what a reviewer clicking Approve right now would submit).
+    Returns ``{"violations": {gate: [messages]}, "advisories": [...]}``
+    plus the same pre-reword ``provenance_body`` snapshot approve reads —
+    or ``None`` when the prefill doesn't parse (the panel then degrades
+    back to "pending", never a 500)."""
+    from precis.nanopub import evidence, gates
+
+    try:
+        payload = json.loads(payload_json or "{}")
+        if not isinstance(payload, dict):
+            return None
+    except json.JSONDecodeError:
+        return None
+    violations: dict[str, list[str]] = {}
+    for v in gates.run_mint_gates(
+        store,
+        bundle,
+        payload,
+        hub_meta=hub_meta,
+        provenance_body=evidence.hub_body(store, hub_id),
+    ):
+        violations.setdefault(v.gate, []).append(v.message)
+    artifact_type = gates.resolve_artifact_type(bundle, payload)
+    return {
+        "violations": violations,
+        "advisories": gates.advisory_lint(bundle.sentence, artifact_type=artifact_type),
     }
 
 
@@ -121,8 +170,11 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
 _LADDER: list[tuple[str, str]] = [
     (
         "candidate",
-        "Minted as a candidate: the claim hub entered the publish pipeline. "
-        "Nothing is frozen yet — the sentence is still editable.",
+        "Entered the publish pipeline: the chase built and verified its "
+        "evidence upstream (grounding passages pinned, refine verification "
+        "on the edges). Nothing is frozen yet — the sentence is still "
+        "editable, and the Gates panel below shows a live dry-run of every "
+        "check approve will make.",
     ),
     (
         "reviewed",
@@ -235,27 +287,68 @@ _GATES_PASSED_STATES = ("reviewed", "signed", "anchored", "published")
 
 
 def _gate_report(
-    state: str | None, preflight: list[Any]
-) -> dict[str, list[dict[str, Any]]]:
+    state: str | None,
+    preflight: list[Any],
+    *,
+    dryrun: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Every gate the claim faces, with what its status IS — not just the
     failures. ``mint`` gates all passed the moment approve succeeded
-    (state ≥ reviewed); before that they are pending. ``preflight`` checks
-    read the live issue list: a slug with a blocking issue failed, a
-    non-blocking one is a note, anything else passed (or is pending while
-    the hub is unminted/candidate)."""
+    (state ≥ reviewed); before that, ``dryrun`` (:func:`_mint_dryrun`)
+    supplies a live rehearsal — per-gate passing/failing against the
+    current sentence + prefilled grounding, with the advisory lint codes
+    riding the claim-sentence row as a note ("passed, with
+    considerations") — and only a missing/unparseable dry-run degrades to
+    "pending". ``preflight`` checks read the live issue list: a slug with
+    a blocking issue failed, a non-blocking one is a note, anything else
+    passed (or is pending while the hub is unminted/candidate)."""
     minted = state in _GATES_PASSED_STATES
     issues_by_check: dict[str, Any] = {}
     for i in preflight:
         issues_by_check.setdefault(i.check, i)
-    mint = [
-        {
-            "name": name,
-            "desc": desc,
-            "status": "passed" if minted else "pending",
-            "message": None,
-        }
-        for name, desc in _MINT_GATES
-    ]
+    mint: list[dict[str, Any]] = []
+    if minted or dryrun is None:
+        mint = [
+            {
+                "name": name,
+                "desc": desc,
+                "status": "passed" if minted else "pending",
+                "message": None,
+            }
+            for name, desc in _MINT_GATES
+        ]
+    else:
+        violations: dict[str, list[str]] = dryrun["violations"]
+        advisories: list[str] = dryrun["advisories"]
+        for name, desc in _MINT_GATES:
+            broke = violations.get(name)
+            if broke:
+                extra = f" (+{len(broke) - 1} more)" if len(broke) > 1 else ""
+                status, message = "failed", broke[0] + extra
+            elif name == "claim-sentence" and advisories:
+                codes = ", ".join(w.split(":", 1)[0].strip() for w in advisories)
+                status = "note"
+                message = (
+                    f"{desc} — passing, with {len(advisories)} advisory "
+                    f"consideration(s): {codes}"
+                )
+            else:
+                status, message = "passed", None
+            mint.append(
+                {"name": name, "desc": desc, "status": status, "message": message}
+            )
+        # A violation slug outside the vocabulary (a new gate) must not
+        # vanish — append it raw rather than hide it.
+        for name in violations:
+            if name not in {n for n, _ in _MINT_GATES}:
+                mint.append(
+                    {
+                        "name": name,
+                        "desc": "",
+                        "status": "failed",
+                        "message": violations[name][0],
+                    }
+                )
     pre = []
     for name, desc in _PREFLIGHT_CHECKS:
         issue = issues_by_check.get(name)
@@ -267,7 +360,7 @@ def _gate_report(
         else:
             status, message = "passed", None
         pre.append({"name": name, "desc": desc, "status": status, "message": message})
-    return {"mint": mint, "preflight": pre}
+    return {"mint": mint, "preflight": pre, "dryrun": not minted and dryrun is not None}
 
 
 def _frozen_rung(state: str | None) -> str:

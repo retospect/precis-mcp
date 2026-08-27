@@ -552,6 +552,31 @@ def check_claim_sentence(
     return out
 
 
+def advisory_lint(sentence: str, *, artifact_type: str = "claim") -> list[str]:
+    """The NON-blocking half of the sentence lints — every
+    ``lint_notation`` / ``lint_claim_sentence`` warning whose code is
+    advisory for ``artifact_type`` (outside the scoped
+    ``_BLOCKING_LINT_CODES`` set :func:`check_claim_sentence` enforces).
+    These never gate a mint; the review surface shows them as
+    considerations beside a passing claim-sentence gate, so "passed" and
+    "passed, but look at this" stay distinguishable. Never raises; an
+    empty sentence returns ``[]``."""
+    if not sentence:
+        return []
+    blocking = _BLOCKING_LINT_CODES - _ARTIFACT_LINT_EXEMPTIONS.get(
+        artifact_type, frozenset()
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for w in lint_notation(sentence) + lint_claim_sentence(sentence):
+        code = w.split(":", 1)[0].strip()
+        if code in blocking or code in seen:
+            continue
+        seen.add(code)
+        out.append(w)
+    return out
+
+
 def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]:
     """Gate #1: a hub carrying a live unresolved ``contradicts`` edge is
     unmintable until adjudicated (source retracted, or a primary acquired

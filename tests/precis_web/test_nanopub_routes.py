@@ -479,12 +479,17 @@ def test_claim_page_shows_maturity_ladder_and_full_gate_list(
     # Hovering the reviewed rung explains what approve checked.
     assert "EVERY Layer-A mint gate ran and passed" in resp.text
     # The gates panel names both groups and the individual gates…
-    assert "Mint gates (run at approve)" in resp.text
     assert "Publish preflight (live)" in resp.text
     assert "[primary-source]" in resp.text
     assert "[quote-verbatim]" in resp.text
     assert "[withheld-edge]" in resp.text
-    # …and an unminted hub shows them pending (○), none passed yet.
+    # …and pre-approve the mint gates are a live DRY-RUN against the
+    # current sentence + prefilled grounding — real per-gate standing
+    # ("how does this candidate stack up?"), not a wall of pending; only
+    # the publish-preflight rows stay pending (○) until a row exists.
+    assert "Mint gates — live dry-run" in resp.text
+    assert "passing (dry-run)" in resp.text
+    assert "✓" in resp.text
     assert "○" in resp.text
 
     approved = client.post(
@@ -497,8 +502,12 @@ def test_claim_page_shows_maturity_ladder_and_full_gate_list(
     )
     assert approved.status_code == 303
     resp = client.get(f"/claim/fi{hub}")
-    # Reviewed: every mint gate reads passed (✓) and the live preflight
-    # still blocks on state (not anchored yet) — the summary says so.
+    # Reviewed: the dry-run framing is gone — every mint gate reads
+    # passed for real (✓, "run at approve") and the live preflight still
+    # blocks on state (not anchored yet) — the summary says so.
+    assert "Mint gates (run at approve)" in resp.text
+    assert "Mint gates — live dry-run" not in resp.text
+    assert "passing (dry-run)" not in resp.text
     assert "✓" in resp.text
     assert "blocking" in resp.text
 

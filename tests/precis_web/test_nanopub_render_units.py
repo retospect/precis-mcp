@@ -95,6 +95,58 @@ def test_gate_report_reviewed_mint_passed_preflight_reads_live_issues() -> None:
     assert pre["trust"]["status"] == "passed"
 
 
+def test_gate_report_dryrun_gives_live_per_gate_standing() -> None:
+    """Pre-approve, a dry-run replaces blanket "pending": violated gates
+    read failed with their message, clean ones passed, the claim-sentence
+    row carries the advisory lints as a note ("passing, with
+    considerations"), and an off-vocabulary violation slug is appended
+    rather than hidden."""
+    report = _gate_report(
+        "candidate",
+        [],
+        dryrun={
+            "violations": {
+                "grounding": ["passage 1 has no DOI", "passage 2 has no quote"],
+                "brand-new-gate": ["something novel broke"],
+            },
+            "advisories": [
+                "scope-material: name the material",
+                "tilde-approximation: use ≈",
+            ],
+        },
+    )
+    assert report["dryrun"] is True
+    mint = {g["name"]: g for g in report["mint"]}
+    assert mint["grounding"]["status"] == "failed"
+    assert mint["grounding"]["message"] == "passage 1 has no DOI (+1 more)"
+    assert mint["contradicts"]["status"] == "passed"
+    assert mint["claim-sentence"]["status"] == "note"
+    assert "scope-material, tilde-approximation" in mint["claim-sentence"]["message"]
+    assert mint["brand-new-gate"]["status"] == "failed"
+    # Preflight stays pending — no publish row yet at candidate.
+    assert all(g["status"] == "pending" for g in report["preflight"])
+
+
+def test_gate_report_dryrun_clean_is_all_passing() -> None:
+    report = _gate_report("candidate", [], dryrun={"violations": {}, "advisories": []})
+    assert report["dryrun"] is True
+    assert all(g["status"] == "passed" for g in report["mint"])
+
+
+def test_gate_report_minted_ignores_dryrun_and_unparseable_prefill_degrades() -> None:
+    # A reviewed row's gates passed for real — a stray dry-run must not
+    # relabel them; and pre-approve WITHOUT a dry-run (unparseable
+    # prefill) degrades to pending, never crashes.
+    minted = _gate_report(
+        "reviewed", [], dryrun={"violations": {"grounding": ["x"]}, "advisories": []}
+    )
+    assert minted["dryrun"] is False
+    assert all(g["status"] == "passed" for g in minted["mint"])
+    degraded = _gate_report("candidate", [], dryrun=None)
+    assert degraded["dryrun"] is False
+    assert all(g["status"] == "pending" for g in degraded["mint"])
+
+
 def test_answer_model_label_env_chain(monkeypatch) -> None:
     from precis_web.ask import answer_model_label
 

@@ -235,7 +235,8 @@
   {% set gates_failed = gates_all | selectattr('status', 'equalto', 'failed') | list | length %}
   <details id="gates" class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
     <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">
-      Gates — {{ gates_passed }}/{{ gates_all | length }} passed{% if gates_failed %},
+      Gates — {{ gates_passed }}/{{ gates_all | length }}
+      {{ 'passing (dry-run)' if np.gates.dryrun else 'passed' }}{% if gates_failed %},
       <span class="text-rose-600">{{ gates_failed }} blocking</span>{% endif %}
     </summary>
     {% macro gate_row(g) %}
@@ -250,9 +251,15 @@
     {% endmacro %}
     <div class="grid md:grid-cols-2 gap-4 mt-3">
       <div>
+        {% if np.gates.dryrun %}
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
+            title="Layer-A mechanical mint validators (pure code, no LLM), rehearsed read-only right now against the live sentence + the prefilled grounding above — exactly what clicking Approve would check. Trim the payload or reword the sentence and reload to re-run.">
+          Mint gates — live dry-run</h4>
+        {% else %}
         <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
             title="Layer-A mechanical mint validators (pure code, no LLM) — approve runs every one against the exact sentence + payload it freezes, so a claim past candidate cleared them all">
           Mint gates (run at approve)</h4>
+        {% endif %}
         <ul class="space-y-1">{% for g in np.gates.mint %}{{ gate_row(g) }}{% endfor %}</ul>
       </div>
       <div>
