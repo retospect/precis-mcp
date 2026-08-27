@@ -280,3 +280,26 @@ def test_pathway_handle_code_registers_formats_and_parses(
     # unaffected by registering it.
     assert "pathway" not in hr.KIND_CODES
     assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS
+
+
+# --- precis_estimate's `estimate` handle code — same shape as pathway's,
+# above. `precis_estimate.handles` is a plain dict module (no mendeleev/
+# pymatgen/tblite import), so this doesn't need the `[estimate]` extra.
+
+
+def test_estimate_handle_code_registers_formats_and_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_estimate import handles as estimate_handles
+
+    _fake_eps_from_module(monkeypatch, estimate_handles)
+
+    assert hr.code_for_kind("estimate") == "es"
+    assert hr.format_handle("estimate", 12) == "es12"
+    assert hr.parse("es12") == ("estimate", False, 12)
+    assert hr.is_well_formed("es12")
+    assert hr.kind_for_code("es") == ("estimate", False)
+    # `estimate` is a plugin kind, not core — the built-in totality SSOT is
+    # unaffected by registering it.
+    assert "estimate" not in hr.KIND_CODES
+    assert set(hr.KIND_CODES) == EXPECTED_PERSISTENT_KINDS

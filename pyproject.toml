@@ -384,6 +384,25 @@ chem = ["rdkit>=2023.9"]
 # own extra when it lands.
 # calc/tex/docx/plot/cad-export/dft/mermaid are core deps now, not extras —
 # see the "Deterministic, pure-code, no-API tool deps" note above.
+# `estimate` kind (docs/backlog/estimate-kind-ms-chemistry-workup.md): the
+# millisecond chemistry-workup panel's slice-1 element-descriptor tier.
+# mendeleev (element property DB), pymatgen (ChemEnv/CrystalNN/
+# StructureMatcher — slice 2), tblite (GFN-xTB — slice 2) are all light,
+# PyPI-resolvable, torch-free — but kept as an extra (not core, not `[all]`)
+# because they aren't installed in every venv yet: a fresh prod deploy needs
+# `[estimate]` explicitly before `get(kind='estimate', ...)` works. The
+# `precis_estimate` handler imports them lazily (module import never touches
+# them) so an `[estimate]`-less venv still boots every other kind cleanly.
+# tblite ships NO linux-aarch64 wheel (macOS arm64/x86_64 + manylinux x86_64
+# only) and won't build from source in the dev container — the platform
+# marker keeps `--all-extras` image rebuilds green on Apple-Silicon Docker
+# and aarch64 cluster nodes; the xtb tier (slice 2) degrades gracefully
+# where it's absent. Drop the marker when upstream ships the wheel.
+estimate = [
+    "mendeleev>=1.2.0",
+    "pymatgen>=2026.5",
+    "tblite>=0.7 ; sys_platform == 'darwin' or platform_machine == 'x86_64'",
+]
 all = ["precis-mcp[embed,paper,web]"]
 
 [project.scripts]
@@ -412,6 +431,7 @@ asa-slack = "asa_slack.__main__:main"
 route = "precis_chem.route:RouteHandler"
 protein = "precis_bio.protein:ProteinHandler"
 pathway = "precis_pathway.handler:PathwayHandler"
+estimate = "precis_estimate.handler:EstimateHandler"
 
 [project.entry-points."precis.job_types"]
 retrosynth = "precis_chem.jobs:RETROSYNTH_SPEC"
@@ -428,9 +448,11 @@ autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
 precis_chem = "precis_chem.migrations"
 precis_bio = "precis_bio.migrations"
 autocatpath = "precis_pathway.migrations"
+precis_estimate = "precis_estimate.migrations"
 
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
+estimate = "precis_estimate.handles"
 
 [dependency-groups]
 dev = [
@@ -488,7 +510,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
@@ -689,6 +711,8 @@ module = [
     "habanero",
     "manifold3d",
     "marker.*",
+    "mendeleev",
+    "mendeleev.*",
     "mermaidx",
     "num2words",
     "OCP",
@@ -696,6 +720,8 @@ module = [
     "opentimestamps.*",
     "pdf2doi",
     "pylatexenc.*",
+    "pymatgen",
+    "pymatgen.*",
     "pysbd",
     "semanticscholar",
     "sklearn.*",
@@ -703,6 +729,8 @@ module = [
     "surya.*",
     "sympy",
     "sympy.*",
+    "tblite",
+    "tblite.*",
     "wolframalpha",
 ]
 ignore_missing_imports = true
