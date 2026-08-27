@@ -16,11 +16,20 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+#: The sweep is a bash script over a POSIX `ps` process tree, and the fixture
+#: backgrounds children from bash — Windows can't even exec the shebang
+#: script (WinError 193). The SessionStart hook under test only ever runs on
+#: POSIX dev hosts; the Linux/macOS CI legs keep it covered.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only bash/ps process-tree sweep"
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "reap-stale-serves"
 

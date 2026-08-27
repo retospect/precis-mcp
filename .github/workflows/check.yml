@@ -24,7 +24,13 @@ jobs:
       # bridge to `unused-ignore`. This matches the ship gate, whose dev
       # image installs `uv sync --all-extras` — note `--extra all` is NOT
       # the same set (`asa` is deliberately outside `[all]`).
-      - run: uv run --all-extras mypy src tests
+      # `catalyst`/`catalyst-gpu` are subtracted: their `autocatpath` is a
+      # private-repo git source ([tool.uv.sources]; auth exists only in the
+      # local keychain and the image build's gh_token secret), so an
+      # unauthenticated runner can't fetch it. mypy stays sound without it
+      # via the `autocatpath.*` ignore_missing_imports override; real-type
+      # coverage still happens in the ship gate's dev image.
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu mypy src tests
 
   # Linux legs run the FULL suite against a real PostgreSQL + pgvector,
   # so the db-tagged tests (~41% of the suite) actually gate the release
