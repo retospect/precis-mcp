@@ -103,8 +103,19 @@ def test_embed_mode_hides_the_site_chrome(
     assert "<header" not in framed.text
     assert "An embedded claim." in framed.text
     # The embed stamper sends external links out of the pane (publishers
-    # deny framing) and keeps same-host links embed-sticky.
-    assert '"_blank"' in framed.text and '"_blank"' not in full.text
+    # deny framing) and keeps same-host links embed-sticky — that
+    # retargeting line renders ONLY in embed mode.
+    assert 'a.target = "_blank"' in framed.text
+    assert 'a.target = "_blank"' not in full.text
+    # The named-window opener, by contrast, rides EVERY page: Safari
+    # silently drops <a target="precis-paper"> navigation when the window
+    # doesn't exist yet, so paper/paper-chunk clicks on standalone pages
+    # (the smartdraft reader, a claim page in its own tab) were dead
+    # clicks — window.open creates AND reuses the named window instead.
+    for page in (full, framed):
+        assert "window.open(a.href, t)" in page.text
+        assert 'window.open(a.href, "_blank")' in page.text
+        assert 't === "np-review" || t === "np-paper"' in page.text
 
 
 def test_hub_page_shows_state_and_action(

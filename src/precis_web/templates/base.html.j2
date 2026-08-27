@@ -274,6 +274,37 @@
       }, true);
     </script>
     {% endif %}
+    <script>
+      // Custom named-window links (target="precis-paper" — the shared
+      // paper-reading window) are opened via window.open instead of the
+      // browser's native target resolution, on EVERY page: Safari
+      // silently drops an <a target="name"> navigation when no window by
+      // that name exists yet, which reads as a dead click on every
+      // paper / paper-chunk link outside the workbench panes (draft-chunk
+      // links "work" only because they target _blank). window.open both
+      // creates and reuses the named window — the one-paper-tab UX the
+      // named target exists for — and a click-activated open is not
+      // popup-blocked; if it is anyway, fall back to a fresh tab, then to
+      // in-tab navigation, so a click ALWAYS goes somewhere visible.
+      // Ordering: the workbench pane router above (embed pages) runs
+      // first and preventDefaults the clicks it routes into a pane —
+      // defaultPrevented skips them here; np-* targeted anchors belong to
+      // the workbench page's own loader and are skipped by name.
+      // (preventDefault via .call — this template carries no empty-parens
+      // call, see the tripwire note in the pane router above.)
+      document.addEventListener("click", e => {
+        if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        const a = e.target.closest("a[target]");
+        if (!a || a.host !== location.host) return;
+        const t = a.target;
+        if (!t || t.charAt(0) === "_" || t === "np-review" || t === "np-paper") return;
+        e.preventDefault.call(e);
+        let w = null;
+        try { w = window.open(a.href, t); } catch {}
+        if (!w) { try { w = window.open(a.href, "_blank"); } catch {} }
+        if (!w) location.assign(a.href);
+      }, true);
+    </script>
     {# Most pages read best centred at a comfortable measure; the two-pane
        document reader (papers/pres detail) overrides ``main_class`` to go
        full-bleed so the PDF pane grows with the viewport (no max-width cap). #}

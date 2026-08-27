@@ -296,7 +296,12 @@ def _anchor_html(
 
     ``target`` defaults to ``"_blank"`` (a fresh tab per click); a caller
     passing a named window (e.g. ``"precis-paper"``)
-    gets one reused window across successive clicks instead.
+    gets one reused window across successive clicks instead. The actual
+    open is performed by ``base.html.j2``'s site-wide named-window click
+    handler via ``window.open(href, name)`` — Safari silently drops a
+    native ``<a target="name">`` navigation when no window by that name
+    exists yet (a dead click), while ``window.open`` both creates and
+    reuses it.
     ``extra_attrs`` is spliced verbatim onto the ``<a>`` tag (already
     HTML-safe, caller-built — e.g. ``data-claim-head="…"``) so a call site
     can carry extra hooks for client-side JS without every anchor needing
