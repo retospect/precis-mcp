@@ -138,13 +138,31 @@ venvs pick it up via the normal deploy.
 - **Plane segmentation** (`planes.py`): assign power nets to plane-layer
   regions (seeded by load-pin clusters), legalize with polygon ops,
   thermal reliefs, stitching-via proposal, island detection
-  (plane polygon − antipads − splits → connected components).
-- **Placer v2** (`place.py` extension): force-directed + discrete
-  rotation search (90° steps), rubber bands weighted by class, **plane-
-  served nets excluded** from the crossing objective (replaced by a
-  via-proximity term), courtyard-overlap repulsion, measures as soft
-  terms, `fixed` respected. Reports before/after crossings + per-
-  component move list.
+  (plane polygon − antipads − splits → connected components). Plus the
+  **signal-layer fill post-pass**: after routing, flood signal layers
+  with gnd-tied pour (board − tracks − clearances), stitch to the plane,
+  cull slivers/orphan islands (the island detector). Copper retention is
+  a **derived post-pass, never an optimizer objective** (pour area is
+  the complement of wire — a cost term would double-count); per-layer
+  **copper fraction** reported as an advisory DRC metric (balance/warp).
+- **Placer v2** (`place.py` extension): **simulated annealing over a
+  constructive seed** (connectivity clustering + cluster drop; SA is
+  the refiner — at ≤500 components it beats force-directed on rotation,
+  locks, and arbitrary cost terms). Moves: translate, rotate 90°,
+  swap-pair; `fixed='xy'|'rot'|'both'` = restricted move sets, locked
+  parts still contribute cost. Cost = weighted legible terms:
+  signal-net crossings (**plane-served nets excluded**) +
+  **peak region utilization** from a RUDY-style grid estimator (net
+  demand smeared over bounding boxes vs. per-region track capacity;
+  penalize the peak, NOT variance — evenness emerges, clusters stay
+  clustered) + region-priced **via demand** (gnd/power pins count as
+  vias; a via blocks all layers, so its cost is the local congestion,
+  not a scalar) + courtyard-overlap + measures as soft terms. Digest:
+  per-term, per-region table + per-component move list; the LLM's
+  lever is re-annealing from current state with adjusted weights/locks.
+  Post-route, realized per-region density replaces the estimate (the
+  6→5 back-edge carries real numbers; predicted-vs-realized per region
+  is the estimator's calibration signal).
 - **Topological router** (`sketch.py` + `realize.py`): net → two-pin
   connection tree; sketch search (side choices) minimizing crossings +
   congestion; deterministic realizer with per-gap capacity accounting;
@@ -152,6 +170,12 @@ venvs pick it up via the normal deploy.
   bundle/net, pin a topology choice, re-realize incrementally).
   Escalating-cost reroute (PathFinder-style negotiation) inside the
   autoroute job; the LLM intervenes between rounds, not per segment.
+  Cost policy for plane-served nets: **never route ground/power beyond
+  the dog-bone fanout** (pad → short stub → via to plane; via-in-pad
+  wicks solder, so the stub is mandatory for SMT). Cost ordering:
+  fill ≪ via (region-priced) ≪ routed gnd trace — a routed gnd trace
+  on a signal layer is a last resort (pin can't reach its plane) and
+  is flagged as an anomaly in the route digest.
 - **Bundles**: nets sharing class + endpoints-neighborhood route as one
   sketch entity (buses); "move in bunches" falls out of bundle-level
   rip-up.
@@ -249,7 +273,8 @@ recorded-fixture pattern (one live smoke gated on creds).
   criterion.)
 - Placer v2 on the reference design: signal-net crossing count strictly
   below the current `place.py` result; plane-served nets absent from
-  the objective (asserted).
+  the objective (asserted); the digest reports per-term cost and a
+  per-region utilization table with its peak identified.
 - Footprint generator output for one part per package family matches
   IPC-derived expected pads within tolerance (golden tests); an LCSC
   long-tail part round-trips through the easyeda2kicad path into
@@ -326,6 +351,14 @@ recorded-fixture pattern (one live smoke gated on creds).
   regulator + decoupling + headers), authored as slice-3 scope, reused
   by every later slice's tests. A real instrument board is the first
   post-slice-7 real-world exercise, not a gate.
+- **Decided (algo discussion, user, 2026-08-27):** placer optimizer =
+  simulated annealing over a constructive seed (supersedes the earlier
+  force-directed wording); congestion objective = peak region
+  utilization from a RUDY-style estimator, calibrated post-route by
+  realized density; via cost is region-priced congestion, not a scalar;
+  plane-served nets connect via dog-bone fanout only (routed gnd trace
+  = flagged anomaly); copper retention is a derived fill post-pass with
+  an advisory copper-fraction metric, never an optimizer term.
 - Open (slice 8, user-side): JLCPCB API access application
   (api.jlcpcb.com) must be filed from the user's account; unknown
   approval lead time — file early, slice 8 is creds-blocked until then.
