@@ -9,6 +9,13 @@ autocatpath barrier run and its NEB endpoints line up. The validator gate wiring
 (§5c) is the next increment. ``apply_ops`` mutates the Scene in place
 and returns it; an unknown op or a bad reference raises ``OpError`` (the Edit
 contract surfaces this as a structured error, §5c).
+
+``add_atom_site`` (blind-3D fix, ``docs/backlog/estimate-kind-ms-chemistry-workup.md``
+§"Blind 3D design") is the preferred adsorbate-placement op: the model NAMES a
+site (top/bridge/hollow over existing atom labels) instead of guessing
+fractional coordinates. :func:`_resolve_site` turns the name into exact
+coordinates and delegates to :func:`_op_add_atom` — one label-minting/
+validation path for both raw and site-symbolic placement.
 """
 
 from __future__ import annotations
@@ -128,6 +135,119 @@ def _op_add_atom(scene: Scene, op: dict[str, Any]) -> None:
         oxidation=op.get("oxidation"),
         hybridization=op.get("hybridization"),
     )
+
+
+#: Anchor count required per site type (v1 closed set — no interstitials yet;
+#: an octahedral/tetrahedral void needs a different resolver, backlogged in
+#: the estimate-kind design doc).
+_SITE_ANCHOR_COUNT = {"top": 1, "bridge": 2, "hollow": 3}
+
+
+def _op_add_atom_site(scene: Scene, op: dict[str, Any]) -> None:
+    """Place an atom by NAMING a site instead of guessing coordinates.
+
+    ``{"op": "add_atom_site", "element": "H", "site": {"type": "hollow",
+    "anchors": ["aPd1", "aPd2", "aPd3"]}, "height": <optional Å>}``. Resolves
+    the site to Cartesian coordinates (:func:`_resolve_site`) and delegates
+    to :func:`_op_add_atom` for the actual mint — same label/validation path
+    as raw ``add_atom``.
+    """
+    element = op.get("element")
+    if not element:
+        raise OpError("add_atom_site needs an 'element'")
+    site = op.get("site")
+    if not isinstance(site, dict):
+        raise OpError(
+            "add_atom_site needs a 'site' object: "
+            "{'type': 'top'|'bridge'|'hollow', 'anchors': [labels]}"
+        )
+    frac = _resolve_site(scene, site, str(element), op.get("height"))
+    delegate = dict(op)
+    delegate.pop("site", None)
+    delegate.pop("height", None)
+    delegate.pop("cart", None)
+    delegate["frac"] = [float(x) for x in frac]
+    _op_add_atom(scene, delegate)
+
+
+def _resolve_site(
+    scene: Scene, site: dict[str, Any], element: str, height: Any
+) -> np.ndarray:
+    """Resolve a symbolic site (type + anchor labels) to fractional coords.
+
+    xy = centroid of the anchors' Cartesian xy, PBC/minimum-image aware (each
+    anchor is first moved to the periodic image nearest the first anchor —
+    the same :meth:`Cell.mic` the tick's PBC scar block warns about, so a
+    hollow site spanning a cell wall doesn't average a wrapped-away copy).
+    z = the anchors' highest z + ``height`` (default: the covalent-radius-sum
+    rule, see :func:`_default_site_height`).
+    """
+    site_type = site.get("type")
+    if site_type not in _SITE_ANCHOR_COUNT:
+        raise OpError(
+            f"add_atom_site 'site.type' must be one of "
+            f"{sorted(_SITE_ANCHOR_COUNT)}, got {site_type!r} — interstitials "
+            "aren't supported yet"
+        )
+    anchors = site.get("anchors")
+    if not isinstance(anchors, list) or not anchors:
+        raise OpError("add_atom_site 'site.anchors' must be a list of atom labels")
+    want = _SITE_ANCHOR_COUNT[site_type]
+    if len(anchors) != want:
+        raise OpError(
+            f"a {site_type!r} site needs exactly {want} anchor(s), got "
+            f"{len(anchors)}: {anchors!r}"
+        )
+    if len(set(anchors)) != len(anchors):
+        raise OpError(f"add_atom_site anchors must be distinct labels, got {anchors!r}")
+    atoms = [_require_atom(scene, str(a)) for a in anchors]
+    ref_frac = atoms[0].frac
+    carts = []
+    anchor_elements = []
+    for atom in atoms:
+        _dist, img = scene.cell.mic(ref_frac, atom.frac)
+        image_frac = atom.frac + np.asarray(img, dtype=float)
+        carts.append(scene.cell.frac_to_cart(image_frac))
+        anchor_elements.append(atom.element)
+    carts_arr = np.asarray(carts, dtype=float)
+    xy = carts_arr[:, :2].mean(axis=0)
+    z_top = float(carts_arr[:, 2].max())
+    if height is None:
+        h = _default_site_height(anchor_elements, element)
+    else:
+        try:
+            h = float(height)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"add_atom_site 'height' must be a number, got {height!r}"
+            ) from exc
+    target_cart = np.array([xy[0], xy[1], z_top + h])
+    return scene.cell.wrap(scene.cell.cart_to_frac(target_cart))
+
+
+def _default_site_height(anchor_elements: list[str], element: str) -> float:
+    """Default adsorbate height (Å) above the anchor plane: covalent-radius sum.
+
+    No campaign-validated per-site-type constant exists — :mod:`.invariants`
+    only carries a site *classification* cutoff (``_SURFACE_CUTOFF`` 2.8 Å,
+    for reading a built structure back), not a placement height, and the
+    on-surface z=0.66 figure the design doc flags is trial-and-error folklore
+    carried in prose, not a code constant. So the fallback is deterministic
+    and element-aware instead: the mean covalent radius of the anchor
+    element(s) plus the placed element's own covalent radius — the same
+    ``ase.data.covalent_radii`` table :mod:`.preflight`'s settle field
+    already leans on for bonding distance.
+    """
+    try:
+        from ase.data import atomic_numbers, covalent_radii
+    except ImportError as exc:  # pragma: no cover - ASE is the [dft] extra
+        raise OpError(
+            "add_atom_site needs ASE (the [dft] extra) to size a default "
+            "height — pass 'height' explicitly to skip this"
+        ) from exc
+    anchor_r = [covalent_radii[atomic_numbers[el]] for el in anchor_elements]
+    placed_r = covalent_radii[atomic_numbers[element]]
+    return float(np.mean(anchor_r) + placed_r)
 
 
 def _op_set_element(scene: Scene, op: dict[str, Any]) -> None:
@@ -342,6 +462,7 @@ _OPS = {
     "set_cell": _op_set_cell,
     "slab": _op_slab,
     "add_atom": _op_add_atom,
+    "add_atom_site": _op_add_atom_site,
     "set_element": _op_set_element,
     "vacancy": _op_vacancy,
     "displace": _op_displace,

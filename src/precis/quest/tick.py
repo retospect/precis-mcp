@@ -883,13 +883,20 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         f"{label}1..N in ascending-z order — the TOP surface layer is the "
         "highest-numbered labels; `Cu` below is a worked SYNTAX example, "
         "not a suggested element — pick your own):\n"
-        "- add_atom  — an adatom ON the surface: "
-        '{"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.66]}\n'
+        "- add_atom_site — an adatom placed by NAMING a site, never guessing "
+        'coordinates: {"op":"add_atom_site","element":"H","site":'
+        '{"type":"hollow","anchors":["aPd1","aPd2","aPd3"]}} '
+        '("type" is top/bridge/hollow with 1/2/3 anchors; code resolves the '
+        "exact position from the anchor atoms — prefer this over add_atom)\n"
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
         '"element":"Cu"}\n'
         "- vacancy — REMOVE a surface atom (defect site): "
         f'{{"op":"vacancy","atom":"{top_label}"}}\n'
+        "- add_atom (advanced/escape hatch) — a raw guessed fractional "
+        'coordinate: {"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.66]} '
+        "— only when no existing atom anchors the site you mean; add_atom_site "
+        "is exact, this is a guess.\n"
         "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
         "atoms.\n"

@@ -220,10 +220,11 @@ def _candidate_composition(
     from the un-materialised ``spec['ops']`` — a ``slab`` op's ``size``
     ``[nx, ny, nz]`` product IS the slab's atom count (confirmed by
     :func:`~precis.structure.ops._op_slab`'s own build), so the host element
-    gets that weight; an ``add_atom``/``set_element`` op (a dopant
-    substitution or an adsorbate) contributes one atom each. Order-of-
-    magnitude only, matching :func:`atom_cost`'s own tolerance — this path
-    only fires on the rare load failure.
+    gets that weight; an ``add_atom``/``add_atom_site``/``set_element`` op (a
+    dopant substitution or an adsorbate, site-symbolic or raw-coordinate)
+    contributes one atom each. Order-of-magnitude only, matching
+    :func:`atom_cost`'s own tolerance — this path only fires on the rare
+    load failure.
 
     ``None`` when neither source yields any element.
     """
@@ -255,7 +256,7 @@ def _candidate_composition(
                 except (TypeError, ValueError):
                     n = 1
             counts[element] = counts.get(element, 0) + n
-        elif op_name in ("add_atom", "set_element"):
+        elif op_name in ("add_atom", "add_atom_site", "set_element"):
             counts[element] = counts.get(element, 0) + 1
     return counts or None
 

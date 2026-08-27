@@ -127,6 +127,193 @@ def test_bonds_add_remove_and_constrain() -> None:
     assert scene.bonds == []
 
 
+# -- add_atom_site (site-symbolic placement) ---------------------------------
+
+
+def _pd_triangle() -> Scene:
+    """Three Pd anchors in a flat triangle (a toy hollow/top/bridge site)."""
+    scene = Scene(cell=_cubic(20.0))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "cart": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "cart": [2.75, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "cart": [1.375, 2.38, 0.0]},
+        ],
+    )
+    return scene
+
+
+def test_add_atom_site_hollow_resolves_to_anchor_centroid() -> None:
+    pytest.importorskip("ase")
+    from ase.data import atomic_numbers, covalent_radii
+
+    scene = _pd_triangle()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom_site",
+                "element": "H",
+                "site": {
+                    "type": "hollow",
+                    "anchors": ["aPd1", "aPd2", "aPd3"],
+                },
+            }
+        ],
+    )
+    labels = [
+        la for la in scene.atoms if la != "aPd1" and la != "aPd2" and la != "aPd3"
+    ]
+    assert len(labels) == 1
+    h = scene.atoms[labels[0]]
+    assert h.element == "H"
+    cart = scene.cell.frac_to_cart(h.frac)
+    # xy = centroid of the three anchors
+    assert cart[0] == pytest.approx((0.0 + 2.75 + 1.375) / 3, abs=1e-6)
+    assert cart[1] == pytest.approx((0.0 + 0.0 + 2.38) / 3, abs=1e-6)
+    # z = anchor plane (0.0) + covalent-radius-sum default height
+    expected_h = (
+        covalent_radii[atomic_numbers["Pd"]] + covalent_radii[atomic_numbers["H"]]
+    )
+    assert cart[2] == pytest.approx(expected_h, abs=1e-6)
+
+
+def test_add_atom_site_top_resolves_to_single_anchor_xy() -> None:
+    scene = _pd_triangle()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom_site",
+                "element": "H",
+                "site": {"type": "top", "anchors": ["aPd1"]},
+                "height": 1.5,
+            }
+        ],
+    )
+    labels = [
+        la for la in scene.atoms if la != "aPd1" and la != "aPd2" and la != "aPd3"
+    ]
+    h = scene.atoms[labels[0]]
+    cart = scene.cell.frac_to_cart(h.frac)
+    assert cart[0] == pytest.approx(0.0, abs=1e-6)
+    assert cart[1] == pytest.approx(0.0, abs=1e-6)
+    assert cart[2] == pytest.approx(1.5, abs=1e-6)
+
+
+def test_add_atom_site_unknown_anchor_names_the_bad_label() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_triangle()
+    with pytest.raises(OpError) as exc:
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom_site",
+                    "element": "H",
+                    "site": {"type": "top", "anchors": ["aPd99"]},
+                }
+            ],
+        )
+    assert "aPd99" in str(exc.value)
+
+
+def test_add_atom_site_wrong_anchor_count_raises() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_triangle()
+    with pytest.raises(OpError) as exc:
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom_site",
+                    "element": "H",
+                    "site": {"type": "hollow", "anchors": ["aPd1", "aPd2"]},
+                }
+            ],
+        )
+    assert "hollow" in str(exc.value)
+    assert "3" in str(exc.value)
+
+
+def test_add_atom_site_duplicate_anchors_raises() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_triangle()
+    with pytest.raises(OpError):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom_site",
+                    "element": "H",
+                    "site": {"type": "bridge", "anchors": ["aPd1", "aPd1"]},
+                }
+            ],
+        )
+
+
+def test_add_atom_site_unknown_type_raises() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_triangle()
+    with pytest.raises(OpError):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom_site",
+                    "element": "H",
+                    "site": {"type": "octahedral", "anchors": ["aPd1"]},
+                }
+            ],
+        )
+
+
+def test_add_atom_site_is_deterministic() -> None:
+    pytest.importorskip("ase")
+    scene_a = _pd_triangle()
+    scene_b = _pd_triangle()
+    op = {
+        "op": "add_atom_site",
+        "element": "H",
+        "site": {"type": "bridge", "anchors": ["aPd1", "aPd2"]},
+    }
+    apply_ops(scene_a, [dict(op)])
+    apply_ops(scene_b, [dict(op)])
+    labels_a = [la for la in scene_a.atoms if la not in ("aPd1", "aPd2", "aPd3")]
+    labels_b = [la for la in scene_b.atoms if la not in ("aPd1", "aPd2", "aPd3")]
+    assert np.allclose(scene_a.atoms[labels_a[0]].frac, scene_b.atoms[labels_b[0]].frac)
+
+
+def test_add_atom_site_placed_atom_is_not_floating() -> None:
+    """The whole point of the fix: the resolved atom passes the geometry
+    lint that flags an untethered adsorbate (preflight's ``detached`` check)."""
+    pytest.importorskip("ase")
+    from precis.structure import preflight
+
+    scene = _pd_triangle()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom_site",
+                "element": "H",
+                "site": {
+                    "type": "hollow",
+                    "anchors": ["aPd1", "aPd2", "aPd3"],
+                },
+            }
+        ],
+    )
+    verdict = preflight.preflight(scene)
+    detached = [r for r in verdict.reasons if r.code == "detached"]
+    assert detached == []
+
+
 def test_unknown_op_and_bad_ref_raise() -> None:
     from precis.structure import OpError
 

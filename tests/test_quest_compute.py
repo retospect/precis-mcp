@@ -6073,6 +6073,47 @@ class TestCandidateComposition:
         assert compute_mod._candidate_composition(None, {"cell": {}}) is None
         assert compute_mod._candidate_composition(None, None) is None
 
+    def test_add_atom_site_counts_in_spec_fallback(self) -> None:
+        # add_atom_site (site-symbolic placement) must be counted the same
+        # as add_atom in the un-materialised spec-ops fallback.
+        spec = {
+            "ops": [
+                {"op": "slab", "element": "Pd", "size": [2, 2, 2]},
+                {
+                    "op": "add_atom_site",
+                    "element": "H",
+                    "site": {"type": "top", "anchors": ["aPd1"]},
+                },
+            ]
+        }
+        assert compute_mod._candidate_composition(None, spec) == {"Pd": 8, "H": 1}
+
+    def test_add_atom_site_candidate_counts_element_from_materialised_scene(
+        self, store: Any
+    ) -> None:
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A striving")
+        spec = {
+            "ops": [
+                {"op": "slab", "element": "Pd", "size": [2, 2, 3], "fix_layers": 1},
+                {
+                    "op": "add_atom_site",
+                    "element": "H",
+                    "site": {
+                        "type": "hollow",
+                        "anchors": ["aPd10", "aPd11", "aPd12"],
+                    },
+                },
+            ]
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd(111)+H", "structure": spec}
+        )
+        assert sid is not None
+        scene, _handles = store.structure_load(sid)
+        composition = compute_mod._candidate_composition(scene, spec)
+        assert composition == {"Pd": 12, "H": 1}
+
 
 class TestAtomCostStampedAtCandidateCreation:
     def test_ensure_candidate_stamps_atom_cost_and_dearest(self, store: Any) -> None:

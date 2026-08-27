@@ -2015,6 +2015,22 @@ class TestReactionContext:
         assert "set_element" in prompt
         assert "vacancy" in prompt
 
+    def test_reaction_context_advertises_site_symbolic_placement(
+        self, store: Any
+    ) -> None:
+        # Blind-3D fix (estimate-kind-ms-chemistry-workup.md §"Blind 3D
+        # design"): the model should name a site, not guess frac coordinates.
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "add_atom_site" in prompt
+        assert '"type":"hollow"' in prompt or "type': 'hollow'" in prompt
+        # add_atom is still mentioned, but demoted to an escape hatch.
+        assert "escape hatch" in prompt
+
     def test_reaction_context_steers_toward_novelty_without_enumerating_elements(
         self, store: Any
     ) -> None:
