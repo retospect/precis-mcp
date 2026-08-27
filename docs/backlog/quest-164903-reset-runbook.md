@@ -74,6 +74,34 @@ autocatpath 0.18.0 everywhere.
    least verify the first fresh tick's prompt renders the new handle-rich
    sections correctly (one manual tick eyeball).
 
+## Status 2026-08-27 evening — steps 5–7 DONE on prod; HOLD in effect
+
+Done: logbook deleted (4,767→0, cascades verified, ref_events kept);
+dialectic dossier installed verbatim (seed:
+`~/precis-experiments/qu164903-reset/dossier-seed-dialectic.md`); 27
+off-topic serves pruned (1,241→1,214; 25 finding serves intact). Mint
+done earlier: fi263178 + fi263593–617 (minus 263613), 2 refuted-tagged.
+Tick-zero replication DISPATCHED pre-hold: 50 valid jobs jb263259–263823
+(5×10 structures, unique idem keys `tick0-<st>-r<n>`), results accrue on
+job meta.partial; jb263279 invalid (transcription, replaced) — cancel
+pending. GPU-slot token missing on MCP put → infra:child-killed attrition
+expected; re-put same idem key staggered.
+
+**HELD (Reto, "more gates coming") — prod writes awaiting go:**
+1. Ledger wipe: 296 old ledger nodes + stale attempt/frontier-tree
+   containers (prose bookkeeping only, zero simulation data; content
+   preserved in salvage+mints; it is the 62%-of-prompt pathology).
+2. qu164903 `meta.rubric_objectives` update → current axes
+   (span_at_Uopt, U_L, energy, P_side; drop log_tof) — the REAL cause of
+   the empty trusted frontier (qualification code is already generic).
+3. Cancel tag on invalid jb263279.
+4. Fleet deploy (main is ≥7 commits ahead: gate change, skills, tick.py
+   derived-z + frontier sort + axes-prose fixes).
+5. Then: Reto's 1–2 observed hand ticks (quest stays dormant; one manual
+   dispatch at a time) → re-arm decision.
+Reto's parallel queue: 24 hypothesis approve/sign payloads at
+/claim/fi<id>; redlines on the seed dossier welcome (edits cheap).
+
 ## Not-too-early assessment (asked 2026-08-27)
 
 Halt + salvage + wipe: NOT too early — substrate deployed, engine trusted.

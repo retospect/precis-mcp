@@ -2403,6 +2403,118 @@ class TestProvisionalFrontier:
         assert "── awaiting a sim" not in body
 
 
+# ── frontier qualifies on the quest's CURRENT objective axes (gr263257) ─
+# The trusted split (`pareto_split`, via `_objectives_for`'s per-quest
+# `rubric_objectives` read) is generic over ANY declared axis vector — a
+# candidate qualifies for `fr.frontier`/`fr.dominated` when it covers
+# whatever the quest currently declares, never a hardcoded `log_tof`. These
+# lock that in for a non-kinetics (electro) objective vector, the
+# missing-axis provisional path, and a still-live log_tof-era quest.
+
+
+class TestFrontierQualifiesOnCurrentObjective:
+    def _electro_quest(self, store: Any) -> int:
+        qid = _mk_quest(store, "An electro-catalysis striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "span_at_Uopt", "sense": "min"},
+                    {"key": "U_L", "sense": "min"},
+                    {"key": "energy", "sense": "min"},
+                    {"key": "P_side", "sense": "min"},
+                ]
+            },
+        )
+        return qid
+
+    def test_candidate_covering_non_log_tof_axes_qualifies_trusted(
+        self, store: Any
+    ) -> None:
+        # gr263257: an operator switching a quest's objective off log_tof
+        # (e.g. onto span_at_Uopt/U_L/energy/P_side) must not empty the
+        # trusted frontier — a candidate that covers the CURRENT axes and
+        # has a converged relax qualifies exactly as a log_tof-era one did.
+        qid = self._electro_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-9.0,
+        )
+        store.stamp_ref_meta(
+            sid, {"span_at_Uopt": 0.5, "U_L": -0.3, "P_side": 0.1}
+        )
+
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [sid]
+        assert fr.provisional == []
+        assert fr.unevaluated == []
+
+    def test_candidate_missing_one_axis_is_provisional_naming_that_axis(
+        self, store: Any
+    ) -> None:
+        # Same objective vector, but `P_side` never got measured — the
+        # candidate is visible (provisional), not silently unevaluated, and
+        # the reason names the missing axis generically (not "missing
+        # log_tof" — whatever axis the CURRENT rubric actually declares).
+        qid = self._electro_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-9.0,
+        )
+        store.stamp_ref_meta(sid, {"span_at_Uopt": 0.5, "U_L": -0.3})  # no P_side
+
+        fr = quest_frontier(store, qid)
+        assert fr.frontier == [] and fr.dominated == []
+        assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
+        assert fr.provisional[0].reasons == ["missing P_side"]
+
+    def test_legacy_log_tof_objective_still_qualifies_trusted(
+        self, store: Any
+    ) -> None:
+        # A still-live log_tof-era quest is unaffected — log_tof is just
+        # another axis, not special-cased away, when it IS the objective.
+        qid = _mk_quest(store, "A catalyst striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "log_tof", "sense": "max"}]}
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-9.0,
+        )
+        store.stamp_ref_meta(sid, {"kinetics_trusted": True, "log_tof": 0.42})
+
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [sid]
+        assert fr.provisional == []
+
+
 # ── by-total leaderboard view (§7.3) ──────────────────────────────────
 
 

@@ -654,9 +654,20 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
         lines.append(f"- beaten   {c.handle} {c.name} — {ms}")
     # Provisional rows: measured but unconfirmed (untrusted values marked ≈,
-    # exclusion reason in brackets). Frontier-leaders-if-trusted first, then
-    # capped — a long provisional tail is re-sim queue, not reasoning input.
-    provisional = sorted(fr.provisional, key=lambda p: not p.on_frontier)
+    # exclusion reason in brackets). Frontier-leaders-if-trusted first; within
+    # that, a row whose barrier itself carries an untrusted/nonphysical flag
+    # (gripe 263257 — an auto-untrusted ~73.7 eV reading topped the listing
+    # ahead of clean measured rows purely by insertion order) sinks below
+    # rows with a clean measured barrier — a flagged number is noise the
+    # model should read last, not first. Then capped — a long provisional
+    # tail is re-sim queue, not reasoning input.
+    provisional = sorted(
+        fr.provisional,
+        key=lambda p: (
+            not p.on_frontier,
+            p.candidate.flags.get("barrier_trusted") is False,
+        ),
+    )
     for p in provisional[:10]:
         c = p.candidate
         ms = " ".join(
@@ -676,6 +687,112 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
     if ruled_out:
         lines.append(f"- ruled out (do not re-propose): {', '.join(ruled_out)}")
     return "\n".join(lines)
+
+
+#: One-liner explaining each KNOWN Pareto axis, for :func:`_axis_reading_notes`
+#: — gripe 263257: the prompt's axis explainer used to be a static paragraph
+#: that unconditionally declared `log_tof` the activity axis, even for a
+#: quest whose `rubric_objectives` had moved off it entirely (e.g. onto the
+#: electro axes below). Keyed by measure name, not by quest type, so a new
+#: axis needs only a new entry here — never a code branch. An axis with no
+#: entry still renders (see `_axis_reading_notes`'s fallback), just without
+#: the bespoke read.
+_AXIS_NOTES: dict[str, str] = {
+    "log_tof": (
+        "`log_tof` is the ACTIVITY axis — a candidate that is measured but "
+        'dead-slow is legitimately dominated by a faster one, `barrier` alone '
+        'no longer settles that. A "provisional" row on kinetics '
+        "(`kinetics_note` shown) means the run is UNKNOWN and worth fixing or "
+        're-running — never read it as "this candidate is bad", only as "not '
+        'yet resolved".'
+    ),
+    "atom_cost": (
+        "`atom_cost` is a SOFT economic axis: a dear composition that buys "
+        "real activity can still be worth proposing — it only loses if a "
+        "cheaper design beats it on both axes at once."
+    ),
+    "barrier": (
+        "`barrier` is the rate-limiting reaction barrier (eV) — lower means a "
+        "faster elementary step; on a quest that also declares `log_tof` it "
+        "is a context scalar, not the ranked activity axis."
+    ),
+    "energy": (
+        "`energy` is the relaxed total energy — a stability signal, not "
+        "activity; it only orders candidates meaningfully relative to a "
+        "shared composition/reference, never across unrelated ones."
+    ),
+    "span_at_Uopt": (
+        "`span_at_Uopt` is the electrochemical rate-limiting span (eV) at "
+        "the reaction's own optimal applied potential — lower is a more "
+        "kinetically accessible path at that operating voltage."
+    ),
+    "U_L": (
+        "`U_L` is the limiting potential (V) — the applied voltage at which "
+        "every elementary step turns exergonic; closer to the "
+        "reaction's thermodynamic minimum voltage is better."
+    ),
+    "U_L_abs": (
+        "`U_L_abs` ranks the limiting potential by magnitude regardless of "
+        "sign — the rubric minimises how far the limiting step sits from 0 V."
+    ),
+    "P_side": (
+        "`P_side` is the side-reaction pressure at the operating point — "
+        "lower means less competing chemistry eating into yield."
+    ),
+    "selectivity_margin": (
+        "`selectivity_margin` is the worst branch-point margin — the main "
+        "route's climb minus its closest competing side route; higher means "
+        "safer against a side product taking over."
+    ),
+    "poison_margin": (
+        "`poison_margin` is the worst screened poison's margin over the "
+        "substrate — higher means more resistance to that poison shutting "
+        "the active site down."
+    ),
+    "trap_margin": (
+        "`trap_margin` is the best route's span minus the worst off-route "
+        "escape climb — higher means less risk of getting stuck in a "
+        "self-poisoning trap state."
+    ),
+}
+
+#: Rendered only when the quest declares BOTH components — `$/rate` is
+#: meaningless (and the leaderboard/frontier rows show `—` for it) otherwise.
+_RATE_READOUT_NOTE = (
+    "Where both are measured, `$/rate` (atom_cost − log_tof, shown per row) "
+    'reads directly as "100× more active buys 100× less catalyst for the '
+    'same spend" — use it to judge a dear-but-active tradeoff at a glance.'
+)
+
+
+def _axis_reading_notes(fr: Any) -> str:
+    """The tick prompt's "Reading the axes" paragraph — derived from the
+    quest's OWN current objective vector (``fr.objectives``), never a
+    hardcoded assumption (gripe 263257: the prior static text always named
+    `log_tof` the activity axis, even for a quest whose rubric had moved
+    entirely onto other axes — e.g. the electro span_at_Uopt/U_L/P_side set —
+    which would render a flatly false claim about what the frontier table
+    actually ranks on).
+
+    One :data:`_AXIS_NOTES` one-liner per axis the quest currently
+    declares, in declaration order; an axis with no known entry gets a
+    generic fallback rather than being silently dropped (a quest may declare
+    a composite or a not-yet-catalogued measure). `$/rate`'s explainer is
+    appended only when BOTH its components (``atom_cost``, ``log_tof``) are
+    declared. Empty when the quest declares no objectives at all (never
+    happens in practice — :func:`precis.quest.frontier._objectives_for`
+    always falls back to :data:`precis.quest.frontier.DEFAULT_OBJECTIVES`).
+    """
+    keys = [k for k, _ in fr.objectives]
+    if not keys:
+        return ""
+    notes = [
+        _AXIS_NOTES.get(k, f"`{k}` is one of this quest's declared objective axes.")
+        for k in keys
+    ]
+    if "atom_cost" in keys and "log_tof" in keys:
+        notes.append(_RATE_READOUT_NOTE)
+    return "Reading the axes: " + " ".join(notes) + "\n"
 
 
 def _ledger_constraints(ledger_text: str) -> str:
@@ -1084,6 +1201,7 @@ def build_tick_prompt(
         logbook="\n".join(tail),
         servers="\n".join(servers),
         frontier=frontier_text,
+        axis_notes=_axis_reading_notes(fr),
         literature=literature,
         reaction_context=_reaction_context(store, quest, fr=fr),
         skill_injection=_skill_injection_section(stmt),
@@ -1140,17 +1258,7 @@ You do not emit `result`/`milestone` entries — the system stamps those from \
 simulations; you close a lead with a `dead-end` when the table shows it \
 beaten.)
 
-Reading the axes: `log_tof` is the ACTIVITY axis — a candidate that is measured \
-but dead-slow is legitimately dominated by a faster one, `barrier` alone no \
-longer settles that. A "provisional" row on kinetics (`kinetics_note` shown) \
-means the run is UNKNOWN and worth fixing or re-running — never read it as \
-"this candidate is bad", only as "not yet resolved". `atom_cost` is a SOFT \
-economic axis: a dear composition that buys real activity can still be worth \
-proposing — it only loses if a cheaper design beats it on both axes at once. \
-Where both are measured, `$/rate` (atom_cost − log_tof, shown per row) reads \
-directly as "100× more active buys 100× less catalyst for the same spend" — \
-use it to judge a dear-but-active tradeoff at a glance.
-{literature}{reaction_context}{skill_injection}
+{axis_notes}{literature}{reaction_context}{skill_injection}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \

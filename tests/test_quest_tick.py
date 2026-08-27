@@ -2291,6 +2291,68 @@ class TestFrontierAlwaysOn:
         assert "senior reviewer" in prompt  # the rest of the banner survives
 
 
+class TestAxisReadingNotes:
+    """The "Reading the axes" paragraph (gr263257) is derived from the
+    quest's OWN current `rubric_objectives` — never a hardcoded assumption
+    that `log_tof` is the activity axis, which used to render even for a
+    quest whose rubric had moved onto entirely different axes."""
+
+    def test_electro_axes_quest_names_its_own_axes_not_log_tof(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "An electro-catalysis striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "span_at_Uopt", "sense": "min"},
+                    {"key": "U_L", "sense": "min"},
+                    {"key": "energy", "sense": "min"},
+                    {"key": "P_side", "sense": "min"},
+                ]
+            },
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "Reading the axes:" in prompt
+        assert "`span_at_Uopt` is the electrochemical rate-limiting span" in prompt
+        assert "`U_L` is the limiting potential" in prompt
+        assert "`P_side` is the side-reaction pressure" in prompt
+        assert "log_tof` is the ACTIVITY axis" not in prompt
+        assert "$/rate" not in prompt  # atom_cost/log_tof not both declared
+
+    def test_legacy_log_tof_quest_keeps_the_current_prose(self, store: Any) -> None:
+        qid = _mk_quest(store, "A catalyst striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "log_tof", "sense": "max"},
+                    {"key": "atom_cost", "sense": "min"},
+                ]
+            },
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "`log_tof` is the ACTIVITY axis" in prompt
+        assert "`atom_cost` is a SOFT economic axis" in prompt
+        assert "$/rate` (atom_cost − log_tof, shown per row)" in prompt
+
+    def test_unknown_axis_gets_a_generic_fallback_not_dropped(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A novel-axis striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "widget_score", "sense": "max"}]}
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert (
+            "`widget_score` is one of this quest's declared objective axes."
+            in prompt
+        )
+
+
 class TestServedPapersDetail:
     """Served papers carry an abstract snippet in the tick prompt, not just a
     bare title — the model can only judge relevance from real substance."""
@@ -3032,7 +3094,9 @@ class TestWipCap:
 class TestFrontierSummaryProvisional:
     """_frontier_summary renders the provisional band between beaten and
     awaiting: values marked ≈ when untrusted, reason in brackets, frontier-
-    leaders-if-trusted starred and sorted first, tail capped at 10."""
+    leaders-if-trusted starred and sorted first, then a row whose barrier
+    itself carries an untrusted/nonphysical flag sinks below rows with a
+    clean measured barrier (gr263257), tail capped at 10."""
 
     @staticmethod
     def _fr(provisional: list[Any], **kw: Any) -> Any:
@@ -3048,10 +3112,16 @@ class TestFrontierSummaryProvisional:
 
     @staticmethod
     def _pc(
-        ref_id: int, barrier: float, *, on_frontier: bool = False, reason: str = "x"
+        ref_id: int,
+        barrier: float,
+        *,
+        on_frontier: bool = False,
+        reason: str = "x",
+        trusted: bool = False,
     ) -> Any:
         from precis.quest.frontier import Candidate, ProvisionalCandidate
 
+        flags: dict[str, Any] = {} if trusted else {"barrier_trusted": False}
         return ProvisionalCandidate(
             candidate=Candidate(
                 ref_id,
@@ -3059,10 +3129,10 @@ class TestFrontierSummaryProvisional:
                 f"C{ref_id}",
                 {},
                 True,
-                flags={"barrier_trusted": False},
+                flags=flags,
             ),
             measures={"barrier": barrier, "energy": -10.0},
-            untrusted_keys=frozenset({"barrier"}),
+            untrusted_keys=frozenset() if trusted else frozenset({"barrier"}),
             reasons=[reason],
             on_frontier=on_frontier,
         )
@@ -3094,6 +3164,23 @@ class TestFrontierSummaryProvisional:
         assert len(lines) == 10
         assert "st99" in lines[0]  # on_frontier sorts first despite worst value
         assert "(+3 more provisional)" in text
+
+    def test_flagged_nonphysical_barrier_sinks_below_clean_measured_rows(
+        self,
+    ) -> None:
+        # gr263257: a nonsense auto-untrusted barrier (e.g. ~73.7 eV, past
+        # compute._BARRIER_ABSURD_EV) must not outrank clean measured rows
+        # purely by insertion order — it sinks to the bottom of its
+        # on_frontier tier instead.
+        nonphysical = self._pc(1, 73.7, reason="barrier untrusted")
+        clean_a = self._pc(2, 0.5, reason="no converged relax", trusted=True)
+        clean_b = self._pc(3, 0.6, reason="no converged relax", trusted=True)
+        text = self._summary(self._fr([nonphysical, clean_a, clean_b]))
+        lines = [ln for ln in text.splitlines() if ln.startswith("- provisional")]
+        assert len(lines) == 3
+        assert "st2" in lines[0]
+        assert "st3" in lines[1]
+        assert "st1" in lines[2]  # the untrusted 73.7 row sinks to last
 
 
 class TestServersSummaryHandles:
