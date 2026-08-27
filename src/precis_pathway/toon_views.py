@@ -174,6 +174,32 @@ def analysis_text(meta: dict[str, Any]) -> str:
     return "\n".join(head)
 
 
+def step_view(meta: dict[str, Any], pw_handle: str, edge: dict[str, Any]) -> str:
+    """Focused single-step view for a ``pw<id>~<source>→<target>`` selector
+    (Simulation step deep-links, docs/backlog/quest-dossier-dialectic.md).
+    ``edge`` is one row of ``meta['graph']['links']`` — see
+    :func:`precis_pathway.analysis._reaction_edges` for the shape."""
+    refs = meta.get("structure_refs") or {}
+    source, target = edge["source"], edge["target"]
+    row = {
+        "reaction": f"{source}→{target}",
+        "Ea_eV": _b(edge.get("barrier")),
+        "std": _b(edge.get("barrier_std")),
+        "dE_eV": _e(edge.get("delta_e")),
+        "conf": _conf(edge.get("low_confidence")),
+        "kind": edge.get("kind") or "reaction",
+    }
+    table = toon.dump(
+        [row], schema=["reaction", "Ea_eV", "std", "dE_eV", "conf", "kind"]
+    )
+    lines = [f"step {pw_handle}~{row['reaction']}", table]
+    a, b = _structure_handle(refs, source), _structure_handle(refs, target)
+    if a or b:
+        lines.append(f"structures: {a or '?'} → {b or '?'}")
+        lines.append(_structure_hint("structures", "each side's (source→target)"))
+    return "\n".join(lines)
+
+
 # ── cross-candidate compare (interleaved profile) ───────────────────────
 def compare_toon(candidates: list[dict[str, Any]]) -> str:
     """`candidates`: [{slug, lever, graph, root, target}]. Rows = candidates.

@@ -421,6 +421,9 @@ precis_chem = "precis_chem.migrations"
 precis_bio = "precis_bio.migrations"
 autocatpath = "precis_pathway.migrations"
 
+[project.entry-points."precis.handle_codes"]
+pathway = "precis_pathway.handles"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

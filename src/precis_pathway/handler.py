@@ -305,7 +305,17 @@ class PathwayHandler(Handler):
                 next="get(kind='pathway', id='no_to_no3_pd')",
             )
         store = self.hub.live_store
-        ref = store.get_ref(kind="pathway", id=str(id))
+        # A trailing ``~<source>→<target>`` step selector (Simulation step
+        # deep-links) — dispatch's universal-handle/slug routing reattaches
+        # any ``~selector`` suffix to the resolved id untouched (it only
+        # recognises chunk/view selectors of its own, e.g. ``~ord``), so it
+        # reaches us as one string. ``_slugify`` never produces ``~``, so
+        # splitting on the first one is unambiguous.
+        ident = str(id)
+        slug, sep, step_label = ident.partition("~")
+        if sep:
+            return self._get_step(store, slug, step_label)
+        ref = store.get_ref(kind="pathway", id=slug)
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
 
@@ -363,6 +373,47 @@ class PathwayHandler(Handler):
 
             return Response(body=analysis_text(meta))
         return Response(body=self._render_profile(ref.title, meta))
+
+    # -- step selector -----------------------------------------------------
+    def _get_step(self, store: Store, slug: str, step_label: str) -> Response:
+        """Resolve a ``~<source>→<target>`` step selector against the
+        computed graph's edges (``meta['graph']['links']``) — see
+        ``analysis._path_steps``'s ``f"{source}→{target}"`` label, unique per
+        network."""
+        ref = store.get_ref(kind="pathway", id=slug)
+        if ref is None:
+            raise BadInput(f"no pathway '{slug}'")
+        meta = ref.meta or {}
+        graph = meta.get("graph")
+        if not graph:
+            raise BadInput(
+                f"pathway '{slug}' has no computed graph yet (status "
+                f"{meta.get('status', '?')}); a step selector only resolves "
+                "against a computed pathway.",
+                next=f"get(kind='pathway', id='{slug}') — run it first "
+                "(put without mode='preview')",
+            )
+        links = graph.get("links") or []
+        by_label = {f"{e['source']}→{e['target']}": e for e in links}
+        edge = by_label.get(step_label)
+        if edge is None:
+            available = sorted(by_label)
+            shown = ", ".join(available[:30])
+            more = f" (+{len(available) - 30} more)" if len(available) > 30 else ""
+            raise BadInput(
+                f"pathway '{slug}' has no step '{step_label}'.",
+                next=(
+                    f"available steps: {shown}{more}"
+                    if available
+                    else f"pathway '{slug}' has no steps"
+                ),
+            )
+        from precis.utils.handle_registry import try_format
+
+        from .toon_views import step_view
+
+        pw_handle = try_format("pathway", ref.id) or slug
+        return Response(body=step_view(meta, pw_handle, edge))
 
     # -- compare (cross-candidate) ---------------------------------------
     def _compare(self, store: Store, ref: Any, meta: dict[str, Any]) -> str:
