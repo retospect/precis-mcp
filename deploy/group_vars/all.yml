@@ -21,12 +21,12 @@ precis_daily_cost_ceiling: 100.0
 
 # Operator hold: job_types the claim path skips (PRECIS_SUSPENDED_JOB_TYPES;
 # queued jobs wait in place, quest ticks stop minting new autocatpath trees).
-# Held 2026-08-17 → 2026-08-21 (autocatpath compute). Released on operator
-# request after confirming the GPU node is coherent: engine 0.13.0 installed,
-# constraints.txt pins the same, and NO PRECIS_AUTOCATPATH_VERSION override is
-# present — so the idem-key version token derives the version actually running
-# and re-dispatches cannot dedup onto a stale-engine job. (0.13.0 is the newest
-# catpath *release*; the 0.14.1 referenced by the pin-bump backlog item is
-# unreleased, so that bump is not a prerequisite here.)
+# Held 2026-08-17 → 2026-08-21 (autocatpath compute). Release check, then and
+# now: the GPU node must be version-coherent, because the idem-key version
+# token derives the engine actually running — an incoherent node lets a
+# re-dispatch dedup onto a stale-engine job. Since 01fb9e6a that coherence is
+# structural rather than hand-held: constraints no longer pin the engine, the
+# autocatpath role installs the wheelhouse wheel, and no
+# PRECIS_AUTOCATPATH_VERSION override is present anywhere.
 # To suspend again: list job_types comma-separated and redeploy.
 precis_suspended_job_types: ""
