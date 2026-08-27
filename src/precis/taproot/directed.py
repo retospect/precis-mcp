@@ -65,6 +65,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
@@ -78,6 +79,7 @@ from precis.taproot.canon import (
     _parse_claim_item,
     _parse_json_object,
     block,
+    claim_sha,
     dedup_judge,
     merge_confirm,
     place,
@@ -460,7 +462,12 @@ def directed_mint(
        ``quote`` carried in the evidence edge's ``meta``
        (``source_handle=pc<chunk_id>`` grounds it to this exact passage —
        :func:`~precis.taproot.hub._grounding_chunk_ord` resolves it same
-       as every other evidence edge). A ``needs_review`` placement never
+       as every other evidence edge). Because the qualify step is itself
+       a claim-vs-passage verification, the edge is born verified:
+       ``support: "yes"`` rides with ``support_reason`` (the qualify
+       note), ``verified_by='directed-mint'``, ``verified_at``, and
+       ``verified_claim_sha`` of the qualified sentence — never a bare
+       mint-time default. A ``needs_review`` placement never
        auto-attaches (open #16): it files a ``kind='todo'`` via
        ``todo_fn`` (default :func:`_file_review_todo`) and contributes no
        hub. When a hub *did* land and ``demand`` was given, the hub's
@@ -515,12 +522,23 @@ def directed_mint(
             store, claim, placement_, chunk_id=chunk_id, demand=demand, set_by=set_by
         )
 
+    # A real verdict, not a mint-time default: qualify_claim IS a
+    # claim-vs-passage judgment (BIG tier, one-way fit, and the grounding
+    # quote was mechanically verified against this exact passage), so the
+    # edge is born verified — support_reason is the qualify note,
+    # verified_claim_sha binds the verdict to the qualified wording (an
+    # attach onto a differently-worded hub reads as unverified there, which
+    # is honest: qualify never saw that hub's sentence).
     edge_meta: dict[str, Any] = {
         "support": "yes",
+        "support_reason": qr.reason,
         "caveats": [],
         "source_handle": f"pc{chunk_id}",
         "origin": "directed-mint",
         "quote": qr.quote,
+        "verified_by": "directed-mint",
+        "verified_at": datetime.now(UTC).isoformat(),
+        "verified_claim_sha": claim_sha(qr.claim.sentence),
     }
     hub_ref_id = apply_placement(
         store,

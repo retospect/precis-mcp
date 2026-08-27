@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 def add_parser(subparsers: Any) -> None:
     """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
     ``merge`` / ``backfill`` / ``backfill-grounding`` / ``repair-evidence`` /
-    ``direct-mint`` / ``lint``)."""
+    ``verify-edges`` / ``reword-sweep`` / ``direct-mint`` / ``lint``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -252,6 +252,117 @@ def add_parser(subparsers: Any) -> None:
         "stderr either way, so stdout stays pipeable).",
     )
     re_.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    ve = tsub.add_parser(
+        "verify-edges",
+        help="Verify withheld/unverified evidence edges against their pinned "
+        "passage and stamp the meta.support verdict the publish preflight "
+        "reads (2026-08-27 audit: 264 withheld edges across 248 hubs). "
+        "DRY-RUN BY DEFAULT: zero DB writes unless --apply. A "
+        "non-corroborating verdict is NEVER stamped -- reported (default "
+        "cohort) or stripped back to withheld (--unverified-stamped); "
+        "pruning stays reground's door. Passage-less edges are skipped + "
+        "counted (repair-evidence territory).",
+    )
+    ve_mode = ve.add_mutually_exclusive_group()
+    ve_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default: verify + report, write nothing.",
+    )
+    ve_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the verdicts (jsonb-merge onto the edge's meta -- "
+        "support/support_reason/caveats/verified_by/verified_at/"
+        "verified_claim_sha -- one short transaction per edge). Default "
+        "(omitted) is a read-only dry-run (the LLM verify calls still run, "
+        "budget-metered).",
+    )
+    ve.add_argument(
+        "--unverified-stamped",
+        action="store_true",
+        help="Select the born-released cohort instead: edges whose support "
+        "stamp was written at mint time and never verified (support set, "
+        "no verified_by). On --apply a corroborating verdict OVERWRITES "
+        "the stamp with the real one; a non-corroborating verdict STRIPS "
+        "meta.support, returning the edge to withheld behind the publish "
+        "gate.",
+    )
+    ve.add_argument(
+        "--hub",
+        default=None,
+        help="Restrict to one claim hub (fi<id> handle, pub_id, cite_key, "
+        "or bare ref_id). Default: every live strict claim hub.",
+    )
+    ve.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Verify at most this many edges (link_id order, so a limited "
+        "run is a stable prefix). Default: the whole cohort.",
+    )
+    ve.add_argument(
+        "--out",
+        default=None,
+        help="Write the JSONL rows (link_id, hub, source_ref, chunk_id, "
+        "verdict, action) here. Default: stdout (the run summary goes to "
+        "stderr either way, so stdout stays pipeable).",
+    )
+    ve.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    rw = tsub.add_parser(
+        "reword-sweep",
+        help="LLM batch reword of claim hubs blocked by the sentence lints "
+        "(2026-08-27 audit: 356 of 1,490 live hubs fail ONLY the blocking "
+        "lint codes) -- the LLM half of the lint-debt split; `taproot lint "
+        "--fix` owns the mechanical notation codes. DRY-RUN BY DEFAULT: "
+        "zero DB writes unless --apply (the MEDIUM reword calls still run, "
+        "budget-metered). Every proposal is re-validated in code before "
+        "any write (blocking lints, numeric/unit survival, citation ban, "
+        "length budget); NO-REWORD is an expected verdict, not a failure.",
+    )
+    rw_mode = rw.add_mutually_exclusive_group()
+    rw_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default: propose + report, write nothing.",
+    )
+    rw_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write accepted rewords through taproot.hub.refine_claim_sentence "
+        "-- the single retitle door, so refs.title, the finding_body chunk, "
+        "and the pub_id alias stay in sync. Default (omitted) is a "
+        "read-only dry-run.",
+    )
+    rw.add_argument(
+        "--hub",
+        default=None,
+        help="Restrict to one claim hub (fi<id> handle, pub_id, cite_key, "
+        "or bare ref_id -- it still has to qualify for the cohort). "
+        "Default: every live strict claim hub failing a blocking lint.",
+    )
+    rw.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Reword at most this many hubs (ref_id order, applied after "
+        "the cohort filters, so a limited run is a stable prefix). "
+        "Default: the whole cohort.",
+    )
+    rw.add_argument(
+        "--out",
+        default=None,
+        help="Write the JSONL rows (hub, old, new, status, lint_codes, "
+        "checks_failed, reason, applied) here. Default: stdout (the run "
+        "summary goes to stderr either way, so stdout stays pipeable).",
+    )
+    rw.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -1142,6 +1253,176 @@ def _run_repair_evidence(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _run_verify_edges(args: argparse.Namespace) -> None:
+    """``precis taproot verify-edges`` -- certify withheld/unverified
+    evidence edges for the publish preflight (module docstring:
+    :mod:`precis.taproot.verify_edges`).
+
+    Dry-run is the default and the ONLY mode that needs no flag: without
+    ``--apply`` this makes zero DB writes (the LLM verify calls still run,
+    budget-metered). A ``None`` verdict (LLM failure) is a counted skip; a
+    per-edge raise is caught, written to the artifact as an ``error`` row,
+    and exits nonzero at the end -- same discipline as repair-evidence.
+    """
+    from precis.budget import meter
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.verify_edges import (
+        count_passageless_edges,
+        select_unverified_stamped_edges,
+        select_withheld_edges,
+        verify_edge,
+    )
+
+    apply = bool(args.apply)
+    unverified = bool(args.unverified_stamped)
+    rows: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    n_errors = 0
+    n_passageless = 0
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    # Same bind as repair-evidence: the verify dispatch resolves its
+    # endpoint through the budget meter and this run's spend is gated by
+    # the breaker. The only claim-data writes are the per-edge meta
+    # patches, and only under --apply.
+    meter.bind_store(store)
+    try:
+        hub_ref_id: int | None = None
+        if args.hub:
+            from precis.taproot.authoring import resolve_hub_ref_id
+
+            token = args.hub.strip()
+            hub_ref_id = resolve_hub_ref_id(
+                store, int(token) if token.isdigit() else token
+            )
+        if unverified:
+            edges = select_unverified_stamped_edges(
+                store, hub_ref_id=hub_ref_id, limit=args.limit
+            )
+        else:
+            edges = select_withheld_edges(
+                store, hub_ref_id=hub_ref_id, limit=args.limit
+            )
+        n_passageless = count_passageless_edges(
+            store, unverified_stamped=unverified, hub_ref_id=hub_ref_id
+        )
+        for edge in edges:
+            try:
+                result = verify_edge(
+                    store, edge, apply=apply, unverified_stamped=unverified
+                )
+            except Exception as exc:
+                n_errors += 1
+                print(
+                    f"taproot verify-edges: link {edge.link_id} "
+                    f"(hub fi{edge.hub_ref_id}) failed: {exc}",
+                    file=sys.stderr,
+                )
+                rows.append(
+                    {
+                        "link_id": edge.link_id,
+                        "hub": edge.hub_ref_id,
+                        "source_ref": edge.source_ref_id,
+                        "chunk_id": edge.chunk_id,
+                        "supports": None,
+                        "support_reason": None,
+                        "contradicts": False,
+                        "status": None,
+                        "action": None,
+                        "applied": False,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            counts[result.status] = counts.get(result.status, 0) + 1
+            rows.append(result.to_row())
+    except BadInput as exc:
+        print(f"taproot verify-edges: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    _write_repair_rows(rows, args.out)
+    if apply:
+        suffix = ""
+    else:
+        would = f"would stamp {counts.get('verified', 0)}"
+        if unverified:
+            would += f", strip {counts.get('stripped', 0)}"
+        suffix = f"  [DRY-RUN -- nothing written; {would}]"
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+    print(
+        f"taproot verify-edges: {len(rows)} edge(s) processed -- {breakdown}, "
+        f"skipped_passageless={n_passageless}, errors={n_errors}{suffix}",
+        file=sys.stderr,
+    )
+    if n_errors > 0:
+        sys.exit(1)
+
+
+def _run_reword_sweep(args: argparse.Namespace) -> None:
+    """``precis taproot reword-sweep`` -- LLM batch reword of lint-blocked
+    claim hub sentences through the retitle door (module docstring:
+    :mod:`precis.taproot.reword`).
+
+    Dry-run is the default and the ONLY mode that needs no flag: without
+    ``--apply`` this makes zero DB writes (the MEDIUM reword calls still
+    run, budget-metered). Per-hub failures are named statuses inside the
+    sweep (``llm-failed`` / ``apply-failed`` -- the module never raises on
+    a dead model or a refused write), counted and reported; only a hard
+    error (BadInput) exits nonzero -- same convention as verify-edges,
+    whose per-edge failures are counted rows, not a crash.
+    """
+    from precis.budget import meter
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.reword import run_reword_sweep
+
+    apply = bool(args.apply)
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    # Same bind as repair-evidence/verify-edges: the reword dispatch
+    # resolves its endpoint through the budget meter and this run's spend
+    # is gated by the breaker. The only claim-data writes are the
+    # refine_claim_sentence retitles, and only under --apply.
+    meter.bind_store(store)
+    try:
+        hub_ref_id: int | None = None
+        if args.hub:
+            from precis.taproot.authoring import resolve_hub_ref_id
+
+            token = args.hub.strip()
+            hub_ref_id = resolve_hub_ref_id(
+                store, int(token) if token.isdigit() else token
+            )
+        summary = run_reword_sweep(
+            store,
+            apply=apply,
+            limit=args.limit,
+            hub=hub_ref_id,
+            out=args.out if args.out else sys.stdout,
+        )
+    except BadInput as exc:
+        print(f"taproot reword-sweep: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    counts: dict[str, int] = summary["counts"]
+    if apply:
+        suffix = ""
+    else:
+        would = f"would reword {counts.get('reworded', 0)}"
+        suffix = f"  [DRY-RUN -- nothing written; {would}]"
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+    print(
+        f"taproot reword-sweep: {summary['processed']} hub(s) processed -- "
+        f"{breakdown}, applied={summary['applied']}{suffix}",
+        file=sys.stderr,
+    )
+
+
 def _run_direct_mint(args: argparse.Namespace) -> None:
     from precis.budget import meter
     from precis.config import load_config
@@ -1574,6 +1855,10 @@ def run(args: argparse.Namespace) -> None:
         _run_backfill_grounding(args)
     elif args.taproot_cmd == "repair-evidence":
         _run_repair_evidence(args)
+    elif args.taproot_cmd == "verify-edges":
+        _run_verify_edges(args)
+    elif args.taproot_cmd == "reword-sweep":
+        _run_reword_sweep(args)
     elif args.taproot_cmd == "direct-mint":
         _run_direct_mint(args)
     elif args.taproot_cmd == "lint":

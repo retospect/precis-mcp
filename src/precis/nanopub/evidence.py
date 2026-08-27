@@ -66,6 +66,42 @@ HEARSAY_SECTION = re.compile(
     re.IGNORECASE,
 )
 
+#: Source-TITLE patterns that mark a review/perspective by genre — a paper
+#: we may hold in full, but whose own prose attributes its findings to the
+#: doers it surveys, so a quote from it is secondhand even from a results
+#: section. This is the arm the four structural acquisition arms cannot
+#: express: ``refs_without_body_chunks`` fires only when we do NOT hold the
+#: text. (2026-08-27 audit:
+#: ~39/1,490 hubs ground on review-titled papers; the title heuristic
+#: eyeballed ~97% accurate on this corpus — a "Recent advances in X: A
+#: review" is a review, and the rare primary paper with "review" in its
+#: title over-blocks into a human decision, which is the safe direction.)
+REVIEW_TITLE = re.compile(
+    r"\b(?:mini-?|systematic )?reviews?\b"
+    r"|\bperspectives?\b"
+    r"|\broadmap\b"
+    r"|state.of.the.art"
+    r"|(?:recent\s+)?(?:advances|progress|developments)\s+(?:in|of|on)\s",
+    re.IGNORECASE,
+)
+
+#: Claim-sentence patterns declaring a SYNTHESIS mode — for such a claim a
+#: review is not hearsay but the primary source itself ("Review synthesis
+#: identifies … as the degradation pathways"), so the review-title arm
+#: stays quiet. Anything else grounded on a review-titled source blocks.
+SYNTHESIS_MODE = re.compile(
+    r"review synthesis|meta-analysis|systematic review|umbrella review"
+    r"|survey of \d|synthesis of \d+\s+(?:studies|papers|reports)",
+    re.IGNORECASE,
+)
+
+
+def is_review_title(title: str) -> bool:
+    """True iff a source's title marks it a review/perspective by genre
+    (:data:`REVIEW_TITLE`)."""
+    return bool(REVIEW_TITLE.search(title or ""))
+
+
 #: Harvester prose marking a claim whose primary source was never
 #: ingested ("Paper not in corpus — needs acquisition."). Grounding such
 #: a claim in a *citing* paper's text is hearsay whatever section the

@@ -353,6 +353,17 @@ precis stats --utilization [--hours N]
                                    #   (llm_call_log) utilization + idle gaps.
 precis cron | heartbeat            # Scheduler tick / liveness ping.
 
+# Claim-hub curation (taproot)
+precis taproot ...                 # Claim-hub authoring/repair: mint / refine /
+                                   #   merge / backfill / backfill-grounding /
+                                   #   repair-evidence / direct-mint / lint.
+precis taproot verify-edges        # Certify withheld/unverified evidence edges
+                                   #   for the publish preflight (stamps the
+                                   #   meta.support verdict; dry-run default).
+precis taproot reword-sweep        # LLM batch reword of lint-blocked claim hub
+                                   #   sentences through the retitle door
+                                   #   (dry-run default).
+
 # One-shot jobs
 precis jobs ingest[-md|-oracles] ...   # Pre-warm files under PRECIS_ROOT.
 precis jobs import-perplexity ...      # Bulk-import Perplexity web-UI answers.

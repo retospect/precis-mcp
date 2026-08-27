@@ -102,7 +102,12 @@ traceable. Admissible is not true. Claim-versus-claim disagreement is the
 only truth-bearing mechanism in the system, and it has never actually run.
 Independently reached by an external review
 (`get(kind='perplexity-research', id='critique-the-design-of-a-scientific-claim-publication-pipeli')`):
-the corpus is *"impeccably traced but epistemically flat."*
+the corpus is *"impeccably traced but epistemically flat."* Re-confirmed by
+the 2026-08-27 staged-queue review: finding-level critiques (fi191315's)
+must surface as a nonblocking review/dispute state — visible in the
+evidence view, not silently absent, not a hard gate — which is exactly
+Part 1's `disputes` rendering. Third independent derivation; Part 1's
+priority rises accordingly.
 
 ## The change
 

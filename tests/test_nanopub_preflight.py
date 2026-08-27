@@ -4,6 +4,7 @@ recorder, no network is ever touched."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -100,6 +101,69 @@ def test_withheld_edge_blocks_and_signoff_clears(store: Any, monkeypatch: Any) -
     )
     assert withheld_edges(store, hub) == []
     assert "withheld-edge" not in _checks(publish_preflight(store, hub))
+
+
+def test_stale_verified_claim_sha_withholds_the_edge(store: Any) -> None:
+    """A support verdict is bound to the claim wording it was issued
+    against: once the hub title is edited, the edge's ``verified_claim_sha``
+    no longer matches and the edge is withheld as stale — what was checked
+    is not what would publish."""
+    from precis.taproot.canon import claim_sha
+
+    sentence = "DFT finds the sha-bound claim holds."
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, sentence, paper, chunk)
+    # A publish row must exist for the preflight to reach the withheld-edge
+    # loop at all (no row → the "state" early-return says nothing was ever
+    # approved).
+    store.nanopub_create_publish_row(hub)
+    verdict = {
+        "support": "yes",
+        "support_reason": "read the passage",
+        "verified_by": "verify-edges",
+        "verified_claim_sha": claim_sha(sentence),
+    }
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE links SET meta = meta || %s::jsonb "
+            "WHERE dst_ref_id = %s AND relation = 'corroborates'",
+            (json.dumps(verdict), hub),
+        )
+    # sha matches the live title → released.
+    assert withheld_edges(store, hub) == []
+
+    # The claim is edited after verification → stale verdict → withheld.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET title = %s WHERE ref_id = %s",
+            ("DFT finds the sha-bound claim holds under argon.", hub),
+        )
+    edges = withheld_edges(store, hub)
+    assert len(edges) == 1
+    assert edges[0].paper_ref_id == paper
+    assert edges[0].stale is True
+    issues = publish_preflight(store, hub)
+    assert any(i.check == "withheld-edge" and "stale" in i.message for i in issues)
+
+
+def test_sha_less_stamp_stays_released_even_after_a_title_edit(store: Any) -> None:
+    """Forward-only invalidation: a legacy ``support`` stamp with no
+    ``verified_claim_sha`` predates the sha and stays valid — even across a
+    later title edit — until the operational re-verify pass rewrites it.
+    Anything else would instantly block every pending publish."""
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "The legacy-stamped claim holds.", paper, chunk)
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE links SET meta = meta || \'{"support": "yes"}\'::jsonb '
+            "WHERE dst_ref_id = %s AND relation = 'corroborates'",
+            (hub,),
+        )
+        conn.execute(
+            "UPDATE refs SET title = %s WHERE ref_id = %s",
+            ("The legacy-stamped claim holds, reworded.", hub),
+        )
+    assert withheld_edges(store, hub) == []
 
 
 def test_trust_gate_requires_attesting_allowlist_entry(

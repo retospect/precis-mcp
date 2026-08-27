@@ -89,12 +89,19 @@ def _seed_paper(
 
 
 def _attach(store: Any, *, hub: int, paper: int, chunk_id: int, role: str) -> None:
+    # ``verified_by`` keeps the seeded edge out of the publish-gate
+    # re-verify arm's cohort (these tests exercise reground, and the arm's
+    # verify hook is deliberately left unpatched here).
     attach_evidence(
         store,
         hub_ref_id=hub,
         paper_ref_id=paper,
         role=role,
-        meta={"support": "yes", "source_handle": f"pc{chunk_id}"},
+        meta={
+            "support": "yes",
+            "source_handle": f"pc{chunk_id}",
+            "verified_by": "test-seed",
+        },
         set_by="system",
         check_retraction=False,
     )

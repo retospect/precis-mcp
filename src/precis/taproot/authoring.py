@@ -18,12 +18,13 @@ re-attaching an evidence edge that already exists (checked directly against
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import ActorSlug
-from precis.taproot.canon import CanonicalClaim
+from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import (
     _DEFAULT_ROLE,
     EVIDENCE_SRC_KINDS,
@@ -290,8 +291,17 @@ def seed_claim_hub(
       :data:`precis.taproot.hub.HUB_ROLES`.
     * ``source_handle`` (optional) — the grounding chunk pointer
       (``pc<chunk_id>`` / ``slug~ord``), stored in the edge ``meta``.
-    * ``support`` (default ``'yes'``) / ``caveats`` (default ``[]``) — the
-      chase-verdict-shaped fields carried in the edge ``meta``.
+    * ``support`` / ``support_reason`` / ``verified_by`` (optional, all
+      three or none) — a real verification the caller attests to
+      (``verified_by`` names the verifier). Only when all three are
+      present does the edge carry a ``support`` verdict (plus ``caveats``,
+      default ``[]``, and a stamped ``verified_at`` /
+      ``verified_claim_sha``); otherwise ``support``/``caveats`` are
+      omitted entirely and the edge is **born withheld** behind
+      ``nanopub.preflight.withheld_edges`` until a verifier reads the
+      passage. Never a default: the old ``support: "yes"``-on-omission
+      shape is what let 86% of stamped edges assert support nothing
+      checked.
 
     Calls :func:`~precis.taproot.hub.mint_hub` ONCE for the claim (idempotent
     by its content-derived pub_id) then :func:`~precis.taproot.hub.attach_evidence`
@@ -391,11 +401,26 @@ def seed_claim_hub(
                 seen_edges.add(edge_key)
                 continue
 
-            meta = {
-                "support": supporter.get("support", "yes"),
-                "caveats": list(supporter.get("caveats") or []),
-                "source_handle": supporter.get("source_handle"),
-            }
+            # Support is a verdict, never a default: it lands on the edge
+            # only when the supporter attests a real verification (the
+            # support/support_reason/verified_by trio), stamped with when
+            # and against which claim wording. Anything less is born
+            # withheld behind the publish gate.
+            meta: dict[str, Any] = {"source_handle": supporter.get("source_handle")}
+            support = supporter.get("support")
+            support_reason = supporter.get("support_reason")
+            verified_by = supporter.get("verified_by")
+            if support and support_reason and verified_by:
+                meta.update(
+                    {
+                        "support": support,
+                        "support_reason": support_reason,
+                        "caveats": list(supporter.get("caveats") or []),
+                        "verified_by": verified_by,
+                        "verified_at": datetime.now(UTC).isoformat(),
+                        "verified_claim_sha": claim_sha(claim.sentence),
+                    }
+                )
             attach_evidence(
                 store,
                 hub_ref_id=hub_ref_id,

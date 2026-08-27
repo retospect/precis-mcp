@@ -98,6 +98,19 @@ a blind periodic rescan (the incremental-trigger design,
    rejection memo *before* discovery: the claim itself changed, so an old
    ``supports=no`` verdict on the previous wording may no longer hold.
 
+Alongside discovery, every per-hub run also **re-verifies the hub's own
+attached-but-unverified evidence** (:func:`_reverify_pinned_edges`): the
+step-3 skip-if-attached precheck means an already-attached edge never
+re-enters discovery, so an edge minted with no verdict (born withheld) or
+with a mint-time default stamp (``support`` and no ``verified_by``) would
+otherwise stay unverified forever. Corroborating verdicts are stamped with
+the full ``support``/``support_reason``/``caveats``/``verified_by``/
+``verified_at``/``verified_claim_sha`` shape (``taproot.verify_edges``'s
+stamp, fingerprinted ``'hub-refine'``); non-corroborating ones are memoed
+into ``meta.reground_seen`` (judged once per ``claim_sha``) and never
+stripped or pruned here — additive-only, capped at
+:data:`_REVERIFY_PER_PASS` verifier calls per hub per pass.
+
 **Reopen gate vs. decomposition.** A compound hub never reaches step 6 (it's
 excluded upstream, see step 1), so a human rewording a compound hub's title
 costs nothing here and — critically — does NOT re-run decomposition: atoms
@@ -127,7 +140,8 @@ blocked by a stale lease left over from an earlier finished pass.
 
 Never a periodic full re-scan: idempotent attach + pre-verify existence
 check + rejection memo + due-set claim query together bound the per-run LLM
-spend to (at most) ``HUBS_PER_PASS x (TOPK + grounded-cite count)`` calls —
+spend to (at most) ``HUBS_PER_PASS x (TOPK + grounded-cite count +
+REVERIFY_PER_PASS)`` calls —
 adding the patent leg to the semantic source doesn't grow this bound: the two
 kind-scoped legs are merged by score and truncated back to ``topk`` before
 Filter→Verify ever runs. The citation source adds at most one scoped verify
@@ -244,6 +258,15 @@ from precis.taproot.hub import (
     run_retraction_checks,
 )
 from precis.taproot.resolve import resolve_citation
+
+# Acyclic on purpose: taproot.verify_edges imports only workers._chase_llm
+# (a leaf this module already depends on) and taproot.canon — never this
+# module or the workers package surface (workers/__init__ exports only the
+# chunk-pass core), so reusing its cohort selectors here cannot cycle.
+from precis.taproot.verify_edges import (
+    select_unverified_stamped_edges,
+    select_withheld_edges,
+)
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.llm.router import LlmRequest, Tier, dispatch
@@ -271,6 +294,34 @@ _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
 #: module docstring's "Originators are still derived" note in the build
 #: ticket).
 _ROLE = "corroborates"
+
+#: The ``meta.verified_by`` fingerprint on every support verdict this pass
+#: writes — distinct from ``taproot.verify_edges``'s ``'verify-edges'`` (the
+#: standalone sweep) and from the mint paths' own fingerprints, so a verdict
+#: is always traceable to the judge that issued it.
+_VERIFIED_BY = "hub-refine"
+
+#: Publish-gate re-verify budget: verifier calls per hub per pass over the
+#: hub's own attached-but-unverified edges (:func:`_reverify_pinned_edges`).
+#: Small on purpose, same shape as :data:`_PER_PAPER_K`: a hub carries a
+#: handful of edges, so a typical hub certifies in one or two passes while
+#: the per-hub LLM bound grows by a constant, not by the edge count.
+_REVERIFY_PER_PASS = 4
+
+
+def _verified_stamp(sha: str) -> dict[str, Any]:
+    """The three-key verification fingerprint every support verdict this
+    pass writes rides with — the same stamp shape as
+    ``taproot.verify_edges._stamp_edge`` (modulo :data:`_VERIFIED_BY`), so
+    the publish preflight and the verify-edges cohorts read both passes'
+    verdicts identically. ``sha`` is the hub sentence's ``claim_sha`` at
+    verify time: a later claim edit invalidates the verdict."""
+    return {
+        "verified_by": _VERIFIED_BY,
+        "verified_at": datetime.now(UTC).isoformat(),
+        "verified_claim_sha": sha,
+    }
+
 
 #: ``finding.meta`` keys this pass reads/writes.
 _META_LAST_REFINED_AT = "last_refined_at"
@@ -2223,8 +2274,12 @@ def repair_hub_intent(
                 hub_ref_id=hub_ref_id,
                 paper_ref_id=h.src_ref_id,
                 role=h.relation,
+                # No support: the intent memo stores only edge handles, so
+                # the lost row's verdict (if it ever had one) is gone with
+                # it — restoring membership must not fabricate one. The
+                # re-attached edge is born withheld; the per-hub re-verify
+                # arm (or the verify-edges sweep) re-certifies it.
                 meta={
-                    "support": "yes",
                     "source_handle": handle_registry.try_format(
                         kinds.get(h.src_ref_id, "paper"), h.src_chunk_id, chunk=True
                     ),
@@ -2397,25 +2452,41 @@ def _reground_verify_candidate(
             )
             return
     role = _ROLE if verdict.verdict == "KEEP" else "contradicts"
+    edge_meta: dict[str, Any] = {
+        "source_handle": handle,
+        # Reversible as a set, the way the semantic backfill's
+        # ``src_grounding.method`` marker is: every edge this stage
+        # writes is queryable by ``meta->'reground'``.
+        "reground": {
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+            "sha": plan.claim_sha,
+            "via": cand.via,
+        },
+    }
+    if role == _ROLE:
+        # A KEEP is a fresh strict-judge verification of this exact passage
+        # — the edge is born verified (reason + fingerprint, never a bare
+        # support stamp).
+        edge_meta.update(
+            {
+                "support": "yes",
+                "support_reason": verdict.reason,
+                "caveats": [],
+                **_verified_stamp(plan.claim_sha),
+            }
+        )
+    else:
+        # A contradicts edge is outside the publish preflight's withheld
+        # cohort (it blocks via the contradicts gate outright), so it keeps
+        # the plain shape the contradicts re-attach path writes.
+        edge_meta.update({"support": "no", "caveats": []})
     attach_evidence(
         store,
         hub_ref_id=hub_ref_id,
         paper_ref_id=source_ref_id,
         role=role,
-        meta={
-            "support": "yes" if role == _ROLE else "no",
-            "caveats": [],
-            "source_handle": handle,
-            # Reversible as a set, the way the semantic backfill's
-            # ``src_grounding.method`` marker is: every edge this stage
-            # writes is queryable by ``meta->'reground'``.
-            "reground": {
-                "verdict": verdict.verdict,
-                "reason": verdict.reason,
-                "sha": plan.claim_sha,
-                "via": cand.via,
-            },
-        },
+        meta=edge_meta,
         set_by="system",
         conn=conn,
         pending_checks=pending_checks,
@@ -2462,6 +2533,102 @@ def _hub_verdict(conn: Connection, hub_ref_id: int, plan: RegroundPlan) -> str:
     if live - doomed:
         return VERDICT_SUPPORTABLE
     return VERDICT_RETIRE if plan.external_ran else VERDICT_NEEDS_EXTERNAL
+
+
+# ── publish-gate re-verify of attached-but-unverified edges ──────────
+
+
+def _reverify_pinned_edges(
+    conn: Connection,
+    store: Store,
+    hub_ref_id: int,
+    *,
+    seen: dict[str, Any],
+    sha: str,
+) -> bool:
+    """Certify THIS hub's attached-but-unverified evidence for the publish
+    gate — the "…unless unverified" arm the skip-if-attached precheck
+    needed: an already-attached edge never re-enters discovery, so without
+    this step no verifier could ever reach the mint-time debt.
+
+    Two cohorts, both this hub's own pinned inbound ``establishes``/
+    ``corroborates`` edges (``taproot.verify_edges``'s selectors, hub-
+    scoped): **withheld** (``support`` absent, no ``publish_signoff``) and
+    **unverified-stamped** (``support`` present, no ``verified_by`` — the
+    born-released mint-time default). Each is re-read against the hub's
+    claim by the minter's own verifier
+    (:func:`~precis.workers._chase_llm._verify_support_with_caveats`):
+
+    * a corroborating verdict is stamped in the six-key shape
+      (:func:`_verified_stamp` over support/support_reason/caveats) on this
+      hub's own transaction — the stamp carries ``verified_by`` and drops
+      the edge out of both cohorts, so certification self-converges;
+    * a non-corroborating verdict is **not** stamped (and, deliberately,
+      not stripped — this step is additive-only: no prunes, no role
+      changes; stripping a born-released stamp stays ``precis taproot
+      verify-edges --unverified-stamped``'s door, and pruning stays
+      reground's). It is memoed into ``seen`` (``meta.reground_seen`` — one
+      judgment per edge per ``claim_sha``, cleared by the same sha-reopen)
+      so the step converges instead of re-spending the verifier every pass;
+    * a ``None`` verdict (LLM failure) is skipped without a memo — retried
+      next pass, never recorded as a judgment. A cohort row whose pinned
+      chunk has no live text is likewise skipped (repair-evidence
+      territory, mirroring verify-edges' chunk-missing status).
+
+    Verifier calls are capped at :data:`_REVERIFY_PER_PASS` per hub per
+    pass. Returns True when ``seen`` gained an entry, so the caller
+    persists the memo even when reground (its usual owner) is inactive.
+    """
+    from psycopg.types.json import Jsonb
+
+    candidates = [
+        *select_withheld_edges(store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS),
+        *select_unverified_stamped_edges(
+            store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS
+        ),
+    ]
+    memoed = False
+    spent = 0
+    for edge in candidates:
+        if spent >= _REVERIFY_PER_PASS:
+            break
+        key = _seen_key(edge.source_ref_id, edge.chunk_id)
+        if seen.get(key, {}).get("sha") == sha:
+            continue  # judged once per claim_sha (audit or an earlier pass)
+        if not edge.chunk_text or edge.chunk_ord is None:
+            continue  # pinned chunk retired/deleted — repair-evidence territory
+        spent += 1
+        verdict = _verify_support_with_caveats(
+            claim=edge.sentence,
+            scope=dict(edge.scope),
+            target_cite_key=edge.cite_key or f"ref:{edge.source_ref_id}",
+            target_chunk_ord=edge.chunk_ord,
+            target_chunk_text=edge.chunk_text,
+            source_kind=edge.source_kind,
+        )
+        if verdict is None:
+            continue  # LLM failure — no memo, retried next pass
+        if is_corroborating(verdict):
+            patch = {
+                "support": verdict.get("supports"),
+                "support_reason": verdict.get("support_reason"),
+                "caveats": list(verdict.get("caveats") or []),
+                **_verified_stamp(sha),
+            }
+            conn.execute(
+                "UPDATE links SET meta = COALESCE(meta, '{}'::jsonb) || %s "
+                "WHERE link_id = %s",
+                (Jsonb(patch), edge.link_id),
+            )
+            continue
+        seen[key] = {
+            "sha": sha,
+            "verdict": "NO-CORROBORATION",
+            "at": datetime.now(UTC).isoformat(),
+            "via": "reverify",
+        }
+        memoed = True
+    return memoed
 
 
 def _refine_one_hub(
@@ -2585,6 +2752,17 @@ def _refine_one_hub(
             cfg=reground,
             seen=reground_seen,
             plan=plan,
+        )
+
+    # Publish-gate re-verify (always on, embedder-independent): certify
+    # this hub's attached-but-unverified evidence edges, which the
+    # skip-if-attached precheck below can never reach. Runs AFTER the
+    # reground audit so the strict judge wins the per-sha memo slot when
+    # reground is active. Additive and bounded — see the function.
+    reverify_memoed = False
+    if claim_sentence:
+        reverify_memoed = _reverify_pinned_edges(
+            conn, store, hub_ref_id, seen=reground_seen, sha=new_sha
         )
 
     # Citation-miss / unresolved-cite records accumulate across passes
@@ -2821,12 +2999,17 @@ def _refine_one_hub(
                     hub_ref_id=hub_ref_id,
                     paper_ref_id=source_ref_id,
                     role=_ROLE,
+                    # A verification just ran against this exact passage, so
+                    # the edge is born verified: reason + fingerprint ride
+                    # with the verdict (support alone is never written).
                     meta={
                         "support": supports,
+                        "support_reason": verification.get("support_reason"),
                         "caveats": list(verification.get("caveats") or []),
                         "source_handle": handle_registry.try_format(
                             ref.kind, block.id, chunk=True
                         ),
+                        **_verified_stamp(new_sha),
                     },
                     set_by="system",
                     conn=conn,
@@ -2883,6 +3066,12 @@ def _refine_one_hub(
     unresolved_deduped = _dedup_records(unresolved)
     if unresolved_deduped or reopened:
         meta_patch[_META_UNRESOLVED] = unresolved_deduped
+    if reverify_memoed and reground is None:
+        # The re-verify arm's non-corroborating memos must persist even
+        # without reground active (the memo's usual writer) — they are what
+        # stops a non-corroborating edge from re-spending the verifier
+        # every pass.
+        meta_patch[_META_REGROUND_SEEN] = reground_seen
     if reground is not None and plan is not None:
         meta_patch[_META_REGROUND_SEEN] = reground_seen
         plan.verdict = _hub_verdict(conn, hub_ref_id, plan)

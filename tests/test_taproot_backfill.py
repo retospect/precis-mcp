@@ -432,13 +432,23 @@ def test_apply_mints_hub_and_rewrites_prose(draft: DraftHandler, hub: Hub) -> No
     assert result.rewritten_text is not None
     assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
     assert "[pc" not in result.rewritten_text
-    # evidence edge paper --> hub written
+    # evidence edge paper --> hub written — born withheld: a mechanical
+    # draft-citation edge carries provenance keys but NO support verdict
+    # (nothing read the passage), so the publish gate holds it until a
+    # verifier certifies it.
     with hub.live_store.pool.connection() as conn:
         edge = conn.execute(
-            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
             (paper, plan.hub_ref_id),
         ).fetchone()
     assert edge is not None
+    edge_meta = dict(edge[0] or {})
+    assert "support" not in edge_meta
+    assert "caveats" not in edge_meta
+    assert edge_meta["origin"] == "draft-backfill"
+    assert edge_meta["arm"] == "pc"
+    assert edge_meta["source_handle"] == pc
+    assert edge_meta["draft_chunk"] == f"dc{dc}"
 
 
 def test_apply_converges_onto_existing_hub(draft: DraftHandler, hub: Hub) -> None:

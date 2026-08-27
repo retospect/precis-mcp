@@ -209,6 +209,31 @@ supplementary material and the main text is absent. That is `UNDECIDED`, not
 counter-evidence. Verifiers must check whether the source is *completely*
 ingested before reading silence as absence.
 
+## Gate wiring — the rubric's approve-time consumer (2026-08-27)
+
+An external review of the staged candidate queue independently re-derived
+this rubric's taxonomy (PARTIAL severity split, `WRONG_CHUNK`/`WRONG_SOURCE`/
+`MISATTRIBUTED`/`NEEDS_SECOND_EDGE`) and added the requirement the rubric so
+far only implies: **approval must check claim-level coverage, not edge-level
+support.** Its 30-hub sample: 20 had a `partial` edge, only 2 were
+all-`yes`; ~7 material mis-groundings (fabricated range, wrong source,
+inference-as-result). The failure the field-containment gate cannot see: a
+single `partial` quote releasing an unsupported conjunction.
+
+Wire, at approve time (`nanopub/gates.py`, payload-dependent — it has the
+quote envelope the mint-time gates lack):
+
+- Every atomic proposition of the sentence must be covered by the **union**
+  of selected passages; multiple complementary quotes are allowed
+  (fi191120/fi191293 shape: different passages cover different clauses).
+- `PARTIAL_MINOR` passes; `PARTIAL_MATERIAL`/`PARTIAL_FABRICATED` block.
+- Verdicts stamp `verified_claim_sha` so a claim edit re-opens coverage
+  (the edge-level plumbing shipped 2026-08; this extends it to the
+  approval payload).
+
+Run the review's pilot before scaling: 10–20 claims, human-reviewed,
+including complementary-partial cases.
+
 ## Method caveat, unchanged
 
 Verdicts are LLM judgments, advisory and unreviewed. The nanobud audit that

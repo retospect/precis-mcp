@@ -996,9 +996,11 @@ def apply_chunk(
         # A pa handle names no chunk, so _grounding_chunk_ord returns None and
         # the edge lands ref-level (ungrounded) — the [pa]-arm override; a pc
         # handle grounds at its passage. `arm` fingerprints which for queries.
+        # No support/caveats: a mechanical draft-citation edge carries no
+        # verdict (nothing read the passage against the claim), so it is born
+        # withheld behind nanopub.preflight.withheld_edges until a verifier
+        # certifies it.
         return {
-            "support": "yes",
-            "caveats": [],
             "source_handle": handle,
             "origin": "draft-backfill",
             "arm": "pa" if handle.startswith("pa") else "pc",

@@ -56,6 +56,26 @@ here needs a confidence floor, an idempotency story, and a dry-run mode before
 its first large run — ``place``'s confidence gate on ``contradicts`` is one
 instance of that pattern, not a one-off.
 
+**Support is a verdict, never a default** (2026-08). An evidence edge's
+``links.meta.support`` is written only together with ``support_reason`` +
+``verified_by`` (+ ``verified_at`` and ``verified_claim_sha``, the hub
+sentence's ``claim_sha`` at verify time) — a caller/pass attesting a real
+claim-vs-passage verification. Every attach path that has no such verdict
+omits the key entirely, so a new edge is **born withheld** behind
+``nanopub.preflight.withheld_edges`` until a verifier certifies it
+(``hub_refine``'s per-hub re-verify arm, or ``precis taproot
+verify-edges``). Why: three attach paths (the authoring on-ramp's
+default-yes-on-omission, ``backfill``'s and ``directed``'s hard-coded
+``support: "yes"``) had stamped edges at mint time before anything read the
+passage — 1252 of 1461 stamped edges (86%, measured 2026-08-21) asserted
+support nothing checked, so the publish gate only ever withheld edges the
+minter happened to leave blank. ``verified_claim_sha`` closes the other
+half of that hole: editing a claim invalidates its verdicts (the preflight
+withholds on sha mismatch) instead of carrying them silently onto new
+wording. Invalidation is forward-only — a legacy stamp with no sha stays
+valid, so the pre-sha verified corpus keeps publishing until the
+operational re-verify pass rewrites it.
+
 Module map (each module's docstring carries its own detail):
 
 - :mod:`.canon` — the canonicalizer cascade: ``extract_claim`` (SMALL; chunk
@@ -183,7 +203,13 @@ difference matters because one of them looks like the other and isn't:
   ``chunk_citations`` -> ``resolve_citation`` -> the held cited paper's top
   passage (citation candidates win the per-paper dedup slot) — prechecks
   existing-edge + rejection memo before any LLM spend, verifies, then
-  attaches ``corroborates`` or appends the memo. A citation-reached
+  attaches ``corroborates`` (born verified: reason + fingerprint ride the
+  verdict) or appends the memo. Each per-hub run also re-verifies the
+  hub's own attached-but-unverified edges (born-withheld mints, mint-time
+  default stamps) at a small per-pass cap — the skip-if-attached precheck
+  would otherwise keep the verifier away from them forever; a
+  non-corroborating verdict memoes into ``meta.reground_seen``, never
+  prunes. A citation-reached
   ``supports=no`` records ``via='citation'`` + ``meta.citation_misses``
   (rendered on the claim page); resolved-but-not-held cites land in
   ``meta.unresolved_citations``, never auto-fetched; a miss never flips hub

@@ -51,6 +51,7 @@ from precis.taproot.canon import (
     CanonicalClaim,
     Placement,
     block,
+    claim_sha,
     dedup_judge,
     place,
 )
@@ -1440,6 +1441,7 @@ def _evidence_edge_meta(
     *,
     slug: str,
     ord_: int | None,
+    claim_sentence: str,
 ) -> dict[str, Any]:
     """Map one hop's ``verification`` dict to a taproot evidence edge's
     ``meta`` shape. Shared by :func:`_taproot_bridge`'s terminal write
@@ -1453,15 +1455,35 @@ def _evidence_edge_meta(
     never LLM-verified, e.g. an untouched intermediate frontier) yields a
     minimal meta with ``support``/``support_reason`` left ``None`` rather
     than fabricating a verdict.
+
+    A real ``verification`` additionally stamps
+    ``verified_by='chase-verify'`` / ``verified_at`` /
+    ``verified_claim_sha`` (of ``claim_sentence`` — the finding's title,
+    the user-asserted claim the bridge mints; the verifier read the
+    finding's body wording of that same claim) so the ``support`` it
+    carries is a fingerprinted verdict, never a bare mint-time stamp. On
+    an ``attach`` onto a differently-worded existing hub the sha won't
+    match that hub's live title, and the publish preflight reads the edge
+    as unverified there — honest, since the verifier never saw that
+    wording.
     """
     v = verification or {}
-    return {
+    meta: dict[str, Any] = {
         "support": v.get("supports"),
         "support_reason": v.get("support_reason"),
         "caveats": _aggregate_caveats(chain),
         "char_offset": None,  # no producer yet (deferred)
         "source_handle": f"{slug}~{ord_}" if ord_ is not None else slug,
     }
+    if verification is not None:
+        meta.update(
+            {
+                "verified_by": "chase-verify",
+                "verified_at": datetime.now(UTC).isoformat(),
+                "verified_claim_sha": claim_sha(claim_sentence),
+            }
+        )
+    return meta
 
 
 def _snapshot_chain(
@@ -1642,7 +1664,7 @@ def _taproot_bridge(
     paper_ref_id = int(chain[-1]["ref_id"])
     paper_slug = target.get("slug") or f"ref:{paper_ref_id}"
     edge_meta = _evidence_edge_meta(
-        verification, chain, slug=paper_slug, ord_=chunk_ord
+        verification, chain, slug=paper_slug, ord_=chunk_ord, claim_sentence=sentence
     )
 
     def _todo_fn(claim: CanonicalClaim, placement: Placement) -> None:
@@ -1676,8 +1698,19 @@ def _taproot_bridge(
                     chain=chain,
                     hub_ref_id=hub_ref_id,
                     terminal_ref_id=paper_ref_id,
+                    claim_sentence=sentence,
                     pending_checks=pending_checks,
                 )
+                # Advisory lint memo (2026-08-27 audit — the bridge feedstock
+                # is ~0.5% gate-passing, so every bridged hub arrives
+                # pre-broken and review used to discover that 1,490 hubs deep):
+                # a FRESH mint records the blocking lint codes its sentence
+                # is born with. An attach converges onto an existing hub
+                # whose sentence this finding did not write — no memo there.
+                if placement.action in ("new", "new_contradicts"):
+                    _memo_bridge_lint(
+                        conn, store, hub_ref_id=hub_ref_id, sentence=sentence
+                    )
     except Exception:
         log.warning(
             "taproot: bridge apply_placement failed for finding ref_id=%s",
@@ -1689,6 +1722,37 @@ def _taproot_bridge(
     run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
 
 
+def _memo_bridge_lint(
+    conn: Connection,
+    store: Store,
+    *,
+    hub_ref_id: int,
+    sentence: str,
+) -> None:
+    """Record the blocking sentence-lint codes a bridge-minted hub is born
+    with (``meta.mint_lint_at_bridge``) — advisory, never blocks the mint.
+
+    The bridge builds the claim sentence from the finding's own title, and
+    that feedstock is ~0.5% gate-passing (2026-08-27 audit: 199 of 201
+    established chase-tree claims fail blocking lints), so nearly every
+    bridged hub arrives already unmintable and review discovers it late.
+    The memo makes the debt visible at creation: the mint-preflight view
+    re-runs the same lints live, and the workbench can filter on the memo.
+    Rewording here is a deliberate non-goal — the sentence is what the
+    chase user asserted; remediation is the reword-sweep's job."""
+    from precis.nanopub.gates import check_claim_sentence
+
+    codes = sorted({v.message.split(":", 1)[0] for v in check_claim_sentence(sentence)})
+    if not codes:
+        return
+    store.update_ref(hub_ref_id, meta_patch={"mint_lint_at_bridge": codes}, conn=conn)
+    log.info(
+        "taproot: bridge-minted hub ref_id=%s born with lint codes %s",
+        hub_ref_id,
+        codes,
+    )
+
+
 def _attach_intermediate_corroborators(
     conn: Connection,
     store: Store,
@@ -1696,6 +1760,7 @@ def _attach_intermediate_corroborators(
     chain: list[dict[str, Any]],
     hub_ref_id: int,
     terminal_ref_id: int,
+    claim_sentence: str,
     pending_checks: list[int] | None = None,
 ) -> None:
     """Phase-3 W2: attach every INTERMEDIATE chain hop (every entry but
@@ -1750,7 +1815,11 @@ def _attach_intermediate_corroborators(
 
         hop_slug = hop_ref["slug"] or f"ref:{hop_ref_id}"
         hop_meta = _evidence_edge_meta(
-            hop_verification, chain, slug=hop_slug, ord_=hop.get("ord")
+            hop_verification,
+            chain,
+            slug=hop_slug,
+            ord_=hop.get("ord"),
+            claim_sentence=claim_sentence,
         )
         attach_evidence(
             store,

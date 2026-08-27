@@ -22,7 +22,7 @@ import pytest
 from precis.errors import BadInput
 from precis.store.store import Store
 from precis.taproot import directed
-from precis.taproot.canon import Candidate, CanonicalClaim, Verdict
+from precis.taproot.canon import Candidate, CanonicalClaim, Verdict, claim_sha
 from precis.taproot.directed import (
     DirectedMintReport,
     QualifyResult,
@@ -477,6 +477,17 @@ def test_directed_mint_apply_new_mints_hub_and_attaches_evidence_with_quote(
     assert edge_meta.get("quote") == quote
     assert edge_meta.get("origin") == "directed-mint"
     assert edge_meta.get("source_handle") == f"pc{chunk_id}"
+    # Qualify IS a claim-vs-passage verification, so the edge is born
+    # verified — the full six-key verdict shape, sha-bound to the
+    # qualified sentence.
+    assert edge_meta["support"] == "yes"
+    assert edge_meta["support_reason"] == "qualified"
+    assert edge_meta["caveats"] == []
+    assert edge_meta["verified_by"] == "directed-mint"
+    assert edge_meta["verified_at"]
+    assert edge_meta["verified_claim_sha"] == claim_sha(
+        "Pd/C catalyzes Suzuki coupling of aryl bromides at RT."
+    )
 
     # Grounded at the specific passage, not ref-level.
     with store.pool.connection() as conn:

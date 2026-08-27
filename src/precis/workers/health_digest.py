@@ -140,6 +140,14 @@ from precis.alerts import (
     resolve_stale_alerts,
 )
 from precis.store import Store
+
+# Pure-Python lints only — both modules import nothing but ``re``/``typing``
+# (no ``llm``, direct or transitive; the module-level invariant above). The
+# blocking-code SET they are filtered with is the pinned literal copy
+# ``_MINT_BLOCKING_LINT_CODES`` below — ``nanopub.gates`` itself is
+# llm-tainted and must not be imported here.
+from precis.taproot.notation import lint_notation
+from precis.taproot.sentence_lint import lint_claim_sentence
 from precis.workers.registry import SERVICES, ServiceKind, ServiceSpec
 from precis.workers.runner import BatchResult
 from precis.workers.scheduler import CADENCES
@@ -180,6 +188,49 @@ _WARN = "warn"
 #: own ``_SPIN_LOOP_EVENTS_24H`` mirror: this pass must not grow a
 #: dependency on the subsystems it watches just to read one threshold/tuple).
 _TAPROOT_HUB_ROLES = ("establishes", "corroborates", "contradicts")
+
+#: Literal copy of ``precis.nanopub.gates._BLOCKING_LINT_CODES`` (and the
+#: exemption map below it) for :func:`_check_nanopub_candidates_fresh`.
+#: ``nanopub.gates`` is unimportable here — it reaches ``taproot.canon`` →
+#: ``llm.router`` via ``nanopub.evidence`` → ``taproot.seniority``, and this
+#: module asserts no ``llm`` import, direct or transitive. The pure lint
+#: modules (``sentence_lint``/``notation``) are llm-free and imported
+#: directly; only the code SET is duplicated. Pinning the copy equal to the
+#: original is what keeps the check honest — it exists precisely because the
+#: set drifts under staged rows, so
+#: ``tests/workers/test_health_digest.py::test_mint_blocking_codes_copy_is_pinned``
+#: asserts equality (a test may import gates; this module may not).
+_MINT_BLOCKING_LINT_CODES: frozenset[str] = frozenset(
+    {
+        "not-falsifiable",
+        "dangling-reference",
+        "multi-assertion",
+        "no-evidence-verb",
+        "no-epistemic-mode",
+        "over-long",
+        "author-name",
+        "no-terminal-period",
+        "em-dash",
+        "past-passive",
+        "ascii-plusminus",
+        "ascii-micro",
+        "ascii-degrees",
+        "ascii-ohm",
+        "ascii-angstrom",
+        "ascii-micrometre",
+        "e-notation",
+        "digit-grouping",
+        "ascii-multiplication",
+        "ascii-x-multiplier",
+        "hyphen-numeric-range",
+        "caret-exponent",
+        "ascii-minus-exponent",
+        "tex-residue",
+    }
+)
+_MINT_LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
+    "hypothesis": frozenset({"no-epistemic-mode", "no-evidence-verb"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -817,6 +868,118 @@ def _check_claim_hub_dedup_index(conn: Any) -> CheckResult:
     )
 
 
+def _check_nanopub_candidates_fresh(conn: Any) -> CheckResult:
+    """Staged nanopub candidates re-gated against the CURRENT mint rules.
+
+    A ``nanopub_publish`` row is staged as ``candidate`` and then the world
+    moves: new blocking lint codes land (llm-attribution 2026-08-24, the
+    review-source arm 2026-08-27), or the hub picks up a live
+    ``contradicts`` edge — and nothing re-gates the staged row, so the
+    ``/nanopub`` queue keeps offering dead work. The 2026-08-27 audit found
+    13 of 135 staged rows already unmintable.
+
+    Deliberately narrower than ``run_mint_gates``: only the sentence lints
+    (code-drift-sensitive) and the contradicts edge (world-drift-sensitive)
+    are re-checked. The payload gates (quote/snip/containment) have nothing
+    to bite on — a candidate carries no grounding envelope yet — and the
+    structural arms barely move under a code release.
+
+    The row's hub must also still *be* a strict claim hub — live
+    ``TAPROOT:claim`` **and** ``STATUS:canonical`` (the tag literals are
+    inlined, not imported; see :func:`_check_claim_hub_dedup_index`). A row
+    failing that reports ``noncanonical`` regardless of lint: the
+    2026-08-27 review found 3 staged rows carrying ``TAPROOT:claim`` alone
+    — chase-tree findings, never hubs. The remedy is routing them back to
+    the finding lifecycle; this check only surfaces them.
+    """
+    sql = """
+        SELECT r.ref_id, r.title, p.artifact_type,
+               EXISTS (
+                   SELECT 1 FROM links l
+                    JOIN refs pr ON pr.ref_id = l.src_ref_id
+                                AND pr.deleted_at IS NULL
+                   WHERE l.dst_ref_id = r.ref_id AND l.relation = 'contradicts'
+               ) AS disputed,
+               (EXISTS (
+                    SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = r.ref_id
+                       AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                       AND t.namespace = 'TAPROOT' AND t.value = 'claim'
+                )
+                AND EXISTS (
+                    SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = r.ref_id
+                       AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                       AND t.namespace = 'STATUS' AND t.value = 'canonical'
+                )) AS canonical
+          FROM nanopub_publish p
+          JOIN refs r ON r.ref_id = p.claim_ref_id AND r.deleted_at IS NULL
+         WHERE p.state = 'candidate'
+         ORDER BY p.id
+    """
+    try:
+        rows = conn.execute(sql).fetchall()
+    except Exception:
+        log.exception("health_digest: nanopub-candidates probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception(
+                "health_digest: rollback after nanopub-candidates probe failed"
+            )
+        return CheckResult(
+            "nanopub",
+            "staged_candidates_fresh",
+            "unknown",
+            "staged nanopub candidates: probe failed",
+            _WARN,
+        )
+    if not rows:
+        return CheckResult(
+            "nanopub",
+            "staged_candidates_fresh",
+            "ok",
+            "staged nanopub candidates: none staged",
+            _WARN,
+        )
+    stale: list[str] = []
+    for ref_id, title, artifact_type, disputed, canonical in rows:
+        if not canonical:
+            stale.append(f"fi{int(ref_id)}(noncanonical)")
+            continue
+        if disputed:
+            stale.append(f"fi{int(ref_id)}(disputed)")
+            continue
+        blocking = _MINT_BLOCKING_LINT_CODES - _MINT_LINT_EXEMPTIONS.get(
+            str(artifact_type), frozenset()
+        )
+        warnings = lint_notation(str(title or "")) + lint_claim_sentence(
+            str(title or "")
+        )
+        hit = sorted({w.split(":", 1)[0].strip() for w in warnings} & set(blocking))
+        if hit:
+            stale.append(f"fi{int(ref_id)}({','.join(hit)})")
+    if not stale:
+        return CheckResult(
+            "nanopub",
+            "staged_candidates_fresh",
+            "ok",
+            f"staged nanopub candidates: {len(rows)}/{len(rows)} pass "
+            "current mint gates",
+            _WARN,
+        )
+    shown = "; ".join(stale[:4]) + ("; …" if len(stale) > 4 else "")
+    return CheckResult(
+        "nanopub",
+        "staged_candidates_fresh",
+        "stale",
+        f"staged nanopub candidates: {len(stale)} of {len(rows)} staged "
+        f"rows no longer pass the current mint gates — the /nanopub queue "
+        f"is offering dead work ({shown})",
+        _WARN,
+    )
+
+
 def _check_agent_jobs_completing(conn: Any) -> CheckResult:
     """Agent (``claude_inproc``) jobs completing, not all-failing, in 6h.
 
@@ -1013,6 +1176,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out += _idle_aware_backlog_checks(conn)
         out.append(_check_card_forge(conn))
         out.append(_check_claim_hub_dedup_index(conn))
+        out.append(_check_nanopub_candidates_fresh(conn))
         out.append(_check_agent_jobs_completing(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))

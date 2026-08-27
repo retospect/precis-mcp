@@ -29,6 +29,7 @@ def _seed_paper(
     *,
     doi: str | None = None,
     sha: str | None = None,
+    title: str = "Anisotropic Elastic Properties",
     chunk_text: str = f"Tensorial analysis. {_QUOTE}, in stark contrast.",
     section: list[str] | None = None,
 ) -> tuple[int, int, str]:
@@ -37,7 +38,7 @@ def _seed_paper(
     one body chunk, and a pdf_sha256 identifier row. Defaults are unique
     per paper — the identifiers PK is ``(id_kind, id_value)``. Returns
     ``(ref_id, chunk_id, sha)``."""
-    ref_id = seed_ref(store, title="Anisotropic Elastic Properties", kind="paper")
+    ref_id = seed_ref(store, title=title, kind="paper")
     if sha is None:
         sha = f"{ref_id:064x}"
     if doi is None:
@@ -300,6 +301,45 @@ def test_unheld_evidence_source_rejects_grounded_mint(store: Any) -> None:
     assert "primary-source" not in _gate_slugs(
         store, hub, {"passages": [], "hanging": True}
     )
+
+
+def test_review_titled_source_rejects_grounded_mint(store: Any) -> None:
+    """The fifth arm (2026-08-27 audit): the source IS held — body chunks
+    and all — but its title marks it a review, so a quote from it is
+    secondhand by genre. Distinct gate slug ``review-source`` so the review
+    surface can route it to re-grounding advice."""
+    review, chunk, sha = _seed_paper(
+        store, title="Recent advances in anisotropic elasticity: A review"
+    )
+    hub = _seed_hub(store, "DFT shows the surveyed claim holds.", review, chunk)
+    assert "review-source" in _gate_slugs(store, hub, _payload(chunk, sha))
+    # Hanging stays the designed escape — same as every acquisition arm.
+    assert "review-source" not in _gate_slugs(
+        store, hub, {"passages": [], "hanging": True}
+    )
+
+
+def test_review_source_quiet_for_synthesis_claim(store: Any) -> None:
+    """The escape: a claim whose sentence declares a synthesis mode makes
+    the review the primary source, not hearsay."""
+    review, chunk, sha = _seed_paper(
+        store, title="Metal-organic frameworks for catalysis: A review"
+    )
+    hub = _seed_hub(
+        store,
+        "Review synthesis identifies metal-linker hydrolysis as the main "
+        "degradation pathway for MOF electrocatalysts.",
+        review,
+        chunk,
+    )
+    assert "review-source" not in _gate_slugs(store, hub, _payload(chunk, sha))
+
+
+def test_held_primary_research_title_is_not_a_review(store: Any) -> None:
+    """Control: an ordinary research-paper title never trips the arm."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the ordinary claim holds.", paper, chunk)
+    assert "review-source" not in _gate_slugs(store, hub, _payload(chunk, sha))
 
 
 def _mute_prose_arm(monkeypatch: Any) -> None:

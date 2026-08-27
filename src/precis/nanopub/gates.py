@@ -471,6 +471,26 @@ def check_primary_source(
                 "hanging",
             )
         )
+    # Fifth arm (2026-08-27 audit — ~39/1,490 hubs ground on review-titled
+    # papers): a source we DO hold, but whose title marks it a review/
+    # perspective —
+    # secondhand by genre, the shape the four arms above cannot see (the
+    # derived arm fires on UNHELD sources only). One escape: the hub's own
+    # sentence declares a synthesis mode, making the review the primary.
+    if not ev.SYNTHESIS_MODE.search(bundle.sentence):
+        for src in bundle.sources:
+            if ev.is_review_title(src.title):
+                out.append(
+                    GateViolation(
+                        "review-source",
+                        f"evidence {src.kind} ref {src.ref_id} "
+                        f"({src.title[:60]}…) is a review/perspective by "
+                        "title — a passage quoted from it attributes the "
+                        "finding to the survey, not the doers; re-ground in "
+                        "the primary, drop the review edge, or mint "
+                        "explicitly hanging",
+                    )
+                )
     body = bundle.body if provenance_body is None else provenance_body
     marked = ev.ACQUISITION_MARKER.search(body) or ev.ACQUISITION_MARKER.search(
         bundle.sentence

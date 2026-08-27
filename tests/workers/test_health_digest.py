@@ -691,6 +691,94 @@ def test_claim_hub_dedup_index_reports_no_hubs_yet_for_a_bare_chase_finding(
     assert "no hubs yet" in result.detail
 
 
+# ── staged nanopub candidates: re-gated against the CURRENT mint rules ────
+#
+# docs/backlog/mint-queue-hygiene.md §1 — a staged 'candidate' publish row
+# goes stale as the gates move under it; the /nanopub queue must not keep
+# offering dead work invisibly.
+
+
+def test_mint_blocking_codes_copy_is_pinned() -> None:
+    """health_digest cannot import ``nanopub.gates`` (llm-tainted via
+    ``nanopub.evidence`` → ``taproot.seniority`` → ``taproot.canon``), so it
+    carries a literal copy of the blocking lint set — and this test is what
+    keeps the copy honest when the gate set drifts (which is exactly the
+    drift the check exists to catch)."""
+    from precis.nanopub import gates
+
+    assert health_digest._MINT_BLOCKING_LINT_CODES == gates._BLOCKING_LINT_CODES
+    assert health_digest._MINT_LINT_EXEMPTIONS == gates._ARTIFACT_LINT_EXEMPTIONS
+
+
+def test_nanopub_candidates_fresh_ok_when_clean(store) -> None:
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT calculations show that graphene is stiff.", scope={}
+        ),
+    )
+    store.nanopub_create_publish_row(hub, artifact_type="claim")
+    with store.pool.connection() as conn:
+        result = health_digest._check_nanopub_candidates_fresh(conn)
+    assert result.status == "ok"
+    assert "1/1 pass" in result.detail
+
+
+def test_nanopub_candidates_fresh_flags_lint_blocked_row(store) -> None:
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="Graphene is the strongest material ever measured",
+            scope={},
+        ),
+    )
+    store.nanopub_create_publish_row(hub, artifact_type="claim")
+    with store.pool.connection() as conn:
+        result = health_digest._check_nanopub_candidates_fresh(conn)
+    assert result.status == "stale"
+    assert f"fi{hub}(" in result.detail
+    assert "no-terminal-period" in result.detail
+
+
+def test_nanopub_candidates_fresh_flags_disputed_row(store) -> None:
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT calculations show that graphene is stiff.", scope={}
+        ),
+    )
+    store.nanopub_create_publish_row(hub, artifact_type="claim")
+    other = seed_ref(store, title="opposing paper", kind="paper")
+    store.add_link(
+        src_ref_id=other,
+        dst_ref_id=hub,
+        relation="contradicts",
+        set_by="agent",
+    )
+    with store.pool.connection() as conn:
+        result = health_digest._check_nanopub_candidates_fresh(conn)
+    assert result.status == "stale"
+    assert f"fi{hub}(disputed)" in result.detail
+
+
+def test_nanopub_candidates_fresh_flags_noncanonical_row(store) -> None:
+    """A staged row whose hub carries ``TAPROOT:claim`` without
+    ``STATUS:canonical`` (a chase-tree finding, not a strict claim hub —
+    the 2026-08-27 review's 3 rows) is stale regardless of lint."""
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT calculations show that graphene is stiff.", scope={}
+        ),
+    )
+    store.nanopub_create_publish_row(hub, artifact_type="claim")
+    store.remove_tag(hub, Tag.closed("STATUS", "canonical"))
+    with store.pool.connection() as conn:
+        result = health_digest._check_nanopub_candidates_fresh(conn)
+    assert result.status == "stale"
+    assert f"fi{hub}(noncanonical)" in result.detail
+
+
 # ── (3) chunks_classified: idle-aware on the classify service_config gate
 # (gr204385) — a bare freshness probe on a default-OFF pass alerts stale
 # forever by construction; the check must read as idle-not-a-finding while

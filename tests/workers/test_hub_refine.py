@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from precis.store.types import BlockInsert, Tag
-from precis.taproot.canon import CanonicalClaim
+from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.utils import handle_registry
 from precis.workers._chase_llm import is_corroborating
@@ -189,7 +189,8 @@ def test_no_embedder_degrades_to_a_no_op(store: Any) -> None:
 
 def test_fresh_hub_gains_a_verified_corroborator(store: Any) -> None:
     embedder = make_mock_bge_m3()
-    hub = _seed_hub(store, sentence="The device sustains 2.4 kV without breakdown.")
+    sentence = "The device sustains 2.4 kV without breakdown."
+    hub = _seed_hub(store, sentence=sentence)
     paper, chunk_id = _seed_paper_chunk(
         store, embedder, cite_key="primary", text="A direct measurement statement."
     )
@@ -204,7 +205,13 @@ def test_fresh_hub_gains_a_verified_corroborator(store: Any) -> None:
     dst, relation, meta = edges[0]
     assert dst == hub
     assert relation == "corroborates"
+    # Born verified: support is a verdict, so the reason + fingerprint ride
+    # with it (the six-key stamp shape shared with taproot.verify_edges).
     assert meta["support"] == "yes"
+    assert meta["support_reason"] == "direct measurement statement"
+    assert meta["verified_by"] == "hub-refine"
+    assert meta["verified_at"]
+    assert meta["verified_claim_sha"] == claim_sha(sentence)
     assert meta["source_handle"] == f"pc{chunk_id}"
 
     assert _hub_meta(store, hub).get("last_refined_at") is not None
@@ -470,7 +477,12 @@ def test_edge_exists_precheck_skips_verify_for_a_pre_attached_paper(store: Any) 
         hub_ref_id=hub,
         paper_ref_id=paper,
         role="corroborates",
-        meta={"support": "yes", "caveats": [], "source_handle": f"pc{chunk_id}"},
+        meta={
+            "support": "yes",
+            "caveats": [],
+            "source_handle": f"pc{chunk_id}",
+            "verified_by": "test-seed",
+        },
         set_by="agent",
     )
 
@@ -525,7 +537,12 @@ def test_attached_source_never_occupies_a_widening_slot(store: Any) -> None:
         hub_ref_id=hub,
         paper_ref_id=held,
         role="corroborates",
-        meta={"support": "yes", "caveats": [], "source_handle": f"pc{held_chunk}"},
+        meta={
+            "support": "yes",
+            "caveats": [],
+            "source_handle": f"pc{held_chunk}",
+            "verified_by": "test-seed",
+        },
         set_by="agent",
     )
     newcomer, _chunk_id = _seed_paper_chunk(
@@ -625,7 +642,12 @@ def test_exclusion_is_ref_grained_so_a_sibling_chunk_is_excluded_too(
         hub_ref_id=hub,
         paper_ref_id=held.id,
         role="corroborates",
-        meta={"support": "yes", "caveats": [], "source_handle": f"pc{grounding_chunk}"},
+        meta={
+            "support": "yes",
+            "caveats": [],
+            "source_handle": f"pc{grounding_chunk}",
+            "verified_by": "test-seed",
+        },
         set_by="agent",
     )
     newcomer, _chunk_id = _seed_paper_chunk(
@@ -803,7 +825,12 @@ def _seed_citation_scenario(
         hub_ref_id=hub,
         paper_ref_id=citing,
         role="corroborates",
-        meta={"support": "yes", "caveats": [], "source_handle": f"pc{citing_chunk}"},
+        meta={
+            "support": "yes",
+            "caveats": [],
+            "source_handle": f"pc{citing_chunk}",
+            "verified_by": "test-seed",
+        },
         set_by="system",
     )
     return hub, citing, citing_chunk, cited, cited_chunk
@@ -1081,7 +1108,12 @@ def test_attached_patent_is_not_reverified_next_pass(store: Any) -> None:
         hub_ref_id=hub,
         paper_ref_id=patent,
         role="corroborates",
-        meta={"support": "yes", "caveats": [], "source_handle": f"pc{chunk_id}"},
+        meta={
+            "support": "yes",
+            "caveats": [],
+            "source_handle": f"pc{chunk_id}",
+            "verified_by": "test-seed",
+        },
         set_by="agent",
     )
 
@@ -1224,3 +1256,94 @@ def test_atom_sha_reopen_still_clears_its_own_memo_beside_a_compound(
     # is re-verified, not silently skipped by the (now-stale) memo.
     assert mock_verify2.call_count == 1
     assert _hub_meta(store, compound).get("last_refined_at") is None
+
+
+# ── publish-gate re-verify of attached-but-unverified edges ─────────────
+#
+# The skip-if-attached precheck means an already-attached edge never
+# re-enters discovery, so _reverify_pinned_edges is the only way the
+# verifier reaches an edge minted withheld (no support) or born released
+# (mint-time support, no verified_by).
+
+
+def test_reverify_stamps_an_attached_unverified_edge(store: Any) -> None:
+    """An edge attached with no support verdict (born withheld behind the
+    publish gate) is re-verified from its pinned chunk on an ordinary pass
+    and stamped with the full six-key verdict shape."""
+    embedder = make_mock_bge_m3()
+    sentence = "The coating survives 1000 thermal cycles intact."
+    hub = _seed_hub(store, sentence=sentence)
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="reverify", text="A cycling measurement statement."
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk_id}"},
+        set_by="agent",
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    # Exactly the arm's call: discovery precheck-skips the attached source.
+    assert mock_verify.call_count == 1
+
+    edges = _edges_from(store, paper)
+    assert len(edges) == 1
+    _dst, relation, meta = edges[0]
+    assert relation == "corroborates"  # additive: no role change
+    assert meta["support"] == "yes"
+    assert meta["support_reason"] == "direct measurement statement"
+    assert meta["caveats"] == []
+    assert meta["verified_by"] == "hub-refine"
+    assert meta["verified_at"]
+    assert meta["verified_claim_sha"] == claim_sha(sentence)
+    # jsonb MERGE: the unrelated seeded key survived the stamp.
+    assert meta["source_handle"] == f"pc{chunk_id}"
+
+
+def test_reverify_non_corroborating_memos_and_is_not_rejudged(store: Any) -> None:
+    """A non-corroborating re-verify verdict is never stamped — and never
+    stripped or pruned (additive-only) — it memos into
+    ``meta.reground_seen`` at the current claim sha, so a DUE-retriggered
+    second pass spends nothing on the same edge."""
+    embedder = make_mock_bge_m3()
+    sentence = "The membrane rejects 99% of divalent salts."
+    hub = _seed_hub(store, sentence=sentence)
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="reverify-no", text="An unrelated statement."
+    )
+    # The born-released shape: mint-time support, nobody ever verified it.
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"pc{chunk_id}"},
+        set_by="agent",
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert mock_verify.call_count == 1
+
+    edges = _edges_from(store, paper)
+    assert len(edges) == 1
+    _dst, _relation, meta = edges[0]
+    assert meta["support"] == "yes"  # left standing: the strip is verify-edges' door
+    assert "verified_by" not in meta  # a no is never stamped
+
+    seen = _hub_meta(store, hub).get("reground_seen") or {}
+    entry = seen[f"{paper}:{chunk_id}"]
+    assert entry["sha"] == claim_sha(sentence)
+    assert entry["verdict"] == "NO-CORROBORATION"
+
+    # Re-trigger: the memo, not a repeat verify, settles the edge.
+    store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+    assert mock_verify2.call_count == 0

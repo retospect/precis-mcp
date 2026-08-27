@@ -6,13 +6,23 @@ whether a claim may become an artifact; this decides whether an existing
 artifact may leave the building. Everything before the POST is
 reversible, so the preflight's job is to be *loud*, not clever:
 
-* **Withheld-edge enumeration** — every inbound evidence edge that is
-  neither verified-by-refine (``links.meta['support']``, the chase
-  verdict) nor literally signed off by a human
+* **Withheld-edge enumeration** — an inbound evidence edge blocks
+  publication when it is not literally signed off by a human
   (``links.meta['publish_signoff']``, written only through
-  :func:`signoff_edge`'s interactive door) blocks publication. There is
-  no mute button: unverified evidence can neither slip out nor be
-  silently ignored.
+  :func:`signoff_edge`'s interactive door) AND it either carries no
+  ``links.meta['support']`` verdict at all (edges are born withheld;
+  every writer stamps ``support`` only alongside a real verification —
+  ``support_reason`` + ``verified_by`` + ``verified_at`` +
+  ``verified_claim_sha``), or carries a verdict whose
+  ``verified_claim_sha`` no longer matches the live hub sentence's
+  ``claim_sha`` — a **stale** verdict: the claim was edited after
+  verification, so what was checked is not what would publish. An edge
+  with ``support`` but no ``verified_claim_sha`` at all stays released:
+  legacy stamps predate the sha and remain valid until the operational
+  re-verify pass (``precis taproot verify-edges``) reaches them —
+  invalidation is forward-only on purpose, so shipping the sha did not
+  instantly block every pending publish. There is no mute button:
+  unverified evidence can neither slip out nor be silently ignored.
 * **Trust gate** — the artifact's (signer, key fingerprint) must have an
   open-window row in ``nanopub_trust_allowlist``, and publication
   additionally requires the entry be **attesting** — a bot signature
@@ -75,26 +85,51 @@ class WithheldEdge:
     paper_ref_id: int
     paper_title: str
     relation: str
+    #: True when the edge carries a ``support`` verdict whose
+    #: ``verified_claim_sha`` no longer matches the live hub sentence —
+    #: withheld as *stale* (claim edited after verification) rather than
+    #: missing. False for the plain unverified shape.
+    stale: bool = False
 
 
 def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
-    """Every inbound evidence edge on the hub that is neither
-    verified-by-refine nor human-signed-off. ``contradicts`` edges are
+    """Every inbound evidence edge on the hub that is not human-signed-off
+    and is either unverified (no ``support`` verdict) or stale-verified
+    (``verified_claim_sha`` no longer matches the live hub sentence — the
+    claim was edited after verification). A stamped edge with no
+    ``verified_claim_sha`` is legacy-valid and NOT withheld (module
+    docstring: forward-only invalidation). ``contradicts`` edges are
     excluded — they block via the contradicts gate outright, and a
     sign-off must never make a live dispute publishable."""
+    from precis.taproot.canon import claim_sha
+
     with store.pool.connection() as conn:
+        hub_row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (hub_ref_id,),
+        ).fetchone()
+        # No live hub row → no live sentence to have verified against; any
+        # sha-stamped edge reads stale (the state check blocks such a hub
+        # anyway, this just keeps the predicate total).
+        live_sha = claim_sha(str(hub_row[0] or "")) if hub_row is not None else None
         rows = conn.execute(
             """
-            SELECT l.link_id, l.src_ref_id, r.title, l.relation
+            SELECT l.link_id, l.src_ref_id, r.title, l.relation,
+                   l.meta->>'support'
               FROM links l
               JOIN refs r ON r.ref_id = l.src_ref_id AND r.deleted_at IS NULL
              WHERE l.dst_ref_id = %(hub)s
                AND l.relation IN ('establishes', 'corroborates')
-               AND l.meta->>'support' IS NULL
+               AND (
+                     l.meta->>'support' IS NULL
+                     OR (l.meta->>'verified_claim_sha' IS NOT NULL
+                         AND l.meta->>'verified_claim_sha'
+                             IS DISTINCT FROM %(sha)s)
+                   )
                AND l.meta->'publish_signoff' IS NULL
              ORDER BY l.link_id
             """,
-            {"hub": hub_ref_id},
+            {"hub": hub_ref_id, "sha": live_sha},
         ).fetchall()
     return [
         WithheldEdge(
@@ -102,6 +137,7 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
             paper_ref_id=int(r[1]),
             paper_title=str(r[2] or ""),
             relation=str(r[3]),
+            stale=r[4] is not None,
         )
         for r in rows
     ]
@@ -240,11 +276,16 @@ def publish_preflight(
             issues.append(PreflightIssue(check=drift.gate, message=drift.message))
 
     for edge in withheld_edges(store, hub_ref_id):
+        why = (
+            "stale support verdict (claim edited after verification) on"
+            if edge.stale
+            else "unverified"
+        )
         issues.append(
             PreflightIssue(
                 check="withheld-edge",
                 message=(
-                    f"unverified evidence edge {edge.relation!r} from "
+                    f"{why} evidence edge {edge.relation!r} from "
                     f"{edge.paper_title!r} (pc{edge.paper_ref_id}) — verify "
                     "it (refine) or sign it off literally (link "
                     f"{edge.link_id})"

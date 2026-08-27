@@ -31,7 +31,7 @@ from unittest.mock import patch
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.store.types import BlockInsert, Tag
-from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.seniority import derive_evidence
 from precis.workers.chase import FindingRow, advance_finding, run_finding_chase_pass
 from tests.workers._helpers import make_mock_bge_m3
@@ -221,13 +221,123 @@ def test_established_finding_mints_hub_and_attaches_evidence_with_mapped_meta(
     dst, relation, meta = edges[0]
     assert dst == hub
     assert relation == "corroborates"  # apply_placement's default role
+    # verified_at is a live timestamp — assert presence, pin the rest.
+    assert meta.pop("verified_at", None)
     assert meta == {
         "support": "yes",
         "support_reason": "direct measurement statement",
         "caveats": ["only tested at room temperature"],
         "char_offset": None,
         "source_handle": "primary~0",
+        # A real verification ran, so the verdict is fingerprinted and
+        # bound to the claim wording it was issued against.
+        "verified_by": "chase-verify",
+        "verified_claim_sha": claim_sha(finding.title),
     }
+
+
+# ── bridge lint memo (docs/backlog/mint-queue-hygiene.md §2) ────────────
+#
+# The bridge builds the hub sentence from the finding's own title, and that
+# feedstock is ~0.5% gate-passing — a fresh mint records the blocking lint
+# codes it is born with on ``meta.mint_lint_at_bridge``; an attach
+# (convergence onto an existing hub) writes nothing.
+
+
+def _hub_meta(store: Any, hub: int) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (hub,)).fetchone()
+    return dict(row[0] or {})
+
+
+def test_bridge_memo_records_blocking_codes_on_fresh_mint(store: Any) -> None:
+    paper = _seed_paper(
+        store, cite_key="lintmemo", blocks=["A direct measurement statement."]
+    )
+    # The default seed title fires no-evidence-verb + no-epistemic-mode.
+    finding = _seed_finding(store, cite_key="lintmemo")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=make_mock_bge_m3(),
+        )
+    assert outcome == "terminated"
+
+    hubs = _hub_ref_ids(store)
+    assert len(hubs) == 1
+    meta = _hub_meta(store, hubs[0])
+    assert meta["mint_lint_at_bridge"] == ["no-epistemic-mode", "no-evidence-verb"]
+    assert _edges_from(store, paper)  # the evidence write is unaffected
+
+
+def test_bridge_memo_quiet_for_clean_sentence(store: Any) -> None:
+    paper = _seed_paper(
+        store, cite_key="lintclean", blocks=["A direct measurement statement."]
+    )
+    finding = _seed_finding(
+        store,
+        cite_key="lintclean",
+        title="DFT calculations show that the device sustains 2.4 kV "
+        "without breakdown.",
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=make_mock_bge_m3(),
+        )
+    assert outcome == "terminated"
+
+    hubs = _hub_ref_ids(store)
+    assert len(hubs) == 1
+    assert "mint_lint_at_bridge" not in _hub_meta(store, hubs[0])
+
+
+def test_bridge_memo_not_written_on_attach(store: Any) -> None:
+    """A converging placement attaches to the existing hub — the hub's
+    sentence is not the one just written, so no memo lands even when the
+    finding's title would fail the lints."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    embedder = make_mock_bge_m3()
+    paper = _seed_paper(
+        store, cite_key="lintattach", blocks=["A direct measurement statement."]
+    )
+    title = "The device sustains 2.4 kV without breakdown."
+    hub = mint_hub(store, CanonicalClaim(sentence=title, scope={"electrode": "Cu"}))
+    _embed_hub_body(store, hub, title, embedder)
+    finding = _seed_finding(store, cite_key="lintattach", title=title)
+
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES),
+        patch(
+            _DEDUP_PATH,
+            return_value={
+                "verdict": "same",
+                "confidence": 0.99,
+                "rationale": "identical claim text",
+            },
+        ),
+    ):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=embedder,
+        )
+    assert outcome == "terminated"
+
+    assert _hub_ref_ids(store) == [hub]  # converged, no second hub
+    assert "mint_lint_at_bridge" not in _hub_meta(store, hub)
 
 
 # ── NO-SUPPORT / NO-CLAIM skips ──────────────────────────────────────────
@@ -543,6 +653,7 @@ def test_intermediate_hop_attached_as_corroborator_multi_supporter_split(
     dst, relation, meta = mid_edges[0]
     assert dst == hub
     assert relation == "corroborates"  # W2 always writes corroborates
+    assert meta.pop("verified_at", None)  # live timestamp — presence only
     assert meta == {
         "support": "yes",
         "support_reason": "cited earlier context",
@@ -550,6 +661,10 @@ def test_intermediate_hop_attached_as_corroborator_multi_supporter_split(
         "caveats": ["mid caveat", "only tested at room temperature"],
         "char_offset": None,
         "source_handle": "mid~0",
+        # The hop carried its own verification, so W2's edge is
+        # fingerprinted exactly like W1's.
+        "verified_by": "chase-verify",
+        "verified_claim_sha": claim_sha(finding.title),
     }
 
     evidence = derive_evidence(store, hub)
@@ -664,6 +779,9 @@ def test_intermediate_hop_with_no_verification_attached_as_bare_corroborator(
     assert meta["support"] is None
     assert meta["support_reason"] is None
     assert meta["source_handle"] == "midbare~0"
+    # No verification ran for this hop — no fingerprint is fabricated.
+    assert "verified_by" not in meta
+    assert "verified_claim_sha" not in meta
 
     evidence = derive_evidence(store, hub)
     supporters = {

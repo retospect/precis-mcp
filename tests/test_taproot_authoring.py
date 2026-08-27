@@ -232,6 +232,77 @@ def test_two_passages_of_one_paper_are_two_edges(store: Any) -> None:
     assert src_chunks == {ids[0], ids[1]}
 
 
+# ── support is a verdict, never a default ────────────────────────────────
+
+
+def test_supporter_without_verified_trio_is_born_withheld(store: Any) -> None:
+    """A supporter that attests no verification (no support/support_reason/
+    verified_by trio) mints an edge with NO ``support`` key at all — born
+    withheld behind ``nanopub.preflight.withheld_edges`` — never the old
+    default ``support: "yes"``. A partial trio (a bare ``support`` with no
+    reason/verifier) degrades the same way."""
+    paper = seed_ref(store, title="Bare 2024", kind="paper")
+    partial = seed_ref(store, title="Partial 2024", kind="paper")
+
+    out = seed_claim_hub(
+        store,
+        sentence="Zeolite frameworks stabilize isolated Cu sites.",
+        scope={},
+        supporters=[
+            {"paper": paper, "role": "corroborates"},
+            # `support` alone is not a verdict — nobody stands behind it.
+            {"paper": partial, "role": "corroborates", "support": "yes"},
+        ],
+    )
+    assert out["attached"] == 2
+
+    for src in (paper, partial):
+        edges = _edges(store, src=src, dst=out["hub_ref_id"])
+        assert len(edges) == 1
+        _relation, meta = edges[0]
+        assert "support" not in meta
+        assert "caveats" not in meta
+        assert "verified_by" not in meta
+
+
+def test_supporter_with_verified_trio_lands_the_six_key_stamp(store: Any) -> None:
+    """A supporter carrying the full trio (support + support_reason +
+    verified_by — a caller attesting a real verification) lands the same
+    six-key stamp shape ``taproot.verify_edges`` writes, with
+    ``verified_at``/``verified_claim_sha`` stamped at mint time."""
+    from precis.taproot.canon import claim_sha
+
+    paper = seed_ref(store, title="Verified 2024", kind="paper")
+    sentence = "Cu-CHA converts methane to methanol stepwise."
+
+    out = seed_claim_hub(
+        store,
+        sentence=sentence,
+        scope={},
+        supporters=[
+            {
+                "paper": paper,
+                "role": "corroborates",
+                "support": "yes",
+                "support_reason": "the passage reports the stepwise conversion",
+                "verified_by": "reto",
+                "caveats": ["stoichiometric, not catalytic"],
+            }
+        ],
+    )
+    assert out["attached"] == 1
+
+    edges = _edges(store, src=paper, dst=out["hub_ref_id"])
+    assert len(edges) == 1
+    _relation, meta = edges[0]
+    assert meta["support"] == "yes"
+    assert meta["support_reason"] == "the passage reports the stepwise conversion"
+    assert meta["caveats"] == ["stoichiometric, not catalytic"]
+    assert meta["verified_by"] == "reto"
+    assert meta["verified_at"]
+    assert meta["verified_claim_sha"] == claim_sha(sentence)
+
+
 # ── idempotency ──────────────────────────────────────────────────────────
 
 

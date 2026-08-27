@@ -335,10 +335,16 @@ on the `/claim/fi<id>` page's review section — one page, reader
 evidence + review-and-sign (`/nanopub/fi<id>` is the workbench deep
 link framing it):
 
-- **Withheld evidence edges** — an evidence edge neither
-  verified-by-refine nor human-signed-off blocks publication; there is
-  no mute button. Verification (the refine chase) is the agent-side
-  remedy; the literal sign-off is human-only.
+- **Withheld evidence edges** — evidence edges are **born withheld**:
+  an edge neither verified nor human-signed-off blocks publication;
+  there is no mute button. `meta.support` is a *verdict*, stamped only
+  by something that read the pinned passage and only with its
+  `support_reason` + `verified_by` (plus `verified_at`,
+  `verified_claim_sha`) — never a mint-time default. Editing the claim
+  sentence invalidates sha-carrying verdicts, so an edited hub's edges
+  re-enter verification rather than keeping a stale stamp. `precis
+  taproot verify-edges` (dry-run default) is the certification sweep;
+  the literal sign-off stays human-only.
 - **Trust allowlist** — only pinned (identity, key-fingerprint) pairs
   are trusted, and publishing requires the *attesting* (human) entry.
 - **Order** — atoms publish before the compounds citing them; hanging

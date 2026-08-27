@@ -152,6 +152,14 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   chase-finding candidate (`precis-finding-help`), not a hub grounding.
   Same discipline as citing generally, one level stricter — see
   `precis-cite-paper-help`'s "cite the doer, not hearsay."
+  A source whose *title* marks it a review/perspective ("…: a review",
+  "Recent advances in…") is secondhand by genre — its prose attributes
+  findings to the doers it surveys — and now hard-blocks the mint gates
+  (`review-source`), even when the quoted passage reads primary. One
+  escape: the claim sentence itself declares a synthesis mode ("Review
+  synthesis identifies…", "Meta-analysis of…"), which makes the review
+  the primary. Remedies: re-ground in the primary, drop the review
+  edge, or mint explicitly hanging.
 
 **Soft flags — mint, but expect review:**
 
