@@ -218,6 +218,91 @@ def test_deploy_refuses_to_build_from_a_stale_or_dirty_checkout() -> None:
         assert at < build_at, f"{guard!r} must gate the build, not follow it"
 
 
+_LOCK_OTHER = (
+    "[[package]]\n"
+    'name = "aaa-other"\n'
+    'version = "1.0.0"\n'
+    'source = { git = "https://github.com/x/other?branch=main#' + "a" * 40 + '" }\n'
+)
+_LOCK_ACP = (
+    "[[package]]\n"
+    'name = "autocatpath"\n'
+    'version = "0.18.0"\n'
+    'source = { git = "https://github.com/retospect/catpath?branch=main#'
+    + "b" * 40
+    + '" }\n'
+)
+
+
+def test_locked_sha_reads_the_pin_uv_already_records(tmp_path: Path) -> None:
+    """The whole version-reuse problem (gr263082 comment 1) is that a wheel
+    filename can't identify a build — but uv.lock already stores the resolved
+    commit, so the identifier exists and just wasn't being read.
+    """
+    lock = tmp_path / "uv.lock"
+    lock.write_text(_LOCK_OTHER + "\n" + _LOCK_ACP, encoding="utf-8")
+    assert _sh(f'autocatpath_locked_sha "{lock}"').stdout == "b" * 40
+
+
+def test_locked_sha_is_anchored_to_the_autocatpath_stanza(tmp_path: Path) -> None:
+    """uv.lock has a `source = { git = ... }` line for EVERY git dependency, so
+    a plain grep would happily return whichever one came first — here, a
+    package deliberately sorted above autocatpath.
+    """
+    lock = tmp_path / "uv.lock"
+    lock.write_text(_LOCK_OTHER + "\n" + _LOCK_ACP, encoding="utf-8")
+    result = _sh(f'autocatpath_locked_sha "{lock}"')
+    assert result.stdout != "a" * 40, "returned a different package's commit"
+
+
+def test_locked_sha_does_not_leak_from_a_following_package(tmp_path: Path) -> None:
+    """When autocatpath resolves from an index it has no `source = { git }`
+    line at all. Scanning must stop at the next `[[package]]` rather than
+    running on and reporting the NEXT git package's commit as autocatpath's —
+    a wrong sha here would make deploy refuse a perfectly good checkout.
+    """
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        '[[package]]\nname = "autocatpath"\nversion = "0.18.0"\n\n' + _LOCK_OTHER,
+        encoding="utf-8",
+    )
+    assert _sh(f'autocatpath_locked_sha "{lock}"').returncode == 1
+
+
+def test_locked_sha_reads_the_real_lockfile() -> None:
+    """Pin the parse against the shipped uv.lock, not just synthetic input."""
+    result = _sh(f'autocatpath_locked_sha "{REPO_ROOT / "uv.lock"}"')
+    assert result.returncode == 0, result.stderr
+    assert re.fullmatch(r"[0-9a-f]{40}", result.stdout), result.stdout
+
+
+def test_locked_sha_reports_absence_rather_than_guessing(tmp_path: Path) -> None:
+    assert _sh(f'autocatpath_locked_sha "{tmp_path / "absent.lock"}"').returncode == 1
+
+
+def test_deploy_checks_the_checkout_against_the_locked_commit() -> None:
+    """ "Level with upstream" is a PROXY for "would build the code we depend
+    on", and it answers that question wrong in the normal case: catpath moves
+    ahead between `uv lock -P autocatpath` runs, so a checkout sitting exactly
+    ON the pinned commit is correct while being behind upstream — and the
+    proxy refuses it. uv.lock names the commit outright, so ask directly.
+
+    The diff is scoped to what a build actually reads. docs/ and tests/ commits
+    cannot change the wheel, and rejecting them would just relocate the same
+    false alarm.
+    """
+    deploy = (REPO_ROOT / "scripts" / "deploy").read_text(encoding="utf-8")
+    build_at = deploy.index("uv build --wheel")
+
+    for guard in ("autocatpath_locked_sha", "diff --quiet", "-- src pyproject.toml"):
+        at = deploy.index(guard, deploy.index("autocatpath_floor"))
+        assert at < build_at, f"{guard!r} must gate the build, not follow it"
+
+    # Presence of the pinned commit is checked before it is diffed against —
+    # `git diff <missing-sha>` fails for a reason the operator can't act on.
+    assert deploy.index("cat-file -e") < deploy.index("diff --quiet")
+
+
 def test_deploy_keeps_an_escape_hatch() -> None:
     """A fleet whose hosts were seeded by hand, or one with no
     autocatpath_plugin hosts at all, must not be blocked by a check that

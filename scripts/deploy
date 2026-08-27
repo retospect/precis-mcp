@@ -204,21 +204,44 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
             [[ -n "$_PROJ_V" ]] || die "autocatpath floor is >=${_FLOOR} but no wheel that new exists in ${_CATPATH_DIR}/dist and there is no catpath checkout there to build one from. Set PRECIS_CATPATH_DIR, or PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 if the hosts are already seeded. (gr263082)"
             version_ge "$_PROJ_V" "$_FLOOR" || die "autocatpath floor is >=${_FLOOR} but the catpath checkout at ${_CATPATH_DIR} is only ${_PROJ_V} — pull/bump catpath and release the wheel first. (gr263082)"
 
-            # Only build from a checkout that matches what the release machine
-            # would build. catpath reuses one version number across many
+            # Only build from a checkout that matches what precis actually
+            # depends on. catpath reuses one version number across many
             # commits — 0.18.0 already spans nine, including a minimum-image
             # convention fix — so the wheel FILENAME cannot tell a stale build
             # from a current one. Two wheels named autocatpath-0.18.0 can carry
             # different code, and the wheelhouse keeps whichever landed last.
-            # Checkout state is therefore the only signal available, and a
-            # deploy is the wrong place to be relaxed about it: refuse rather
-            # than ship a plausible-looking wheel nobody can later identify.
+            # A deploy is the wrong place to be relaxed about that: refuse
+            # rather than ship a plausible-looking wheel nobody can identify.
             git -C "$_CATPATH_DIR" fetch -q origin 2>/dev/null || true
             [[ -z "$(git -C "$_CATPATH_DIR" status --porcelain 2>/dev/null)" ]] \
                 || die "catpath at ${_CATPATH_DIR} has uncommitted changes — a wheel built from it would be named autocatpath-${_PROJ_V} but contain code no one else has. Commit/stash there, or build the wheel on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
-            _BEHIND="$(git -C "$_CATPATH_DIR" rev-list --count 'HEAD..@{upstream}' 2>/dev/null || echo 0)"
-            [[ "$_BEHIND" == "0" ]] \
-                || die "catpath at ${_CATPATH_DIR} is ${_BEHIND} commit(s) behind its upstream, all still labelled ${_PROJ_V} — building here would ship a wheel that silently differs from the released one. Pull catpath first, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
+
+            # uv.lock already names the exact commit precis resolved against,
+            # so ask the precise question — "would this tree build the code we
+            # locked?" — instead of the proxy "is this tree level with its
+            # upstream?". The proxy is not the same question and gets it wrong
+            # in the normal case: catpath moves ahead between `uv lock -P`
+            # runs, so a checkout at the pinned commit is CORRECT while being
+            # behind upstream, and the proxy would refuse it.
+            #
+            # Compare only what ships. Commits touching docs/ or tests/ cannot
+            # change the wheel, and refusing them would be the same false
+            # alarm in a new place; src/ plus pyproject.toml (metadata, deps,
+            # packaging config) is what a build actually reads.
+            _LOCKED="$(autocatpath_locked_sha "${REPO_ROOT}/uv.lock" || true)"
+            if [[ -n "$_LOCKED" ]]; then
+                git -C "$_CATPATH_DIR" cat-file -e "${_LOCKED}^{commit}" 2>/dev/null \
+                    || die "uv.lock pins autocatpath at ${_LOCKED}, but that commit is not in ${_CATPATH_DIR} even after a fetch — the checkout is on a different remote, or the pin references an unpushed commit. Fix the checkout, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
+                git -C "$_CATPATH_DIR" diff --quiet "$_LOCKED" HEAD -- src pyproject.toml 2>/dev/null \
+                    || die "catpath at ${_CATPATH_DIR} would build packaged code that differs from the commit uv.lock pins (${_LOCKED}) — and both builds are labelled ${_PROJ_V}, so nothing downstream could tell them apart. Either check that commit out, or run 'uv lock -P autocatpath' here to depend on the newer code deliberately. (gr263082)"
+            else
+                # No git pin to check against (autocatpath resolved from an
+                # index, or a stale lock). Fall back to the weaker signal
+                # rather than dropping provenance checking entirely.
+                _BEHIND="$(git -C "$_CATPATH_DIR" rev-list --count 'HEAD..@{upstream}' 2>/dev/null || echo 0)"
+                [[ "$_BEHIND" == "0" ]] \
+                    || die "catpath at ${_CATPATH_DIR} is ${_BEHIND} commit(s) behind its upstream, all still labelled ${_PROJ_V} — building here would ship a wheel that silently differs from the released one. Pull catpath first, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
+            fi
 
             say "building autocatpath ${_PROJ_V} wheel (floor >=${_FLOOR}, nothing that new in ${_CATPATH_DIR}/dist)"
             (cd "$_CATPATH_DIR" && uv build --wheel --out-dir dist) \

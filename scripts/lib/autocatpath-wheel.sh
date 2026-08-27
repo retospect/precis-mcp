@@ -92,3 +92,32 @@ autocatpath_project_version() {
     [ -n "$v" ] || return 1
     printf '%s' "$v"
 }
+
+# autocatpath_locked_sha <uv.lock-path>
+#
+# Prints the exact catpath commit this repo's lockfile pins, or returns 1 if
+# autocatpath is not locked to a git source.
+#
+# gr263082 comment 1: catpath reuses one version number across many commits, so
+# `autocatpath-0.18.0-py3-none-any.whl` does not identify a build and no version
+# comparison can recover what it holds. The identifier we need already exists,
+# though — `uv lock` records the resolved commit directly in uv.lock, and
+# `uv lock -P autocatpath` is what moves it. Reading it here lets scripts/deploy
+# check a checkout against what precis actually depends on, rather than against
+# a proxy like "level with upstream" — not the same question, and it answers it
+# wrong whenever catpath has moved ahead of the pin.
+#
+# Anchored to the `name = "autocatpath"` stanza rather than grepping the URL:
+# uv.lock carries a `source = { git = ... }` line for every git dependency.
+autocatpath_locked_sha() {
+    local lock=$1 sha
+    [ -f "$lock" ] || return 1
+    sha=$(
+        awk '/^name = "autocatpath"$/      { in_pkg = 1; next }
+             in_pkg && /^\[\[/             { in_pkg = 0 }
+             in_pkg && /^source = / && /#/ { print; exit }' "$lock" |
+            sed -n 's/.*#\([0-9a-f]\{7,40\}\)".*/\1/p'
+    )
+    [ -n "$sha" ] || return 1
+    printf '%s' "$sha"
+}
