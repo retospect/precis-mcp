@@ -1088,6 +1088,76 @@ def test_head_in_neither_map_stays_generic_finding_anchor() -> None:
     assert "data-claim-head" not in out
 
 
+# ── `refuted_claims` — the RED ◆ twin (the do-not-repropose ledger,
+# docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") ────────────
+# A head tagged STATUS:refuted renders a filled red diamond, links straight
+# to the refuted finding (no `/claim` page — same href convention as the
+# pending branch), carries no `data-claim-head`, and wins over BOTH the
+# live claim and pending renderings.
+
+
+def test_refuted_head_renders_red_diamond_compact() -> None:
+    out = str(linkify_refs("see [fi123]", compact=True, refuted_claims={"fi123": 123}))
+    assert "◆" in out
+    assert 'href="/r/finding/123"' in out
+    assert 'hx-get="/preview/finding/123"' in out
+    assert "text-red-600" in out
+    assert 'title="refuted — see ruling"' in out
+    assert "data-claim-head" not in out
+    assert "/claim/" not in out
+
+
+def test_refuted_head_noncompact_shows_head_text_not_diamond() -> None:
+    out = str(linkify_refs("[fi123]", compact=False, refuted_claims={"fi123": 123}))
+    assert "◆" not in out
+    assert ">fi123<" in out
+    assert 'href="/r/finding/123"' in out
+
+
+def test_refuted_wins_over_hub_claim() -> None:
+    """A head in BOTH `claims` and `refuted_claims` renders red, not the
+    violet hub anchor — the refuted lifecycle's cite-site rendering wins
+    over "still a live claim hub"."""
+    out = str(
+        linkify_refs(
+            "[fi123]",
+            compact=True,
+            claims=frozenset({"fi123"}),
+            refuted_claims={"fi123": 123},
+        )
+    )
+    assert "text-red-600" in out
+    assert "text-violet-700" not in out
+    assert 'href="/r/finding/123"' in out
+    assert "/claim/" not in out
+    assert "data-claim-head" not in out
+
+
+def test_refuted_wins_over_pending_claim() -> None:
+    """A head in BOTH `pending_claims` and `refuted_claims` renders red,
+    not the hollow pending diamond."""
+    out = str(
+        linkify_refs(
+            "[fi123]",
+            compact=True,
+            pending_claims={"fi123": 123},
+            refuted_claims={"fi123": 123},
+        )
+    )
+    assert "text-red-600" in out
+    assert "text-violet-400" not in out
+    assert 'title="refuted — see ruling"' in out
+
+
+def test_head_absent_from_refuted_map_stays_generic() -> None:
+    """`refuted_claims` is additive, same as `pending_claims` — a head
+    absent from it (and `None`, the default everywhere but a reader) keeps
+    prior rendering."""
+    out = str(linkify_refs("[fi123]", compact=True, refuted_claims={}))
+    assert 'href="/r/finding/123"' in out
+    assert "text-red-600" not in out
+
+
 # ---- gr171760: the page-wide delegated popover registry --------------
 #
 # The registry itself is a browser-side singleton (``window.__refPopover``

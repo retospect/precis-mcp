@@ -49,6 +49,12 @@ the smartdraft/paper readers, so every other surface renders unchanged.
 A sibling ``pending_claims`` map covers a head that resolves to a finding
 but isn't (yet) a hub — "claim in chase, not yet canonical" — rendering
 instead as a hollow, muted-violet ``◇`` linking straight to the finding.
+A second sibling ``refuted_claims`` map covers a head tagged
+``STATUS:refuted`` — the do-not-repropose ledger
+(docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") — rendering
+instead as a filled RED ``◆`` linking to the refuted finding itself; it
+wins over both the live and pending renderings when a head is (unusually)
+in more than one map.
 """
 
 from __future__ import annotations
@@ -174,6 +180,18 @@ _CLAIM_PENDING_ANCHOR_CLS = (
     "text-violet-400 underline decoration-dotted hover:decoration-solid"
 )
 _CLAIM_PENDING_SIGIL = "◇"
+
+#: A finding cite whose head is tagged ``STATUS:refuted`` — the
+#: do-not-repropose ledger (docs/backlog/quest-dossier-dialectic.md
+#: §"Refuted lifecycle"). Red, filled — "the claim as stated is dead" —
+#: so every cite site turns red automatically the moment the underlying
+#: finding is stamped refuted, with no per-surface rendering work. Wins
+#: over both the live ``◆`` and pending ``◇`` renderings (see
+#: :func:`_render_claim_hub`'s precedence check).
+_CLAIM_REFUTED_ANCHOR_CLS = (
+    "text-red-600 underline decoration-dotted hover:decoration-solid"
+)
+_CLAIM_REFUTED_SIGIL = "◆"
 
 #: Named window target for a paper citation (the claim-UX paper-at-position
 #: behaviour): successive clicks on paper cites reuse ONE side window instead of
@@ -506,6 +524,7 @@ def _render_claim_hub(
     *,
     claims: frozenset[str] | None,
     pending_claims: Mapping[str, int] | None = None,
+    refuted_claims: Mapping[str, int] | None = None,
     compact: bool = False,
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
@@ -514,6 +533,15 @@ def _render_claim_hub(
     pinned) whose ``head`` is a known hub for this window → a violet claim
     anchor: hover shows the claim + its evidence, click opens ``/claim``.
 
+    A head tagged ``STATUS:refuted`` — present in ``refuted_claims`` — wins
+    over every other rendering (checked FIRST, below): a filled RED ``◆``
+    linking to the refuted finding itself (``/r/finding/<id>``, the same
+    href convention the pending branch uses — there is no separate refuted
+    page), ``title="refuted — see ruling"``. This is the do-not-repropose
+    ledger's cite-site rendering (docs/backlog/quest-dossier-dialectic.md
+    §"Refuted lifecycle") — "red = the claim as stated is dead", not "this
+    document is wrong".
+
     A head that resolves to a finding but ISN'T (yet) a hub — present in
     ``pending_claims`` instead — renders as the hollow, muted-violet ``◇``
     twin: "claim in chase, not yet canonical". It links straight to the
@@ -521,13 +549,24 @@ def _render_claim_hub(
     page to show yet — and carries no ``data-claim-head`` (the smartdraft
     diamond↔rail sync is hubs-only; a pending cite has no rail row).
 
-    A head in neither map (or a call site with no ``claims``/``pending_claims``
-    at all) falls back to the ordinary rendering of the bare ``head`` — the
-    export-only pin (`>`/`+` …) is dropped in every branch (a reader shows
-    the cite, not the bibliography directive), so ``[fi42>pa5]`` renders
-    identically to ``[fi42]``, and nothing that used to be a plain finding
-    anchor / literal changes.
+    A head in neither map (or a call site with no
+    ``claims``/``pending_claims``/``refuted_claims`` at all) falls back to
+    the ordinary rendering of the bare ``head`` — the export-only pin
+    (`>`/`+` …) is dropped in every branch (a reader shows the cite, not
+    the bibliography directive), so ``[fi42>pa5]`` renders identically to
+    ``[fi42]``, and nothing that used to be a plain finding anchor /
+    literal changes.
     """
+    if refuted_claims and head in refuted_claims:
+        ref_id = refuted_claims[head]
+        label = _CLAIM_REFUTED_SIGIL if compact else escape(head)
+        return _anchor_html(
+            href=f"/r/finding/{ref_id}",
+            preview_url=f"/preview/finding/{ref_id}",
+            label=label,
+            anchor_cls=_CLAIM_REFUTED_ANCHOR_CLS,
+            extra_attrs='title="refuted — see ruling"',
+        )
     if claims is not None and head in claims:
         safe_head = escape(head)
         label = _CLAIM_SIGIL if compact else escape(head)
@@ -879,6 +918,7 @@ def linkify_refs(
     callouts: dict[str, str] | None = None,
     claims: frozenset[str] | None = None,
     pending_claims: Mapping[str, int] | None = None,
+    refuted_claims: Mapping[str, int] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -925,6 +965,14 @@ def linkify_refs(
     (``/r/finding/<id>``) rather than a ``/claim`` page. ``None`` (every
     non-reader call site) keeps prior rendering, same as ``claims``.
 
+    ``refuted_claims`` — the second sibling ``{head: ref_id}`` map for
+    heads tagged ``STATUS:refuted`` (the do-not-repropose ledger,
+    docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"). A
+    matching cite renders as a filled RED ``◆``, linking straight to the
+    refuted finding, and wins over both ``claims`` and ``pending_claims``
+    when a head is (unusually) present in more than one map. ``None``
+    (every non-reader call site) keeps prior rendering, same as ``claims``.
+
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
@@ -939,6 +987,7 @@ def linkify_refs(
         callouts=callouts,
         claims=claims,
         pending_claims=pending_claims,
+        refuted_claims=refuted_claims,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -992,6 +1041,7 @@ def _linkify_prose(
     callouts: dict[str, str] | None = None,
     claims: frozenset[str] | None = None,
     pending_claims: Mapping[str, int] | None = None,
+    refuted_claims: Mapping[str, int] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -1026,6 +1076,7 @@ def _linkify_prose(
                 m.group("claimhead"),
                 claims=claims,
                 pending_claims=pending_claims,
+                refuted_claims=refuted_claims,
                 compact=compact,
                 local=local,
                 callouts=callouts,

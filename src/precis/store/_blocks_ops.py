@@ -103,8 +103,10 @@ def _draft_dream_boost_seconds() -> float:
 
 from precis.store._tag_filter import (
     build_tag_filter,
+    is_refuted_tag,
     is_speculative_tag,
     is_wiki_tag,
+    refuted_fence,
     speculative_fence,
     wiki_fence,
 )
@@ -567,6 +569,23 @@ class BlockStore:
             return False
         return True
 
+    @staticmethod
+    def _fence_refuted(tags: list[str] | None) -> bool:
+        """Whether to apply the ``STATUS:refuted`` fence to a search.
+
+        Fence by default so a rejected hypothesis (the do-not-repropose
+        ledger, docs/backlog/quest-dossier-dialectic.md §"Refuted
+        lifecycle") never resurfaces in default or cross-kind search.
+        Lift it when the caller lists the ``STATUS:refuted`` control tag
+        in ``tags=`` — the opt-in mirrors ``DREAM:speculative`` /
+        ``ORIGIN:wikipedia``. ``search(kind='finding', status='refuted')``
+        desugars to exactly this tag, so the fence lifts automatically
+        for that shorthand.
+        """
+        if tags and any(is_refuted_tag(t) for t in tags):
+            return False
+        return True
+
     def search_blocks_lexical(
         self,
         *,
@@ -625,6 +644,8 @@ class BlockStore:
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
             clauses.append(wiki_fence("r"))
+        if self._fence_refuted(tags):
+            clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
         if exclude_ref_ids:
@@ -710,6 +731,8 @@ class BlockStore:
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
             clauses.append(wiki_fence("r"))
+        if self._fence_refuted(tags):
+            clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
         if exclude_ref_ids:
@@ -793,6 +816,8 @@ class BlockStore:
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
             clauses.append(wiki_fence("r"))
+        if self._fence_refuted(tags):
+            clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
         clauses.extend(_chunk_scope_clauses(chunk_kinds, chunk_ids))
         if exclude_ref_ids:
@@ -909,6 +934,9 @@ class BlockStore:
         if self._fence_wiki(tags, kind):
             # Likewise parameterless — safe under the double-splice.
             clauses.append(wiki_fence("r"))
+        if self._fence_refuted(tags):
+            # Likewise parameterless — safe under the double-splice.
+            clauses.append(refuted_fence("r"))
         # Year + chunk-scope predicates are int/validated-literal
         # (parameterless) for the same double-splice safety — see
         # ``_year_range_clauses`` / ``_chunk_scope_clauses``.

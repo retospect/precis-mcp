@@ -114,27 +114,64 @@ def cite_heads_in(text: str) -> list[str]:
     return out
 
 
+def _refuted_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
+    """The subset of ``ref_ids`` carrying ``STATUS:refuted`` — one bulk
+    query, same shape as :func:`~precis.taproot.seniority.is_claim_hub_bulk`
+    (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"). Used by
+    :func:`claim_cite_head_sets` to compute the ``refuted`` head set
+    alongside the hub check, so a window's cite-head resolution stays a
+    bounded number of queries regardless of head count."""
+    ids = sorted({int(r) for r in ref_ids})
+    if not ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+            FROM refs r
+            JOIN ref_tags rt ON rt.ref_id = r.ref_id
+            JOIN tags t ON t.tag_id = rt.tag_id
+                       AND t.namespace = 'STATUS' AND t.value = 'refuted'
+            WHERE r.ref_id = ANY(%(ids)s) AND r.kind = 'finding'
+              AND r.deleted_at IS NULL
+            """,
+            {"ids": ids},
+        ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
 def claim_cite_head_sets(
     store: Store, texts: Iterable[str]
-) -> tuple[frozenset[str], dict[str, int]]:
-    """The cite heads in ``texts`` split into ``(hubs, pending)`` from ONE
-    resolution pass across the window: each distinct head is resolved once
-    (first to a ref_id, then the hub check runs as a single bulk query over
-    every distinct ref_id — :func:`~precis.taproot.seniority.
-    is_claim_hub_bulk` — rather than one ``is_claim_hub`` round trip per
-    head, OPEN-ITEMS.md's "/smartdraft reader" batch B).
+) -> tuple[frozenset[str], dict[str, int], dict[str, int]]:
+    """The cite heads in ``texts`` split into ``(hubs, pending, refuted)``
+    from ONE resolution pass across the window: each distinct head is
+    resolved once (first to a ref_id, then the hub check runs as a single
+    bulk query over every distinct ref_id — :func:`~precis.taproot.
+    seniority.is_claim_hub_bulk` — rather than one ``is_claim_hub`` round
+    trip per head, OPEN-ITEMS.md's "/smartdraft reader" batch B). The
+    refuted check (:func:`_refuted_ref_ids_bulk`) is a second bulk query
+    over the same resolved id set — still O(1) queries for the whole
+    window, not O(heads).
 
     ``hubs`` is the ``claims`` side-channel a reader threads into
     :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
     cite renders as a filled ``◆`` claim anchor. ``pending`` is its hollow-
     ``◇`` twin: ``{head: ref_id}`` for heads that resolve but AREN'T a hub —
-    a claim still in the chase, not yet canonical. No extra kind lookup is
-    needed to tell those apart from a non-finding cite: :func:`
-    _resolve_head_ref_id` only ever resolves to a ``finding`` ref (the
-    ``fi`` handle code decodes to that kind by construction, and
-    :func:`~precis.utils.pub_id_lookup.lookup_pub_id_finding` filters to it
-    in SQL), so every resolved-but-not-hub head is, by construction, a
-    pending finding."""
+    a claim still in the chase, not yet canonical. ``refuted`` is the red-◆
+    twin: ``{head: ref_id}`` for heads carrying ``STATUS:refuted`` — the
+    do-not-repropose ledger (docs/backlog/quest-dossier-dialectic.md
+    §"Refuted lifecycle"). The three sets are mutually exclusive — a
+    refuted head is carved OUT of ``hubs``/``pending`` here, not left to
+    the anchor layer's precedence check (:func:`~precis_web.linkify.
+    _render_claim_hub` still checks ``refuted_claims`` first, belt-and-
+    suspenders, for callers that build their own maps some other way). No
+    extra kind lookup is needed to tell a pending head apart from a
+    non-finding cite: :func:`_resolve_head_ref_id` only ever resolves to a
+    ``finding`` ref (the ``fi`` handle code decodes to that kind by
+    construction, and :func:`~precis.utils.pub_id_lookup.
+    lookup_pub_id_finding` filters to it in SQL), so every resolved
+    head that's neither a hub nor refuted is, by construction, a pending
+    finding."""
     head_ref: dict[str, int] = {}
     for text in texts:
         for head in cite_heads_in(text):
@@ -144,11 +181,21 @@ def claim_cite_head_sets(
             if ref_id is not None:
                 head_ref[head] = ref_id
     if not head_ref:
-        return frozenset(), {}
+        return frozenset(), {}, {}
     hub_flags = is_claim_hub_bulk(store, head_ref.values())
-    hubs = frozenset(h for h, rid in head_ref.items() if hub_flags.get(rid))
-    pending = {h: rid for h, rid in head_ref.items() if not hub_flags.get(rid)}
-    return hubs, pending
+    refuted_ids = _refuted_ref_ids_bulk(store, head_ref.values())
+    hubs = frozenset(
+        h
+        for h, rid in head_ref.items()
+        if hub_flags.get(rid) and rid not in refuted_ids
+    )
+    refuted = {h: rid for h, rid in head_ref.items() if rid in refuted_ids}
+    pending = {
+        h: rid
+        for h, rid in head_ref.items()
+        if not hub_flags.get(rid) and rid not in refuted_ids
+    }
+    return hubs, pending, refuted
 
 
 def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
@@ -157,8 +204,8 @@ def hub_cite_heads(store: Store, texts: Iterable[str]) -> frozenset[str]:
     :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
     cite renders as a claim anchor. Thin wrapper over
     :func:`claim_cite_head_sets` (its ``hubs`` half) — kept for the callers
-    that only ever wanted the hub set, not the pending one."""
-    hubs, _pending = claim_cite_head_sets(store, texts)
+    that only ever wanted the hub set, not the pending/refuted ones."""
+    hubs, _pending, _refuted = claim_cite_head_sets(store, texts)
     return hubs
 
 

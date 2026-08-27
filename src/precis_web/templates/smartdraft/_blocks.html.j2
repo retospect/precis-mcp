@@ -2,5 +2,5 @@
    doc blocks for a window of full-document placeholders scrolling into view.
    Same macro the initial render uses, so a hydrated block matches exactly. #}
 {% import "smartdraft/_block.html.j2" as sd_block %}
-{% for n in nodes %}{{ sd_block.sd_doc_block(n, n.text, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims) }}
+{% for n in nodes %}{{ sd_block.sd_doc_block(n, n.text, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims) }}
 {% endfor %}

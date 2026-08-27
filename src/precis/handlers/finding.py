@@ -888,6 +888,18 @@ class FindingHandler(NumericRefHandler):
         ``search(status='tracing', tags=['topic-co2'])`` works as
         expected.
 
+        ``status='refuted'`` reaches the do-not-repropose ledger
+        (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") —
+        a terminal, tag-applied status for a rejected hypothesis, retracts-
+        linked to the negative-ruling finding that superseded it. It's
+        fenced out of the default cohort (and every cross-kind search) at
+        the store layer (``store/_tag_filter.py::refuted_fence``), same as
+        the ``DREAM:speculative`` / ``ORIGIN:wikipedia`` fences — the
+        ``STATUS:refuted`` tag desugar IS the opt-in that lifts it.
+        ``status='*'`` does NOT add that tag, so it still skips the fence's
+        opt-in: a refuted finding can surface there via the title-lexical
+        leg (unfenced) but not the semantic/lexical block leg.
+
         **Default cohort (no explicit ``status=``):** ``STATUS:established``
         findings **plus** taproot claim hubs (``TAPROOT:claim`` — minted by
         ``taproot/hub.py::mint_hub`` with ``STATUS:canonical``, off the

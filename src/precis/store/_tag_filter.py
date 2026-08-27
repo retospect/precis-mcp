@@ -247,12 +247,63 @@ def wiki_fence(ref_alias: str = "r") -> str:
     )
 
 
+#: Canonical control tag for the finding-search do-not-repropose ledger
+#: (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"). Stamped
+#: on the negative-ruling finding a rejected hypothesis is
+#: ``retracts``/``superseded-by``-linked to. The ``STATUS`` axis is a
+#: closed vocabulary; ``refuted`` is one of its values.
+REFUTED_TAG = "STATUS:refuted"
+_REFUTED_NS = "STATUS"
+_REFUTED_VALUE = "refuted"
+
+
+def is_refuted_tag(tag: str) -> bool:
+    """True iff ``tag`` is the ``STATUS:refuted`` control tag.
+
+    Used to detect an *explicit* opt-in: a caller listing this tag in
+    ``tags=`` is asking to see refuted findings, so the fence lifts for
+    that query (mirrors :func:`is_speculative_tag` / :func:`is_wiki_tag`).
+    ``search(kind='finding', status='refuted')`` desugars to exactly this
+    tag, so the fence lifts automatically for that shorthand too.
+    """
+    return tag.strip() == REFUTED_TAG
+
+
+def refuted_fence(ref_alias: str = "r") -> str:
+    """SQL clause excluding refs tagged ``STATUS:refuted``.
+
+    Parameterless ``NOT EXISTS (...)`` predicate (no leading ``AND``,
+    fixed namespace/value constants) — safe under the fused-search CTE's
+    double-splice, exactly like :func:`speculative_fence` /
+    :func:`wiki_fence`. Splice into a ``clauses`` list that gets
+    ``AND``-joined.
+
+    Default + cross-kind search fences refuted findings — the
+    do-not-repropose ledger — so a rejected hypothesis never resurfaces
+    as if it were still live; the fence is a no-op for every kind that
+    never carries the tag. Callers lift it via ``status='refuted'``
+    (which desugars to the ``STATUS:refuted`` tag) or an explicit
+    ``STATUS:refuted`` opt-in in ``tags=``.
+    """
+    return (
+        "NOT EXISTS ("
+        "SELECT 1 FROM ref_tags rt "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {ref_alias}.ref_id "
+        f"AND t.namespace = '{_REFUTED_NS}' "
+        f"AND t.value = '{_REFUTED_VALUE}')"
+    )
+
+
 __all__ = [
+    "REFUTED_TAG",
     "SPECULATIVE_TAG",
     "WIKI_TAG",
     "build_tag_filter",
+    "is_refuted_tag",
     "is_speculative_tag",
     "is_wiki_tag",
+    "refuted_fence",
     "speculative_fence",
     "wiki_fence",
 ]

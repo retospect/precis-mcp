@@ -870,6 +870,15 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "established",
             "multi_candidate",
             "dead_chain",
+            # Refuted lifecycle (docs/backlog/quest-dossier-dialectic.md
+            # §"Refuted lifecycle"). Terminal, no transition machinery —
+            # applied via the existing tag verb, not the chase worker. A
+            # rejected hypothesis finding gets `retracts`/`superseded-by`
+            # linked to the negative-ruling finding, which is stamped
+            # `STATUS:refuted`. This is the do-not-repropose ledger:
+            # default-excluded from search (`store/_tag_filter.py`
+            # `refuted_fence`), reachable via `status='refuted'`.
+            "refuted",
             # Acquisition-mode findings — a
             # claim minted via wants=/provenance= before its supporting
             # paper is in the corpus. Precedes `tracing`; the chase worker

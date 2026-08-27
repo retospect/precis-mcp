@@ -685,6 +685,29 @@ class TestSearch:
         assert str(acquiring_id) in out_filtered.body
         assert "acquiring claim about batteries" in out_filtered.body
 
+    def test_default_cohort_excludes_refuted(self, store) -> None:
+        """The refuted lifecycle's do-not-repropose ledger
+        (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"): a
+        ``STATUS:refuted`` finding is excluded from the default (no
+        ``status=``) cohort — same allowlist shape as
+        ``test_default_cohort_excludes_acquiring`` — but returned by an
+        explicit ``status='refuted'`` filter."""
+        refuted_id = self._seed_finding(
+            store,
+            cite_key="paper-ref",
+            title="refuted claim about superconductivity",
+            body="superconductivity claim body, since refuted",
+            status="refuted",
+        )
+        h = _make_handler(store)
+
+        out_default = h.search(q="superconductivity")
+        assert "refuted claim about superconductivity" not in out_default.body
+
+        out_filtered = h.search(q="superconductivity", status="refuted")
+        assert str(refuted_id) in out_filtered.body
+        assert "refuted claim about superconductivity" in out_filtered.body
+
     def test_recency_list_when_only_status_supplied(self, store) -> None:
         """``search(status='tracing')`` with no q= returns a recency
         list of tracing findings (mirrors the base handler's
@@ -1780,3 +1803,70 @@ class TestRetractionPropagation:
         )
         assert n == 0
         assert self._status_value(store, finding_id) == "established"
+
+
+# ── refuted lifecycle (docs/backlog/quest-dossier-dialectic.md
+#    §"Refuted lifecycle") — terminal STATUS:refuted applied via the
+#    existing tag verb, retracts-linked to the negative-ruling finding ──
+
+
+class TestRefutedLifecycle:
+    """A rejected hypothesis finding: mint the negative ruling as an
+    established finding, ``retracts``-link the hypothesis to it, tag
+    the hypothesis ``STATUS:refuted``. No new transition machinery —
+    the tag verb + the generic ``link(rel=...)`` door (already exercised
+    for Taproot relations in ``TestLinkTaprootRouting``) are enough."""
+
+    def _mint_finding(self, store, *, title: str, cite_key: str) -> int:
+        _seed_paper(store, cite_key=cite_key)
+        h = _make_handler(store)
+        resp = h.put(title=title, body=f"{title} body text", cited_in=cite_key)
+        return int(_search(r"id=(\d+)", resp.body).group(1))
+
+    def test_tag_refuted_stamps_status(self, store) -> None:
+        """``tag(..., tags=['STATUS:refuted'])`` stamps the closed-vocab
+        value; ``get`` reflects it."""
+        hyp_id = self._mint_finding(
+            store, title="d-gate hypothesis", cite_key="paper-hyp"
+        )
+        h = _make_handler(store)
+        h.tag(id=hyp_id, add=["STATUS:refuted"])
+        out = h.get(id=hyp_id)
+        assert "STATUS:refuted" in out.body
+
+    def test_retracts_link_round_trips_to_ruling(self, store) -> None:
+        """``link(id=<hypothesis>, target=<ruling>, rel='retracts')``
+        writes the edge; the mirror ``retracted-by`` is readable from the
+        ruling's side (the auto-mirrored inverse relation, types.py
+        ``_RELATION_MIRROR``)."""
+        hyp_id = self._mint_finding(
+            store, title="d-gate hypothesis", cite_key="paper-hyp2"
+        )
+        ruling_id = self._mint_finding(
+            store, title="d-gate does not gate barrier", cite_key="paper-ruling"
+        )
+        h = _make_handler(store)
+        h.tag(id=ruling_id, add=["STATUS:established"])
+        h.link(id=hyp_id, target=f"fi{ruling_id}", rel="retracts")
+        h.tag(id=hyp_id, add=["STATUS:refuted"])
+
+        with store.pool.connection() as conn:
+            forward = conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (hyp_id, ruling_id),
+            ).fetchone()
+        assert forward is not None
+        assert forward[0] == "retracts"
+
+        # The mirror relation is queryable from the ruling's inbound side.
+        out = h.get(id=ruling_id)
+        assert f"fi{hyp_id}" in out.body or str(hyp_id) in out.body
+
+        # The hypothesis itself is now refuted and excluded from default
+        # search — the do-not-repropose ledger. (The "no finding matches"
+        # miss message legitimately echoes the query text back, so assert
+        # on the hypothesis's own id, not a substring of the query.)
+        out_default = h.search(q="d-gate hypothesis")
+        assert str(hyp_id) not in out_default.body
+        out_explicit = h.search(q="d-gate hypothesis", status="refuted")
+        assert str(hyp_id) in out_explicit.body

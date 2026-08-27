@@ -182,19 +182,42 @@ def test_claim_cite_head_sets_splits_hub_pending_and_unresolved(hub: Hub) -> Non
     unresolved_head = "zzzzzz"  # 6-char pub_id-shaped token, no matching ref
 
     texts = [f"see [{hub_head}] and [{pending_head}] and [{unresolved_head}]"]
-    hubs, pending = claim_cite_head_sets(store, texts)
+    hubs, pending, refuted = claim_cite_head_sets(store, texts)
 
     assert hubs == frozenset({hub_head})
     assert pending == {pending_head: plain_finding}
+    assert refuted == {}
     assert unresolved_head not in hubs
     assert unresolved_head not in pending
 
 
 def test_claim_cite_head_sets_empty_when_no_heads(hub: Hub) -> None:
     store = hub.live_store
-    hubs, pending = claim_cite_head_sets(store, ["no cites here"])
+    hubs, pending, refuted = claim_cite_head_sets(store, ["no cites here"])
     assert hubs == frozenset()
     assert pending == {}
+    assert refuted == {}
+
+
+def test_claim_cite_head_sets_splits_out_refuted(hub: Hub) -> None:
+    """A finding tagged ``STATUS:refuted`` lands in the ``refuted`` map, not
+    ``pending`` — the do-not-repropose ledger's cite-site rendering
+    (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle")."""
+    from precis.store.types import Tag
+
+    store = hub.live_store
+    refuted_finding = store.insert_ref(
+        kind="finding", slug=None, title="A dead hypothesis"
+    ).id
+    store.add_tag(refuted_finding, Tag.closed("STATUS", "refuted"), replace_prefix=True)
+    refuted_head = handle_registry.format_handle("finding", refuted_finding)
+    texts = [f"see [{refuted_head}]"]
+
+    hubs, pending, refuted = claim_cite_head_sets(store, texts)
+
+    assert hubs == frozenset()
+    assert pending == {}
+    assert refuted == {refuted_head: refuted_finding}
 
 
 def test_hub_cite_heads_is_the_hubs_half_of_claim_cite_head_sets(hub: Hub) -> None:
@@ -208,7 +231,7 @@ def test_hub_cite_heads_is_the_hubs_half_of_claim_cite_head_sets(hub: Hub) -> No
     pending_head = handle_registry.format_handle("finding", plain_finding)
     texts = [f"[{hub_head}] [{pending_head}]"]
 
-    hubs, _pending = claim_cite_head_sets(store, texts)
+    hubs, _pending, _refuted = claim_cite_head_sets(store, texts)
     assert hub_cite_heads(store, texts) == hubs == frozenset({hub_head})
 
 
