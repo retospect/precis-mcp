@@ -861,14 +861,10 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         f'"vacuum": {vac}, "fix_layers": {fixl}}}'
     )
     base = f'{{"ops": [{slab_op}]}}'
-    doped = (
-        f'{{"ops": [{slab_op}, '
-        f'{{"op": "add_atom", "element": "Cu", "frac": [0.33, 0.33, 0.66]}}]}}'
-    )
-    # An illustrative top-layer label for the op menu below — the `slab` op
+    # Illustrative top-layer labels for the examples below — the `slab` op
     # numbers atoms a<El>1..N in ascending-z (ASE fcc111) order, so the top
-    # surface layer is the highest-numbered labels. This index is just a
-    # plausible central one for the example, not a guarantee for every size.
+    # surface layer is the highest-numbered labels. These indices are just
+    # plausible ones for the example, not a guarantee for every size.
     try:
         nx, ny, nz = int(size[0]), int(size[1]), int(size[2])
     except Exception:
@@ -876,6 +872,15 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
     top_index = nx * ny * (nz - 1) + -(-(nx * ny) // 2)  # + ceil(nx*ny/2)
     label = f"a{el}"
     top_label = f"{label}{top_index}"
+    # First top-layer atom + two neighbours forming a hollow triangle
+    # (row-major layer ordering: i and i+1 in-row, i+nx in the next row).
+    top_first = nx * ny * (nz - 1) + 1
+    doped = (
+        f'{{"ops": [{slab_op}, '
+        f'{{"op": "add_atom_site", "element": "Cu", "site": '
+        f'{{"type": "hollow", "anchors": ["{label}{top_first}", '
+        f'"{label}{top_first + 1}", "{label}{top_first + nx}"]}}}}]}}'
+    )
     # `Cu` in the worked examples below is a SYNTAX example only, not a
     # suggested element or a menu — pick your own dopant.
     op_menu = (
@@ -893,10 +898,15 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '"element":"Cu"}\n'
         "- vacancy — REMOVE a surface atom (defect site): "
         f'{{"op":"vacancy","atom":"{top_label}"}}\n'
-        "- add_atom (advanced/escape hatch) — a raw guessed fractional "
-        'coordinate: {"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.66]} '
-        "— only when no existing atom anchors the site you mean; add_atom_site "
-        "is exact, this is a guess.\n"
+        "- add_atom (advanced/escape hatch) — a raw fractional coordinate: "
+        '{"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.52]} '
+        "— only when no existing atom anchors the site you mean. DERIVE z "
+        "from the cell, never copy it: the top layer sits near frac z≈0.40 "
+        "in the standard cell and an adsorbate belongs ONE BOND LENGTH above "
+        "it (≈0.46–0.47 for H, ≈0.52 for a metal adatom); z=0.66 floats the "
+        "atom ~4 Å above the surface (preflight rejection, or a silent relax "
+        "into a subsurface-degenerate site). add_atom_site computes the "
+        "height for you — prefer it.\n"
         "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
         "atoms.\n"

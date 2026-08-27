@@ -41,10 +41,12 @@ the human queue forever:
   default. The remaining mint gates are satisfied here by construction — no
   passages, no fields — so this is the whole of what can fail.
 
-* **≥2 motivators across ≥2 distinct source papers.** A conjecture that
-  leaps from a single source is a restatement of that source, not a
-  cross-binding, and the whole point of the type is the unearned transfer
-  between two things.
+* **≥2 motivators across ≥2 distinct independent sources.** A source is a
+  distinct source paper (a claim hub motivator resolves through its live
+  evidence edges) or a distinct `structure` ref, counted directly — a
+  measured structure is its own observation. A conjecture that leaps from a
+  single source is a restatement of that source, not a cross-binding, and
+  the whole point of the type is the unearned transfer between two things.
 * **No hub that already carries a publish row.** `nanopub_reopen` clears
   `grounding` but keeps `artifact_type`, so a hub that ever held a `claim`
   row would assemble as an `AtomicClaim` — silently dropping `testableBy`,
@@ -91,8 +93,8 @@ META_ARTIFACT_TYPE = "artifact_type"
 #: `nanopub/assemble.py` vocabulary, so the two agree on the word.
 ARTIFACT_HYPOTHESIS = "hypothesis"
 
-#: Minimum distinct source papers behind a proposal — see the module
-#: docstring's first guard.
+#: Minimum distinct independent sources (papers and/or structures) behind a
+#: proposal — see the module docstring's first guard.
 MIN_SOURCE_PAPERS = 2
 
 
@@ -219,15 +221,21 @@ def put_hypothesis(
                 f"motivator {token!r} is a {kind_desc!r} ref",
                 options=sorted(hublib.MOTIVATION_SRC_KINDS),
                 next=(
-                    "a hypothesis is motivated by a paper, a patent, or another "
-                    "claim hub — a memory is something you thought with, not a "
-                    "source you can cite"
+                    "a hypothesis is motivated by a paper, a patent, another "
+                    "claim hub, or a measured structure (an instrument "
+                    "observation) — a memory is something you thought with, "
+                    "not a source you can cite"
                 ),
             )
         if ref_id not in seen:
             seen.add(ref_id)
             resolved.append((ref_id, source_handle))
-        papers |= _source_papers(store, ref_id, ref.kind)
+        if ref.kind == "structure":
+            # A structure is its own distinct source — counted directly by
+            # ref id, not resolved through evidence edges like a claim hub.
+            papers.add(ref_id)
+        else:
+            papers |= _source_papers(store, ref_id, ref.kind)
 
     if len(papers) < MIN_SOURCE_PAPERS:
         raise BadInput(
@@ -235,7 +243,8 @@ def put_hypothesis(
             f"need {MIN_SOURCE_PAPERS}",
             next=(
                 "two claim hubs grounded in the same paper are one source, not "
-                "two — the type exists for a binding between separate findings"
+                "two — the type exists for a binding between separate findings "
+                "(a measured structure also counts as its own source)"
             ),
         )
 
@@ -374,7 +383,7 @@ def put_hypothesis(
             # Live edge count, not newly-written: `attach_motivation` is
             # idempotent, so a re-proposal would otherwise report zero.
             f"motivated by: {len(resolved)} edge(s) across {len(papers)} "
-            f"source paper(s)\n"
+            f"independent source(s)\n"
             f"check it before leaving it: get(kind='finding', id='{handle}', "
             "view='mint-preflight')\n"
             "a human approves/signs it — this door never does"

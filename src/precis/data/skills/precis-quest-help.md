@@ -7,6 +7,7 @@ answers:
   - how does PRIO: flow down from a quest to the work that serves it?
   - how do I log an entry in a quest's WORM logbook?
   - how is a quest different from a todo — why does it never go done?
+  - how do I know a barrier number is trustworthy before I rank candidates or cite it?
 applies-to: get/search/put/delete/tag/link (kind='quest')
 status: active
 ---
@@ -296,6 +297,37 @@ not a single step) is a later rung — see Roadmap below. Dark by default:
 nothing mints a loop automatically, and compute is off unless you pass
 `--compute` (`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the
 manual CLI runs regardless).
+
+## Trust a barrier before you rank on it
+
+`barrier_trusted` (behind the confirmed/provisional split above) goes
+`False` on: adsorbate detached, wrong binding site, NEB not converged,
+`|barrier| > 8 eV` (nonphysical), relax converged in 0 steps (the geometry
+never actually moved), and symmetry-identical structures disagreeing
+(re-measure both — neither is trusted until they agree). **A barrier near
+0 eV carries none of these flags** — it's usually a broken/degenerate NEB
+(both endpoints collapsing to the same state), not a record-low. Treat any
+~0 eV read as invalid until checked, never as a leaderboard entry.
+
+A single **low** trusted barrier is strong evidence — an upper bound, since
+a path that cheap exists. A single **high** barrier rules nothing out — the
+seed may have missed the easy path. Ruling a direction out needs several
+seeded attempts, all high; a single read only ever supports a lead, not a
+rule-out.
+
+Same-crystal repeats have disagreed by ~1 eV between two otherwise-identical
+runs (one or both invalid, or genuinely different paths found) — never rank
+two candidates on a margin under ~1 eV without a replicate agreeing.
+
+A proposal rejected with `'NoneType' object has no attribute 'get'` is
+infrastructure noise — resubmit the identical proposal unchanged. A
+rejection naming a real geometry problem ("structure preflight rejected
+this edit") is a genuine veto — fix the edit, don't resubmit it.
+
+`view='frontier'` lags the system log by hours to days — a barrier logged
+as a `result` logbook entry can sit unpropagated for a day before it shows
+on the frontier. The frontier is authoritative but late; read the logbook
+tail before concluding a quest has stalled.
 
 ## What this is *not*
 

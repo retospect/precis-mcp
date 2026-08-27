@@ -10,6 +10,7 @@ answers:
   - how do I export a structure to POSCAR or CIF?
   - does it matter where in the cell I put a dopant?
   - what does a 3×3 slab supercell mean for coverage?
+  - how do I place an adsorbate on a real site (top/bridge/hollow) without guessing a z coordinate?
 applies-to: get/search/put/edit/delete (kind='structure')
 status: active
 ---
@@ -90,7 +91,8 @@ put(
 |----|------|--------|
 | `set_cell` | `lattice` or `a,b,c,…` + `pbc` | redefine the cell |
 | `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell + `pbc (true,true,true)` (ASE-exact atom order, so autocatpath can inject it). Omit the top-level `cell`. `size` is `nx×ny` in-plane repeats × `nz` layers — the cell tiles, so one substitution = 1/(nx·ny) ML coverage. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
-| `add_atom` | `element`, `frac:[fa,fb,fc]` | place an atom (wraps into the cell) |
+| `add_atom` | `element`, `frac:[fa,fb,fc]` | place an atom at a raw fractional coordinate (wraps into the cell) — an escape hatch; for an adsorbate on an existing site, use `add_atom_site` instead |
+| `add_atom_site` | `element`, `site:{type:"top"\|"bridge"\|"hollow", anchors:[atom labels]}`, `height?` | place an atom by **naming** a site (1/2/3 anchors) instead of guessing coordinates — `xy` = the anchors' centroid, `z` = the anchors' top + `height` (Å; default the covalent-radius sum of anchor + placed element) |
 | `set_element` | `atom`, `element` | transmute — **keeps the atom's label & position** (see caution below) |
 | `vacancy` | `atom` | remove an atom (label not recycled) |
 | `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | nudge (Cartesian Å by default; `cartesian:false` for a fractional delta) |
@@ -107,6 +109,25 @@ put(
 geometry gets fixed by `relax`, and DFT consumes positions + cell (bonds are
 dropped on export, §8.1). Auto-detected bonds from geometry show up in
 probes tagged `inferred` — you always see the best picture of reality.
+
+## Place an adsorbate on a real site, not a guessed z
+
+```python
+edit(kind="structure", id="pd111", ops=[
+    {"op": "add_atom_site", "element": "H",
+     "site": {"type": "hollow", "anchors": ["aPd10", "aPd11", "aPd12"]}},
+])
+```
+
+`z` comes from the anchors' own geometry, never a remembered constant — a
+hand-picked `frac` copied from another cell doesn't transfer. Use raw
+`add_atom` only when no anchor exists yet, and then derive `z` from *this*
+cell: top-layer `frac z` + bond length / cell height. On the standard
+Pd(111) `[3,3,4]`/vacuum-10 cell (height ≈16.74 Å, top layer `frac
+z≈0.403`), on-surface hollow `z≈0.46–0.47` for a ~0.9–1.2 Å H–metal bond —
+`frac z=0.66` looks plausible but sits H ~4.3 Å above the surface: it either
+fails preflight as a floating atom or relaxes in 0 steps to a
+subsurface-degenerate energy, not a real adsorbate.
 
 ## Edit — `edit(id=<slug>, ops=[…])`
 

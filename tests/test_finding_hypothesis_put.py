@@ -190,6 +190,80 @@ def test_a_hypothesis_cannot_stack_on_other_hypotheses(store: Store) -> None:
         )
 
 
+def test_two_structures_are_independent_sources(store: Store) -> None:
+    """A quest campaign's own instrument measurements can motivate a
+    hypothesis — two distinct `structure` refs clear the independence bar
+    on their own."""
+    st1 = seed_ref(store, title="Structure A", kind="structure")
+    st2 = seed_ref(store, title="Structure B", kind="structure")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"st{st1}", f"st{st2}"],
+    )
+    motivated = dict(_links(store, _hub_id(resp.body), "motivated-by"))
+    assert set(motivated) == {st1, st2}
+
+
+def test_a_structure_and_a_paper_together_are_independent_sources(
+    store: Store,
+) -> None:
+    """Mixed motivators count fine — one measured structure plus one source
+    paper is two independent sources."""
+    st1 = seed_ref(store, title="Structure A", kind="structure")
+    pa1, ch1 = _paper_with_chunk(store, "A real source")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"st{st1}", f"pc{ch1}"],
+    )
+    motivated = dict(_links(store, _hub_id(resp.body), "motivated-by"))
+    assert set(motivated) == {st1, pa1}
+
+
+def test_one_structure_alone_fails_independence(store: Store) -> None:
+    """The same single measured structure named twice is still one source —
+    a structure gets no exemption from the restatement rule a repeated
+    paper already faces."""
+    st1 = seed_ref(store, title="Structure A", kind="structure")
+
+    with pytest.raises(BadInput, match="distinct source paper"):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"st{st1}", f"st{st1}"],
+        )
+
+
+def test_a_quest_is_not_a_citable_motivator(store: Store) -> None:
+    """A quest is a container, not an observation — it stays disallowed
+    even though a structure (also non-paper) is now accepted. The refused
+    kind's `options` names structure among what *is* allowed."""
+    st1 = seed_ref(store, title="Structure A", kind="structure")
+    quest = seed_ref(store, title="a campaign", kind="quest")
+    with pytest.raises(BadInput, match="'quest' ref") as exc:
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"st{st1}", f"qu{quest}"],
+        )
+    assert "structure" in (exc.value.options or [])
+
+
 def test_a_memory_is_not_a_citable_motivator(store: Store) -> None:
     """A dream may think with its own notes; a signed artifact cites
     sources, and a note is not one."""
