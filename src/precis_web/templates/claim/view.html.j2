@@ -36,6 +36,65 @@
 {% endif %}
 
 {% if np %}
+{# The maturity flow graph, left → right — where this claim sits on the
+   candidate → published ladder. Hover a rung for what was checked and
+   what happened to climb it (the gates list at the bottom has the full
+   per-gate readout). #}
+<div class="np-ladder mt-3 flex flex-wrap items-center gap-y-1 text-xs" aria-label="claim maturity">
+  {% for s in np.ladder %}
+  {% if not loop.first %}<span class="mx-1.5 text-slate-300">→</span>{% endif %}
+  <span class="px-2 py-0.5 rounded-full cursor-help border
+    {% if s.blocked %}border-rose-300 bg-rose-100 text-rose-700 font-semibold
+    {% elif s.current and s.name == 'published' %}border-emerald-300 bg-emerald-100 text-emerald-700 font-semibold
+    {% elif s.current %}border-sky-300 bg-sky-100 text-sky-800 font-semibold
+    {% elif s.done %}border-sky-200 bg-sky-50 text-sky-700
+    {% else %}border-slate-200 bg-slate-50 text-slate-400{% endif %}"
+    title="{{ s.tip }}">{{ '◆ ' if s.blocked }}{{ s.name }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# Discussion — deliberately above the fold (the follow-up box is the
+   claim page's main thinking affordance, not an afterthought). Posts to
+   the SAME /refs/finding/<hub_ref_id>/ask route the finding page used;
+   that route spawns the agentic pass and redirects to the new conv
+   thread (/refs/conv/<id>). `discussions` is a (possibly empty) list on
+   the full page, None on surfaces that don't pass it. #}
+{% if discussions is not none %}
+<section class="mt-4">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
+  {% if discussions %}
+  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for d in discussions %}
+    <li class="px-3 py-2 text-sm flex items-center gap-2">
+      <span class="text-slate-400">💬</span>
+      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
+      {% if d.chunk is not none %}
+      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
+      {% endif %}
+      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <form method="post" action="/refs/finding/{{ hub_ref_id }}/ask" class="space-y-2">
+    <textarea name="question" rows="2" required
+              placeholder="Ask a follow-up about this claim…"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+    <div class="flex items-center gap-2">
+      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+        Ask &amp; think
+      </button>
+      <span class="text-xs text-slate-400">
+        runs an agentic <span class="font-mono text-slate-500">{{ ask_model | default('sonnet') }}</span> pass
+        over the corpus (~30–60s); the answer lands in a linked thread
+      </span>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{% if np %}
 {% include "claim/_review.html.j2" %}
 {% endif %}
 
@@ -89,10 +148,11 @@
 {% endif %}
 
 {% macro evidence_row(row) %}
-<li class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm">
+<li class="text-sm">
+  <p class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
   {% if row.starred %}<span class="text-amber-500" title="prints on export">★</span>{% endif %}
-  {# target the shared 'precis-paper' window (same as the grounding-chunk
-     [pc…] link below and the smartdraft paper cites) so clicking a source
+  {# target the shared 'precis-paper' window (same as the nested [pc…]
+     passage link and the smartdraft paper cites) so clicking a source
      from the claim window opens/reuses ONE paper window instead of
      navigating the claim page away. NO rel="noopener": per the HTML spec it
      makes the browser treat a named target like _blank, so every click would
@@ -100,7 +160,6 @@
   <a href="/r/paper/{{ row.paper_ref_id }}" target="precis-paper" class="font-mono text-sky-700 underline decoration-dotted">{{ row.handle }}</a>
   {# Shared identity header (compact one line): year · title · venue · first … last. #}
   {{ ph.paper_head(row.head, compact=true) }}
-  {% if row.source_handle %}<span class="text-slate-400">· grounded at {% if row.source_is_chunk %}{{ ('[' ~ row.source_handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono">{{ row.source_handle }}</span>{% endif %}</span>{% endif %}
   {% if row.unacquirable %}
   {# This paper declared itself unacquirable on its OWN Meta tab — a fact,
      mode-less, that can contribute to the hub-harden rule above. #}
@@ -110,6 +169,31 @@
   {% if row.integrity != 'clean' %}
   <span class="text-[11px] rounded bg-rose-100 text-rose-700 px-1.5 py-0.5">⚠ {{ row.integrity }}</span>
   {% endif %}
+  </p>
+  {# Its grounding passages, nested right below the paper (one listing —
+     the separate "Grounding passages" section this replaces repeated
+     every pc handle). A passage grounding several papers nests under its
+     highest-ranked one and names the rest on its "grounds" line. #}
+  {% for c in (passages_by_paper | default({})).get(row.handle, []) %}
+  <div class="mt-1 ml-5 text-xs">
+    <p class="flex flex-wrap items-baseline gap-x-1.5">
+      {% if c.starred %}<span class="text-amber-500" title="grounds a print-visible source">★</span>{% endif %}
+      {% if c.is_chunk %}{{ ('[' ~ c.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-slate-600">{{ c.handle }}</span>{% endif %}
+      <span class="text-slate-400">grounds
+        {% for p in c.papers %}{{ p.handle }} <span class="italic">({{ p.role }})</span>{% if not loop.last %}, {% endif %}{% endfor %}
+      </span>
+    </p>
+    {% if c.quote_html %}
+    {# tex-scope: this is verbatim paper text, which legitimately carries
+       $…$/$$…$$ TeX (the claim title above never does — the decided
+       claim-titles-are-plain-text policy) — the base.html.j2 init script
+       runs client-side KaTeX over this element. #}
+    <blockquote class="tex-scope mt-1 border-l-2 border-slate-200 pl-3 text-slate-600">{{ c.quote_html }}</blockquote>
+    {% else %}
+    <p class="mt-1 text-slate-400 italic">passage text not available</p>
+    {% endif %}
+  </div>
+  {% endfor %}
 </li>
 {% endmacro %}
 
@@ -167,34 +251,6 @@
 </section>
 {% endif %}
 
-{% if chunks %}
-<section class="mt-6">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">Grounding passages</h2>
-  <ul class="space-y-3">
-    {% for c in chunks %}
-    <li class="text-sm">
-      <p class="flex flex-wrap items-baseline gap-x-1.5 text-xs">
-        {% if c.starred %}<span class="text-amber-500" title="grounds a print-visible source">★</span>{% endif %}
-        {% if c.is_chunk %}{{ ('[' ~ c.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-slate-600">{{ c.handle }}</span>{% endif %}
-        <span class="text-slate-400">grounds
-          {% for p in c.papers %}{{ p.handle }} <span class="italic">({{ p.role }})</span>{% if not loop.last %}, {% endif %}{% endfor %}
-        </span>
-      </p>
-      {% if c.quote_html %}
-      {# tex-scope: this is verbatim paper/draft text, which legitimately
-         carries $…$/$$…$$ TeX (the claim title above never does — the
-         decided claim-titles-are-plain-text policy) — the
-         base.html.j2 init script runs client-side KaTeX over this element. #}
-      <blockquote class="tex-scope mt-1 border-l-2 border-slate-200 pl-3 text-slate-600">{{ c.quote_html }}</blockquote>
-      {% else %}
-      <p class="mt-1 text-xs text-slate-400 italic">passage text not available</p>
-      {% endif %}
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
 {% if citers %}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2 text-slate-700">Used by</h2>
@@ -220,48 +276,6 @@
 
 {% if coverage_note %}
 <p class="mt-6 text-xs text-slate-500 italic">{{ coverage_note }}</p>
-{% endif %}
-
-{# Discussion — the "Ask & think" follow-up affordance the generic finding
-   detail carried before /refs/finding/<hub> began redirecting here (the
-   redirect must not drop functionality). Posts to the SAME
-   /refs/finding/<hub_ref_id>/ask route the finding page used; that route
-   spawns the agentic pass and redirects to the new conv thread
-   (/refs/conv/<id>). The thread then lists under Discussion below on the next
-   load of this claim page (the finding→claim redirect makes both surfaces
-   share one discussion set). `discussions` is a (possibly empty) list on the
-   full page, None on surfaces that don't pass it. #}
-{% if discussions is not none %}
-<section class="mt-6">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
-  {% if discussions %}
-  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
-    {% for d in discussions %}
-    <li class="px-3 py-2 text-sm flex items-center gap-2">
-      <span class="text-slate-400">💬</span>
-      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
-      {% if d.chunk is not none %}
-      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
-      {% endif %}
-      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-  <form method="post" action="/refs/finding/{{ hub_ref_id }}/ask" class="space-y-2">
-    <textarea name="question" rows="2" required
-              placeholder="Ask a follow-up about this claim…"
-              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
-    <div class="flex items-center gap-2">
-      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
-        Ask &amp; think
-      </button>
-      <span class="text-xs text-slate-400">
-        runs an agentic pass (can take ~30–60s); the answer lands in a linked thread
-      </span>
-    </div>
-  </form>
-</section>
 {% endif %}
 
 {% endif %}

@@ -11,9 +11,10 @@ evidence, citers, discussions) *and*, when the store carries the nanopub
 mixin, the review-and-sign surface merged in under ``ctx['np']``
 (:func:`~precis_web.nanopub_render.hub_context` — namespaced rather than
 splatted flat so its keys can never silently shadow the reader context's
-own). ``/nanopub/fi<id>`` is now a redirect here; :func:`claim_page_context`
-is the shared builder ``routes/nanopub.py``'s approve-error re-render also
-calls, so both paths render byte-identical pages.
+own). ``/nanopub/fi<id>`` is the workbench deep link (full workbench with
+this page framed in the review pane); :func:`claim_page_context` is the
+shared builder ``routes/nanopub.py``'s approve-error re-render also calls,
+so both paths render byte-identical pages.
 
 ``POST /claim/<head>/unacquirable`` is the **claim-level** unacquirable-
 override write door (:mod:`precis.taproot.trust`'s only softener) — the
@@ -30,6 +31,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis.utils import handle_registry
+from precis_web import ask
 from precis_web.claim_render import (
     claim_citers,
     claim_full_sentence,
@@ -114,9 +116,27 @@ def claim_page_context(store: Any, head: str) -> dict[str, Any]:
         "citers": claim_citers(store, hub_ref_id),
         "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
         "discussions": _followup_discussions(store, hub_ref_id),
+        "ask_model": ask.answer_model_label(),
+        "passages_by_paper": _passages_by_paper(data["chunks"]),
         "np": hub_context(store, hub_ref_id) if _publish_row_fn else None,
         "refuted": _refuted_ruling(store, hub_ref_id),
     }
+
+
+def _passages_by_paper(chunks: list[dict[str, Any]]) -> dict[str, list[dict]]:
+    """Group the grounding passages under the paper row each one grounds,
+    so the template nests every quote directly below its source instead of
+    a separate "Grounding passages" section repeating the pc handles. A
+    passage grounding several papers appears once, under its highest-
+    ranked paper (``entry["papers"]`` is already role-rank ordered by
+    ``_grounding_chunks``) — the entry keeps the full papers list, so the
+    nested line still names the other roles it grounds."""
+    by_paper: dict[str, list[dict]] = {}
+    for c in chunks:
+        first = next((p["handle"] for p in c["papers"]), None)
+        if first is not None:
+            by_paper.setdefault(first, []).append(c)
+    return by_paper
 
 
 @router.get("/claim/{head}", response_class=HTMLResponse)

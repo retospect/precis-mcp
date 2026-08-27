@@ -864,6 +864,9 @@ def test_paper_chunk_preview_shows_quote(draft_client: TestClient) -> None:
     r = draft_client.get("/preview/chunk/pc77")
     assert r.status_code == 200
     assert "A cited passage about nanoscale transport." in r.text
+    # No fake "click to open →" line — it was a plain <p>, not a link;
+    # the anchor the popover hangs off is the click target.
+    assert "click to open" not in r.text
 
 
 def test_unknown_universal_chunk_preview_is_missing(draft_client: TestClient) -> None:

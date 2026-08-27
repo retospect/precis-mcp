@@ -353,6 +353,9 @@ def test_claim_preview_fragment(claim_client: TestClient, hub: Hub) -> None:
 
     assert r.status_code == 200
     assert _CLAIM.sentence in r.text
+    # No fake "click to open →" affordance — it was a plain <p> that did
+    # nothing when clicked; the anchor under the popover is the click.
+    assert "click to open" not in r.text
 
 
 def _seed_hub_with_chunk(hub: Hub) -> tuple[int, str, str]:
@@ -392,7 +395,9 @@ def test_claim_view_grounding_passage_linked_and_quoted(
     r = claim_client.get(f"/claim/{fi_handle}")
 
     assert r.status_code == 200
-    assert "Grounding passages" in r.text
+    # The passage nests directly below its paper row (no separate
+    # "Grounding passages" section repeating the pc handles).
+    assert "Grounding passages" not in r.text
     assert chunk_text in r.text
     assert f"/c/{chunk_handle}" in r.text  # the chunk is clickable
 
@@ -407,7 +412,6 @@ def test_claim_view_dangling_source_handle_degrades(
     r = claim_client.get(f"/claim/{fi_handle}")
 
     assert r.status_code == 200
-    assert "Grounding passages" in r.text
     assert "/c/pc999" in r.text  # still clickable — hover degrades server-side
     assert "passage text not available" in r.text
 
@@ -686,7 +690,8 @@ def test_claim_view_surfaces_both_src_chunk_grounding(
     r = claim_client.get(f"/claim/{fi_handle}")
 
     assert r.status_code == 200
-    assert "Grounding passages" in r.text
+    # Both passages nest below the paper row (the standalone "Grounding
+    # passages" section is gone — the pc handles listed once, not twice).
     assert text0 in r.text and text1 in r.text
     assert f"/c/{h0}" in r.text and f"/c/{h1}" in r.text  # both clickable
 
@@ -731,6 +736,11 @@ def test_claim_view_has_ask_and_think_affordance(
     assert "Discussion" in r.text
     assert "Ask &amp; think" in r.text
     assert f'action="/refs/finding/{hub_ref_id}/ask"' in r.text
+    # Above the fold: Discussion renders BEFORE the evidence sections, and
+    # the helper line names the model that answers (env-resolved).
+    assert r.text.index("Discussion") < r.text.index("Prints on export")
+    assert "runs an agentic" in r.text
+    assert "sonnet" in r.text or "opus" in r.text
 
 
 def test_claim_view_mixed_paper_labels_contradiction_not_support(

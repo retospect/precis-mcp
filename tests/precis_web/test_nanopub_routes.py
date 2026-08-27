@@ -1,9 +1,9 @@
 """The /nanopub workbench + the merged claim page's review-and-sign
 section: claim forest, interactive doors (approve/sign/signoff), and
-exact-bytes TriG serving. ``/nanopub/fi<id>`` GETs now redirect to
-``/claim/fi<id>`` (nanopub-light-up merge) — most assertions here hit
-the old URL and rely on the TestClient's default redirect-following to
-land on the merged page; POST doors stay at ``/nanopub/fi<id>/...``.
+exact-bytes TriG serving. ``/nanopub/fi<id>`` is the workbench DEEP LINK
+(full workbench, review pane preloaded); the claim content itself lives
+at ``/claim/fi<id>`` (nanopub-light-up merge), which content assertions
+here hit directly. POST doors stay at ``/nanopub/fi<id>/...``.
 Real DB-backed store (the routes run real SQL through the nanopub
 mixin + overview/preflight modules)."""
 
@@ -56,7 +56,12 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     # both panes.
     assert "const loadPane" in resp.text
     assert 'a[target="np-review"], a[target="np-paper"]' in resp.text
-    assert f'target="np-review" href="/claim/fi{hub}?embed=1"' in resp.text
+    # The anchor href is the workbench deep link (cmd-click keeps the nav
+    # context); data-src is what a plain click loads into the pane.
+    assert f'target="np-review" href="/nanopub/fi{hub}"' in resp.text
+    assert "a.dataset.src || a.href" in resp.text
+    # The browser URL follows the review pane (deep-link sync).
+    assert "history.replaceState" in resp.text
     # Placeholders are injected into about:blank frames, never srcdoc:
     # Safari drops programmatic src navigation onto srcdoc-initialized
     # frames (webkit.org/b/243385 class) — the panes look dead.
@@ -70,11 +75,19 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     # The old tree URL redirects home.
     tree = client.get("/nanopub/tree", follow_redirects=False)
     assert tree.status_code == 307 and tree.headers["location"] == "/nanopub"
-    # The old per-hub review URL now redirects to the merged claim page.
-    redirected = client.get(f"/nanopub/fi{hub}", follow_redirects=False)
-    assert redirected.status_code == 307
-    assert redirected.headers["location"] == f"/claim/fi{hub}"
+    # /nanopub/fi<id> is the workbench DEEP LINK: the full workbench with
+    # the review pane preloaded on that claim (nav + tree included).
+    deep = client.get(f"/nanopub/fi{hub}", follow_redirects=False)
+    assert deep.status_code == 200
+    # A real src= attribute on the review iframe (leading space excludes
+    # the tree rows' data-src= attributes); the bare index has none.
+    assert f' src="/claim/fi{hub}?embed=1"' in deep.text
+    assert ' src="/claim/' not in resp.text
+    assert 'name="np-review"' in deep.text
+    # …but with ?embed=1 (inside a pane already) it still redirects to the
+    # framed claim page — a pane must never nest the workbench.
     redirected_embed = client.get(f"/nanopub/fi{hub}?embed=1", follow_redirects=False)
+    assert redirected_embed.status_code == 307
     assert redirected_embed.headers["location"] == f"/claim/fi{hub}?embed=1"
 
 
@@ -84,8 +97,8 @@ def test_embed_mode_hides_the_site_chrome(
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "An embedded claim.", paper, chunk)
-    full = client.get(f"/nanopub/fi{hub}")
-    framed = client.get(f"/nanopub/fi{hub}?embed=1")
+    full = client.get(f"/claim/fi{hub}")
+    framed = client.get(f"/claim/fi{hub}?embed=1")
     assert "<header" in full.text
     assert "<header" not in framed.text
     assert "An embedded claim." in framed.text
@@ -100,26 +113,41 @@ def test_hub_page_shows_state_and_action(
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "A reviewable claim.", paper, chunk)
-    resp = client.get(f"/nanopub/fi{hub}")
+    resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     assert "A reviewable claim." in resp.text
     assert "Approve" in resp.text  # unminted → approve action
-    # Framed in the workbench, paper links retarget to the paper pane —
-    # but claim links do NOT: other-claim links replace THIS pane
-    # (location.assign) and self-links are swallowed, so the review pane
-    # is never mirrored into the paper pane as a duplicate column.
-    assert 'window.name === "np-review"' in resp.text
-    assert '"np-paper"' in resp.text
+    # Framed in the workbench (?embed=1 → base.html.j2's embed script),
+    # links route by DESTINATION: paper-destined links (precis-paper
+    # target, /papers/, /c/pc…) load the np-paper pane, claim links the
+    # np-review pane; a link whose destination IS this pane navigates in
+    # place (location.assign) and self-links are swallowed — the review
+    # pane is never mirrored into the paper pane as a duplicate column.
+    # Covers EVERY embedded page (the paper pane's own pa/pc links were
+    # dead in Safari when routing lived on claim pages only).
+    framed = client.get(f"/claim/fi{hub}?embed=1")
+    assert 'const NP_PANES = ["np-review", "np-paper"];' in framed.text
+    assert 'a.target === "precis-paper"' in framed.text
+    assert 'u.pathname.startsWith("/papers/")' in framed.text
+    assert 'u.pathname.startsWith("/c/pc")' in framed.text
+    assert 'u.pathname.startsWith("/claim/") ? "np-review" : null' in framed.text
+    assert "u.pathname === location.pathname" in framed.text
+    assert "location.assign(u)" in framed.text
+    # An anchor carrying its OWN target (a popover's target="_blank"
+    # chunk permalink) is never hijacked into a pane — only target-less
+    # links and the pane-owned targets are routed.
     assert (
-        'toPaperPane = a.target === "precis-paper" || u.pathname.startsWith("/papers/");'
-        in resp.text
+        'const routable = !a.target || a.target === "precis-paper" '
+        "|| NP_PANES.includes(a.target);" in framed.text
     )
-    assert "u.pathname === location.pathname" in resp.text
-    assert "location.assign(u)" in resp.text
+    # The routing rides base.html.j2's embed script, so the framed PAPER
+    # page carries it too — that is the fix, not an incidental.
+    framed_paper = client.get(f"/papers/{paper}?embed=1")
+    assert 'const NP_PANES = ["np-review", "np-paper"];' in framed_paper.text
     # Non-hub → the claim page's own friendly "no claim hub" stub (200),
     # not a 404 — the merged page's degrade-gracefully policy, not an error.
     other = _seed_paper(store)[0]
-    resp = client.get(f"/nanopub/fi{other}")
+    resp = client.get(f"/claim/fi{other}")
     assert resp.status_code == 200
     assert "No claim hub" in resp.text
 
@@ -130,7 +158,7 @@ def test_approve_prefill_suggests_quote_and_unique_snip(
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "A prefilled claim.", paper, chunk)
-    resp = client.get(f"/nanopub/fi{hub}")
+    resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     # The candidate quote is the first citation-marker-free sentence of
     # the grounding chunk ("Tensorial analysis." is too short), and the
@@ -150,7 +178,7 @@ def test_prefill_doi_comes_from_ref_identifiers(
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store, doi="10.5555/regress.1")
     hub = _seed_hub(store, "A doi-carrying claim.", paper, chunk)
-    resp = client.get(f"/nanopub/fi{hub}")
+    resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     # The approve prefill's passage carries the identifiers-table DOI…
     assert "10.5555/regress.1" in resp.text
@@ -176,7 +204,7 @@ def test_prefill_doi_falls_back_to_legacy_meta(
             (paper,),
         )
     hub = _seed_hub(store, "A legacy-doi claim.", paper, chunk)
-    resp = client.get(f"/nanopub/fi{hub}")
+    resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     assert "10.9999/legacy.7" in resp.text
 
@@ -195,7 +223,7 @@ def test_prefill_covers_derived_from_lineage_anchor(
     # No inbound evidence edge — the ONLY grounding is the outbound
     # lineage pin (dst_pos resolves to the chunk), fi19981's shape.
     store.add_link(src_ref_id=hub, dst_ref_id=paper, relation="derived-from", dst_pos=0)
-    resp = client.get(f"/nanopub/fi{hub}")
+    resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     assert "This anisotropy can reach a 400:1 ratio" in resp.text
 
@@ -213,7 +241,7 @@ def test_prefill_skips_heading_residue_and_ranks_by_claim(
         ),
     )
     hub = _seed_hub(store, "Anisotropy ratio doubles every two years.", paper, chunk)
-    resp = client.get(f"/nanopub/fi{hub}")
+    resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     # The heading fragment is disqualified and the claim-relevant sentence
     # beats the earlier meta-discourse one.
@@ -428,6 +456,51 @@ def test_claim_page_shows_review_section_with_publish_row(
         "DFT finds the claim-page-reviewed claim holds." in resp.text
     )  # approved title
     assert 'name="attest"' in resp.text  # the Sign action's form
+
+
+def test_claim_page_shows_maturity_ladder_and_full_gate_list(
+    client: TestClient, runtime_with_store
+) -> None:
+    """The flow graph (candidate → … → published, left to right, hover
+    tips) tops the claim page, and the Gates panel lists EVERY gate with
+    a status — not just failures: mint gates read passed the moment the
+    state left candidate (approve refuses on any violation), preflight
+    checks read the live issue list."""
+    import json
+
+    store = _store(runtime_with_store)
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT finds the ladder claim holds.", paper, chunk)
+
+    resp = client.get(f"/claim/fi{hub}")
+    assert 'aria-label="claim maturity"' in resp.text
+    for step in ("candidate", "reviewed", "signed", "anchored", "published"):
+        assert step in resp.text
+    # Hovering the reviewed rung explains what approve checked.
+    assert "EVERY Layer-A mint gate ran and passed" in resp.text
+    # The gates panel names both groups and the individual gates…
+    assert "Mint gates (run at approve)" in resp.text
+    assert "Publish preflight (live)" in resp.text
+    assert "[primary-source]" in resp.text
+    assert "[quote-verbatim]" in resp.text
+    assert "[withheld-edge]" in resp.text
+    # …and an unminted hub shows them pending (○), none passed yet.
+    assert "○" in resp.text
+
+    approved = client.post(
+        f"/nanopub/fi{hub}/approve",
+        data={
+            "title": "DFT finds the ladder claim holds.",
+            "payload": json.dumps(_payload(chunk, sha)),
+        },
+        follow_redirects=False,
+    )
+    assert approved.status_code == 303
+    resp = client.get(f"/claim/fi{hub}")
+    # Reviewed: every mint gate reads passed (✓) and the live preflight
+    # still blocks on state (not anchored yet) — the summary says so.
+    assert "✓" in resp.text
+    assert "blocking" in resp.text
 
 
 def test_approve_gate_failure_is_a_400_not_a_500(

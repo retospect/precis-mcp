@@ -54,6 +54,11 @@
     <string>web:reto</string>
     <key>PRECIS_PROCESS</key>
     <string>precis-web</string>
+    {# Claim-page "Ask & think" follow-up pass: run it on opus (the code
+       default is sonnet). The claim page surfaces this value beside the
+       Ask box, so what it SAYS answers is what actually answers. #}
+    <key>PRECIS_FOLLOWUP_MODEL</key>
+    <string>opus</string>
     {% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %}
     {# autocatpath `pathway` kind: expose it on the MCP surface, and route compute
        to the pinned GPU node — the gateway has no ML backend, so an in-process

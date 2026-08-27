@@ -109,7 +109,165 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         "action_label": action_label,
         "suggested_payload": _suggested_payload(store, row, bundle, hub_meta),
         "graph": _graph(store, bundle, row, display_artifact_type),
+        "ladder": _ladder(state, row, disputed=disputed),
+        "gates": _gate_report(state, preflight),
     }
+
+
+#: The maturity ladder, left → right, with the "what happened here / what
+#: was checked" hover text the claim page's stepper renders. Each rung's
+#: tip describes the checks that gated ENTERING it — hovering a lit rung
+#: answers "what has been verified so far".
+_LADDER: list[tuple[str, str]] = [
+    (
+        "candidate",
+        "Minted as a candidate: the claim hub entered the publish pipeline. "
+        "Nothing is frozen yet — the sentence is still editable.",
+    ),
+    (
+        "reviewed",
+        "Approved by a human: the exact claim sentence was frozen "
+        "(sha-pinned) and EVERY Layer-A mint gate ran and passed at that "
+        "moment — grounding, verbatim quotes, primary source in corpus, "
+        "sentence lint, no contradicting edge (see the gates list below).",
+    ),
+    (
+        "signed",
+        "Signed: the artifact bytes were minted and cryptographically "
+        "signed — immutable in the append-only proof store from here on.",
+    ),
+    (
+        "anchored",
+        "Anchored: an OpenTimestamps batch committed the signature's hash "
+        "to the Bitcoin timeline — the artifact provably existed by then.",
+    ),
+    (
+        "published",
+        "Published to the nanopub registry — public and immutable forever; "
+        "a change is a supersede or retract, never an edit.",
+    ),
+]
+
+
+def _ladder(state: str | None, row: Any, *, disputed: bool) -> list[dict[str, Any]]:
+    """The left-to-right flow-graph steps for the claim's maturity. Each
+    step: ``name``, ``tip`` (hover: what was checked/what happened),
+    ``done`` (rung climbed), ``current``. An unminted hub lights nothing;
+    a disputed hub carries ``blocked`` on its current rung (no forward
+    transition while the contradicts edge stands)."""
+    names = [n for n, _ in _LADDER]
+    idx = names.index(state) if state in names else -1
+    when = (
+        row.updated_at.strftime("%Y-%m-%d %H:%M")
+        if row is not None and row.updated_at
+        else None
+    )
+    steps = []
+    for i, (name, tip) in enumerate(_LADDER):
+        current = i == idx
+        if current and when:
+            tip = f"{tip} In this state since {when}Z."
+        if current and disputed:
+            tip = f"{tip} BLOCKED: a live contradicts edge stands — adjudicate first."
+        steps.append(
+            {
+                "name": name,
+                "tip": tip,
+                "done": i <= idx,
+                "current": current,
+                "blocked": current and disputed,
+            }
+        )
+    return steps
+
+
+#: Layer-A mint gates (``precis.nanopub.gates``) — the mechanical checks
+#: ``approve`` runs against the exact sentence+payload it freezes. One
+#: (slug, what-passing-means) line per gate; every gate listed here PASSED
+#: for any hub whose state is reviewed or beyond (approve refuses
+#: otherwise — the queue only holds strings that can mint).
+_MINT_GATES: list[tuple[str, str]] = [
+    # Phrased as an at-approve statement: a dispute can arrive AFTER the
+    # freeze, and then the ladder + the preflight "contradicts" row (the
+    # live re-check) show blocked while this row stays truthfully ✓.
+    ("contradicts", "no unresolved contradicting edge stood at approve"),
+    (
+        "primary-source",
+        "the primary source is in the corpus — not hearsay from a citing paper",
+    ),
+    (
+        "claim-sentence",
+        "the sentence passes the admissibility/grammar lint (blocking subset)",
+    ),
+    ("schema-lint", "the grounding payload matches the envelope schema"),
+    ("grounding", "grounded passages carry DOI + verbatim quote + snip"),
+    ("quote-verbatim", "each quote is found verbatim in its pinned source chunk"),
+    ("snip", "each snip is a well-formed subrange of its quote"),
+    ("field-containment", "structured field values appear inside a quoted passage"),
+    ("quantity-bound", "quantities sit within the vocabulary's physical bounds"),
+    ("pdf-sha", "each passage pins the exact source PDF by sha256"),
+    ("llm-attribution", "an agent-prepared payload names its authoring model(s)"),
+    ("compound-shape", "a compound cites its conjunct atoms' artifacts, not papers"),
+    ("mint-order", "conjunct atoms carry signed artifacts before their compound mints"),
+    ("rejected-memo", "the sentence is not a previously rejected claim string"),
+]
+
+#: Publish-time preflight checks (``precis.nanopub.preflight``) — what
+#: must hold for the registry POST. Slugs mirror ``PreflightIssue.check``;
+#: a check absent from the live issue list passed.
+_PREFLIGHT_CHECKS: list[tuple[str, str]] = [
+    ("state", "the state machine reached the publish door (anchored)"),
+    ("hanging", "not a hanging claim — a grounded passage exists"),
+    ("contradicts", "still no unresolved dispute at publish time"),
+    ("drift", "the live hub sentence still hashes to the frozen sha"),
+    ("withheld-edge", "every evidence edge is refine-verified or human-signed-off"),
+    ("dependency-drift", "dependency artifacts are unchanged since this one signed"),
+    ("dependency-unpublished", "every dependency artifact is already published"),
+    ("trust", "signer + key fingerprint are allowlisted and attesting"),
+    ("ots-pending", "the OTS proof reached a Bitcoin attestation"),
+]
+
+#: States that imply every ``_MINT_GATES`` entry passed — approve refuses
+#: on any violation, so a row past candidate mechanically cleared them
+#: all. (``drift`` is deliberately absent from the mint list: it can only
+#: fire after a freeze, so it reports under the preflight group.)
+_GATES_PASSED_STATES = ("reviewed", "signed", "anchored", "published")
+
+
+def _gate_report(
+    state: str | None, preflight: list[Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Every gate the claim faces, with what its status IS — not just the
+    failures. ``mint`` gates all passed the moment approve succeeded
+    (state ≥ reviewed); before that they are pending. ``preflight`` checks
+    read the live issue list: a slug with a blocking issue failed, a
+    non-blocking one is a note, anything else passed (or is pending while
+    the hub is unminted/candidate)."""
+    minted = state in _GATES_PASSED_STATES
+    issues_by_check: dict[str, Any] = {}
+    for i in preflight:
+        issues_by_check.setdefault(i.check, i)
+    mint = [
+        {
+            "name": name,
+            "desc": desc,
+            "status": "passed" if minted else "pending",
+            "message": None,
+        }
+        for name, desc in _MINT_GATES
+    ]
+    pre = []
+    for name, desc in _PREFLIGHT_CHECKS:
+        issue = issues_by_check.get(name)
+        if issue is not None:
+            status = "failed" if issue.blocking else "note"
+            message = issue.message
+        elif state in (None, "unminted", "candidate"):
+            status, message = "pending", None
+        else:
+            status, message = "passed", None
+        pre.append({"name": name, "desc": desc, "status": status, "message": message})
+    return {"mint": mint, "preflight": pre}
 
 
 def _frozen_rung(state: str | None) -> str:

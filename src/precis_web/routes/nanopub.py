@@ -17,16 +17,19 @@ functions with ``interactive=True`` (a person clicked).
   (:func:`precis.nanopub.overview.draft_cited_hub_ids`) — "did I review
   everything this draft cites?" — with a clear-filter chip; an
   unresolvable draft id degrades to a friendly notice, not a 500.
-* ``GET /nanopub/fi<id>`` — **redirects** (307, query string preserved)
-  to ``/claim/fi<id>``: the nanopub-light-up merge folded the per-hub
-  review page (claim DAG, publish row, action box, preflight) into the
-  claim page's reader view as one page, one URL, one way to look at a
-  claim and sign it. The POST doors below stay at this path (only their
-  post-action redirects now land on ``/claim/fi<id>``); the review
-  context itself is assembled by :func:`precis_web.nanopub_render.
-  hub_context`, shared with :func:`precis_web.routes.claim.
-  claim_page_context` so the two entry points (a fresh GET, this
-  module's approve-error re-render) render byte-identical pages.
+* ``GET /nanopub/fi<id>`` — the workbench **deep link**: the full
+  workbench with the review pane preloaded on that claim (the tree's
+  anchor hrefs point here, so cmd-click / copy-link keeps the navigation
+  context; client-side ``history.replaceState`` keeps the URL in sync as
+  the pane navigates). ``?embed=1`` still redirects (307) to
+  ``/claim/fi<id>?embed=1`` — a pane must never nest the workbench. The
+  claim page itself carries the review-and-sign section (nanopub-light-up
+  merge); the POST doors below stay at this path (their post-action
+  redirects land on ``/claim/fi<id>``); the review context is assembled
+  by :func:`precis_web.nanopub_render.hub_context`, shared with
+  :func:`precis_web.routes.claim.claim_page_context` so the two entry
+  points (a fresh GET, this module's approve-error re-render) render
+  byte-identical pages.
 * ``GET /np/<code>`` — the exact frozen artifact bytes as
   ``application/trig``, served by artifact code (during embargo the
   w3id name resolves nowhere public; this is the local mirror).
@@ -68,13 +71,14 @@ def _parse_draft_ref_id(value: str) -> int | None:
     return int(v) if v.isdigit() else None
 
 
-@router.get("/nanopub", response_class=HTMLResponse)
-async def nanopub_index(request: Request) -> HTMLResponse:
-    """The one nanopub working surface: the claim forest (compounds nest
+def _index_context(request: Request) -> dict[str, Any]:
+    """The workbench page context: the claim forest (compounds nest
     conjunct atoms, refined claims nest under what they refine, evidence
     as leaves) beside a review pane (the claim page, review section
     included, framed) and a paper pane. The old queue table folded in as
-    the disputed-first strip + the OTS section under the tree.
+    the disputed-first strip + the OTS section under the tree. Shared by
+    the bare index and the ``/nanopub/fi<id>`` deep link (which adds a
+    ``preload_src`` for the review pane on top).
 
     ``?draft=`` scopes the forest + tally to one draft's cited hubs (see
     module docstring) — the author's "did I check and sign everything my
@@ -138,20 +142,24 @@ async def nanopub_index(request: Request) -> HTMLResponse:
     threshold = datetime.now(UTC) - timedelta(days=STUCK_PENDING_DAYS)
     stuck = [b for b in store.nanopub_pending_batches() if b.created_at < threshold]
 
+    return {
+        "active_tab": "nanopub",
+        "roots": roots,
+        "n_nodes": len(rows),
+        "state_counts": state_counts,
+        "disputed": disputed,
+        "batches": batches,
+        "stuck": stuck,
+        "draft_filter": draft_filter,
+        "draft_notice": draft_notice,
+    }
+
+
+@router.get("/nanopub", response_class=HTMLResponse)
+async def nanopub_index(request: Request) -> HTMLResponse:
+    """The one nanopub working surface — see :func:`_index_context`."""
     return templates.TemplateResponse(
-        request,
-        "nanopub/index.html.j2",
-        {
-            "active_tab": "nanopub",
-            "roots": roots,
-            "n_nodes": len(rows),
-            "state_counts": state_counts,
-            "disputed": disputed,
-            "batches": batches,
-            "stuck": stuck,
-            "draft_filter": draft_filter,
-            "draft_notice": draft_notice,
-        },
+        request, "nanopub/index.html.j2", _index_context(request)
     )
 
 
@@ -162,12 +170,22 @@ async def nanopub_tree() -> RedirectResponse:
 
 
 @router.get("/nanopub/fi{hub_id}", response_model=None)
-async def nanopub_hub(request: Request, hub_id: int) -> RedirectResponse:
-    """Legacy per-hub review URL — the claim page now carries the
-    review-and-sign section too (nanopub-light-up merge). Query string
-    preserved (notably ``?embed=1``, the workbench iframe's framing flag)."""
-    suffix = f"?{request.url.query}" if request.url.query else ""
-    return RedirectResponse(url=f"/claim/fi{hub_id}{suffix}", status_code=307)
+async def nanopub_hub(request: Request, hub_id: int) -> HTMLResponse | RedirectResponse:
+    """The workbench **deep link**: the full workbench (nav, tree, three
+    panes) with the review pane preloaded on ``fi<hub_id>`` — what a
+    cmd-click / copied link from the tree lands on, so a shared claim URL
+    always arrives with its navigation context, never the bare claim page.
+
+    ``?embed=1`` still redirects to the framed claim page: that flag means
+    "I am inside a pane already", and a pane must never nest the whole
+    workbench."""
+    if request.query_params.get("embed") == "1":
+        return RedirectResponse(
+            url=f"/claim/fi{hub_id}?{request.url.query}", status_code=307
+        )
+    ctx = _index_context(request)
+    ctx["preload_src"] = f"/claim/fi{hub_id}?embed=1"
+    return templates.TemplateResponse(request, "nanopub/index.html.j2", ctx)
 
 
 @router.get("/np/{code}")

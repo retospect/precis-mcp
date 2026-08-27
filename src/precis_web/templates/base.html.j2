@@ -187,16 +187,81 @@
     {% endif %}
     {% if embed %}
     <script>
-      // Keep embed mode sticky across same-origin navigation inside the
-      // frame: stamp embed=1 onto link hrefs and form actions as they are
-      // used (capture phase, before the default navigation reads them).
+      // Embed mode = this page lives inside an iframe pane. Two jobs, one
+      // capture-phase click listener:
+      //
+      //  1. WORKBENCH PANE ROUTING (window.name np-review / np-paper —
+      //     the /nanopub workbench's panes): route by DESTINATION, not by
+      //     which pane the click happened in. Paper-destined links (the
+      //     shared "precis-paper" named target, /papers/ paths, /c/pc…
+      //     paper-chunk handles) load the np-paper pane; claim links
+      //     (/claim/…) load the np-review pane. The destination pane is
+      //     navigated DIRECTLY through the parent document (same-origin,
+      //     so reachable): named-target resolution from a nested browsing
+      //     context is unreliable across browsers — Safari silently drops
+      //     it, which reads as a dead click (this used to live on claim
+      //     pages only, leaving the paper pane's own pa/pc links dead
+      //     there). A link whose destination IS this pane navigates in
+      //     place; the shown page's own self-link is swallowed (a
+      //     fragment still scrolls). Modified clicks (cmd/ctrl/shift/
+      //     middle) fall through to the browser untouched.
+      //
+      //  2. EMBED STICKINESS: stamp embed=1 onto same-origin link hrefs
+      //     and form actions as they are used (capture phase, before the
+      //     default navigation reads them). External links must leave the
+      //     pane: publishers (doi.org redirect targets) send
+      //     X-Frame-Options/frame-ancestors deny, so navigating the
+      //     iframe there shows a blank pane.
+      const NP_PANES = ["np-review", "np-paper"];
+      const inWorkbench = NP_PANES.includes(window.name) && window.parent !== window;
       document.addEventListener("click", e => {
         const a = e.target.closest("a[href]");
-        if (!a || a.target) return;
-        // External links must leave the pane: publishers (doi.org
-        // redirect targets) send X-Frame-Options/frame-ancestors deny,
-        // so navigating the iframe there shows a blank pane.
-        if (a.host !== location.host) { a.target = "_blank"; a.rel = "noopener"; return; }
+        if (!a) return;
+        if (a.host !== location.host) {
+          if (!a.target) { a.target = "_blank"; a.rel = "noopener"; }
+          return;
+        }
+        // A bare "#fragment" anchor is an in-page scroll, never a
+        // navigation — leave it alone.
+        if ((a.getAttribute("href") || "").startsWith("#")) return;
+        // Only target-less links and the pane-owned targets (the shared
+        // precis-paper window, the panes themselves) are ours to route —
+        // an anchor that carries its own target (a popover's
+        // target="_blank" chunk permalink, say) keeps it: hijacking it
+        // into a pane would swallow a deliberate new-tab affordance.
+        const routable = !a.target || a.target === "precis-paper" || NP_PANES.includes(a.target);
+        if (inWorkbench && routable && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)) {
+          try {
+            const u = new URL(a.href);
+            const toPaper = a.target === "precis-paper"
+              || u.pathname.startsWith("/papers/")
+              || u.pathname.startsWith("/c/pc");
+            const dest = toPaper ? "np-paper"
+              : (u.pathname.startsWith("/claim/") ? "np-review" : null);
+            if (dest) {
+              u.searchParams.set("embed", "1");
+              // preventDefault via .call so this template carries no
+              // empty-parens call (the error-page stale-substitution
+              // tripwire pinned by test_base_template_installs_one_
+              // delegated_popover_registry).
+              if (dest === window.name) {
+                e.preventDefault.call(e);
+                if (u.pathname === location.pathname) {
+                  if (u.hash) location.hash = u.hash;
+                  return;
+                }
+                location.assign(u);
+                return;
+              }
+              let frame = null;
+              try { frame = window.parent.document.getElementById(dest); } catch {}
+              if (frame) { e.preventDefault.call(e); frame.src = u; return; }
+              a.href = u; a.target = dest;  // last resort: named target
+              return;
+            }
+          } catch {}
+        }
+        if (a.target) return;
         try { const u = new URL(a.href); u.searchParams.set("embed", "1"); a.href = u; } catch {}
       }, true);
       document.addEventListener("submit", e => {

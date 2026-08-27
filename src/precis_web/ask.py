@@ -84,6 +84,14 @@ def _resolve_config() -> _Config:
     )
 
 
+def answer_model_label() -> str:
+    """The model the next follow-up pass will run with — surfaced beside
+    the Ask box (the asker should know who answers). Mirrors
+    :func:`_resolve_config`'s override chain; ``sonnet`` is the CLI's
+    default when no override is set."""
+    return _resolve_config().model or "sonnet"
+
+
 def followup_slug(kind: str, ref_id: int, chunk_pos: int | None) -> str:
     """Stable conv slug for the discussion about one source (or chunk).
 
@@ -191,6 +199,7 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
 __all__ = [
     "ANSWERER",
     "ASKER",
+    "answer_model_label",
     "build_prompt",
     "followup_slug",
     "generate_answer",

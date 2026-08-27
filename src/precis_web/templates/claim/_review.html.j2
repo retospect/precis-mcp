@@ -226,25 +226,43 @@
           refine chase verify them) before publish. A contradicts edge blocks the claim outright.</p>
       </details>
 
-      {# ── publish preflight ── #}
-      {% if np.row %}
-      <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-1 text-sm">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Publish preflight</h3>
-        {% if not np.preflight %}
-        <p class="text-emerald-600 text-xs">clear to publish — every publish-time gate passes</p>
-        {% else %}
-        <ul class="space-y-1">
-          {% for i in np.preflight %}
-          <li class="text-xs {% if i.blocking %}text-rose-600{% else %}text-slate-500{% endif %}">
-            {{ '✖' if i.blocking else '·' }} <span class="font-mono">[{{ i.check }}]</span> {{ i.message }}
-          </li>
-          {% endfor %}
-        </ul>
-        {% endif %}
-      </section>
-      {% endif %}
     </div>
   </div>
+
+  {# ── every gate, with its status — not just the failures ── #}
+  {% set gates_all = np.gates.mint + np.gates.preflight %}
+  {% set gates_passed = gates_all | selectattr('status', 'equalto', 'passed') | list | length %}
+  {% set gates_failed = gates_all | selectattr('status', 'equalto', 'failed') | list | length %}
+  <details id="gates" class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
+    <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">
+      Gates — {{ gates_passed }}/{{ gates_all | length }} passed{% if gates_failed %},
+      <span class="text-rose-600">{{ gates_failed }} blocking</span>{% endif %}
+    </summary>
+    {% macro gate_row(g) %}
+    <li class="text-xs flex gap-1.5
+      {% if g.status == 'passed' %}text-emerald-700
+      {% elif g.status == 'failed' %}text-rose-600
+      {% elif g.status == 'note' %}text-amber-700
+      {% else %}text-slate-400{% endif %}">
+      <span class="shrink-0 w-3 text-center">{{ {'passed': '✓', 'failed': '✖', 'note': '·', 'pending': '○'}[g.status] }}</span>
+      <span><span class="font-mono">[{{ g.name }}]</span> {{ g.message or g.desc }}</span>
+    </li>
+    {% endmacro %}
+    <div class="grid md:grid-cols-2 gap-4 mt-3">
+      <div>
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
+            title="Layer-A mechanical mint validators (pure code, no LLM) — approve runs every one against the exact sentence + payload it freezes, so a claim past candidate cleared them all">
+          Mint gates (run at approve)</h4>
+        <ul class="space-y-1">{% for g in np.gates.mint %}{{ gate_row(g) }}{% endfor %}</ul>
+      </div>
+      <div>
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
+            title="Publish-time preflight — what must hold before the registry POST (the one irreversible step); re-checked live on every page load">
+          Publish preflight (live)</h4>
+        <ul class="space-y-1">{% for g in np.gates.preflight %}{{ gate_row(g) }}{% endfor %}</ul>
+      </div>
+    </div>
+  </details>
 </section>
 
 <script>
@@ -254,54 +272,11 @@
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  // Inside the workbench the review iframe is named np-review. Routing
-  // (delegated + capture so it covers the evidence/citer rows above AND
-  // the detail links rendered below after a node click):
-  //   - paper links (target="precis-paper" — the shared paper-reading
-  //     window every non-embedded surface reuses — or /papers/ paths) →
-  //     the sibling np-paper pane. Named-target resolution from a NESTED
-  //     browsing context is unreliable across browsers and a miss
-  //     silently opens a stray window, so the parent's np-paper iframe
-  //     is navigated directly (same-origin, so reachable) instead.
-  //   - other-claim links (fi-cites, DAG nodes, conjunct/refines) → THIS
-  //     pane: the paper pane is for sources; mirroring a claim page into
-  //     it reads as a duplicate of the center column.
-  //   - self-links (the shown claim's own /claim/fi<id>) → swallowed
-  //     (a fragment still scrolls): a reload would just flash the pane.
-  // Standalone pages (no frame name) keep default navigation.
-  if (window.name === "np-review") {
-    document.addEventListener("click", e => {
-      const a = e.target.closest("a[href]");
-      // A bare "#review" fragment (the state chip above) is an in-page
-      // scroll, never a navigation away — must not be swept into the
-      // pane routing below.
-      if (!a || a.host !== location.host || (a.getAttribute("href") || "").startsWith("#")) return;
-      try {
-        const u = new URL(a.href);
-        const toPaperPane = a.target === "precis-paper" || u.pathname.startsWith("/papers/");
-        if (!toPaperPane && !u.pathname.startsWith("/claim/")) return;
-        u.searchParams.set("embed", "1");
-        if (!toPaperPane) {
-          e.preventDefault();
-          if (u.pathname === location.pathname) {
-            if (u.hash) location.hash = u.hash;
-            return;
-          }
-          location.assign(u);
-          return;
-        }
-        let frame = null;
-        try { frame = window.parent.document.getElementById("np-paper"); } catch {}
-        if (frame) {
-          e.preventDefault();
-          frame.src = u;
-        } else {
-          a.href = u;
-          a.target = "np-paper";
-        }
-      } catch {}
-    }, true);
-  }
+  // Workbench pane routing (paper links → np-paper pane, claim links →
+  // np-review pane) lives in base.html.j2's embed script now — it must
+  // cover EVERY embedded page (the paper pane's own pa/pc links were
+  // falling back to Safari's silently-dropped named-target navigation
+  // when it lived here, claim pages only).
   document.querySelectorAll(".np-node").forEach(n => n.addEventListener("click", () => {
     const d = NP_DETAIL[n.dataset.id];
     if (!d) return;

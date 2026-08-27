@@ -331,8 +331,9 @@ sentence, shaped **general → specific**: `[epistemic mode + method] +
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
 Distinct from mint gates; enumerated by `precis nanopub preflight` and
-on the `/claim/fi<id>` page's review section (`/nanopub/fi<id>`
-redirects there — one page, reader evidence + review-and-sign):
+on the `/claim/fi<id>` page's review section — one page, reader
+evidence + review-and-sign (`/nanopub/fi<id>` is the workbench deep
+link framing it):
 
 - **Withheld evidence edges** — an evidence edge neither
   verified-by-refine nor human-signed-off blocks publication; there is
