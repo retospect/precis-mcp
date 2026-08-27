@@ -79,19 +79,23 @@ put(kind='finding', hypothesis=True,
     title='<claim sentence — same grammar as any claim, see below>',
     motivation='<what each source established; which transfer is unproven>',
     testable_by='<the measurement that would settle it either way>',
-    motivated_by=['pc293', 'fi1234'],   # >=2, spanning >=2 source papers
+    motivated_by=['pc293', 'fi1234'],   # >=2 independent sources (papers/structures)
     llm_models=['claude-fable-5'],      # required: the model id(s) authoring this
     from_memory='me4567')               # optional: the note it came from
 ```
 
 Rules the door enforces:
 
-- **≥2 motivators across ≥2 distinct source papers.** A conjecture that
+- **≥2 independent motivating sources.** A distinct source paper (papers,
+  patents, and claim hubs count through their underlying source papers) or
+  a distinct measured `structure` ref each count as one; a conjecture that
   leaps from one source restates that source. Two claim hubs grounded
-  in the same single paper are one source, not two.
-- **Papers, patents, and claim hubs only** — a memory is something you
-  thought *with*, not a source an artifact can cite. Name it in the
-  `motivation` prose instead.
+  in the same single paper are one source, not two; one structure alone
+  is one source, not two.
+- **Papers, patents, claim hubs, and measured structures only** — a memory
+  is something you thought *with*, not a source an artifact can cite (name
+  it in the `motivation` prose instead); a quest is a container, not an
+  observation.
 - **`llm_models` is required** — the model id(s) you are running as (plus
   any co-authoring model). It freezes into the envelope at approve and
   lands as `precis:llmModel` in the signed pubinfo: a machine-written
