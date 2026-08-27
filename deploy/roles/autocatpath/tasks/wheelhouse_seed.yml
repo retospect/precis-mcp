@@ -1,0 +1,34 @@
+---
+# Land the controller-side private wheel (if any) into the host wheelhouse
+# BEFORE the constraints-pinned `precis-mcp[catalyst...]` install runs, so
+# that install's `--find-links {{ autocatpath_wheelhouse }}` can actually
+# resolve `autocatpath>=0.18.0` — a floor that isn't on PyPI yet (release-
+# gated; PyPI tops out at 0.13.0) — at PRIMARY install time, not just via
+# the post-install wheelhouse.yml re-apply (which reverts the pin AFTER the
+# fact, one install cycle too late to help the primary resolve).
+#
+# Shared by two callers: roles/autocatpath/tasks/main.yml (playbook 44, the
+# GPU compute node) and roles/precis_worker/tasks/provision.yml /
+# roles/precis_web/tasks/main.yml (autocatpath_plugin kind-surface hosts),
+# which each include_role this file before their own catalyst-extra
+# install. Idempotent — a host with no `-e autocatpath_wheel=` still gets
+# the directory; a missing/empty wheelhouse leaves --find-links a no-op.
+
+- name: Ensure the autocatpath wheelhouse
+  ansible.builtin.file:
+    path: "{{ autocatpath_wheelhouse }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Push the controller-side autocatpath wheel into the wheelhouse
+  when: autocatpath_wheel | length > 0
+  ansible.builtin.copy:
+    src: "{{ autocatpath_wheel }}"
+    dest: "{{ autocatpath_wheelhouse }}/"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true

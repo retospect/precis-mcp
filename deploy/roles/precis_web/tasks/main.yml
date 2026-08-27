@@ -83,6 +83,18 @@
 # rides a new commit → new sha → preflight DIFF → this runs. Out-of-band engine
 # work targets the inference-node GPU venv (playbook 44), not this venv.
 # `-e precis_force_install=true` overrides.
+# autocatpath's floor is >=0.18.0, not on PyPI yet (release-gated; PyPI tops
+# out at 0.13.0) — land the controller-side private wheel into this host's
+# wheelhouse BEFORE the install below so its --find-links can resolve it.
+# See roles/autocatpath/tasks/wheelhouse_seed.yml.
+- name: Seed the autocatpath wheelhouse before the catalyst install (autocatpath_plugin hosts only)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+  ansible.builtin.include_role:
+    name: autocatpath
+    tasks_from: wheelhouse_seed
+
 - name: Install precis-mcp[catalyst] into the MCP venv (pathway kind surface — pulls pure autocatpath)
   when:
     - os_family == "darwin"
@@ -94,6 +106,7 @@
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
       --constraints /opt/precis/constraints.txt \
+      --find-links {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} \
       'precis-mcp[catalyst] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_autocatpath

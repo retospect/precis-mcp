@@ -315,8 +315,8 @@ wheels = [
 
 [[package]]
 name = "autocatpath"
-version = "0.13.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.18.0"
+source = { git = "https://github.com/retospect/catpath?branch=main#4f059dcedd4e1b7643a614425d2d25f08c3af99a" }
 dependencies = [
     { name = "ase" },
     { name = "matplotlib" },
@@ -325,10 +325,6 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rdkit" },
     { name = "scipy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/15/c967dee7dda36c0b01aac5fd69ce753ac5d9fb609310d5995a1e7980e304/autocatpath-0.13.0.tar.gz", hash = "sha256:e115b536e465140c05599199713e3e0a9acab380ed186a5a070f87d536bbaed6", size = 2772129, upload-time = "2026-08-12T19:02:39.959Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/fa/dc9760cd1001e9f4f634e89da58f364a987c0208c6b29d9e9f0bfbb7ed45/autocatpath-0.13.0-py3-none-any.whl", hash = "sha256:252c5aad43fb67a1a27b392cea05d96607ac33eae4d0ba86cb178c9725fa8088", size = 316479, upload-time = "2026-08-12T19:02:36.359Z" },
 ]
 
 [package.optional-dependencies]
@@ -3409,8 +3405,8 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'asa'", specifier = ">=3.9" },
     { name = "ase", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
-    { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.13.0" },
-    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.13.0" },
+    { name = "autocatpath", marker = "extra == 'catalyst'", git = "https://github.com/retospect/catpath?branch=main" },
+    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", git = "https://github.com/retospect/catpath?branch=main" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },

@@ -92,7 +92,16 @@ COPY pyproject.toml uv.lock /build/precis-mcp/
 
 # Install every locked dep into /opt/venv, but NOT precis-mcp itself
 # (--no-install-project). Stage `builder` does that on top.
+# uv.lock sources autocatpath from the PRIVATE catpath repo ([tool.uv.sources]),
+# so this sync needs the same gh_token secret as the dev-venv autocatpath layer
+# below — same credential-helper exposure, never embedded in a layer.
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    --mount=type=secret,id=gh_token,required=false \
+    if [ -s /run/secrets/gh_token ]; then \
+        export GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
+            GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/gh_token)"; }; f'; \
+    fi; \
     uv venv /opt/venv && \
     uv sync --frozen --no-install-project --all-extras
 

@@ -77,9 +77,15 @@
       # --no-hashes: this is a --constraints file, not a -r requirements
       #   file — uv's hash mode requires EVERY resolved package hash-pinned,
       #   which the ad-hoc git deps (autocatpath, remarkable-mcp) aren't.
+      # --no-emit-package autocatpath: the autocatpath floor is satisfied
+      #   from the host wheelhouse (--find-links), not PyPI — a ==0.13.0
+      #   constraint from the stale uv.lock (PyPI tops out at 0.13.0; the
+      #   pin floor is >=0.18.0) would make every catalyst/catalyst-gpu
+      #   resolve unsatisfiable.
       ansible.builtin.command:
         cmd: >-
           uv export --frozen --all-extras --no-emit-project --no-hashes
+          --no-emit-package autocatpath
           -o {{ precis_constraints_tmp.path }}
         chdir: "{{ playbook_dir }}/.."
       delegate_to: localhost

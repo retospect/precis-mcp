@@ -308,7 +308,14 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
 # compute extra below (mirrors dft/dft-ml) so a gateway venv can serve
 # get(kind='pathway') without pulling torch. Kept out of `all` (heavy,
 # host-specific like the other dft-ml/cad/pcb extras).
-catalyst = ["autocatpath>=0.13.0"]
+# >=0.18.0 is not on PyPI (release-gated): the lock resolves it from the
+# private catpath repo via [tool.uv.sources] below (needs GitHub auth at
+# lock/sync time — keychain locally, the gh_token BuildKit secret in the
+# image build). Cluster venvs never touch that source: the constraints
+# export excludes autocatpath (--no-emit-package, deploy/playbooks/
+# 03-precis-constraints.yml) and the catalyst installs resolve it from the
+# host wheelhouse (deploy/roles/autocatpath, --find-links).
+catalyst = ["autocatpath>=0.18.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -317,8 +324,9 @@ catalyst = ["autocatpath>=0.13.0"]
 # GPU node). `cuequivariance-torch` makes the engine's `mlip.cueq: auto`
 # actually engage (same math, faster CUDA kernels) — upstream keeps its
 # `mace` extra lean, so the dep rides here; Linux-only (no macOS wheels).
+# Same 0.18.0-not-on-PyPI caveat as the `catalyst` floor above.
 catalyst-gpu = [
-    "autocatpath[mace]>=0.13.0",
+    "autocatpath[mace]>=0.18.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
 # NOTE: [external] and [patent] were promoted into core (2026-08-16) —
@@ -469,6 +477,15 @@ dev = [
     # mutant runs only its covering tests. Not used by /land or scripts/test.
     "pytest-cov>=7.1.0",
 ]
+
+# autocatpath is release-gated off PyPI past 0.13.0; resolve it from the
+# private repo (branch tracks catpath main; uv.lock pins the exact rev at
+# lock time — `uv lock -P autocatpath` re-pins after a catpath bump). Auth:
+# git credential helper locally, gh_token BuildKit secret in the image build.
+# tool.uv.sources applies only to THIS project's lock/sync — cluster
+# `uv pip install precis-mcp[...]` never reads it (wheelhouse covers those).
+[tool.uv.sources]
+autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway"]

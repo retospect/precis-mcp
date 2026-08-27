@@ -30,11 +30,19 @@
 - name: Install the autocatpath OS prerequisites
   ansible.builtin.include_tasks: prereqs.yml
 
+# ── private-wheel seed (see defaults/main.yml) ─────────────────────────────
+# Land the controller-side wheel (if any) BEFORE the primary install below,
+# so its --find-links can resolve autocatpath>=0.18.0 (not on PyPI yet) at
+# primary-install time. See wheelhouse_seed.yml for the full story.
+- name: Seed the autocatpath wheelhouse (controller wheel, before the primary install)
+  ansible.builtin.include_tasks: wheelhouse_seed.yml
+
 - name: Install precis-mcp[{{ autocatpath_extras }}] (pulls the autocatpath engine) into the precis worker venv
   ansible.builtin.shell: |
     {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
       --constraints /opt/precis/constraints.txt \
+      --find-links {{ autocatpath_wheelhouse }} \
       'precis-mcp[{{ autocatpath_extras }}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref | default("main") }}'
   become: true
   register: autocatpath_install
@@ -75,29 +83,13 @@
   become: true
   changed_when: false
 
-# ── private-wheel override (see defaults/main.yml) ─────────────────────────
-# Runs AFTER both constraints-pinned installs above so the wheel's version is
-# what the venv ends on; deps resolve unconstrained (the engine's runtime deps
-# are the stable scientific stack, already present from the pinned install).
-- name: Ensure the autocatpath wheelhouse
-  ansible.builtin.file:
-    path: "{{ autocatpath_wheelhouse }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  become: true
-
-- name: Push the controller-side autocatpath wheel into the wheelhouse
-  when: autocatpath_wheel | length > 0
-  ansible.builtin.copy:
-    src: "{{ autocatpath_wheel }}"
-    dest: "{{ autocatpath_wheelhouse }}/"
-    owner: root
-    group: root
-    mode: "0644"
-  become: true
-
+# ── private-wheel re-apply (see defaults/main.yml) ──────────────────────────
+# The wheel was already landed in the wheelhouse (and, via --find-links,
+# already the version installed above) by the wheelhouse_seed.yml include
+# near the top of this file. Re-apply it explicitly anyway, belt-and-
+# braces: idempotent, and it's the same shared step precis_worker's
+# redeploy re-apply uses, so both paths converge on one code path for
+# "what version does the venv end on."
 # find + install shared with roles/precis_worker's redeploy re-apply.
 - name: Apply the wheelhouse (find + install newest)
   ansible.builtin.include_tasks: wheelhouse.yml

@@ -38,7 +38,7 @@ autocatpath_worker_home: /var/lib/precis
 autocatpath_wheelhouse: /opt/precis/wheels
 # Optional controller-side wheel to push into the wheelhouse this run:
 #   ansible-playbook playbooks/44-autocatpath.yml \
-#     -e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.17.0-py3-none-any.whl
+#     -e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.18.0-py3-none-any.whl
 autocatpath_wheel: ""
 
 # The precis-mcp extra to install, derived from the topology in ONE expression:

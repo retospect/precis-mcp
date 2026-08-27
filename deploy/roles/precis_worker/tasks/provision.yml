@@ -86,6 +86,18 @@
     creates: "{{ precis_worker_venv }}/bin/python"
   become: true
 
+# autocatpath's floor is >=0.18.0, not on PyPI yet (release-gated; PyPI tops
+# out at 0.13.0) — land the controller-side private wheel into this host's
+# wheelhouse BEFORE the `catalyst`-extra install below so its --find-links
+# can resolve it. Gated to autocatpath_plugin hosts only (the only ones that
+# add `,catalyst` to the extras list below); a bare `paper`-only host never
+# needs the wheelhouse. See roles/autocatpath/tasks/wheelhouse_seed.yml.
+- name: Seed the autocatpath wheelhouse before the primary install (autocatpath_plugin hosts only)
+  when: inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+  ansible.builtin.include_role:
+    name: autocatpath
+    tasks_from: wheelhouse_seed
+
 - name: Install precis-mcp[paper] into worker venv
   # Installing from git+https because the worker subcommand only lives in
   # the v7/v8 line — PyPI is still at 6.0.0 as of 2026-05-31. Point at a
@@ -124,6 +136,12 @@
   # InitErrors on every pathway dispatch (seen on the agent worker 2026-08-09).
   vars:
     _precis_worker_ref_is_sha: "{{ (precis_worker_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
+    _precis_worker_is_autocatpath_plugin: "{{ inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) }}"
+    # --find-links so autocatpath>=0.18.0 (not on PyPI yet) resolves from the
+    # wheel the wheelhouse_seed task above just landed. Only meaningful on
+    # autocatpath_plugin hosts (the only ones adding `,catalyst` below).
+    _precis_worker_find_links: >-
+      {{ ('--find-links ' ~ (autocatpath_wheelhouse | default('/opt/precis/wheels'))) if _precis_worker_is_autocatpath_plugin | bool else '' }}
   when: >-
     (precis_deploy_changed | default(true) | bool)
     or (precis_force_install | default(false) | bool)
@@ -131,7 +149,8 @@
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
       {{ '' if _precis_worker_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
-      'precis-mcp[paper{% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
+      {{ _precis_worker_find_links }} \
+      'precis-mcp[paper{% if _precis_worker_is_autocatpath_plugin | bool %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true
   register: precis_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
