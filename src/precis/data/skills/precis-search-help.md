@@ -10,6 +10,7 @@ answers:
   - how do I paginate through search results?
   - why doesn't my query find a claim I know exists?
   - do I have to type kΩ / µ / Å, or will ASCII work?
+  - how do I exclude everything a draft already cites from a search?
 applies-to: search (every kind that supports it)
 status: active
 ---
@@ -109,7 +110,7 @@ kinds, use `mode='lexical'` (exact string/keyword match) or
 | `page_size` | int | **Page size** (default 10, max 100). Not a match-quality cutoff despite the name. |
 | `tags` | list[str] | Per-kind tag filters; AND semantics. |
 | `scope` | str | Restrict to one ref's blocks. |
-| `exclude` | list[str] | Skip-list (specific slugs to drop). `page=` is the normal pagination. |
+| `exclude` | list[str] | Skip-list — paper handles/slugs/DOIs, OR (paper search) a container: `dr…` (whole draft) / `dc…` (draft-chunk subtree), resolved to every paper it cites. `page=` is the normal pagination. |
 | `source` | str | Patent only: `'both'` (default) / `'local'` / `'remote'`. |
 | `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). `view='stubs'` returns the paper-acquisition backlog — paper refs with an external id but no PDF yet (`q=` ignored; see `precis-stubs-help`). `view='chase-queue'` is a tighter, DOI-only, never-tried-first slice of the same backlog (`q=` ignored). |
 | `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
@@ -325,6 +326,28 @@ search(kind="paper", q="photocatalysis", exclude=["pa5", "pa12"])  # handles fro
 Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to
 the underlying ref; unknown entries are silently ignored. `exclude=` is the skip-list for
 known-irrelevant refs, not a paging mechanism — use `page=` for that.
+
+## Best chunks, one per paper, about X, excluding what a draft already cites
+## Skip papers a draft (or one section of it) already cites
+
+`exclude=` also accepts **containers** in the same list: a whole draft
+(`dr…`) or a draft-chunk subtree (`dc…`) — resolved server-side to every
+paper cited anywhere within (`[pa…]` direct, `[pc…]` via its owning
+paper, `[fi…]` via a claim hub's grounding/supporter papers). The MCP
+does the enumeration — you never walk the draft's cites by hand:
+
+```python
+search(kind="paper", q="wang tile guided self assembly", per_paper=1,
+       exclude=["dr42995"])                    # the whole draft's cite closure
+search(kind="paper", q="wang tile guided self assembly", per_paper=1,
+       exclude=["dc48213"])                     # just that section's closure
+```
+
+A `dr…`/`dc…` entry that doesn't resolve raises `BadInput` naming it
+(unlike a stale bare slug, which is silently dropped — you named this
+container explicitly). See `precis-stubs-help` for the twin external-
+discovery form (`get(kind='semanticscholar', exclude=[…])`), which also
+flags every hit `held:`/`stub:`/`NEW` against the corpus.
 
 ## What does the ⚠ on a paper hit mean?
 ## Why did a retracted paper rank so low?

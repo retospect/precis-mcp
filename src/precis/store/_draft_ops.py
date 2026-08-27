@@ -689,8 +689,19 @@ class DraftStore(_AbbrevMixin):
         chunk = self.get_draft_chunk(handle)
         if chunk is None:
             return []
+        return [chunk.chunk_id, *self.descendant_chunk_ids(chunk.chunk_id)]
+
+    def descendant_chunk_ids(self, chunk_id: int) -> list[int]:
+        """Live descendant chunk ids of ``chunk_id`` (NOT including itself)
+        — the walk :meth:`draft_subtree_chunk_ids` uses internally,
+        exposed on its own for a caller that already holds the chunk
+        (e.g. it just fetched it via :meth:`get_draft_chunk` for its
+        ``ref_id``) and would otherwise pay a second, redundant
+        ``get_draft_chunk`` round trip just to re-derive what it already
+        has (the ``exclude=`` cite-closure resolver,
+        ``precis.handlers._exclude_closure``)."""
         with self.pool.connection() as conn:
-            return [chunk.chunk_id, *self._descendant_ids(conn, chunk.chunk_id)]
+            return self._descendant_ids(conn, chunk_id)
 
     def draft_term_shorts(self, ref_id: int) -> set[str]:
         """The ``short`` of every live glossary ``term`` chunk in the

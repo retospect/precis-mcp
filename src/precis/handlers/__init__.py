@@ -6,6 +6,20 @@ register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
 
+**Container-aware ``exclude=`` (cite closure).** ``search(kind='paper')``
+and ``get(kind='semanticscholar')`` accept ``exclude=`` entries that are
+paper slugs, a draft ref (``dr…``), or a draft chunk (``dc…``, hierarchical
+subtree); containers resolve server-side to every paper cited within —
+``[pa…]`` direct, ``[pc…]`` via owning paper, ``[fi…]`` via the hub's
+supporter papers (:mod:`precis.handlers._exclude_closure`). The
+semanticscholar surface additionally diffs every external hit against the
+held corpus (DOI → arXiv → normalized title) and flags hits
+``held``/``stub``/``NEW`` — the "what don't we have yet, on this topic?"
+door; a NEW hit is accepted via the existing ``put(kind='paper', doi=…)``
+stub path. Relevance-ranked only — papers arrive in pseudo-random order,
+so no surface assumes recency. Bogus container entries raise ``BadInput``;
+bare stale slugs keep the historical silent-drop contract.
+
 The todo tree
 =============
 

@@ -9,10 +9,13 @@ import pytest
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers.draft import DraftHandler
 from precis.handlers.paper import PaperHandler, _maybe_resolve_doi, _parse_paper_id
+from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
 from precis.store import BlockInsert, Store
 from precis.store.types import Tag
+from precis.utils import handle_registry
 from tests.conftest import chunk_handle, record_handle
 
 # ---------------------------------------------------------------------------
@@ -764,6 +767,57 @@ class TestSearch:
         # Valid slug still drops; stale slug is no-op (no error).
         assert chunk_handle(store, "paper-a") not in resp.body
         assert chunk_handle(store, "paper-b") in resp.body
+
+    def test_search_exclude_accepts_draft_ref_container(
+        self, store: Store, handler: PaperHandler, hub: Hub
+    ) -> None:
+        """``exclude=['dr…']`` drops every paper cited anywhere in that
+        draft — the container form, not a bare slug
+        (docs/backlog/discovery-exclude-by-container.md)."""
+        _seed_paper(
+            store,
+            slug="paper-a",
+            title="A",
+            blocks=["photocatalytic reduction in paper-a"],
+            doi="10.1/dr-a",
+        )
+        _seed_paper(
+            store,
+            slug="paper-b",
+            title="B",
+            blocks=["photocatalytic reduction in paper-b"],
+            doi="10.1/dr-b",
+        )
+        proj = TodoHandler(hub=hub).put(text="proj", meta={"rotation_root": True})
+        proj_id = int(proj.body.split("id=")[1].split()[0].rstrip(",.()"))
+        draft = DraftHandler(hub=hub)
+        draft.put(id="exclude-draft", title="Cites paper-a", project=proj_id)
+        paper_a_ref = store.get_ref(kind="paper", id="paper-a")
+        assert paper_a_ref is not None
+        handle_a = handle_registry.format_handle("paper", paper_a_ref.id)
+        draft.put(
+            id="exclude-draft",
+            chunk_kind="paragraph",
+            text=f"builds on [{handle_a}]",
+            at={"last": True},
+        )
+        draft_ref = store.get_ref(kind="draft", id="exclude-draft")
+        assert draft_ref is not None
+
+        resp = handler.search(
+            q="photocatalytic", page_size=10, exclude=[f"dr{draft_ref.id}"]
+        )
+        assert chunk_handle(store, "paper-a") not in resp.body
+        assert chunk_handle(store, "paper-b") in resp.body
+
+    def test_search_exclude_unknown_draft_container_raises_bad_input(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Unlike a stale bare paper slug (silently dropped), a
+        caller-named ``dr…`` container that doesn't resolve is a
+        visible mistake — it names the offending entry."""
+        with pytest.raises(BadInput, match="dr999999"):
+            handler.search(q="photocatalytic", page_size=10, exclude=["dr999999"])
 
     def test_search_exclude_total_header_reflects_remainder(
         self, store: Store, handler: PaperHandler

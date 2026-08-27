@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, Upstream
 from precis.format import render_agent_table
+from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._paper_format import _clean_inline_text, _format_authors
 from precis.handlers._paper_text import _chunk_keywords_or_caption, _scrub_block_text
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
@@ -631,33 +632,21 @@ class FusedBlockSearch:
                 )
                 scope_ref_id = scope_ref.id
 
-        # ``exclude=['slug1', 'slug2']`` drops every block of the
-        # listed papers from the result set. Coarse / ref-level: a
-        # ``slug~38`` entry is treated as ``slug``. Stale slugs are
-        # silently dropped — the agent's exclude list may carry
-        # ids that no longer resolve, and we'd rather quietly skip
-        # than fail the whole search. The canonical use case is the
-        # "show me hits 6..N" continuation rendered in the Next:
-        # trailer below.
-        excluded_slugs_in: list[str] = []
-        exclude_ref_ids: list[int] = []
-        if exclude:
-            normalised: list[str] = []
-            for raw in exclude:
-                slug = _normalise_exclude_slug(str(raw), store=self.store)
-                if slug is not None:
-                    normalised.append(slug)
-            # Dedup while preserving order so the trailer's "previous
-            # exclude" cross-reference reads predictably.
-            seen: set[str] = set()
-            for s in normalised:
-                if s not in seen:
-                    seen.add(s)
-                    excluded_slugs_in.append(s)
-            if excluded_slugs_in:
-                exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
-                    excluded_slugs_in, kind=kind
-                )
+        # ``exclude=['slug1', 'dr…', 'dc…']`` drops every block of the
+        # listed/resolved papers from the result set. Coarse / ref-level: a
+        # ``slug~38`` entry is treated as ``slug``. Bare paper slugs/DOIs
+        # that don't resolve are silently dropped — the agent's exclude
+        # list may carry ids that no longer resolve, and we'd rather
+        # quietly skip than fail the whole search. A ``dr…`` (whole
+        # draft) / ``dc…`` (draft-chunk subtree) container entry instead
+        # resolves to every paper cited (pa/pc/fi-closure) anywhere
+        # within — see ``_exclude_closure`` — and raises BadInput naming
+        # the entry when the container itself doesn't resolve (Reto
+        # named a specific container; silently ignoring it would be a
+        # surprise, unlike a stale bare slug).
+        exclude_ref_ids: list[int] = sorted(
+            resolve_exclude_paper_ids(exclude, store=self.store, kind=kind)
+        )
 
         # ``max_distance`` enforces a semantic relevance floor so a
         # nonsense query (``'xyzzy frobnicate quux'``) returns an

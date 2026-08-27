@@ -7,7 +7,9 @@ answers:
   - how do I find just the DOI stubs nobody has tried fetching yet?
   - how do I add a missing paper to the acquisition backlog?
   - why did a stub disappear from the backlog without a PDF landing?
-applies-to: search(kind='paper', view='stubs'|'chase-queue'), put (kind='paper')
+  - how do I find papers on a topic we don't already have?
+  - how do I exclude a draft's cites from a discovery search?
+applies-to: search(kind='paper', view='stubs'|'chase-queue', exclude=), get(kind='semanticscholar'), put (kind='paper')
 status: active
 ---
 
@@ -111,6 +113,42 @@ search by topic on Semantic Scholar — each hit carries a DOI to stub:
 get(kind="semanticscholar", id="refs:<held-doi>")  # papers it cites
 get(kind="semanticscholar", id="cites:<held-doi>")  # papers citing it
 get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + DOIs
+```
+
+## What don't we have yet, on this topic?
+
+A plain topic search **always** diffs its hits against the held corpus
+(DOI → arXiv id → normalized title) and flags every one —
+`held: pa123` (a body is on file), `stub: pa456` (known, no PDF yet), or
+`NEW` (nothing in the corpus matches) — with the abstract as a preview,
+so you don't have to eyeball each title against a separate search:
+
+```python
+get(kind="semanticscholar", id="wang tile guided self assembly")
+```
+
+**Skip what a draft already cites.** `exclude=` accepts a mixed list of
+paper slugs/ids AND containers — a whole draft (`dr…`) or a draft-chunk
+subtree (`dc…`) — resolved server-side to every paper cited anywhere
+within (`[pa…]` direct, `[pc…]` via its owning paper, `[fi…]` via a
+claim hub's grounding/supporter papers). The canonical "find sources
+this draft doesn't already have" query:
+
+```python
+get(kind="semanticscholar", id="wang tile guided self assembly", exclude=["dr42995"])
+search(kind="paper", q="wang tile guided self assembly", per_paper=1, exclude=["dr42995"])
+```
+
+The first widens the net to the open literature (flagged); the second
+finds the best already-held chunk per paper the draft doesn't cite yet.
+`exclude=["dc<subtree-chunk>"]` narrows either to one section's cite
+closure instead of the whole draft.
+
+**Accept a `NEW` hit** — mint it into the acquisition backlog the same
+one-step way as any other stub, using the DOI/arXiv id the hit carries:
+
+```python
+put(kind="paper", doi="<doi from the NEW hit>")
 ```
 
 ## Why did a stub disappear from the backlog without a PDF?

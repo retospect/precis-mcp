@@ -9,6 +9,8 @@ mapping into ``refs.id``. This mixin provides:
 
 * :meth:`find_ref_by_identifier`        — generic alias lookup (by scheme+value).
 * :meth:`find_paper_ref_by_identifier`  — paper-specific, scheme auto-detected from value shape.
+* :meth:`find_paper_refs_by_identifiers_bulk` — the same lookup for MANY values
+  at once, bounded queries regardless of N.
 * :meth:`insert_ref_identifiers`        — bulk INSERT with ``ON CONFLICT DO NOTHING``.
 * :meth:`list_ref_identifiers`          — read-back of all aliases for a ref.
 
@@ -212,6 +214,56 @@ class IdentifiersMixin:
         if scheme is None:
             return None
         return self.find_ref_by_identifier(scheme, value, kind="paper")
+
+    def find_paper_refs_by_identifiers_bulk(
+        self, values: Iterable[str]
+    ) -> dict[str, int]:
+        """Bulk twin of :meth:`find_paper_ref_by_identifier` — resolve many
+        raw identifier strings (a mixed bag of DOIs / arXiv ids / …) in a
+        BOUNDED number of queries (one per distinct detected scheme, so
+        ~1-2 for a typical DOI+arXiv batch) instead of one round trip per
+        value. Used by the Semantic Scholar corpus-diff render
+        (docs/backlog/discovery-exclude-by-container.md), which otherwise
+        paid N ``find_paper_ref_by_identifier`` calls for N fetched hits.
+
+        Returns ``{original_value: ref_id}`` for every input that both
+        scheme-detects (:func:`detect_identifier_scheme`) and resolves to a
+        live paper; values that don't detect or don't match are simply
+        absent from the result — same "quiet miss" contract as the
+        singular lookup, just batched. When two distinct raw values
+        normalise to the same ``(scheme, value)`` pair, only the last one
+        (input order) keeps its own key in the group — degenerate in
+        practice (callers pass distinct hit identifiers).
+        """
+        by_scheme: dict[str, dict[str, str]] = {}
+        for raw in values:
+            if not raw:
+                continue
+            scheme = detect_identifier_scheme(raw)
+            if scheme is None:
+                continue
+            norm = _normalise_identifier(scheme, raw)
+            if not norm:
+                continue
+            by_scheme.setdefault(scheme, {})[norm] = raw
+        if not by_scheme:
+            return {}
+        out: dict[str, int] = {}
+        with self.pool.connection() as conn:
+            for scheme, norm_to_raw in by_scheme.items():
+                rows = conn.execute(
+                    "SELECT pi.id_value, pi.ref_id "
+                    "FROM ref_identifiers pi "
+                    "JOIN refs r ON r.ref_id = pi.ref_id "
+                    "WHERE pi.id_kind = %s AND pi.id_value = ANY(%s) "
+                    "AND r.kind = 'paper' AND r.deleted_at IS NULL",
+                    (scheme, list(norm_to_raw)),
+                ).fetchall()
+                for id_value, ref_id in rows:
+                    raw_value = norm_to_raw.get(str(id_value))
+                    if raw_value is not None:
+                        out[raw_value] = int(ref_id)
+        return out
 
     def insert_ref_identifiers(
         self,

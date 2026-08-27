@@ -34,14 +34,20 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.errors import BadInput, Upstream
-from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.handlers._cache_base import CacheBackedHandler, FetchResult, _cite_pointer
+from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.protocol import KindSpec
+from precis.response import Response
 from precis.store.types import BlockInsert
+from precis.utils import handle_registry
 from precis.utils.http import http_client, require_httpx
 from precis.utils.slug import slug_from_text
+
+if TYPE_CHECKING:
+    from precis.store.types import CacheEntry, Ref
 
 log = logging.getLogger(__name__)
 
@@ -56,9 +62,25 @@ _S2_FIELDS = (
     "citationCount,referenceCount,openAccessPdf"
 )
 
-#: How many top hits to retain. Keeps the body bounded and the
-#: chunker-emitted chunks meaningful per-paper.
+#: How many top hits to RENDER (the corpus-diff survivor page). Keeps the
+#: body bounded and the chunker-emitted chunks meaningful per-paper.
 _S2_LIMIT = 10
+
+#: How many hits to FETCH+CACHE from S2 for a plain topic search — well
+#: above :data:`_S2_LIMIT` so an ``exclude=`` skip-list (or a corpus that
+#: already holds several top hits) still leaves ``_S2_LIMIT`` survivors to
+#: render instead of a thinned-out page (docs/backlog/
+#: discovery-exclude-by-container.md — "over-fetch, render top-10
+#: survivors"). Raw hits are cached in ``meta['papers']`` so the exclude/
+#: corpus-diff pass re-runs at RENDER time on every call (exclude= is
+#: per-call, the held corpus drifts) without re-fetching from S2.
+_S2_FETCH_LIMIT = 30
+
+#: Trigram-similarity floor for the "normalized title" corpus-diff tier —
+#: the last-resort match when an S2 hit carries neither a DOI nor an arXiv
+#: id. High bar (near-exact) so an unrelated paper that merely shares a
+#: few title words never renders as a false ``held:``/``stub:`` match.
+_TITLE_MATCH_FLOOR = 0.9
 
 #: Per-paper fields for the citation-graph (references / citations)
 #: endpoints. The nested paper record shares the search field shape,
@@ -109,16 +131,40 @@ _ATTRIBUTION = (
 
 
 class SemanticScholarHandler(CacheBackedHandler):
-    """``semanticscholar`` — paper search via the S2 Graph API."""
+    """``semanticscholar`` — paper search via the S2 Graph API.
+
+    A plain topic search (``id='<query>'``) ALWAYS diffs its hits against
+    the held corpus (DOI → arXiv id → normalized title) and renders each
+    one flagged ``held: pa…`` / ``stub: pa…`` / ``NEW`` — no more guessing
+    whether a promising S2 hit is something the corpus already has.
+    ``exclude=`` additionally drops papers already cited by a container:
+    a paper slug/id (today's ``search(kind='paper')`` behavior), a whole
+    draft (``dr…``), or a draft-chunk subtree (``dc…``) — resolved via the
+    shared cite-closure walk (:mod:`precis.handlers._exclude_closure`).
+    See docs/backlog/discovery-exclude-by-container.md.
+    """
+
+    #: Set for the duration of one ``get()`` call — the container-aware
+    #: exclude= entries this request wants dropped from a topic-search
+    #: render. ``get()`` isn't part of the base ``CacheBackedHandler``
+    #: signature (it only accepts the shared cache-flow kwargs), so this
+    #: mirrors the ``_pending_*`` convention other handlers use (e.g.
+    #: ``memory.py``'s ``_pending_title``) to thread a subclass-only kwarg
+    #: through to ``_render`` without changing the base class's contract.
+    _pending_exclude: list[str] | None = None
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="semanticscholar",
         title="Semantic Scholar paper search",
         description=(
             "Search Semantic Scholar's paper graph by natural-language "
-            "query (top-10 hits with title, authors, year, DOI / arXiv "
-            "id, venue, abstract, citation count), OR walk a known "
-            "paper's citation graph: id='refs:<paper-id>' lists the "
+            "query (over-fetches ~30, renders the top 10 survivors after "
+            "corpus-diffing: each hit flagged held:pa…/stub:pa…/NEW with "
+            "title, authors, year, DOI / arXiv id, venue, abstract, "
+            "citation count). exclude=['dr…'|'dc…'|paper-slug] drops "
+            "papers already cited by a draft/subtree/paper-list — see "
+            "get(kind='skill', id='precis-stubs-help'). OR walk a "
+            "known paper's citation graph: id='refs:<paper-id>' lists the "
             "papers it cites, id='cites:<paper-id>' the papers citing "
             "it — each row carrying the DOI to feed a "
             "put(kind='paper', doi=…) acquisition stub. Or walk the "
@@ -233,6 +279,192 @@ class SemanticScholarHandler(CacheBackedHandler):
         # New rows stamp the canonical key directly; fall back to the
         # legacy ``query`` field for search rows written before that.
         return meta.get("key") or meta.get("query")
+
+    # ── exclude= plumbing ─────────────────────────────────────────────
+
+    def get(
+        self,
+        *,
+        id: str | int | None = None,
+        q: str | None = None,
+        exclude: list[str] | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        mode: str | None = None,
+        ttl_days: int | None = None,
+        refresh: bool = False,
+        no_fetch: bool = False,
+        literal: bool = False,
+        **_kw: Any,
+    ) -> Response:
+        """Like the base ``get()``, plus ``exclude=`` for a plain topic
+        search: drop papers already cited by a container (paper slug/id,
+        ``dr…`` whole draft, ``dc…`` draft-chunk subtree — see
+        :func:`precis.handlers._exclude_closure.resolve_exclude_paper_ids`).
+        Meaningless (silently ignored) on the ``refs:``/``cites:``/
+        ``authors:``/``author:`` graph-walk modes, which carry no
+        per-paper corpus-diff render to filter.
+        """
+        self._pending_exclude = exclude
+        try:
+            return super().get(
+                id=id,
+                q=q,
+                view=view,
+                tags=tags,
+                untags=untags,
+                mode=mode,
+                ttl_days=ttl_days,
+                refresh=refresh,
+                no_fetch=no_fetch,
+                literal=literal,
+                **_kw,
+            )
+        finally:
+            self._pending_exclude = None
+
+    def _render(self, ref: Ref, cache: CacheEntry, *, hit: bool) -> Response:
+        """Corpus-diff render for a plain topic-search ref; everything
+        else (graph-walk modes, the injection-withheld/suspect banners)
+        defers to the base class unchanged.
+
+        Discriminator: only :meth:`_fetch_search` stamps ``meta['papers']``
+        — the graph-walk fetchers (`_fetch_graph` / `_fetch_paper_authors`
+        / `_fetch_author_papers`) never do, so they always fall through to
+        ``super()._render()``. A ``high`` injection verdict also defers to
+        the base class, which withholds the body — that gate must apply
+        regardless of which render path would otherwise run.
+        """
+        meta = cache.meta or {}
+        inject = meta.get("inject") or {}
+        papers = meta.get("papers")
+        if inject.get("verdict") == "high" or not papers:
+            return super()._render(ref, cache, hit=hit)
+        return self._render_topic_search(ref, cache, papers, hit=hit)
+
+    def _render_topic_search(
+        self,
+        ref: Ref,
+        cache: CacheEntry,
+        papers: list[dict[str, Any]],
+        *,
+        hit: bool,
+    ) -> Response:
+        exclude_ids = resolve_exclude_paper_ids(self._pending_exclude, store=self.store)
+        flags = self._corpus_flags_bulk(papers)
+        lines = [f"# {ref.title}", ""]
+        shown = held_n = stub_n = new_n = excluded_n = 0
+        for p, (flag, matched_ref_id) in zip(papers, flags, strict=True):
+            if shown >= _S2_LIMIT:
+                break
+            if matched_ref_id is not None and matched_ref_id in exclude_ids:
+                excluded_n += 1
+                continue
+            shown += 1
+            if flag == "NEW":
+                new_n += 1
+            elif flag.startswith("held"):
+                held_n += 1
+            else:
+                stub_n += 1
+            lines.append(_format_paper_with_flag(p, flag))
+        if shown == 0:
+            lines.append(
+                "_(every fetched hit was excluded — widen exclude= or the query.)_"
+            )
+        lines.append("")
+        counts = f"{shown} shown ({new_n} NEW, {held_n} held, {stub_n} stub"
+        if excluded_n:
+            counts += f", {excluded_n} excluded"
+        counts += f") of {len(papers)} fetched"
+        lines.append(f"_{counts}._")
+        if new_n:
+            lines.append(
+                "\nAccept a NEW hit: `put(kind='paper', doi='<doi>')` (or "
+                "`arxiv=`/`title=`) — mints a DREAM:acquire stub the "
+                "fetch_oa worker picks up automatically."
+            )
+        lines.append("")
+        lines.append(f"- {self.attribution}")
+        cite = _cite_pointer(self.spec.kind, ref.id)
+        if cite:
+            lines.append(cite)
+        return Response(body="\n".join(lines), cost=self._cost_str(cache, hit=hit))
+
+    def _corpus_flags_bulk(
+        self, papers: list[dict[str, Any]]
+    ) -> list[tuple[str, int | None]]:
+        """Diff every fetched S2 hit against the held corpus — DOI → arXiv
+        id → normalized title (the order docs/backlog/
+        discovery-exclude-by-container.md specifies) — in a BOUNDED
+        number of queries regardless of ``len(papers)`` (this runs on
+        EVERY call, including a cache hit, so the render stays cheap
+        even though it re-diffs from scratch each time):
+
+        1. ONE bulk identifier lookup
+           (:meth:`Store.find_paper_refs_by_identifiers_bulk`) over every
+           hit's DOI/arXiv id at once.
+        2. A per-hit trigram title query ONLY for hits an identifier
+           didn't resolve (the fallback tier — rare, since S2 hits mostly
+           carry a DOI or arXiv id).
+        3. ONE bulk :meth:`Store.fetch_refs_by_ids` over every distinct
+           matched ``ref_id`` to read back ``pdf_sha256`` (held vs. stub).
+
+        Returns one ``(flag, matched_ref_id)`` pair per input paper, same
+        order — ``flag`` is ``'NEW'`` or ``'held: pa…'`` / ``'stub: pa…'``;
+        ``matched_ref_id`` is ``None`` on ``'NEW'``, else the paper's
+        ``ref_id`` (what ``exclude=`` closure ids compare against).
+        """
+
+        def _doi_arxiv(p: dict[str, Any]) -> tuple[str, str]:
+            ext = p.get("externalIds") or {}
+            doi = str(ext.get("DOI") or "").strip()
+            arxiv = str(ext.get("ArXiv") or "").strip()
+            return doi, arxiv
+
+        id_values = [v for p in papers for v in _doi_arxiv(p) if v]
+        id_map = (
+            self.store.find_paper_refs_by_identifiers_bulk(id_values)
+            if id_values
+            else {}
+        )
+
+        matched_ref_ids: list[int | None] = []
+        for p in papers:
+            doi, arxiv = _doi_arxiv(p)
+            matched_ref_ids.append(id_map.get(doi) if doi else None)
+            if matched_ref_ids[-1] is None and arxiv:
+                matched_ref_ids[-1] = id_map.get(arxiv)
+
+        # Fallback tier: only the hits an identifier left unresolved pay a
+        # (per-hit, unavoidable — trigram similarity has no bulk form here)
+        # title query.
+        for i, p in enumerate(papers):
+            if matched_ref_ids[i] is not None:
+                continue
+            title = str(p.get("title") or "").strip()
+            if not title:
+                continue
+            title_hits = self.store.find_refs_by_title_similarity(
+                kind="paper", q=title, limit=1, min_similarity=_TITLE_MATCH_FLOOR
+            )
+            if title_hits:
+                matched_ref_ids[i] = title_hits[0][0]
+
+        unique_ids = {rid for rid in matched_ref_ids if rid is not None}
+        refs_map = self.store.fetch_refs_by_ids(list(unique_ids)) if unique_ids else {}
+
+        flags: list[tuple[str, int | None]] = []
+        for rid in matched_ref_ids:
+            matched = refs_map.get(rid) if rid is not None else None
+            if matched is None:  # NEW, or vanished between resolve + fetch
+                flags.append(("NEW", None))
+                continue
+            handle = handle_registry.try_format("paper", rid) or f"pa{rid}"
+            state = "held" if matched.pdf_sha256 is not None else "stub"
+            flags.append((f"{state}: {handle}", rid))
+        return flags
 
     # ── fetch + render ────────────────────────────────────────────────
 
@@ -372,7 +604,14 @@ class SemanticScholarHandler(CacheBackedHandler):
             raise Upstream(f"Semantic Scholar returned non-JSON: {exc}") from exc
 
     def _fetch_search(self, key: str) -> FetchResult:
-        params = {"query": key, "fields": _S2_FIELDS, "limit": _S2_LIMIT}
+        # Over-fetch (``_S2_FETCH_LIMIT`` ~30) vs. what actually renders
+        # (``_S2_LIMIT`` 10) — the corpus-diff / exclude= filtering runs at
+        # RENDER time (see :meth:`_render`), on every call, not here: a
+        # cache hit days later must re-diff against whatever the corpus
+        # holds NOW and whatever THIS call's exclude= says, not what was
+        # true at fetch time. Caching the raw hits (below, ``meta['papers']``)
+        # instead of a pre-filtered page is what makes that possible.
+        params = {"query": key, "fields": _S2_FIELDS, "limit": _S2_FETCH_LIMIT}
         data = self._s2_get_json(_S2_URL, params)
 
         papers = data.get("data") or []
@@ -382,13 +621,17 @@ class SemanticScholarHandler(CacheBackedHandler):
                 title=f"Semantic Scholar: {key}",
                 body_blocks=[BlockInsert(pos=0, text=text)],
                 cost_usd=None,
-                meta={"key": key, "query": key, "result_count": 0},
+                meta={"key": key, "query": key, "result_count": 0, "papers": []},
             )
 
         # One block per paper — the base-class auto-chunker would split
         # a single long blob anyway, but emitting per-paper blocks keeps
         # the chunk-level granularity meaningful for citation surface
         # (the chunk's text *is* a paper's entry, not a fragment of one).
+        # These blocks back the plain block-level search()/search_hits()
+        # surface (base class) and the injection scan; the agent-facing
+        # `get()` render instead reads ``meta['papers']`` (below) so the
+        # corpus-diff flags stay live across cache hits.
         blocks: list[BlockInsert] = []
         for i, p in enumerate(papers):
             blocks.append(BlockInsert(pos=i, text=_format_paper(p)))
@@ -402,6 +645,10 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "query": key,
                 "result_count": len(papers),
                 "total_available": data.get("total"),
+                # Raw S2 hit dicts (JSON-serialisable — the API response
+                # shape verbatim) — the render-time corpus-diff pass reads
+                # this instead of re-parsing the formatted block text.
+                "papers": papers,
             },
         )
 
@@ -523,6 +770,18 @@ def _format_paper(p: dict[str, Any]) -> str:
         lines.append("")
         lines.append(abstract)
     return "\n".join(lines)
+
+
+def _format_paper_with_flag(p: dict[str, Any], flag: str) -> str:
+    """:func:`_format_paper`, plus the corpus-diff flag
+    (``held: pa…`` / ``stub: pa…`` / ``NEW``, from
+    :meth:`SemanticScholarHandler._corpus_flags_bulk`) as a line under the
+    heading — every rendered hit in a topic search carries this, so "have
+    we already got this?" never requires a separate lookup."""
+    base = _format_paper(p)
+    heading, _sep, rest = base.partition("\n")
+    body = f"{heading}\n_Corpus:_ {flag}"
+    return f"{body}\n{rest}" if rest else body
 
 
 __all__ = ["SemanticScholarHandler"]
