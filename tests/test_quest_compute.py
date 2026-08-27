@@ -2449,9 +2449,7 @@ class TestFrontierQualifiesOnCurrentObjective:
             max_disp=0.0,
             energy=-9.0,
         )
-        store.stamp_ref_meta(
-            sid, {"span_at_Uopt": 0.5, "U_L": -0.3, "P_side": 0.1}
-        )
+        store.stamp_ref_meta(sid, {"span_at_Uopt": 0.5, "U_L": -0.3, "P_side": 0.1})
 
         fr = quest_frontier(store, qid)
         assert [c.ref_id for c in fr.frontier] == [sid]
@@ -2486,9 +2484,7 @@ class TestFrontierQualifiesOnCurrentObjective:
         assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
         assert fr.provisional[0].reasons == ["missing P_side"]
 
-    def test_legacy_log_tof_objective_still_qualifies_trusted(
-        self, store: Any
-    ) -> None:
+    def test_legacy_log_tof_objective_still_qualifies_trusted(self, store: Any) -> None:
         # A still-live log_tof-era quest is unaffected — log_tof is just
         # another axis, not special-cased away, when it IS the objective.
         qid = _mk_quest(store, "A catalyst striving")

@@ -2338,9 +2338,7 @@ class TestAxisReadingNotes:
         assert "`atom_cost` is a SOFT economic axis" in prompt
         assert "$/rate` (atom_cost − log_tof, shown per row)" in prompt
 
-    def test_unknown_axis_gets_a_generic_fallback_not_dropped(
-        self, store: Any
-    ) -> None:
+    def test_unknown_axis_gets_a_generic_fallback_not_dropped(self, store: Any) -> None:
         qid = _mk_quest(store, "A novel-axis striving")
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "widget_score", "sense": "max"}]}
@@ -2348,8 +2346,7 @@ class TestAxisReadingNotes:
         quest = store.get_ref(kind="quest", id=qid)
         prompt = build_tick_prompt(store, quest)
         assert (
-            "`widget_score` is one of this quest's declared objective axes."
-            in prompt
+            "`widget_score` is one of this quest's declared objective axes." in prompt
         )
 
 

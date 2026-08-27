@@ -700,7 +700,7 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
 _AXIS_NOTES: dict[str, str] = {
     "log_tof": (
         "`log_tof` is the ACTIVITY axis — a candidate that is measured but "
-        'dead-slow is legitimately dominated by a faster one, `barrier` alone '
+        "dead-slow is legitimately dominated by a faster one, `barrier` alone "
         'no longer settles that. A "provisional" row on kinetics '
         "(`kinetics_note` shown) means the run is UNKNOWN and worth fixing or "
         're-running — never read it as "this candidate is bad", only as "not '

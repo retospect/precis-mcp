@@ -104,6 +104,36 @@ possibly `precis.taproot.canon.extract_claim`'s prompt. Consumers: the
 `taproot_backfill` worker job, `precis taproot backfill` CLI, the web
 convert-cites route. No schema change.
 
+## Figure captions are a systematic generator of this bug (2026-08-27)
+
+A second, cleaner shape than literature-narrative prose, found while working
+the nanobud remediation (td263083 / td264356): **figure captions**.
+
+A caption ends in an attribution line — `Reproduced from [pa2069].` — and that
+is a cite marker like any other, so `segment_cite_groups` hands the extractor
+"the prose since the previous marker", i.e. the entire caption, as a claim
+grounded by that cite. Captions describe an *image*, so what comes back is
+reliably a meta-claim. `dr173020` ords 181-190 are ten consecutive caption
+chunks of exactly this form, and fi189540 — "The passage illustrates four
+representative nanobud junction geometries and shows transmission electron
+microscopy images of the original NanoBuds at increasing magnification" — is
+the minted result of one of them.
+
+This shape is worth calling out separately because it is **mechanically
+detectable**, unlike the narrative case: the span is a caption, the trailing
+marker is an attribution rather than an evidential cite, and no subject-verb
+or NO-CLAIM judgement is needed to skip it. If the fix ends up being a
+segmentation change rather than a prompt change, captions are the cheapest
+first cut.
+
+It also settles a related question the other way. The nanobud todo carried an
+item to convert those same ten `[pa<id>]` markers to `[fi<id>]` for
+provenance-ladder granularity. That would be **wrong**: you reproduce a figure
+from a *paper*, not from a *proposition*, so the bare `[pa]` is the correct
+citation there and the item is mis-specified. Claim-level provenance in a
+caption would mean adding a cite to the descriptive sentence, leaving the
+"Reproduced from" attribution alone — a prose rewrite, not a marker swap.
+
 ## Open questions / decisions log
 
 - Which of the three shapes? Needs more evidence than one draft chunk — run
