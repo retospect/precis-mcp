@@ -40,9 +40,55 @@ bundle to rip when the realizer reports a squeeze, placement moves,
 plane assignment, phase back-edges. Every automatic tool must **fail
 legibly** — numbers and digests, never bare success/failure.
 
-A default **4-layer stackup (SIG/GND/PWR/SIG) simplifies the problem**:
-power/gnd pins become "drop a via to the plane", removing ~⅓–½ of the
-ratsnest from both the placement objective and the router.
+A **4-layer default stackup simplifies the problem**: nets served by a
+plane become "drop a via to the plane", removing ~⅓–½ of the ratsnest
+from both the placement objective and the router.
+
+**Layer identity is an INTEGER INDEX, not a name** (user decision
+2026-08-27). Internally a layer is its position in the stackup array;
+`"F.Cu"`/`"In1.Cu"` are KiCad's vocabulary and gerber has its own
+file-per-layer convention, so **names are an export concern only** and
+must never appear in optimizer state. The payoff is not just tidiness:
+with integer layers a via's span is a contiguous **bitmask**, "does
+this via block layer k" is a bit test, and pad layer membership is the
+same, so the inner loop does arithmetic instead of string hashing. The
+already-shipped `stackup jsonb` is an *ordered* array, so index is
+already its identity — this is a discipline statement, not a schema
+change.
+
+**Layer ROLE is a decision variable, not a constant** (user decision
+2026-08-27). Do NOT hardcode SIG/GND/PWR/SIG. Which nets become planes,
+and on which layers, is exactly the same *kind* of choice as which
+layer a segment lands on — a plane-assigned net is just a net that
+occupies a large connected region instead of a thin path, so it stops
+consuming gap capacity (it *is* the gap) and removes its pins from
+routing. That makes role assignment another move class, and lets better
+architectures emerge by measurement rather than convention (three
+routing layers + one GND for a dense BGA; a partial pour instead of a
+whole wasted PWR layer for a single-rail board). Layer *count* and
+*physical* stackup stay constrained by the fab menu (slice 4's
+capability data); **roles are entirely ours**.
+Two guards keep emergent roles from producing electrically silly boards
+— both cost terms, neither a hardcoded stackup:
+- **Reference-plane adjacency.** Not only an RF concern: any fast edge
+  (USB, a 100 MHz SPI clock, a 1 ns CMOS edge) needs a return path
+  beneath it, and a signal layer with no adjacent contiguous reference
+  gets a long return loop — EMI and ringing that are miserable to
+  debug. Term: each signal layer wants an adjacent layer carrying
+  substantial contiguous copper on a stable net. Low weight while we
+  are slow-digital-only; the same term takes a high weight when RF
+  arrives, with no structural change.
+- **Copper balance.** Fabs want roughly balanced copper per layer or
+  the panel warps. This stays a **check, not a cost term** — the
+  tiling pass coppers every layer to near-full by construction, so
+  balance is largely automatic and the residual comes from antipad and
+  clearance density rather than from trace width.
+
+Consequence for the never-route-ground rule: it was predicated on
+*knowing* which nets are plane-served. The rule is unchanged but its
+antecedent is now decided by the optimizer — **if** a net is
+plane-assigned on some layer, its pins fan out (dog-bone) rather than
+route.
 
 Compute model: **Postgres is checkpoint and truth; RAM is the workspace.**
 Boards in our class (≤ ~500 instances, ≤ ~1500 nets, ≤ ~10k pads) hydrate
@@ -181,6 +227,275 @@ the fence. Policy: **no EasyEDA footprint ⇒ not a selectable part**
   Fit stays a hard gate; turnover (not raw stock) stays the popularity
   estimator.
 
+### The IR: one progressively-enriched structure (`ir.py`)
+
+User decision 2026-08-27, and the organizing principle for every engine
+below. **One structure, six enrichment levels.** Each level *decorates*
+the previous — drop everything above level k and you still hold a valid
+level-k object. Optimization runs as deep in pure-graph space as it can
+and only descends when it must.
+
+| L | Adds | Decidable at this level | Cost to evaluate |
+|---|---|---|---|
+| **L0** | pins + nets (hypergraph) | connection trees, **pin/gate swap classes**, clustering, bundles | µs |
+| **L1** | integer layer per segment; vias as transitions | biplanarity partition, via count/spans, **which nets become planes**, plane connectivity under via deletion | µs |
+| **L2** | explicit combinatorial embedding (rotation system + side choices) | crossings, relative order (`A north of Z`) | µs–ms |
+| **L3** | component x/y/rotation; pin positions from footprints | courtyard overlap, board fit | ms |
+| **L4** | metric annotations: gap capacities, region density, class width minima | routability-for-real, congestion | ms |
+| **L5** | realized copper: arcs, tangents, widths, pours, antipads | geometric DRC | seconds |
+
+**The invalidation cascade is the point, not the tidiness.** A move at
+level k dirties only levels > k, and usually only *locally*:
+
+- move/rotate a component → L3 dirty, L4 dirty **near that component
+  only**, L5 dirty; **L2 and L1 stay clean**. That invariance IS the
+  rubber-band property, and it is what makes the joint optimizer's
+  local-delta requirement satisfiable.
+- flip a side choice → L2 local, L4 local. L0/L1 clean.
+- reassign a layer / promote a net to plane → L1, and L4 for the
+  affected gaps. L3 untouched.
+
+**Store the embedding EXPLICITLY; never derive it from coordinates.**
+This is the crux. If L2 is recomputed from L3 positions, every
+component move silently re-derives the topology and the invariance
+above is lost — we would be back to maze-router behaviour with extra
+steps. Storing chosen sides/orders means a move *preserves* topology by
+construction and we only check it is still realizable. L3 coordinates
+**propose and validate** the embedding; they do not define it. (So this
+is a lattice with one back-edge, not a strict ladder — be honest about
+that rather than pretending L2 is coordinate-free in practice.)
+
+**Implementation shape: arrays, not objects.** Parallel numpy arrays
+keyed by segment id; layer as `int8`; via spans as bitmasks; adjacency
+in CSR; dirty flags as boolean masks. That is what buys vectorized
+batch delta evaluation and gets past Python's per-op overhead — an
+object graph of `Segment` instances will not hit the move rates the
+optimizer needs.
+
+**Storage maps onto the levels directly**: L0–L3 are the canonical
+sketch in Postgres (`pcb_routes.topology`, instances); L4 is derived
+cache; L5 is `pcb_copper`, derived and regenerable — the discipline
+already shipped in slice 1.
+
+**A win that only exists in graph space: pin and gate swaps.** Many
+pins are functionally interchangeable — resistor ends, gates within a
+logic IC, and above all **MCU GPIO assignments**. Reassigning ESP32
+GPIOs is a pure L0 relabeling that can collapse a large fraction of
+crossings at zero physical cost. Human designers do this by hand and
+hate it; here it is just another cheap move class, available precisely
+*because* we optimize combinatorially before committing to geometry.
+Requires the netlist to carry pin-equivalence classes (a `part`/
+footprint annotation) — worth capturing when the catalog lands.
+
+### Connections carry OBJECTIVE VECTORS (`objectives.py`)
+
+User decision 2026-08-27. Every connection carries a vector of physical
+objectives — **low impedance · low resistance · low capacitance · small
+loop area · low coupling · matched length** — and the optimizer
+minimizes them jointly. This *replaces* a bespoke decap/affinity-edge
+mechanism outright; do not reintroduce one.
+
+**Why this beats special-casing.** "Decap near its IC" stops being a
+rule and becomes a consequence of `C<tmp> terminal A: low impedance to
+PWR; terminal B: low impedance to GND`. No group table, no decap
+pattern-matcher. The same machinery covers the switcher hot loop, the
+crystal, sense resistors and terminations — they differ only in which
+objectives their connections carry.
+
+**It absorbs the width-policy enum too.** fixed/minimum/free is not a
+separate classification: **low capacitance ⇒ narrow, low resistance ⇒
+wide**, and the tiling pass reads the objective directly. One fewer
+concept.
+
+**Refinement that is physics, not pedantry — impedance is a LOOP
+property.** "Low impedance to PWR" is satisfiable by a via anywhere,
+since a plane is low-impedance everywhere — but the quantity that
+matters is the loop `IC pin → plane → cap → plane → IC pin`, whose
+spreading inductance grows with separation. So an impedance objective
+**implicitly names its return**; nets are already domain-typed and
+classed, so a PWR connection's return is its paired GND and the
+objective becomes loop-scoped without per-instance statement.
+(Consequence, and a cargo-cult correction: with tight plane-pair
+spacing that inductance grows ~logarithmically, not linearly, so decaps
+may legitimately sit further out than the 2 mm folklore. Minimizing the
+real quantity lets the optimizer discover that instead of obeying a
+rule of thumb.)
+
+**Why this mostly dissolves weight-tuning.** Objectives in real units
+(nH, mΩ, mm²) are commensurable in a principled way, so the usual
+hand-tuned-weight problem largely evaporates. What does NOT evaporate:
+converting between them is a judgment (how many nH is one crossing
+worth?). Keep that as a **handful of meaningful dials** — "EMI-
+critical", "cost-critical" — never dozens of opaque weights, and
+expose the trade as a **Pareto front** (one placement minimizing loop
+inductance, one area, one layer count) rather than a single scalar
+going down. A front is far more legible to a model-in-the-loop than a
+number.
+
+**Every cost term must carry a one-line justification** naming the
+physics or manufacturing constraint it encodes. A term that cannot
+produce one is suspect — this is how a defunct convention
+("penalize wirelength", "prefer 45°", "split planes for isolation")
+gets caught at the point it would enter, instead of living forever as
+an innocuous config constant. "Fail legibly", applied to our own
+assumptions.
+
+### The cost function (`cost.py`) — one function, refined estimators
+
+Everything else in this spec depends on this being right, so it is
+written out in full rather than left implicit.
+
+**It does NOT change across levels.** One cost function, evaluated by
+progressively finer *estimators*. If the objective itself varied per
+level, an improvement at L1 would not survive to L4 and the optimizer
+would thrash — commit coarse, descend, discover the real cost moved the
+other way. Three things that are easy to conflate and must stay
+separate:
+- **the cost function** — constant across levels AND across the schedule
+- **estimator fidelity** — increases as you descend levels
+- **constraint hardness** — increases across the schedule
+
+**Admissibility rule: every coarse estimate must be OPTIMISTIC.** It may
+understate cost and overstate feasibility, never the reverse (A*
+admissibility). The guarantee bought: descending only ever brings *bad*
+news, so a state that looks bad at L1 really is bad and can be pruned
+without discarding a good solution. The natural estimators have this
+for free — Euclidean pin distance ≤ routed length; same-layer crossing
+count ≤ vias required; courtyard sum ≤ area.
+**Testable as a property**: generate random states, evaluate at L1 and
+L4, assert L1 bounds L4. This is the check that stops the estimator
+hierarchy silently rotting; nothing else would catch it.
+
+**Trap — undefined ≠ zero.** Gap capacity is undefined at L1 (no gaps
+without pad positions). Evaluating an undefined term as *zero* tells
+the optimizer congestion is free, and it will produce states that look
+excellent at L1 and are unroutable at L4. Undefined terms evaluate as
+an optimistic **bound**, never as nothing.
+
+**Two families, normalized differently, AND AGGREGATED DIFFERENTLY:**
+- **Margin terms** → normalized by their own budget, giving a
+  dimensionless *fraction of allowance consumed* (this clearance is
+  0.6 of fab headroom; this coupling is 0.3 of the victim's noise
+  budget). Clearance, inductance, coupling, thermal rise, gap capacity.
+- **Money terms** → normalized to currency from live JLC pricing.
+  Board area, layer count, via count, Extended-part fees.
+
+**Aggregation: money ADDS, risk does NOT average away.** Sum the money
+family. Take **max (or a soft-max / p-norm)** over the margin family —
+one net at 99 % of its noise budget is a problem even if 500 others sit
+at 5 %, and a sum drowns exactly the signal that matters. (Same
+instinct as "penalize peak region utilization, not variance" in the
+congestion estimator — generalized here, having originally been applied
+only there.)
+
+**Convexity IS the hardening schedule** — they are one mechanism, not
+two. Margin penalties are superlinear in budget fraction (~quadratic
+early, so the optimizer can explore through near-violations), sharpening
+toward a barrier at the end so violations must actually reach zero.
+Linear summing under-penalizes near-violations: a design at 95 % of
+every budget is far riskier than one at 50 % and 40 %, because the
+first has no room for manufacturing variation.
+
+**Coefficients: ONE irreducible dial**, not a table of weights — the
+exchange rate between risk and money. Everything else derives from it
+plus a **criticality class** per constraint *type*, drawn from a small
+enumeration (catastrophic / functional / marginal / cosmetic) reflecting
+*consequence of violation*, assigned once and justified by physics.
+Note only relative weights matter (n terms ⇒ n−1 degrees of freedom),
+and the dial need not be guessed — sweep it for the Pareto front, which
+turns the one judgment call into a visible trade curve.
+
+**Wirelength is deliberately ABSENT** — the primary objective of every
+other tool. It is **subsumed, not omitted**: length enters through
+*resistance* where current matters, *inductance* where di/dt matters,
+*delay* where timing matters, and is correctly ignored where a net
+cares about none of them. This removes the commonest way a placer
+produces tidy-looking, electrically mediocre boards.
+
+**Per-connection annotations** (LLM-derived at part ingestion from
+datasheet timing tables and input specs, with a fallback library keyed
+by function — a crystal node is high-Z by construction, a switcher SW
+node a violent aggressor, an ADC input a sensitive victim):
+**impedance · edge rate · signal level**. From those the coupling term
+derives rather than being asserted:
+`coupling(a→v) = aggressor_strength(a) × victim_susceptibility(v) ×
+k(geometry)`, where high-Z ⇒ capacitive (E-field) victim, low-Z ⇒
+inductive (H-field) victim, high dV/dt ⇒ capacitive aggressor, high
+dI/dt ⇒ magnetic aggressor. **Cheap despite being pairwise**: coupling
+decays fast with distance (a spatial query we already run for gaps),
+and most nets are neither strong aggressors nor sensitive victims, so
+the significant pair list is dozens, not thousands. **Order-of-magnitude
+accuracy suffices** — the geometry term varies over a far wider range
+than the annotation error, so false precision here would only invite
+over-fitting.
+
+**Via cost is net-dependent and runs BOTH directions** — a good sanity
+check that the objective vector is doing real work rather than
+relabelling special cases: high-Z ⇒ avoid vias (≈0.5–1 pF against a
+huge R, plus barrel leakage, plus guard-continuity break); controlled
+impedance ⇒ avoid vias (discontinuity + stub resonance); **high current
+⇒ deliberately MANY vias in parallel** (a 0.3 mm via carries ~1–2 A, so
+a 10 A rail needs an array). Extreme cases also take a hard
+`max_vias: 0` cap that no weighting may trade away — which is also an
+L1 layer-assignment constraint (the net is single-layer), to be
+respected rather than discovered.
+
+**Every term carries a one-line justification** naming the physics or
+manufacturing constraint it encodes. A term that cannot produce one is
+suspect. This is how a defunct convention ("penalize wirelength",
+"prefer 45°", "split planes for isolation") gets caught at the point it
+would enter, instead of living forever as an innocuous config constant.
+
+**Calibration — structure is sound, NUMBERS ARE NOT VALIDATED.** Say so
+rather than dressing a guess as a derivation. Division of labour: the
+**LLM labels and attributes** (reads a DFM report / bench observation,
+attributes a failure to a term, sanity-checks a fitted coefficient for
+physical plausibility); a **numerical routine fits** (not token
+generation); the **LLM reviews** the fit. Same candidate→verify shape as
+part selection. The binding constraint is *data*, not capability — each
+electrical data point costs a fabrication cycle.
+**Entry point that needs no fabrication: rank, don't calibrate.** Take
+published reference designs (dev kits, app-note layouts) as positives
+and generate negatives by deliberate perturbation — scramble placement,
+split a plane, walk the decaps away, force vias onto a high-Z net — and
+require the cost function to order them correctly. Free labels,
+unlimited synthetic data, runs in CI as a regression suite. Cheap
+sources in increasing order: reference-design ranking (free, now) →
+JLC's DFM report per order (cheap, covers manufacturing terms) → bench
+measurement (expensive, the only source for EMI/SI).
+
+**Open items — recorded as open, NOT quietly resolved:**
+- The risk↔money exchange rate is a guess with a trade curve behind it.
+  The ranking harness catches only *gross* errors; it does not
+  discriminate among near-optimal designs, which is where tuning
+  actually matters.
+- **Terms are not independent** and the sum pretends they are: widening
+  a trace lowers resistance, raises capacitance and consumes gap
+  capacity at once. Survivable (all three derive from the same
+  geometry, so the coupling is implicit and consistent) but it means a
+  term cannot be tuned in isolation — which is exactly what people try.
+- **No board-level thermal term** (component-to-component heat,
+  spreading, hotspots). Fine for logic boards, wrong the moment a
+  regulator dissipates a couple of watts. Known-absent by decision.
+- **Nothing for assembly/test** — AOI orientation, test-point access,
+  panelization. Known-absent by decision.
+
+### Refdes and pin maps are LATE LABELS with a freeze point
+
+User decision 2026-08-27. `C1`/`R7` are assigned at schematic capture
+and then treated as identity for the board's life, purely because of
+the order someone drew them. They are **labels**. Internal identity is
+a stable opaque id; **refdes is assigned at export** in a spatially or
+functionally sensible order — which incidentally yields far nicer
+boards to assemble and debug than arbitrary capture order.
+
+**Hazard, same shape as the firmware pin-map desync:** refdes is free
+until first release, then **frozen**. Once physical boards exist with a
+BOM/CPL/assembly drawing naming C5, renumbering silently desyncs
+paperwork from hardware. Both refdes and pin assignment are *generated
+artifacts* with an explicit freeze recorded as board state — never a
+convention someone remembers.
+
 ### Engines (all in `src/precis/pcb/`, pure-Python, unit-testable)
 
 Dependency: **`shapely` becomes a core runtime dep** (pyproject `[project]`
@@ -191,15 +506,33 @@ is confined to drc.py / planes.py / realize.py; **`pcb/geom.py` keeps its
 precis-dev image rebuild (or the UV_WITH bridge until then) + serving
 venvs pick it up via the normal deploy.
 
-- **DRC engine** (`drc.py`): STRtree spatial index over pads/copper/
-  features; class-rule clearances, width, annular ring, courtyard
-  overlap, board-edge, plane-island connectivity, unconnected-item.
-  Emits `pcb_drc_findings` rows + a TOON digest. Supersedes
-  `eyes.drc_lite` behind the existing `view='drc'` (same address, real
-  engine); eyes.py keeps ratsnest/crossings/proximity/measures. Plane/
-  copper rules in slice 3 are unit-tested against **synthetic
-  `pcb_planes`/`pcb_copper` fixture rows** — slice 3 does not wait on
-  slices 5/7 for real data.
+- **DRC splits in two, at the IR level boundary** (re-cut 2026-08-27
+  after the layered-ratsnest/IR decisions — the single-engine `drc.py`
+  this bullet used to describe no longer matches the architecture):
+  - **Graph feasibility** (`ir.py`, L0–L4, **no geometry, no
+    shapely**): unconnected items, same-layer crossings, per-layer
+    planarity, per-gap capacity, plane connectivity under via
+    deletion, escape-capacity feasibility. These are *constraints
+    inside the optimizer's loop*, not a post-hoc pass — but they also
+    back `view='drc'` on their own, which means the useful early
+    answer ("this netlist cannot route on 4 layers, here is the gap
+    that binds") arrives **before any geometry exists**.
+  - **Geometric DRC** (`drc.py`, L5, on realized copper): class-rule
+    clearance, width, annular ring, courtyard overlap, board-edge.
+    The *final* check, not the main event. Verified against the
+    **naive O(n²) reference implementation** (exact pairwise distance
+    on small fixtures) — the acceleration structure is where the bugs
+    live, and a reference kills them instantly.
+  Both emit `pcb_drc_findings` rows + a TOON digest and share
+  `view='drc'`; `eyes.drc_lite` is superseded, eyes.py keeps
+  ratsnest/crossings/proximity/measures.
+  **Shapely's justification changes** (it is still a core dep, for a
+  different reason): NOT for clearance queries — our geometry alphabet
+  is small (circles, rounded rects, arcs and segments with width) and
+  those distances are closed-form. It is needed for the **tiling
+  pass**: polygon booleans, antipad subtraction, sliver detection,
+  weighted-Voronoi expansion. If tiling were ever cut, the shapely
+  core-dep decision should be revisited rather than inherited.
 - **Plane segmentation** (`planes.py`): assign power nets to plane-layer
   regions (seeded by load-pin clusters), legalize with polygon ops,
   thermal reliefs, stitching-via proposal, island detection
@@ -210,12 +543,38 @@ venvs pick it up via the normal deploy.
   a **derived post-pass, never an optimizer objective** (pour area is
   the complement of wire — a cost term would double-count); per-layer
   **copper fraction** reported as an advisory DRC metric (balance/warp).
-- **Placer v2** (`place.py` extension): **simulated annealing over a
-  constructive seed** (connectivity clustering + cluster drop; SA is
-  the refiner — at ≤500 components it beats force-directed on rotation,
-  locks, and arbitrary cost terms). Moves: translate, rotate 90°,
-  swap-pair; `fixed='xy'|'rot'|'both'` = restricted move sets, locked
-  parts still contribute cost. Cost = weighted legible terms:
+- **Joint place+route optimizer** (`optimize.py`, absorbing the
+  `place.py` extension): ONE annealer over a shared
+  **(placement, sketch)** state — placement and topology are not
+  separate stages (user decision 2026-08-27; see the decisions log for
+  the full rationale). The staging in classic tools is an artifact of
+  maze routing, where a route *is* geometry and any component move
+  invalidates it. In a rubber-band sketch a route is a set of
+  combinatorial side-choices that stays *valid* under small placement
+  perturbations — the bands just stretch — so co-optimization is the
+  payoff for choosing the topological representation, not a stretch of
+  it.
+  **Hard design constraint — locality.** Every cost term MUST decompose
+  into local contributions with an efficient delta: moving one
+  component perturbs only the connections incident to it and the gaps
+  near it (~10–30 on a real board). A term needing a board-wide
+  re-evaluation per move is disqualified however cheap it looks — rule
+  simplicity does not save an O(board) delta. Budget: pure-Python
+  local deltas run ~10⁴ moves/s against an SA appetite of 10⁵–10⁷, so
+  a real board is **minutes**, not interactive. That is fine — place
+  and route are enqueued worker jobs by construction.
+  **Move mix is a schedule, not an architecture.** Start
+  placement-dominant (topology is meaningless before parts are roughly
+  located), end topology-dominant (once placement is near-frozen the
+  remaining wins are side-choices and layer assignment). Placement and
+  topology moves have different cost scales and acceptance rates, so
+  the mix adapts over the schedule.
+  Constructive seed (connectivity clustering + cluster drop) then SA as
+  the refiner. Placement moves: translate, rotate 90°, swap-pair;
+  `fixed='xy'|'rot'|'both'` = restricted move sets, locked parts still
+  contribute cost. Topology moves: flip a side choice, reorder through
+  a gap, change layer, rip-and-reseed a bundle. Cost = weighted legible
+  terms:
   signal-net crossings (**plane-served nets excluded**) +
   **peak region utilization** from a RUDY-style grid estimator (net
   demand smeared over bounding boxes vs. per-region track capacity;
@@ -225,16 +584,91 @@ venvs pick it up via the normal deploy.
   not a scalar) + courtyard-overlap + measures as soft terms. Digest:
   per-term, per-region table + per-component move list; the LLM's
   lever is re-annealing from current state with adjusted weights/locks.
-  Post-route, realized per-region density replaces the estimate (the
-  6→5 back-edge carries real numbers; predicted-vs-realized per region
-  is the estimator's calibration signal).
-- **Topological router** (`sketch.py` + `realize.py`): net → two-pin
-  connection tree; sketch search (side choices) minimizing crossings +
-  congestion; deterministic realizer with per-gap capacity accounting;
-  congestion digest per board region; rip-up primitives (rip one
-  bundle/net, pin a topology choice, re-realize incrementally).
-  Escalating-cost reroute (PathFinder-style negotiation) inside the
-  autoroute job; the LLM intervenes between rounds, not per segment.
+  Post-realize, measured per-region density replaces the estimate
+  (predicted-vs-realized per region is the estimator's calibration
+  signal).
+  **Legibility is a requirement, not a hope.** A fused optimizer's
+  failure mode is one number going down with no story — which would
+  break the whole "LLM intervenes between rounds" premise. The engine
+  MUST keep per-term, per-region cost decomposition, so the digest can
+  still say "peak congestion in region C3, driven by these six nets,
+  and placement moves there are blocked by two locked parts." This is
+  the thing most likely to be quietly lost in the fusion.
+- **The canonical intermediate is a LAYERED ratsnest** (user decision
+  2026-08-27 — the representation, not just the optimizer, changed).
+  A connection is a path of segments; **every segment carries a layer**;
+  every layer transition is a via with position constraints. Layer
+  assignment lives INSIDE the ratsnest, not in a pass after it.
+  *Why this beats the layer-free version:* a crossing in a layer-free
+  ratsnest is not a violation — it is only a violation if both segments
+  land on the same layer. Minimizing layer-free crossings optimizes a
+  *proxy*. With layers, a crossing is exactly the thing that must be
+  resolved, and resolution has exactly three forms — move a component,
+  reorder through a gap, or spend a via — so via cost falls out of the
+  structure instead of being a hand-tuned term.
+  *The graph formulation:* "partition edges into k subgraphs, each
+  planar" is graph **thickness**; planarity testing is linear-time and
+  crossing counting is a sweep line, so evaluation on ~1500 connections
+  is milliseconds — the cost is in the search, not the check. Lineage:
+  Dai/Kong/Sato on rubber-band-sketch routability.
+  *Big simplification from our own stackup:* with the default 4-layer
+  SIG/GND/PWR/SIG, only F.Cu and B.Cu route — signal layer assignment
+  is **binary**. We solve biplanarity, not general k-layer thickness.
+  **Three places the pure-graph view must take metric information
+  back** — this is the load-bearing part, a purely topological
+  formulation will cheerfully emit physically impossible boards:
+  1. *Crossings depend on placement*, so this never fully decouples.
+     What is needed is the **cyclic order of pins around each
+     component** plus rough relative positions — enough geometry to
+     determine the embedding, not enough to draw it. That is what keeps
+     the state small.
+  2. *Planarity is necessary but NOT sufficient — gaps have capacity.*
+     A perfectly planar assignment can still demand 8 strands through
+     a 0.5 mm gap. So **per-gap capacity accounting moves OUT of the
+     realizer and INTO the optimization loop** as a hard constraint
+     (strands passing vs. strands that fit, per adjacent-obstacle
+     pair). Cheap to maintain, keeps the representation nearly pure.
+  3. *Vias couple all layers.* A through via blocks every layer, so in
+     the graph it is a vertex present in **all** layer subgraphs at
+     once. That coupling is why this does not decompose into k
+     independent planarity problems, and it is the part that stays
+     genuinely hard. (Blind/buried vias would decouple it; JLC prices
+     accordingly.)
+  **Plane integrity becomes a constraint, not a post-hoc finding.**
+  Every via punches an antipad through a plane; enough antipads in one
+  region disconnect it. That is a graph-connectivity property with vias
+  as vertex deletions — so the island detector moves *into* the
+  optimizer's constraint set rather than reporting damage afterwards.
+  **Consequence for the congestion estimator:** RUDY was a statistical
+  proxy for gap pressure. Once gaps carry exact capacities we can
+  *count* instead of estimating, so RUDY is retained ONLY for the early
+  placement-dominant phase when no sketch exists yet; the moment a
+  layered sketch exists, exact gap capacity supersedes it.
+  **Scheduling:** layer assignment must not start at move zero — while
+  placement is making large moves the assignment churns uselessly. It
+  enters mid-schedule: placement-dominant → layer assignment enters →
+  topology polish.
+- **Sketch + realize** (`sketch.py` + `realize.py`): net → two-pin
+  connection tree; the layered sketch state (side choices + layer
+  assignment) is what the joint optimizer mutates. **The realizer stays OUT of the inner loop** —
+  sketch → copper is deterministic and comparatively expensive, so it
+  runs at checkpoints only, preserving sketch-as-canonical /
+  copper-as-derived. Deterministic realizer with per-gap capacity
+  accounting; congestion digest per board region; rip-up primitives
+  (rip one bundle/net, pin a topology choice, re-realize
+  incrementally). Escalating-cost reroute (PathFinder-style
+  negotiation) across checkpoints; the LLM intervenes between rounds,
+  not per segment.
+  **Geometry is arcs and tangent lines, NOT beziers** (user question
+  2026-08-27, resolved to the exact form): the shortest path around
+  obstacles with clearance is exactly straight tangents joined by
+  circular arcs, computable in closed form — a bezier would be an
+  *approximation* of something we can solve outright. Gerber supports
+  arcs natively (G02/G03) and has no bezier primitive, so beziers
+  would be flattened to polylines on export anyway. Arcs are therefore
+  simultaneously more correct, cheaper, and more manufacturable, while
+  still buying the real wins of curved traces (no acid traps at acute
+  angles, better copper utilization, smoother impedance).
   Cost policy for plane-served nets: **never route ground/power beyond
   the dog-bone fanout** (pad → short stub → via to plane; via-in-pad
   wicks solder, so the stub is mandatory for SMT). Cost ordering:
@@ -266,11 +700,43 @@ venvs pick it up via the normal deploy.
 
 ### Export + order
 
-- **`.kicad_pcb` writer** (export.py): stackup, outline, footprints
-  (generated or cached kicad_mod), realized copper, pours. One artifact
-  buys: EasyEDA Pro viewing (its KiCad importer), gerbers via kicad-cli,
-  and **KiCad DRC as the independent second-opinion oracle** in tests
-  (advisory container-image dep; test skips without it, CI job runs it).
+- **Gerber X2 + Excellon writer** (export.py) — **replaces the
+  `.kicad_pcb` writer as the critical path** (user decision
+  2026-08-27). Rationale: routing through `.kicad_pcb` to reach gerbers
+  is backwards — it writes a complex, version-brittle s-expression
+  board format so an external binary can convert it into a *simpler*
+  one. Gerber X2 is flat (aperture definitions + draws) and Excellon is
+  trivial; writing them straight off canonical copper is less code than
+  the board writer, removes the `kicad-cli` image dependency, and drops
+  a class of "KiCad N changed the board format" breakage. `export.py`
+  already hand-writes BOM/CPL/DSN — this is the same kind of work.
+- **JLC capability rules as versioned DATA, not code**: a rule table
+  holding JLC's published minimum *and* our house default at a
+  deliberate margin above it. Two tiers so the margin is legible: the
+  DRC digest can say "JLC min 3.5 mil, house default 6, this trace
+  spends 2.5 mil of headroom" rather than hiding a constant. Data (not
+  code) because aluminum and non-4-layer processes have *different*
+  capability rows — the same reason the stackup is data.
+- **DRC oracles without KiCad.** Conservative margin defends against
+  *quantitative* error (units bugs, a few mils of clearance) but NOT
+  against *categorical* error (a net silently shorted, an unconnected
+  pin called clean, a pad on the wrong layer) — margin is irrelevant
+  to those, so slice 3's engine still has to be correct. Two cheaper
+  oracles cover it better than KiCad did:
+  (a) a **naive O(n²) reference implementation** — exact pairwise
+  clearance on small fixtures, asserted equal to the STRtree-
+  accelerated engine. Spatial-index bugs (a query that misses a
+  neighbour) die instantly against this; ~30 lines, no dependency.
+  (b) **JLCPCB's own DFM report** on upload at slice 8 — ground truth
+  from the authority that matters, not a proxy for it.
+  Residual gap, stated honestly: nothing independently checks our
+  *interpretation* of a rule's definition (clearance to centreline vs.
+  edge). That is exactly the error class the house margin absorbs, and
+  JLC's DFM catches the remainder before copper is etched.
+- **`.kicad_pcb` writer — demoted to a convenience**, for human viewing
+  in KiCad / EasyEDA Pro. Worth having, not worth blocking on; nothing
+  correctness-critical rides on it, so it may be lower fidelity and
+  ships whenever convenient.
 - **JLCPCB API client** (`src/precis/pcb/jlc_api.py`): quote → order →
   track over the official API (api.jlcpcb.com); gerber+BOM+CPL bundle
   upload. All calls via `safe_get`/`safe_stream` discipline (fixed host,
@@ -314,15 +780,35 @@ venvs pick it up via the normal deploy.
    first; everything else keys off board_id/stackup/classes).
 2. Catalog + footprints: EasyEDA footprint pull/parse + JLCPCB
    Components API (live stock) + family-consolidating selection.
-3. DRC engine + findings rows + gate evaluator. (needs 1, 2)
-4. `.kicad_pcb` writer + KiCad-DRC test oracle. (needs 1, 2)
-5. Planes: assignment + segmentation + islands. (needs 1, 3)
-6. Placer v2. (needs 3, 5)
-7. Topological router + autoroute job + congestion/rip-up tools.
-   (needs 3, 5, 6)
-8. JLCPCB API client. (needs 4)
-9. Phase-machine gates hookup — supersedes the "route round-trip"
-   wording of 0042 Slice 9; back-edges unchanged. (needs 7)
+**Re-cut 2026-08-27.** The old order put a geometry-first DRC engine at
+slice 3 and the IR nowhere — an artifact of the pre-fusion design. The
+IR is now the foundation everything keys off, and geometric DRC needs
+realized copper (L5), so it moves *after* the realizer. Net effect: one
+foundation slice earlier, one geometry slice later, same count.
+
+3. **The IR** (`ir.py` + `objectives.py`) — L0–L4 structure, enrichment
+   levels, dirty-flag cascade, array layout, objective vectors; plus
+   the **graph feasibility checks**, which back `view='drc'` with
+   useful findings before any geometry exists. Foundation slice: like
+   slice 1, little user-visible surface, everything downstream depends
+   on it. (needs 1, 2)
+4. Gerber X2 + Excellon writer + JLC capability rule table. Independent
+   of 3 — the widest point in the graph, ship in parallel. (needs 1, 2)
+5. Escape-routing precompute per footprint + plane/tiling primitives
+   (weighted-Voronoi expansion, sliver cull, tile connectivity).
+   (needs 2, 3)
+6. Joint optimizer, **placement moves only** — the walking skeleton.
+   Same engine as 7, restricted move set. (needs 3, 5)
+7. Joint optimizer, **topology + layer + pin-swap moves enabled** +
+   realizer (arcs/tangents) + autoroute job + congestion/rip-up tools.
+   Not a second engine: 6 and 7 are one `optimize.py` shipped in two
+   steps, so delivery stays incremental without re-introducing the
+   place/route split. (needs 6)
+8. **Geometric DRC on realized copper** + the O(n²) reference oracle +
+   gate evaluator. Was slice 3; needs L5 to exist. (needs 7)
+9. JLCPCB API client (quote/order/track). (needs 4)
+10. Phase-machine gates hookup — supersedes the "route round-trip"
+    wording of 0042 Slice 9; back-edges unchanged. (needs 7, 8)
 
 Each slice ships via the normal gate; live-model/API tests follow the
 recorded-fixture pattern (one live smoke gated on creds).
@@ -393,10 +879,12 @@ recorded-fixture pattern (one live smoke gated on creds).
 - Migration 0138 (new tables + two ALTERs; backfill one board/design).
 - `pyproject.toml` — shapely added to core deps ⇒ precis-dev image
   rebuild (or UV_WITH bridge) + serving venvs via normal deploy.
-- `src/precis/pcb/` — new: drc.py, planes.py, sketch.py, realize.py,
-  jlc_api.py, footprint_gen.py; extended: place.py, export.py,
-  footprint.py, catalog.py; eyes.py — drc_lite retired (superseded by
-  drc.py behind `view='drc'`), other eyes views unchanged.
+- `src/precis/pcb/` — new: drc.py, planes.py, optimize.py, sketch.py,
+  realize.py, easyeda.py, jlc_api.py, _http.py, gerber.py; extended:
+  place.py (folded into optimize.py), export.py, footprint.py,
+  catalog.py; eyes.py — drc_lite retired (superseded by drc.py behind
+  `view='drc'`), other eyes views unchanged. No footprint_gen.py —
+  footprints are pulled, never synthesized.
 - `src/precis/store/_pcb_ops.py` (hydration + new row ops),
   `src/precis/handlers/pcb.py` (tool surface, job enqueue).
 - Worker: new job types on the existing substrate
@@ -404,8 +892,8 @@ recorded-fixture pattern (one live smoke gated on creds).
 - Skills: `precis-pcb-help` (+ net-class/measures cross-refs) get the
   new ops; a new `precis-route-help` runtime skill.
 - Secrets vault rows (`JLCPCB_*`, set via `/secrets`) — no deploy-
-  template env change needed; kicad-cli in the
-  CI/test image (advisory oracle); Freerouting role demoted in docs.
+  template env change needed. **No kicad-cli image dependency** (the
+  KiCad-DRC oracle is dropped); Freerouting role demoted in docs.
 - `docs/backlog/pcb-0042-implementation.md` — residuals section
   rewritten on ship of slice 1 (Freerouting → escape hatch; footprint
   conversion promoted to critical path; Slice 9 wording superseded).
@@ -425,8 +913,113 @@ recorded-fixture pattern (one live smoke gated on creds).
   vocabulary (pins/vias only vs. explicit board-edge anchors) — settle
   in a short design note inside sketch.py's docstring during slice 7,
   with the reference-board tests as the arbiter.
-- Open (slice 8): which JLCPCB API auth flow (key pair vs OAuth) —
-  settle when creds are provisioned; client abstracts it.
+- ~~Open (slice 8): which JLCPCB API auth flow~~ **Closed 2026-08-27**:
+  per-request HMAC-SHA256 key-pair signing, no OAuth, no token
+  endpoint — server-verified; see the auth block in Export + order.
+- **Decided (user, 2026-08-27) — place and route are ONE optimizer.**
+  The classic split is a workaround for maze routing (a route is
+  geometry ⇒ any component move invalidates it), not a mathematical
+  truth. Under a rubber-band sketch the topology is invariant to small
+  placement perturbations, so joint optimization is the payoff for the
+  representation we already chose. Consequences recorded in Engines:
+  locality is a hard constraint on every cost term; staging survives
+  only as a move-mix *schedule*; the realizer stays out of the inner
+  loop; per-term/per-region decomposition is mandatory for legibility.
+  Slices 6 and 7 merge into one engine shipped in two steps.
+- **Decided (user, 2026-08-27) — connections carry OBJECTIVE VECTORS;
+  no affinity-edge special case.** See §Connections carry objective
+  vectors. Fixes a live hole: plane-served nets are removed from the
+  routing objective, so a decap — whose only nets are PWR and GND —
+  had **zero edges and was invisible to the optimizer**. Objectives fix
+  it generally rather than by patch. Impedance objectives are
+  loop-scoped (return path implied by net domain/class). Absorbs the
+  trace-width policy enum. Trade-offs surface as a Pareto front over a
+  few meaningful dials, not dozens of weights.
+- **Decided (user, 2026-08-27) — refdes and pin maps are late labels
+  with an explicit freeze at first release.** Identity is an opaque id;
+  the human-facing number is assigned at export. Both are generated
+  artifacts — a hand-transcribed pin map or a renumbered refdes after
+  release desyncs firmware/paperwork from hardware.
+- **Decided (user, 2026-08-27) — escape routing is footprint-intrinsic
+  and PRECOMPUTED.** Pad gaps, shell depth and per-gap escape capacity
+  follow from the footprint alone, so they are derived once per
+  footprint from the parsed pads and cached in `part_footprints`,
+  available at L0/L1 before any placement exists. Rotation permutes
+  them; placement does not change them. Consequence worth more than the
+  escape routing itself: **required layer count is derivable from
+  escape demand** rather than asserted up front (~2 rings escape on top
+  for 0.8 mm BGA) — which is what makes emergent layer roles workable.
+- **Decided (user, 2026-08-27) — fill is a TILING, not a flood.** One
+  primitive: *a net owns a region on a layer*; trace, plane, pour and
+  keepout stop being different objects. Do NOT optimize the tiling
+  (continuous, non-convex); **derive** it — L2 topology gives each net
+  a skeleton, then a weighted-Voronoi / multi-source expansion grows
+  every skeleton simultaneously with per-net weights from the objective
+  vector, until clearance binds. Ground fills what remains because it
+  has the most skeleton and no cap. Two mandatory checks: sliver/acute
+  cull (acid traps), and **every tile must connect to its own net**
+  (kills floating copper) — the plane-connectivity constraint again.
+  Widened traces need thermal relief / neck-down at pads or they
+  heat-sink during reflow and tombstone.
+- **Decided (user, 2026-08-27) — keepouts and vias are ONE primitive:
+  layer-masked obstacle regions.** A via is a small obstacle over a
+  contiguous layer span that *additionally* carries connectivity; a
+  keepout connects nothing. An antenna keepout must exclude the plane
+  too, which holes the plane graph — the same machinery as
+  antipad-induced islands, at no extra cost.
+- **Decided (user, 2026-08-27) — copper balance is a CHECK, not a cost
+  term** (correcting an earlier over-promotion in this same log). The
+  fill/tiling pass coppers every layer to near-full by construction and
+  total per-layer copper is dominated by pour, not trace width;
+  residual imbalance comes from antipad/clearance density. Widening
+  traces is a separate, purely positive relaxation (resistance,
+  thermal, yield), bounded by the gap capacities we already compute —
+  so gap capacity does double duty: constraining routability AND
+  pricing the widening.
+- **Decided (user, 2026-08-27) — ONE progressively-enriched IR (L0–L5),
+  graph-first.** See §The IR. Work as deep in pure-graph space as
+  possible and descend to geometry only when forced; each level
+  decorates the previous; a move dirties only levels above it, usually
+  locally. Non-negotiable corollary: **the embedding is stored
+  explicitly, never derived from coordinates** — deriving it destroys
+  the move-invariance the whole architecture rests on. Arrays not
+  objects, so deltas vectorize.
+- **Decided (user, 2026-08-27) — layers are integer indexes; names are
+  export-only.** Via spans become bitmasks and the inner loop does
+  arithmetic, not string hashing. `stackup jsonb` is already ordered,
+  so this is discipline, not migration.
+- **Decided (user, 2026-08-27) — layer ROLES are emergent, not
+  hardcoded.** SIG/GND/PWR/SIG is a default, not an architecture; which
+  nets become planes on which layers is a decision variable, so better
+  stackups can emerge by measurement. Guarded by two cost terms rather
+  than a fixed stackup: reference-plane adjacency (low weight now, high
+  when RF arrives — but note it already matters for any fast digital
+  edge, not just RF) and copper balance (promoted from advisory metric
+  to cost term, since emergent roles can warp a panel). Layer count and
+  physical stackup stay pinned by the fab menu; roles are ours.
+- **Decided (user, 2026-08-27) — the ratsnest is LAYERED.** Layer
+  assignment belongs inside the ratsnest, not in a pass after it,
+  because a layer-free crossing is not a violation — only a same-layer
+  crossing is — so the layer-free crossing count optimizes a proxy.
+  Full consequences in Engines: exact gap capacity replaces RUDY once a
+  sketch exists; per-gap capacity moves into the optimizer as a hard
+  constraint; plane-island detection becomes a constraint rather than a
+  post-hoc DRC finding; layer assignment is a third move class entering
+  mid-schedule. Our own stackup reduces this to **biplanarity** (only
+  F.Cu/B.Cu route), not general k-layer thickness.
+- **Decided (user, 2026-08-27) — curves are arcs + tangents, not
+  beziers.** The rubber-band optimum around clearance circles *is*
+  tangent lines joined by arcs, in closed form; gerber has arcs
+  natively and no bezier primitive. The exact answer is cheaper than
+  the approximation.
+- **Decided (user, 2026-08-27) — de-novo DRC against published JLC
+  rules, no KiCad oracle.** The `.kicad_pcb` writer is demoted to a
+  viewing convenience and `kicad-cli` leaves the image; gerber is
+  written directly. Rules become versioned two-tier data (JLC minimum
+  + house margin). Oracles: an O(n²) reference implementation for the
+  geometry kernel, and JLC's own DFM report at slice 8. Stated
+  residual gap: rule-*interpretation* error is covered by margin, not
+  by an independent implementation.
 
 - **Decided (ready-review 2026-08-27, all 4 blockers + 3 advisories
   resolved into the sections above):** shapely = core dep (geom.py stays

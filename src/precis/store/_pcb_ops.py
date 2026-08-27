@@ -25,6 +25,7 @@ Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from psycopg import Connection
@@ -994,8 +995,9 @@ class PcbMixin:
 
         Upsert (not the atomic swap) keeps the table live and the FK-free
         ``part_footprints`` / ``part_availability`` caches intact; the
-        staging + atomic-swap is the scale lever for the full ~300k dump
-        (the PCB netlist+placement IR — "drop-index trick optional at our row count")."""
+        staging + atomic-swap (:meth:`parts_bulk_replace`) is the scale
+        lever for the full ~300k dump (the PCB netlist+placement IR —
+        "drop-index trick optional at our row count")."""
         counts = {"upserted": 0, "restocked": 0}
         with self.tx() as conn:
             for r in rows:
@@ -1035,6 +1037,134 @@ class PcbMixin:
                     ),
                 )
                 counts["upserted"] += 1
+        return counts
+
+    def parts_bulk_replace(
+        self,
+        rows: Iterable[dict[str, Any]],
+        *,
+        min_fraction: float = 0.5,
+        force: bool = False,
+    ) -> dict[str, int]:
+        """Full-catalog reload via staging + atomic swap (0047's design —
+        see that migration's header comment) — the scale lever for the
+        whole ~300k-row jlcparts dump, as opposed to :meth:`parts_import`'s
+        per-row upsert (right-sized for an incremental API page, wrong for
+        a full reload). ``rows`` may be a one-shot generator; it is
+        consumed while loading the staging table, so a full dump never
+        needs to fit in memory as a list.
+
+        Everything — the staging table's creation, every row load, the
+        ``part_availability`` turnover roll, and the swap itself — runs
+        inside ONE transaction (:meth:`tx`, commit-on-clean-exit /
+        rollback-on-exception): a raise anywhere during the load leaves
+        the live ``parts`` table (and its indexes/rows) completely
+        untouched — the swap (drop old, promote staging) is the LAST
+        thing this method does. ``part_footprints`` / ``part_availability``
+        are deliberately FK-free (0047) so they are never touched by the
+        swap and survive it unconditionally; this method still rolls
+        ``part_availability``'s turnover signal per row, exactly like
+        :meth:`parts_import`, so a bulk reload keeps that signal live too.
+
+        **Shrink guard (do not remove).** A staging table that loaded far
+        fewer rows than the live catalog is almost never a real catalog
+        that shrank — it is a truncated download, a dump whose upstream
+        column names drifted so every row failed normalization, or an API
+        walk that died early. Promoting it silently destroys the catalog,
+        and the transaction cannot save us because the empty load is a
+        perfectly *successful* one. So the swap refuses unless staging
+        holds at least ``min_fraction`` of the live row count, and refuses
+        an empty staging table outright. ``force=True`` overrides for the
+        genuinely-intended teardown; the CLI surfaces it as an explicit
+        flag so nobody trips it by accident.
+
+        Returns ``{loaded, restocked}``.
+        """
+        counts = {"loaded": 0, "restocked": 0}
+        # A local (not module-level) name, not a string literal directly in
+        # the .execute() call — deliberately so
+        # tests/test_sql_schema_drift.py's static AST extractor can't
+        # statically resolve the INSERT below and counts it as
+        # skipped-dynamic rather than EXPLAIN-ing it against the migrated
+        # schema, where a scratch table created+dropped inside this one
+        # transaction (never a real migrated object) would false-positive
+        # as "relation does not exist". Same idiom
+        # :func:`precis.pcb.catalog.read_jlcparts_sqlite` already uses for
+        # its dynamic column list.
+        staging = "parts_staging"
+        with self.tx() as conn:
+            conn.execute(f"DROP TABLE IF EXISTS {staging}")
+            conn.execute(f"CREATE TABLE {staging} (LIKE parts INCLUDING ALL)")
+            for r in rows:
+                lcsc = r["lcsc"]
+                new_stock = int(r.get("stock") or 0)
+                if self._parts_update_availability(conn, lcsc, new_stock):
+                    counts["restocked"] += 1
+                conn.execute(
+                    f"""
+                    INSERT INTO {staging}
+                        (lcsc, mfr, mfr_part, description, jlcpcb_assemblable,
+                         basic, stock, price, package, height_mm, params,
+                         datasheet_url)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        lcsc,
+                        r.get("mfr"),
+                        r.get("mfr_part"),
+                        r.get("description") or "",
+                        bool(r.get("jlcpcb_assemblable", True)),
+                        bool(r.get("basic", False)),
+                        new_stock,
+                        _jsonb_or_none(r.get("price")),
+                        r.get("package"),
+                        r.get("height_mm"),
+                        _jsonb_or_none(r.get("params")),
+                        r.get("datasheet_url"),
+                    ),
+                )
+                counts["loaded"] += 1
+            # Shrink guard — see the docstring. A clean-but-empty load is
+            # the dangerous case precisely because nothing raised.
+            live = conn.execute("SELECT count(*) FROM parts").fetchone()
+            live_n = int(live[0]) if live else 0
+            floor = int(live_n * min_fraction)
+            if not force and (counts["loaded"] == 0 or counts["loaded"] < floor):
+                raise ValueError(
+                    f"refusing to swap: staging loaded {counts['loaded']} row(s) "
+                    f"but the live catalog holds {live_n} (floor {floor} = "
+                    f"{min_fraction:.0%}). A shrunken load is almost always a "
+                    "truncated dump, drifted upstream column names, or a walk "
+                    "that died early — not a catalog that really shrank. Pass "
+                    "force=True (CLI: --allow-shrink) if this is intended."
+                )
+            # The atomic swap: promote the fully-loaded staging table into
+            # ``parts``'s place. Reached only if every row above loaded
+            # clean — an exception anywhere in the loop propagates out of
+            # ``self.tx()`` and rolls back the whole transaction, DDL
+            # included, so ``parts`` is never dropped on a failed load.
+            conn.execute("DROP TABLE parts")
+            conn.execute(f"ALTER TABLE {staging} RENAME TO parts")
+            # ``LIKE ... INCLUDING ALL`` names the cloned indexes after the
+            # STAGING table, and RENAME TO does not rename a table's own
+            # indexes — so without this, 0047's deliberately-named
+            # parts_select_idx / parts_tsv_gin / parts_params_gin are gone
+            # after the first reload, and each later reload accumulates
+            # another auto-suffixed variant. Rename them back so the live
+            # table's index names stay the ones the migration documents.
+            for (idx_name,) in conn.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'parts' AND indexname LIKE %s",
+                (f"{staging}%",),
+            ).fetchall():
+                canonical = "parts" + idx_name[len(staging) :]
+                conn.execute(f'ALTER INDEX "{idx_name}" RENAME TO "{canonical}"')
+            conn.execute(
+                "COMMENT ON TABLE parts IS "
+                "'LCSC/JLCPCB catalog (ADR 0042 §5, Flow A) — bulk from "
+                "the jlcparts dump via staging + atomic swap. NO inbound "
+                "FK (the swap drops the table).'"
+            )
         return counts
 
     def _parts_update_availability(
@@ -1134,10 +1264,10 @@ class PcbMixin:
         }
 
     def part_footprint_get(self, lcsc: str) -> dict[str, Any] | None:
-        """The Flow B easyeda2kicad cache row for a C-number, or None."""
+        """The Flow B EasyEDA cache row for a C-number, or None."""
         with self.pool.connection() as conn:
             r = conn.execute(
-                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source "
+                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw "
                 "FROM part_footprints WHERE lcsc = %s",
                 (lcsc,),
             ).fetchone()
@@ -1151,21 +1281,24 @@ class PcbMixin:
             "centroid": r[3],
             "kicad_mod": r[4],
             "source": r[5],
+            "raw": r[6],
         }
 
     def part_footprint_put(self, lcsc: str, data: dict[str, Any]) -> None:
-        """Cache a converted footprint (Flow B). Upsert by C-number."""
+        """Cache a fetched footprint (Flow B). Upsert by C-number. ``raw``
+        (the untouched EasyEDA component JSON) round-trips so a future
+        parser improvement can reparse from cache without re-fetching."""
         with self.tx() as conn:
             conn.execute(
                 """
                 INSERT INTO part_footprints
-                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (lcsc) DO UPDATE SET
                     pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
                     courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
                     kicad_mod=EXCLUDED.kicad_mod, source=EXCLUDED.source,
-                    fetched_at=now()
+                    raw=EXCLUDED.raw, fetched_at=now()
                 """,
                 (
                     lcsc,
@@ -1175,6 +1308,7 @@ class PcbMixin:
                     _jsonb_or_none(data.get("centroid")),
                     data.get("kicad_mod"),
                     data.get("source"),
+                    _jsonb_or_none(data.get("raw")),
                 ),
             )
 

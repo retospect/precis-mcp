@@ -48,6 +48,7 @@ from precis.cli import (
     migrate_refs,
     nanopub,
     patent,
+    pcb,
     perplexity,
     podcast,
     provenance,
@@ -241,6 +242,10 @@ def main() -> None:
         heartbeat.run(args)
         return
 
+    if args.cmd == "pcb":
+        pcb.run(args)
+        return
+
     if args.cmd == "cron":
         cron.run(args)
         return
@@ -340,6 +345,7 @@ def _build_parser() -> argparse.ArgumentParser:
     schema_doc.add_parser(sub)
     secret.add_parser(sub)
     nanopub.add_parser(sub)
+    pcb.add_parser(sub)
     settings.add_parser(sub)
     users.add_parser(sub)
     db.add_parser(sub)

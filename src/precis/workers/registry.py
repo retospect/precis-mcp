@@ -975,6 +975,29 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr264357: the JLCPCB catalog ingest, wired at last — prod `parts`
+        # was EMPTY because nothing ever called the parsing layer in
+        # precis.pcb.catalog. Same shape as watch_poll/news_poll just
+        # above: no `default_profiles`, so this registers a pass only for
+        # a manual/ad-hoc `--only parts_refresh` run. The STANDING trigger
+        # is the `parts_refresh` scheduler-lease cadence (workers/
+        # scheduler.py CADENCES, daily, host-agnostic — the catalog moves
+        # slowly). Dark (clean no-op) without JLCPCB Open API credentials —
+        # the community jlcparts-dump bulk load stays the manual
+        # `precis pcb refresh-parts --from-sqlite` CLI verb, not this pass.
+        # See docs/backlog/pcb-guided-place-route.md "Footprint + catalog
+        # reality" (the PREREQUISITE bullet) for the full context.
+        name="parts_refresh",
+        label="JLCPCB catalog refresh (Open API cursor walk)",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        uses_external=("jlcpcb",),
+        one_line="Resume the JLCPCB Open API `lastKey` cursor walk into "
+        "`parts` (checkpointed, bounded per cycle); daily cadence.",
+        doc_skill="precis-part-select-help",
+    ),
+    ServiceSpec(
         # email-kind slice 3. Dark until PRECIS_MAIL_POLL_ENABLED is set on one
         # host — no default profile, so it doesn't poll the same mailbox from
         # every node (a per-account lease that would make every-node safe is the

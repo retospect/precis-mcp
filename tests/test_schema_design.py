@@ -107,6 +107,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "part_footprints.courtyard",
         "part_footprints.pads",
         "part_footprints.pin_map",
+        # 0139: the untouched EasyEDA component JSON, kept so a future
+        # parser improvement can reparse from cache without re-fetching.
+        "part_footprints.raw",
         "parts.params",
         "parts.price",
         "pcb_boards.fold_lines",

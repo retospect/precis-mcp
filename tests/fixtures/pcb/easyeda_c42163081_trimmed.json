@@ -1,0 +1,32 @@
+{
+  "code": 200,
+  "success": true,
+  "result": {
+    "uuid": "schematic-uuid-trimmed",
+    "dataStr": {
+      "docType": 2,
+      "head": {"x": 0, "y": 0},
+      "shape": [
+        "P~show~0~gge0~100 90 0~0~1~gge0~0",
+        "PIN~show~1~pin1~pin1"
+      ]
+    },
+    "packageDetail": {
+      "uuid": "pkg-uuid-trimmed",
+      "dataStr": {
+        "docType": 4,
+        "head": {"x": 100, "y": 100},
+        "shape": [
+          "PAD~ELLIPSE~100~90~6~6~1~GND~1~1.5~~0~gge1~0~Y~0",
+          "PAD~RECT~110~90~6~6~1~~2~0~~0~gge2~0~Y~0",
+          "PAD~RECT~100~100~6~6~2~~3~0~~0~gge3~0~Y~0",
+          "PAD~RECT~110~100~6~6~1~~4~0~~0~gge4~0~Y~0",
+          "PAD~RECT~100~110~6~6~1~~5~0~~0~gge5~0~Y~0",
+          "PAD~RECT~110~110~6~6~1~~6~0~~90~gge6~0~Y~0",
+          "TRACK~1~3~~95 85 115 85 115 115 95 115~trackid1~0",
+          "SOLIDREGION~3~~M95,85 L115,85 L115,115 L95,115 Z~solid~0"
+        ]
+      }
+    }
+  }
+}

@@ -1,16 +1,18 @@
 """Footprint resolution (Flow B) — lazy, per-selected-part.
 
-Footprints are the catalog's expensive half: pad geometry + the pin-name→pad
-map, converted from LCSC via **easyeda2kicad**. We do NOT convert all ~300k
-parts — only the few a design actually selects — and cache the result in
-``part_footprints`` (keyed by C-number, FK-free so the Flow-A catalog swap
-never touches it).
+Footprints are the catalog's expensive half: pad geometry + the pin-name->pad
+map, fetched from EasyEDA (:mod:`precis.pcb.easyeda`) and parsed ourselves —
+no parametric generation (user decision 2026-08-27): footprints are pulled,
+never synthesized. Every JLCPCB-assemblable part has one by construction
+(JLC assembly places from it), so **no EasyEDA footprint means the part is
+not selectable** — there is no fallback generator to fall back to. We do NOT
+fetch all ~300k catalog parts — only the few a design actually selects — and
+cache the result in ``part_footprints`` (keyed by C-number, FK-free so the
+Flow-A catalog swap never touches it).
 
 The fetch is pluggable: ``ensure_footprint(store, lcsc, fetcher=...)`` returns
-the cache row, fetching+caching on a miss. The default fetcher is
-easyeda2kicad (an optional, network-bound dependency — gated like the cad
-exporters); tests inject a fake fetcher. (Phase 2 adds the internal IPC-7351
-land-pattern generator for standard packages — the PCB netlist+placement IR footprint tiers.)
+the cache row, fetching+caching on a miss. The default fetcher hits EasyEDA
+live; tests inject a fake fetcher instead.
 """
 
 from __future__ import annotations
@@ -18,13 +20,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import Unsupported
-
 if TYPE_CHECKING:
     from precis.store import Store
 
 #: A fetcher takes a C-number and returns the footprint dict
-#: ``{pads, pin_map, courtyard, centroid, kicad_mod, source}`` or None.
+#: ``{pads, pin_map, courtyard, centroid, source, raw}`` or None.
 Fetcher = Callable[[str], "dict[str, Any] | None"]
 
 
@@ -40,7 +40,7 @@ def ensure_footprint(
     cached = store.part_footprint_get(lcsc)
     if cached is not None:
         return cached
-    fetch = fetcher or _easyeda2kicad_fetch
+    fetch = fetcher or _easyeda_fetch
     data = fetch(lcsc)
     if data is None:
         return None
@@ -48,20 +48,13 @@ def ensure_footprint(
     return store.part_footprint_get(lcsc)
 
 
-def _easyeda2kicad_fetch(lcsc: str) -> dict[str, Any] | None:  # pragma: no cover
-    """Real fetch via easyeda2kicad (optional + network). Gated like the cad
-    exporters — a missing dep is an Unsupported with the install hint, not a
-    crash. Full conversion (EasyEDA → pads/pin_map/courtyard) is wired in the
-    deploy image where the dependency + network are present."""
-    try:
-        import easyeda2kicad  # noqa: F401
-    except ImportError as exc:
-        raise Unsupported(
-            "footprint fetch needs the easyeda2kicad backend",
-            next="install it:  pip install 'precis-mcp[pcb]'  (or pre-cache "
-            "footprints via the parts_refresh worker)",
-        ) from exc
-    # The conversion (EasyEDA component → KiCad pads/pin_map/courtyard) lands
-    # with the deploy wiring; until then a present dep still returns None so
-    # callers degrade rather than guess geometry.
-    return None
+def _easyeda_fetch(lcsc: str) -> dict[str, Any] | None:  # pragma: no cover
+    """Default fetcher: EasyEDA over the network, parsed into canonical
+    pads/pin_map/courtyard/centroid. Exercised by the worker/CLI paths that
+    have network; unit tests inject a fake fetcher instead of hitting it."""
+    from precis.pcb.easyeda import fetch_component, parse_component
+
+    doc = fetch_component(lcsc)
+    if doc is None:
+        return None
+    return parse_component(doc)

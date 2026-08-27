@@ -385,6 +385,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "disk_check",
             "watch_poll",
             "news_poll",
+            "parts_refresh",
             "mail_poll",
             "inject_scan",
             "briefing",
@@ -1811,6 +1812,31 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_news_poll_pass)
+
+        # parts_refresh — the JLCPCB catalog ingest (gr264357). Same shape
+        # as health_digest/materialize below: this registration is for a
+        # manual/ad-hoc `--only parts_refresh` run only (no
+        # `default_profiles`, no `enable_env`). The STANDING trigger is the
+        # `parts_refresh` scheduler-lease cadence (workers/scheduler.py
+        # CADENCES, daily, host-agnostic) — the catalog moves slowly. Dark
+        # (clean no-op) without JLCPCB Open API credentials.
+        if _register("parts_refresh"):
+            from precis.workers.parts_refresh import run_parts_refresh_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _parts_refresh_pass(batch_size: int) -> _BatchResult:
+                # batch_size is unused, like health_digest/materialize
+                # below — the pass caps itself via its own row budget
+                # (workers/parts_refresh.py's DEFAULT_ROW_BUDGET).
+                r = run_parts_refresh_pass(store)
+                return _BatchResult(
+                    handler="parts_refresh",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_parts_refresh_pass)
 
         # Mailbox poll (email kind, slice 3). Per-account IMAP poll for new
         # mail past the last_uid high-water + inline tier-0 regex injection

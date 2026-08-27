@@ -299,6 +299,28 @@ def _run_ots_sweep(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_parts_refresh(store: Store, batch_size: int) -> None:
+    """One JLCPCB catalog Open API cursor-walk tick (gr264357), fired from
+    the daily host-agnostic ``parts_refresh`` cadence — any live worker can
+    win it, same shape as ``ots_sweep``/``nanopub_mirror``. ``batch_size``
+    is unused — the pass caps itself via its own row budget (workers/
+    parts_refresh.py's ``DEFAULT_ROW_BUDGET``), checkpointed in
+    ``app_state`` so an interrupted or resumed walk continues rather than
+    restarting the ~7M-row catalog. Dark (clean no-op) without JLCPCB Open
+    API credentials on this host — the community-dump bulk load stays a
+    manual ``precis pcb refresh-parts --from-sqlite`` call, not this
+    cadence."""
+    from precis.workers.parts_refresh import run_parts_refresh_pass
+
+    result = run_parts_refresh_pass(store)
+    log.info(
+        "scheduler: parts_refresh — claimed=%d ok=%d failed=%d",
+        result["claimed"],
+        result["ok"],
+        result["failed"],
+    )
+
+
 def _run_nanopub_mirror(store: Store, batch_size: int) -> None:
     """One registry-mirror pass (delta sync → flag scan → concurrence
     alerts), fired from the daily host-agnostic ``nanopub_mirror``
@@ -592,6 +614,17 @@ CADENCES: tuple[Cadence, ...] = (
         name="nanopub_mirror",
         interval_s=24 * 3600 + 23 * 60,
         run=_run_nanopub_mirror,
+    ),
+    # gr264357: the JLCPCB catalog ingest — daily, off the exact day
+    # boundary like ots_sweep/nanopub_mirror above so the three daily
+    # fires don't land together. Host-agnostic; no `eligible` env gate —
+    # the pass itself no-ops cleanly without JLCPCB API credentials (see
+    # workers/parts_refresh.py), same posture as ots_sweep/nanopub_mirror.
+    # spends=False: no LLM anywhere in the walk.
+    Cadence(
+        name="parts_refresh",
+        interval_s=24 * 3600 + 37 * 60,
+        run=_run_parts_refresh,
     ),
 )
 

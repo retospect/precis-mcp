@@ -13,8 +13,9 @@ status: active
 # precis-part-select-help — pick parts that JLCPCB can actually build
 
 A `part` is reference data in the LCSC/JLCPCB catalog, addressed by its **LCSC
-C-number** (`C25804`). It is **ingest-only** (loaded from the `jlcparts` dump
-by the `parts_refresh` worker) — you `get` and `search` it, never `put` it.
+C-number** (`C25804`). It is **ingest-only** (loaded via `precis pcb
+refresh-parts` / the `parts_refresh` worker, from the JLCPCB Open API or the
+community `jlcparts` dump) — you `get` and `search` it, never `put` it.
 The whole catalog is **JLCPCB-assemblable by definition**, so a part you find
 here can be placed and soldered by the fab. This skill feeds the `part` field
 of a `pcb` component ([[precis-pcb-help]]).
@@ -52,7 +53,8 @@ Columns: `lcsc · mfr_part · description · basic · stock · restocks · packa
 $ea`. Pick the top Basic row that matches your parametrics + footprint.
 
 > If a search returns nothing, the catalog may simply be empty on this host —
-> it's populated by `precis pcb refresh-parts` (the jlcparts dump). Say so
+> it's populated by `precis pcb refresh-parts` (the JLCPCB Open API, falling
+> back to the community jlcparts dump without API credentials). Say so
 > rather than inventing a C-number.
 
 ## Read one part — `get(kind='part', id='C…')`

@@ -2,9 +2,10 @@
 
 A ``part`` is reference data in the ``parts`` catalog table (NOT a ref;
 addressed by its LCSC **C-number**, e.g. ``get(kind='part', id='C25804')``).
-It is **ingest-only** — populated by the ``parts_refresh`` worker from the
-``jlcparts`` dump (Slice 2), never by ``put``. Selection prefers
-**JLCPCB-assemblable, high-turnover** parts.
+It is **ingest-only** — populated by ``precis pcb refresh-parts`` / the
+``parts_refresh`` worker (JLCPCB Open API cursor walk, falling back to the
+community ``jlcparts`` SQLite dump absent API credentials), never by
+``put``. Selection prefers **JLCPCB-assemblable, high-turnover** parts.
 
 Slice 1 ships read-only access (``get`` one part, ``search`` the catalog) over
 whatever the importer has loaded; the turnover ranking + lazy
@@ -96,8 +97,8 @@ class PartHandler(Handler):
             return Response(
                 body=f"no assemblable parts match {q!r}\n\n"
                 "Note: the parts catalog is populated by `precis pcb "
-                "refresh-parts` (the jlcparts dump) — it may be empty until "
-                "that has run."
+                "refresh-parts` (JLCPCB Open API, or the jlcparts dump as a "
+                "fallback) — it may be empty until that has run."
             )
         out = []
         for r in rows:

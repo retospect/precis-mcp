@@ -160,12 +160,30 @@ def read_jlcparts_sqlite(path: str, *, batch: int = 5000) -> Iterator[dict[str, 
 
 def refresh_parts_from_sqlite(store: Store, path: str) -> dict[str, int]:
     """Flow A end-to-end: read a jlcparts SQLite dump → normalize → import
-    (upsert + turnover). ``store`` provides :meth:`parts_import`. Returns the
-    import counts. The per-minute worker / ``precis pcb refresh-parts`` CLI
-    call this; here so it's testable against a fixture dump."""
+    (per-row upsert + turnover via :meth:`Store.parts_import`). Returns the
+    import counts. Right-sized for a small/incremental dump (and this
+    module's own test fixtures); a real ~300k-row dump refresh should use
+    :func:`bulk_refresh_parts_from_sqlite` instead — see that function."""
     rows = [
         norm
         for raw in read_jlcparts_sqlite(path)
         if (norm := normalize_jlcparts_row(raw)) is not None
     ]
     return store.parts_import(rows)
+
+
+def bulk_refresh_parts_from_sqlite(store: Store, path: str) -> dict[str, int]:
+    """Flow A full-dump reload: read a jlcparts SQLite dump → normalize →
+    staging + atomic swap (:meth:`precis.store._pcb_ops.PcbMixin.
+    parts_bulk_replace`, per the 0047 design) — the scale lever for the
+    whole ~300k-row catalog, unlike :func:`refresh_parts_from_sqlite`'s
+    per-row upsert. Streams rows as a generator (never materializes the
+    full dump as a list) so a real dump doesn't have to fit in memory.
+    ``precis pcb refresh-parts --from-sqlite`` (and its no-API-credentials
+    fallback) calls this."""
+    rows = (
+        norm
+        for raw in read_jlcparts_sqlite(path)
+        if (norm := normalize_jlcparts_row(raw)) is not None
+    )
+    return store.parts_bulk_replace(rows)

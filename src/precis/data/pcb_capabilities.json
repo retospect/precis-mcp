@@ -1,0 +1,132 @@
+{
+  "_note": "JLCPCB fab-capability rules, versioned DATA per docs/backlog/pcb-guided-place-route.md 'Export + order' — two tiers per row (jlc_min = JLC's published process minimum, house_default = our margin above it) so a DRC digest can quote spent headroom instead of hiding a constant. 'source'/'retrieved' are per-row because these are third-party numbers that change. field_confidence carries, per field, the number's provenance and any caveat needed to use it safely — 'high'/'medium' were checked directly against a live JLCPCB page on 2026-08-27 (see 'source'); 'low'/'n/a' mark figures JLC does not publish for that process, where the value is deliberately null rather than an invented number. house_default margin rule (auditable, applied uniformly): house_default = max(1.5 x jlc_min, rounded up to the nearest 0.05mm; JLC's own published 'recommended' figure, where one exists) — except soldermask_dam_mm, whose house_default is set above the 2oz-copper figure (0.20mm) rather than the 1oz jlc_min, so a copper-weight change on the order doesn't silently violate it. board_edge_clearance is two figures, not one (routed-edge vs V-cut-edge minimums differ and neither is conservative for the other); when the panelization method isn't known yet, use the V-cut (board_edge_clearance_vcut_mm) figure as the safe default. npth_annular_ring_mm is JLC's non-plated-hole copper-clearance requirement (0.2mm of copper must be cleared around an NPTH for the sealing film) — previously misfiled as via_diameter_mm's 0.45mm figure; it is now its own field. Sources checked 2026-08-27: https://jlcpcb.com/capabilities/pcb-capabilities (primary FR-4 capability table); https://jlcpcb.com/help/article/jlc-aluminum-substrates-are-now-available (aluminum, page states 'last updated Aug 13, 2025'); https://jlcpcb.com/news/new-arrival-aluminum-pcb-boards (aluminum, published 2022-10-13).",
+  "rows": [
+    {
+      "process": "2layer",
+      "label": "2-layer standard (1.6mm FR-4)",
+      "source": "https://jlcpcb.com/capabilities/pcb-capabilities",
+      "retrieved": "2026-08-27",
+      "jlc_min": {
+        "trace_width_mm": 0.10,
+        "trace_spacing_mm": 0.10,
+        "annular_ring_mm": 0.18,
+        "drill_mm": 0.15,
+        "via_diameter_mm": 0.25,
+        "npth_annular_ring_mm": 0.45,
+        "board_edge_clearance_routed_mm": 0.20,
+        "board_edge_clearance_vcut_mm": 0.40,
+        "soldermask_dam_mm": 0.10,
+        "silk_width_mm": 0.15
+      },
+      "house_default": {
+        "trace_width_mm": 0.15,
+        "trace_spacing_mm": 0.15,
+        "annular_ring_mm": 0.30,
+        "drill_mm": 0.25,
+        "via_diameter_mm": 0.40,
+        "npth_annular_ring_mm": 0.70,
+        "board_edge_clearance_routed_mm": 0.30,
+        "board_edge_clearance_vcut_mm": 0.60,
+        "soldermask_dam_mm": 0.25,
+        "silk_width_mm": 0.25
+      },
+      "field_confidence": {
+        "trace_width_mm": "high — verified against jlcpcb.com/capabilities/pcb-capabilities 2026-08-27: 1oz-copper 2-layer minimum trace width is 0.10mm",
+        "trace_spacing_mm": "high — same page/date; 2-layer minimum trace spacing is 0.10mm",
+        "annular_ring_mm": "high — page states an absolute minimum of 0.18mm with a recommended value of 0.25mm; jlc_min is the absolute figure, house_default clears the recommended one",
+        "drill_mm": "high — 0.15mm mechanical-drill minimum confirmed; the page separately notes 0.20mm as the preferred minimum for a plated through-hole via, which house_default also clears",
+        "via_diameter_mm": "high — corrected 2026-08-27: published minimum finished via diameter is 0.25mm, not the 0.45mm previously carried here (that figure was the NPTH annular-ring requirement, now its own field)",
+        "npth_annular_ring_mm": "high — JLC requires 0.2mm of copper cleared around a non-plated hole for the sealing film, i.e. pad/ring >= hole + 0.45mm; this is the figure formerly misfiled under via_diameter_mm",
+        "board_edge_clearance_routed_mm": "high — routed-edge (mechanically-milled) copper-to-edge minimum is 0.20mm",
+        "board_edge_clearance_vcut_mm": "high — V-cut-edge copper-to-edge minimum is 0.40mm, double the routed-edge figure; use this one as the conservative default when the panelization method is unknown",
+        "soldermask_dam_mm": "high — 0.10mm minimum solder-mask dam applies at 1oz copper (this row's default weight); at 2oz copper the minimum is 0.20mm. jlc_min carries the 1oz figure; house_default (0.25mm) is set above the 2oz figure so a copper-weight change doesn't silently violate it",
+        "silk_width_mm": "high — minimum silkscreen line width is 0.15mm (minimum text height is 1.0mm, tracked separately as it isn't one of this table's fields)"
+      }
+    },
+    {
+      "process": "4layer",
+      "label": "4-layer standard (1.6mm FR-4, SIG/GND/PWR/SIG)",
+      "source": "https://jlcpcb.com/capabilities/pcb-capabilities",
+      "retrieved": "2026-08-27",
+      "jlc_min": {
+        "trace_width_mm": 0.09,
+        "trace_spacing_mm": 0.09,
+        "annular_ring_mm": 0.15,
+        "drill_mm": 0.15,
+        "via_diameter_mm": 0.25,
+        "npth_annular_ring_mm": 0.45,
+        "board_edge_clearance_routed_mm": 0.20,
+        "board_edge_clearance_vcut_mm": 0.40,
+        "soldermask_dam_mm": 0.10,
+        "silk_width_mm": 0.15
+      },
+      "house_default": {
+        "trace_width_mm": 0.15,
+        "trace_spacing_mm": 0.15,
+        "annular_ring_mm": 0.25,
+        "drill_mm": 0.25,
+        "via_diameter_mm": 0.40,
+        "npth_annular_ring_mm": 0.70,
+        "board_edge_clearance_routed_mm": 0.30,
+        "board_edge_clearance_vcut_mm": 0.60,
+        "soldermask_dam_mm": 0.25,
+        "silk_width_mm": 0.25
+      },
+      "field_confidence": {
+        "trace_width_mm": "high — verified 2026-08-27: JLC publishes one multilayer trace-width/spacing figure (0.09mm) that covers all layers of the stack — confirmed there is no separate inner-layer minimum, resolving the earlier 'may differ, not verified' open question. Caveat: inner copper is 0.5oz by default; if the order specifies 2oz inner copper, the multilayer minimum becomes 0.15mm (this row assumes the 0.5oz default and does not model the 2oz-inner case)",
+        "trace_spacing_mm": "high — see trace_width_mm note; same 0.09mm figure and same 2oz-inner-copper caveat",
+        "annular_ring_mm": "high — page states an absolute minimum of 0.15mm with a recommended value of 0.20mm; jlc_min is the absolute figure, house_default clears the recommended one",
+        "drill_mm": "high — same mechanical-drill process/minimum as the 2-layer row (0.15mm)",
+        "via_diameter_mm": "high — corrected 2026-08-27, same as 2-layer row: published minimum finished via diameter is 0.25mm, not the 0.45mm previously carried here",
+        "npth_annular_ring_mm": "high — same NPTH copper-clearance requirement as the 2-layer row (pad/ring >= hole + 0.45mm)",
+        "board_edge_clearance_routed_mm": "high — same routed-edge figure as the 2-layer row (0.20mm); JLC's page does not vary this by layer count",
+        "board_edge_clearance_vcut_mm": "high — same V-cut figure as the 2-layer row (0.40mm); use as the conservative default when panelization is unknown",
+        "soldermask_dam_mm": "high — same 1oz/2oz split as the 2-layer row (0.10mm at 1oz, 0.20mm at 2oz); jlc_min assumes 1oz outer copper, house_default (0.25mm) clears the 2oz figure",
+        "silk_width_mm": "high — same 0.15mm minimum silkscreen line width as the 2-layer row"
+      }
+    },
+    {
+      "process": "aluminum",
+      "label": "Aluminum (metal-core, single-layer)",
+      "source": "https://jlcpcb.com/help/article/jlc-aluminum-substrates-are-now-available; https://jlcpcb.com/news/new-arrival-aluminum-pcb-boards",
+      "retrieved": "2026-08-27",
+      "process_notes": "Single-sided metal-core only: no plated vias and JLC explicitly advises against through-hole parts on this process (via_diameter_mm is null by construction, not a missing figure). Board shaping is CNC-milled and requires a minimum 1.6mm milling cutter, so slots and panel/board gaps must be >= 1.6mm. Available thickness: 0.8 / 1.0 / 1.2 / 1.6mm, at 1oz copper. Surface finish is HASL only (no ENIG). Soldermask color is white or black only.",
+      "jlc_min": {
+        "trace_width_mm": 0.10,
+        "trace_spacing_mm": 0.10,
+        "annular_ring_mm": null,
+        "drill_mm": 0.65,
+        "via_diameter_mm": null,
+        "npth_annular_ring_mm": null,
+        "board_edge_clearance_routed_mm": null,
+        "board_edge_clearance_vcut_mm": null,
+        "soldermask_dam_mm": null,
+        "silk_width_mm": null
+      },
+      "house_default": {
+        "trace_width_mm": 0.15,
+        "trace_spacing_mm": 0.15,
+        "annular_ring_mm": null,
+        "drill_mm": 1.00,
+        "via_diameter_mm": null,
+        "npth_annular_ring_mm": null,
+        "board_edge_clearance_routed_mm": null,
+        "board_edge_clearance_vcut_mm": null,
+        "soldermask_dam_mm": null,
+        "silk_width_mm": null
+      },
+      "field_confidence": {
+        "trace_width_mm": "high — verified 2026-08-27 against JLC's aluminum-substrate pages: minimum trace width is 0.10mm (corrected down from the previous 0.15mm, which overstated the minimum)",
+        "trace_spacing_mm": "high — same pages; minimum trace spacing is 0.10mm",
+        "annular_ring_mm": "low — JLC publishes no annular-ring figure for aluminum boards; null is deliberate (not carried over from the FR-4 rows, which do not necessarily apply), not a missing number",
+        "drill_mm": "high — CRITICAL CORRECTION 2026-08-27: minimum drill diameter on aluminum is 0.65mm. The previous jlc_min (0.30mm) and house_default (0.35mm) were both below this real minimum — a house default that was itself unmanufacturable. 0.30mm appears to have been the 1-layer FR-4 drill figure mistakenly transplanted onto this row",
+        "via_diameter_mm": "n/a — single-sided aluminum boards have no plated vias by construction; JLC advises against through-hole parts on this process. null is deliberate, not a missing number",
+        "npth_annular_ring_mm": "low — JLC publishes no NPTH copper-clearance figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows",
+        "board_edge_clearance_routed_mm": "low — JLC publishes no board-edge-clearance figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows",
+        "board_edge_clearance_vcut_mm": "low — see board_edge_clearance_routed_mm note",
+        "soldermask_dam_mm": "low — JLC publishes no solder-mask-dam figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows",
+        "silk_width_mm": "low — JLC publishes no silkscreen-width figure for aluminum boards; null is deliberate, not carried over from the FR-4 rows"
+      }
+    }
+  ]
+}

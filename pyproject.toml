@@ -357,14 +357,12 @@ web = [
 # rather than build123d's whole jupyter/ezdxf/svg tree. Heavy (~200 MB of
 # bundled libs), so kept out of ``[all]`` like the torch-gated paths.
 cad-step = ["cadquery-ocp-novtk>=7.8"]
-# Electronics / PCB (ADR 0042 §5). Flow-B footprint resolution: LCSC part →
-# KiCad footprint (pads + pin-name map) via ``easyeda2kicad``, cached in
-# ``part_footprints``. Network-bound + optional — like the cad tiers it stays
-# out of ``[all]`` (the design / eyes / placement / export loop needs none of
-# it; only real-pad-geometry footprint conversion does). The Freerouting
-# autorouter and kicad-cli (``precis.pcb.route`` / gerber export) are external
-# binaries, gated at call time — not Python deps, so not listed here.
-pcb = ["easyeda2kicad>=0.8"]
+# NOTE: [pcb] deleted (2026-08-27) — it was only ``easyeda2kicad``, and Flow-B
+# footprint resolution no longer depends on it: ``precis.pcb.easyeda`` fetches
+# the EasyEDA component JSON and parses the pad subset itself (easyeda2kicad
+# stays the reference implementation we cribbed from, NOT a dependency). That
+# removes the optional-extra silent-fail trap for footprints entirely — there
+# is no longer an install tier where footprint resolution is missing.
 # NOTE: [edgar] deleted (2026-08-16) — it was only ``httpx``, which is
 # core now. The edgar kind ships with every install (key-free).
 # Chemistry / protein tool-pack (ADR 0056; docs/design/chem-tools-integration.md).
@@ -704,7 +702,6 @@ module = [
     "autocatpath",
     "autocatpath.*",
     "chgnet.*",
-    "easyeda2kicad",
     "epo_ops",
     "epo_ops.*",
     "fitz",
