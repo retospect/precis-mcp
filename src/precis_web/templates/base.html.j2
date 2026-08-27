@@ -187,14 +187,15 @@
     {% endif %}
     {% if embed %}
     <script>
-      // Embed mode = this page lives inside an iframe pane. Two jobs, one
-      // capture-phase click listener:
+      // Embed mode = this page lives inside an iframe pane. Three jobs,
+      // two of them on one capture-phase click listener:
       //
       //  1. WORKBENCH PANE ROUTING (window.name np-review / np-paper —
       //     the /nanopub workbench's panes): route by DESTINATION, not by
       //     which pane the click happened in. Paper-destined links (the
-      //     shared "precis-paper" named target, /papers/ paths, /c/pc…
-      //     paper-chunk handles) load the np-paper pane; claim links
+      //     shared "precis-paper" named target, /papers/ paths, and the
+      //     permalink resolvers /c/<chunk> and /r/paper/<id>, which land
+      //     on a document) load the np-paper pane; claim links
       //     (/claim/…) load the np-review pane. The destination pane is
       //     navigated DIRECTLY through the parent document (same-origin,
       //     so reachable): named-target resolution from a nested browsing
@@ -235,7 +236,8 @@
             const u = new URL(a.href);
             const toPaper = a.target === "precis-paper"
               || u.pathname.startsWith("/papers/")
-              || u.pathname.startsWith("/c/pc");
+              || u.pathname.startsWith("/c/")
+              || u.pathname.startsWith("/r/paper/");
             const dest = toPaper ? "np-paper"
               : (u.pathname.startsWith("/claim/") ? "np-review" : null);
             if (dest) {
@@ -272,6 +274,27 @@
           e.target.action = u;
         } catch {}
       }, true);
+      //  3. SELF-CORRECTING PANE PLACEMENT. The router above has to pick a
+      //     pane from the PRE-navigation URL, but the permalink routes
+      //     (/c/<handle>, /r/<kind>/<id>) only resolve their kind
+      //     server-side — so a guess can land a claim in the paper pane,
+      //     where it reads as the review column duplicated (gr264349). A
+      //     page that finds itself in the wrong pane moves to the right
+      //     one and vacates the pane it was wrongly occupying, which makes
+      //     a misroute self-healing whatever caused it. Scoped to the two
+      //     placements that are certain — claims are reviewed, papers are
+      //     read; anything else stays where it landed.
+      if (inWorkbench) {
+        const p = location.pathname;
+        const want = p.startsWith("/claim/") ? "np-review"
+          : (p.startsWith("/papers/") ? "np-paper" : null);
+        if (want && want !== window.name) {
+          try {
+            const f = window.parent.document.getElementById(want);
+            if (f) { f.src = location.href; location.replace("about:blank"); }
+          } catch {}
+        }
+      }
     </script>
     {% endif %}
     <script>

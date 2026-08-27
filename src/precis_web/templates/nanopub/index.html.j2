@@ -259,14 +259,29 @@
   // the srcdoc-avoidance note on the iframes themselves). A frame the
   // server preloaded (the /nanopub/fi<id> deep link) is skipped — it is
   // already navigating to real content.
-  document.querySelectorAll("#np-panes iframe[data-placeholder]").forEach(f => {
-    if (f.getAttribute("src")) return;
+  const placeholder = f => {
     const d = f.contentDocument;
-    if (!d) return;
+    if (!d || !d.body || d.body.firstChild) return;
     const p = d.createElement("p");
     p.style.cssText = "font: 13px system-ui; color: #94a3b8; padding: 1.5rem";
     p.textContent = f.dataset.placeholder;
     d.body.appendChild(p);
+  };
+  document.querySelectorAll("#np-panes iframe[data-placeholder]").forEach(f => {
+    if (f.getAttribute("src")) return;
+    placeholder(f);
+  });
+
+  // A pane a page vacated (base.html.j2's self-correcting placement sends
+  // a claim that landed in the paper pane back to the review pane and
+  // blanks the one it left) would otherwise read as a white void — give it
+  // its hint back instead.
+  document.querySelectorAll("#np-panes iframe[data-placeholder]").forEach(f => {
+    f.addEventListener("load", () => {
+      let blank = false;
+      try { blank = f.contentWindow.location.href === "about:blank"; } catch { blank = false; }
+      if (blank) placeholder(f);
+    });
   });
 
   // One loader for every way a pane gets content. Dims the pane until its

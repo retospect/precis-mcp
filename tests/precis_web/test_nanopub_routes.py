@@ -140,7 +140,12 @@ def test_hub_page_shows_state_and_action(
     assert 'const NP_PANES = ["np-review", "np-paper"];' in framed.text
     assert 'a.target === "precis-paper"' in framed.text
     assert 'u.pathname.startsWith("/papers/")' in framed.text
-    assert 'u.pathname.startsWith("/c/pc")' in framed.text
+    # Every chunk permalink is paper-destined, not just the pc<id> shape:
+    # /c/<handle> and /r/paper/<id> resolve server-side, so classifying on
+    # the pc prefix alone sent the other handles (mc/lc/…) into the REVIEW
+    # pane, where the resolved document replaced the claim being reviewed.
+    assert 'u.pathname.startsWith("/c/")' in framed.text
+    assert 'u.pathname.startsWith("/r/paper/")' in framed.text
     assert 'u.pathname.startsWith("/claim/") ? "np-review" : null' in framed.text
     assert "u.pathname === location.pathname" in framed.text
     assert "location.assign(u)" in framed.text
@@ -161,6 +166,41 @@ def test_hub_page_shows_state_and_action(
     resp = client.get(f"/claim/fi{other}")
     assert resp.status_code == 200
     assert "No claim hub" in resp.text
+
+
+def test_framed_pages_correct_their_own_pane_placement(
+    client: TestClient, runtime_with_store
+) -> None:
+    """A page that lands in the wrong workbench pane moves itself.
+
+    The click router picks a pane from the PRE-navigation URL, but the
+    permalink routes resolve their kind server-side — so a claim can end
+    up in the paper pane, where it reads as the review column duplicated
+    (gr264349, reported against the deployed workbench). The placement is
+    therefore also enforced by the page itself, which makes a misroute
+    self-healing no matter which link caused it.
+    """
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A misrouted claim.", paper, chunk)
+    framed_claim = client.get(f"/claim/fi{hub}?embed=1")
+    framed_paper = client.get(f"/papers/{paper}?embed=1")
+    for page in (framed_claim, framed_paper):
+        # Claims are reviewed, papers are read; a page in neither pane's
+        # remit stays where it landed rather than guessing.
+        assert 'p.startsWith("/claim/") ? "np-review"' in page.text
+        assert 'p.startsWith("/papers/") ? "np-paper" : null' in page.text
+        assert "want && want !== window.name" in page.text
+        # Move to the right pane, then vacate the wrong one — leaving the
+        # page in both is exactly the duplicate column being fixed.
+        assert "f.src = location.href; location.replace" in page.text
+        assert '"about:blank"' in page.text
+    # Standalone (unframed) pages are not in a workbench and must not
+    # reach for a parent document at all.
+    assert (
+        'p.startsWith("/claim/") ? "np-review"'
+        not in client.get(f"/claim/fi{hub}").text
+    )
 
 
 def test_approve_prefill_suggests_quote_and_unique_snip(
