@@ -37,6 +37,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, overload
 
+import numpy as np
+
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
 from precis.quest import narrative_budget
@@ -47,6 +49,7 @@ from precis.quest.logbook import (
     append_entry,
     clamp_entry_type,
 )
+from precis.reading.cast_common import _TOKENS_PER_WORD
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -347,10 +350,21 @@ def _servers_summary(store: Store, quest_id: int) -> list[str]:
     return out
 
 
-#: Cap on how many served papers get an abstract snippet in the tick prompt.
-_MAX_DETAIL_PAPERS = 6
+#: Token budget for the literature section — replaces a bare paper-count cap
+#: so a quest with many served papers (the audited qu164903 case had 852)
+#: still gets *some* detail without ballooning the tick prompt. See
+#: docs/backlog/quest-dossier-dialectic.md §"Tick diet fixes".
+_LITERATURE_TOKEN_BUDGET = 1500
 #: Length bound on a served paper's abstract snippet.
 _PAPER_DETAIL_CHARS = 300
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token count for budgeting the literature section — chars/4 (the
+    standard chars-per-token rule of thumb) scaled by the same words→token
+    ratio :data:`precis.reading.cast_common._TOKENS_PER_WORD` uses for the
+    audio-cast word budget (reused rather than duplicated)."""
+    return int(len(text) / 4 * _TOKENS_PER_WORD)
 
 
 def _paper_abstract_snippet(store: Store, ref: Ref) -> str:
@@ -414,17 +428,119 @@ def _paper_citable_handle(store: Store, ref: Ref) -> str | None:
     return None
 
 
-def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
-    """One line per served `paper`: its citable ``[pc<id>]`` handle (when it
-    has a body chunk to point at), a short title, and an abstract snippet."""
-    live = gaps_mod._live_servers(store, quest_id)
-    papers = [r for r in live if r.kind == "paper"][:_MAX_DETAIL_PAPERS]
-    out: list[str] = []
-    for r in papers:
-        title = (r.title or "").splitlines()[0][:80] if r.title else "(untitled)"
+def _cosine(a: np.ndarray[Any, Any], b: np.ndarray[Any, Any]) -> float:
+    """Mirrors :func:`precis.quest.placement._cosine` — kept as a local copy
+    per that module's own convention (each caller of this one-line-of-math
+    keeps its own copy rather than growing a shared micro-util)."""
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denom == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+
+def _rank_papers_by_relevance(
+    store: Store, quest_id: int, papers: list[Ref], budget_tokens: int
+) -> list[tuple[Ref, str | None]]:
+    """Order a quest's live ``paper`` servers by relevance, tiered so a held
+    body and a query-comparable vector both count:
+
+    - tier 1: has a vector *and* a held body (citable now)
+    - tier 2: has a vector, stub (no body chunk yet)
+    - tier 3: no vector, held body
+    - tier 4: no vector, stub
+
+    Cosine (descending, against the quest's own gist vector) breaks ties
+    within tiers 1-2; ``papers``' incoming (serves-graph insertion) order
+    breaks ties within 3-4. Gaps/hypotheses have no cached vectors and this
+    is a prompt-building call, not a model call, so nothing here ever
+    embeds on the fly — a paper (or the quest itself) with no cached vector
+    just scores 0 / drops to the no-vector tiers.
+
+    When the quest itself has no gist vector yet (``seed_chunk_for_ref`` /
+    ``get_chunk_vector`` -> ``None`` — the ~2h demand-driven embedding blind
+    window), cosine is skipped entirely and papers degrade to two tiers,
+    held-body first then stubs — the same degrade-rather-than-guess posture
+    ``embed_query``'s lexical fallback uses.
+
+    Returns ``(ref, citable_handle)`` pairs, ranked — the handle is
+    :func:`_paper_citable_handle`'s result, computed once here rather than
+    a second time by the renderer. ``budget_tokens`` isn't consulted for
+    the ordering itself (every paper costs the same to score); it's part of
+    this helper's signature so the budgeted-serving contract — rank, then
+    fill to budget — is documented on the ranking call, even though the
+    accumulate/cut loop lives in :func:`_served_papers_detail`, the
+    renderer.
+    """
+    del budget_tokens  # not consulted for ordering — see docstring
+    seed_cid = store.blocks.seed_chunk_for_ref(quest_id)
+    quest_vec = (
+        store.blocks.get_chunk_vector(seed_cid) if seed_cid is not None else None
+    )
+    quest_arr = (
+        np.asarray(quest_vec, dtype=np.float64) if quest_vec is not None else None
+    )
+
+    keys: list[tuple[int, float, int]] = []
+    handles: list[str | None] = []
+    for idx, r in enumerate(papers):
         handle = _paper_citable_handle(store, r)
+        handles.append(handle)
+        held = handle is not None
+        score = 0.0
+        has_vec = False
+        if quest_arr is not None:
+            paper_seed_cid = store.blocks.seed_chunk_for_ref(r.id)
+            paper_vec = (
+                store.blocks.get_chunk_vector(paper_seed_cid)
+                if paper_seed_cid is not None
+                else None
+            )
+            if paper_vec is not None:
+                has_vec = True
+                score = _cosine(quest_arr, np.asarray(paper_vec, dtype=np.float64))
+        if quest_arr is None:
+            tier = 0 if held else 1
+        else:
+            tier = (0 if held else 1) if has_vec else (2 if held else 3)
+        keys.append((tier, -score, idx))
+
+    order = sorted(range(len(papers)), key=lambda i: keys[i])
+    return [(papers[i], handles[i]) for i in order]
+
+
+def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
+    """One line per served `paper`, relevance-ranked and token-budgeted: its
+    citable ``[pc<id>]`` handle (when it has a body chunk to point at), a
+    short title, and an abstract snippet.
+
+    Ranked by :func:`_rank_papers_by_relevance` against the quest's own
+    gist — a quest serving hundreds of papers (the audited qu164903 case)
+    gets the *relevant* ones, not just the first few in serves-graph
+    insertion order. Filled to :data:`_LITERATURE_TOKEN_BUDGET` rather than
+    a bare count cap, always showing at least one paper when there are any;
+    a trailing line reports what didn't fit.
+    """
+    live = gaps_mod._live_servers(store, quest_id)
+    papers = [r for r in live if r.kind == "paper"]
+    ranked = _rank_papers_by_relevance(
+        store, quest_id, papers, _LITERATURE_TOKEN_BUDGET
+    )
+    out: list[str] = []
+    used_tokens = 0
+    shown = 0
+    for r, handle in ranked:
+        title = (r.title or "").splitlines()[0][:80] if r.title else "(untitled)"
         cite = f"[{handle}] " if handle else ""
-        out.append(f"- {cite}{title} — {_paper_abstract_snippet(store, r)}")
+        line = f"- {cite}{title} — {_paper_abstract_snippet(store, r)}"
+        line_tokens = _estimate_tokens(line)
+        if shown and used_tokens + line_tokens > _LITERATURE_TOKEN_BUDGET:
+            break
+        out.append(line)
+        used_tokens += line_tokens
+        shown += 1
+    remaining = len(ranked) - shown
+    if remaining > 0:
+        out.append(f"(+{remaining} more served papers not shown)")
     return out
 
 

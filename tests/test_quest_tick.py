@@ -17,9 +17,12 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
+
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
+from precis.quest import gaps as gaps_mod
 from precis.quest import tick as tick_mod
 from precis.quest.dossier import (
     add_attempt,
@@ -2347,6 +2350,179 @@ class TestServedPapersDetail:
         # the citation instruction itself — tells the model to actually cite
         assert "cite the specific paper inline" in prompt
         assert "precis-cite-paper-help" in prompt
+
+
+# ── relevance-ranked, token-budgeted literature serving ─────────────────
+# docs/backlog/quest-dossier-dialectic.md §"Tick diet fixes" — the served-
+# paper cap used to be a bare `[:6]` slice of serves-graph insertion order;
+# these seed one-hot/blended vectors (mirrors ``tests/test_placement.py``'s
+# "pure geometry" convention) so cosine ranking is exercised without a
+# model in the loop.
+
+_RANK_DIM = 1024
+_RANK_EMBEDDER = "bge-m3"  # migration-seeded default (embedders.dim=1024)
+
+
+def _onehot(i: int) -> list[float]:
+    v = [0.0] * _RANK_DIM
+    v[i] = 1.0
+    return v
+
+
+def _blend(*idxs: int) -> list[float]:
+    """A unit vector equidistant from each ``e_i`` in ``idxs``."""
+    v = [0.0] * _RANK_DIM
+    for i in idxs:
+        v[i] = 1.0
+    norm = float(np.linalg.norm(v))
+    return [x / norm for x in v]
+
+
+def _embed_chunk(store: Any, chunk_id: int, vec: list[float]) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, attempts) "
+            "VALUES (%s, %s, %s, 'ok', 1)",
+            (chunk_id, _RANK_EMBEDDER, vec),
+        )
+        conn.commit()
+
+
+def _embed_quest_gist(store: Any, quest_id: int, vec: list[float]) -> None:
+    cid = store.blocks.upsert_card_combined(quest_id, "gist")
+    _embed_chunk(store, cid, vec)
+
+
+def _held_paper_with_vector(store: Any, title: str, vec: list[float]) -> int:
+    """A paper with a real body chunk (citable — held) that is also the
+    embedded seed chunk (no separate ``card_combined``)."""
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    ref_id = seed_ref(store, title=title)
+    chunk_id = seed_chunk(store, ref_id=ref_id, text=f"{title} — a finding.")
+    _embed_chunk(store, chunk_id, vec)
+    return ref_id
+
+
+def _stub_paper_with_vector(store: Any, title: str, vec: list[float]) -> int:
+    """A paper with no body chunk (a stub — no citable handle) but an
+    embedded ``card_combined`` (so it still has a gist vector)."""
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title=title)
+    cid = store.blocks.upsert_card_combined(ref_id, title)
+    _embed_chunk(store, cid, vec)
+    return ref_id
+
+
+def _held_paper_no_vector(store: Any, title: str) -> int:
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    ref_id = seed_ref(store, title=title)
+    seed_chunk(store, ref_id=ref_id, text=f"{title} — a finding.")
+    return ref_id
+
+
+def _stub_paper_no_vector(store: Any, title: str) -> int:
+    from tests.workers._helpers import seed_ref
+
+    return seed_ref(store, title=title)
+
+
+def _link_serves(store: Any, quest_id: int, *paper_ids: int) -> None:
+    for pid in paper_ids:
+        store.add_link(src_ref_id=pid, dst_ref_id=quest_id, relation="serves")
+
+
+def _ranked_ids(store: Any, quest_id: int) -> list[int]:
+    papers = gaps_mod._live_servers(store, quest_id)
+    ranked = tick_mod._rank_papers_by_relevance(
+        store, quest_id, papers, tick_mod._LITERATURE_TOKEN_BUDGET
+    )
+    return [r.id for r, _handle in ranked]
+
+
+class TestPaperRelevanceRanking:
+    """``_rank_papers_by_relevance`` replaces the old ``[:6]`` insertion-order
+    slice: cosine against the quest's own gist, tiered so a held body and a
+    comparable vector both count, degrading gracefully when the quest has
+    no gist vector yet (the demand-driven embedding blind window)."""
+
+    def test_orders_by_cosine_within_the_held_vectored_tier(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving about Fe-N4 NO reduction")
+        _embed_quest_gist(store, qid, _onehot(0))
+
+        low = _held_paper_with_vector(store, "Low relevance", _onehot(1))
+        high = _held_paper_with_vector(store, "High relevance", _onehot(0))
+        mid = _held_paper_with_vector(store, "Mid relevance", _blend(0, 1))
+        _link_serves(store, qid, low, high, mid)
+
+        assert _ranked_ids(store, qid) == [high, mid, low]
+
+    def test_vectored_stub_outranks_no_vector_held(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        _embed_quest_gist(store, qid, _onehot(0))
+
+        stub = _stub_paper_with_vector(store, "Stub with a vector", _onehot(0))
+        held = _held_paper_no_vector(store, "Held, no vector yet")
+        _link_serves(store, qid, held, stub)
+
+        order = _ranked_ids(store, qid)
+        assert order.index(stub) < order.index(held)
+
+    def test_no_vector_held_outranks_no_vector_stub(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        _embed_quest_gist(store, qid, _onehot(0))
+
+        held = _held_paper_no_vector(store, "Held, no vector yet")
+        stub = _stub_paper_no_vector(store, "A bare stub")
+        _link_serves(store, qid, stub, held)
+
+        order = _ranked_ids(store, qid)
+        assert order.index(held) < order.index(stub)
+
+    def test_degrades_to_held_first_when_quest_has_no_gist_vector(
+        self, store: Any
+    ) -> None:
+        """The quest itself has no cached gist vector (nothing embedded it
+        yet) — cosine is skipped entirely rather than embedding on the fly
+        or crashing; papers degrade to held-first, stub-second."""
+        qid = _mk_quest(store, "A brand-new striving")
+
+        # a vector on the paper doesn't matter when the quest has none —
+        # the degrade path never looks at it.
+        stub = _stub_paper_with_vector(store, "Stub with a vector", _onehot(0))
+        held = _held_paper_no_vector(store, "Held, no vector")
+        _link_serves(store, qid, stub, held)
+
+        order = _ranked_ids(store, qid)
+        assert order == [held, stub]
+
+
+class TestLiteratureTokenBudget:
+    """``_served_papers_detail`` fills :data:`tick_mod._LITERATURE_TOKEN_BUDGET`
+    rather than the old bare paper-count cap."""
+
+    def test_stops_within_budget_and_reports_the_cut(self, store: Any) -> None:
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A striving with abundant literature")
+        abstract = "A specific measured finding. " * 20  # near _PAPER_DETAIL_CHARS
+        pids = []
+        for i in range(40):
+            pid = seed_ref(store, title=f"Paper {i:02d}")
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+                    (json.dumps({"abstract": abstract}), pid),
+                )
+                conn.commit()
+            pids.append(pid)
+        _link_serves(store, qid, *pids)
+
+        detail = tick_mod._served_papers_detail(store, qid)
+        assert 0 < len(detail) < 40
+        assert re.match(r"^\(\+\d+ more served papers not shown\)$", detail[-1])
 
 
 def _sequenced_dispatch(
