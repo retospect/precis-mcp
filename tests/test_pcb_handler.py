@@ -363,3 +363,252 @@ def test_feasibility_view(pcb):
     f = pcb.get(id="x", view="feasibility")
     assert "route feasibility" in f.body
     assert "vias needed" in f.body
+
+
+# ── boards / net_classes / domain / route-status (pcb-guided-place-route
+#    Slice 1, docs/backlog/pcb-guided-place-route.md) ───────────────────
+
+
+def test_put_creates_default_board(pcb):
+    resp = pcb.put(id="sensor-node", args=_DESIGN)
+    # the netlist TOC surfaces the board name + stackup layer summary
+    assert "board: main" in resp.body
+    assert "4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu" in resp.body
+    toc = pcb.get(id="sensor-node")
+    assert "board: main" in toc.body
+    assert "4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu" in toc.body
+
+
+def test_stackup_default_content(pcb, store):
+    from precis.pcb import DEFAULT_STACKUP
+
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    design = store.pcb_load(ref.id)
+    assert design["board"]["stackup"] == DEFAULT_STACKUP
+    assert design["board"]["fold_lines"] == []
+
+
+def test_pcb_ensure_board_is_idempotent(pcb, store):
+    """Simulates the backfill semantics: a design's rows (any created
+    before this call) resolve to the SAME default board on repeated calls,
+    and the graph/TOC hydration picks it up."""
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    board_id_1 = store.pcb_ensure_board(ref.id)
+    board_id_2 = store.pcb_ensure_board(ref.id)
+    assert board_id_1 == board_id_2
+
+    graph = store.pcb_graph(ref.id)
+    assert graph["board"] is not None
+    assert graph["board"]["board_id"] == board_id_1
+    assert graph["board"]["name"] == "main"
+
+
+def test_pcb_ensure_board_already_exists_returns_same_id(pcb, store):
+    """Calling ensure twice for a design that already has a board (the
+    common get-or-create path) returns the SAME id both times."""
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    first = store.pcb_ensure_board(ref.id)
+    second = store.pcb_ensure_board(ref.id)
+    assert first == second
+
+
+def test_pcb_ensure_board_conflict_path_returns_existing(pcb, store, monkeypatch):
+    """Simulates the concurrent-insert race pcb_boards_ref_name_key guards
+    against: between our SELECT-miss and our INSERT, a concurrent session
+    wins and commits the 'main' board first. Our INSERT ... ON CONFLICT
+    DO NOTHING must absorb that (not raise UniqueViolation) and the
+    get-or-create fallback must resolve to the concurrent winner's row
+    (gr — Fix 2 of the pcb-guided-place-route Slice 1 review)."""
+    from psycopg.types.json import Jsonb
+
+    from precis.pcb import DEFAULT_STACKUP
+
+    pcb.put(id="race-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="race-node")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM pcb_boards WHERE ref_id = %s", (ref.id,))
+        conn.commit()
+
+    winner: dict[str, int] = {}
+
+    with store.pool.connection() as our_conn:
+        real_execute = our_conn.execute
+        calls = {"n": 0}
+
+        def spy_execute(query, params=None, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                # our own SELECT (call 1) already came back empty; before
+                # our INSERT (this call) runs, a concurrent session wins
+                # the race and commits the board first.
+                with store.pool.connection() as winner_conn:
+                    row = winner_conn.execute(
+                        "INSERT INTO pcb_boards (ref_id, name, stackup) "
+                        "VALUES (%s, 'main', %s) RETURNING board_id",
+                        (ref.id, Jsonb(DEFAULT_STACKUP)),
+                    ).fetchone()
+                    winner_conn.commit()
+                    assert row is not None
+                    winner["id"] = int(row[0])
+            return real_execute(query, params, **kw)
+
+        monkeypatch.setattr(our_conn, "execute", spy_execute)
+        board_id = store._pcb_ensure_board(our_conn, ref.id)
+
+    assert calls["n"] == 3  # SELECT (miss), INSERT ON CONFLICT (absorbed), re-SELECT
+    assert board_id == winner["id"]
+
+
+def test_domain_rejects_non_electrical(pcb):
+    with pytest.raises(BadInput, match="electrical nets only"):
+        pcb.put(
+            id="fluidic-board",
+            args={
+                "components": [
+                    {"refdes": "V1", "label": "valve", "pins": [{"name": "1"}]}
+                ],
+                "nets": [{"name": "COOLANT_IN", "domain": "fluidic"}],
+            },
+        )
+
+
+def test_domain_defaults_electrical_and_accepts_explicit(pcb, store):
+    resp = pcb.put(
+        id="explicit-electrical",
+        args={
+            "components": [{"refdes": "U1", "label": "mcu", "pins": [{"name": "1"}]}],
+            "nets": [
+                {"name": "N1"},
+                {"name": "N2", "domain": "electrical"},
+            ],
+        },
+    )
+    assert "created" in resp.body
+    ref = store.get_ref(kind="pcb", id="explicit-electrical")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    domains = {n["name"]: n["domain"] for n in graph["nets"]}
+    assert domains == {"N1": "electrical", "N2": "electrical"}
+    # the column itself, not just the read-path default (gr — Fix 3: the
+    # write path used to silently drop `domain`, and the DB DEFAULT was
+    # indistinguishable from an explicit 'electrical' at this level).
+    with store.pool.connection() as conn:
+        rows = dict(
+            conn.execute(
+                "SELECT name, domain FROM pcb_nets WHERE ref_id = %s", (ref.id,)
+            ).fetchall()
+        )
+    assert rows == {"N1": "electrical", "N2": "electrical"}
+
+
+def test_domain_round_trips_non_default_value(pcb, store):
+    """Proves the read path carries the REAL `domain` column value rather
+    than a hardcoded 'electrical' — insert a net with domain='fluidic'
+    directly via SQL (the handler rejects it at put(), so this is the only
+    way to seed one pre-Slice-2) and confirm both domain-projecting reads
+    (:meth:`pcb_graph`, :meth:`pcb_route_status`) hydrate it (gr — Fix 3 of
+    the pcb-guided-place-route Slice 1 review)."""
+    pcb.put(
+        id="fluidic-seed",
+        args={
+            "components": [{"refdes": "V1", "label": "valve", "pins": [{"name": "1"}]}]
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="fluidic-seed")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pcb_nets (ref_id, name, domain) VALUES (%s, %s, %s)",
+            (ref.id, "COOLANT_IN", "fluidic"),
+        )
+        conn.commit()
+
+    graph = store.pcb_graph(ref.id)
+    domains = {n["name"]: n["domain"] for n in graph["nets"]}
+    assert domains["COOLANT_IN"] == "fluidic"
+
+    status_rows = {r["name"]: r["domain"] for r in store.pcb_route_status(ref.id)}
+    assert status_rows["COOLANT_IN"] == "fluidic"
+
+
+def test_net_classes_upsert_and_toc_visibility(pcb, store):
+    resp = pcb.put(
+        id="sensor-node",
+        args={
+            **_DESIGN,
+            "net_classes": {
+                "i2c": {"clearance_mm": 0.2, "track_width_mm": 0.25},
+            },
+        },
+    )
+    assert "+1 net_class(es)" in resp.body
+    assert "net classes" in resp.body
+    assert "i2c" in resp.body
+
+    toc = pcb.get(id="sensor-node")
+    assert "i2c" in toc.body
+
+    # re-put with different rules upserts (does not duplicate the class)
+    again = pcb.put(
+        id="sensor-node",
+        args={"net_classes": {"i2c": {"clearance_mm": 0.3}}},
+    )
+    assert "+1 net_class(es)" in again.body
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    assert graph["net_classes"] == {"i2c": {"clearance_mm": 0.3}}
+
+
+def test_put_net_classes_atomic_with_design_write(pcb, store):
+    """A blank net_class name errors out of pcb_upsert_net_classes — but the
+    design write from pcb_apply in the SAME put() must not have been
+    committed either. Before the fix, pcb_apply ran in its own tx (already
+    committed) and pcb_upsert_net_classes ran in a second tx that then
+    raised BadInput, leaving a design behind despite the error (gr — Fix 1
+    of the pcb-guided-place-route Slice 1 review)."""
+    with pytest.raises(BadInput):
+        pcb.put(
+            id="atomic-fail",
+            args={**_DESIGN, "net_classes": {"  ": {"clearance_mm": 0.2}}},
+        )
+    assert store.get_ref(kind="pcb", id="atomic-fail") is None
+
+
+def test_route_status_view_all_unrouted(pcb):
+    pcb.put(id="sensor-node", args=_DESIGN)
+    resp = pcb.get(id="sensor-node", view="route-status")
+    assert "route status" in resp.body
+    assert "unrouted" in resp.body
+    # every net in _DESIGN shows up
+    assert "I2C_SCL" in resp.body and "GND" in resp.body and "VCC3V3" in resp.body
+
+
+def test_route_status_view_reflects_seeded_routes(pcb, store):
+    """Seeds a pcb_routes row directly via SQL (no route-writing op ships in
+    this slice) and confirms the view reads real status, not just the
+    all-unrouted default."""
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    with store.pool.connection() as conn:
+        net_id = conn.execute(
+            "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = 'I2C_SCL'",
+            (ref.id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO pcb_routes (board_id, net_id, status) VALUES (%s, %s, %s)",
+            (board_id, net_id, "sketched"),
+        )
+        conn.commit()
+    resp = pcb.get(id="sensor-node", view="route-status")
+    assert "sketched" in resp.body
+    assert "1 sketched" in resp.body

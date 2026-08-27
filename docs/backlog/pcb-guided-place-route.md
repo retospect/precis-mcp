@@ -103,18 +103,83 @@ ledger before shipping; renumber if a sibling lands first)
   severity error|warn, objects jsonb, detail text, waived_by?). Gate
   evaluators and the LLM read the latest run.
 
-### Footprint reality (unblocks everything geometric)
+### Footprint + catalog reality (unblocks everything geometric)
 
-- **Parametric generator first**: IPC-7351-ish generated footprints
-  (pads + courtyard + centroid + pin-map) for the standard package
-  families — chip R/C (0402/0603/0805…), SOT-23/89/223, SOIC, TSSOP,
-  QFN/DFN, SOT/TO powers, 2.54/1.27 headers — keyed by `parts.package` +
-  params. Deterministic, offline, unit-tested against published IPC
-  dimensions for a sample of each family.
-- **Wire the easyeda2kicad conversion** (existing Slice 2 residual) as
-  the long-tail fallback: EasyEDA API JSON → pads/pin_map/courtyard into
-  `part_footprints`. Network-gated exactly like today; generator wins
-  when both exist unless `meta.footprint_source='easyeda'`.
+**No parametric generation** (user decision 2026-08-27, supersedes the
+earlier IPC-generator plan): footprints are *pulled, never synthesized*.
+Rationale: every JLCPCB-assemblable part has an EasyEDA footprint by
+construction (JLC assembly places from it), and selection is already
+fenced to assemblable in-stock parts — coverage is guaranteed inside
+the fence. Policy: **no EasyEDA footprint ⇒ not a selectable part**
+(clear message at part selection).
+
+- **PREREQUISITE — wire the catalog ingest at all** (gr264357, found
+  2026-08-27): prod `parts` is EMPTY (0 rows) and
+  `refresh_parts_from_sqlite` has **zero callers** — there is no
+  `precis pcb refresh-parts` verb and no `parts_refresh` worker; only
+  the parsing layer in `catalog.py` was ever built. Slice 2 must add
+  the entry point (CLI verb + scheduled worker, staging + atomic swap
+  per the 0047 design) and correct the messages in
+  `handlers/part.py`, `footprint.py`, and `precis-part-select-help`
+  that currently name that non-existent command. Everything else in
+  this slice — selection ranking, live-stock verification, the
+  `datasheet_url` that ADR 0042 slice 3 ingests from — is dead until
+  this lands.
+  **What feeds it (spike-resolved 2026-08-27).** The existing
+  `refresh_parts_from_sqlite` reads the community yaqwsx/jlcparts
+  SQLite dump (that project's publish format — SQLite is the dump's
+  shape, not our storage choice). Prefer the **official** source:
+  `POST /overseas/openapi/component/getComponentInfos` on
+  `open.jlcpcb.com` takes a **`lastKey` cursor** — a real incremental
+  bulk-pull, the clean path to a local table — but it 403s until the
+  app gets the Components scope (see slice 8). Verified fallback with
+  **no credentials**: `POST jlcpcb.com/api/overseas-pcb-order/v1/
+  shoppingCart/smtGood/selectSmtComponentList` enumerates the whole
+  catalog (`total` 7,234,574; empty `keyword` = everything), BUT has a
+  hard **100,000-offset cap** (ES `max_result_window`) and `pageSize`
+  ≤ 2000 — so a full walk requires sharding into <100k slices
+  (keyword-prefix sharding verified: `"C"` → 58,353). Community dump
+  drops to last-resort. A bulk-local `parts` table stays required
+  either way: offline parametric search/ranking and the
+  `part_availability` restock-trend signal (the popularity proxy
+  selection ranks on) both need repeated local snapshots, which a
+  per-part lookup cannot provide.
+- **EasyEDA footprint fetch** (`footprint.py` rework) — **verified
+  working, no credentials** (spike 2026-08-27, C42163081):
+  `GET easyeda.com/api/products/<C>/components`. Two traps, both
+  load-bearing: (a) a bare request gets **403 from CloudFront** — the
+  easyeda2kicad header set is required and **`Referer` is the
+  load-bearing one**; (b) the footprint is at
+  **`result.packageDetail.dataStr.shape`** (`docType: 4`) — plain
+  `result.dataStr` is the *schematic symbol* (`docType: 2`), a
+  different primitive alphabet that is easy and costly to confuse.
+  Primitives are `~`-delimited (`PAD~RECT~x~y~…`, `TRACK~…`), units
+  **10 mil**, origin `head.x/head.y`; decoded pads for the test part
+  matched an exact 2.54 mm-pitch 2×3 SMD header. Fetch the
+  per-C-number EasyEDA component JSON and **parse it ourselves** into
+  canonical pads/pin_map/courtyard/centroid in `part_footprints`
+  (easyeda2kicad is the reference implementation to crib, NOT a
+  dependency — we need only the pad subset, and slice 4's writer emits
+  footprints from canonical pads, so no `.kicad_mod` intermediary).
+  Raw JSON cached in the row for reparse. Fixed-host fetch via the
+  `safe_get` discipline; network-gated like today, no creds needed.
+- **JLCPCB Components API client**: live part existence / stock /
+  price / basic-vs-extended per C-number, used at selection time
+  ("in stock now", not dump-age stock). Creds-gated
+  (vault secrets, shared with slice 8); **graceful fallback to
+  the existing jlcparts dump (Flow A) + `part_availability` trend**
+  when creds are absent — the dump stays the bulk-search substrate,
+  the API is the live-verification layer. LCSC.com itself has no
+  official API and is not integrated (community endpoints are
+  scraper-grade; C-numbers key both surfaces anyway).
+- **Selection ranking gains family-consolidation** (the agent-judgment
+  half already shipped in `precis-part-select-help`): boost candidates
+  sharing a manufacturer *series* with parts already chosen on this
+  design, and candidates matching the board's dominant passive package
+  (0402 default). Rationale: fewer distinct SKUs = fewer Extended
+  loading fees, one set of known characteristics, reorder stability.
+  Fit stays a hard gate; turnover (not raw stock) stays the popularity
+  estimator.
 
 ### Engines (all in `src/precis/pcb/`, pure-Python, unit-testable)
 
@@ -209,8 +274,34 @@ venvs pick it up via the normal deploy.
 - **JLCPCB API client** (`src/precis/pcb/jlc_api.py`): quote → order →
   track over the official API (api.jlcpcb.com); gerber+BOM+CPL bundle
   upload. All calls via `safe_get`/`safe_stream` discipline (fixed host,
-  no agent-supplied URLs), creds via `PRECIS_JLC_API_*` env (exported in
-  the deploy template — the env-config-vs-CLI-arg gap applies). **Order
+  no agent-supplied URLs). **Creds live in the existing secrets vault**
+  (`precis.secrets`, the `/secrets` write-only editor — NOT env vars,
+  NOT the deploy template): `JLCPCB_APP_ID`, `JLCPCB_ACCESS_KEY`,
+  `JLCPCB_SECRET_KEY`, read via `require_secret`, gated with
+  `is_available` so the client degrades cleanly when unset.
+  **Auth is SOLVED — server-verified 2026-08-27, do not re-derive:**
+  ```
+  host = https://open.jlcpcb.com          # NOT api.jlcpcb.com (that
+                                          # is the portal SPA; 404s)
+  string_to_sign = "{METHOD}\n{path}\n{timestamp}\n{nonce}\n{body}\n"
+  signature      = base64(HMAC-SHA256(secret_key, string_to_sign))
+  Authorization: JOP appid="…",accesskey="…",timestamp="…",
+                     nonce="…",signature="…"
+  ```
+  Per-request signing; there is **no token-issuance endpoint**.
+  Failures are explicit, not opaque: bad signature → `401 The request
+  signature verify failed`; unknown app → `401 application not
+  exists`; missing header → `400`. Our signature is accepted — the
+  only remaining blocker is `403 API insufficient permissions`, i.e.
+  **a console permission grant on the app (human action, not
+  engineering)**.
+  **Politeness/backoff is mandatory** on every JLC + EasyEDA call
+  (this is a third-party service that can blacklist us): exponential
+  backoff with jitter on 429/5xx, a conservative concurrency cap and
+  inter-request delay on bulk walks, honour `Retry-After`, and a
+  circuit-breaker that stops the walk rather than hammering. Never
+  retry a 401/403 — auth failures must fail fast, never loop.
+  **Order
   placement always requires explicit human confirmation** — the tool
   prepares and quotes; a human pulls the trigger (spends real money).
 - Freerouting DSN path **stays as the escape hatch** — demoted, not
@@ -221,7 +312,8 @@ venvs pick it up via the normal deploy.
 
 1. Schema migration + store mixin + handler read paths (hedges land
    first; everything else keys off board_id/stackup/classes).
-2. Footprints: parametric generator + easyeda2kicad wiring.
+2. Catalog + footprints: EasyEDA footprint pull/parse + JLCPCB
+   Components API (live stock) + family-consolidating selection.
 3. DRC engine + findings rows + gate evaluator. (needs 1, 2)
 4. `.kicad_pcb` writer + KiCad-DRC test oracle. (needs 1, 2)
 5. Planes: assignment + segmentation + islands. (needs 1, 3)
@@ -275,10 +367,15 @@ recorded-fixture pattern (one live smoke gated on creds).
   below the current `place.py` result; plane-served nets absent from
   the objective (asserted); the digest reports per-term cost and a
   per-region utilization table with its peak identified.
-- Footprint generator output for one part per package family matches
-  IPC-derived expected pads within tolerance (golden tests); an LCSC
-  long-tail part round-trips through the easyeda2kicad path into
-  `part_footprints`.
+- Footprint pull: recorded EasyEDA JSON fixtures (one per package
+  family) parse into canonical pads/pin_map/courtyard with golden
+  assertions; one live creds-free fetch smoke for a real C-number; a
+  part with no EasyEDA footprint is refused at selection with the
+  documented message (never silently placeholder-padded).
+- Selection: given a design already using one resistor series, a new
+  resistor search ranks that series' member above an equal-fit
+  stranger (family consolidation), and a non-fitting cheaper part is
+  absent from candidates entirely (fit is a gate).
 - JLCPCB client: recorded-fixture tests for quote/order/track; one live
   quote smoke (creds-gated) returns a price for the exported gerber
   bundle; the order call path provably cannot fire without the
@@ -306,7 +403,8 @@ recorded-fixture pattern (one live smoke gated on creds).
   (`src/precis/workers/`), route/place lanes.
 - Skills: `precis-pcb-help` (+ net-class/measures cross-refs) get the
   new ops; a new `precis-route-help` runtime skill.
-- Deploy: `PRECIS_JLC_API_*` env in serving templates; kicad-cli in the
+- Secrets vault rows (`JLCPCB_*`, set via `/secrets`) — no deploy-
+  template env change needed; kicad-cli in the
   CI/test image (advisory oracle); Freerouting role demoted in docs.
 - `docs/backlog/pcb-0042-implementation.md` — residuals section
   rewritten on ship of slice 1 (Freerouting → escape hatch; footprint
@@ -351,6 +449,14 @@ recorded-fixture pattern (one live smoke gated on creds).
   regulator + decoupling + headers), authored as slice-3 scope, reused
   by every later slice's tests. A real instrument board is the first
   post-slice-7 real-world exercise, not a gate.
+- **Decided (user, 2026-08-27):** slice 2 pulls footprints, never
+  generates them — no parametric/IPC generator at all. Parts come from
+  the JLCPCB Components API (live existence/stock/price, creds-gated,
+  jlcparts-dump fallback) and footprints from the EasyEDA per-C-number
+  JSON parsed in-house (easyeda2kicad = reference, not dependency).
+  No EasyEDA footprint ⇒ not a selectable part. Selection ranking gains
+  family/package consolidation; the agent-judgment half of that policy
+  shipped immediately in `precis-part-select-help`.
 - **Decided (algo discussion, user, 2026-08-27):** placer optimizer =
   simulated annealing over a constructive seed (supersedes the earlier
   force-directed wording); congestion objective = peak region
@@ -359,6 +465,31 @@ recorded-fixture pattern (one live smoke gated on creds).
   plane-served nets connect via dog-bone fanout only (routed gnd trace
   = flagged anomaly); copper retention is a derived fill post-pass with
   an advisory copper-fraction metric, never an optimizer term.
-- Open (slice 8, user-side): JLCPCB API access application
-  (api.jlcpcb.com) must be filed from the user's account; unknown
-  approval lead time — file early, slice 8 is creds-blocked until then.
+- **Decided (user, 2026-08-27):** JLCPCB credentials live in the
+  existing secrets vault (`/secrets` on melchior, `precis.secrets`)
+  alongside the other API creds — names `JLCPCB_APP_ID` /
+  `JLCPCB_ACCESS_KEY` / `JLCPCB_SECRET_KEY`, matching the
+  `ORCID_CLIENT_SECRET` convention. Supersedes the earlier
+  `PRECIS_JLC_API_*`-env plan (no deploy-template change).
+- **Spike-resolved 2026-08-27 (live, against the real API).** Slice 2
+  needs **no credentials at all** — footprint geometry, stock, price,
+  and basic-vs-extended (`componentLibraryType`) are all retrievable
+  unauthenticated, so slice 2 is fully decoupled from slice 8's auth
+  work (the earlier "creds-gated with dump fallback" framing was
+  stricter than reality). Datasheets: records carry **67 fields**
+  including `dataManualUrl` (primary PDF) and
+  `dataManualOfficialLink`; hosts vary between LCSC-rehosted and the
+  manufacturer's own, which **confirms `safe_get` is required** for
+  these fetches. Coverage is NOT 100% (the C42163081 test part has no
+  datasheet field at all); EasyEDA independently carries a link at
+  `packageDetail.dataStr.head.c_para.link`, so the two sources are
+  complementary — try both before declaring a part datasheet-less.
+- **Resolved 2026-08-27 — creds provisioned.** `JLCPCB_APP_ID`,
+  `JLCPCB_ACCESS_KEY`, `JLCPCB_SECRET_KEY` are live in the prod vault
+  (names verified against `vault.list()`). Slice 8 and slice 2's
+  live-stock half are no longer creds-blocked, and the signing spike
+  is DONE (scheme above, server-verified — no Java SDK needed after
+  all). **The one remaining blocker is a human console action:** the
+  app must have the Components (+ PCB, for slice 8 ordering) API
+  permissions enabled, or every signed call returns `403 API
+  insufficient permissions`.

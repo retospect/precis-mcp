@@ -28,6 +28,18 @@ share:
   list. A concurrent worker creating an active quest reweights that ordering
   and flips the pair.
 
+Third instance, 2026-08-27 (same signature, different global): a full gate
+failed `tests/test_runtime.py::test_build_runtime_no_database` — 1 failed /
+15171 passed — which **passed in isolation in 4.6 s**. It pops
+`PRECIS_DATABASE_URL` and asserts `"memory" not in rt.hub`, i.e. that
+`build_runtime()` finds no store. But the env var is not the only DSN source
+(`precis.secrets` also resolves an adopted process store / pgpass), so a
+sibling worker that has adopted a store makes the runtime stateful and the
+absence assertion flips. Same missing-scope shape: the test asserts a
+*process-global* absence it does not control. Note this one is not even
+store-scoped — it races on interpreter/process state, so a store-scoping fix
+alone would not cover it.
+
 This is distinct from the three known infra flakes (OOM-137, colima bind-mount
 `import file mismatch`, test-DB `does not exist`): those come from resource
 pressure, this one is a missing scope predicate. Sibling gate load only widens

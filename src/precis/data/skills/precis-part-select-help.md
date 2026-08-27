@@ -1,7 +1,7 @@
 ---
 id: precis-part-select-help
 title: precis — selecting JLCPCB parts for a PCB
-summary: pick real, manufacturable components for a pcb design from the LCSC/JLCPCB catalog — search by parametrics, prefer Basic + high-turnover (not the last reel), read one part by C-number, and let the footprint auto-stamp onto your component. Covers LCSC, JLCPCB assembly, Basic vs Extended, stock, BOM cost.
+summary: pick real, manufacturable components for a pcb design from the LCSC/JLCPCB catalog — fit first, then Basic + high-turnover (not the last reel), consolidating on one family and one package size (0402 default); read one part by C-number and let the footprint auto-stamp onto your component. Covers LCSC, JLCPCB assembly, Basic vs Extended, stock, popularity, BOM consolidation, cost.
 answers:
   - how do I search the LCSC/JLCPCB catalog for a real, buyable part?
   - how do I use a selected part in a PCB design?
@@ -30,15 +30,23 @@ search(kind="part", q="3.3V LDO 500mA SOT-23")
 
 The selector **hard-filters to assemblable parts** and ranks them:
 
-1. **Basic first.** JLCPCB stocks *Basic* parts on every assembly line for
+1. **Fit is a gate, not a tiebreak.** A candidate must first satisfy the
+   *electrical* spec — value, tolerance, voltage and power rating,
+   dielectric (X7R/X5R for anything that matters; never Y5V), temperature
+   range — and the package. A cheaper, more popular part that misses a
+   rating is not a candidate at all. Rank only what fits.
+2. **Basic first.** JLCPCB stocks *Basic* parts on every assembly line for
    free; *Extended* parts cost a per-reel loading fee and add risk. Prefer
    Basic unless the spec needs the Extended part.
-2. **Then turnover, not raw stock.** Ranking uses a derived *restock* signal
-   (how often the part's stock rises across daily dumps) + a smoothed stock
-   level — **not** the instantaneous count. This steers you away from the
-   "last reel" (high stock today, never restocked, gone next week) toward parts
-   that keep coming back.
-3. **Then cheaper.** The row shows the cheapest unit price across qty breaks.
+3. **Then turnover, not raw stock.** High stock volume is a good proxy for
+   "everyone uses this part" — and popular is safer: it stays orderable, it
+   is what JLC's line already runs, and its quirks are known. But raw volume
+   alone has a failure mode, so ranking uses a derived *restock* signal (how
+   often stock rises across daily dumps) + a smoothed level, **not** the
+   instantaneous count. That steers you away from the "last reel" (high
+   stock today, never restocked, gone next week) toward parts that keep
+   coming back.
+4. **Then cheaper.** The row shows the cheapest unit price across qty breaks.
 
 Columns: `lcsc · mfr_part · description · basic · stock · restocks · package ·
 $ea`. Pick the top Basic row that matches your parametrics + footprint.
@@ -86,11 +94,67 @@ Real pad geometry (the pin-name→pad map used by the DSN exporter) is fetched
 lazily from `easyeda2kicad` and cached; until that runs the exporter falls back
 to placeholder pads (clearly labelled).
 
+## Two rules the ranking can't apply for you
+
+The ranking sees one search at a time. These two need *your* view of the whole
+board — apply them yourself when choosing among the top rows.
+
+**Default to 0402, and stay there.** For passives prefer SMT, smallest that
+still fits the job: **0402 is the default**; go 0603/0805 only for a reason you
+can name (power dissipation, voltage derating, hand-rework, a bulk cap's
+capacitance). Don't mix 0402 and 0603 for the same function across a board —
+one size means one feeder, one reel, one placement setup.
+
+**Stay in one family.** Prefer a part from a series you've *already picked* on
+this board over an equally-good stranger: same resistor series (one
+manufacturer's 1% 0402 line for every resistor), same cap dielectric line, same
+logic family, same connector series. Consolidation pays three ways — fewer
+distinct SKUs means fewer Extended-part loading fees, one set of known
+characteristics (tolerance, tempco, ESR) instead of several, and a reorder that
+doesn't re-litigate part choices. When a family member is missing a value you
+need, take the family's next value up before you leave the family.
+
+## When the part you want isn't well stocked
+
+Thin stock is a design signal, not just a purchasing problem. Work down this
+ladder — the top rungs cost nothing, the bottom ones cost board area.
+
+1. **Same-footprint alternate.** Most substitutes share footprint *and*
+   pinout (a dozen vendors' 100nF 0402 X7R; SOT-23-5 LDOs with identical
+   pinouts). Nothing on the board changes — record the approved alternates on
+   the BOM line and move on. Every alternate must match the primary's
+   footprint and pin-map; if it doesn't, it belongs on a lower rung.
+2. **Take the bigger part.** A commodity part with features you don't need
+   usually beats an exact-fit part nobody stocks: an 8-bit shift register
+   where you need 5 bits, a fatter MCU, a higher-voltage or
+   higher-current-rated device. Unused capability is free; unavailability is
+   not. Check only that the extras are genuinely inert (no mandatory
+   support parts, no quiescent-current surprise).
+3. **Split one exotic part into two commodity ones.** Two cascaded 74HC595s
+   instead of a 16-bit driver; an MCU pin plus a discrete FET instead of a
+   specialised driver IC. Costs a little area and routing, buys parts that
+   are *always* in stock.
+4. **Two footprints, side by side, one populated (DNP).** Place both land
+   patterns **normally, not overlapping** — overlapping pads bring bridging
+   risk and awkward paste apertures for no gain. Populate variant A or B and
+   note which; the other stays unpopulated and out of the BOM/CPL. Costs
+   board area and routing to both sites, so reserve it for a genuinely
+   single-sourced critical part where the alternate is a different package.
+5. **Accept the thin-stock part** — deliberately, with the risk stated in
+   the component's `note`, not by default.
+
+**"Well stocked" is a ratio, not a number.** Compare stock against
+*this build*: qty × per-board count, with a healthy multiple. 5 000 units is
+enormous for ten prototypes and thin for a 10 k run. And remember rule 2
+above: **Basic parts sit on JLC's line permanently**, so for most passives
+"prefer Basic" already solves availability without any of this ladder.
+
 ## Policy in one line
 
-**Basic + high-turnover + footprint-matches + cheapest** — in that priority.
-The JLCPCB order is the final availability gate; turnover ranking just makes it
-unlikely you picked a part that's about to vanish.
+**Fits the spec + Basic + same family + high-turnover + cheapest** — in that
+priority. Fit is a gate; family keeps the BOM consolidated; turnover makes it
+unlikely you picked a part about to vanish; the JLCPCB order is the final
+availability gate.
 
 ## Selecting per function (typical board)
 

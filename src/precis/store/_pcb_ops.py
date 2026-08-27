@@ -30,6 +30,8 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.pcb import DEFAULT_STACKUP
+
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
     """psycopg Jsonb for a nullable JSONB column."""
@@ -56,6 +58,7 @@ class PcbMixin:
         measures: list[dict[str, Any]] | None = None,
         features: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
+        conn: Connection | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """Create-or-extend a design, batch. Returns ``(ref, created, counts)``.
 
@@ -69,7 +72,50 @@ class PcbMixin:
         ``width_mm``/``width``, ``note``. A *connection* dict: ``net`` (req),
         ``refdes`` (req), ``pin`` (req, a pin name), ``note``. Re-runnable:
         existing refdes / net names are reused.
-        """
+
+        Reuses ``conn`` when called inside an existing transaction (e.g. the
+        handler bundling the ``net_classes`` upsert so both writes commit or
+        roll back as one unit); opens its own otherwise (mirrors
+        :meth:`pcb_ensure_board`)."""
+        if conn is not None:
+            return self._pcb_apply(
+                conn,
+                slug=slug,
+                title=title,
+                components=components,
+                nets=nets,
+                connections=connections,
+                measures=measures,
+                features=features,
+                meta=meta,
+            )
+        with self.tx() as c:
+            return self._pcb_apply(
+                c,
+                slug=slug,
+                title=title,
+                components=components,
+                nets=nets,
+                connections=connections,
+                measures=measures,
+                features=features,
+                meta=meta,
+            )
+
+    def _pcb_apply(
+        self,
+        conn: Connection,
+        *,
+        slug: str,
+        title: str,
+        components: list[dict[str, Any]],
+        nets: list[dict[str, Any]],
+        connections: list[dict[str, Any]],
+        measures: list[dict[str, Any]] | None,
+        features: list[dict[str, Any]] | None,
+        meta: dict[str, Any] | None,
+    ) -> tuple[Any, bool, dict[str, int]]:
+        """The body of :meth:`pcb_apply`, given an already-open ``conn``."""
         existing = self.get_ref(kind="pcb", id=slug)
         created = existing is None
         counts = {
@@ -81,86 +127,87 @@ class PcbMixin:
             "measures": 0,
             "features": 0,
         }
-        with self.tx() as conn:
-            if created:
-                ref = self.insert_ref(
-                    kind="pcb",
-                    slug=slug,
-                    title=title,
-                    meta=dict(meta or {}),
-                    conn=conn,
-                )
-            else:
-                ref = existing
+        if created:
+            ref = self.insert_ref(
+                kind="pcb",
+                slug=slug,
+                title=title,
+                meta=dict(meta or {}),
+                conn=conn,
+            )
+        else:
+            ref = existing
+            conn.execute(
+                "UPDATE refs SET title = %s WHERE ref_id = %s",
+                (title, ref.id),
+            )
+            if meta is not None:
                 conn.execute(
-                    "UPDATE refs SET title = %s WHERE ref_id = %s",
-                    (title, ref.id),
+                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                    (Jsonb(dict(meta)), ref.id),
                 )
-                if meta is not None:
-                    conn.execute(
-                        "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
-                        (Jsonb(dict(meta)), ref.id),
-                    )
 
-            # refdes -> (instance_id, component_id); net name -> net_id
-            inst_by_refdes = self._pcb_instance_map(conn, ref.id)
-            net_by_name = self._pcb_net_map(conn, ref.id)
+        board_id = self.pcb_ensure_board(ref.id, conn=conn)
 
-            # catalog snapshots for the whole batch up front (two ANY()
-            # queries) — resolving inside the loop was 2 queries per component.
-            part_cache = self._pcb_resolve_parts(
-                conn,
-                sorted(
-                    {
-                        str(c.get("part_lcsc") or c.get("part")).strip().upper()
-                        for c in components
-                        if (c.get("part_lcsc") or c.get("part"))
-                    }
-                ),
+        # refdes -> (instance_id, component_id); net name -> net_id
+        inst_by_refdes = self._pcb_instance_map(conn, ref.id)
+        net_by_name = self._pcb_net_map(conn, ref.id)
+
+        # catalog snapshots for the whole batch up front (two ANY()
+        # queries) — resolving inside the loop was 2 queries per component.
+        part_cache = self._pcb_resolve_parts(
+            conn,
+            sorted(
+                {
+                    str(c.get("part_lcsc") or c.get("part")).strip().upper()
+                    for c in components
+                    if (c.get("part_lcsc") or c.get("part"))
+                }
+            ),
+        )
+
+        for c in components:
+            refdes = str(c.get("refdes") or "").strip()
+            if not refdes:
+                raise ValueError("pcb component needs a refdes")
+            if refdes in inst_by_refdes:
+                continue  # already placed; skip (re-runnable)
+            comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
+            counts["components"] += 1
+            counts["pins"] += self._pcb_insert_pins(conn, comp_id, c.get("pins") or [])
+            inst_id = self._pcb_insert_instance(
+                conn, ref.id, board_id, comp_id, refdes, c
+            )
+            counts["instances"] += 1
+            inst_by_refdes[refdes] = (inst_id, comp_id)
+
+        for n in nets:
+            name = str(n.get("name") or "").strip()
+            if not name:
+                raise ValueError("pcb net needs a name (meaningful)")
+            if name in net_by_name:
+                continue
+            net_by_name[name] = self._pcb_insert_net(conn, ref.id, n)
+            counts["nets"] += 1
+
+        for k in connections:
+            counts["conns"] += self._pcb_connect(
+                conn, ref.id, k, inst_by_refdes, net_by_name
             )
 
-            for c in components:
-                refdes = str(c.get("refdes") or "").strip()
-                if not refdes:
-                    raise ValueError("pcb component needs a refdes")
-                if refdes in inst_by_refdes:
-                    continue  # already placed; skip (re-runnable)
-                comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
-                counts["components"] += 1
-                counts["pins"] += self._pcb_insert_pins(
-                    conn, comp_id, c.get("pins") or []
-                )
-                inst_id = self._pcb_insert_instance(conn, ref.id, comp_id, refdes, c)
-                counts["instances"] += 1
-                inst_by_refdes[refdes] = (inst_id, comp_id)
+        for mm in measures or []:
+            self._pcb_insert_measure(conn, ref.id, mm)
+            counts["measures"] += 1
 
-            for n in nets:
-                name = str(n.get("name") or "").strip()
-                if not name:
-                    raise ValueError("pcb net needs a name (meaningful)")
-                if name in net_by_name:
-                    continue
-                net_by_name[name] = self._pcb_insert_net(conn, ref.id, n)
-                counts["nets"] += 1
+        for ft in features or []:
+            self._pcb_insert_feature(conn, ref.id, board_id, ft)
+            counts["features"] += 1
 
-            for k in connections:
-                counts["conns"] += self._pcb_connect(
-                    conn, ref.id, k, inst_by_refdes, net_by_name
-                )
-
-            for mm in measures or []:
-                self._pcb_insert_measure(conn, ref.id, mm)
-                counts["measures"] += 1
-
-            for ft in features or []:
-                self._pcb_insert_feature(conn, ref.id, ft)
-                counts["features"] += 1
-
-            self.blocks._replace_card_combined(
-                conn,
-                ref_id=ref.id,
-                card_text=self._pcb_card_text(conn, ref.id, title),
-            )
+        self.blocks._replace_card_combined(
+            conn,
+            ref_id=ref.id,
+            card_text=self._pcb_card_text(conn, ref.id, title),
+        )
         return ref, created, counts
 
     def _pcb_card_text(self, conn: Connection, ref_id: int, title: str) -> str:
@@ -298,6 +345,7 @@ class PcbMixin:
         self,
         conn: Connection,
         ref_id: int,
+        board_id: int,
         component_id: int,
         refdes: str,
         c: dict[str, Any],
@@ -305,12 +353,14 @@ class PcbMixin:
         row = conn.execute(
             """
             INSERT INTO pcb_instances
-                (ref_id, component_id, refdes, x, y, rot, layer, fixed, roles, note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (ref_id, board_id, component_id, refdes, x, y, rot, layer,
+                 fixed, roles, note)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING instance_id
             """,
             (
                 ref_id,
+                board_id,
                 component_id,
                 refdes,
                 c.get("x"),
@@ -329,8 +379,8 @@ class PcbMixin:
         row = conn.execute(
             """
             INSERT INTO pcb_nets
-                (ref_id, name, net_class, est_current_a, width_mm, note)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                (ref_id, name, net_class, est_current_a, width_mm, note, domain)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING net_id
             """,
             (
@@ -340,6 +390,7 @@ class PcbMixin:
                 n.get("est_current_a") or n.get("current"),
                 n.get("width_mm") or n.get("width"),
                 n.get("note"),
+                str(n.get("domain") or "electrical").strip(),
             ),
         ).fetchone()
         assert row is not None
@@ -371,7 +422,7 @@ class PcbMixin:
         )
 
     def _pcb_insert_feature(
-        self, conn: Connection, ref_id: int, f: dict[str, Any]
+        self, conn: Connection, ref_id: int, board_id: int, f: dict[str, Any]
     ) -> None:
         """A non-electrical placed feature: mounting hole /
         fiducial / testpoint / keepout / outline. ``geom`` carries the shape
@@ -384,11 +435,12 @@ class PcbMixin:
         conn.execute(
             """
             INSERT INTO pcb_features
-                (ref_id, ftype, x, y, rot, layer, fixed, geom, note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (ref_id, board_id, ftype, x, y, rot, layer, fixed, geom, note)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 ref_id,
+                board_id,
                 ftype,
                 f.get("x"),
                 f.get("y"),
@@ -469,11 +521,97 @@ class PcbMixin:
         ).fetchall()
         return {str(r[0]): int(r[1]) for r in rows}
 
+    # -- boards -----------------------------------------------------------
+    def pcb_ensure_board(self, ref_id: int, *, conn: Connection | None = None) -> int:
+        """Get-or-create the design's default board (``name='main'``,
+        :data:`precis.pcb.DEFAULT_STACKUP`). Every instance/feature write
+        path threads ``board_id`` through this — the netlist != board hedge
+        (pcb-guided-place-route Slice 1). Reuses ``conn`` when called inside
+        an existing transaction (e.g. :meth:`pcb_apply`); opens its own
+        otherwise."""
+        if conn is not None:
+            return self._pcb_ensure_board(conn, ref_id)
+        with self.tx() as c:
+            return self._pcb_ensure_board(c, ref_id)
+
+    def _pcb_ensure_board(self, conn: Connection, ref_id: int) -> int:
+        row = conn.execute(
+            "SELECT board_id FROM pcb_boards "
+            "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+        # Get-or-create: a concurrent pcb_apply for the same new design can
+        # race this SELECT-then-INSERT and hit pcb_boards_ref_name_key
+        # (the partial unique index on (ref_id, name) WHERE retired_at IS
+        # NULL — the same clause the 0138 backfill uses). ON CONFLICT DO
+        # NOTHING absorbs the race; re-SELECT picks up the winner's row.
+        new = conn.execute(
+            "INSERT INTO pcb_boards (ref_id, name, stackup) VALUES (%s, %s, %s) "
+            "ON CONFLICT (ref_id, name) WHERE retired_at IS NULL DO NOTHING "
+            "RETURNING board_id",
+            (ref_id, "main", Jsonb(DEFAULT_STACKUP)),
+        ).fetchone()
+        if new is not None:
+            return int(new[0])
+        row = conn.execute(
+            "SELECT board_id FROM pcb_boards "
+            "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def _pcb_board_meta(
+        self, conn: Connection, ref_id: int
+    ) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, int]]:
+        """The board row (board_id/name/stackup/fold_lines), the design's
+        net_classes (name -> rules), and a route-status summary (counts by
+        :class:`pcb_routes.status`; empty = all-unrouted) — shared by
+        :meth:`pcb_load` (TOC) and :meth:`pcb_graph` (the eyes)."""
+        board_row = conn.execute(
+            "SELECT board_id, name, stackup, fold_lines FROM pcb_boards "
+            "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+        board = (
+            {
+                "board_id": int(board_row[0]),
+                "name": board_row[1],
+                "stackup": board_row[2],
+                "fold_lines": board_row[3],
+            }
+            if board_row is not None
+            else None
+        )
+        net_classes = {
+            r[0]: r[1]
+            for r in conn.execute(
+                "SELECT name, rules FROM pcb_net_classes "
+                "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
+                (ref_id,),
+            ).fetchall()
+        }
+        route_status: dict[str, int] = {}
+        if board is not None:
+            route_status = {
+                r[0]: int(r[1])
+                for r in conn.execute(
+                    "SELECT status, count(*) FROM pcb_routes "
+                    "WHERE board_id = %s GROUP BY status",
+                    (board["board_id"],),
+                ).fetchall()
+            }
+        return board, net_classes, route_status
+
     # -- read -----------------------------------------------------------
-    def pcb_load(self, ref_id: int) -> dict[str, list[dict[str, Any]]]:
-        """The design's instances + nets + a fanout count per net, for the
-        netlist TOC. Components/pins are joined into the instance rows."""
+    def pcb_load(self, ref_id: int) -> dict[str, Any]:
+        """The design's board/net_classes/route-status + instances + nets +
+        a fanout count per net, for the netlist TOC. Components/pins are
+        joined into the instance rows."""
         with self.pool.connection() as conn:
+            board, net_classes, route_status = self._pcb_board_meta(conn, ref_id)
             instances = [
                 {
                     "instance_id": int(r[0]),
@@ -520,7 +658,13 @@ class PcbMixin:
                     (ref_id,),
                 ).fetchall()
             ]
-        return {"instances": instances, "nets": nets}
+        return {
+            "board": board,
+            "net_classes": net_classes,
+            "route_status": route_status,
+            "instances": instances,
+            "nets": nets,
+        }
 
     def pcb_instance_neighbors(self, ref_id: int, refdes: str) -> dict[str, Any] | None:
         """The graph hop from one component instance: its pins, the net on each
@@ -592,10 +736,14 @@ class PcbMixin:
         }
 
     def pcb_graph(self, ref_id: int) -> dict[str, Any]:
-        """The whole design as the *eyes* consume it: placed
-        instances, nets with their (refdes, pin) members, and the unconnected
-        pins. Pure data — the analysis lives in :mod:`precis.pcb`."""
+        """The whole design as the *eyes* consume it: the board (stackup +
+        fold_lines), placed instances, nets with their (refdes, pin) members
+        + domain, the design's net_classes, a route-status summary (counts
+        by :class:`pcb_routes.status`; empty = all-unrouted), and the
+        unconnected pins. Pure data — the analysis lives in
+        :mod:`precis.pcb`."""
         with self.pool.connection() as conn:
+            board, net_classes, route_status = self._pcb_board_meta(conn, ref_id)
             instances = [
                 {
                     "refdes": r[0],
@@ -622,12 +770,17 @@ class PcbMixin:
                 ).fetchall()
             ]
             net_rows = conn.execute(
-                "SELECT net_id, name, net_class FROM pcb_nets "
+                "SELECT net_id, name, net_class, domain FROM pcb_nets "
                 "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
                 (ref_id,),
             ).fetchall()
             nets = {
-                int(r[0]): {"name": r[1], "net_class": r[2], "members": []}
+                int(r[0]): {
+                    "name": r[1],
+                    "net_class": r[2],
+                    "domain": r[3],
+                    "members": [],
+                }
                 for r in net_rows
             }
             for r in conn.execute(
@@ -658,10 +811,82 @@ class PcbMixin:
                 ).fetchall()
             ]
         return {
+            "board": board,
             "instances": instances,
             "nets": list(nets.values()),
+            "net_classes": net_classes,
+            "route_status": route_status,
             "unconnected": unconnected,
         }
+
+    def pcb_route_status(self, ref_id: int) -> list[dict[str, Any]]:
+        """Per-net route status for ``view='route-status'`` — a net with no
+        :class:`pcb_routes` row reads as ``'unrouted'`` (the default state,
+        not a missing one)."""
+        with self.pool.connection() as conn:
+            board_row = conn.execute(
+                "SELECT board_id FROM pcb_boards "
+                "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            board_id = int(board_row[0]) if board_row is not None else None
+            return [
+                {
+                    "name": r[0],
+                    "net_class": r[1],
+                    "domain": r[2],
+                    "status": r[3] or "unrouted",
+                }
+                for r in conn.execute(
+                    "SELECT n.name, n.net_class, n.domain, rt.status "
+                    "FROM pcb_nets n "
+                    "LEFT JOIN pcb_routes rt "
+                    "  ON rt.net_id = n.net_id AND rt.board_id = %s "
+                    "WHERE n.ref_id = %s AND n.retired_at IS NULL "
+                    "ORDER BY n.name",
+                    (board_id, ref_id),
+                ).fetchall()
+            ]
+
+    def pcb_upsert_net_classes(
+        self,
+        ref_id: int,
+        classes: dict[str, dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Upsert per-design net-class rules by name (``{name: rules}``).
+        Upsert only — no soft-retire of names absent from the batch;
+        deletion is an explicit later op. Returns the count written.
+
+        Reuses ``conn`` when called inside an existing transaction (e.g. the
+        handler bundling this with :meth:`pcb_apply` so both writes commit
+        or roll back as one unit); opens its own otherwise (mirrors
+        :meth:`pcb_ensure_board`)."""
+        if conn is not None:
+            return self._pcb_upsert_net_classes(conn, ref_id, classes)
+        with self.tx() as c:
+            return self._pcb_upsert_net_classes(c, ref_id, classes)
+
+    def _pcb_upsert_net_classes(
+        self, conn: Connection, ref_id: int, classes: dict[str, dict[str, Any]]
+    ) -> int:
+        n = 0
+        for name, rules in classes.items():
+            name = str(name).strip()
+            if not name:
+                raise ValueError("pcb net_class needs a name")
+            conn.execute(
+                """
+                INSERT INTO pcb_net_classes (ref_id, name, rules)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (ref_id, name) WHERE retired_at IS NULL
+                DO UPDATE SET rules = EXCLUDED.rules
+                """,
+                (ref_id, name, Jsonb(dict(rules or {}))),
+            )
+            n += 1
+        return n
 
     def pcb_set_placement(
         self,

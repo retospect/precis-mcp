@@ -6,15 +6,19 @@ A ``pcb`` design is a slug-addressed ref whose graph lives in the dedicated
 pixels. The verbs map onto the seven-verb surface:
 
 - ``put``    — create / extend a design (``id=`` slug; ``args={components,
-  nets, connections}`` — see :meth:`PcbHandler.put`). Re-runnable.
-- ``get``    — list designs (no id); a design's netlist TOC (``id=slug``); one
+  nets, connections, net_classes}`` — see :meth:`PcbHandler.put`).
+  Re-runnable. Every design gets a default board (``pcb-guided-place-route``
+  Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
+  electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
+- ``get``    — list designs (no id); a design's netlist TOC (``id=slug``,
+  now with the board/stackup + net_classes + route-status summary); one
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
-  'feasibility'``); or an *export* (``view='bom'|'cpl'|'netlist'|'dsn'|
-  'mechanical'`` writes a JLCPCB fab artifact; ``view='route'`` runs the
-  Freerouting place↔route round-trip — :mod:`precis.pcb.export` /
-  :mod:`precis.pcb.route`).
+  'feasibility'|'route-status'``); or an *export* (``view='bom'|'cpl'|
+  'netlist'|'dsn'|'mechanical'`` writes a JLCPCB fab artifact;
+  ``view='route'`` runs the Freerouting place↔route round-trip —
+  :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
 - ``search`` — over design names + descriptions (the one summary card).
 - ``delete`` — soft-retire a whole design.
 
@@ -62,8 +66,10 @@ _PROBE_VIEWS = (
 _EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical")
 #: The rented autorouter round-trip (Slice 6, gated on Freerouting).
 _ROUTE_VIEWS = ("route",)
+#: pcb-guided-place-route Slice 1 — per-net route status (all-unrouted v1).
+_STATUS_VIEWS = ("route-status",)
 _OTHER_VIEWS = ("links",)
-_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_ROUTE_VIEWS, *_OTHER_VIEWS)
+_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_ROUTE_VIEWS, *_STATUS_VIEWS, *_OTHER_VIEWS)
 
 
 class PcbHandler(Handler):
@@ -75,14 +81,18 @@ class PcbHandler(Handler):
             "the LLM authors in batch and reads as a traversable graph, never "
             "pixels. put creates/extends a design (id=slug, args={components:"
             "[{refdes,label,part?,pins:[{name,pad?,tags?}],x?,y?,layer?,roles?}],"
-            " nets:[{name,class?,current?}], connections:[{net,refdes,pin}]}); "
-            "get lists designs, a design's netlist TOC (id=slug), one "
+            " nets:[{name,class?,current?,domain?}], connections:[{net,refdes,"
+            "pin}], net_classes:{name:rules}}); nets default domain='electrical' "
+            "(v1 rejects fluidic/thermal — schema-reserved). Every design gets "
+            "a default 4-layer board (pcb_boards) on first write. "
+            "get lists designs, a design's netlist TOC (id=slug, incl. board/"
+            "stackup + net_classes + route-status summary), one "
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
-            "'trace'|'proximity'|'measures'|'feasibility'), or an export "
-            "(view='bom'|'cpl'|'netlist'|'dsn'|'mechanical' writes a JLCPCB "
-            "fab artifact; view='route' runs the Freerouting place↔route "
-            "round-trip), all with args={...}; "
+            "'trace'|'proximity'|'measures'|'feasibility'|'route-status'), or "
+            "an export (view='bom'|'cpl'|'netlist'|'dsn'|'mechanical' writes a "
+            "JLCPCB fab artifact; view='route' runs the Freerouting "
+            "place↔route round-trip), all with args={...}; "
             "put(args={'autoplace':{'iters':N}}) auto-places to minimise "
             "crossings (fixed parts pinned); search over names; delete "
             "soft-retires. "
@@ -133,19 +143,34 @@ class PcbHandler(Handler):
         features = list(args.get("features") or [])
         autoplace = args.get("autoplace")
         meta = args.get("meta") if isinstance(args.get("meta"), dict) else None
+        net_classes = args.get("net_classes")
         ttl = (title or slug).strip() or slug
 
+        self._reject_non_electrical(nets)
+
         try:
-            ref, created, counts = self.store.pcb_apply(
-                slug=slug,
-                title=ttl,
-                components=components,
-                nets=nets,
-                connections=connections,
-                measures=measures,
-                features=features,
-                meta=meta,
-            )
+            # One transaction spans pcb_apply + the net_classes upsert (both
+            # accept an external conn=) so a validation error in either half
+            # (e.g. a blank net_class name) rolls back the whole put — never
+            # a committed design followed by a BadInput implying nothing
+            # happened (gr — pcb-guided-place-route Slice 1 review).
+            with self.store.tx() as conn:
+                ref, created, counts = self.store.pcb_apply(
+                    slug=slug,
+                    title=ttl,
+                    components=components,
+                    nets=nets,
+                    connections=connections,
+                    measures=measures,
+                    features=features,
+                    meta=meta,
+                    conn=conn,
+                )
+                n_classes = 0
+                if isinstance(net_classes, dict) and net_classes:
+                    n_classes = self.store.pcb_upsert_net_classes(
+                        ref.id, net_classes, conn=conn
+                    )
         except ValueError as exc:
             raise BadInput(f"pcb: {exc}") from exc
 
@@ -159,12 +184,28 @@ class PcbHandler(Handler):
         extra = f", +{counts['measures']} measure(s)" if counts["measures"] else ""
         if counts["features"]:
             extra += f", +{counts['features']} feature(s)"
+        if n_classes:
+            extra += f", +{n_classes} net_class(es)"
         head = (
             f"# {slug} — {verb}: +{counts['components']} part(s), "
             f"+{counts['nets']} net(s), +{counts['conns']} conn(s){extra}  "
             f"(now {len(design['instances'])} part(s), {len(design['nets'])} net(s))"
         )
         return Response(body=head + "\n" + self._toc(design))
+
+    def _reject_non_electrical(self, nets: list[dict[str, Any]]) -> None:
+        """v1 routes electrical nets only — ``domain`` is schema-reserved
+        for fluidic/thermal co-design (pcb-guided-place-route). Nets
+        without a ``domain`` key default to electrical (schema default)."""
+        for n in nets:
+            domain = n.get("domain")
+            if domain is not None and str(domain).strip() != "electrical":
+                raise BadInput(
+                    f"pcb: net {n.get('name')!r} has domain={domain!r} — v1 routes "
+                    "electrical nets only; fluidic/thermal are schema-reserved",
+                    next="omit 'domain' (defaults to electrical) or use "
+                    "domain='electrical'",
+                )
 
     # ── get ──────────────────────────────────────────────────────────
     def get(
@@ -263,6 +304,8 @@ class PcbHandler(Handler):
             return self._render_export(ref_id, view, args)
         if view in _ROUTE_VIEWS:
             return self._render_route(ref_id, args)
+        if view in _STATUS_VIEWS:
+            return self._render_route_status(ref_id)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -583,6 +626,34 @@ class PcbHandler(Handler):
             + tail
         )
 
+    # ── route status (pcb-guided-place-route Slice 1) ──────────────────
+    def _render_route_status(self, ref_id: int) -> Response:
+        """The per-net route status table — a net with no ``pcb_routes`` row
+        reads as ``unrouted`` (v1 has no sketcher/realizer yet, so every net
+        renders unrouted until a later slice writes routes)."""
+        rows = self.store.pcb_route_status(ref_id)
+        if not rows:
+            return Response(body="no nets on this design yet")
+        counts: dict[str, int] = {}
+        for r in rows:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
+        table_rows = [
+            {
+                "net": r["name"],
+                "class": r["net_class"] or "—",
+                "domain": r["domain"] or "electrical",
+                "status": r["status"],
+            }
+            for r in rows
+        ]
+        return Response(
+            body=f"# route status — {len(rows)} net(s): {summary}\n"
+            + render_agent_table(
+                table_rows, schema=["net", "class", "domain", "status"]
+            )
+        )
+
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
@@ -688,8 +759,13 @@ class PcbHandler(Handler):
             + render_agent_table(rows, schema=["design", "title"])
         )
 
-    def _toc(self, design: dict[str, list[dict[str, Any]]]) -> str:
+    def _toc(self, design: dict[str, Any]) -> str:
         parts = []
+        board = design.get("board")
+        if board is not None:
+            parts.append(
+                f"## board: {board['name']} — {self._stackup_summary(board['stackup'])}"
+            )
         irows = [
             {
                 "refdes": i["refdes"],
@@ -721,7 +797,37 @@ class PcbHandler(Handler):
             "## nets\n"
             + render_agent_table(nrows, schema=["net", "class", "fanout", "I", "w"])
         )
+        net_classes = design.get("net_classes") or {}
+        if net_classes:
+            crows = [
+                {"class": name, "rules": json.dumps(rules)}
+                for name, rules in net_classes.items()
+            ]
+            parts.append(
+                "## net classes\n"
+                + render_agent_table(crows, schema=["class", "rules"])
+            )
+        n_nets = len(design["nets"])
+        route_status = design.get("route_status") or {}
+        if n_nets:
+            if route_status:
+                summary = ", ".join(f"{n} {s}" for s, n in sorted(route_status.items()))
+            else:
+                summary = f"{n_nets} unrouted"
+            parts.append(f"## route status: {summary}")
         return "\n".join(parts)
+
+    def _stackup_summary(self, stackup: Any) -> str:
+        """``4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu`` — the plane_net (if
+        any) parenthesised after its layer name."""
+        layers = list(stackup or [])
+        names = [
+            f"{layer.get('name')}({layer['plane_net']})"
+            if layer.get("plane_net")
+            else str(layer.get("name"))
+            for layer in layers
+        ]
+        return f"{len(layers)} layers: {'/'.join(names)}"
 
     def _pose(self, i: dict[str, Any]) -> str:
         if i["x"] is None or i["y"] is None:

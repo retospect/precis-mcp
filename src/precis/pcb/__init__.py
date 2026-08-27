@@ -16,3 +16,18 @@ are unit-testable in isolation.
 """
 
 from __future__ import annotations
+
+from typing import Any
+
+#: The v1 default stackup (pcb-guided-place-route Slice 1) — 4-layer rigid
+#: FR-4, SIG/GND/PWR/SIG. Roles only (no material/thickness_mm) in v1; the
+#: schema (``pcb_boards.stackup``) is shaped to carry dielectric detail
+#: later. This is the single Python-side source of truth; migration
+#: 0138_pcb_boards_routes.sql inlines the same JSON literal for backfill —
+#: keep the two in sync by eye.
+DEFAULT_STACKUP: list[dict[str, Any]] = [
+    {"name": "F.Cu", "role": "signal"},
+    {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},
+    {"name": "In2.Cu", "role": "plane"},
+    {"name": "B.Cu", "role": "signal"},
+]

@@ -111,6 +111,18 @@ Field notes:
 - A connection to an unknown **net** auto-creates the net; an unknown
   **refdes** is an error (declare the component first).
 - Optional `measures` and `features` arrays — see below.
+- Optional `net_classes` — `{name: rules}` per-design router/DRC rules
+  (upsert; existing names not in the batch are left alone). `rules` is a
+  free-form dict (`clearance_mm`, track width, via drill/annular, permitted
+  layers…); a net's `net_class` joins this by name, a missing row means
+  built-in defaults.
+- Every design gets a default **board** (`pcb_boards`, name `'main'`, the
+  4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu(GND)`/`In2.Cu`/`B.Cu`) on first
+  `put` — the netlist≠board hedge for future multi-board work; v1 is one
+  board per design.
+- **`nets[].domain`** — `'electrical'` (default) `|'fluidic'|'thermal'`.
+  v1 **rejects** any net with a non-electrical domain: schema-reserved for
+  later microfluidic/thermal co-design, not yet routed.
 
 ## Read it as a graph — `get`
 
@@ -118,7 +130,8 @@ Field notes:
 get(kind="pcb")  # list designs
 get(
     kind="pcb", id="sensor-node"
-)  # netlist TOC: parts table + nets table (fanout, class, I, width)
+)  # netlist TOC: board/stackup + parts + nets (fanout, class, I, width) +
+   # net_classes + route-status summary
 get(
     kind="pcb", id="sensor-node#U1"
 )  # ONE instance: each pin → its net → the neighbour instances
@@ -143,6 +156,9 @@ get(
 get(
     kind="pcb", id="s", view="drc"
 )  # DRC-lite findings (unplaced, off-board, overlaps…)
+get(
+    kind="pcb", id="s", view="route-status"
+)  # per-net route status table (v1: no sketcher/realizer yet — all unrouted)
 get(
     kind="pcb", id="s", view="proximity", args={"a": "U1", "b": "C1"}
 )  # centroid gap (mm)
