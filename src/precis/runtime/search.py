@@ -21,6 +21,9 @@ from precis.protocol import Handler
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
+from precis.runtime._shared import (
+    UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
+)
 from precis.runtime._shared import RuntimeShape
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
@@ -343,6 +346,15 @@ class SearchMixin(RuntimeShape):
         hits — each stamped with its own ``ref.kind`` so handles/labels
         stay correct — as one pre-ordered stream (RRF over a single
         stream preserves the store's relevance-or-recency order).
+
+        ``args['exclude_ref_ids']`` (set by ``_dispatch_inner``'s
+        ``uncited=`` resolution) threads straight into
+        :meth:`~precis.store._blocks_ops.BlocksMixin.search_chunks_across_kinds`,
+        which applies it in the ONE underlying SQL query across every
+        requested kind — the only search path with no per-kind support gap
+        to work around (unlike :meth:`_dispatch_cross_kind`'s per-handler
+        fan-out), so this is the recommended route for
+        ``uncited=`` when the target kind set includes patent/edgar.
         """
         store = self.hub.store
         if store is None:
@@ -378,6 +390,7 @@ class SearchMixin(RuntimeShape):
             except Exception:
                 log.exception("source search: query embed failed; lexical-only")
 
+        exclude_ref_ids = args.get("exclude_ref_ids")
         results = store.blocks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
@@ -389,6 +402,7 @@ class SearchMixin(RuntimeShape):
             sort=sort,
             limit=top_k,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
+            exclude_ref_ids=exclude_ref_ids,
         )
         hits: list[SearchHit] = []
         for block, ref, score in results:
@@ -428,7 +442,18 @@ class SearchMixin(RuntimeShape):
         # leg doesn't need an embedder, so we can answer this in one
         # store query — list_refs accepts a kind=None tag filter and
         # returns a kind-mixed result set the renderer trivially flattens.
+        # ``_dispatch_cross_kind_tags_only`` has no exclude_ref_ids wiring
+        # at all (``list_refs`` isn't a ranked chunk search), so a
+        # ``uncited=`` resolved into ``args['exclude_ref_ids']`` above would
+        # silently ride through unfiltered — raise instead of falling
+        # through to that path.
         if q is None or not (isinstance(q, str) and q.strip()):
+            if args.get("exclude_ref_ids") is not None:
+                raise BadInput(
+                    "uncited= requires q= (it filters a ranked search, not "
+                    "the tags-only sweep)",
+                    next=f"search(kind={kind!r}, q='your query', uncited=…)",
+                )
             if tags_in:
                 return self._dispatch_cross_kind_tags_only(kind, args)
             raise BadInput(
@@ -463,6 +488,48 @@ class SearchMixin(RuntimeShape):
                     "use single-kind search() against the kind you want"
                 ),
             )
+
+        # ``uncited=`` (resolved by ``_dispatch_inner`` into
+        # ``args['exclude_ref_ids']``): every per-handler ``search_hits``
+        # accepts arbitrary kwargs (``**_kw``), so an unsupported kind would
+        # otherwise silently swallow the filter and contribute unfiltered
+        # (possibly already-cited) hits — the "believed every hit was new"
+        # failure mode the feature must never produce. Kinds in
+        # ``_UNCITED_UNSUPPORTED_KINDS`` have no real SQL-level exclusion
+        # wiring: an EXPLICIT request for one of them raises; the default
+        # wildcard fan-out instead drops them (footer-noted below) so the
+        # common unscoped ``search(q=..., uncited=...)`` call still works.
+        exclude_ref_ids = args.get("exclude_ref_ids")
+        uncited_dropped_kinds: list[str] = []
+        if exclude_ref_ids is not None:
+            unsupported_present = [k for k in kinds if k in _UNCITED_UNSUPPORTED_KINDS]
+            if unsupported_present:
+                if kind.strip().lower() in _CROSS_KIND_ALIASES:
+                    kinds = [k for k in kinds if k not in _UNCITED_UNSUPPORTED_KINDS]
+                    uncited_dropped_kinds = unsupported_present
+                    if not kinds:
+                        raise Unsupported(
+                            "uncited= leaves no searchable kinds — every "
+                            f"eligible kind {unsupported_present!r} lacks "
+                            "exclude-by-ref_id wiring",
+                            next=(
+                                "use sort=/since=/until= (the cross-kind "
+                                "source-search primitive), which excludes "
+                                "uniformly across every kind"
+                            ),
+                        )
+                else:
+                    raise Unsupported(
+                        f"uncited= is not supported for kind(s) "
+                        f"{unsupported_present!r} — no exclude-by-ref_id "
+                        "wiring yet",
+                        next=(
+                            "drop these kinds from the comma-list, or use "
+                            "sort=/since=/until= (the cross-kind "
+                            "source-search primitive) which excludes "
+                            "uniformly across every kind"
+                        ),
+                    )
 
         # Canonicalise the tag filter once at the dispatch boundary.
         # ``Tag.normalize_filter`` round-trips each tag through
@@ -540,6 +607,15 @@ class SearchMixin(RuntimeShape):
             base_kwargs["tags"] = tags
         if exclude:
             base_kwargs["exclude"] = exclude
+        if exclude_ref_ids:
+            # Real SQL-level exclusion for the kinds that support it
+            # (paper/cfp/datasheet — the ``PaperHandler`` family); every
+            # other kind's ``search_hits`` accepts and ignores this via
+            # ``**_kw``, which is safe (never a false match) since ref_ids
+            # are globally unique and the exclusion set only ever contains
+            # citeable-kind refs (see ``_UNCITED_UNSUPPORTED_KINDS`` above
+            # for the two exceptions, already excluded from ``kinds``).
+            base_kwargs["exclude_ref_ids"] = exclude_ref_ids
 
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
@@ -654,6 +730,20 @@ class SearchMixin(RuntimeShape):
                 else:
                     lines.append(tip)
                 response = Response(body="\n".join(lines), cost=response.cost)
+
+        if uncited_dropped_kinds:
+            lines = response.body.splitlines()
+            tip = (
+                "_(uncited=: skipped "
+                + ", ".join(sorted(uncited_dropped_kinds))
+                + " — no exclude-by-ref_id wiring yet, so a hit there might "
+                "already be cited; search that kind explicitly to check)_"
+            )
+            if lines:
+                lines.insert(1, tip)
+            else:
+                lines.append(tip)
+            response = Response(body="\n".join(lines), cost=response.cost)
 
         return response
 
@@ -790,6 +880,24 @@ class SearchMixin(RuntimeShape):
         most-recent-addition first (``exclude``, then ``tags``). Any
         non-TypeError exception is logged and degraded to ``None``
         so one slow / broken kind doesn't crash the whole query.
+
+        ``exclude_ref_ids=`` (``search(uncited=...)``'s resolved closure) is
+        deliberately NOT in the drop list above: every registered handler's
+        ``search_hits`` today declares ``**_kw`` (accepts and silently
+        ignores an unknown kwarg rather than raising ``TypeError``), so this
+        never actually triggers the retry path — and dropping it here would
+        be the exact silent-degrade the feature must avoid. The caller
+        (``_dispatch_cross_kind``) instead pre-filters ``kinds`` to exclude
+        the two kinds known to ignore it (see
+        :data:`~precis.runtime._shared.UNCITED_UNSUPPORTED_KINDS`); for
+        every kind still in the fan-out, ignoring the kwarg is provably
+        harmless (ref_ids are globally unique, so it can never wrongly
+        match a hit from an unrelated kind) or is actually honoured (the
+        ``PaperHandler`` family). If a future handler ever *does* raise
+        ``TypeError`` on ``exclude_ref_ids=`` (e.g. a stricter signature
+        with no ``**_kw``), that's an even safer failure than a silent
+        drop: this method's final fallback returns ``None`` — no hits from
+        that kind at all — rather than proceeding without the filter.
         """
         # Try the full set first.
         try:

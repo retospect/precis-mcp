@@ -1226,6 +1226,7 @@ class BlockStore:
         offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> list[tuple[Block, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
 
@@ -1238,6 +1239,12 @@ class BlockStore:
         (default), recency (``sort='recency'`` → newest matching ref first),
         or age (``sort='oldest'`` → oldest matching ref first).
         ``offset`` pages past the first window (Slice-3 pagination).
+        ``exclude_ref_ids`` drops those refs from every leg (threaded straight
+        into :meth:`search_blocks_multi`) — unlike the per-handler cross-kind
+        fan-out (``runtime._dispatch_cross_kind``), this primitive runs ONE
+        SQL query over every requested kind at once, so the exclusion applies
+        uniformly regardless of which kinds are in ``kinds`` (no per-handler
+        support gap to work around; see ``search(uncited=...)``).
         Returns ``(Block, Ref, score)``, one per ref. Kinds with no
         embedded chunks simply contribute nothing (the join filters them),
         so an over-broad kind set is harmless.
@@ -1266,6 +1273,7 @@ class BlockStore:
                 limit=pool,
                 k=k,
                 max_distance=max_distance,
+                exclude_ref_ids=exclude_ref_ids,
                 per_paper=1,  # one best chunk per ref (breadth / triage)
             )
             fused.sort(
@@ -1288,6 +1296,7 @@ class BlockStore:
             offset=offset,
             k=k,
             max_distance=max_distance,
+            exclude_ref_ids=exclude_ref_ids,
             per_paper=1,
         )
 

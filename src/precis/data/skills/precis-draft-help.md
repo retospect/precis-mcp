@@ -708,7 +708,12 @@ supporting papers behind every cited `[fi<id>]` claim hub, so a hub's
 own evidence never resurfaces as a false gap). `id=` is a `dc<id>`
 section (full per-candidate detail) or a draft slug (a slimmer roll-up).
 A topic-precision gate keeps candidates on-domain when the cited papers
-carry `topic:` tags — a no-op when they don't.
+carry `topic:` tags — a no-op when they don't. Text-driven — it programs
+its own recall from the section's own keywords. For a query *you* phrase
+("what does the corpus say about X that this draft hasn't already
+grounded?"), use `search(q=…, uncited=<draft>)` instead — the same
+already-cited closure, applied to a hand-typed search. See
+`precis-search-help`.
 
 **Some drafts are machine-owned and refuse your edits.** A draft linked
 `dossier-of` (a quest's dossier, [[precis-quest-help]]) or `paper-of` is

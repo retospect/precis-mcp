@@ -511,6 +511,15 @@ def search(
     # category the spec is being read against.
     spec: str | None = None,
     category: str | None = None,
+    # discovery filter (see precis-search-help / precis-draft-help
+    # "backfill"): uncited=<draft handle/slug/id> drops every source that
+    # draft already cites — directly, or as a cited claim hub's
+    # evidence-supporter (never a contradictor, which keeps surfacing) —
+    # so the results are the corpus minus what's already grounded. The
+    # query-driven complement to get(kind='draft', view='backfill')'s
+    # text-driven recall. Declared at the verb level so strict-schema MCP
+    # clients don't strip it.
+    uncited: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -530,6 +539,11 @@ def search(
     Claims (finding): `trust=` `'signed'` / `'verified'` / `'disputed'` /
     `'any'` filters by how far up the publish ladder a claim hub climbed
     — orthogonal to `status=`, which is the chase lifecycle.
+
+    Discovery: `uncited=<draft>` excludes everything that draft already
+    cites (directly, or via a cited claim hub's supporters) — surfacing
+    sources you missed, the query-driven twin of
+    `get(kind='draft', view='backfill')`'s text-driven recall.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """
@@ -728,6 +742,10 @@ def search(
         payload["spec"] = spec
     if category is not None:
         payload["category"] = category
+    # Discovery filter — forwarded only when set so a plain search never
+    # trips the uncited= resolution path in the runtime dispatcher.
+    if uncited is not None:
+        payload["uncited"] = uncited
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
@@ -1363,6 +1381,8 @@ _SEARCH_HELP: dict[str, str] = {
     "source": "Patent only: 'both' (default) | 'local' | 'remote'.",
     "exclude": "Ref slugs to drop from results (hand-skip; page= is "
     "usually preferable).",
+    "uncited": "Drop every source a draft (handle/slug/id) already cites, "
+    "directly or via a cited claim hub's supporters.",
 }
 
 _PUT_HELP: dict[str, str] = {

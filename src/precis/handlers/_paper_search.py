@@ -578,6 +578,7 @@ class FusedBlockSearch:
         queries: list[str] | None,
         answers: list[str] | None,
         per_paper: int | None,
+        extra_exclude_ref_ids: list[int] | None = None,
     ) -> BlockSearchResult:
         # Local import — paper.py imports this module lazily, so by the
         # time ``run`` executes paper.py is fully loaded; see this
@@ -644,8 +645,16 @@ class FusedBlockSearch:
         # the entry when the container itself doesn't resolve (Reto
         # named a specific container; silently ignoring it would be a
         # surprise, unlike a stale bare slug).
+        # ``extra_exclude_ref_ids`` is the dispatch-resolved ``uncited=``
+        # closure (already-cited-source ref_ids, pre-resolved — see
+        # ``runtime.dispatch._resolve_uncited_exclude`` /
+        # ``precis.backfill.candidates.draft_cited_ref_ids``). It merges
+        # into the same ``exclude_ref_ids`` the ``exclude=`` slug/container
+        # list resolves to, so both filters run in the ONE SQL query below
+        # rather than a post-hoc cull after ranking.
         exclude_ref_ids: list[int] = sorted(
             resolve_exclude_paper_ids(exclude, store=self.store, kind=kind)
+            | set(extra_exclude_ref_ids or ())
         )
 
         # ``max_distance`` enforces a semantic relevance floor so a

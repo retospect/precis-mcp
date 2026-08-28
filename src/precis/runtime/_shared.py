@@ -28,6 +28,21 @@ CROSS_KIND_WILDCARD = "*"
 # search-hits-capable kind.
 CROSS_KIND_ALIASES: frozenset[str] = frozenset({"*", "", "all", "any", "*all*"})
 
+# The citeable kinds (:data:`precis.utils.refeye._CITED_KINDS`, mirrored
+# here to avoid an import into a low-level shared module) whose ``search()``
+# / ``search_hits()`` have no SQL-level ``exclude_ref_ids`` wiring: patent's
+# local+OPS-remote search and edgar's filing search never route through
+# ``store.blocks.search_blocks*``, unlike paper/cfp/datasheet (the
+# ``PaperHandler`` family). ``search(uncited=...)``'s exclusion set can
+# legitimately contain a ref of either kind (a draft may cite a patent or an
+# EDGAR filing), so combining ``uncited=`` with an *explicit* request for one
+# of these kinds raises rather than silently returning hits that might
+# already be cited; the default wildcard cross-kind fan-out instead drops
+# them from the merge (footer-noted) so the common unscoped call still
+# works. See ``runtime.search._dispatch_cross_kind`` /
+# ``runtime.dispatch._dispatch_inner_core``.
+UNCITED_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"patent", "edgar"})
+
 
 class RuntimeShape:
     """Typing-only cross-mixin shape (never instantiated on its own).

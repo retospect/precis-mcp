@@ -715,6 +715,13 @@ class PaperHandler(Handler):
         good: bool = False,
         title: str | None = None,
         author: str | None = None,
+        # dispatch-injected (see runtime.dispatch._resolve_uncited_exclude,
+        # ``search(uncited=<draft>)``): additional ref_ids to drop, already
+        # resolved to a set — orthogonal to ``exclude=`` (which is a mixed
+        # slug/container list resolved by ``resolve_exclude_paper_ids``).
+        # Declared as an explicit kwarg (not swallowed by ``**_kw``) so the
+        # filter can never be silently dropped for paper/cfp/datasheet.
+        exclude_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -832,6 +839,7 @@ class PaperHandler(Handler):
             queries=queries,
             answers=answers,
             per_paper=per_paper,
+            extra_exclude_ref_ids=exclude_ref_ids,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
 
@@ -846,6 +854,12 @@ class PaperHandler(Handler):
         exclude: list[str] | None = None,
         query_vec: list[float] | None = None,
         mode: str | None = None,
+        # dispatch-injected (see runtime.dispatch._resolve_uncited_exclude,
+        # ``search(uncited=<draft>)``): already-resolved ref_ids to drop,
+        # merged with the ``exclude=`` slug resolution below. Declared
+        # explicitly (not swallowed by ``**_kw``) so the cross-kind fan-out
+        # never silently loses the filter for this kind.
+        exclude_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -858,12 +872,13 @@ class PaperHandler(Handler):
 
         ``exclude=`` mirrors the ``search`` shape (coarse, ref-level
         slug list). Cross-kind callers can pass it through so
-        pagination works across the merged stream.
+        pagination works across the merged stream. ``exclude_ref_ids=``
+        is the pre-resolved numeric complement (``uncited=``'s closure).
         """
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind=self.spec.kind)
-        exclude_ref_ids: list[int] = []
+        resolved_exclude_ref_ids: set[int] = set(exclude_ref_ids or ())
         if exclude:
             normalised: list[str] = []
             for raw in exclude:
@@ -871,8 +886,8 @@ class PaperHandler(Handler):
                 if slug is not None:
                     normalised.append(slug)
             if normalised:
-                exclude_ref_ids = self.store.fetch_ref_ids_by_slugs(
-                    normalised, kind=self.spec.kind
+                resolved_exclude_ref_ids.update(
+                    self.store.fetch_ref_ids_by_slugs(normalised, kind=self.spec.kind)
                 )
         # query_vec= may be pre-supplied by the runtime cross-kind
         # dispatcher (computed once for all kinds), avoiding an
@@ -892,7 +907,7 @@ class PaperHandler(Handler):
             tags=normalized_tags,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
-            exclude_ref_ids=exclude_ref_ids or None,
+            exclude_ref_ids=sorted(resolved_exclude_ref_ids) or None,
             card_kinds=("card_combined",),
         )
         triples = _dedup_card_hits(triples)

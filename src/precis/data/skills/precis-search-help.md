@@ -11,6 +11,7 @@ answers:
   - why doesn't my query find a claim I know exists?
   - do I have to type kΩ / µ / Å, or will ASCII work?
   - how do I exclude everything a draft already cites from a search?
+  - how do I search for sources a draft hasn't cited yet?
 applies-to: search (every kind that supports it)
 status: active
 ---
@@ -34,6 +35,7 @@ search(kind="paper", q="X", page=2, page_size=20)  # paginate
 search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
 search(kind="paper", q="X", scope="pa5")  # search inside one ref, by handle
 search(kind="paper", q="X", exclude=["pa5", "pa12"])  # skip refs by handle
+search(kind="paper", q="X", uncited="dr173020")  # skip what that draft already cites
 search(kind="patent", q="X", source="remote")  # patent-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
 search(
@@ -122,6 +124,7 @@ kinds, use `mode='lexical'` (exact string/keyword match) or
 | `title` | str | **Byline lookup** (paper): find a paper by its title. Returns paper *records* (handle + citation + cite path), not block hits. Matches `refs.title` via trigram + FTS, held copies first. See `precis-paper-help`. |
 | `author` | str | **Byline lookup** (paper): find papers by an author name (surname or full). Same record-row shape as `title=`; matches the structured `refs.authors` byline. Pass one of `title=`/`author=`, not both. |
 | `folder` | int/str | **Placement scope** (ADR 0045): restrict hits to one folder's live subtree. Accepts the id, `'folder:N'`, the `fo<N>` handle, or the folder's unique name. Forces the cross-kind fan-out even with a single `kind=`; works with `tags=`-only sweeps too. See `precis-folder-help`. |
+| `uncited` | str | **Discovery filter**: a draft handle (`dr<id>`), slug, or bare ref_id — drops every source that draft already cites (directly, or via a cited claim hub's evidence-supporters), so hits are the corpus *minus* what's already grounded. See below. |
 
 ## Broad retrieval — when the gold hides behind the wording
 ## Find more, better, more-diverse chunks for one question
@@ -348,6 +351,41 @@ A `dr…`/`dc…` entry that doesn't resolve raises `BadInput` naming it
 container explicitly). See `precis-stubs-help` for the twin external-
 discovery form (`get(kind='semanticscholar', exclude=[…])`), which also
 flags every hit `held:`/`stub:`/`NEW` against the corpus.
+
+## Find sources a draft hasn't cited yet — query-driven discovery
+## uncited= — search for sources you missed, by keyword
+## The query-driven twin of view='backfill'
+
+```python
+search(kind="paper", q="wang tile guided self assembly", uncited="dr173020")
+```
+
+`uncited=<draft>` (a `dr<id>` handle, slug, or bare ref_id) drops every
+source that draft already cites from the results — the same closure
+`exclude=['dr…']` computes (direct cites, plus a cited claim hub's
+evidence-**supporters**; a paper that **contradicts** a cited claim is
+never "already cited for this point" and keeps surfacing). The response
+names how many refs it excluded, so you can see the filter actually ran:
+
+```
+_(uncited=dr173020: 4 already-cited sources excluded)_
+```
+
+This is the **query-driven** complement to `get(kind='draft', id=<scope>,
+view='backfill')` (`precis-draft-help`): `view='backfill'` programs its own
+recall from the draft's own section text (no `q=` to type); `uncited=`
+answers a question *you* phrase — "what does the corpus say about X that
+this draft hasn't already grounded?" Reach for `view='backfill'` to sweep
+a whole section for gaps, and `uncited=` when you already have a specific
+angle in mind.
+
+An unresolvable handle, or one that resolves to a non-draft ref, raises
+`BadInput` rather than silently searching unfiltered — `uncited=` never
+degrades to a no-op filter. Combined with a kind whose search has no
+exclude-by-ref_id wiring yet (`patent`, `edgar`): naming that kind
+explicitly raises `Unsupported`; the default unscoped fan-out instead
+drops it from the merge and says so in the footer (`_(uncited=: skipped
+edgar — …)_`) rather than returning that kind's hits unfiltered.
 
 ## What does the ⚠ on a paper hit mean?
 ## Why did a retracted paper rank so low?

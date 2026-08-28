@@ -121,6 +121,45 @@ def _subtree_chunks(chunks: list[Any], target: Any) -> list[Any]:
     return [c for c in chunks if in_section(c)]
 
 
+def resolve_draft_ref_id(store: Store, token: str) -> int:
+    """A draft handle (``dr<id>``), slug, or bare ``ref_id`` -> its live
+    ``draft`` ref_id — the resolution ``search(uncited=<token>)`` needs before
+    it can call :func:`draft_cited_ref_ids`.
+
+    The canonical two-step every draft resolver uses (mirrors
+    :func:`precis.cli.taproot._resolve_draft_ref_id`): the universal-handle
+    decoder first (:func:`~precis.utils.mentions.resolve_handle_target`),
+    falling back to the slug/cite_key lookup
+    (:func:`~precis.utils.mentions.resolve_handle_ref`). Raises ``BadInput``
+    when ``token`` doesn't resolve to a *live* ``draft`` ref — an
+    unresolvable or wrong-kind handle must never silently become an empty
+    exclusion set, which would make every hit look "new" while some are
+    already cited.
+    """
+    from precis.errors import BadInput
+    from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
+
+    ident = token.strip()
+    target = resolve_handle_target(store, ident)
+    ref_id: int | None = target.dst_ref_id if target is not None else None
+    if ref_id is None:
+        ref = resolve_handle_ref(store, ident, include_deleted=False)
+        ref_id = int(ref.id) if ref is not None else None
+    kind: str | None = None
+    if ref_id is not None:
+        found = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+        kind = getattr(found, "kind", None) if found is not None else None
+    if ref_id is None or kind != "draft":
+        raise BadInput(
+            f"cannot resolve draft: {token!r}",
+            next=(
+                "pass a live draft's 'dr<id>' handle, its slug, or its bare "
+                "ref_id -- uncited= excludes every source that draft already cites"
+            ),
+        )
+    return ref_id
+
+
 def draft_cited_ref_ids(store: Store, ref_id: int, *, kind: str = "draft") -> set[int]:
     """The cited-source ref_ids a draft already points at — mined from every
     chunk's body (``resolve_link_targets``, the reference ring's path), filtered

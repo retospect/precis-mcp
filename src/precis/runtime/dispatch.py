@@ -32,6 +32,9 @@ from precis.errors import BadInput, Internal, NotFound, PrecisError, Unsupported
 from precis.protocol import _ALL_VERBS, Handler, Verb
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
+from precis.runtime._shared import (
+    UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
+)
 from precis.runtime._shared import RuntimeShape
 from precis.utils import handle_registry
 
@@ -259,6 +262,120 @@ class DispatchMixin(RuntimeShape):
         return tail, False
 
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
+        """``search(uncited=...)`` resolution wrapper around
+        :meth:`_dispatch_inner_core`.
+
+        Resolves ``uncited=<draft>`` into a merged ``args['exclude_ref_ids']``
+        BEFORE any of the search-shape interceptions in the core method
+        branch off, so every retrieval path (source-search, cross-kind
+        fan-out, single-kind) sees the same filter — and prepends the
+        "N already-cited sources excluded" note to whatever ``Response``
+        the core method returns, regardless of which of its many internal
+        early-return branches produced it. Kept as a thin wrapper (rather
+        than folded into the core method's branches) precisely because
+        there are so many early returns down there: one wrapping call here
+        guarantees the footer can never be forgotten on a future branch.
+
+        The note is **prepended**, not appended: ``dispatch_with_status``
+        hands the body to :meth:`precis._pagination.PaginationCache.split`,
+        which keeps the largest *leading* run that fits the byte cap and
+        stashes the rest behind a ``more()`` cursor. A trailing note on a
+        result set big enough to paginate would strand the one signal that
+        the filter ran on a page the caller never reads.
+        """
+        uncited_note: str | None = None
+        if verb == "search" and args.get("uncited") is not None:
+            self._reject_uncited_unfiltered_shape(args)
+            uncited_note = self._resolve_uncited_exclude(args)
+        response = self._dispatch_inner_core(verb, args)
+        if uncited_note is not None:
+            from dataclasses import replace as _replace
+
+            response = _replace(response, body=f"{uncited_note}\n\n{response.body}")
+        return response
+
+    def _reject_uncited_unfiltered_shape(self, args: dict[str, Any]) -> None:
+        """Refuse ``uncited=`` on the search shapes that
+        :meth:`_dispatch_inner_core` intercepts and returns from *before*
+        any ``exclude_ref_ids`` is consulted.
+
+        ``view='dreamable'``, ``view='stubs'``, ``view='chase-queue'`` and
+        the ``angle=``/``like=`` spray each pick their own seed and target
+        set and never read ``exclude_ref_ids`` — and their default target
+        set includes ``paper``, the very kind the exclusion is built from.
+        Left alone they would return fully unfiltered hits *underneath the
+        "N already-cited sources excluded" note*, which is worse than no
+        feature at all: the note actively attests that a filter ran. A
+        caller cannot see the difference from the output, so this must
+        fail loudly. Same stance as the ``UNCITED_UNSUPPORTED_KINDS``
+        guard, for the same reason.
+        """
+        view = str(args.get("view") or "").strip()
+        shape = (
+            view
+            if view in ("dreamable", "stubs", "chase-queue")
+            else "angle="
+            if "angle" in args
+            else "like="
+            if "like" in args
+            else None
+        )
+        if shape is None:
+            return
+        raise Unsupported(
+            f"uncited= is not supported with {shape} — that search shape "
+            "picks its own seed and target set and has no "
+            "exclude-by-ref_id wiring",
+            next=(
+                "drop uncited=, or use a plain search(q=..., uncited=...) "
+                "which filters across every citeable kind"
+            ),
+        )
+
+    def _resolve_uncited_exclude(self, args: dict[str, Any]) -> str:
+        """Resolve ``search(uncited=<draft>)`` into ``args['exclude_ref_ids']``.
+
+        Pops the raw ``uncited=`` token and replaces it with a merged, sorted
+        ``list[int]`` under ``exclude_ref_ids`` — the exact channel
+        :meth:`_dispatch_source_search`, :meth:`_dispatch_cross_kind`, and
+        the plain single-kind path (``PaperHandler.search``/``search_hits``
+        and its cfp/datasheet siblings) all read, so the filter can't drift
+        between paths. The exclusion set is exactly
+        :func:`precis.backfill.candidates.draft_cited_ref_ids` — every
+        source the draft directly cites, plus a cited claim hub's
+        evidence-**supporter** papers (originators + corroborators; a
+        contradicting paper is never "already cited for this point" and
+        keeps surfacing). Raises (via
+        :func:`~precis.backfill.candidates.resolve_draft_ref_id`) when
+        ``uncited=`` doesn't resolve to a live draft — this must never
+        silently degrade to an empty exclusion set, which would make every
+        hit look "new" while some are already cited.
+
+        Returns the agent-facing note reporting how many refs were
+        excluded, so a caller can see the filter actually did something.
+        """
+        from precis.backfill.candidates import draft_cited_ref_ids, resolve_draft_ref_id
+        from precis.utils import handle_registry
+
+        token = args.pop("uncited")
+        store = self.store
+        if store is None:
+            raise Unsupported("uncited= needs a store-backed deployment")
+        draft_ref_id = resolve_draft_ref_id(store, str(token))
+        cited = draft_cited_ref_ids(store, draft_ref_id)
+        merged: set[int] = set(args.get("exclude_ref_ids") or ())
+        merged |= cited
+        args["exclude_ref_ids"] = sorted(merged)
+        handle = (
+            handle_registry.try_format("draft", draft_ref_id) or f"draft:{draft_ref_id}"
+        )
+        n = len(cited)
+        return (
+            f"_(uncited={handle}: {n} already-cited source{'s' if n != 1 else ''} "
+            "excluded)_"
+        )
+
+    def _dispatch_inner_core(self, verb: str, args: dict[str, Any]) -> Response:
         """Orchestrate one verb call.
 
         Three responsibilities, each delegated to a helper:
@@ -367,6 +484,31 @@ class DispatchMixin(RuntimeShape):
         )
         if cross_kind_resp is not None:
             return cross_kind_resp
+
+        # ``uncited=`` (resolved above into ``args['exclude_ref_ids']``)
+        # combined with an EXPLICIT single-kind request for a citeable kind
+        # that has no SQL-level exclusion wiring (patent's local+OPS-remote
+        # search, edgar's filing search — see
+        # :data:`~precis.runtime._shared.UNCITED_UNSUPPORTED_KINDS`) must
+        # fail loudly rather than silently return hits that might already
+        # be cited. The default wildcard cross-kind fan-out handles this
+        # kind pair differently (drops + footer-notes them, in
+        # ``_dispatch_cross_kind``) since raising there would break the
+        # common unscoped ``search(q=..., uncited=...)`` call entirely.
+        if (
+            verb == "search"
+            and args.get("exclude_ref_ids") is not None
+            and resolved_kind in _UNCITED_UNSUPPORTED_KINDS
+        ):
+            raise Unsupported(
+                f"uncited= is not supported for kind={resolved_kind!r} — its "
+                "search has no exclude-by-ref_id wiring yet",
+                next=(
+                    "drop uncited= for this kind, or use "
+                    "sort=/since=/until= (the cross-kind source-search "
+                    "primitive) which excludes uniformly across every kind"
+                ),
+            )
 
         handler = self._resolve_handler(resolved_kind, verb)
         return self._invoke_handler(
