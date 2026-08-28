@@ -568,10 +568,24 @@ venvs pick it up via the normal deploy.
   component perturbs only the connections incident to it and the gaps
   near it (~10–30 on a real board). A term needing a board-wide
   re-evaluation per move is disqualified however cheap it looks — rule
-  simplicity does not save an O(board) delta. Budget: pure-Python
-  local deltas run ~10⁴ moves/s against an SA appetite of 10⁵–10⁷, so
-  a real board is **minutes**, not interactive. That is fine — place
-  and route are enqueued worker jobs by construction.
+  simplicity does not save an O(board) delta.
+  **MEASURED throughput (slice 6, 2026-08-28) — ~1200 moves/s** on a
+  synthetic 30-component / 49-segment board (20 000 iterations in
+  16.5 s). This **replaces the ~10⁴ moves/s figure previously asserted
+  here**, which was an unmeasured estimate, ~8× optimistic, and had been
+  propagating into design decisions unchallenged. Consequence: 10⁵ moves
+  ≈ 80 s (fine), 10⁶ ≈ 15 min, 10⁷ ≈ hours — so "minutes per board"
+  holds only at the LOW end of the SA appetite range. Still acceptable
+  (place/route are enqueued worker jobs by construction, never inline),
+  but if slice 7's topology moves enlarge the search space enough to
+  need 10⁶+, vectorizing the delta becomes load-bearing rather than
+  optional. **Re-measure after slice 7 rather than assuming.**
+  **One honest exception to the locality rule: `board_area`.** A
+  bounding box is irreducibly a whole-board aggregate and cannot
+  decompose locally. It is recomputed per move at O(n_instances), not
+  O(board geometry), and documented as the deliberate exception in
+  `optimize.py` — recorded rather than papered over, since a rule with
+  an undocumented violation is worse than one with a documented one.
   **Move mix is a schedule, not an architecture.** Start
   placement-dominant (topology is meaningless before parts are roughly
   located), end topology-dominant (once placement is near-frozen the

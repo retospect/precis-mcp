@@ -87,9 +87,11 @@ class PcbIR:
     """The progressively-enriched IR. Construct via :func:`from_graph`
     (a plain-dict-in build, so this module stays independently
     unit-testable without a DB); mutate via the ``move_*`` / ``set_*``
-    methods, which are the *only* sanctioned way to change state — each
-    one owns exactly which dirty masks it sets, which is the cascade
-    contract every other engine (optimizer, realizer) depends on.
+    methods (plus :meth:`swap_pins` and :meth:`add_via`, which don't fit
+    that naming pattern but follow the same contract), which are the
+    *only* sanctioned way to change state — each one owns exactly which
+    dirty masks it sets, which is the cascade contract every other engine
+    (optimizer, realizer) depends on.
 
     All levels' arrays are always **allocated** once built — "level" is a
     fidelity a *caller* (an estimator in :mod:`precis.pcb.cost`) chooses to
@@ -275,6 +277,78 @@ class PcbIR:
         self.rotation_darts[lo:hi] = dart_order
         for dart in dart_order:
             seg_id = dart // 2
+            self.dirty_l2[seg_id] = True
+            self.dirty_l4[seg_id] = True
+            self.dirty_l5[seg_id] = True
+
+    def swap_pins(self, pin_a: int, pin_b: int) -> None:
+        """L0 mutator: exchange which net occupies ``pin_a`` vs ``pin_b`` —
+        the move that lets an MCU's GPIO assignment (or a symmetric part's
+        pin labeling) become a search variable, per the module docstring's
+        "a win that only exists in graph space" note. Both pins must
+        belong to the SAME instance (a swap that also moved a net to a
+        different instance would be a netlist edit, not a relabeling) and
+        carry equal rotation-CSR degree (this slice restricts pin swap to
+        simple, single-dart pins — a hub pin with several darts would need
+        its own dart-order permutation, future work, not silently
+        mismatched here).
+
+        Dirties L2 (each pin's rotation slot now names a different dart)
+        and L4/L5 for every segment that touched either pin — ``seg_net``
+        is untouched (electrical membership doesn't change), but the
+        segment's endpoint now sits at the OTHER pin's own fixed footprint
+        position, so gap/loop/coupling numbers must re-derive.
+        **L1 and L3 stay clean**: no layer or component position changed —
+        this really is "zero physical cost" (backlog, verbatim) at the
+        IR's own granularity. Only ``_segs_of_instance[instance]`` is
+        scanned (never the whole board), the same locality budget every
+        other mutator here honours.
+        """
+        if pin_a == pin_b:
+            return
+        inst_a, inst_b = int(self.pin_instance[pin_a]), int(self.pin_instance[pin_b])
+        if inst_a != inst_b:
+            raise ValueError("swap_pins requires both pins on the same instance")
+        lo_a, hi_a = (
+            int(self.rotation_index[pin_a]),
+            int(self.rotation_index[pin_a + 1]),
+        )
+        lo_b, hi_b = (
+            int(self.rotation_index[pin_b]),
+            int(self.rotation_index[pin_b + 1]),
+        )
+        if (hi_a - lo_a) != (hi_b - lo_b):
+            raise ValueError(
+                f"swap_pins requires equal rotation-CSR degree (pin {pin_a} has "
+                f"{hi_a - lo_a}, pin {pin_b} has {hi_b - lo_b})"
+            )
+        self.pin_net[pin_a], self.pin_net[pin_b] = (
+            int(self.pin_net[pin_b]),
+            int(self.pin_net[pin_a]),
+        )
+        a_darts = self.rotation_darts[lo_a:hi_a].copy()
+        b_darts = self.rotation_darts[lo_b:hi_b].copy()
+        self.rotation_darts[lo_a:hi_a] = b_darts
+        self.rotation_darts[lo_b:hi_b] = a_darts
+
+        touched: list[int] = []
+        for seg_id in self._segs_of_instance.get(inst_a, ()):
+            changed = False
+            if int(self.seg_pin_a[seg_id]) == pin_a:
+                self.seg_pin_a[seg_id] = pin_b
+                changed = True
+            elif int(self.seg_pin_a[seg_id]) == pin_b:
+                self.seg_pin_a[seg_id] = pin_a
+                changed = True
+            if int(self.seg_pin_b[seg_id]) == pin_a:
+                self.seg_pin_b[seg_id] = pin_b
+                changed = True
+            elif int(self.seg_pin_b[seg_id]) == pin_b:
+                self.seg_pin_b[seg_id] = pin_a
+                changed = True
+            if changed:
+                touched.append(seg_id)
+        for seg_id in touched:
             self.dirty_l2[seg_id] = True
             self.dirty_l4[seg_id] = True
             self.dirty_l5[seg_id] = True

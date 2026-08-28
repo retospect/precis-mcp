@@ -111,6 +111,7 @@ from enum import Enum
 import numpy as np
 
 from precis.format import toon
+from precis.pcb import pinswap
 from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
@@ -122,37 +123,71 @@ from precis.pcb.cost import (
     evaluate_cost,
     gap_capacity_term,
     hardened_penalty,
+    layer_count_term,
     loop_inductance_term,
 )
-from precis.pcb.ir import Level, PcbIR, nearest_other_instance
+from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, nearest_other_instance
+from precis.pcb.pinswap import PinSwapGroup
 
 # ── move set (slice 6: placement only) ──────────────────────────────────
 
 
 class MoveKind(Enum):
-    """The restricted slice-6 move set. Slice 7 adds
-    ``TOPOLOGY_FLIP``/``LAYER_ASSIGN``/``PIN_SWAP``/... members here and
-    registers their generators in :data:`MOVE_GENERATORS` — nothing else
-    in this module changes shape to accommodate that."""
+    """The move set. Slice 6 shipped the first three (placement only);
+    slice 7 adds the rest — topology (side flip), layer assignment, plane
+    role, and pin swap — registering their generators in
+    :data:`MOVE_GENERATORS`. The engine (state, cost plumbing, SA loop)
+    is unchanged in shape; :class:`Move` grows a few kind-specific
+    optional fields (see its docstring) rather than the module being
+    restructured."""
 
     TRANSLATE = "translate"
     ROTATE = "rotate"
     SWAP = "swap"
+    LAYER_ASSIGN = "layer_assign"
+    SIDE_FLIP = "side_flip"
+    PLANE_PROMOTE = "plane_promote"
+    PLANE_DEMOTE = "plane_demote"
+    PIN_SWAP = "pin_swap"
 
 
 @dataclass(frozen=True, slots=True)
 class Move:
-    """One proposed move: which instance(s), their pre- and post-move
-    ``(x, y, rot)``. A pure data record — :meth:`OptimizeEngine.apply_move`
-    / :meth:`OptimizeEngine.undo_move` are what actually mutate state, so a
-    rejected move costs exactly one more application of the same
-    (exact, bounded) update pipeline, never a special-cased rollback path.
+    """One proposed move. A pure data record — :meth:`OptimizeEngine.
+    apply_move` / :meth:`OptimizeEngine.undo_move` are what actually
+    mutate state, so a rejected move costs exactly one more application of
+    the same (exact, bounded) update pipeline, never a special-cased
+    rollback path.
+
+    Different :class:`MoveKind`\\ s populate different fields — a tagged
+    union via optional defaults, not one shape stretched to fit
+    everything:
+
+    - ``TRANSLATE``/``ROTATE``/``SWAP`` (slice 6): ``instances`` + the
+      ``(x, y, rot)`` triples in ``old``/``new``.
+    - ``LAYER_ASSIGN``/``SIDE_FLIP``: ``segments`` (one segment id) +
+      ``old_int``/``new_int`` (one layer index / side value).
+    - ``PLANE_PROMOTE``/``PLANE_DEMOTE``: ``net`` + ``old_int``/``new_int``
+      (the vacated/assigned plane layer — empty tuple when there was/is
+      none, i.e. a promote's ``old_int`` and a demote's ``new_int``).
+    - ``PIN_SWAP``: ``pin_pairs`` — a sequence of
+      :meth:`precis.pcb.ir.PcbIR.swap_pins` calls (a fixed-pivot cycle
+      decomposition, see :mod:`precis.pcb.pinswap`) that together realize
+      the proposed reassignment; applying the same pairs in REVERSE order
+      undoes it (each individual swap is self-inverse; reversing a
+      composed sequence of invertible ops always undoes it, regardless of
+      whether the ops commute).
     """
 
     kind: MoveKind
-    instances: tuple[int, ...]
-    old: tuple[tuple[float, float, float], ...]
-    new: tuple[tuple[float, float, float], ...]
+    instances: tuple[int, ...] = ()
+    old: tuple[tuple[float, float, float], ...] = ()
+    new: tuple[tuple[float, float, float], ...] = ()
+    segments: tuple[int, ...] = ()
+    old_int: tuple[int, ...] = ()
+    new_int: tuple[int, ...] = ()
+    net: int | None = None
+    pin_pairs: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,28 +203,83 @@ class ScheduleStage:
     weights: dict[MoveKind, float]
 
 
-#: Placement-dominant for the whole run — there is no topology to become
-#: dominant *over* yet (slice 7). Translate carries most of the weight
-#: (it is what actually moves the congestion picture); rotate is included
-#: for architectural completeness even though it is currently cost-neutral
-#: (see the module-level note below) so the move-mix machinery already
-#: exercises a 3-kind registry, matching the slice-7 shape.
+#: **Move mix is a schedule** (backlog, verbatim): placement-dominant
+#: early (there is no sketch to refine yet), layer assignment entering
+#: mid-schedule (NOT at move zero — while placement is still making large
+#: moves, an assigned layer's gap/congestion story is stale before the
+#: component has even settled near its final neighbourhood), topology
+#: polish (side flips, plane role, pin swap) late, once placement is
+#: near-frozen and the remaining wins are combinatorial. Three stages,
+#: `through_fraction` gating which is "active":
 DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
+    # 0% - 50%: placement only, same mix slice 6 shipped. No LAYER_ASSIGN/
+    # SIDE_FLIP/PLANE_*/PIN_SWAP entries at all in this stage -- the
+    # schedule enforces "not at move zero" by simple absence, not a
+    # near-zero weight that could still fire early by chance.
+    ScheduleStage(
+        0.5,
+        {MoveKind.TRANSLATE: 0.6, MoveKind.ROTATE: 0.15, MoveKind.SWAP: 0.25},
+    ),
+    # 50% - 85%: layer assignment enters; placement still carries most of
+    # the weight (components are still refining position) but topology
+    # (side flip, plane role) starts contributing too.
+    ScheduleStage(
+        0.85,
+        {
+            MoveKind.TRANSLATE: 0.35,
+            MoveKind.ROTATE: 0.05,
+            MoveKind.SWAP: 0.15,
+            MoveKind.LAYER_ASSIGN: 0.2,
+            MoveKind.SIDE_FLIP: 0.15,
+            MoveKind.PLANE_PROMOTE: 0.05,
+            MoveKind.PLANE_DEMOTE: 0.05,
+        },
+    ),
+    # 85% - 100%: topology-dominant polish. Placement moves shrink to a
+    # minority (fine-tuning only); pin swap -- the most expensive-to-
+    # evaluate move (a per-instance min-cost matching) and the one whose
+    # payoff depends on a nearly-settled placement to even be measured
+    # meaningfully -- joins only here.
     ScheduleStage(
         1.0,
-        {MoveKind.TRANSLATE: 0.6, MoveKind.ROTATE: 0.15, MoveKind.SWAP: 0.25},
+        {
+            MoveKind.TRANSLATE: 0.1,
+            MoveKind.SIDE_FLIP: 0.3,
+            MoveKind.LAYER_ASSIGN: 0.25,
+            MoveKind.PIN_SWAP: 0.2,
+            MoveKind.PLANE_PROMOTE: 0.075,
+            MoveKind.PLANE_DEMOTE: 0.075,
+        },
     ),
 )
 
-#: **Known, expected characteristic, not a bug**: no term registered in
-#: ``cost.py`` reads ``inst_rot`` yet (component-centroid granularity —
-#: the same limitation ``place.py`` documented: "rotation has no effect
-#: on the crossing metric until real pad offsets land"). A ROTATE move is
-#: therefore cost-neutral under every current term; it is still exercised
-#: here (dirtying L3/L4/L5 like any move, honouring `fixed='rot'`) so the
-#: move-generator registry and the locality plumbing are already exactly
-#: the shape slice 7's per-pin footprint offsets need — nothing here
-#: special-cases rotation as inert.
+#: **Known, expected characteristic, not a bug — and NOT limited to
+#: ROTATE.** No term registered in ``cost.py`` reads ``inst_rot``
+#: (component-centroid granularity — the same limitation ``place.py``
+#: documented: "rotation has no effect on the crossing metric until real
+#: pad offsets land") **nor ``seg_side``** (no crossing/embedding-aware
+#: term exists yet — ``sketch.py``'s anchor vocabulary is explicitly
+#: still an open backlog item, not resolved by this slice). ROTATE and
+#: SIDE_FLIP are therefore cost-neutral under every currently-registered
+#: term: their ``total()`` delta is a true, provable zero, not an
+#: approximation rounding to zero. Both are still exercised here (dirty
+#: cascade honoured, `fixed='rot'` respected for ROTATE) so the
+#: move-generator registry, the schedule, and the delta-correctness
+#: plumbing are already exactly the shape a future cost.py term (real
+#: per-pin footprint offsets for ROTATE; an embedding-aware crossing term
+#: for SIDE_FLIP) needs to land into — nothing here special-cases either
+#: as inert, and this paragraph is the one place that says so plainly, so
+#: nobody mistakes "the plumbing is correct" for "the anneal currently
+#: benefits from it". LAYER_ASSIGN and PLANE_PROMOTE/DEMOTE are NOT in
+#: this category: LAYER_ASSIGN's ``layer_count`` money term and
+#: PLANE_PROMOTE/DEMOTE's ``layer_count`` (via ``net_plane_layer``) AND
+#: ``gap_capacity`` (the plane-exclusion branch added this slice) DO
+#: respond to those moves — see :meth:`OptimizeEngine._refresh_layer_count`
+#: and :func:`precis.pcb.cost.gap_capacity_term`. PIN_SWAP is its own
+#: separate story: see :mod:`precis.pcb.pinswap`'s module docstring —
+#: its effect is real and measured by that module's own crossing
+#: evaluator, but likewise invisible to ``total()`` today (no registered
+#: term reads pin identity either).
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +303,13 @@ class OptimizeConfig:
     max_cluster_size: int = 6
     seed_pitch_mm: float = 8.0
     schedule: tuple[ScheduleStage, ...] = DEFAULT_SCHEDULE
+    #: Caller-supplied pin-swap admissible sets (:mod:`precis.pcb.pinswap`).
+    #: Empty by default — "where the equivalence data doesn't exist yet,
+    #: degrade cleanly (no swaps)" (task instruction, verbatim): with no
+    #: groups, :func:`_gen_pin_swap` always returns ``None`` and PIN_SWAP
+    #: never fires, regardless of its schedule weight. This module never
+    #: invents an equivalence class from a part number or footprint shape.
+    pin_swap_groups: tuple[PinSwapGroup, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:
@@ -436,7 +533,26 @@ class OptimizeEngine:
         self._money_static_by_name: dict[str, float] = {}
         self._money_board_area = 0.0
 
+        # Layer-move eligibility: LAYER_ASSIGN targets "signal" role
+        # layers only (a routed trace belongs on a routing layer, not a
+        # plane), PLANE_PROMOTE targets "plane" role layers only. This
+        # reads the board's own `stackup` role field rather than
+        # hardcoding SIG/GND/PWR/SIG indices — the backlog's "roles are
+        # emergent, not hardcoded" applies to which nets occupy a plane
+        # layer, not (in this slice) to reclassifying a layer's own role
+        # mid-anneal, which stays a placement-time (stackup-authoring)
+        # decision. Falls back to "every layer is eligible" for a
+        # stackup that never declared roles, rather than making every
+        # LAYER_ASSIGN/PLANE_PROMOTE move silently inert.
+        self._signal_layers = [
+            i for i, layer in enumerate(ir.stackup) if layer.get("role") == "signal"
+        ] or list(range(ir.n_layers))
+        self._plane_layers = [
+            i for i, layer in enumerate(ir.stackup) if layer.get("role") == "plane"
+        ]
+
         self._init_caches()
+        self._seed_layers()
 
     # -- one-time initialization (the only "full board" pass) ------------
     def _init_caches(self) -> None:
@@ -470,6 +586,52 @@ class OptimizeEngine:
                 self._margin[("thermal_rise", t.region)] = t
 
         self._refresh_board_area()
+
+    def _seed_layers(self) -> None:
+        """One-time seed (mirrors :func:`seed_placement`'s "seed then
+        refine" shape, at L1 instead of L3): every segment still at
+        ``UNSET_LAYER`` is assigned the first eligible signal layer.
+        Needed so :meth:`precis.pcb.ir.PcbIR.set_layer` — which rejects a
+        negative layer index — always has a valid value to restore on
+        :meth:`undo_move`; a LAYER_ASSIGN move's ``old_int`` must never be
+        ``UNSET_LAYER``. Cheap (``n_segments`` calls, once) and harmless
+        to run even when every segment already has a layer (the loop is a
+        no-op then)."""
+        ir = self.ir
+        if not self._signal_layers:
+            return
+        default_layer = self._signal_layers[0]
+        seeded: list[int] = []
+        for s in range(ir.n_segments):
+            if int(ir.seg_layer[s]) == UNSET_LAYER:
+                ir.set_layer(s, default_layer)
+                seeded.append(s)
+        self._refresh_layer_count()
+        # This IS the engine consuming the dirty flags `set_layer` raised
+        # (the layer_count refresh above + the already-current L4 margin
+        # caches from `_init_caches`, neither of which reads `seg_layer`
+        # today — see the module-level ROTATE/SIDE_FLIP note) — matches
+        # `PcbIR.clean`'s own contract ("acknowledge that an engine
+        # consumed the dirty flags... and recomputed"). Leaving these set
+        # would make every post-construction dirty-cascade assertion
+        # (this slice's own delta-correctness tests included) see stale
+        # "dirty since birth" flags that have nothing to do with any move.
+        ir.clean(Level.L1, seeded)
+        ir.clean(Level.L4, seeded)
+        ir.clean(Level.L5, seeded)
+
+    def _refresh_layer_count(self) -> None:
+        """Recompute the ``layer_count`` money term from scratch and
+        overwrite its cached value — needed after any move that can
+        change the *set* of layers in use (LAYER_ASSIGN, PLANE_PROMOTE,
+        PLANE_DEMOTE). This is exactly the "slice 7's layer/topology moves
+        will need to dirty them again" the module docstring flagged
+        ahead of time; ``via_count``/``extended_part_fees`` stay static —
+        no move class this slice registers touches vias or extended-part
+        membership."""
+        self._money_static_by_name["layer_count"] = layer_count_term(
+            self.ir, self.level, self.config.cost
+        ).raw
 
     # -- gap-capacity delta (the involved one — see module docstring) ----
     def _refresh_gap(self, seg_id: int) -> None:
@@ -564,6 +726,44 @@ class OptimizeEngine:
                 if t is not None:
                     self._margin[("coupling", key)] = t
 
+    def _rescan_segments(self, seg_ids: tuple[int, ...]) -> None:
+        """Local refresh for LAYER_ASSIGN/SIDE_FLIP/PIN_SWAP: recompute
+        the per-segment margin caches for exactly the touched segments —
+        the segment-scoped analogue of :meth:`_rescan_after_move`'s
+        per-instance version. No :meth:`_newly_closer_segments` scan
+        here: none of these move kinds change any OTHER segment's
+        nearest-obstacle distance (only a component translate does that —
+        see that method's docstring), so only the touched segments
+        themselves ever need a refresh."""
+        for s in seg_ids:
+            self._refresh_gap(s)
+            if s in self._loop_applicable:
+                lt = loop_inductance_term(self.ir, s, self.level, self.config.cost)
+                assert lt is not None
+                self._margin[("loop_inductance", s)] = lt
+        touched = set(seg_ids) & self._coupling_candidate_set
+        for sa in touched:
+            for sb in self._coupling_candidate_set:
+                if sa == sb:
+                    continue
+                key = (sa, sb) if sa < sb else (sb, sa)
+                if key not in self._coupling_pairs:
+                    continue
+                t = coupling_pair_term(
+                    self.ir, key[0], key[1], self.level, self.config.cost
+                )
+                if t is not None:
+                    self._margin[("coupling", key)] = t
+
+    def _rescan_net(self, net_id: int) -> None:
+        """Local refresh for PLANE_PROMOTE/PLANE_DEMOTE: every segment of
+        ``net_id`` (its ``gap_capacity`` value depends on
+        ``net_plane_layer`` now — see :func:`precis.pcb.cost.
+        gap_capacity_term`'s plane-exclusion branch), scoped to that net's
+        own segments only, never the whole board."""
+        seg_ids = tuple(int(s) for s in np.flatnonzero(self.ir.seg_net == net_id))
+        self._rescan_segments(seg_ids)
+
     # -- aggregate cost ----------------------------------------------------
     def money(self) -> float:
         return sum(self._money_static_by_name.values()) + self._money_board_area
@@ -581,13 +781,34 @@ class OptimizeEngine:
         return self.money() + self.config.cost.risk_to_money * self.risk()
 
     # -- move application ----------------------------------------------
+    #: Kind -> does this move kind's payload live in the placement
+    #: (instances/old/new) shape? Everything else is segment/net/pin
+    #: shaped — see :class:`Move`'s docstring for the full breakdown.
+    _PLACEMENT_KINDS = (MoveKind.TRANSLATE, MoveKind.ROTATE, MoveKind.SWAP)
+
     def apply_move(self, move: Move) -> None:
-        self._apply(move, move.new)
+        self._dispatch(move, forward=True)
 
     def undo_move(self, move: Move) -> None:
-        self._apply(move, move.old)
+        self._dispatch(move, forward=False)
 
-    def _apply(
+    def _dispatch(self, move: Move, *, forward: bool) -> None:
+        if move.kind in self._PLACEMENT_KINDS:
+            self._apply_placement(move, move.new if forward else move.old)
+        elif move.kind == MoveKind.LAYER_ASSIGN:
+            self._apply_layer_assign(move, forward=forward)
+        elif move.kind == MoveKind.SIDE_FLIP:
+            self._apply_side_flip(move, forward=forward)
+        elif move.kind == MoveKind.PLANE_PROMOTE:
+            self._apply_plane_promote(move, forward=forward)
+        elif move.kind == MoveKind.PLANE_DEMOTE:
+            self._apply_plane_demote(move, forward=forward)
+        elif move.kind == MoveKind.PIN_SWAP:
+            self._apply_pin_swap(move, forward=forward)
+        else:  # pragma: no cover — exhaustive over MoveKind by construction
+            raise AssertionError(f"unhandled move kind {move.kind!r}")
+
+    def _apply_placement(
         self, move: Move, coords: tuple[tuple[float, float, float], ...]
     ) -> None:
         for inst, (x, y, rot) in zip(move.instances, coords):
@@ -595,13 +816,83 @@ class OptimizeEngine:
             self._rescan_after_move(inst)
         self._refresh_board_area()
 
+    def _apply_layer_assign(self, move: Move, *, forward: bool) -> None:
+        seg = move.segments[0]
+        layer = move.new_int[0] if forward else move.old_int[0]
+        self.ir.set_layer(seg, layer)
+        self._rescan_segments((seg,))
+        self._refresh_layer_count()
+
+    def _apply_side_flip(self, move: Move, *, forward: bool) -> None:
+        seg = move.segments[0]
+        side = move.new_int[0] if forward else move.old_int[0]
+        self.ir.set_side(seg, side)
+        self._rescan_segments((seg,))
+
+    def _apply_plane_promote(self, move: Move, *, forward: bool) -> None:
+        assert move.net is not None
+        if forward:
+            self.ir.promote_plane(move.net, move.new_int[0])
+        else:
+            self.ir.demote_plane(move.net)
+        self._rescan_net(move.net)
+        self._refresh_layer_count()
+
+    def _apply_plane_demote(self, move: Move, *, forward: bool) -> None:
+        assert move.net is not None
+        if forward:
+            self.ir.demote_plane(move.net)
+        else:
+            self.ir.promote_plane(move.net, move.old_int[0])
+        self._rescan_net(move.net)
+        self._refresh_layer_count()
+
+    def _apply_pin_swap(self, move: Move, *, forward: bool) -> None:
+        pairs = move.pin_pairs if forward else tuple(reversed(move.pin_pairs))
+        touched: set[int] = set()
+        for pin_a, pin_b in pairs:
+            inst = int(self.ir.pin_instance[pin_a])
+            for s in self.ir._segs_of_instance.get(inst, ()):
+                a, b = int(self.ir.seg_pin_a[s]), int(self.ir.seg_pin_b[s])
+                if pin_a in (a, b) or pin_b in (a, b):
+                    touched.add(s)
+            self.ir.swap_pins(pin_a, pin_b)
+        self._rescan_segments(tuple(touched))
+
     # -- SA loop -----------------------------------------------------------
     def anneal(self, rng: random.Random) -> None:
         cfg = self.config
-        temp = cfg.t0 if cfg.t0 is not None else max(5.0, self.board_side / 2.0)
+        t0 = cfg.t0 if cfg.t0 is not None else max(5.0, self.board_side / 2.0)
+        temp = t0
         moves: list[MoveRecord] = []
+        active_stage = _stage_index(cfg.schedule, 0.0)
         for it in range(cfg.iters):
             self.schedule = min(1.0, it / max(1, cfg.iters - 1))
+            frac = it / max(1, cfg.iters)
+            stage = _stage_index(cfg.schedule, frac)
+            if stage != active_stage:
+                # **Reheat at every schedule-stage boundary** — found on
+                # contact while measuring slice-7 throughput (2026-08-28):
+                # without this, a global exponential cool from `t0` over
+                # the WHOLE `iters` budget is already near-zero (e.g.
+                # ~1e-22 x t0 by 50% of a 20k-iteration run at the
+                # default `cooling=0.995`) by the time a LATER stage's
+                # move kind first becomes eligible. A newly-introduced
+                # kind whose delta isn't exactly zero (LAYER_ASSIGN's
+                # `layer_count` money step, PLANE_PROMOTE's) then can
+                # NEVER pay its one-time entry cost and is silently
+                # frozen out for the rest of the run — measured directly:
+                # zero LAYER_ASSIGN/PLANE_PROMOTE acceptances over a full
+                # anneal despite thousands of proposals, before this fix.
+                # Reheating to `t0` at each boundary gives every stage's
+                # newly-eligible move kinds the same fair, explorable
+                # temperature budget the FIRST stage got, while cooling
+                # still proceeds *within* a stage exactly as before — the
+                # hardening (`self.schedule`, cost.py's convexity dial)
+                # is untouched and keeps advancing monotonically across
+                # the whole run regardless.
+                temp = t0
+                active_stage = stage
             # Re-baseline AFTER advancing the schedule, not before: the
             # hardening dial tightening on an existing (unresolved) margin
             # violation must never itself register as "this move made
@@ -782,10 +1073,107 @@ def _gen_swap(engine: OptimizeEngine, rng: random.Random, temp: float) -> Move |
     return Move(MoveKind.SWAP, (ia, ib), (old_a, old_b), (new_a, new_b))
 
 
+def _gen_layer_assign(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    ir = engine.ir
+    if ir.n_segments == 0 or len(engine._signal_layers) < 2:
+        return None
+    seg = rng.randrange(ir.n_segments)
+    old_layer = int(ir.seg_layer[seg])
+    choices = [layer for layer in engine._signal_layers if layer != old_layer]
+    if not choices:
+        return None
+    new_layer = choices[rng.randrange(len(choices))]
+    return Move(
+        MoveKind.LAYER_ASSIGN,
+        segments=(seg,),
+        old_int=(old_layer,),
+        new_int=(new_layer,),
+    )
+
+
+def _gen_side_flip(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    """Toggles ``seg_side`` between the two-value placeholder vocabulary
+    (0/1) — the "exact sketch anchor vocabulary" is an explicitly open
+    backlog item ("settle in a short design note inside sketch.py's
+    docstring... with the reference-board tests as the arbiter") that
+    ``sketch.py`` (not this slice) owns; a binary toggle is the minimal,
+    honest placeholder that exercises the move class without pretending
+    to have resolved that open question."""
+    ir = engine.ir
+    if ir.n_segments == 0:
+        return None
+    seg = rng.randrange(ir.n_segments)
+    old_side = int(ir.seg_side[seg])
+    new_side = 0 if old_side else 1
+    return Move(
+        MoveKind.SIDE_FLIP, segments=(seg,), old_int=(old_side,), new_int=(new_side,)
+    )
+
+
+def _gen_plane_promote(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    ir = engine.ir
+    if not engine._plane_layers:
+        return None
+    candidates = [
+        n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) == UNSET_LAYER
+    ]
+    if not candidates:
+        return None
+    net = candidates[rng.randrange(len(candidates))]
+    layer = engine._plane_layers[rng.randrange(len(engine._plane_layers))]
+    return Move(MoveKind.PLANE_PROMOTE, net=net, new_int=(layer,))
+
+
+def _gen_plane_demote(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    ir = engine.ir
+    candidates = [
+        n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) != UNSET_LAYER
+    ]
+    if not candidates:
+        return None
+    net = candidates[rng.randrange(len(candidates))]
+    old_layer = int(ir.net_plane_layer[net])
+    return Move(MoveKind.PLANE_DEMOTE, net=net, old_int=(old_layer,))
+
+
+def _gen_pin_swap(
+    engine: OptimizeEngine, rng: random.Random, temp: float
+) -> Move | None:
+    """The "big one" (task instruction): rather than proposing a random
+    pair and letting Metropolis sort it out (as TRANSLATE/ROTATE/SWAP
+    do), this solves :func:`precis.pcb.pinswap.propose_reassignment`'s
+    min-cost bipartite matching directly — a deterministic sub-solve, not
+    a random walk, per the backlog's "polynomial and fast, likely cheaper
+    than the annealing around it". Degrades to always-``None`` when
+    ``config.pin_swap_groups`` is empty (the default) — see that field's
+    docstring."""
+    groups = engine.config.pin_swap_groups
+    if not groups:
+        return None
+    group = groups[rng.randrange(len(groups))]
+    pairs = pinswap.propose_reassignment(engine.ir, group)
+    if not pairs:
+        return None
+    return Move(MoveKind.PIN_SWAP, pin_pairs=pairs)
+
+
 MOVE_GENERATORS: dict[MoveKind, MoveGeneratorFn] = {
     MoveKind.TRANSLATE: _gen_translate,
     MoveKind.ROTATE: _gen_rotate,
     MoveKind.SWAP: _gen_swap,
+    MoveKind.LAYER_ASSIGN: _gen_layer_assign,
+    MoveKind.SIDE_FLIP: _gen_side_flip,
+    MoveKind.PLANE_PROMOTE: _gen_plane_promote,
+    MoveKind.PLANE_DEMOTE: _gen_plane_demote,
+    MoveKind.PIN_SWAP: _gen_pin_swap,
 }
 
 
@@ -796,6 +1184,18 @@ def _active_weights(
         if frac <= stage.through_fraction:
             return stage.weights
     return schedule[-1].weights
+
+
+def _stage_index(schedule: tuple[ScheduleStage, ...], frac: float) -> int:
+    """Which :class:`ScheduleStage` (by position) is active at ``frac`` —
+    :meth:`OptimizeEngine.anneal`'s reheat trigger: a change in this
+    value is a change in the *move-kind mix*, the moment a stage's newly-
+    eligible kinds need a fair temperature budget (see that method for
+    why)."""
+    for i, stage in enumerate(schedule):
+        if frac <= stage.through_fraction:
+            return i
+    return len(schedule) - 1
 
 
 def _pick_move_kind(
@@ -924,6 +1324,7 @@ __all__ = [
     "OptimizeConfig",
     "OptimizeEngine",
     "OptimizeResult",
+    "PinSwapGroup",
     "RegionEntry",
     "ScheduleStage",
     "TermSummary",

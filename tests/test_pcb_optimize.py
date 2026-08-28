@@ -1,13 +1,16 @@
 """Unit + property tests for precis.pcb.optimize — the joint place+route
-optimizer's slice-6 walking skeleton (placement moves only). No DB.
+optimizer. No DB.
 
-Covers: the locality invariant (a placement move leaves L1/L2 clean),
-delta correctness (the highest-value test in this slice — an incremental
-delta must equal a fresh full :func:`~precis.pcb.cost.evaluate_cost` call,
-over many random moves and both the apply and undo paths), determinism,
-the `fixed='xy'|'rot'|'both'` move restrictions (and that locked parts
-still contribute cost), SA improving on the constructive seed, and the
-digest's per-term/per-region breakdown.
+Covers: the locality invariant (each move kind dirties exactly the levels
+its own IR mutator dirties, nothing else), delta correctness (the
+highest-value test in this slice — an incremental delta must equal a
+fresh full :func:`~precis.pcb.cost.evaluate_cost` call, over many random
+moves of EVERY kind and both the apply and undo paths), determinism, the
+`fixed='xy'|'rot'|'both'` move restrictions (and that locked parts still
+contribute cost), SA improving on the constructive seed, the digest's
+per-term/per-region breakdown, and (slice 7) layer assignment, side flip,
+plane promote/demote, and pin swap — including pin swap's admissible-set/
+exclusion contract and its measured crossing reduction.
 """
 
 from __future__ import annotations
@@ -19,9 +22,10 @@ import pytest
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.cost import CostConfig, evaluate_cost
-from precis.pcb.ir import Level, from_graph
+from precis.pcb.ir import UNSET_LAYER, Level, from_graph
 from precis.pcb.optimize import (
     MOVE_GENERATORS,
+    Move,
     MoveKind,
     OptimizeConfig,
     OptimizeEngine,
@@ -29,6 +33,7 @@ from precis.pcb.optimize import (
     optimize,
     seed_placement,
 )
+from precis.pcb.pinswap import PinSwapGroup, propose_reassignment, total_group_crossings
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
 
@@ -107,6 +112,271 @@ def test_rotate_and_swap_moves_also_leave_l1_l2_clean():
         engine.apply_move(move)
         assert not ir.dirty_l1.any()
         assert not ir.dirty_l2.any()
+
+
+# ── slice 7: layer assignment, side flip, plane promote/demote ──────────
+def test_layer_assign_dirties_l1_leaves_l2_l3_clean():
+    ir = _seeded_ir(8, graph_seed=30, seed_rng_seed=31)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=31))
+    assert not ir.dirty_l1.any()  # the engine's own layer seed cleaned up after itself
+    l3_before = ir.dirty_l3.copy()
+    rng = random.Random(32)
+    move = MOVE_GENERATORS[MoveKind.LAYER_ASSIGN](engine, rng, 5.0)
+    assert move is not None
+    engine.apply_move(move)
+
+    seg = move.segments[0]
+    assert ir.dirty_l1[seg]
+    assert not ir.dirty_l2.any()
+    assert (ir.dirty_l3 == l3_before).all()  # untouched -- no component moved
+    assert int(ir.seg_layer[seg]) == move.new_int[0]
+
+    engine.undo_move(move)
+    assert int(ir.seg_layer[seg]) == move.old_int[0]
+
+
+def test_layer_assign_only_targets_signal_role_layers():
+    ir = _seeded_ir(8, graph_seed=33, seed_rng_seed=34)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=34))
+    signal_idx = {
+        i for i, layer in enumerate(DEFAULT_STACKUP) if layer["role"] == "signal"
+    }
+    rng = random.Random(35)
+    for _ in range(50):
+        move = MOVE_GENERATORS[MoveKind.LAYER_ASSIGN](engine, rng, 5.0)
+        if move is None:
+            continue
+        assert move.new_int[0] in signal_idx
+
+
+def test_side_flip_dirties_l2_leaves_l1_l3_clean():
+    ir = _seeded_ir(8, graph_seed=36, seed_rng_seed=37)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=37))
+    l3_before = ir.dirty_l3.copy()
+    rng = random.Random(38)
+    move = MOVE_GENERATORS[MoveKind.SIDE_FLIP](engine, rng, 5.0)
+    assert move is not None
+    engine.apply_move(move)
+
+    seg = move.segments[0]
+    assert ir.dirty_l2[seg]
+    assert not ir.dirty_l1.any()
+    assert (ir.dirty_l3 == l3_before).all()  # untouched -- no component moved
+    assert int(ir.seg_side[seg]) == move.new_int[0]
+    assert move.new_int[0] != move.old_int[0]
+
+    engine.undo_move(move)
+    assert int(ir.seg_side[seg]) == move.old_int[0]
+
+
+def test_plane_promote_demote_dirty_only_that_nets_segments_leave_l2_l3_clean():
+    ir = _seeded_ir(10, graph_seed=39, seed_rng_seed=40)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=40))
+    l3_before = ir.dirty_l3.copy()
+    rng = random.Random(41)
+    move = MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, rng, 5.0)
+    assert move is not None
+    net = move.net
+    assert net is not None
+    seg_ids = [s for s in range(ir.n_segments) if int(ir.seg_net[s]) == net]
+    assert seg_ids
+
+    engine.apply_move(move)
+    assert int(ir.net_plane_layer[net]) == move.new_int[0]
+    for s in seg_ids:
+        assert ir.dirty_l1[s]
+    assert not ir.dirty_l2.any()
+    assert (ir.dirty_l3 == l3_before).all()  # untouched -- no component moved
+
+    engine.undo_move(move)
+    assert int(ir.net_plane_layer[net]) == UNSET_LAYER
+
+
+def test_plane_promote_only_targets_plane_role_layers():
+    ir = _seeded_ir(10, graph_seed=42, seed_rng_seed=43)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=43))
+    plane_idx = {
+        i for i, layer in enumerate(DEFAULT_STACKUP) if layer["role"] == "plane"
+    }
+    rng = random.Random(44)
+    for _ in range(50):
+        move = MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, rng, 5.0)
+        if move is None:
+            continue
+        assert move.new_int[0] in plane_idx
+        engine.undo_move(
+            Move(MoveKind.PLANE_PROMOTE, net=move.net, new_int=move.new_int)
+        )
+
+
+def test_plane_promote_reduces_gap_capacity_penalty_to_zero():
+    """The backlog's "plane-served nets excluded from the objective" —
+    the nearest analog this slice's registered terms have to it."""
+    ir = _seeded_ir(10, graph_seed=45, seed_rng_seed=46)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=46))
+    rng = random.Random(47)
+    move = None
+    for _ in range(50):
+        candidate = MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, rng, 5.0)
+        if candidate is not None:
+            move = candidate
+            break
+    assert move is not None
+    net = move.net
+    assert net is not None
+    seg_ids = [s for s in range(ir.n_segments) if int(ir.seg_net[s]) == net]
+
+    engine.apply_move(move)
+    for s in seg_ids:
+        assert engine._margin[("gap_capacity", s)].raw == 0.0
+
+
+def test_layer_assign_and_plane_promote_refresh_layer_count():
+    ir = _seeded_ir(10, graph_seed=48, seed_rng_seed=49)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=49))
+    rng = random.Random(50)
+    before = engine._money_static_by_name["layer_count"]
+    move = None
+    for _ in range(50):
+        candidate = MOVE_GENERATORS[MoveKind.PLANE_PROMOTE](engine, rng, 5.0)
+        if candidate is not None:
+            move = candidate
+            break
+    assert move is not None
+    engine.apply_move(move)
+    after = engine._money_static_by_name["layer_count"]
+    assert after >= before  # a plane layer entering "used" never lowers the count
+
+
+# ── slice 7: pin swap ─────────────────────────────────────────────────
+def _pin_swap_ir_and_group():
+    """Two nets whose airwires obviously cross under the CURRENT pin
+    assignment and obviously don't after swapping which of U0's two
+    admissible pins each occupies — the hand-built fixture the task asks
+    for. U0 sits at the origin with two candidate pins offset left/right;
+    U1 (net A's far end) sits up-left, U2 (net B's far end) sits up-right.
+    Net A wired to the RIGHT pin and net B to the LEFT pin cross; swapped,
+    they don't."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": -5.0, "y": 5.0},
+            {"refdes": "U2", "x": 5.0, "y": 5.0},
+        ],
+        "nets": [
+            {
+                "name": "A",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "right"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            },
+            {
+                "name": "B",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "left"},
+                    {"refdes": "U2", "pin": "1"},
+                ],
+            },
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    u0 = 0
+    pin_right = next(
+        p
+        for p in range(ir.n_pins)
+        if int(ir.pin_instance[p]) == u0 and str(ir.pin_label[p]) == "right"
+    )
+    pin_left = next(
+        p
+        for p in range(ir.n_pins)
+        if int(ir.pin_instance[p]) == u0 and str(ir.pin_label[p]) == "left"
+    )
+    group = PinSwapGroup(
+        instance=u0,
+        pins=(pin_left, pin_right),
+        offsets={pin_left: (-1.0, 0.0), pin_right: (1.0, 0.0)},
+    )
+    return ir, group, pin_left, pin_right
+
+
+def test_pin_swap_reduces_crossings_on_hand_built_fixture():
+    ir, group, _pin_left, _pin_right = _pin_swap_ir_and_group()
+    before = total_group_crossings(ir, group)
+    assert (
+        before == 1
+    )  # net A (right pin -> upper-left) crosses net B (left pin -> upper-right)
+
+    pairs = propose_reassignment(ir, group)
+    assert pairs  # a beneficial swap must be found on this fixture
+    for a, b in pairs:
+        ir.swap_pins(a, b)
+
+    after = total_group_crossings(ir, group)
+    assert after == 0
+    assert after < before
+
+
+def test_pin_swap_dirties_l2_l4_l5_leaves_l1_l3_clean():
+    ir, group, pin_left, pin_right = _pin_swap_ir_and_group()
+    config = OptimizeConfig(seed=1, pin_swap_groups=(group,))
+    engine = OptimizeEngine(ir, config)
+    rng = random.Random(2)
+    move = MOVE_GENERATORS[MoveKind.PIN_SWAP](engine, rng, 5.0)
+    assert move is not None
+    assert set(move.pin_pairs) == {(pin_left, pin_right)} or set(move.pin_pairs) == {
+        (pin_right, pin_left)
+    }
+
+    before_net_left = int(ir.pin_net[pin_left])
+    before_net_right = int(ir.pin_net[pin_right])
+    engine.apply_move(move)
+    assert int(ir.pin_net[pin_left]) == before_net_right
+    assert int(ir.pin_net[pin_right]) == before_net_left
+    assert not ir.dirty_l1.any()
+    assert not ir.dirty_l3.any()
+    assert ir.dirty_l2.any()
+    assert ir.dirty_l5.any()
+
+    engine.undo_move(move)
+    assert int(ir.pin_net[pin_left]) == before_net_left
+    assert int(ir.pin_net[pin_right]) == before_net_right
+
+
+def test_pin_swap_respects_exclusions():
+    ir, group, pin_left, pin_right = _pin_swap_ir_and_group()
+    excluded_group = dataclasses.replace(group, excluded=frozenset({pin_right}))
+    pairs = propose_reassignment(ir, excluded_group)
+    assert pairs is None  # only one non-excluded pin left -- nothing to match
+
+
+def test_pin_swap_never_proposed_with_empty_config():
+    ir, _group, _pl, _pr = _pin_swap_ir_and_group()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))  # default pin_swap_groups=()
+    rng = random.Random(4)
+    for _ in range(20):
+        assert MOVE_GENERATORS[MoveKind.PIN_SWAP](engine, rng, 5.0) is None
+
+
+def test_pin_swap_delta_correctness_over_random_moves():
+    ir, group, _pl, _pr = _pin_swap_ir_and_group()
+    cost_config = CostConfig()
+    config = OptimizeConfig(seed=5, cost=cost_config, pin_swap_groups=(group,))
+    engine = OptimizeEngine(ir, config)
+    rng = random.Random(6)
+    for trial in range(20):
+        move = MOVE_GENERATORS[MoveKind.PIN_SWAP](engine, rng, 5.0)
+        if move is None:
+            continue
+        engine.apply_move(move)
+        if rng.random() < 0.5:
+            engine.undo_move(move)
+        full = evaluate_cost(ir, Level.L4, cost_config)
+        assert engine.total() == pytest.approx(full.total, rel=1e-9, abs=1e-9), trial
 
 
 # ── delta correctness: the highest-value test in this slice ─────────────

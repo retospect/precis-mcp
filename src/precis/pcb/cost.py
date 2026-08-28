@@ -360,7 +360,16 @@ def _board_area(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     return [board_area_term(ir, level, config)]
 
 
-def _layer_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+def layer_count_term(ir: PcbIR, level: Level, config: CostConfig) -> TermValue:
+    """The single ``layer_count`` :class:`TermValue` — extracted the same
+    way :func:`board_area_term` was (module docstring's per-item pattern)
+    so :mod:`precis.pcb.optimize` can recompute it after a LAYER_ASSIGN or
+    plane promote/demote move without re-running the full registry. Unlike
+    ``board_area``, this is genuinely cheap to recompute in full (a set
+    over segment/net layer fields, not a geometry re-derivation) — slice
+    7's own docstring anticipated exactly this: "layer_count... currently
+    cached-once... slice 7's layer/topology moves will need to dirty them
+    again.\""""
     if level < Level.L1:
         used = 1  # a board needs at least one layer; nothing assigned yet
         bound = True
@@ -377,16 +386,18 @@ def _layer_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]
         }
         used = max(1, len(layers))
         bound = False
-    return [
-        TermValue(
-            "layer_count",
-            Family.MONEY,
-            "board",
-            used * config.layer_usd,
-            "each additional copper layer is a discrete lamination+drill fab step, not a continuous cost",
-            is_bound=bound,
-        )
-    ]
+    return TermValue(
+        "layer_count",
+        Family.MONEY,
+        "board",
+        used * config.layer_usd,
+        "each additional copper layer is a discrete lamination+drill fab step, not a continuous cost",
+        is_bound=bound,
+    )
+
+
+def _layer_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    return [layer_count_term(ir, level, config)]
 
 
 def _via_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
@@ -455,6 +466,24 @@ def gap_capacity_term(
     net_id = int(ir.seg_net[seg_id])
     pitch = _pitch_for(ir, net_id, config)
     net_name = str(ir.net_name[net_id])
+    if int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
+        # Plane-served nets excluded from the routing objective (backlog,
+        # verbatim, for the crossing metric — this is the nearest analog
+        # this slice's registered terms have to it): a plane-promoted net
+        # dog-bones a short stub to its via instead of threading a
+        # full-length trace through shared gap capacity. This is a
+        # genuine measured near-zero, not an "undefined == zero" trap —
+        # the physical situation really is good once a net is
+        # plane-promoted, so 0.0 doesn't hide anything here the way it
+        # would for a segment whose gap is simply not yet known.
+        return TermValue(
+            "gap_capacity",
+            Family.MARGIN,
+            net_name,
+            0.0,
+            "a plane-promoted net dog-bones a short stub to its via, not a full-length "
+            "trace competing for the same routed-gap capacity",
+        )
     if level < Level.L4 or math.isnan(ir.seg_gap_capacity[seg_id]):
         bound_capacity = max(1.0, config.assumed_max_gap_mm / pitch)
         return TermValue(
