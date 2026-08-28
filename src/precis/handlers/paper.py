@@ -382,12 +382,17 @@ class PaperHandler(Handler):
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
         3. Link it from ``context_ref_id`` (provenance) when supplied.
 
-        Downstream is automatic and needs no wiring here: the
-        ``fetch_oa`` worker auto-claims the stub on a later pass and
-        grabs an OA PDF if one exists; otherwise the stub waits on the
-        ``precis stubs`` required-papers backlog. Minting is additive and
-        reversible (soft-delete), so a runaway dream can at worst enqueue
-        stubs — never blow a budget on downloads.
+        Downstream is automatic and needs no wiring here: an explicit
+        acquire is a "fetch NOW" signal, so the stub (fresh or
+        re-requested) is pinned to the head of the ``fetch_oa`` queue
+        (``Store.pin_stub_for_fetch``: ``prio=1`` /
+        ``meta.prio_by='acquire'`` + an ``oa_requeued`` stamp that lifts
+        a backed-off stub for one immediate retry) and claimed on the
+        worker's next pass; auto-discovered stubs instead earn their
+        place via ``stub_rank``. No OA copy anywhere → the stub waits on
+        the ``precis stubs`` required-papers backlog. Minting is additive
+        and reversible (soft-delete), so a runaway dream can at worst
+        enqueue stubs — never blow a budget on downloads.
 
         Reachable from the MCP surface via ``put(kind='paper', …)`` (the
         agent-facing spelling — see :meth:`put`); this method is the
@@ -543,9 +548,18 @@ class PaperHandler(Handler):
                     meta={"acquire_reason": reason} if reason else None,
                     conn=conn,
                 )
+            # An explicit acquire means "fetch this NOW" — pin it to the
+            # head of the fetch_oa queue (fresh mint AND re-request of a
+            # still-pending stub alike; the re-stamp also lifts a stub out
+            # of fetch backoff for one immediate retry). Auto-discovered
+            # stubs instead earn their prio via stub_rank. No-op on a
+            # collapse hit onto an already-held paper.
+            pinned = self.store.pin_stub_for_fetch(ref_id, conn=conn)
 
         state = "minted stub" if created else "already tracked"
         parts = [f"acquire: {state} paper id={ref_id}"]
+        if pinned:
+            parts.append("(pinned to front of fetch queue)")
         if identifiers:
             parts.append("(" + ", ".join(f"{k}:{v}" for k, v in identifiers) + ")")
         if ctx_id is not None:

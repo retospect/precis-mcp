@@ -122,6 +122,93 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     assert "get(id=" in second.body
 
 
+def _fetch_pin(store: Store, ref_id: int) -> tuple[int | None, str | None, str | None]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT prio, meta->>'prio_by', meta #>> '{oa_requeued,at}' "
+            "FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    assert row is not None
+    return row[0], row[1], row[2]
+
+
+def test_acquire_pins_stub_to_fetch_front(handler: PaperHandler, store: Store) -> None:
+    # Explicit acquire = "fetch NOW": the fresh stub is pinned prio=1 /
+    # prio_by='acquire' (stub_rank's never-clobber guard leaves it alone)
+    # and stamped oa_requeued so it claims on fetch_oa's next pass instead
+    # of waiting unranked behind the whole prio-ranked backlog.
+    r = handler.acquire(identifier="doi:10.1/pin")
+    assert "pinned to front of fetch queue" in r.body
+    prio, prio_by, requeued_at = _fetch_pin(store, _ref_id(r.body))
+    assert (prio, prio_by) == (1, "acquire")
+    assert requeued_at is not None
+
+
+def test_reacquire_repins_and_restamps(handler: PaperHandler, store: Store) -> None:
+    # Re-requesting a still-pending stub re-pins it and refreshes the
+    # oa_requeued stamp — the stamp being newer than the last fetch attempt
+    # is what lifts a backed-off stub out of its retry window.
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2").body)
+    with store.pool.connection() as conn:
+        # simulate stub_rank-era state drift + an old stamp
+        conn.execute(
+            "UPDATE refs SET prio = 7, meta = meta || jsonb_build_object("
+            "'prio_by', 'stub_rank', "
+            "'oa_requeued', jsonb_build_object('at', now() - interval '1 day')) "
+            "WHERE ref_id = %s",
+            (rid,),
+        )
+        conn.commit()
+    second = handler.acquire(identifier="doi:10.1/pin2")
+    assert _ref_id(second.body) == rid
+    assert "pinned to front of fetch queue" in second.body
+    prio, prio_by, requeued_at = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (1, "acquire")
+    assert requeued_at is not None
+    with store.pool.connection() as conn:
+        fresh = conn.execute(
+            "SELECT (meta #>> '{oa_requeued,at}')::timestamptz "
+            "> now() - interval '1 minute' FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+    assert fresh is not None and fresh[0] is True
+
+
+def test_pin_stub_for_fetch_without_conn(handler: PaperHandler, store: Store) -> None:
+    # The conn-less spelling (operator/script use) opens its own connection;
+    # the handler path always passes the tx conn, so cover this leg directly.
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin3").body)
+    assert store.pin_stub_for_fetch(rid) is True
+    assert store.pin_stub_for_fetch(999999999) is False  # no such ref → no-op
+    prio, prio_by, requeued_at = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (1, "acquire")
+    assert requeued_at is not None
+
+
+def test_acquire_does_not_pin_held_paper(handler: PaperHandler, store: Store) -> None:
+    # A collapse hit onto an already-held paper (pdf present) must not get
+    # the synthetic prio=1 — there is nothing left to fetch.
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/held").body)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/stub')",
+            ("b" * 64, "b" * 64),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, prio = NULL, "
+            "meta = meta - 'prio_by' WHERE ref_id = %s",
+            ("b" * 64, rid),
+        )
+        conn.commit()
+    second = handler.acquire(identifier="doi:10.1/held")
+    assert _ref_id(second.body) == rid
+    assert "pinned" not in second.body
+    prio, prio_by, _ = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (None, None)
+
+
 def test_acquire_title_only_mints_backlog_stub(
     handler: PaperHandler, store: Store
 ) -> None:

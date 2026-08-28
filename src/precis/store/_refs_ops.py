@@ -541,6 +541,53 @@ class RefsMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def pin_stub_for_fetch(
+        self, ref_id: int, *, conn: Connection | None = None
+    ) -> bool:
+        """Explicit-request fast lane: put one stub at the head of the fetch queue.
+
+        An *explicit* acquire ("I want this paper") shouldn't wait for
+        ``stub_rank``'s enrich→embed→rank cycle to assign a prio — an
+        unranked (NULL-prio) stub sorts behind every ranked one in
+        ``fetch_oa``'s claim order, so a hand-requested paper could sit
+        behind the whole quest-ranked backlog for hours. This pins
+        ``prio = 1`` with ``meta.prio_by = 'acquire'`` (a provenance
+        ``stub_rank``'s never-clobber guard respects, so the pin survives
+        re-ranks) and stamps ``meta.oa_requeued.at = now()`` — the claim
+        query's backoff bypass (``claim_stubs_to_fetch``) treats a stamp
+        newer than the last fetch attempt as "retry immediately once", so
+        re-acquiring a stub that's deep in exponential backoff still
+        fetches on the next pass.
+
+        Auto-discovered stubs (chase / watch / orcid / draft-import /
+        finding-acquire) deliberately do NOT get this — they flow through
+        ``stub_rank``'s relevance prio. No-ops (returns ``False``) unless
+        the ref is a live paper stub (``pdf_sha256 IS NULL``).
+        """
+
+        def _do(c: Connection) -> bool:
+            cur = c.execute(
+                """
+                UPDATE refs
+                   SET prio = 1,
+                       meta = meta || jsonb_build_object(
+                           'prio_by', 'acquire',
+                           'oa_requeued',
+                           jsonb_build_object('at', now(), 'by', 'acquire')
+                       ),
+                       updated_at = now()
+                 WHERE ref_id = %s AND kind = 'paper'
+                   AND pdf_sha256 IS NULL AND deleted_at IS NULL
+                """,
+                (ref_id,),
+            )
+            return cur.rowcount == 1
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def stub_backlog(
         self,
         *,
@@ -779,9 +826,11 @@ class RefsMixin:
         (``source='paper_reconcile'``, ``event='oa_requeued'``), mirroring
         :func:`precis.ingest.paper_hygiene.requeue_stranded_fetches`'s
         stamping pattern. ``fetch_oa``'s claim query orders
-        ``jsonb_exists(r.meta, 'oa_requeued') DESC`` first, so a stamped
-        stub is claimed on the worker's very next pass rather than waiting
-        its turn.
+        ``jsonb_exists(r.meta, 'oa_requeued') DESC`` right after ``prio``,
+        so a stamped stub jumps ahead of everything in its prio band
+        (for never-ranked stubs: ahead of the whole unranked backlog).
+        For the harder "front of the entire queue" guarantee an explicit
+        acquire needs, see :meth:`pin_stub_for_fetch`.
 
         ``ref_ids`` narrows selection to that set — the single-paper
         sibling of the batch "Fetch next N" button

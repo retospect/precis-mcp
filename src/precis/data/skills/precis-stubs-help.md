@@ -96,9 +96,13 @@ import-only, via `.acatome` ingest). Idempotent: a paper already held
 or already wanted is a no-op.
 
 A **DOI / arXiv / S2 id is strongly preferred** — the stub carries the
-id, the `fetch_oa` worker auto-grabs an OA PDF on a later pass, and a
-hallucinated identifier is rejected up front (pass `verify=False` to
-force a known-real preprint S2 hasn't indexed). A **title-only** stub
+id, and an explicit `put` jumps the fetch queue: the stub is pinned to
+the front (`prio=1`) so `fetch_oa` tries it on its very next pass —
+re-requesting an already-wanted stub re-pins it, including one
+immediate retry for a stub deep in fetch backoff. (Auto-discovered
+stubs — citation chase, watched feeds — instead wait their ranked
+turn.) A hallucinated identifier is rejected up front (pass
+`verify=False` to force a known-real preprint S2 hasn't indexed). A **title-only** stub
 just parks in the backlog until someone supplies an identifier — no
 auto-fetch. Optional: `year=` (disambiguates the cite key) and
 `reason=` (why it's wanted).

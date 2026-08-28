@@ -326,10 +326,21 @@ def claim_stubs_to_fetch(
     the backlog separately, at ingest dedup time (see
     ``precis.ingest.add``), so they don't even reach the cap.
 
+    One escape hatch: a ``meta.oa_requeued.at`` stamp *newer than the
+    last fetch attempt* (an operator re-queue or an explicit-acquire
+    pin — ``Store.pin_stub_for_fetch``) bypasses the window for exactly
+    one retry; the attempt it triggers dates the stamp, so backoff
+    resumes unless someone stamps again.
+
     Ordering: **``prio`` ascending, NULLs last** — the ``stub_rank``
     pass writes ``refs.prio`` (1=hottest .. 10=coldest, ``NULL`` =
     unranked) and the fetcher spends its claim budget on the hottest
-    stubs first. Ties (including every unranked stub, which all sort
+    stubs first. An *explicit* acquire pre-empts that ranking entirely:
+    ``Store.pin_stub_for_fetch`` pins ``prio = 1`` with
+    ``meta.prio_by = 'acquire'`` at request time, so a hand-requested
+    paper claims on the very next pass instead of waiting unranked
+    (``NULL`` sorts behind every ranked stub) for ``stub_rank``'s
+    enrich→embed→rank cycle. Ties (including every unranked stub, which all sort
     to the bottom of the ``prio`` order together) fall back to the
     pre-``prio`` ordering: **explicitly re-queued stubs first**
     (``meta.oa_requeued``), then newest-stub-first (``ref_id DESC``).
@@ -413,6 +424,13 @@ def claim_stubs_to_fetch(
                         %(backoff_max)s::double precision
                       ) * INTERVAL '1 hour'
                  )
+                 -- Re-queued-since-last-attempt bypasses the backoff once:
+                 -- an operator/explicit-acquire stamp (`meta.oa_requeued.at`,
+                 -- see Store.pin_stub_for_fetch) newer than the last fetcher
+                 -- event means "try again NOW"; after that attempt the stamp
+                 -- is older than last_ts and normal backoff resumes. Legacy
+                 -- stamps without `at`, or none at all, yield NULL → no bypass.
+                 OR (r.meta #>> '{{oa_requeued,at}}')::timestamptz > fe.last_ts
            )
     """
     params: dict[str, Any] = {

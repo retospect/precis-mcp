@@ -257,6 +257,57 @@ class TestClaimStubs:
             conn.commit()
         assert [s.ref_id for s in stubs] == [ref_id]
 
+    def test_requeue_newer_than_last_attempt_bypasses_backoff(
+        self, store: Store
+    ) -> None:
+        # A fresh `meta.oa_requeued.at` stamp (operator re-queue / explicit
+        # acquire via pin_stub_for_fetch) newer than the last fetcher event
+        # overrides the retry window for one immediate retry.
+        ref_id = _seed_paper_stub(store, doi="10.1234/requeue-now")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                "now() - interval '1 hour')",
+                (ref_id,),
+            )
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "'oa_requeued', jsonb_build_object('at', now())) "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
+    def test_requeue_older_than_last_attempt_keeps_backoff(self, store: Store) -> None:
+        # The bypass is one-shot: once an attempt postdates the stamp, the
+        # normal backoff window applies again (a stale stamp must not turn
+        # into a retry-every-pass loop). Legacy `{}` stamps (no `at`) fall
+        # into the same branch via the NULL cast.
+        ref_id = _seed_paper_stub(store, doi="10.1234/requeue-stale")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "'oa_requeued', jsonb_build_object('at', now() - interval '2 hours')) "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                "VALUES (%s, 'fetcher:s2', 'no_oa_version', '{}'::jsonb, "
+                "now() - interval '1 hour')",
+                (ref_id,),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == []
+
     def test_backoff_widens_with_attempt_count(self, store: Store) -> None:
         # After several attempts the retry window doubles per attempt
         # (24h → 48h → 96h …). With 3 prior fetcher events the window

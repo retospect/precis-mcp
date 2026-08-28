@@ -169,6 +169,10 @@ Notable pass mechanics
 * ``fetch`` / ``chase`` backoff are both exponential (the OA fetcher
   doubles per prior attempt; chase doubles ``WAITING_BACKOFF_MINUTES``
   per consecutive ``waiting``) — kills ``ref_events`` spin-loop floods.
+  Explicit acquires pre-empt both queue rank and backoff:
+  ``Store.pin_stub_for_fetch`` (the ``put(kind='paper')`` path) pins
+  ``prio=1`` and its fresh ``oa_requeued`` stamp buys one immediate
+  retry; auto-discovered stubs earn their turn via ``stub_rank``.
 * ``sweeper`` fails ``STATUS:running`` jobs older than
   ``PRECIS_STUCK_JOB_HOURS`` — except the three lease-owning executors,
   which self-heal via boot-epoch reclaim (see :mod:`.executors`);
