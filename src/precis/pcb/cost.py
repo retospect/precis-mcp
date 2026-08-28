@@ -96,9 +96,16 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from precis.pcb import objectives as obj
+from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, same_layer_crossing_count
+from precis.pcb.rules import (
+    ipc2221_capacity_a,
+    net_current_a_or_none,
+    resolve_net_rules,
+)
 
 
 class Family(Enum):
@@ -210,7 +217,19 @@ class CostConfig:
     crossings_tolerance: float = 1.0
     thermal_budget_fraction: dict[str, float] = field(
         default_factory=lambda: {"power": 0.4, "ground": 0.3}
-    )  # net_class -> assumed loading fraction of a generic-width ampacity budget; 0 for other classes
+    )  # net_class fallback ONLY for a net with no current annotation -- see _thermal_rise
+    #: The fab this design realizes against — same field, same default, as
+    #: :class:`precis.pcb.realize.RealizeConfig.fab_caps`; ``thermal_rise``
+    #: reads it to resolve the SAME per-net width :mod:`precis.pcb.realize`
+    #: will actually draw (:mod:`precis.pcb.rules`).
+    fab_caps: CapabilityRow = field(default_factory=lambda: capability_for("4layer"))
+    #: ``pcb_net_classes.rules`` overrides, keyed by net_class name — the
+    #: same dict :class:`precis.pcb.realize.RealizeConfig.class_rules`
+    #: takes, so a class-rule-authored width is what BOTH the realizer and
+    #: this cost term reason about.
+    class_rules: dict[str, dict[str, Any]] | None = None
+    thermal_temp_rise_c: float = 10.0  # IPC-2221 target rise, thermal_rise term
+    thermal_copper_oz: float = 1.0
 
     # -- catalog / annotation side-channels (not IR fields; optional) ----
     net_annotations: dict[int, obj.NetAnnotation] = field(default_factory=dict)
@@ -721,32 +740,102 @@ def _segment_distance_mm(ir: PcbIR, sa: int, sb: int) -> float | None:
     return math.hypot(ma[0] - mb[0], ma[1] - mb[1])
 
 
+def _net_layer_is_outer(ir: PcbIR, net_id: int, level: Level) -> tuple[bool, bool]:
+    """Whether ``net_id``'s realized copper lands on an OUTER stackup layer
+    — ``(layer_is_outer, is_bound)``. Before L1 (no layer assignment has
+    been decided for anything, regardless of what ``ir.seg_layer`` happens
+    to already hold — an L1-fidelity-or-coarser caller must not peek, same
+    discipline :func:`layer_count_term` already follows), the OPTIMISTIC
+    assumption is outer (the higher-ampacity, lower-required-width side of
+    IPC-2221's split): this is what keeps the term admissible (LOWER
+    bound — coarse must never overstate cost) since assuming outer can
+    only ever UNDERSTATE the true required width relative to whatever the
+    net's real layer turns out to be. Once L1 exists, the WORST (any
+    non-outer) assigned layer among the net's own segments (or its plane
+    layer) wins — thermal risk is bounded by whichever segment actually
+    carries the current through the tightest copper."""
+    n_layers = len(ir.stackup)
+    if level < Level.L1 or n_layers == 0:
+        return True, True
+    layers = [
+        int(ir.seg_layer[s])
+        for s in range(ir.n_segments)
+        if int(ir.seg_net[s]) == net_id and int(ir.seg_layer[s]) != UNSET_LAYER
+    ]
+    plane_layer = int(ir.net_plane_layer[net_id])
+    if plane_layer != UNSET_LAYER:
+        layers.append(plane_layer)
+    if not layers:
+        return True, True
+    all_outer = all(layer_i <= 0 or layer_i >= n_layers - 1 for layer_i in layers)
+    return all_outer, False
+
+
 def _thermal_rise(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     """Per-connection ampacity margin — **not** the board-level
     component-to-component heat-spreading term the backlog explicitly
     excludes (open items: "no board-level thermal term... known-absent
-    by decision"). This is narrower and local: how much of a class's
-    assumed current-carrying budget a power/ground connection draws.
-    Current and trace width aren't first-class IR fields yet (width is
-    assigned by the tiling pass, a later slice), so this term is
-    deliberately **level-invariant** — it has nothing further to learn
-    from L3/L4 in this slice, and a constant estimate trivially satisfies
-    admissibility (coarse == fine)."""
+    by decision"). This is narrower and local: how much of a net's ACTUAL
+    current draw exceeds the ampacity of the width :mod:`precis.pcb.rules`
+    will actually resolve for it — the SAME resolver
+    :mod:`precis.pcb.realize` uses to draw the copper, closing the exact
+    bug this term exists to catch (an optimizer reasoning about current
+    while the geometry it scores ignores it).
+
+    A net with NO current annotation (``ir.net_current_a`` is ``nan`` —
+    "keep today's behaviour", not an invented figure) falls back to the
+    original class-fraction placeholder
+    (:data:`CostConfig.thermal_budget_fraction`), unchanged."""
     out: list[TermValue] = []
     for net_id in range(ir.n_nets):
         net_class = str(ir.net_class[net_id]).strip().lower()
-        fraction = config.thermal_budget_fraction.get(net_class)
-        if not fraction:
+        current_a = net_current_a_or_none(float(ir.net_current_a[net_id]))
+        if current_a is None or current_a <= 0.0:
+            fraction = config.thermal_budget_fraction.get(net_class)
+            if not fraction:
+                continue
+            out.append(
+                TermValue(
+                    "thermal_rise",
+                    Family.MARGIN,
+                    str(ir.net_name[net_id]),
+                    fraction,
+                    "IPC-2221-style temperature rise vs. a generic-width ampacity budget for "
+                    "current-carrying rails; no current annotation yet, so this net falls back "
+                    "to a class-assumed load fraction rather than inventing a current figure",
+                    is_bound=True,
+                )
+            )
             continue
+
+        layer_is_outer, is_bound = _net_layer_is_outer(ir, net_id, level)
+        overrides = (config.class_rules or {}).get(net_class)
+        resolved = resolve_net_rules(
+            net_class,
+            layer_is_outer=layer_is_outer,
+            fab_caps=config.fab_caps,
+            overrides=overrides,
+            current_a=current_a,
+            temp_rise_c=config.thermal_temp_rise_c,
+            copper_oz=config.thermal_copper_oz,
+        )
+        capacity_a = ipc2221_capacity_a(
+            resolved.track_width_mm,
+            layer_is_outer=layer_is_outer,
+            temp_rise_c=config.thermal_temp_rise_c,
+            copper_oz=config.thermal_copper_oz,
+        )
+        fraction = current_a / capacity_a if capacity_a > 0.0 else 10.0
         out.append(
             TermValue(
                 "thermal_rise",
                 Family.MARGIN,
                 str(ir.net_name[net_id]),
                 fraction,
-                "IPC-2221-style temperature rise vs. a generic-width ampacity budget for "
-                "current-carrying rails; refines once realize.py assigns real trace widths",
-                is_bound=True,
+                "IPC-2221-style temperature rise scored against the SAME resolved trace "
+                "width realize.py will actually draw for this net -- current / ampacity "
+                "of the real copper, not a generic-width placeholder",
+                is_bound=is_bound,
             )
         )
     return out

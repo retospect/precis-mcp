@@ -745,8 +745,10 @@ class PcbMixin:
     def pcb_graph(self, ref_id: int) -> dict[str, Any]:
         """The whole design as the *eyes* consume it: the board (stackup +
         fold_lines), placed instances, nets with their (refdes, pin) members
-        + domain, the design's net_classes, a route-status summary (counts
-        by :class:`pcb_routes.status`; empty = all-unrouted), and the
+        + domain + ``est_current_a`` (the current annotation
+        :mod:`precis.pcb.rules`'s resolver derives an IPC-2221 width from),
+        the design's net_classes, a route-status summary (counts by
+        :class:`pcb_routes.status`; empty = all-unrouted), and the
         unconnected pins. Pure data — the analysis lives in
         :mod:`precis.pcb`."""
         with self.pool.connection() as conn:
@@ -777,7 +779,7 @@ class PcbMixin:
                 ).fetchall()
             ]
             net_rows = conn.execute(
-                "SELECT net_id, name, net_class, domain FROM pcb_nets "
+                "SELECT net_id, name, net_class, domain, est_current_a FROM pcb_nets "
                 "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
                 (ref_id,),
             ).fetchall()
@@ -786,6 +788,7 @@ class PcbMixin:
                     "name": r[1],
                     "net_class": r[2],
                     "domain": r[3],
+                    "est_current_a": r[4],
                     "members": [],
                 }
                 for r in net_rows

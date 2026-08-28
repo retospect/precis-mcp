@@ -1,0 +1,234 @@
+"""The single per-net rules resolver — closes gr-shaped defects A and B in
+docs/backlog/pcb-usb-c-pd-nano-testboard.md's §Blockers in ONE place rather
+than two: :mod:`precis.pcb.realize` emitted a flat ``track_width_mm=0.25``
+default regardless of current, and :mod:`precis.pcb.drc` read only the fab
+capability table, never a ``pcb_net_classes.rules`` override. Both gaps are
+the same defect — per-net electrical intent (current, an authored class
+rule) never reaching the geometry — so this module is the one place that
+turns that intent into a track width / clearance, and every consumer
+(:mod:`precis.pcb.realize`, :mod:`precis.pcb.drc`, :mod:`precis.pcb.cost`)
+reads through it instead of re-deriving its own answer.
+
+**Resolution order, most specific first:**
+
+1. an explicit ``pcb_net_classes.rules`` override for the net's class;
+2. else, when the net carries a current annotation (``pcb_nets.est_
+   current_a``), derive the width from IPC-2221 (see
+   :func:`ipc2221_track_width_mm`) — clearance has no current-derived form,
+   so a net with no override simply falls through to (3) for clearance;
+3. else the fab capability floor (:mod:`precis.pcb.capabilities`) —
+   existing behaviour, never emit below what the fab can manufacture.
+
+**The result is ALWAYS clamped to the fab capability minimum**, regardless
+of which tier produced it — an authored class rule or a current-derived
+width may ask for MORE copper/clearance than the fab needs, never less
+than the fab can make (:func:`resolve_net_rules`'s own clamp, applied
+unconditionally as the last step).
+
+**IPC-2221, and why external/internal is a real split, not a knob.**
+``A_mils^2 = (I / (k * dT^0.44))^(1/0.725)``, with ``k=0.048`` external /
+``k=0.024`` internal — the two k's differ by exactly 2x, and since area
+enters the final width linearly while area itself is a *power* of the
+current-to-k ratio, an inner layer needs ``2^(1/0.725) ~= 2.6x`` the
+EXTERNAL width for the same current and temperature rise (external copper
+sheds heat to open air on both sides; internal copper is sandwiched in
+dielectric, a much worse conductor of heat, so more cross-section is the
+only way to hold the same temperature rise). ``layer_is_outer`` is a
+resolver INPUT, never inferred here, because layer identity is IR state
+this module doesn't own (module docstring precedent set by ``ir.py``'s own
+"layers are integer indexes" discipline).
+
+**Via sizing is a field on :class:`NetRules`, not yet a resolved value.**
+No via geometry is realized anywhere in this build (see the master
+backlog's "Known-inert" section), so there is nothing to size a via
+AGAINST yet — ``via_dia_mm``/``via_drill_mm`` are populated from the fab
+capability floor only (no override tier), shaped so the task that adds via
+geometry extends the SAME resolution order rather than inventing a second
+resolver.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Any
+
+from precis.pcb.capabilities import CapabilityRow
+
+#: IPC-2221 external/internal constants (module docstring, verbatim).
+IPC2221_K_EXTERNAL = 0.048
+IPC2221_K_INTERNAL = 0.024
+#: mils^2 per (oz copper-weight * mil width) -- i.e. cross-sectional area
+#: per unit width for 1oz copper is 1.378 mil of thickness.
+_COPPER_MIL_PER_OZ = 1.378
+_MM_PER_MIL = 0.0254
+
+#: Sane fallbacks when neither an override, a current annotation, NOR a fab
+#: capability figure is available (a capability field is legitimately
+#: `None` for some process/field combinations, see capabilities.py) --
+#: mirrors realize.py's pre-existing generic-class defaults so a design
+#: with a truly unknown process never emits copper narrower than today's
+#: behaviour did.
+_FALLBACK_TRACK_WIDTH_MM = 0.25
+_FALLBACK_CLEARANCE_MM = 0.15
+
+
+@dataclass(frozen=True, slots=True)
+class NetRules:
+    """One net's resolved geometry rules -- the shape every consumer reads
+    instead of inventing its own default. ``via_dia_mm``/``via_drill_mm``
+    are reserved for the via-geometry task (module docstring); they are
+    always fab-floor values today, never an override tier."""
+
+    track_width_mm: float
+    clearance_mm: float
+    via_dia_mm: float | None = None
+    via_drill_mm: float | None = None
+
+
+def ipc2221_track_width_mm(
+    current_a: float,
+    *,
+    layer_is_outer: bool,
+    temp_rise_c: float = 10.0,
+    copper_oz: float = 1.0,
+) -> float:
+    """The IPC-2221 external/internal trace-width formula (module
+    docstring, verbatim) -- the width that holds ``current_a`` to
+    ``temp_rise_c`` of temperature rise on ``copper_oz``-weight copper.
+    Raises for a non-positive current (nothing to size against) rather
+    than returning a nonsense value."""
+    if current_a <= 0.0:
+        raise ValueError(
+            f"ipc2221_track_width_mm: current_a must be > 0, got {current_a!r}"
+        )
+    k = IPC2221_K_EXTERNAL if layer_is_outer else IPC2221_K_INTERNAL
+    area_mil2 = (current_a / (k * temp_rise_c**0.44)) ** (1.0 / 0.725)
+    width_mil = area_mil2 / (copper_oz * _COPPER_MIL_PER_OZ)
+    return width_mil * _MM_PER_MIL
+
+
+def ipc2221_capacity_a(
+    width_mm: float,
+    *,
+    layer_is_outer: bool,
+    temp_rise_c: float = 10.0,
+    copper_oz: float = 1.0,
+) -> float:
+    """The exact algebraic inverse of :func:`ipc2221_track_width_mm`: the
+    current a copper trace of ``width_mm`` can carry at ``temp_rise_c`` of
+    rise -- what :mod:`precis.pcb.cost`'s ``thermal_rise`` term scores the
+    net's ACTUAL current draw against, so the term reasons about the same
+    width the geometry will actually carry (the exact bug this module
+    closes, restated: an optimizer scoring against a width the realizer
+    never emits)."""
+    if width_mm <= 0.0:
+        return 0.0
+    k = IPC2221_K_EXTERNAL if layer_is_outer else IPC2221_K_INTERNAL
+    width_mil = width_mm / _MM_PER_MIL
+    area_mil2 = width_mil * copper_oz * _COPPER_MIL_PER_OZ
+    return k * temp_rise_c**0.44 * area_mil2**0.725
+
+
+def _fab_floor(capability: CapabilityRow, field: str, fallback: float) -> float:
+    value = capability.house_default.get(field)
+    if value is None:
+        value = capability.jlc_min.get(field)
+    return value if value is not None else fallback
+
+
+def _fab_min(capability: CapabilityRow, field: str) -> float | None:
+    return capability.jlc_min.get(field)
+
+
+def resolve_net_rules(
+    net_class: str,
+    *,
+    layer_is_outer: bool,
+    fab_caps: CapabilityRow,
+    overrides: dict[str, Any] | None = None,
+    current_a: float | None = None,
+    temp_rise_c: float = 10.0,
+    copper_oz: float = 1.0,
+) -> NetRules:
+    """Resolve ONE net's geometry rules -- the single function every
+    consumer (realize.py/drc.py/cost.py) calls instead of re-deriving its
+    own default (module docstring's resolution order).
+
+    ``overrides`` is the net's class row from ``pcb_net_classes.rules``
+    (``None`` when the design has no row for this class -- "missing row
+    means built-in defaults", per that table's own comment). ``current_a``
+    is the net's ``est_current_a`` annotation, or ``None``/NaN when the
+    design carries no current estimate for it -- "keep today's behaviour"
+    (fall through to the fab floor) is exactly what a ``None`` here does.
+    """
+    overrides = overrides or {}
+
+    width_mm = overrides.get("track_width_mm")
+    if width_mm is None and current_a is not None and current_a > 0:
+        width_mm = ipc2221_track_width_mm(
+            current_a,
+            layer_is_outer=layer_is_outer,
+            temp_rise_c=temp_rise_c,
+            copper_oz=copper_oz,
+        )
+    if width_mm is None:
+        width_mm = _fab_floor(fab_caps, "trace_width_mm", _FALLBACK_TRACK_WIDTH_MM)
+    width_min = _fab_min(fab_caps, "trace_width_mm")
+    if width_min is not None:
+        width_mm = max(float(width_mm), width_min)
+
+    clearance_mm = overrides.get("clearance_mm")
+    if clearance_mm is None:
+        clearance_mm = _fab_floor(fab_caps, "trace_spacing_mm", _FALLBACK_CLEARANCE_MM)
+    clearance_min = _fab_min(fab_caps, "trace_spacing_mm")
+    if clearance_min is not None:
+        clearance_mm = max(float(clearance_mm), clearance_min)
+
+    via_dia_mm = overrides.get("via_dia_mm")
+    if via_dia_mm is None:
+        via_dia_mm = fab_caps.house_default.get(
+            "via_diameter_mm"
+        ) or fab_caps.jlc_min.get("via_diameter_mm")
+    via_min = _fab_min(fab_caps, "via_diameter_mm")
+    if via_dia_mm is not None and via_min is not None:
+        via_dia_mm = max(float(via_dia_mm), via_min)
+
+    via_drill_mm = overrides.get("via_drill_mm")
+    if via_drill_mm is None:
+        via_drill_mm = fab_caps.house_default.get("drill_mm") or fab_caps.jlc_min.get(
+            "drill_mm"
+        )
+    drill_min = _fab_min(fab_caps, "drill_mm")
+    if via_drill_mm is not None and drill_min is not None:
+        via_drill_mm = max(float(via_drill_mm), drill_min)
+
+    return NetRules(
+        track_width_mm=float(width_mm),
+        clearance_mm=float(clearance_mm),
+        via_dia_mm=None if via_dia_mm is None else float(via_dia_mm),
+        via_drill_mm=None if via_drill_mm is None else float(via_drill_mm),
+    )
+
+
+def net_current_a_or_none(value: float | None) -> float | None:
+    """Normalize a possibly-NaN/None current annotation to ``None`` -- the
+    one place "no annotation" gets decided, so every caller (IR float64
+    NaN sentinel, a plain ``None`` from a dict) agrees on what "absent"
+    means before it reaches :func:`resolve_net_rules`."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return float(value)
+
+
+__all__ = [
+    "IPC2221_K_EXTERNAL",
+    "IPC2221_K_INTERNAL",
+    "NetRules",
+    "ipc2221_capacity_a",
+    "ipc2221_track_width_mm",
+    "net_current_a_or_none",
+    "resolve_net_rules",
+]

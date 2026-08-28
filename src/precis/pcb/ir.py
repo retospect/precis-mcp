@@ -114,6 +114,14 @@ class PcbIR:
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
+    #: float64[n_nets], nan = no current annotation (``pcb_nets.est_
+    #: current_a``). This is a real, already-shipped store column -- the
+    #: "current annotation" :mod:`precis.pcb.rules`'s resolver reads to
+    #: derive an IPC-2221 track width, distinct from the LLM-authored
+    #: datasheet :class:`precis.pcb.objectives.NetAnnotation` side-channel
+    #: (impedance/edge-rate), which stays a `CostConfig` dict since it has
+    #: no store column yet.
+    net_current_a: np.ndarray
 
     # ---- L1: integer layer per segment; vias as transitions -----------
     seg_net: np.ndarray  # int32[n_seg]
@@ -449,6 +457,7 @@ def from_graph(
     net_name: list[str] = []
     net_domain: list[str] = []
     net_class: list[str] = []
+    net_current_a: list[float] = []
     seg_net: list[int] = []
     seg_pin_a: list[int] = []
     seg_pin_b: list[int] = []
@@ -458,6 +467,8 @@ def from_graph(
         net_name.append(net["name"])
         net_domain.append(net.get("domain") or "electrical")
         net_class.append(net.get("net_class") or "")
+        current = net.get("est_current_a")
+        net_current_a.append(math.nan if current is None else float(current))
         members = net.get("members") or []
         member_pins = [_pin(m["refdes"], m.get("pin") or "1", net_id) for m in members]
         for other in member_pins[1:]:
@@ -509,6 +520,7 @@ def from_graph(
         net_name=_obj_array(net_name),
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),
+        net_current_a=np.array(net_current_a, dtype=np.float64),
         seg_net=np.array(seg_net, dtype=np.int32),
         seg_pin_a=np.array(seg_pin_a, dtype=np.int32),
         seg_pin_b=np.array(seg_pin_b, dtype=np.int32),

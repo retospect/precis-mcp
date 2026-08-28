@@ -312,6 +312,95 @@ def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
     assert "no via geometry realized yet" in drc.body
 
 
+def test_drc_view_warns_on_a_pcb_net_classes_elevated_clearance_requirement(pcb):
+    """Gap B (pcb-usb-c-pd-nano-testboard.md): a `pcb_net_classes.rules`
+    override must actually change ``view='drc'``'s output, not just
+    round-trip — a gap that comfortably clears the GENERIC house default
+    but falls short of an authored per-class requirement (e.g. a 20V PD
+    rail wanting more room) must WARN."""
+    design = {
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "buck",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "U2",
+                "label": "load",
+                "x": 20.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "U3",
+                "label": "gnd",
+                "x": 0.0,
+                "y": 5.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "U4",
+                "label": "gnd2",
+                "x": 20.0,
+                "y": 5.0,
+                "pins": [{"name": "1"}],
+            },
+        ],
+        "nets": [
+            {"name": "VBUS_20V", "class": "power"},
+            {"name": "SIG", "class": "signal"},
+        ],
+        "connections": [
+            {"net": "VBUS_20V", "refdes": "U1", "pin": "1"},
+            {"net": "VBUS_20V", "refdes": "U2", "pin": "1"},
+            {"net": "SIG", "refdes": "U3", "pin": "1"},
+            {"net": "SIG", "refdes": "U4", "pin": "1"},
+        ],
+        "net_classes": {"power": {"clearance_mm": 0.5}},
+    }
+    pcb.put(id="pd-board", args=design)
+    ref = pcb.store.get_ref(kind="pcb", id="pd-board")
+    board_id = pcb.store.pcb_ensure_board(ref.id)
+    net_ids = pcb.store.pcb_net_ids(ref.id)
+    # 0.3mm edge-to-edge gap: clears the generic 4-layer house default
+    # (0.15mm) but falls short of the authored power-class 0.5mm rule.
+    pcb.store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["VBUS_20V"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [1.0, 0.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            },
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["SIG"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.5], "end": [1.0, 0.5]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            },
+        ],
+    )
+    drc = pcb.get(id="pd-board", view="drc")
+    assert "warn" in drc.body
+    assert "clearance" in drc.body
+
+
 def test_proximity_view(pcb):
     pcb.put(id="sensor-node", args=_DESIGN)
     # U1@(10,10), C1 unplaced in _DESIGN → proximity needs both placed

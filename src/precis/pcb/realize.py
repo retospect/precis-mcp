@@ -58,11 +58,13 @@ tracks against an already-realized result, replacing only those entries.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist
 from precis.pcb.ir import UNSET_LAYER, PcbIR, nearest_other_instance
+from precis.pcb.rules import NetRules, net_current_a_or_none, resolve_net_rules
 
 # ── config + obstacles ───────────────────────────────────────────────────
 
@@ -75,15 +77,34 @@ class RealizeConfig:
     #: half-size, not a real footprint courtyard (that data lives in
     #: ``part_footprints``, a store concern this pure module doesn't read).
     default_obstacle_radius_mm: float = 1.0
-    #: Class-generic trace pitch (width + clearance) — the same fallback
-    #: :mod:`precis.pcb.cost`'s ``default_pitch_mm`` uses, for the same
-    #: reason (no per-class-rules table wired into the IR yet).
+    #: Class-generic trace pitch (width + clearance) for GAP-CAPACITY
+    #: accounting (:func:`_gap_usage`) — the same fallback
+    #: :mod:`precis.pcb.cost`'s ``default_pitch_mm`` uses. Deliberately
+    #: NOT wired to ``class_rules`` below (a different question — "how
+    #: many strands fit through this gap", not "how wide is one net's own
+    #: trace" — out of this module's current scope).
     pitch_mm: float = 0.3
     #: Plane-served nets fan out via a short dog-bone stub instead of a
     #: routed trace (backlog cost policy, verbatim) — this is that stub's
     #: length. The via-to-plane connection itself is ``planes.py``'s job,
     #: a later module; this realizer only ever draws the stub.
     dogbone_stub_mm: float = 0.5
+    #: The fab this board realizes against — every emitted track's width
+    #: is clamped to this table's minimum (:mod:`precis.pcb.rules`'s own
+    #: resolver discipline). Defaults to the house 4-layer row so a bare
+    #: ``RealizeConfig()`` (most tests, most synthetic boards) still
+    #: resolves a sane width; a real board's caller should pass the row
+    #: for its ACTUAL stackup (``drc.process_for_stackup``).
+    fab_caps: CapabilityRow = field(default_factory=lambda: capability_for("4layer"))
+    #: ``pcb_net_classes.rules`` overrides, keyed by net_class name —
+    #: ``pcb_graph()``'s own ``net_classes`` dict, unmodified. A class with
+    #: no row here (the common case) falls through to the current-derived
+    #: or fab-floor tiers (:func:`precis.pcb.rules.resolve_net_rules`).
+    class_rules: dict[str, dict[str, Any]] | None = None
+    #: IPC-2221 target temperature rise / copper weight for the
+    #: current-derived width tier — see :mod:`precis.pcb.rules`.
+    temp_rise_c: float = 10.0
+    copper_oz: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,11 +282,54 @@ class RealizedTrack:
     #: The instance id of the single obstacle routed around, or ``None``
     #: for a straight run (or a dog-boned plane connection).
     blocked_by: int | None
+    #: This track's resolved copper width — :func:`precis.pcb.rules.
+    #: resolve_net_rules`'s answer for this net/layer, ALREADY clamped to
+    #: the fab minimum. The one place a track's width is decided; every
+    #: consumer (gerber export, ``pcb_route``'s persisted copper) reads
+    #: this field rather than re-deriving its own default.
+    width_mm: float
     #: True for a plane-promoted net's short dog-bone stub, never a real
     #: routed trace — the "never route ground/power beyond the dog-bone
     #: fanout" cost policy (backlog, verbatim), enforced here rather than
     #: merely hoped for by a cost term.
     is_dogbone: bool = False
+
+
+def _layer_is_outer(ir: PcbIR, layer: int) -> bool:
+    """Whether ``layer`` is an OUTER stackup layer (index 0 or the last
+    index — F.Cu/B.Cu in :data:`precis.pcb.DEFAULT_STACKUP`; "layers are
+    integer indexes" per ``ir.py``'s own discipline, never a name compare).
+    ``UNSET_LAYER`` (no L1 assignment yet, or a dog-bone stub whose pad
+    sits on whichever layer its component is placed on — components live
+    on outer layers in this build) defaults to ``True``: the common case,
+    and IPC-2221's more generous (lower-width-for-the-same-current)
+    assumption, matching :mod:`precis.pcb.cost`'s own "assume outer until
+    proven otherwise" admissible-bound choice for the same question."""
+    n = len(ir.stackup)
+    if n == 0 or layer == UNSET_LAYER:
+        return True
+    return layer <= 0 or layer >= n - 1
+
+
+def _resolve_track_rules(
+    ir: PcbIR, net_id: int, layer: int, config: RealizeConfig
+) -> NetRules:
+    """This net's resolved geometry rules (module docstring's single
+    resolver, shared with :mod:`precis.pcb.drc` and :mod:`precis.pcb.cost`)
+    — the ``track_width_mm`` every :class:`RealizedTrack` this module emits
+    carries."""
+    net_class = str(ir.net_class[net_id])
+    overrides = (config.class_rules or {}).get(net_class)
+    current_a = net_current_a_or_none(float(ir.net_current_a[net_id]))
+    return resolve_net_rules(
+        net_class,
+        layer_is_outer=_layer_is_outer(ir, layer),
+        fab_caps=config.fab_caps,
+        overrides=overrides,
+        current_a=current_a,
+        temp_rise_c=config.temp_rise_c,
+        copper_oz=config.copper_oz,
+    )
 
 
 def realize_segment(
@@ -280,6 +344,7 @@ def realize_segment(
         return None
     net_id = int(ir.seg_net[seg_id])
     layer = int(ir.seg_layer[seg_id])
+    width_mm = _resolve_track_rules(ir, net_id, layer, config).track_width_mm
 
     if int(ir.net_plane_layer[net_id]) != UNSET_LAYER:
         # Dog-bone fanout: a short stub off the near pad, not a full route
@@ -301,6 +366,7 @@ def realize_segment(
             tuple(segments),
             dist(start, stub_end),
             None,
+            width_mm,
             is_dogbone=True,
         )
 
@@ -317,7 +383,9 @@ def realize_segment(
             start, end, blocker.center, blocker.radius + config.clearance_mm
         )
         blocked_by = blocker.instance
-    return RealizedTrack(seg_id, net_id, layer, tuple(segs), length, blocked_by)
+    return RealizedTrack(
+        seg_id, net_id, layer, tuple(segs), length, blocked_by, width_mm
+    )
 
 
 # ── per-gap capacity accounting + the legible congestion digest ─────────
@@ -480,17 +548,18 @@ def to_gerber_model(
     *,
     layers: list[str],
     outline: list[list[float]],
-    track_width_mm: float = 0.25,
+    track_width_mm: float | None = None,
 ) -> dict[str, Any]:
     """Assemble a :mod:`precis.pcb.gerber`-shaped model dict from a
     :class:`RealizeResult` — ``layers`` is the board's layer-name list
     (export label only, per the IR's own "names are an export concern
     only" discipline: this is the ONE place an integer layer index gets
-    turned into a name, at hand-off to gerber). Track/via width is a flat
-    default here (the real per-net width comes from
-    :mod:`precis.pcb.tiling`'s objective-derived expansion, out of this
-    module's scope — a realized track's centerline is what this module
-    owns, not its final copper width)."""
+    turned into a name, at hand-off to gerber). Each track's width is its
+    OWN :attr:`RealizedTrack.width_mm` — already resolved per net/layer by
+    :mod:`precis.pcb.rules` at realize time (module docstring). Passing an
+    explicit ``track_width_mm`` overrides every track uniformly, for a
+    caller that genuinely wants one flat width (e.g. a quick sanity export)
+    rather than the per-net resolution."""
     copper: list[dict[str, Any]] = []
     for t in result.tracks:
         if t.layer < 0 or t.layer >= len(layers):
@@ -500,7 +569,7 @@ def to_gerber_model(
                 "ctype": "track",
                 "layer": layers[t.layer],
                 "net": str(ir.net_name[t.net_id]),
-                "width_mm": track_width_mm,
+                "width_mm": t.width_mm if track_width_mm is None else track_width_mm,
                 "segments": list(t.segments),
             }
         )

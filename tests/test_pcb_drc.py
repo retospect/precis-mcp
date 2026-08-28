@@ -19,6 +19,7 @@ import pytest
 
 from precis.pcb import drc
 from precis.pcb.capabilities import capability_for
+from precis.pcb.rules import NetRules
 
 _CAP4 = capability_for("4layer")
 # 4-layer trace_spacing_mm: jlc_min=0.09, house_default=0.15 (capabilities.py)
@@ -117,6 +118,73 @@ def test_check_clearance_ignores_same_net_and_different_layer():
         ],
     }
     assert drc.check_clearance(model, _CAP4) == []
+
+
+# ── check_clearance with a resolved net_rules override (gr-shaped: Gap B —
+# pcb_net_classes.rules had no consumer) ─────────────────────────────────
+def test_check_clearance_net_rules_warn_on_a_gap_the_generic_house_default_clears():
+    """A gap that comfortably clears the GENERIC house_default (0.15mm)
+    but falls short of a net-class-elevated requirement (e.g. a 20V PD
+    rail wanting more room) must now WARN once a net_rules map is
+    supplied — the exact consumer this module previously lacked."""
+    house = _CAP4.house_default["trace_spacing_mm"]
+    assert house is not None
+    required = 0.5  # a class rule asking for more than the generic house default
+    gap = (house + required) / 2.0  # clears house, falls short of `required`
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [
+            _track("VBUS_20V", "F.Cu", (0.0, 0.0), (1.0, 0.0)),
+            _track("SIG", "F.Cu", (0.0, 0.2 + gap), (1.0, 0.2 + gap)),
+        ],
+    }
+    assert drc.check_clearance(model, _CAP4) == []  # quiet without net_rules
+
+    net_rules = {
+        "VBUS_20V": NetRules(track_width_mm=0.5, clearance_mm=required),
+        "SIG": NetRules(track_width_mm=house, clearance_mm=house),
+    }
+    findings = drc.check_clearance(model, _CAP4, net_rules=net_rules)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert findings[0].margin_mm == pytest.approx(gap - required, abs=1e-4)
+
+
+def test_check_clearance_net_rules_error_tier_unaffected_by_a_higher_requirement():
+    """The error tier is the fab's own hard minimum — an elevated
+    net-class requirement can only WIDEN the warn band, never move the
+    error floor."""
+    jlc_min = _CAP4.jlc_min["trace_spacing_mm"]
+    assert jlc_min is not None
+    gap = jlc_min / 2.0  # well under the fab's own manufacturable floor
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [
+            _track("VBUS_20V", "F.Cu", (0.0, 0.0), (1.0, 0.0)),
+            _track("SIG", "F.Cu", (0.0, 0.2 + gap), (1.0, 0.2 + gap)),
+        ],
+    }
+    net_rules = {"VBUS_20V": NetRules(track_width_mm=0.5, clearance_mm=1.0)}
+    findings = drc.check_clearance(model, _CAP4, net_rules=net_rules)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert findings[0].margin_mm == pytest.approx(gap - jlc_min, abs=1e-4)
+
+
+def test_check_clearance_net_rules_absent_net_falls_back_to_generic_house():
+    """A net_rules map that simply doesn't cover a particular net behaves
+    exactly like today's capability-only path for that pair."""
+    house = _CAP4.house_default["trace_spacing_mm"]
+    assert house is not None
+    gap = house + 0.5
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [
+            _track("A", "F.Cu", (0.0, 0.0), (1.0, 0.0)),
+            _track("B", "F.Cu", (0.0, 0.2 + gap), (1.0, 0.2 + gap)),
+        ],
+    }
+    assert drc.check_clearance(model, _CAP4, net_rules={}) == []
 
 
 # ── trace width ───────────────────────────────────────────────────────
@@ -260,6 +328,25 @@ def test_run_geometric_drc_aggregates_every_rule():
     rules = {f.rule for f in findings}
     assert "trace_width" in rules
     assert "courtyard_overlap" in rules
+
+
+def test_run_geometric_drc_threads_net_rules_into_clearance_only():
+    house = _CAP4.house_default["trace_spacing_mm"]
+    assert house is not None
+    required = 0.5
+    gap = (house + required) / 2.0
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [
+            _track("VBUS_20V", "F.Cu", (0.0, 0.0), (1.0, 0.0)),
+            _track("SIG", "F.Cu", (0.0, 0.2 + gap), (1.0, 0.2 + gap)),
+        ],
+    }
+    net_rules = {"VBUS_20V": NetRules(track_width_mm=0.5, clearance_mm=required)}
+    findings = drc.run_geometric_drc(model, capability=_CAP4, net_rules=net_rules)
+    clearance_findings = [f for f in findings if f.rule == "clearance"]
+    assert len(clearance_findings) == 1
+    assert clearance_findings[0].severity == "warn"
 
 
 # ── the O(n^2) reference oracle vs. the STRtree-accelerated engine ─────

@@ -92,6 +92,22 @@ _DESIGN_WITH_DANGLING = {
 }
 
 
+#: A high-current power net -- the exact regression named in the task:
+#: pcb_copper.geom.width_mm for a 5A rail must not come out at the old
+#: flat 0.25mm default (a fuse), on EITHER an outer or inner layer.
+_DESIGN_HIGH_CURRENT = {
+    "components": [
+        {"refdes": "U1", "label": "buck", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {"refdes": "U2", "label": "load", "x": 5.0, "y": 0.0, "pins": [{"name": "1"}]},
+    ],
+    "nets": [{"name": "VBUS", "class": "power", "current": 5.0}],
+    "connections": [
+        {"net": "VBUS", "refdes": "U1", "pin": "1"},
+        {"net": "VBUS", "refdes": "U2", "pin": "1"},
+    ],
+}
+
+
 def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
     handler = PcbHandler(hub=Hub(store=store))
     handler.put(id=slug, args=args)
@@ -120,6 +136,30 @@ def test_pcb_route_writes_realized_route_and_copper(store: Store) -> None:
         assert row is not None
         n_copper = row[0]
     assert n_copper >= 1
+
+
+def test_pcb_route_widens_a_high_current_net_well_past_the_old_flat_default(
+    store: Store,
+) -> None:
+    """pcb-usb-c-pd-nano-testboard.md's Gap A, closed at the actual write
+    path: the persisted copper's ``width_mm`` for a 5A net must reflect
+    IPC-2221 sizing (multi-mm, on either an outer or an inner layer),
+    never the old flat 0.25mm default that used to fire here regardless
+    of current."""
+    ref_id = _seed(store, "route-current", _DESIGN_HIGH_CURRENT)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    board_id = store.pcb_ensure_board(ref_id)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT geom->>'width_mm' FROM pcb_copper WHERE board_id = %s", (board_id,)
+        ).fetchall()
+    assert rows
+    widths = [float(r[0]) for r in rows]
+    assert all(w > 1.0 for w in widths)  # nowhere near the 0.25mm fuse
+    assert all(w != pytest.approx(0.25) for w in widths)
 
 
 def test_pcb_route_persists_sketch_survives_rebuild(store: Store) -> None:

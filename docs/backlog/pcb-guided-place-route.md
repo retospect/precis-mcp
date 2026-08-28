@@ -44,7 +44,35 @@ were missing the `retired_at IS NULL` filter their siblings all apply.
 Still open, filed not fixed: **`gr266041`** — `op=` idempotency coalesces
 a resubmit onto an in-flight job that predates an `op='pin_side'` /
 `op='plane_net'` edit, because the content hash covers design inputs but
-not those session edits. Needs a product call.
+not those session edits. **Resolution decided, not yet built:** this is a
+DRY defect, not a caching quirk — the idem key is hand-listed in
+`handlers/job.py` while what the run actually depends on is defined in
+`pcb_route.py`, and the two drift. Derive the key from the same snapshot
+the job reads; then an edit necessarily changes the key and a resubmit is
+automatically a new job, with no "predates your edit" band-aid needed.
+
+### Route-state consolidation — DESIGNED, NOT BUILT
+Success is **done**: every net that *ought* to be routed is realized AND
+nothing is shorted. One definition, one implementation.
+
+- **NOT_STARTED** — no route run yet, *or* the design has no nets →
+  evaluator returns `None` ("not yet"). This removes the live incoherence
+  where a zero-net design is `False` ("nothing to route is not routed")
+  while a board whose only net is a 1-pin test point is `True`.
+- **PARTIAL** — some ought-to-be-routed net not realized → `False` + the
+  offending nets as issues.
+- **DRC_FAIL** — all realized but DRC finds shorts/clearance violations →
+  `False` + the findings. Persistent DRC_FAIL is *information* (board too
+  small, too few layers), so the issues must be returned, not discarded.
+- **DONE** → `True`.
+
+"Ought to be routed" resolves through the single `ir.net_member_counts()`
+rule. Implement as one `route_state()` in the pcb domain layer returning
+status + issues; `route_complete` and `netlist_drc_clean` both delegate to
+it and collapse to the bool the generic machine wants. **Do not widen the
+shared `bool | None` Evaluator contract** — seven unrelated evaluators
+(`paper_ingested`, `time_past`, `tag_present`, the child-job ones) share it
+and none of them need this.
 
 **Slice 9 (JLCPCB ordering) is the only one not built** — blocked on a
 human action, not engineering: every signed call returns `403 API
@@ -93,6 +121,15 @@ re-probe after the next `/go` deploy.
   caveat when the realizer emits vias.
 - **Layer *roles* are read from the stackup's `role` field**, not yet
   emergent as §Layer ROLE describes.
+- **Layer count is hard-guarded to 4** (`handlers/pcb.py:374`): place/route
+  refuses any non-default stackup, 2-layer explicitly out of v1 scope. It
+  fails *loudly* with a reason and a `next=` hint — the right failure mode,
+  just a narrow scope. **Layer count should ultimately be a user call**:
+  the machine derives the *floor* (minimum feasible count from escape
+  demand and routability), the user picks the actual count at or above it,
+  and a pick below the floor is refused **with the reason** — which part's
+  escape demand forces the extra layer — never silently promoted. 2-layer
+  is dramatically cheaper and is often the right answer.
 
 ### Bugs this build produced that were SILENT — all found by tests or
 measurement, none by review, none crashed or failed type checking

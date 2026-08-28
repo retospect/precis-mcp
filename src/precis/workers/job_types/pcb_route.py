@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
+from precis.pcb.capabilities import capability_for
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import UNSET_LAYER, net_member_counts, segment_points
 from precis.pcb.optimize import OptimizeConfig, digest_toon, optimize
@@ -62,9 +63,22 @@ DESCRIPTION = (
 
 _DEFAULT_ITERS = 3000
 
-#: Placeholder trace width until net-class rules feed the realizer (a
-#: later slice's job, not this one's — see the module docstring's scope).
-_DEFAULT_TRACK_WIDTH_MM = 0.25
+
+def _process_for_stackup(stackup: list[dict[str, Any]]) -> str:
+    """The capability-table process row for a board's layer COUNT —
+    deliberately mirrors :func:`precis.pcb.drc.process_for_stackup`
+    (duplicated, not imported: that module pulls in shapely, a dependency
+    this worker has no other reason to load just for a 4-line lookup).
+    v1 checks 2- or 4-layer boards only, same limit as the DRC engine's own
+    copy."""
+    n = len(stackup)
+    if n == 2:
+        return "2layer"
+    if n == 4:
+        return "4layer"
+    raise ValueError(
+        f"no fab capability row for a {n}-layer stackup — v1 checks 2- or 4-layer boards only"
+    )
 
 
 def _residual_crossings(
@@ -147,7 +161,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     pose = pcb_session.positions(ir)
     ctx.store.pcb_set_pose(pcb_ref_id, pose)
 
-    rres = pcb_realize.realize(ir)
+    try:
+        fab_caps = capability_for(_process_for_stackup(ir.stackup))
+    except ValueError as exc:
+        ctx.record_failure(f"pcb_route: {exc}", failure_class="infra")
+        return
+    realize_config = pcb_realize.RealizeConfig(
+        fab_caps=fab_caps, class_rules=graph.get("net_classes")
+    )
+    rres = pcb_realize.realize(ir, config=realize_config)
     plane_net_ids = {
         n for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) != UNSET_LAYER
     }
@@ -227,7 +249,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "geom": {
                     "segments": list(t.segments),
                     "length_mm": round(t.length_mm, 4),
-                    "width_mm": _DEFAULT_TRACK_WIDTH_MM,
+                    # RealizedTrack.width_mm is already resolved per net
+                    # (current-derived IPC-2221, class-rule override, or
+                    # the fab floor) -- see precis.pcb.rules.
+                    "width_mm": t.width_mm,
                     "is_dogbone": t.is_dogbone,
                 },
             }

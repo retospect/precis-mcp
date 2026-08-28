@@ -35,16 +35,21 @@ boolean. A ``None`` capability field (JLC publishes no figure for that
 process/field — see ``capabilities.py``) means the rule genuinely does not
 apply and is silently skipped, never treated as a violated zero.
 
-**The class-rule clearance rule reads the fab CAPABILITY row, not a
-``pcb_net_classes`` override.** ``trace_spacing_mm`` is JLC's own name for
-copper-to-copper clearance, keyed by *process* (2-layer/4-layer/aluminum —
-the "class" in "class rule" here), mirroring the precedent already set by
-:func:`precis.pcb.escape.compute_gaps`. ``pcb_net_classes.rules`` has no
-established ``clearance_mm``/``trace_width_mm`` schema anywhere else in
-this codebase yet (the migration comment names the fields as *aspirational*
-column content, not a shipped contract) — inventing one here would be
-guessing an API, not reading one. A per-net-class override is a clean
-future hook once that schema is decided elsewhere, not this slice's call.
+**The class-rule clearance rule reads BOTH the fab capability row AND a
+``pcb_net_classes`` override, through ONE resolver.** ``trace_spacing_mm``
+is JLC's own name for copper-to-copper clearance, keyed by *process*
+(2-layer/4-layer/aluminum — the "class" in "class rule" here), mirroring
+the precedent already set by :func:`precis.pcb.escape.compute_gaps` — that
+stays the absolute floor no clearance may go below. A net whose class
+carries an authored ``pcb_net_classes.rules.clearance_mm`` (or whose
+current annotation implies a wider IPC-2221 trace, which in turn implies
+more copper-to-copper room is worth having) resolves through
+:func:`precis.pcb.rules.resolve_net_rules` — the SAME resolver
+:mod:`precis.pcb.realize` uses for track width and :mod:`precis.pcb.cost`
+uses for ``thermal_rise`` — and :func:`check_clearance`'s caller supplies
+the resolved :class:`~precis.pcb.rules.NetRules` per net name via
+``net_rules=``. Passing ``net_rules=None`` (the default) keeps today's
+capability-only behaviour for a caller that hasn't computed one yet.
 
 **Board-edge clearance is two fields, not one** — ``board_edge_clearance_
 routed_mm`` vs. ``..._vcut_mm``. When the caller doesn't know the panel
@@ -92,6 +97,7 @@ from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 from shapely.strtree import STRtree  # type: ignore[import-untyped]
 
 from precis.pcb.capabilities import CapabilityRow
+from precis.pcb.rules import NetRules
 
 Coord = tuple[float, float]
 
@@ -374,29 +380,87 @@ def clearance_pairs_indexed(
     return out
 
 
+def _clearance_detail(
+    value_mm: float,
+    jlc_min: float,
+    required_mm: float | None,
+    process: str,
+    severity: str,
+    margin_mm: float,
+) -> str:
+    """Same two-tier wording as :func:`_margin_detail`, but takes the
+    per-PAIR required clearance directly rather than pulling a single
+    figure off ``capability.house_default`` — the ``check_clearance``
+    threshold is now per-net (``net_rules``), not always the fab's generic
+    house default (module docstring)."""
+    if severity == "error":
+        return (
+            f"copper clearance {value_mm:.3f}mm < JLC min {jlc_min:.3f}mm "
+            f"({process}) — {abs(margin_mm):.3f}mm short of manufacturable"
+        )
+    assert required_mm is not None  # a "warn" only fires when a tier exists
+    return (
+        f"copper clearance {value_mm:.3f}mm — JLC min {jlc_min:.3f}mm, required "
+        f"{required_mm:.3f}mm ({process}) — spends {abs(margin_mm):.3f}mm of headroom"
+    )
+
+
 def check_clearance(
-    model: dict[str, Any], capability: CapabilityRow
+    model: dict[str, Any],
+    capability: CapabilityRow,
+    *,
+    net_rules: dict[str, NetRules] | None = None,
 ) -> list[DrcFinding]:
     """Copper-to-copper clearance, different nets — the class-rule check
     (module docstring: "class" = fab process, per JLC's own naming, read
     off ``capabilities.py``, house-default tier). STRtree-accelerated; see
     :func:`clearance_violations_naive` for the independent reference this
-    is checked against."""
+    is checked against.
+
+    ``net_rules`` (net NAME -> :class:`~precis.pcb.rules.NetRules`, the
+    same resolved rules :mod:`precis.pcb.realize` used to draw the copper)
+    supplies a PER-NET required clearance in place of the flat
+    ``house_default`` — a pair's actual threshold is the STRICTER
+    (larger) of its two nets' own resolved clearance, since a net that
+    wants more room never gets less just because its neighbour wants
+    less. A net absent from ``net_rules`` (or ``net_rules=None``
+    entirely) falls back to the generic ``house_default`` tier, today's
+    behaviour unchanged."""
     field = "trace_spacing_mm"
     jlc_min = capability.jlc_min[field]
     house = capability.house_default.get(field)
     if jlc_min is None:
         return []
-    query_radius = house if house is not None else jlc_min
+    if net_rules:
+        resolved_values = [r.clearance_mm for r in net_rules.values()]
+        query_radius = (
+            max(resolved_values)
+            if resolved_values
+            else (house if house is not None else jlc_min)
+        )
+    else:
+        query_radius = house if house is not None else jlc_min
     pairs = clearance_pairs_indexed(model, required_mm=query_radius)
     items = model.get("copper") or []
     findings: list[DrcFinding] = []
     for i, j, gap in pairs:
-        result = _two_tier(gap, jlc_min, house)
+        a, b = items[i], items[j]
+        required = house
+        if net_rules:
+            candidates = [
+                r.clearance_mm
+                for r in (
+                    net_rules.get(str(a.get("net"))),
+                    net_rules.get(str(b.get("net"))),
+                )
+                if r is not None
+            ]
+            if candidates:
+                required = max(candidates)
+        result = _two_tier(gap, jlc_min, required)
         if result is None:
             continue
         severity, margin = result
-        a, b = items[i], items[j]
         where = (
             f"{a.get('ctype')}[{a.get('net')}] <-> {b.get('ctype')}[{b.get('net')}] "
             f"on {a.get('layer')}"
@@ -406,8 +470,8 @@ def check_clearance(
                 rule="clearance",
                 severity=severity,
                 where=where,
-                detail=_margin_detail(
-                    "copper clearance", gap, capability, field, severity, margin
+                detail=_clearance_detail(
+                    gap, jlc_min, required, capability.process, severity, margin
                 ),
                 objects=(
                     {
@@ -832,11 +896,16 @@ def run_geometric_drc(
     outline: list[list[float]] | None = None,
     courtyards: list[tuple[str, float, float, float]] | None = None,
     panel_type: str | None = None,
+    net_rules: dict[str, NetRules] | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
-    ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run."""
+    ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
+    ``net_rules`` (net name -> resolved :class:`~precis.pcb.rules.NetRules`)
+    threads the per-net clearance override into :func:`check_clearance`
+    only — the other rules stay capability-only (module docstring: they
+    check the fab's own hard limits, not an authored class preference)."""
     findings: list[DrcFinding] = []
-    findings += check_clearance(model, capability)
+    findings += check_clearance(model, capability, net_rules=net_rules)
     findings += check_trace_width(model, capability)
     findings += check_annular_ring(model, capability)
     findings += check_npth_clearance(model, capability)

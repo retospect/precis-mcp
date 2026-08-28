@@ -25,6 +25,7 @@ from precis.pcb.cost import (
     Family,
     TermSpec,
     TermValue,
+    _thermal_rise,
     aggregate_margin,
     crossings_term_for_layer,
     evaluate_cost,
@@ -38,6 +39,7 @@ from precis.pcb.ir import (
     from_graph,
     same_layer_crossing_count,
 )
+from precis.pcb.rules import ipc2221_capacity_a
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
 
@@ -467,3 +469,98 @@ def test_crossings_term_is_nonzero_on_a_realistic_star_decomposed_netlist_with_c
     assert same_layer_crossing_count(ir, 0) == 1  # A's U0-U1 spoke x B's U3-U4
     t = crossings_term_for_layer(ir, 0, Level.L4, CostConfig())
     assert t.raw > 0.0
+
+
+# ── thermal_rise: scored against the ACTUAL resolved width (gr-shaped:
+# the exact bug this closes -- an optimizer reasoning about current while
+# the geometry it scores ignores it) ─────────────────────────────────────
+def _current_net_graph(current_a: float | None, net_class: str = "power"):
+    net: dict = {
+        "name": "N1",
+        "net_class": net_class,
+        "domain": "electrical",
+        "members": [{"refdes": "U1", "pin": "1"}, {"refdes": "U2", "pin": "1"}],
+    }
+    if current_a is not None:
+        net["est_current_a"] = current_a
+    return {"instances": [{"refdes": "U1"}, {"refdes": "U2"}], "nets": [net]}
+
+
+def test_thermal_rise_no_current_annotation_keeps_todays_class_fraction_behaviour():
+    """ "Keep today's behaviour" (task, verbatim): a net with no current
+    annotation must not invent one -- it falls back to the original
+    class-fraction placeholder, unchanged."""
+    ir = from_graph(_current_net_graph(None, "power"), stackup=DEFAULT_STACKUP)
+    config = CostConfig()
+    (t,) = _thermal_rise(ir, Level.L4, config)
+    assert t.raw == pytest.approx(config.thermal_budget_fraction["power"])
+    assert t.is_bound
+
+
+def test_thermal_rise_current_derived_width_reads_at_budget():
+    """No override: the resolver sizes the width to EXACTLY carry the
+    net's current at the configured temperature rise, so scoring that
+    same width against that same current reads ~1.0 (at budget), not a
+    manufactured violation."""
+    ir = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)  # F.Cu -- outer
+    config = CostConfig()
+    (t,) = _thermal_rise(ir, Level.L4, config)
+    assert t.raw == pytest.approx(1.0, rel=1e-6)
+    assert not t.is_bound  # a real derivation, not a placeholder, once layer is known
+
+
+def test_thermal_rise_flags_a_too_narrow_class_override_as_a_violation():
+    """The exact bug this term exists to catch: an authored class rule
+    that under-sizes the copper for the net's actual current must show up
+    as OVER budget, not silently pass."""
+    ir = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)
+    config = CostConfig(class_rules={"power": {"track_width_mm": 0.3}})
+    (t,) = _thermal_rise(ir, Level.L4, config)
+    assert t.raw > 1.0
+
+
+def test_thermal_rise_inner_layer_reads_worse_than_outer_for_a_fixed_width():
+    """The outer-vs-inner split matters here too: with a FIXED (class-
+    override) width independent of layer, the same current reads a
+    higher (worse) fraction on an inner layer than on an outer one --
+    inner copper dissipates heat less readily for the same cross-section."""
+    override = {"power": {"track_width_mm": 1.0}}
+
+    ir_outer = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
+    ir_outer.set_layer(0, 0)  # F.Cu
+    (t_outer,) = _thermal_rise(ir_outer, Level.L4, CostConfig(class_rules=override))
+
+    ir_inner = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
+    ir_inner.set_layer(0, 1)  # In1.Cu
+    (t_inner,) = _thermal_rise(ir_inner, Level.L4, CostConfig(class_rules=override))
+
+    assert t_inner.raw > t_outer.raw
+    expected_outer = 5.0 / ipc2221_capacity_a(1.0, layer_is_outer=True)
+    expected_inner = 5.0 / ipc2221_capacity_a(1.0, layer_is_outer=False)
+    assert t_outer.raw == pytest.approx(expected_outer, rel=1e-6)
+    assert t_inner.raw == pytest.approx(expected_inner, rel=1e-6)
+
+
+def test_thermal_rise_admissible_before_layer_assignment_is_known():
+    """LOWER-bound admissibility, concretely: before L1 (no layer decided
+    yet), the optimistic outer assumption must never overstate the risk
+    once the net's real layer -- here deliberately an INNER one -- is
+    known. Coarse (L0) <= fine (L1+), matching this term's declared
+    BoundDirection.LOWER."""
+    override = {"power": {"track_width_mm": 1.0}}
+    ir = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # the net's real assignment is an INNER layer
+    config = CostConfig(class_rules=override)
+
+    (coarse,) = _thermal_rise(ir, Level.L0, config)
+    (fine,) = _thermal_rise(ir, Level.L4, config)
+    assert coarse.is_bound
+    assert not fine.is_bound
+    assert coarse.raw <= fine.raw + 1e-9
+
+
+def test_thermal_rise_registered_term_direction_is_lower():
+    (spec,) = [t for t in TERMS if t.name == "thermal_rise"]
+    assert spec.direction is BoundDirection.LOWER

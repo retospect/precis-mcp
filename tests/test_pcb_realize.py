@@ -18,6 +18,7 @@ import random
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP, gerber
+from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import (
     CongestionWarning,
@@ -30,6 +31,7 @@ from precis.pcb.realize import (
     tangent_arc_path,
     to_gerber_model,
 )
+from precis.pcb.rules import ipc2221_track_width_mm
 
 # ── the closed-form geometric primitive ──────────────────────────────────
 
@@ -331,3 +333,128 @@ def test_pin_topology_delegates_to_set_side():
     pin_topology(ir, 0, 1)
     assert int(ir.seg_side[0]) == 1
     assert ir.dirty_l2[0]
+
+
+# ── per-net resolved track width (gr-shaped: pcb-usb-c-pd-nano-testboard
+# Gap A — a flat 0.25mm default is a fuse on a 5A rail) ───────────────────
+def _current_net_graph(current_a: float, net_class: str = "power"):
+    return {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "VBUS",
+                "net_class": net_class,
+                "domain": "electrical",
+                "est_current_a": current_a,
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            }
+        ],
+    }
+
+
+def test_realize_derives_track_width_from_current_on_outer_layer():
+    """The exact regression named in the task: 5A must NOT come out at
+    the old flat 0.25mm default -- it must land in the multi-mm range an
+    outer-layer IPC-2221 trace actually needs."""
+    ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)  # F.Cu -- an outer layer
+    result = realize(ir)
+    track = result.tracks[0]
+    expected = ipc2221_track_width_mm(5.0, layer_is_outer=True)
+    assert track.width_mm == pytest.approx(expected, rel=1e-6)
+    assert track.width_mm > 1.0  # nowhere near the 0.25mm fuse
+
+
+def test_realize_inner_layer_gets_a_wider_track_than_outer_for_the_same_current():
+    ir_outer = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
+    ir_outer.set_layer(0, 0)  # F.Cu
+    outer_width = realize(ir_outer).tracks[0].width_mm
+
+    ir_inner = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
+    ir_inner.set_layer(0, 1)  # In1.Cu -- an internal layer
+    inner_width = realize(ir_inner).tracks[0].width_mm
+
+    assert inner_width > outer_width
+
+
+def test_realize_no_current_annotation_falls_back_to_fab_floor_width():
+    """No current annotation -> "keep today's behaviour": the fab
+    capability's house-default width, never an invented current."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)
+    track = realize(ir).tracks[0]
+    cap = capability_for("4layer")
+    assert track.width_mm == pytest.approx(cap.house_default["trace_width_mm"])
+
+
+def test_realize_class_rule_override_beats_current_derivation():
+    ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)
+    config = RealizeConfig(class_rules={"power": {"track_width_mm": 0.8}})
+    track = realize(ir, config=config).tracks[0]
+    assert track.width_mm == pytest.approx(0.8)
+
+
+def test_realize_fab_floor_clamps_a_too_small_class_override():
+    ir = from_graph(
+        _current_net_graph(0.0, net_class="signal"), stackup=DEFAULT_STACKUP
+    )
+    ir.set_layer(0, 0)
+    config = RealizeConfig(class_rules={"signal": {"track_width_mm": 0.001}})
+    track = realize(ir, config=config).tracks[0]
+    cap = capability_for("4layer")
+    jlc_min = cap.jlc_min["trace_width_mm"]
+    assert jlc_min is not None
+    assert track.width_mm == pytest.approx(jlc_min)
+
+
+def test_to_gerber_model_uses_per_track_resolved_width_by_default():
+    ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)
+    result = realize(ir)
+    model = to_gerber_model(
+        result,
+        ir,
+        layers=[layer["name"] for layer in DEFAULT_STACKUP],
+        outline=[[0.0, -5.0], [20.0, -5.0], [20.0, 5.0], [0.0, 5.0]],
+    )
+    width = model["copper"][0]["width_mm"]
+    assert width == pytest.approx(result.tracks[0].width_mm)
+    assert width > 1.0
+
+
+def test_to_gerber_model_explicit_override_still_wins_uniformly():
+    ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)
+    result = realize(ir)
+    model = to_gerber_model(
+        result,
+        ir,
+        layers=[layer["name"] for layer in DEFAULT_STACKUP],
+        outline=[[0.0, -5.0], [20.0, -5.0], [20.0, 5.0], [0.0, 5.0]],
+        track_width_mm=0.33,
+    )
+    assert model["copper"][0]["width_mm"] == pytest.approx(0.33)

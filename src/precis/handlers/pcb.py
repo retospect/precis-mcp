@@ -56,6 +56,7 @@ from precis.pcb import eyes, place, ratsnest
 from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
+from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
@@ -927,11 +928,26 @@ class PcbHandler(Handler):
             for i in design["instances"]
             if i["x"] is not None and i["y"] is not None
         ]
+        net_classes = design.get("net_classes") or {}
+        net_rules: dict[str, NetRules] = {
+            str(n["name"]): resolve_net_rules(
+                str(n.get("net_class") or ""),
+                # Clearance (the only field check_clearance reads off this
+                # map) doesn't depend on layer -- an arbitrary True is fine
+                # here; realize.py is the caller that resolves per-layer.
+                layer_is_outer=True,
+                fab_caps=capability,
+                overrides=net_classes.get(n.get("net_class") or ""),
+                current_a=n.get("est_current_a"),
+            )
+            for n in design["nets"]
+        }
         findings = pcb_drc.run_geometric_drc(
             model,
             capability=capability,
             outline=self._outline_from_features(ref_id),
             courtyards=courtyards,
+            net_rules=net_rules,
         )
         run_id = uuid.uuid4().hex
         self.store.pcb_write_drc_findings(
