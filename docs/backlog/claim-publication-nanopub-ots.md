@@ -59,12 +59,15 @@ Two unmade policy calls:
 
 `nanopub/registry.py` is built and triple-gated (`interactive=True` +
 `--live` + clean preflight); the first real POST is Reto's call, still
-untaken. Two things want to exist first, neither built:
+untaken. Two things want to exist first:
 
-- **Introduction nanopub** — registry trust needs one, plus an
-  `approvesOf` path from an existing agent. Deferrable (rates agents, not
-  claims — what's checkable is the evidence graph), but needed before our
-  signature carries any registry weight.
+- **Introduction nanopub** — **built** (`src/precis/nanopub/intro.py`,
+  `precis nanopub intro`): signs + (`--live`)
+  publishes the key→ORCID declaration, records the trusty URI in the
+  vault. The `approvesOf` path from an existing agent is still open
+  (deferrable — rates agents, not claims); the out-of-band ORCID
+  back-link (adding the trusty URI under 'Websites & social links') is
+  still Reto's pending step, same as the first real registry POST above.
 - **Fingerprint page** — `https://precis.retostamm.com/id/precis` must
   resolve to the public key fingerprints + validity windows, the only
   independent binding a reader has (`signedBy` alone proves nothing).
