@@ -157,6 +157,41 @@ class TestBuildSearchEmbedder:
         assert calls == [store]
 
 
+class TestQuestComputeEnabled:
+    """``meta.compute_lane == "off"`` ticks a quest reason-only; anything
+    else — including a store that can't answer — keeps compute on."""
+
+    @staticmethod
+    def _store(meta: dict[str, Any] | None) -> Any:
+        # Duck-typed stand-in for Store — only get_ref is consulted.
+        ref = None if meta is None else SimpleNamespace(meta=meta)
+        return SimpleNamespace(get_ref=lambda kind, id: ref)
+
+    def test_off_disables(self) -> None:
+        assert (
+            qt._quest_compute_enabled(self._store({"compute_lane": "off"}), 1) is False
+        )
+
+    def test_absent_or_other_value_stays_on(self) -> None:
+        assert qt._quest_compute_enabled(self._store({}), 1) is True
+        assert qt._quest_compute_enabled(self._store({"compute_lane": "on"}), 1) is True
+
+    def test_missing_ref_or_raising_store_degrades_to_on(self) -> None:
+        assert qt._quest_compute_enabled(self._store(None), 1) is True
+        no_get_ref: Any = SimpleNamespace()
+        assert qt._quest_compute_enabled(no_get_ref, 1) is True
+
+    def test_dispatch_threads_the_switch_into_the_tick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stub_tick(monkeypatch, _Outcome())
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[], [811]])
+        monkeypatch.setattr(qt, "_quest_compute_enabled", lambda store, qid: False)
+        qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert len(calls) == 1 and calls[0]["compute"] is False
+
+
 class TestPhaseTick:
     def test_first_tick_dispatches_then_yields_await(
         self, monkeypatch: pytest.MonkeyPatch

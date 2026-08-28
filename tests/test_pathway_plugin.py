@@ -1237,6 +1237,71 @@ def test_seed_job_poll_non_infra_failure_does_not_tag_infra_child_killed(
     assert ctx.open_tag is None
 
 
+def test_seed_job_poll_done_persists_then_finalizes_scratch(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The done branch persists the result (inf-bearing evidence included —
+    the batch-2 shape, docs/backlog/autocatpath-seed-child-killed-
+    shredding.md) and only THEN reclaims the scratch dir via
+    ``finalize_seed_partial_detached``."""
+    from precis_pathway import seed_job
+
+    done = {
+        "state": "done",
+        "result": {
+            "model": "emt",
+            "partial": {
+                "states": {"N": {"evidence": {"min_dist_A": float("inf")}}},
+                "warnings": [],
+            },
+        },
+        "tail": "ok",
+    }
+    monkeypatch.setattr(runner, "poll_seed_partial_detached", lambda handle: done)
+    finalized: list[Any] = []
+    monkeypatch.setattr(runner, "finalize_seed_partial_detached", finalized.append)
+
+    ctx = _FakeCtx(store=pathway_store, params={"seed": 3, "model_index": 1})
+    handle = {"pid": 1, "dir": "/nonexistent-scratch"}
+    terminal = seed_job._poll(ctx, handle)
+
+    assert terminal is True
+    assert ctx.status == "succeeded"
+    partial = ctx.meta_updates["partial"]
+    assert partial["states"]["N"]["evidence"]["min_dist_A"] == float("inf")
+    assert finalized == [handle]
+
+
+def test_seed_job_poll_done_persist_failure_keeps_scratch_for_retry(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persist failure must propagate WITHOUT finalizing the scratch —
+    the surviving envelope is what makes the next poll a retry instead of a
+    false ``infra:child-killed`` terminalization."""
+    from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {
+            "state": "done",
+            "result": {"model": "emt", "partial": {"states": {}, "warnings": []}},
+            "tail": "",
+        },
+    )
+    finalized: list[Any] = []
+    monkeypatch.setattr(runner, "finalize_seed_partial_detached", finalized.append)
+
+    class _PersistBoom(_FakeCtx):
+        def set_meta(self, **fields: Any) -> None:
+            raise RuntimeError("persist failed")
+
+    ctx = _PersistBoom(store=pathway_store, params={"seed": 0, "model_index": 0})
+    with pytest.raises(RuntimeError, match="persist failed"):
+        seed_job._poll(ctx, {"pid": 1, "dir": "/nonexistent-scratch"})
+    assert finalized == []
+
+
 def test_run_seed_partial_subprocess_end_to_end_emt() -> None:
     """The real out-of-process boundary: a fresh child runs one EMT seed and the
     parent parses back the JSON-serialisable partial. Proves the subprocess round
@@ -1475,7 +1540,10 @@ def test_poll_seed_partial_detached_running_then_done(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The happy path: running while gated, done (with the child's result)
-    once released — and the scratch dir is gone afterward."""
+    once released. The scratch dir SURVIVES "done" (a failed persist must be
+    retryable — docs/backlog/autocatpath-seed-child-killed-shredding.md), a
+    re-poll is idempotent, and ``finalize_seed_partial_detached`` reclaims
+    the dir once the caller has persisted."""
     import os
 
     script = _write_stub(tmp_path, _STUB_GATED_OK)
@@ -1492,7 +1560,13 @@ def test_poll_seed_partial_detached_running_then_done(
     assert status["result"]["model_index"] == 1
     assert status["result"]["partial"]["states"]
     assert status["tail"] == ""  # the stub prints nothing
-    assert not os.path.exists(handle["dir"])  # terminal states clean up
+    assert os.path.exists(handle["dir"])  # envelope kept for the persist
+    # Re-poll (the persist-failed retry path): same terminal answer, even
+    # with the child long exited and already reaped.
+    assert runner.poll_seed_partial_detached(handle)["state"] == "done"
+    runner.finalize_seed_partial_detached(handle)
+    assert not os.path.exists(handle["dir"])
+    runner.finalize_seed_partial_detached(handle)  # idempotent
 
 
 def test_poll_seed_partial_detached_done_captures_stdout_tail(

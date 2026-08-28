@@ -851,8 +851,11 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
     Returns one of ``{"state": "running"}``,
     ``{"state": "done", "result": <run_seed_partial output>, "tail": ...}``,
     or ``{"state": "failed", "error": ..., "tail": ..., "infra": <bool, only
-    on the no-envelope branch>}``. Terminal states remove the scratch dir
-    (best-effort) after extracting what they need.
+    on the no-envelope branch>}``. FAILED states remove the scratch dir
+    (best-effort) after extracting what they need; the DONE state leaves it
+    in place until the caller has persisted the result and calls
+    :func:`finalize_seed_partial_detached` — a persist failure must be
+    retryable, not a permanent loss of a finished run.
     """
     import json as _json
     import os
@@ -899,13 +902,19 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
             # seed_job caps at) is now the shared default: the failure
             # branches used to take a terser one, which had it backwards —
             # a successful run's log is the one nobody reads.
-            result = {
+            # NO cleanup here: the caller hasn't persisted the result yet.
+            # Deleting the scratch dir before the DB write once turned a
+            # failed persist into a permanent loss — the next poll found a
+            # dead pid with no envelope and misclassified 48 finished seeds
+            # as ``infra:child-killed``. The envelope stays on disk until
+            # the caller confirms persistence via
+            # :func:`finalize_seed_partial_detached`; re-polling this branch
+            # is idempotent (:func:`_reap_zombie` tolerates ECHILD).
+            return {
                 "state": "done",
                 "result": payload["result"],
                 "tail": _tail_logs(scratch),
             }
-            _cleanup_detached(scratch)
-            return result
         result = {
             "state": "failed",
             "error": str(payload.get("error")),
@@ -933,6 +942,18 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
     }
     _cleanup_detached(scratch, failed=True)
     return result
+
+
+def finalize_seed_partial_detached(handle: DetachedHandle) -> None:
+    """Remove a DONE job's scratch dir — call ONLY after persisting.
+
+    The ``"done"`` branch of :func:`poll_seed_partial_detached` deliberately
+    leaves the scratch dir (and its ``result.json`` envelope) on disk so
+    that a failed DB persist retries on the next poll instead of discarding
+    a finished run. Once the caller's persist has succeeded, this reclaims
+    the disk. Best-effort and idempotent (missing dir is a no-op).
+    """
+    _cleanup_detached(handle["dir"])
 
 
 def kill_seed_partial_detached(handle: DetachedHandle) -> None:

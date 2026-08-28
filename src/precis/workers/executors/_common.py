@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -990,11 +991,32 @@ def append_chunk(
     )
 
 
+def _finite_json(value: Any) -> Any:
+    """Map non-finite floats to ``None``, recursively.
+
+    Python's json accepts ``Infinity``/``NaN`` (``json.load`` produces them,
+    ``json.dumps`` re-emits them), but Postgres ``jsonb`` is strict RFC 8259
+    and REJECTS those tokens — so a compute-derived payload carrying one
+    (e.g. an empty-set ``min()`` seeded with ``inf``) fails the whole write
+    with ``InvalidTextRepresentation``. That once discarded 48 finished GPU
+    seed results and misclassified them as ``infra:child-killed``
+    (docs/backlog/autocatpath-seed-child-killed-shredding.md). ``None`` is
+    the honest jsonb spelling of "no finite value here".
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _finite_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(v) for v in value]
+    return value
+
+
 def set_meta(conn: Connection, ref_id: int, **fields: Any) -> None:
-    """Merge ``fields`` into ``refs.meta``."""
+    """Merge ``fields`` into ``refs.meta`` (non-finite floats → ``null``)."""
     conn.execute(
         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
-        (Jsonb(fields), ref_id),
+        (Jsonb(_finite_json(fields)), ref_id),
     )
 
 

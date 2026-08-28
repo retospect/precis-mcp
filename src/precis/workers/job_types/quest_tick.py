@@ -11,10 +11,13 @@ event-driven** (no cron): each active slice
 4. **yields** until the sims land — and the next slice harvests them and
    proposes again.
 
-Both (1)-(3) ride ``run_quest_tick(compute=True)`` (the same tick the manual CLI
+Both (1)-(3) ride ``run_quest_tick(compute=...)`` (the same tick the manual CLI
 runs); the coordinator only owns the *scheduling*: it waits on the in-flight sims
 and resumes when they are done. That makes the cadence **self-paced by sim
-completion**, not a timer.
+completion**, not a timer. Compute is on by default; a quest with
+``meta.compute_lane == "off"`` ticks reason-only (no sim dispatch, no
+searches) — the operator switch for literature-only quests and for holding
+the compute lane while its infrastructure is unhealthy.
 
 **One tick is several slices.** ``run_quest_tick`` is itself a resumable stage
 machine (see that module's stage banner), and this coordinator drives it
@@ -410,6 +413,31 @@ def _quest_body(store: Store, quest_id: int) -> str | None:
     meta = ref.meta or {}
     val = meta.get(QUEST_BODY_META_KEY)
     return str(val) if val is not None else None
+
+
+#: Quest meta key holding the compute-lane switch. ``"off"`` makes every
+#: armed tick reason-only (``run_quest_tick(compute=False)``); any other
+#: value — or the key's absence — keeps the compute lane on.
+COMPUTE_LANE_META_KEY = "compute_lane"
+
+
+def _quest_compute_enabled(store: Store, quest_id: int) -> bool:
+    """Whether this quest's armed ticks may dispatch compute.
+
+    ``meta.compute_lane == "off"`` disables the lane; everything else —
+    including a missing/exception-raising ``get_ref`` (the common case in
+    unit tests that don't stub it) — degrades to the compute-on default,
+    not a crash. Read fresh each slice, so flipping the key takes effect
+    on the next tick without bouncing the coordinator.
+    """
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return True
+    if ref is None:
+        return True
+    meta = ref.meta or {}
+    return str(meta.get(COMPUTE_LANE_META_KEY) or "") != "off"
 
 
 def _frontier_improved_this_tick(store: Store, quest_id: int) -> bool:
@@ -832,7 +860,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     outcome = run_quest_tick(
         ctx.store,
         quest_id,
-        compute=True,
+        compute=_quest_compute_enabled(ctx.store, quest_id),
         tier=tier,
         search_fn=search_fn,
         job_ref_id=ctx.ref_id,

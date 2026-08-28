@@ -307,6 +307,12 @@ def _poll(ctx: Any, handle: Any) -> bool:
         f"{n_states} state(s), {n_warnings} warning(s).",
     )
     ctx.set_status("succeeded")
+    # Scratch cleanup LAST — the poll's "done" branch leaves the envelope on
+    # disk so that anything raising above (a persist failure) retries on the
+    # next poll instead of losing the finished run (see
+    # runner.finalize_seed_partial_detached). Retried chunks may duplicate;
+    # a duplicated run_log beats a discarded result.
+    runner.finalize_seed_partial_detached(handle)
     return True
 
 
