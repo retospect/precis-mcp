@@ -131,7 +131,13 @@ class PcbIR:
     inst_x: np.ndarray  # float64[n_inst], nan until placed
     inst_y: np.ndarray
     inst_rot: np.ndarray  # degrees
-    inst_fixed: np.ndarray  # bool[n_inst]
+    # Two independent lock bits, not one — `fixed='xy'|'rot'|'both'`
+    # (pcb-guided-place-route Slice 6) needs to lock translation and
+    # rotation separately, so a single bool can't carry it (a 'rot'-only
+    # part must stay translatable). `optimize.py`'s move generators are
+    # what actually enforce these; the IR only carries the bits.
+    inst_fixed_xy: np.ndarray  # bool[n_inst] -- 'xy' or 'both'
+    inst_fixed_rot: np.ndarray  # bool[n_inst] -- 'rot' or 'both'
 
     # ---- L4: metric annotations -----------------------------------------
     seg_gap_capacity: (
@@ -442,8 +448,12 @@ def from_graph(
         inst_x=inst_x,
         inst_y=inst_y,
         inst_rot=np.zeros(n_inst),
-        inst_fixed=np.array(
+        inst_fixed_xy=np.array(
             [(inst.get("fixed") or "") in ("xy", "both") for inst in instances],
+            dtype=bool,
+        ),
+        inst_fixed_rot=np.array(
+            [(inst.get("fixed") or "") in ("rot", "both") for inst in instances],
             dtype=bool,
         ),
         seg_gap_capacity=np.full(n_seg, np.nan),
@@ -687,7 +697,9 @@ class PlaneConnectivity:
 # it becomes a hot loop inside the optimizer).
 
 
-def compute_gap_capacity(ir: PcbIR, *, pitch_mm: float = 0.3) -> None:
+def compute_gap_capacity(
+    ir: PcbIR, *, pitch_mm: float = 0.3, seg_ids: list[int] | None = None
+) -> None:
     """Fill L4 ``seg_gap_capacity`` (strands-that-fit) from L3 positions:
     a segment's binding gap is approximated as the distance from either
     endpoint's instance to the nearest *other* instance, divided by
@@ -695,17 +707,41 @@ def compute_gap_capacity(ir: PcbIR, *, pitch_mm: float = 0.3) -> None:
     positions are unset are left ``nan`` — genuinely undefined, not
     silently zeroed; :mod:`precis.pcb.cost` is what turns "undefined"
     into an optimistic bound rather than this function guessing.
+
+    ``seg_ids=None`` (the default) recomputes every segment, as before.
+    :mod:`precis.pcb.optimize` passes a restricted list so a placement
+    move's gap-capacity recompute stays bounded to the segments that
+    move actually touched, instead of re-scanning the whole board —
+    the locality contract the joint optimizer's per-move budget depends
+    on (see that module's docstring for the full incremental-update
+    reasoning, including :func:`nearest_other_instance`'s ``instance_id``
+    return, which is what lets the optimizer know *which other* segments
+    a move can invalidate).
     """
-    for seg_id in range(ir.n_segments):
-        gap = _nearest_other_instance_gap(ir, seg_id)
-        if gap is not None:
+    ids = range(ir.n_segments) if seg_ids is None else seg_ids
+    for seg_id in ids:
+        found = nearest_other_instance(ir, seg_id)
+        if found is not None:
+            gap, _nearest_id = found
             ir.seg_gap_capacity[seg_id] = math.floor(gap / pitch_mm)
 
 
-def _nearest_other_instance_gap(ir: PcbIR, seg_id: int) -> float | None:
+def nearest_other_instance(ir: PcbIR, seg_id: int) -> tuple[float, int] | None:
+    """The distance from ``seg_id``'s nearer endpoint to the closest
+    *other* (non-endpoint) instance, AND which instance realized that
+    minimum — ``None`` if any position involved is unset (nan).
+
+    The instance id is the extra bit :func:`compute_gap_capacity` doesn't
+    need but :mod:`precis.pcb.optimize` does: caching it lets a placement
+    move's delta recompute exactly the segments whose nearest-instance
+    answer could have changed (the ones incident to the moved instance,
+    plus the ones that *used to point at* it) without re-deriving every
+    segment's gap from scratch — see that module's docstring.
+    """
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
     endpoints = {int(ir.pin_instance[a]), int(ir.pin_instance[b])}
     best: float | None = None
+    best_id = -1
     for e in endpoints:
         ex, ey = float(ir.inst_x[e]), float(ir.inst_y[e])
         if math.isnan(ex) or math.isnan(ey):
@@ -719,7 +755,10 @@ def _nearest_other_instance_gap(ir: PcbIR, seg_id: int) -> float | None:
             d = math.hypot(ex - ox, ey - oy)
             if best is None or d < best:
                 best = d
-    return best
+                best_id = other
+    if best is None:
+        return None
+    return best, best_id
 
 
 def compute_region_density(ir: PcbIR, *, cell_mm: float = 5.0) -> None:

@@ -307,8 +307,19 @@ def evaluate_cost(
 
 
 # ── money terms ──────────────────────────────────────────────────────
-def _board_area(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
-    """Coarse (< L3): sum of a small constant per-instance footprint — an
+def board_area_term(ir: PcbIR, level: Level, config: CostConfig) -> TermValue:
+    """The single ``board_area`` :class:`TermValue` — extracted out of
+    :func:`_board_area`'s list-returning wrapper so
+    :mod:`precis.pcb.optimize` has one call it can re-run after a move
+    without going through the full-registry :func:`evaluate_cost`. This is
+    the one registered term that stays honestly whole-board (a bounding
+    box is not decomposable into per-segment contributions) — the
+    optimizer recomputes it via a cheap vectorized numpy min/max over
+    instance positions rather than this Python loop; see that module's
+    docstring for why that's still within the locality budget in
+    practice.
+
+    Coarse (< L3): sum of a small constant per-instance footprint — an
     admissible lower bound because the true board must be at least large
     enough to hold every component without overlap, and a generously
     *small* per-instance constant only makes that sum smaller still
@@ -318,17 +329,15 @@ def _board_area(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     n = ir.n_instances
     if level < Level.L3:
         area = n * config.default_instance_area_mm2
-        return [
-            TermValue(
-                "board_area",
-                Family.MONEY,
-                "board",
-                area * config.board_area_usd_per_mm2,
-                "fab price scales with panel area; the sum of minimum component footprints "
-                "is the tightest lower bound obtainable before placement exists",
-                is_bound=True,
-            )
-        ]
+        return TermValue(
+            "board_area",
+            Family.MONEY,
+            "board",
+            area * config.board_area_usd_per_mm2,
+            "fab price scales with panel area; the sum of minimum component footprints "
+            "is the tightest lower bound obtainable before placement exists",
+            is_bound=True,
+        )
     xs = [ir.inst_x[i] for i in range(n) if not math.isnan(ir.inst_x[i])]
     ys = [ir.inst_y[i] for i in range(n) if not math.isnan(ir.inst_y[i])]
     if len(xs) < 1:
@@ -337,16 +346,18 @@ def _board_area(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
         w = max(xs) - min(xs)
         h = max(ys) - min(ys)
         area = max(w * h, n * config.default_instance_area_mm2)
-    return [
-        TermValue(
-            "board_area",
-            Family.MONEY,
-            "board",
-            area * config.board_area_usd_per_mm2,
-            "fab price scales with panel area; the placed bounding box is the tightest "
-            "estimate available once positions exist",
-        )
-    ]
+    return TermValue(
+        "board_area",
+        Family.MONEY,
+        "board",
+        area * config.board_area_usd_per_mm2,
+        "fab price scales with panel area; the placed bounding box is the tightest "
+        "estimate available once positions exist",
+    )
+
+
+def _board_area(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    return [board_area_term(ir, level, config)]
 
 
 def _layer_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
@@ -421,8 +432,16 @@ def _pitch_for(ir: PcbIR, net_id: int, config: CostConfig) -> float:
     return config.default_pitch_mm
 
 
-def _gap_capacity(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
-    """**The flagship undefined-!=-zero example.** Before L4, no gap width
+def gap_capacity_term(
+    ir: PcbIR, seg_id: int, level: Level, config: CostConfig
+) -> TermValue:
+    """One segment's ``gap_capacity`` :class:`TermValue` — the body
+    :func:`_gap_capacity` loops over every segment to build; extracted so
+    :mod:`precis.pcb.optimize` can recompute exactly this term for one
+    moved segment (its per-move delta) without re-scanning the board, the
+    same math either way.
+
+    **The flagship undefined-!=-zero example.** Before L4, no gap width
     is known at all — reporting a fraction of 0 (as if the gap were
     infinitely wide) would erase this term from the margin max whenever
     something else is nonzero, exactly the failure mode the backlog
@@ -433,40 +452,36 @@ def _gap_capacity(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue
     architecture targets). Once L4 populates ``seg_gap_capacity`` (a
     strand count), the fraction becomes the real ``demand / capacity``
     (one segment == one strand of demand in v1)."""
-    out: list[TermValue] = []
-    for s in range(ir.n_segments):
-        net_id = int(ir.seg_net[s])
-        pitch = _pitch_for(ir, net_id, config)
-        net_name = str(ir.net_name[net_id])
-        if level < Level.L4 or math.isnan(ir.seg_gap_capacity[s]):
-            bound_capacity = max(1.0, config.assumed_max_gap_mm / pitch)
-            out.append(
-                TermValue(
-                    "gap_capacity",
-                    Family.MARGIN,
-                    net_name,
-                    1.0 / bound_capacity,
-                    "a trace cannot occupy more of a gap than its width allows; this bound assumes "
-                    "the most generous physically plausible gap so it can never overstate congestion",
-                    is_bound=True,
-                )
-            )
-            continue
-        capacity = float(ir.seg_gap_capacity[s])
-        fraction = (
-            1.0 / capacity if capacity > 0 else 10.0
-        )  # no room at all: far over budget, not undefined
-        out.append(
-            TermValue(
-                "gap_capacity",
-                Family.MARGIN,
-                net_name,
-                fraction,
-                "a trace cannot occupy more of a gap than its width allows; measured against the "
-                "actual nearest-obstacle gap once placement exists",
-            )
+    net_id = int(ir.seg_net[seg_id])
+    pitch = _pitch_for(ir, net_id, config)
+    net_name = str(ir.net_name[net_id])
+    if level < Level.L4 or math.isnan(ir.seg_gap_capacity[seg_id]):
+        bound_capacity = max(1.0, config.assumed_max_gap_mm / pitch)
+        return TermValue(
+            "gap_capacity",
+            Family.MARGIN,
+            net_name,
+            1.0 / bound_capacity,
+            "a trace cannot occupy more of a gap than its width allows; this bound assumes "
+            "the most generous physically plausible gap so it can never overstate congestion",
+            is_bound=True,
         )
-    return out
+    capacity = float(ir.seg_gap_capacity[seg_id])
+    fraction = (
+        1.0 / capacity if capacity > 0 else 10.0
+    )  # no room at all: far over budget, not undefined
+    return TermValue(
+        "gap_capacity",
+        Family.MARGIN,
+        net_name,
+        fraction,
+        "a trace cannot occupy more of a gap than its width allows; measured against the "
+        "actual nearest-obstacle gap once placement exists",
+    )
+
+
+def _gap_capacity(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    return [gap_capacity_term(ir, s, level, config) for s in range(ir.n_segments)]
 
 
 def _annotation(net_id: int, ir: PcbIR, config: CostConfig) -> obj.NetAnnotation:
@@ -475,104 +490,140 @@ def _annotation(net_id: int, ir: PcbIR, config: CostConfig) -> obj.NetAnnotation
     return obj.annotation_for(None)
 
 
-def _loop_inductance(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
-    """Only meaningful for connections whose objective vector names a
+def loop_inductance_term(
+    ir: PcbIR, seg_id: int, level: Level, config: CostConfig
+) -> TermValue | None:
+    """One segment's ``loop_inductance`` :class:`TermValue`, or ``None``
+    when this segment's connection carries no loop-inductance objective
+    (most logic nets) — the per-segment body :func:`_loop_inductance`
+    loops over the board to build, extracted so :mod:`precis.pcb.optimize`
+    can recompute exactly this term for one moved segment. Purely local
+    by construction: unlike ``gap_capacity``, this only ever reads
+    ``seg_id``'s own two endpoints, never another instance's position, so
+    a move only ever needs to touch segments incident to it.
+
+    Only meaningful for connections whose objective vector names a
     ``return_net`` (power/ground loop connections — see
     :mod:`precis.pcb.objectives`). Before L3, the coarse bound assumes
     the physically smallest possible loop (about a via's own diameter);
     that is always <= any real placement's loop, so it never overstates
     how much margin is consumed."""
-    out: list[TermValue] = []
-    for s in range(ir.n_segments):
-        net_id = int(ir.seg_net[s])
-        net_class = str(ir.net_class[net_id])
-        # `return_net=net_id` is a v1 placeholder: no PWR/GND pairing table
-        # is wired into the IR yet (out of this slice's scope), so a
-        # segment's own net id stands in for "this class DOES have a
-        # return path" — objectives_for_connection only sets it non-None
-        # for power/ground classes, and this term only checks `is None`,
-        # never the value. Real pairing arrives with net_class rules data.
-        vector, _reason = obj.objectives_for_connection(
-            net_class, str(ir.net_domain[net_id]), return_net=net_id
-        )
-        if vector.return_net is None or vector.low_impedance <= 0.0:
-            continue
-        net_name = str(ir.net_name[net_id])
-        if level < Level.L3:
+    net_id = int(ir.seg_net[seg_id])
+    net_class = str(ir.net_class[net_id])
+    # `return_net=net_id` is a v1 placeholder: no PWR/GND pairing table
+    # is wired into the IR yet (out of this slice's scope), so a
+    # segment's own net id stands in for "this class DOES have a
+    # return path" — objectives_for_connection only sets it non-None
+    # for power/ground classes, and this term only checks `is None`,
+    # never the value. Real pairing arrives with net_class rules data.
+    vector, _reason = obj.objectives_for_connection(
+        net_class, str(ir.net_domain[net_id]), return_net=net_id
+    )
+    if vector.return_net is None or vector.low_impedance <= 0.0:
+        return None
+    net_name = str(ir.net_name[net_id])
+    if level < Level.L3:
+        length_mm = config.min_loop_mm
+        bound = True
+    else:
+        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
+        xa, ya, xb, yb = ir.inst_x[ia], ir.inst_y[ia], ir.inst_x[ib], ir.inst_y[ib]
+        if math.isnan(xa) or math.isnan(xb):
             length_mm = config.min_loop_mm
             bound = True
         else:
-            a, b = int(ir.seg_pin_a[s]), int(ir.seg_pin_b[s])
-            ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
-            xa, ya, xb, yb = ir.inst_x[ia], ir.inst_y[ia], ir.inst_x[ib], ir.inst_y[ib]
-            if math.isnan(xa) or math.isnan(xb):
-                length_mm = config.min_loop_mm
-                bound = True
-            else:
-                length_mm = max(config.min_loop_mm, math.hypot(xa - xb, ya - yb))
-                bound = False
-        nh = length_mm * config.inductance_nh_per_mm * vector.low_impedance
-        out.append(
-            TermValue(
-                "loop_inductance",
-                Family.MARGIN,
-                net_name,
-                nh / config.inductance_budget_nh,
-                "return-path loop inductance grows with pin-to-return separation; this is the "
-                "exact quantity the '2 mm decap folklore' approximates",
-                is_bound=bound,
-            )
-        )
+            length_mm = max(config.min_loop_mm, math.hypot(xa - xb, ya - yb))
+            bound = False
+    nh = length_mm * config.inductance_nh_per_mm * vector.low_impedance
+    return TermValue(
+        "loop_inductance",
+        Family.MARGIN,
+        net_name,
+        nh / config.inductance_budget_nh,
+        "return-path loop inductance grows with pin-to-return separation; this is the "
+        "exact quantity the '2 mm decap folklore' approximates",
+        is_bound=bound,
+    )
+
+
+def _loop_inductance(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    out: list[TermValue] = []
+    for s in range(ir.n_segments):
+        t = loop_inductance_term(ir, s, level, config)
+        if t is not None:
+            out.append(t)
     return out
+
+
+def coupling_candidates(ir: PcbIR, config: CostConfig) -> list[int]:
+    """The segment ids the ``coupling`` term considers at all — position-
+    independent (depends only on net class/annotation, never on
+    placement), so this list is stable across every move in an anneal.
+    :mod:`precis.pcb.optimize` computes it once and reuses it: a move
+    only ever changes *which pairs of these* are close, never the list
+    itself. "Most nets are neither strong aggressors nor sensitive
+    victims" (backlog) — this is what keeps the list itself short."""
+    return [s for s in range(ir.n_segments) if _wants_coupling(ir, s, config)]
+
+
+def coupling_pair_term(
+    ir: PcbIR, sa: int, sb: int, level: Level, config: CostConfig
+) -> TermValue | None:
+    """One candidate pair's ``coupling`` :class:`TermValue`, or ``None``
+    when both segments happen to share a net (not a coupling pair) — the
+    per-pair body :func:`_coupling` loops over every candidate pair to
+    build, extracted so :mod:`precis.pcb.optimize` can recompute exactly
+    the pairs touched by a move (any pair naming a moved segment) instead
+    of the full O(candidates^2) sweep.
+
+    Before L3, the proximity factor is ``coupling_bound_k`` (0.0 by
+    default) — unlike gap_capacity, two specific nets' distance is
+    genuinely unconstrained pre-placement (they may land adjacent or on
+    opposite corners), so no nonzero value could be a safe admissible
+    floor; the risk *class* stays visible to the optimizer through the
+    other margin terms instead (see :data:`CostConfig.coupling_bound_k`).
+    """
+    net_a, net_b = int(ir.seg_net[sa]), int(ir.seg_net[sb])
+    if net_a == net_b:
+        return None
+    ann_a, ann_b = _annotation(net_a, ir, config), _annotation(net_b, ir, config)
+    if level < Level.L3:
+        k = config.coupling_bound_k
+        bound = True
+    else:
+        dist_mm = _segment_distance_mm(ir, sa, sb)
+        if dist_mm is None:
+            k = config.coupling_bound_k
+            bound = True
+        else:
+            k = math.exp(-dist_mm / config.coupling_decay_mm)
+            bound = False
+    value = obj.coupling(ann_a, ann_b, k) + obj.coupling(ann_b, ann_a, k)
+    region = f"{ir.net_name[net_a]}~{ir.net_name[net_b]}"
+    return TermValue(
+        "coupling",
+        Family.MARGIN,
+        region,
+        value / config.coupling_budget,
+        "coupled noise scales with aggressor strength, victim susceptibility and spatial "
+        "proximity together (backlog coupling formula)",
+        is_bound=bound,
+    )
 
 
 def _coupling(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     """Pairwise, but cheap in practice: only connections whose objective
     vector names a nonzero ``low_coupling`` weight (a real aggressor or a
     real victim) enter the candidate list at all — "most nets are neither
-    strong aggressors nor sensitive victims" (backlog). Before L3, the
-    proximity factor is ``coupling_bound_k`` (0.0 by default) — unlike
-    gap_capacity, two specific nets' distance is genuinely unconstrained
-    pre-placement (they may land adjacent or on opposite corners), so no
-    nonzero value could be a safe admissible floor; the risk *class*
-    stays visible to the optimizer through the other margin terms
-    instead (see :data:`CostConfig.coupling_bound_k`)."""
-    candidates = [s for s in range(ir.n_segments) if _wants_coupling(ir, s, config)]
+    strong aggressors nor sensitive victims" (backlog)."""
+    candidates = coupling_candidates(ir, config)
     out: list[TermValue] = []
     for i in range(len(candidates)):
         for j in range(i + 1, len(candidates)):
-            sa, sb = candidates[i], candidates[j]
-            net_a, net_b = int(ir.seg_net[sa]), int(ir.seg_net[sb])
-            if net_a == net_b:
-                continue
-            ann_a, ann_b = (
-                _annotation(net_a, ir, config),
-                _annotation(net_b, ir, config),
-            )
-            if level < Level.L3:
-                k = config.coupling_bound_k
-                bound = True
-            else:
-                dist_mm = _segment_distance_mm(ir, sa, sb)
-                if dist_mm is None:
-                    k = config.coupling_bound_k
-                    bound = True
-                else:
-                    k = math.exp(-dist_mm / config.coupling_decay_mm)
-                    bound = False
-            value = obj.coupling(ann_a, ann_b, k) + obj.coupling(ann_b, ann_a, k)
-            region = f"{ir.net_name[net_a]}~{ir.net_name[net_b]}"
-            out.append(
-                TermValue(
-                    "coupling",
-                    Family.MARGIN,
-                    region,
-                    value / config.coupling_budget,
-                    "coupled noise scales with aggressor strength, victim susceptibility and spatial "
-                    "proximity together (backlog coupling formula)",
-                    is_bound=bound,
-                )
-            )
+            t = coupling_pair_term(ir, candidates[i], candidates[j], level, config)
+            if t is not None:
+                out.append(t)
     return out
 
 

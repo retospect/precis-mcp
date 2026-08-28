@@ -5,6 +5,8 @@ and the graph feasibility checks. No DB.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP
@@ -15,6 +17,7 @@ from precis.pcb.ir import (
     compute_gap_capacity,
     compute_region_density,
     from_graph,
+    nearest_other_instance,
     per_layer_planar,
     plane_connectivity,
     propose_rotation_from_positions,
@@ -377,3 +380,55 @@ def test_compute_region_density_groups_nearby_segments():
     compute_region_density(ir, cell_mm=5.0)
     # N1's two segments (U1-U2, U1-U3) sit in the same small cell -> density >= 1
     assert ir.seg_region_density[0] >= 1.0
+
+
+# ── fixed='xy'|'rot'|'both': two independent lock bits ──────────────────
+def test_from_graph_splits_fixed_xy_and_fixed_rot():
+    graph = {
+        "instances": [
+            {"refdes": "U1", "fixed": "xy"},
+            {"refdes": "U2", "fixed": "rot"},
+            {"refdes": "U3", "fixed": "both"},
+            {"refdes": "U4"},
+        ],
+        "nets": [],
+    }
+    ir = from_graph(graph)
+    assert bool(ir.inst_fixed_xy[0]) and not bool(ir.inst_fixed_rot[0])
+    assert not bool(ir.inst_fixed_xy[1]) and bool(ir.inst_fixed_rot[1])
+    assert bool(ir.inst_fixed_xy[2]) and bool(ir.inst_fixed_rot[2])
+    assert not bool(ir.inst_fixed_xy[3]) and not bool(ir.inst_fixed_rot[3])
+
+
+# ── nearest_other_instance: the id-tracking gap search ───────────────────
+def _place(graph, coords):
+    for i, (x, y) in enumerate(coords):
+        graph["instances"][i].update(x=x, y=y)
+    return graph
+
+
+def test_nearest_other_instance_returns_distance_and_realizing_id():
+    graph = _place(_star_graph(), [(0.0, 0.0), (10.0, 0.0), (0.0, 5.0), (100.0, 100.0)])
+    ir = from_graph(graph)
+    found = nearest_other_instance(ir, 0)  # segment U1-U2 (endpoints 0, 1)
+    assert found is not None
+    gap, nearest_id = found
+    assert nearest_id == 2  # U3 at (0,5) is closer to U1 than U4 is to either endpoint
+    assert gap == pytest.approx(5.0)
+
+
+def test_nearest_other_instance_none_when_position_unset():
+    ir = from_graph(_star_graph())  # no positions at all
+    assert nearest_other_instance(ir, 0) is None
+
+
+def test_compute_gap_capacity_seg_ids_restricts_recompute():
+    graph = _place(_star_graph(), [(0.0, 0.0), (10.0, 0.0), (0.0, 5.0), (100.0, 100.0)])
+    ir = from_graph(graph)
+    compute_gap_capacity(ir, pitch_mm=1.0, seg_ids=[0])
+    assert not math.isnan(ir.seg_gap_capacity[0])
+    assert math.isnan(ir.seg_gap_capacity[1])  # untouched: not in seg_ids
+    # a subsequent unrestricted call still recomputes everything, matching
+    # the pre-existing (seg_ids=None) behaviour.
+    compute_gap_capacity(ir, pitch_mm=1.0)
+    assert not math.isnan(ir.seg_gap_capacity[1])

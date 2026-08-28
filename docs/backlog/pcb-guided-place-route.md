@@ -381,12 +381,21 @@ an optimistic **bound**, never as nothing.
   Board area, layer count, via count, Extended-part fees.
 
 **Aggregation: money ADDS, risk does NOT average away.** Sum the money
-family. Take **max (or a soft-max / p-norm)** over the margin family —
+family. Take **exact max** over the margin family —
 one net at 99 % of its noise budget is a problem even if 500 others sit
 at 5 %, and a sum drowns exactly the signal that matters. (Same
 instinct as "penalize peak region utilization, not variance" in the
 congestion estimator — generalized here, having originally been applied
 only there.)
+**It must be EXACT max, not a soft-max / p-norm** (found on contact,
+slice 6 — this spec previously offered the p-norm as an equal option,
+which was wrong). A p-norm shifts with *every* cached value's relative
+weight, not just the peak, so it is **not locally decomposable** and
+violates the optimizer's locality hard-constraint: no bounded per-move
+delta exists for it. `OptimizeConfig` rejects a non-None `p_norm` at
+construction rather than letting it silently destroy delta correctness.
+A plain max changes only when the peak changes, which a local delta can
+track.
 
 **Convexity IS the hardening schedule** — they are one mechanism, not
 two. Margin penalties are superlinear in budget fraction (~quadratic
