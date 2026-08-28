@@ -281,11 +281,15 @@
 
   // Server-rendered markup dropped in by innerHTML is inert until Alpine
   // and htmx are told about it — the reader shell is one big x-data scope
-  // and the claim body carries hx-get popovers. (Both no-ops if the
-  // library is absent, matching paper-viewer.js::_loadRefs.)
+  // and the claim body carries hx-get popovers. KaTeX needs the same
+  // nudge: base.html.j2 typesets ``.tex-scope`` on DOMContentLoaded and on
+  // ``htmx:afterSwap``, and a plain innerHTML assignment fires neither, so
+  // a grounding quote's $…$ would sit here as raw TeX. (All three no-op if
+  // the library is absent, matching paper-viewer.js::_loadRefs.)
   const afterSwap = node => {
     if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(node);
     if (window.htmx) window.htmx.process(node);
+    if (window.renderTexScopes) window.renderTexScopes(node);
   };
 
   // One loader for every way a pane gets content. Dims the pane while the

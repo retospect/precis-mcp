@@ -128,6 +128,38 @@ def test_an_htmx_request_gets_the_chromeless_fragment(
     assert "np-review" not in full.text
 
 
+def test_a_grounding_tables_math_reaches_the_client_and_gets_typeset(
+    client: TestClient, runtime_with_store
+) -> None:
+    r"""A quoted paper table's inline math survives to the browser as raw
+    TeX inside a ``.tex-scope``, and the workbench typesets it after a swap.
+
+    Server-side rendering deliberately leaves ``$…$`` alone — KaTeX runs in
+    the browser — so the only thing that can typeset a cell is
+    base.html.j2's ``renderTexScopes``, which fires on DOMContentLoaded and
+    on ``htmx:afterSwap``. A pane's plain ``innerHTML`` assignment triggers
+    neither, which left a table of ``$Y_{\rm arm}$`` headers reading as
+    literal TeX on the workbench deep link.
+    """
+    store = _store(runtime_with_store)
+    table = (
+        "| material | $Y_{\\rm arm}$ | $Y_{zig}$ |\n"
+        "| --- | --- | --- |\n"
+        "| graphene | 1.02 | 1.11 |\n"
+    )
+    paper, chunk, _sha = _seed_paper(store, chunk_text=table)
+    hub = _seed_hub(store, "A claim grounded in a table.", paper, chunk)
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    # The recovered table is a real <table>, and the header cell's formula
+    # is passed through verbatim — no <sub>/<em> mangling of the TeX.
+    assert "<table" in resp.text
+    assert "$Y_{\\rm arm}$" in resp.text
+    assert 'class="tex-scope' in resp.text
+    # …and the workbench re-runs KaTeX over whatever it swapped into a pane.
+    assert "window.renderTexScopes(node)" in client.get(f"/nanopub/fi{hub}").text
+
+
 def test_hub_page_shows_state_and_action(
     client: TestClient, runtime_with_store
 ) -> None:
