@@ -162,6 +162,45 @@ def test_pcb_route_widens_a_high_current_net_well_past_the_old_flat_default(
     assert all(w != pytest.approx(0.25) for w in widths)
 
 
+def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) -> None:
+    """End-to-end: ``pcb_copper`` must gain ``ctype='via'`` rows, carrying a
+    layer SPAN (never a scalar ``layer`` inside ``geom``) and a
+    current-derived via count, once a net's route actually changes layer —
+    the exact production gap this task closes (the master backlog: "no via
+    geometry is realized, so every via DRC rule never fires")."""
+    ref_id = _seed(store, "route-via", _DESIGN_HIGH_CURRENT)
+    board_id = store.pcb_ensure_board(ref_id)
+    # Pre-author a layer assignment onto an inner layer (In1.Cu, index 1)
+    # -- iters=1 below keeps the optimizer in its placement-only opening
+    # stage (LAYER_ASSIGN doesn't enter the move mix until 50% through the
+    # schedule -- see optimize.py's DEFAULT_SCHEDULE), so this override
+    # survives the run undisturbed.
+    store.pcb_routes_write(
+        ref_id,
+        board_id,
+        {"VBUS": {"layer_assign": [{"a": "U1.1", "b": "U2.1", "layer": 1}]}},
+    )
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 1, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT geom FROM pcb_copper WHERE board_id = %s AND ctype = 'via'",
+            (board_id,),
+        ).fetchall()
+    assert rows, "expected at least one realized via at the layer transition"
+    for (geom,) in rows:
+        assert "layer" not in geom  # never a scalar layer -- span only
+        assert geom["span"] == ["F.Cu", "In1.Cu"]
+        assert geom["dia_mm"] > 0
+        assert geom["drill_mm"] > 0
+    # VBUS carries a 5A annotation -- a single via cannot carry it, so more
+    # than one via must have been stitched in (via ampacity, not just via
+    # geometry).
+    assert len(rows) > 1
+
+
 def test_pcb_route_persists_sketch_survives_rebuild(store: Store) -> None:
     """The settled topology/layer_assign lands in ``pcb_routes`` keyed by
     (a, b) pin pairs — durable across a fresh IR build, not the ephemeral

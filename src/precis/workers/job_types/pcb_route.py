@@ -257,6 +257,40 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 },
             }
         )
+    for v in rres.vias:
+        db_id = db_net_ids.get(str(ir.net_name[v.net_id]))
+        if db_id is None:
+            continue
+        lo = v.layer_lo if v.layer_lo < len(stackup) else 0
+        hi = v.layer_hi if v.layer_hi < len(stackup) else 0
+        copper_rows.append(
+            {
+                # pcb_copper.layer is NOT NULL, but a via's real layer
+                # membership is its geom["span"] pair, not this column --
+                # a via flashes on every layer it spans, never just one
+                # (the exact prior "scalar layer" bug -- see realize.py's
+                # RealizedVia docstring). This column holds the span's
+                # LOWER layer purely to satisfy the schema; every reader
+                # of via copper (precis.pcb.drc, precis.pcb.gerber) reads
+                # geom["span"], never this column, for a via item.
+                "ctype": "via",
+                "layer": stackup[lo]["name"] if lo < len(stackup) else "F.Cu",
+                "net_id": db_id,
+                "route_id": None,
+                "geom": {
+                    "x": round(v.x, 4),
+                    "y": round(v.y, 4),
+                    # RealizedVia.dia_mm/drill_mm are already resolved via
+                    # the same precis.pcb.rules resolver tracks use.
+                    "dia_mm": v.dia_mm,
+                    "drill_mm": v.drill_mm,
+                    "span": [
+                        stackup[lo]["name"] if lo < len(stackup) else "F.Cu",
+                        stackup[hi]["name"] if hi < len(stackup) else "F.Cu",
+                    ],
+                },
+            }
+        )
     ctx.store.pcb_copper_replace(int(board_id), copper_rows)
 
     ctx.store.pcb_set_pose(
@@ -268,6 +302,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "realized": n_realized,
                 "failed": n_failed,
                 "dangling": n_dangling,
+                "vias": len(rres.vias),
                 "warnings": [w.message() for w in rres.warnings][:20],
             }
         },
@@ -276,7 +311,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "job_summary",
         f"routed {len(rows)} net(s): {n_realized} realized, "
         f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
-        f"route), {len(rres.warnings)} congestion warning(s)\n\n" + digest_toon(result),
+        f"route), {len(rres.vias)} via(s) placed, "
+        f"{len(rres.warnings)} congestion warning(s)\n\n" + digest_toon(result),
     )
 
 

@@ -17,10 +17,15 @@ produces (:func:`precis.pcb.realize.to_gerber_model`) and
 docstring for the exact per-``ctype`` shape). This module never invents a
 second geometry representation for the same board.
 
-**No production caller emits ``ctype='via'`` copper yet** (``realize.py``
-only realizes tracks) — :func:`check_annular_ring` and the via halves of
-:func:`check_clearance`/:func:`check_npth_clearance` are correct and
-covered by synthetic-model tests but never fire on a real board today.
+**``realize.py`` now emits ``ctype='via'`` copper** (2026-08-28, closing
+the master backlog's "no via geometry is realized" gap) — wherever a
+track's routed layer differs from its pads' layer, always carrying
+``span``/``layers``, never a scalar ``layer`` (:class:`~precis.pcb.
+realize.RealizedVia`'s own docstring explains why that distinction is
+load-bearing here). :func:`check_annular_ring` and the via halves of
+:func:`check_clearance`/:func:`check_npth_clearance` — correct and covered
+by synthetic-model tests since this module was written — now have real
+production input to check, not just synthetic fixtures.
 
 **Two-tier margin, not bare pass/fail** (backlog, verbatim: "report the
 margin"). Every rule reads BOTH tiers off :mod:`precis.pcb.capabilities` —
@@ -634,12 +639,31 @@ def clearance_violations_naive(
     """The O(n^2) reference oracle (backlog, verbatim): every same-layer,
     different-net pair of track/via copper ITEMS whose exact minimum
     edge-to-edge gap (the min over every constituent circle/capsule sub-
-    primitive pair — see :func:`_capsule_capsule_gap`) is below
-    ``required_mm``. Pure closed-form math; no shapely, no dependency.
-    Compare against :func:`check_clearance` / :func:`clearance_pairs_
-    indexed` — the property test in ``tests/test_pcb_drc.py`` asserts the
-    two agree on both WHICH pairs violate and the gap number itself, over
-    many randomized track/via-only layouts."""
+    primitive pair sharing a layer — see :func:`_capsule_capsule_gap`) is
+    below ``required_mm``. Pure closed-form math; no shapely, no
+    dependency. Compare against :func:`check_clearance` / :func:`clearance_
+    pairs_indexed` — the property test in ``tests/test_pcb_drc.py`` asserts
+    the two agree on both WHICH pairs violate and the gap number itself,
+    over many randomized track/via-only layouts.
+
+    **Bug found on contact 2026-08-28, fixed here**: this used to compare
+    only each GROUP's FIRST primitive's ``.layer`` to decide "do these two
+    items share a layer at all" (correct for a track, whose every
+    sub-primitive is on the same single layer, or a single-layer via — the
+    only shapes the pre-existing synthetic test fixtures ever exercised).
+    A real multi-layer via (:mod:`precis.pcb.realize`'s own
+    :class:`~precis.pcb.realize.RealizedVia`, e.g. a blind via spanning
+    F.Cu..In1.Cu) breaks that shortcut: two vias with only a PARTIALLY
+    overlapping span (say F.Cu..In1.Cu and In1.Cu..B.Cu) can have first
+    primitives on different layers, so the old check silently skipped the
+    pair even though they DO share In1.Cu and DO clash there. Found by
+    this exact randomized-real-via property test disagreeing with
+    :func:`clearance_pairs_indexed` (which already checked every layer a
+    via spans, per-layer STRtree) — the oracle doing its job on itself.
+    Fixed by checking every (sub-primitive, sub-primitive) pair for a
+    SHARED layer directly, taking the minimum gap over only those pairs
+    that share one, rather than gating the whole group pair on one
+    primitive's layer."""
     prims = _copper_primitives(model)
     by_group: dict[int, list[_Prim]] = {}
     for p in prims:
@@ -649,14 +673,21 @@ def clearance_violations_naive(
     for gi in range(len(groups)):
         for gj in range(gi + 1, len(groups)):
             i, j = groups[gi], groups[gj]
-            pa, pb = by_group[i][0], by_group[j][0]
-            if pa.layer != pb.layer or pa.net == pb.net:
+            group_i, group_j = by_group[i], by_group[j]
+            if group_i[0].net == group_j[0].net:
                 continue
-            gap = min(
-                _capsule_capsule_gap(px, py) for px in by_group[i] for py in by_group[j]
-            )
-            if gap < required_mm - _EPS:
-                out.append((i, j, gap))
+            best_gap: float | None = None
+            for px in group_i:
+                for py in group_j:
+                    if px.layer != py.layer:
+                        continue
+                    gap = _capsule_capsule_gap(px, py)
+                    if best_gap is None or gap < best_gap:
+                        best_gap = gap
+            if best_gap is None:
+                continue  # these two items share no layer at all
+            if best_gap < required_mm - _EPS:
+                out.append((i, j, best_gap))
     return out
 
 

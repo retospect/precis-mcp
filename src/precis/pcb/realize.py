@@ -44,6 +44,18 @@ gap whose strand usage exceeds its capacity produces a legible
 :class:`CongestionWarning` naming the blocking gap, the participants, and
 the clearance arithmetic (backlog acceptance criterion, verbatim).
 
+**Vias are emitted wherever a track's realized layer differs from its pad
+layer** (closing the master backlog's "no via geometry is realized" gap,
+2026-08-28) — see :func:`_vias_for_track` for the exact rule and
+:class:`RealizedVia` for why it ALWAYS carries a layer SPAN (``layer_lo``/
+``layer_hi``), never a scalar layer: a scalar via already made every via
+DRC rule silently blind on every layer once (backlog "Bugs this build
+produced" #5), and this module is precisely where that shape decision is
+made. Via COUNT scales with the net's current annotation
+(:func:`precis.pcb.rules.via_count_for_current`) rather than always
+emitting exactly one — a via array that can't carry its rail's current is
+the same silent-failure class as the missing geometry itself.
+
 **Rip-up primitives**: :func:`rip_net` removes one net's tracks (and its
 warnings) from a result, leaving every other net's geometry
 byte-identical — the regenerate-in-place discipline copper needs.
@@ -64,7 +76,22 @@ from typing import Any
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist
 from precis.pcb.ir import UNSET_LAYER, PcbIR, nearest_other_instance
-from precis.pcb.rules import NetRules, net_current_a_or_none, resolve_net_rules
+from precis.pcb.rules import (
+    NetRules,
+    net_current_a_or_none,
+    resolve_net_rules,
+    via_count_for_current,
+)
+
+#: Every instance's pad(s) are assumed to sit on this stackup layer — the
+#: IR carries no per-instance mount-side field yet (module docstring:
+#: "components live on outer layers in this build"), so index 0 (the first
+#: outer layer, F.Cu in :data:`precis.pcb.DEFAULT_STACKUP`) is the one
+#: fixed reference every via transition is computed against, not a
+#: per-instance lookup that doesn't exist. Revisit once the IR grows a real
+#: per-instance layer/side field (a placement decision, not a realizer
+#: one).
+PAD_LAYER = 0
 
 # ── config + obstacles ───────────────────────────────────────────────────
 
@@ -295,6 +322,32 @@ class RealizedTrack:
     is_dogbone: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class RealizedVia:
+    """One realized via — ALWAYS a layer SPAN (``layer_lo``/``layer_hi``,
+    both stackup-index ints, inclusive, ``layer_lo <= layer_hi``), never a
+    scalar layer (module docstring — this is the exact shape a prior
+    scalar-layer regression made invisible to every layer's clearance
+    candidate set; see ``docs/backlog/pcb-guided-place-route.md``'s "Bugs
+    this build produced" #5). :func:`to_gerber_model` is the ONE place
+    these ints become the ``span`` layer-NAME pair :mod:`precis.pcb.drc`/
+    :mod:`precis.pcb.gerber` read (the IR's own "layers are integer
+    indexes, names are an export concern only" discipline)."""
+
+    seg_id: int
+    net_id: int
+    x: float
+    y: float
+    dia_mm: float
+    drill_mm: float
+    layer_lo: int
+    layer_hi: int
+    #: Which of the segment's two endpoints this via serves ('a' or 'b') —
+    #: a stitched-group provenance/debugging aid only, never consumed
+    #: downstream (not part of the gerber/DRC-facing shape).
+    endpoint: str
+
+
 def _layer_is_outer(ir: PcbIR, layer: int) -> bool:
     """Whether ``layer`` is an OUTER stackup layer (index 0 or the last
     index — F.Cu/B.Cu in :data:`precis.pcb.DEFAULT_STACKUP`; "layers are
@@ -388,6 +441,65 @@ def realize_segment(
     )
 
 
+def _vias_for_track(
+    ir: PcbIR, track: RealizedTrack, config: RealizeConfig
+) -> tuple[RealizedVia, ...]:
+    """Vias for ONE realized track, wherever its routed layer differs from
+    :data:`PAD_LAYER` — "emit a via wherever a net's realized route changes
+    layer" (the master backlog's via-geometry gap), restated at this
+    module's actual per-segment granularity: each :class:`RealizedTrack`
+    carries exactly one layer, so "a route changes layer" here means "this
+    track's layer isn't the layer its own two pads sit on", checked once
+    per track rather than diffed against a neighbouring segment.
+
+    A dog-bone stub is explicitly OUT of scope (module docstring: the
+    via-to-plane connection is ``planes.py``'s job, a later module) and an
+    unassigned (``UNSET_LAYER``) or already-pad-layer track has nothing to
+    transition — both return no vias.
+
+    Sized via the SAME resolver every other consumer uses
+    (:func:`precis.pcb.rules.resolve_net_rules` — never a second sizing
+    path); a fab process publishing no via figures (``via_dia_mm``/
+    ``via_drill_mm`` both ``None``) means genuinely nothing to size
+    against, not an invented default. Via COUNT scales with the net's
+    current annotation (:func:`precis.pcb.rules.via_count_for_current`) —
+    a single via cannot carry a real power rail. The stitched group is
+    spread along a straight line through each endpoint at via-pitch
+    spacing (no real footprint/keepout geometry exists yet to route an
+    array around), one group at the start point and one at the end point —
+    both this track's own two pads need the same layer transition.
+    """
+    if track.is_dogbone or track.layer in (UNSET_LAYER, PAD_LAYER):
+        return ()
+    rules = _resolve_track_rules(ir, track.net_id, track.layer, config)
+    if rules.via_dia_mm is None or rules.via_drill_mm is None:
+        return ()
+    layer_lo, layer_hi = min(PAD_LAYER, track.layer), max(PAD_LAYER, track.layer)
+    current_a = net_current_a_or_none(float(ir.net_current_a[track.net_id]))
+    n = via_count_for_current(current_a, rules.via_dia_mm)
+    pitch = rules.via_dia_mm + config.clearance_mm
+    start = (float(track.segments[0]["start"][0]), float(track.segments[0]["start"][1]))
+    end = (float(track.segments[-1]["end"][0]), float(track.segments[-1]["end"][1]))
+    vias: list[RealizedVia] = []
+    for endpoint, point in (("a", start), ("b", end)):
+        for k in range(n):
+            offset = (k - (n - 1) / 2.0) * pitch
+            vias.append(
+                RealizedVia(
+                    seg_id=track.seg_id,
+                    net_id=track.net_id,
+                    x=point[0] + offset,
+                    y=point[1],
+                    dia_mm=rules.via_dia_mm,
+                    drill_mm=rules.via_drill_mm,
+                    layer_lo=layer_lo,
+                    layer_hi=layer_hi,
+                    endpoint=endpoint,
+                )
+            )
+    return tuple(vias)
+
+
 # ── per-gap capacity accounting + the legible congestion digest ─────────
 
 
@@ -419,6 +531,7 @@ class CongestionWarning:
 @dataclass(frozen=True, slots=True)
 class RealizeResult:
     tracks: tuple[RealizedTrack, ...]
+    vias: tuple[RealizedVia, ...]
     warnings: tuple[CongestionWarning, ...]
 
 
@@ -463,8 +576,8 @@ def realize(
 ) -> RealizeResult:
     """Realize every segment in ``seg_ids`` (default: the whole board) —
     the checkpoint call. Never touches the IR (module docstring); pure
-    function of a snapshot in, geometry + a legible congestion digest
-    out."""
+    function of a snapshot in, geometry + vias + a legible congestion
+    digest out."""
     if obstacles is None:
         obstacles = _default_obstacles(ir, config)
     ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
@@ -473,8 +586,9 @@ def realize(
         for t in (realize_segment(ir, s, obstacles, config) for s in ids)
         if t is not None
     ]
+    vias = [v for t in tracks for v in _vias_for_track(ir, t, config)]
     warnings = _gap_usage(ir, ids, config)
-    return RealizeResult(tuple(tracks), tuple(warnings))
+    return RealizeResult(tuple(tracks), tuple(vias), tuple(warnings))
 
 
 # ── rip-up primitives ─────────────────────────────────────────────────────
@@ -486,16 +600,17 @@ def rip_net(
     net_id: int,
     config: RealizeConfig = RealizeConfig(),
 ) -> RealizeResult:
-    """Remove ``net_id``'s tracks from ``result`` — every OTHER net's
-    :class:`RealizedTrack` is the SAME object afterward (untouched, not
-    recomputed): rip-up = edit a sketch row, never a wholesale
+    """Remove ``net_id``'s tracks (and vias) from ``result`` — every OTHER
+    net's :class:`RealizedTrack` is the SAME object afterward (untouched,
+    not recomputed): rip-up = edit a sketch row, never a wholesale
     re-realize. Congestion warnings are recomputed from the remaining
     segments only (a gap's usage can only go DOWN when a net is ripped,
     never up, so this never invents a new violation — it can only clear
     one that the ripped net was itself party to)."""
     tracks = tuple(t for t in result.tracks if t.net_id != net_id)
+    vias = tuple(v for v in result.vias if v.net_id != net_id)
     warnings = tuple(_gap_usage(ir, [t.seg_id for t in tracks], config))
-    return RealizeResult(tracks, warnings)
+    return RealizeResult(tracks, vias, warnings)
 
 
 def pin_topology(ir: PcbIR, seg_id: int, side: int) -> None:
@@ -514,9 +629,9 @@ def re_realize_segments(
     obstacles: list[Obstacle] | None = None,
     config: RealizeConfig = RealizeConfig(),
 ) -> RealizeResult:
-    """Recompute exactly ``seg_ids``' tracks and merge them into a COPY of
-    ``result`` — every other segment's :class:`RealizedTrack` is the same
-    object, untouched, never re-derived. Congestion warnings are
+    """Recompute exactly ``seg_ids``' tracks (and vias) and merge them into
+    a COPY of ``result`` — every other segment's :class:`RealizedTrack` is
+    the same object, untouched, never re-derived. Congestion warnings are
     recomputed from the merged track set's segment ids (cheap — a
     dict-bucket pass, not a geometry re-derivation) since a re-realized
     segment can change which gap it binds."""
@@ -535,8 +650,16 @@ def re_realize_segments(
     tracks += tuple(
         replaced[s] for s in seg_ids if s in replaced and s not in existing_ids
     )
+    # Vias are keyed off their originating seg_id — drop every via that
+    # belonged to a segment this call re-realized, then recompute fresh
+    # vias for exactly the replaced tracks (a re-realized track's layer,
+    # and therefore its via need, can change). Untouched segments' vias
+    # are left as the same objects, same discipline as their tracks.
+    touched = set(seg_ids)
+    vias = tuple(v for v in result.vias if v.seg_id not in touched)
+    vias += tuple(v for t in replaced.values() for v in _vias_for_track(ir, t, config))
     warnings = tuple(_gap_usage(ir, [t.seg_id for t in tracks], config))
-    return RealizeResult(tracks, warnings)
+    return RealizeResult(tracks, vias, warnings)
 
 
 # ── gerber.py hand-off ────────────────────────────────────────────────────
@@ -559,7 +682,13 @@ def to_gerber_model(
     :mod:`precis.pcb.rules` at realize time (module docstring). Passing an
     explicit ``track_width_mm`` overrides every track uniformly, for a
     caller that genuinely wants one flat width (e.g. a quick sanity export)
-    rather than the per-net resolution."""
+    rather than the per-net resolution.
+
+    Each via becomes a ``"span"`` layer-NAME pair — the SAME two-name shape
+    :mod:`precis.pcb.gerber`'s ``_via_layers``/:mod:`precis.pcb.drc`'s
+    ``_via_layer_names`` both already read — never a ``"layer"`` key
+    (:class:`RealizedVia`'s own docstring: that scalar shape is the exact
+    prior regression this function must not reintroduce)."""
     copper: list[dict[str, Any]] = []
     for t in result.tracks:
         if t.layer < 0 or t.layer >= len(layers):
@@ -573,15 +702,31 @@ def to_gerber_model(
                 "segments": list(t.segments),
             }
         )
+    for v in result.vias:
+        if v.layer_lo < 0 or v.layer_hi >= len(layers):
+            continue  # a layer index out of range for this export -- skip, don't guess
+        copper.append(
+            {
+                "ctype": "via",
+                "net": str(ir.net_name[v.net_id]),
+                "x": v.x,
+                "y": v.y,
+                "dia_mm": v.dia_mm,
+                "drill_mm": v.drill_mm,
+                "span": [layers[v.layer_lo], layers[v.layer_hi]],
+            }
+        )
     return {"layers": layers, "outline": outline, "copper": copper}
 
 
 __all__ = [
+    "PAD_LAYER",
     "CongestionWarning",
     "Obstacle",
     "RealizeConfig",
     "RealizeResult",
     "RealizedTrack",
+    "RealizedVia",
     "pin_topology",
     "re_realize_segments",
     "realize",

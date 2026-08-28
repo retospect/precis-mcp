@@ -259,7 +259,6 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
     )
     drc = pcb.get(id="drc-clean", view="drc")
     assert "no findings" in drc.body
-    assert "no via geometry realized yet" in drc.body
 
 
 def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
@@ -306,10 +305,6 @@ def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
     drc = pcb.get(id="sensor-node", view="drc")
     assert "error" in drc.body
     assert "clearance" in drc.body
-    # No via geometry exists in production yet — the via-related rules
-    # (annular ring, via clearance) never fire; the view must say so
-    # rather than reading as though vias were checked.
-    assert "no via geometry realized yet" in drc.body
 
 
 def test_drc_view_warns_on_a_pcb_net_classes_elevated_clearance_requirement(pcb):
@@ -1026,3 +1021,52 @@ def test_planes_view_empty_then_assigned(pcb, store):
     resp = pcb.get(id="planes-x", view="planes")
     assert "In1.Cu" in resp.body
     assert "N1" in resp.body
+
+
+# ── svg view (pcb-svg-render) ────────────────────────────────────────
+
+
+def test_svg_view_is_discoverable():
+    assert "svg" in PcbHandler.spec.views
+
+
+def test_svg_view_sketch_level_with_no_parts_yet(pcb):
+    # Every put() makes a default board, so "no board yet" isn't reachable
+    # here — this exercises the emptier "no parts to sketch" guard.
+    pcb.put(id="empty-sketch", args={"components": [], "nets": []})
+    resp = pcb.get(id="empty-sketch", view="svg", args={"level": "sketch"})
+    assert "nothing to sketch" in resp.body
+
+
+def test_svg_view_board_level_renders_outline_only_before_any_route(pcb):
+    pcb.put(id="x", args=_CROSSED)
+    resp = pcb.get(id="x", view="svg")
+    assert resp.body.strip().startswith("<?xml")
+    assert "<svg" in resp.body and "</svg>" in resp.body
+    assert "viewBox" in resp.body
+    # no op='route' has run yet -> pcb_copper is empty, board render is
+    # outline + scale bar only, never an error.
+    assert 'class="scale-bar"' in resp.body
+
+
+def test_svg_view_sketch_level_renders_placed_components(pcb):
+    pcb.put(id="x2", args=_CROSSED)
+    resp = pcb.get(id="x2", view="svg", args={"level": "sketch"})
+    assert "<svg" in resp.body
+    assert "A" in resp.body and "B" in resp.body  # refdes labels
+
+
+def test_svg_view_layers_and_include_args_accepted(pcb):
+    pcb.put(id="x3", args=_CROSSED)
+    resp = pcb.get(
+        id="x3",
+        view="svg",
+        args={"layers": ["F.Cu"], "include": ["outline"]},
+    )
+    assert "<svg" in resp.body
+
+
+def test_svg_view_bad_level_is_bad_input(pcb):
+    pcb.put(id="x4", args=_CROSSED)
+    with pytest.raises(BadInput):
+        pcb.get(id="x4", view="svg", args={"level": "nonsense"})

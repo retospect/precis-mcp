@@ -38,13 +38,26 @@ resolver INPUT, never inferred here, because layer identity is IR state
 this module doesn't own (module docstring precedent set by ``ir.py``'s own
 "layers are integer indexes" discipline).
 
-**Via sizing is a field on :class:`NetRules`, not yet a resolved value.**
-No via geometry is realized anywhere in this build (see the master
-backlog's "Known-inert" section), so there is nothing to size a via
-AGAINST yet — ``via_dia_mm``/``via_drill_mm`` are populated from the fab
-capability floor only (no override tier), shaped so the task that adds via
-geometry extends the SAME resolution order rather than inventing a second
-resolver.
+**Via sizing is a field on :class:`NetRules`** — ``via_dia_mm``/
+``via_drill_mm`` are populated from the fab capability floor only (no
+override tier yet; a ``pcb_net_classes.rules`` via-size override is future
+work, not needed for the realizer to stop being blind to vias entirely).
+:mod:`precis.pcb.realize` is the first production caller (2026-08-28,
+closing the master backlog's "Known-inert" via-geometry gap) — it extends
+this SAME resolution order rather than inventing a second resolver.
+
+**Via AMPACITY is a separate question from via SIZE**, answered by
+:func:`via_capacity_a`/:func:`via_count_for_current` below: a via's
+plated-drill diameter says how big a hole gets drilled, not how much
+current its barrel can carry, and a single via cannot carry a real power
+rail (backlog, verbatim: "a 0.3 mm via carries ~1-2 A, so a 10 A rail needs
+an array"). This is a deliberately conservative HEURISTIC, not an IPC-2221
+derivation — the plating thickness a real capacity formula needs isn't a
+store column anywhere in this build, unlike trace width's copper-weight
+figure — scaled linearly off the backlog's own reference point, at the LOW
+end of its quoted 1-2 A range (never the high end: a via array that can't
+carry its rail is the exact silent-failure class this module exists to
+close, not one to risk re-introducing via an optimistic constant).
 """
 
 from __future__ import annotations
@@ -128,6 +141,45 @@ def ipc2221_capacity_a(
     width_mil = width_mm / _MM_PER_MIL
     area_mil2 = width_mil * copper_oz * _COPPER_MIL_PER_OZ
     return k * temp_rise_c**0.44 * area_mil2**0.725
+
+
+#: The backlog's own reference point (module docstring, verbatim: "a
+#: 0.3 mm via carries ~1-2 A") — :data:`VIA_REFERENCE_CAPACITY_A` is
+#: deliberately the LOW end of that range, never the midpoint or high end.
+VIA_REFERENCE_DIA_MM = 0.3
+VIA_REFERENCE_CAPACITY_A = 1.0
+
+
+def via_capacity_a(via_dia_mm: float) -> float:
+    """A single plated via's CONSERVATIVE current-carrying capacity (module
+    docstring's ampacity-vs-size distinction) — linear in diameter from the
+    backlog's own reference point (a via barrel's copper cross-section, at
+    fixed plating thickness, is proportional to its circumference, i.e. its
+    diameter). Not a real IPC-2221-grade derivation; a documented,
+    intentionally-conservative heuristic so an under-vias power rail is
+    caught rather than silently accepted. ``via_dia_mm <= 0`` returns
+    ``0.0`` (nothing to size against) rather than a negative/undefined
+    capacity."""
+    if via_dia_mm <= 0.0:
+        return 0.0
+    return via_dia_mm / VIA_REFERENCE_DIA_MM * VIA_REFERENCE_CAPACITY_A
+
+
+def via_count_for_current(current_a: float | None, via_dia_mm: float) -> int:
+    """How many vias, stitched in parallel, ``current_a`` needs against a
+    single via of ``via_dia_mm``'s conservative capacity
+    (:func:`via_capacity_a`) — always >= 1, never 0 (a net that needs a via
+    at all needs at least one). ``current_a=None`` (or non-positive — no
+    usable current annotation) returns 1, the same "keep today's minimal
+    behaviour" default :func:`resolve_net_rules` uses for an absent current
+    annotation elsewhere in this module — never a silently-invented
+    current."""
+    if current_a is None or current_a <= 0.0:
+        return 1
+    capacity = via_capacity_a(via_dia_mm)
+    if capacity <= 0.0:
+        return 1
+    return max(1, math.ceil(current_a / capacity))
 
 
 def _fab_floor(capability: CapabilityRow, field: str, fallback: float) -> float:
@@ -226,9 +278,13 @@ def net_current_a_or_none(value: float | None) -> float | None:
 __all__ = [
     "IPC2221_K_EXTERNAL",
     "IPC2221_K_INTERNAL",
+    "VIA_REFERENCE_CAPACITY_A",
+    "VIA_REFERENCE_DIA_MM",
     "NetRules",
     "ipc2221_capacity_a",
     "ipc2221_track_width_mm",
     "net_current_a_or_none",
     "resolve_net_rules",
+    "via_capacity_a",
+    "via_count_for_current",
 ]

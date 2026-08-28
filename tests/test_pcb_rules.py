@@ -17,10 +17,14 @@ from precis.pcb.capabilities import capability_for
 from precis.pcb.rules import (
     IPC2221_K_EXTERNAL,
     IPC2221_K_INTERNAL,
+    VIA_REFERENCE_CAPACITY_A,
+    VIA_REFERENCE_DIA_MM,
     ipc2221_capacity_a,
     ipc2221_track_width_mm,
     net_current_a_or_none,
     resolve_net_rules,
+    via_capacity_a,
+    via_count_for_current,
 )
 
 _CAP4 = capability_for("4layer")
@@ -175,6 +179,51 @@ def test_resolve_net_rules_via_fields_are_populated_from_fab_floor():
     rules = resolve_net_rules("power", layer_is_outer=True, fab_caps=_CAP4)
     assert rules.via_dia_mm is not None and rules.via_dia_mm > 0
     assert rules.via_drill_mm is not None and rules.via_drill_mm > 0
+
+
+# ── via ampacity: via_capacity_a / via_count_for_current ─────────────────
+
+
+def test_via_capacity_a_matches_the_reference_point_exactly():
+    assert via_capacity_a(VIA_REFERENCE_DIA_MM) == pytest.approx(
+        VIA_REFERENCE_CAPACITY_A
+    )
+
+
+def test_via_capacity_a_is_linear_in_diameter():
+    assert via_capacity_a(0.6) == pytest.approx(2 * via_capacity_a(0.3))
+
+
+def test_via_capacity_a_non_positive_diameter_is_zero():
+    assert via_capacity_a(0.0) == 0.0
+    assert via_capacity_a(-0.1) == 0.0
+
+
+def test_via_count_for_current_no_annotation_defaults_to_one():
+    assert via_count_for_current(None, 0.4) == 1
+    assert via_count_for_current(0.0, 0.4) == 1
+    assert via_count_for_current(-1.0, 0.4) == 1
+
+
+def test_via_count_for_current_a_single_via_suffices_for_a_small_current():
+    # via_capacity_a(0.4) ~= 1.33A -- 0.5A comfortably fits one via.
+    assert via_count_for_current(0.5, 0.4) == 1
+
+
+def test_via_count_for_current_scales_up_for_a_real_power_rail():
+    """The exact regression this task exists to prevent: a 5A rail must
+    NOT be assigned a single via — a single via cannot carry it."""
+    dia = 0.4
+    capacity = via_capacity_a(dia)
+    n = via_count_for_current(5.0, dia)
+    assert n > 1
+    assert n * capacity >= 5.0  # the stitched group's total capacity covers the draw
+    assert n == math.ceil(5.0 / capacity)
+
+
+def test_via_count_for_current_never_below_one():
+    for current in (0.001, 0.1, 1.0, 100.0):
+        assert via_count_for_current(current, 0.4) >= 1
 
 
 # ── net_current_a_or_none ────────────────────────────────────────────────

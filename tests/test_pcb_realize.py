@@ -21,6 +21,7 @@ from precis.pcb import DEFAULT_STACKUP, gerber
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import (
+    PAD_LAYER,
     CongestionWarning,
     Obstacle,
     RealizeConfig,
@@ -31,7 +32,11 @@ from precis.pcb.realize import (
     tangent_arc_path,
     to_gerber_model,
 )
-from precis.pcb.rules import ipc2221_track_width_mm
+from precis.pcb.rules import (
+    ipc2221_track_width_mm,
+    via_capacity_a,
+    via_count_for_current,
+)
 
 # ── the closed-form geometric primitive ──────────────────────────────────
 
@@ -444,6 +449,160 @@ def test_to_gerber_model_uses_per_track_resolved_width_by_default():
     width = model["copper"][0]["width_mm"]
     assert width == pytest.approx(result.tracks[0].width_mm)
     assert width > 1.0
+
+
+# ── via geometry: emitted at layer transitions, spanned + sized correctly
+def _two_pin_graph():
+    return {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                ],
+            }
+        ],
+    }
+
+
+def test_realize_no_via_when_track_stays_on_pad_layer():
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, PAD_LAYER)
+    result = realize(ir)
+    assert result.vias == ()
+
+
+def test_realize_no_via_when_layer_is_unassigned():
+    """A segment with no L1 layer assignment yet (UNSET_LAYER) has nothing
+    to transition -- must not emit a via."""
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    result = realize(ir)
+    assert result.vias == ()
+
+
+def test_realize_no_via_for_a_dogbone_stub():
+    """The plane-served dog-bone stub's via-to-plane connection is
+    planes.py's job (module docstring) -- not this task's scope."""
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.promote_plane(0, 1)  # In1.Cu
+    result = realize(ir)
+    assert result.tracks[0].is_dogbone
+    assert result.vias == ()
+
+
+def test_realize_emits_a_via_at_a_layer_transition():
+    """The exact gap this task closes: a segment realized on a
+    non-pad layer must get vias at BOTH its endpoints."""
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # In1.Cu -- not PAD_LAYER
+    result = realize(ir)
+    assert result.vias
+    endpoints = {v.endpoint for v in result.vias}
+    assert endpoints == {"a", "b"}
+    for v in result.vias:
+        assert v.net_id == 0
+        assert v.seg_id == 0
+
+
+def test_realize_via_span_covers_only_the_transitioned_layers():
+    """Span correctness: a via between F.Cu (pad layer) and In1.Cu must
+    NOT claim to reach In2.Cu/B.Cu -- a blind via must not appear on
+    layers it doesn't actually span (the exact prior scalar-layer bug's
+    consequence, restated as a span-boundary check)."""
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # In1.Cu
+    result = realize(ir)
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+    model = to_gerber_model(
+        result,
+        ir,
+        layers=layers,
+        outline=[[0.0, -5.0], [20.0, -5.0], [20.0, 5.0], [0.0, 5.0]],
+    )
+    vias = [c for c in model["copper"] if c["ctype"] == "via"]
+    assert vias
+    for v in vias:
+        assert "layer" not in v  # never a scalar layer -- span/layers only
+        assert v["span"] == ["F.Cu", "In1.Cu"]
+        assert "In2.Cu" not in v["span"] and "B.Cu" not in v["span"]
+
+
+def test_realize_via_span_a_through_via_when_transitioning_to_the_far_outer_layer():
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 3)  # B.Cu -- the far outer layer, still != PAD_LAYER
+    result = realize(ir)
+    assert result.vias
+    for v in result.vias:
+        assert v.layer_lo == 0
+        assert v.layer_hi == 3
+
+
+def test_realize_via_sized_via_the_shared_resolver():
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)
+    config = RealizeConfig(fab_caps=capability_for("4layer"))
+    result = realize(ir, config=config)
+    assert result.vias
+    expected_dia = config.fab_caps.house_default.get(
+        "via_diameter_mm"
+    ) or config.fab_caps.jlc_min.get("via_diameter_mm")
+    for v in result.vias:
+        assert v.dia_mm == pytest.approx(expected_dia)
+        assert v.drill_mm is not None and v.drill_mm > 0
+
+
+def test_realize_via_count_scales_with_net_current():
+    """A single via cannot carry a real power rail -- the current-derived
+    stitched-group requirement."""
+    ir = from_graph(_current_net_graph(5.0, net_class="power"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # force a layer transition so vias are emitted
+    config = RealizeConfig(fab_caps=capability_for("4layer"))
+    result = realize(ir, config=config)
+    assert result.vias
+    dia = result.vias[0].dia_mm
+    expected_n = via_count_for_current(5.0, dia)
+    assert expected_n > 1  # sanity: 5A genuinely needs more than one via
+    per_endpoint = {"a": 0, "b": 0}
+    for v in result.vias:
+        per_endpoint[v.endpoint] += 1
+    assert per_endpoint == {"a": expected_n, "b": expected_n}
+    assert expected_n * via_capacity_a(dia) >= 5.0
+
+
+def test_realize_via_count_defaults_to_one_with_no_current_annotation():
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)
+    result = realize(ir)
+    per_endpoint = {"a": 0, "b": 0}
+    for v in result.vias:
+        per_endpoint[v.endpoint] += 1
+    assert per_endpoint == {"a": 1, "b": 1}
+
+
+def test_rip_net_removes_its_vias_too():
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)
+    result = realize(ir)
+    assert result.vias
+    ripped = rip_net(ir, result, net_id=0)
+    assert ripped.vias == ()
+
+
+def test_re_realize_segments_recomputes_vias_for_the_replaced_segment():
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)
+    result = realize(ir)
+    assert result.vias
+    ir.set_layer(0, PAD_LAYER)  # no longer a layer transition
+    updated = re_realize_segments(ir, result, [0])
+    assert updated.vias == ()
 
 
 def test_to_gerber_model_explicit_override_still_wins_uniformly():

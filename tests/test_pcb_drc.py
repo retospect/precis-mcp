@@ -17,8 +17,10 @@ from typing import Any
 
 import pytest
 
-from precis.pcb import drc
+from precis.pcb import DEFAULT_STACKUP, drc
 from precis.pcb.capabilities import capability_for
+from precis.pcb.ir import from_graph
+from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
 from precis.pcb.rules import NetRules
 
 _CAP4 = capability_for("4layer")
@@ -215,6 +217,43 @@ def test_check_annular_ring_fires_and_stays_quiet():
     findings = drc.check_annular_ring(model, _CAP4)
     assert len(findings) == 1
     assert findings[0].severity == "error"
+
+
+def test_check_annular_ring_fires_on_a_real_realized_via():
+    """The exact gap this task closes: check_annular_ring was correct but
+    had ZERO production input before realize.py emitted via geometry (the
+    master backlog's own documented gap). Run it against REAL realize.py
+    output — not the synthetic ``_via`` dict fixture above — and confirm
+    it actually fires now."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "SIG",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # In1.Cu -- a layer transition, forces vias
+    result = realize(ir, config=RealizeConfig(fab_caps=_CAP4))
+    assert result.vias  # sanity: this task's realize.py change actually produced vias
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+    model = to_gerber_model(
+        result, ir, layers=layers, outline=[[0, -5], [20, -5], [20, 5], [0, 5]]
+    )
+    findings = drc.check_annular_ring(model, _CAP4)
+    # The fab-floor via_diameter_mm/drill_mm pairing (0.4/0.25mm, house
+    # default) rings at (0.4-0.25)/2 = 0.075mm, below this process's own
+    # jlc_min (0.15mm) -- so a default-sized via is genuinely unmanufacturable
+    # per capabilities.py's own published figures, and the finding must fire.
+    assert findings
+    assert all(f.severity == "error" for f in findings)
 
 
 def test_check_annular_ring_none_field_never_crashes():
@@ -452,6 +491,73 @@ def test_clearance_oracle_matches_strtree_engine_over_random_layouts():
         total_violations += len(naive)
     # sanity: the randomized generator actually produced violations to compare
     assert total_violations > 20
+
+
+def _random_real_board_model(
+    rng: random.Random, *, n_nets: int, span: float
+) -> dict[str, Any]:
+    """A REAL board run through realize.py — instances, nets, some segments
+    forced onto a non-pad layer so realize.py emits real
+    :class:`~precis.pcb.realize.RealizedVia` objects, converted through the
+    production :func:`~precis.pcb.realize.to_gerber_model` hand-off — NOT
+    the synthetic ``_via`` dict helper the rest of this file uses. The
+    randomized oracle-agreement property must exercise real vias, per this
+    task's own requirement (the master backlog's via-geometry gap)."""
+    instances: list[dict[str, Any]] = []
+    nets: list[dict[str, Any]] = []
+    for i in range(n_nets):
+        a_ref, b_ref = f"U{2 * i}", f"U{2 * i + 1}"
+        instances.append(
+            {"refdes": a_ref, "x": rng.uniform(0, span), "y": rng.uniform(0, span)}
+        )
+        instances.append(
+            {"refdes": b_ref, "x": rng.uniform(0, span), "y": rng.uniform(0, span)}
+        )
+        nets.append(
+            {
+                "name": f"N{i}",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": a_ref, "pin": "1"},
+                    {"refdes": b_ref, "pin": "1"},
+                ],
+            }
+        )
+    ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
+    for seg_id in range(ir.n_segments):
+        ir.set_layer(seg_id, rng.choice([0, 1, 2, 3]))
+    result = realize(ir, config=RealizeConfig(clearance_mm=0.15, fab_caps=_CAP4))
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+    outline = [[0.0, 0.0], [span, 0.0], [span, span], [0.0, span]]
+    return to_gerber_model(result, ir, layers=layers, outline=outline)
+
+
+def test_clearance_oracle_matches_strtree_engine_on_real_realized_vias():
+    """The randomized oracle-agreement property, but over REAL production
+    geometry (realize.py's actual vias via to_gerber_model), closing the
+    task's own requirement that this test exercise real vias, not just the
+    synthetic ``_via`` fixture the rest of this file uses."""
+    rng = random.Random(4242)
+    required_mm = 0.2
+    total_vias = 0
+    for trial in range(40):
+        model = _random_real_board_model(rng, n_nets=rng.randint(3, 6), span=6.0)
+        total_vias += sum(1 for c in model["copper"] if c["ctype"] == "via")
+        naive = {
+            (i, j): gap
+            for i, j, gap in drc.clearance_violations_naive(
+                model, required_mm=required_mm
+            )
+        }
+        indexed = {
+            (i, j): gap
+            for i, j, gap in drc.clearance_pairs_indexed(model, required_mm=required_mm)
+        }
+        assert set(naive) == set(indexed), (trial, set(naive) ^ set(indexed))
+        for key, gap in naive.items():
+            assert gap == pytest.approx(indexed[key], abs=1e-4)
+    assert total_vias > 20  # sanity: real vias were actually produced and exercised
 
 
 def test_clearance_oracle_matches_on_dense_close_layout():

@@ -21,7 +21,9 @@ pixels. The verbs map onto the seven-verb surface:
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
-  'feasibility'|'route-status'|'congestion'|'planes'``); or an *export*
+  'feasibility'|'route-status'|'congestion'|'planes'``); ``view='svg'`` — a
+  publication-quality vector figure (``args={'level':'board'|'sketch'}``,
+  see :mod:`precis.pcb.svg`); or an *export*
   (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'`` writes a JLCPCB fab
   artifact; ``view='route'`` runs the Freerouting place↔route round-trip,
   the demoted escape hatch — :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
@@ -55,6 +57,7 @@ from precis.pcb import export as pcb_export
 from precis.pcb import eyes, place, ratsnest
 from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
+from precis.pcb import svg as pcb_svg
 from precis.pcb.capabilities import capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.protocol import Handler, KindSpec
@@ -86,6 +89,10 @@ _STATUS_VIEWS = ("route-status",)
 #: read-side: congestion warnings from the latest ``op='route'`` run, and
 #: authored plane assignments.
 _SESSION_VIEWS = ("congestion", "planes")
+#: pcb-svg-render — publication-quality vector figures off the same
+#: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
+#: rubber-band sketch off the IR. See :meth:`PcbHandler._render_svg`.
+_RENDER_VIEWS = ("svg",)
 _OTHER_VIEWS = ("links",)
 _VIEWS = (
     *_PROBE_VIEWS,
@@ -93,6 +100,7 @@ _VIEWS = (
     *_ROUTE_VIEWS,
     *_STATUS_VIEWS,
     *_SESSION_VIEWS,
+    *_RENDER_VIEWS,
     *_OTHER_VIEWS,
 )
 
@@ -122,7 +130,9 @@ class PcbHandler(Handler):
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
-            "'congestion'|'planes'), or an export (view='bom'|'cpl'|'netlist'|"
+            "'congestion'|'planes'), a vector figure (view='svg', "
+            "args={'level':'board'|'sketch','layers':[...],'include':[...]}), "
+            "or an export (view='bom'|'cpl'|'netlist'|"
             "'dsn'|'mechanical' writes a JLCPCB fab artifact; view='route' runs "
             "the demoted Freerouting escape hatch), all with args={...}; "
             "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
@@ -512,6 +522,8 @@ class PcbHandler(Handler):
             return self._render_planes(ref_id)
         if view == "drc":
             return self._render_drc(ref_id)
+        if view == "svg":
+            return self._render_svg(ref_id, args)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -955,11 +967,7 @@ class PcbHandler(Handler):
         )
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
-        head = (
-            f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)\n"
-            "(no via geometry realized yet — annular-ring/via-clearance "
-            "rules never fire)"
-        )
+        head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
         if not findings:
             return Response(body=head + "\n— no findings ✓")
         rows = [
@@ -979,6 +987,68 @@ class PcbHandler(Handler):
                 rows, schema=["severity", "rule", "where", "margin_mm", "detail"]
             )
         )
+
+    # ── SVG render (pcb-svg-render) ─────────────────────────────────────
+    def _render_svg(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Publication-quality vector figure (:mod:`precis.pcb.svg`).
+        ``args.level='board'`` (default) — realized copper (L5): outline +
+        tracks/vias/pours off ``pcb_copper``, the same model shape
+        :mod:`precis.pcb.gerber` writes from. **Pads and silkscreen are
+        never included here** — the store has no data source for either
+        yet (no resolved, instance-transformed pad geometry anywhere in
+        this codebase, and no silkscreen table at all; see
+        :mod:`precis.pcb.svg`'s module docstring). ``args.level='sketch'``
+        — the L3 rubber-band sketch (placed components + straight
+        connections, layer-coloured wherever a persisted
+        ``pcb_routes.layer_assign`` says so). ``args.layers`` restricts a
+        board render to a layer-name subset; ``args.include`` further
+        restricts to a subset of :data:`precis.pcb.svg.DEFAULT_INCLUDE`.
+        Returns the raw SVG text — never written to disk (this is an
+        inline "eye", not an exporter)."""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        level = str(args.get("level") or "board").strip().lower()
+
+        if level == "sketch":
+            graph = self.store.pcb_graph(ref_id)
+            if not graph["instances"]:
+                return Response(
+                    body="no parts on this design yet — nothing to sketch\n\n"
+                    "Next: put(kind='pcb', id='slug', args={'components':[...]})"
+                )
+            ir = pcb_session.build_ir(graph)
+            pcb_session.apply_route_overrides(ir, self.store.pcb_routes_get(ref_id))
+            return Response(
+                body=pcb_svg.render_sketch(ir, title=f"{slug} — sketch (L3)")
+            )
+        if level != "board":
+            raise BadInput(
+                f"view='svg' args.level={level!r} not recognized",
+                options=["board", "sketch"],
+            )
+
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        if board is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        layer_names = [str(layer.get("name")) for layer in board["stackup"]]
+        model: dict[str, Any] = {
+            "layers": layer_names,
+            "outline": self._outline_from_features(ref_id),
+            "copper": self.store.pcb_copper_list(int(board["board_id"])),
+        }
+        raw_layers = args.get("layers")
+        raw_include = args.get("include")
+        svg_text = pcb_svg.render_board(
+            model,
+            layers=[str(x) for x in raw_layers] if raw_layers else None,
+            include={str(x) for x in raw_include} if raw_include else None,
+            title=f"{slug} — board (L5)",
+        )
+        return Response(body=svg_text)
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
