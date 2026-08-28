@@ -39,6 +39,14 @@ from precis.pcb.ir import (
     from_graph,
     same_layer_crossing_count,
 )
+from precis.pcb.objectives import NetAnnotation, SignalLevel
+from precis.pcb.optimize import (
+    MOVE_GENERATORS,
+    MoveKind,
+    OptimizeConfig,
+    OptimizeEngine,
+    seed_placement,
+)
 from precis.pcb.rules import ipc2221_capacity_a
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
@@ -298,6 +306,171 @@ def test_admissibility_direction_holds_across_a_hardened_schedule_too():
                 assert coarse <= fine + 1e-9
             else:
                 assert coarse >= fine - 1e-9
+
+
+# ── reachability property: registry-driven, mirrors the admissibility
+# property's shape above — every registered term must be able to VARY,
+# not just point the right direction. See cost.py's module docstring:
+# a term over a continuous variable that only rewards an exact coincidence
+# is measure-zero (the crossings estimator's old Euler-bound backing was
+# provably always zero on any real, star-decomposed board — the archetype
+# this test exists to catch structurally, not just once by hand). Iterates
+# TERMS itself, so a newly registered term is checked for free.
+#: Individually-justified exceptions, printed by the test itself — a term
+#: that provably cannot vary across ANY generated state or move, because
+#: nothing in this test's exploration (board topology, positions, every
+#: :class:`~precis.pcb.optimize.MoveKind`, or the ``CostConfig``
+#: side-channels a term reads) touches the field it depends on. Empty as
+#: of this writing: ``via_count``/``extended_part_fees`` are invariant
+#: under every MoveKind (see optimize.py's "evaluated ONCE at
+#: construction" note) but DO vary with board topology, which
+#: :func:`_reachability_board` randomizes per trial — state diversity,
+#: not a move, is what exercises them, and that's a legitimate way to
+#: satisfy this property, not a workaround. If a future term turns out
+#: to need an exception, name it here with its own reason; never widen
+#: this to a blanket skip.
+_NOT_MOVE_REACHABLE: dict[str, str] = {}
+
+
+def _reachability_board(rng: random.Random) -> dict:
+    """A random connectivity graph deliberately richer than
+    :func:`_random_state`: a mix of every net class (power/ground so
+    ``loop_inductance`` has live candidates, rf/clock so ``coupling``
+    does), a coin-flip current annotation per net (``thermal_rise``'s two
+    branches), a coin-flip ``extended_part`` per instance and a random
+    handful of vias — the two MONEY terms no MoveKind ever touches
+    (:data:`_NOT_MOVE_REACHABLE`'s docstring), varied here by state
+    diversity instead."""
+    n_inst = rng.randint(6, 12)
+    instances = [
+        {"refdes": f"U{i}", "extended_part": rng.random() < 0.3} for i in range(n_inst)
+    ]
+    refdes_list = [inst["refdes"] for inst in instances]
+    nets = []
+    for i in range(n_inst - 1):  # a chain: guarantees every instance is reachable
+        net: dict = {
+            "name": f"N{i}",
+            "net_class": rng.choice(_CLASSES),
+            "domain": "electrical",
+            "members": [
+                {"refdes": f"U{i}", "pin": f"n{i}a"},
+                {"refdes": f"U{i + 1}", "pin": f"n{i}b"},
+            ],
+        }
+        if rng.random() < 0.5:
+            net["est_current_a"] = rng.uniform(0.2, 4.0)
+        nets.append(net)
+    for i in range(max(1, n_inst // 3)):  # multi-member nets: real star geometry
+        k = rng.randint(2, min(4, n_inst))
+        idxs = rng.sample(range(n_inst), k)
+        nets.append(
+            {
+                "name": f"X{i}",
+                "net_class": rng.choice(_CLASSES),
+                "domain": "electrical",
+                "members": [
+                    {"refdes": refdes_list[idx], "pin": f"x{i}_{j}"}
+                    for j, idx in enumerate(idxs)
+                ],
+            }
+        )
+    return {"instances": instances, "nets": nets}
+
+
+def _random_net_annotations(ir, rng: random.Random) -> dict[int, NetAnnotation]:
+    """``coupling``'s own required input — ``aggressor_strength`` reads
+    ``edge_rate_v_per_ns``, which the "unknown" default
+    (:data:`precis.pcb.objectives._UNKNOWN_DEFAULT`) deliberately leaves
+    ``None`` (never assert an aggressor without evidence), so
+    ``config.net_annotations`` is genuinely part of the state this term
+    needs varied — a fixture-richness gap, not a move-reachability one
+    (no MoveKind ever touches this side-channel either); see
+    :func:`test_every_registered_term_is_move_reachable`'s docstring."""
+    out = {}
+    for net_id in range(ir.n_nets):
+        edge = rng.uniform(0.1, 2.0) if rng.random() < 0.5 else 0.0
+        impedance = rng.choice([1.0, 100.0, 1.0e4, 1.0e6])
+        out[net_id] = NetAnnotation(
+            impedance_ohm=impedance,
+            edge_rate_v_per_ns=edge or None,
+            signal_level=SignalLevel.LOGIC,
+        )
+    return out
+
+
+def _random_class_rules(rng: random.Random) -> dict[str, dict[str, float]]:
+    """``thermal_rise``'s own required input for variation: absent an
+    override, ``rules.py`` resolves EVERY current-annotated net's width to
+    exactly carry its current (test_thermal_rise_current_derived_width_
+    reads_at_budget, verbatim) — a fraction pinned to ~1.0 BY DESIGN, not
+    a bug. A random per-trial ``track_width_mm`` override (almost never
+    the exact width a given trial's random current would resolve to) is
+    what makes the fraction actually move; without it this term is
+    tautologically constant across every trial, a fixture-richness gap
+    exactly like ``coupling``'s missing annotations, not a move-
+    reachability one (no MoveKind touches ``class_rules`` either)."""
+    return {
+        cls: {"track_width_mm": rng.uniform(0.1, 1.5)} for cls in ("power", "ground")
+    }
+
+
+def test_every_registered_term_is_move_reachable():
+    """For every :data:`TERMS` entry: generate many randomized IR states,
+    apply every available :class:`~precis.pcb.optimize.MoveKind`, and
+    require the term's own aggregate (the SAME sum/max collapse
+    :func:`evaluate_cost` itself uses — :func:`_term_scalar`) to take at
+    least two distinct values somewhere across that exploration. A term
+    that cannot vary under any generated state or move is either dead or
+    measure-zero (cost.py's module docstring) — indistinguishable from a
+    correctly-working term by any other test, which is exactly the failure
+    this property exists to make loud. Registry-driven: a newly registered
+    term is checked automatically, no per-term test to remember to write.
+    """
+    outer_rng = random.Random(0)
+    values: dict[str, set[float]] = {spec.name: set() for spec in TERMS}
+
+    def _record(ir, cfg: CostConfig) -> None:
+        for spec in TERMS:
+            scalar = _term_scalar(spec.estimate(ir, Level.L4, cfg), spec.family)
+            values[spec.name].add(round(scalar, 9))
+
+    for trial in range(60):
+        state_rng = random.Random(outer_rng.randrange(2**31))
+        graph = _reachability_board(state_rng)
+        ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+        seed_placement(ir, state_rng)
+        for _ in range(state_rng.randint(0, 3)):
+            ir.add_via(layer_span=0b0011)
+
+        cost_config = CostConfig(
+            assumed_max_gap_mm=500.0,
+            coupling_decay_mm=50.0,  # generous: keeps k visible regardless of board scale
+            net_annotations=_random_net_annotations(ir, state_rng),
+            class_rules=_random_class_rules(state_rng),
+        )
+        engine = OptimizeEngine(ir, OptimizeConfig(seed=trial, cost=cost_config))
+        _record(ir, cost_config)
+
+        move_rng = random.Random(outer_rng.randrange(2**31))
+        for _ in range(20):
+            kind = move_rng.choice(list(MoveKind))
+            move = MOVE_GENERATORS[kind](engine, move_rng, 8.0)
+            if move is None:
+                continue
+            engine.apply_move(move)
+            _record(ir, cost_config)
+
+    print(f"move-reachability opt-outs (individually justified): {_NOT_MOVE_REACHABLE}")
+    dead = {
+        name: vals
+        for name, vals in values.items()
+        if len(vals) < 2 and name not in _NOT_MOVE_REACHABLE
+    }
+    assert not dead, (
+        "term(s) never varied across randomized states + every available "
+        "MoveKind -- measure-zero or dead (cost.py module docstring's "
+        f"discrete-vs-continuous rule): {dead}"
+    )
 
 
 # ── crossings: registered margin term, GEOMETRICALLY backed since 2026-08-28

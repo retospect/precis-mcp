@@ -24,9 +24,12 @@ pixels. The verbs map onto the seven-verb surface:
   'feasibility'|'route-status'|'congestion'|'planes'``); ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'}``,
   see :mod:`precis.pcb.svg`); or an *export*
-  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'`` writes a JLCPCB fab
-  artifact; ``view='route'`` runs the Freerouting place↔route round-trip,
-  the demoted escape hatch — :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
+  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'`` writes a
+  JLCPCB fab artifact — ``'gerber'`` is the full manufacturable bundle
+  (gerbers + Excellon, zipped) off our own realizer/pads, never
+  Freerouting/kicad-cli; ``view='route'`` runs the Freerouting
+  place↔route round-trip, the demoted escape hatch —
+  :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
 - ``search`` — over design names + descriptions (the one summary card).
 - ``delete`` — soft-retire a whole design.
 
@@ -54,7 +57,8 @@ from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
-from precis.pcb import eyes, place, ratsnest
+from precis.pcb import eyes, padplace, place, ratsnest
+from precis.pcb import gerber as pcb_gerber
 from precis.pcb import route as pcb_route
 from precis.pcb import session as pcb_session
 from precis.pcb import svg as pcb_svg
@@ -79,8 +83,11 @@ _PROBE_VIEWS = (
     "measures",
     "feasibility",
 )
-#: Pure file exporters off the IR (Slice 6).
-_EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical")
+#: Pure file exporters off the IR (Slice 6). ``gerber`` (pcb-fab-output-
+#: unwired) is the odd one out here — it doesn't read ``_export_model``
+#: (the netlist IR), it assembles :mod:`precis.pcb.gerber`'s copper+pad
+#: model straight off the store, see :meth:`PcbHandler._render_gerber`.
+_EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical", "gerber")
 #: The rented autorouter round-trip (Slice 6, gated on Freerouting).
 _ROUTE_VIEWS = ("route",)
 #: pcb-guided-place-route Slice 1 — per-net route status (all-unrouted v1).
@@ -133,7 +140,9 @@ class PcbHandler(Handler):
             "'congestion'|'planes'), a vector figure (view='svg', "
             "args={'level':'board'|'sketch','layers':[...],'include':[...]}), "
             "or an export (view='bom'|'cpl'|'netlist'|"
-            "'dsn'|'mechanical' writes a JLCPCB fab artifact; view='route' runs "
+            "'dsn'|'mechanical'|'gerber' writes a JLCPCB fab artifact -- "
+            "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
+            "zipped); view='route' runs "
             "the demoted Freerouting escape hatch), all with args={...}; "
             "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
             "job (never inline; idempotent per design+op+content-hash) — "
@@ -677,8 +686,10 @@ class PcbHandler(Handler):
 
     def _render_export(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         """Write a fab artifact (BOM / CPL / KiCad netlist / Specctra DSN /
-        mechanical profile) off the IR. Pure — no binary needed; the file lands
-        under the corpus (or a temp dir)."""
+        mechanical profile / the gerber bundle) off the IR. Pure — no binary
+        needed; the file lands under the corpus (or a temp dir)."""
+        if view == "gerber":
+            return self._render_gerber(ref_id, args)
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         model = self._export_model(ref_id)
@@ -743,6 +754,104 @@ class PcbHandler(Handler):
                     + ("…" if len(ml) > 8 else "")
                 )
         return out
+
+    def _render_gerber(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Assemble + write the manufacturable fab bundle — gerbers +
+        Excellon, zipped (:mod:`precis.pcb.gerber`) — closing
+        ``docs/backlog/pcb-fab-output-unwired.md``'s "the export tail is
+        unwired" gap. Unlike every other ``_EXPORT_VIEWS`` entry this does
+        NOT read ``_export_model`` (that IR has no realized copper or pad
+        geometry): the model here is ``{layers, outline, copper, pads,
+        drills, silkscreen}`` — copper straight off ``pcb_copper`` (the
+        realizer's own output shape, see :mod:`precis.pcb.realize`), pads
+        newly placed by :mod:`precis.pcb.padplace` off each instance's
+        pose + its cached footprint, and an EMPTY silkscreen (there is no
+        silkscreen table yet — explicitly out of scope, see the backlog
+        doc; a board with copper+pads+mask+drills+outline is still
+        manufacturable)."""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        if board is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        board_id = int(board["board_id"])
+        layer_names = [str(layer.get("name")) for layer in board["stackup"]]
+        copper = self.store.pcb_copper_list(board_id)
+
+        warnings: list[str] = []
+        outline = self._outline_from_features(ref_id)
+        if outline is None:
+            x0, y0, x1, y1 = pcb_export.board_bbox({"instances": design["instances"]})
+            outline = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            warnings.append(
+                "no 'outline' feature — the board edge is the placed-parts "
+                "bounding box, not a real board outline"
+            )
+        if not copper:
+            warnings.append(
+                "no realized copper yet — run put(args={'op':'route'}) first, "
+                "or the gerbers will carry pads/outline/drills only"
+            )
+
+        footprints = self.store.pcb_footprints_for(ref_id)
+        graph = self.store.pcb_graph(ref_id)
+        pin_to_net = {
+            (m["refdes"], m["pin"]): net["name"]
+            for net in graph["nets"]
+            for m in net["members"]
+        }
+        pads, drills = padplace.board_pads(
+            design["instances"], footprints, layers=layer_names, pin_to_net=pin_to_net
+        )
+        placed = [
+            i
+            for i in design["instances"]
+            if i.get("x") is not None and i.get("y") is not None
+        ]
+        has_pads = {
+            i["refdes"]
+            for i in placed
+            if (footprints.get(str(i.get("part_lcsc") or "")) or {}).get("pads")
+        }
+        missing = sorted({i["refdes"] for i in placed} - has_pads)
+        if missing:
+            warnings.append(
+                f"{len(missing)} placed part(s) have no cached footprint — no "
+                f"pads/soldermask emitted for: {', '.join(missing[:8])}"
+                + ("…" if len(missing) > 8 else "")
+                + " (fetch via precis.pcb.footprint first)"
+            )
+
+        model: dict[str, Any] = {
+            "layers": layer_names,
+            "outline": outline,
+            "copper": copper,
+            "pads": pads,
+            "drills": drills,
+            "silkscreen": {"top": [], "bottom": []},
+        }
+        files = pcb_gerber.export_fab(model, name=slug)
+        blob = pcb_gerber.zip_fab(files)
+
+        raw_dir = args.get("dir")
+        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{slug}-fab.zip"
+        path.write_bytes(blob)
+
+        head = (
+            f"# exported {slug} → GERBER (fab bundle)\n{path}  "
+            f"({len(blob):,} bytes zipped, {len(files)} file(s))\n"
+            f"pads: {len(pads)}  drills: {len(drills)}  copper item(s): {len(copper)}"
+        )
+        if warnings:
+            head += "\n" + "\n".join(f"⚠️  {w}" for w in warnings)
+        listing = "\n".join(sorted(files))
+        return Response(body=head + "\n\n```\n" + listing + "\n```")
 
     def _render_route(self, ref_id: int, args: dict[str, Any]) -> Response:
         """The §9 place↔route round-trip via Freerouting headless. Re-places

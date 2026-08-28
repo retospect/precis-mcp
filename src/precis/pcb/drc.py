@@ -78,6 +78,16 @@ cross-validated by the dependency-free oracle, which is deliberately
 restricted to the circle/capsule primitives that make closed-form math
 possible) — a stated, not silent, gap in oracle coverage.
 
+**A reference oracle only checks the inputs it's fed.** ``clearance_
+violations_naive`` was correct against every synthetic fixture it was
+ever tested with and still shipped a real bug (see its own docstring: it
+compared only each group's FIRST primitive when deciding two items shared
+a layer, so a multi-layer via with a partially-overlapping span could be
+silently skipped) — the fixtures never exercised that shape until real
+via geometry existed. Agreement with a synthetic-fixture oracle is not
+proof of correctness against production geometry; it's proof of
+agreement on the shapes tested.
+
 **STRtree, and why it's used only for the clearance rule.** Copper-to-copper
 clearance is the one genuinely O(n^2) rule (every different-net pair on a
 layer is a candidate); the others (trace width, annular ring, NPTH

@@ -237,22 +237,56 @@ def board_bbox(
     )
 
 
+def _pin_map_name(entry: Any, fallback: str) -> str:
+    """A ``pin_map`` value can be :func:`precis.pcb.easyeda.parse_component`'s
+    real ``{"name": ..., "tags": [...]}`` shape (what ``part_footprints``
+    actually stores) or, defensively, a bare pin-name string — either way,
+    the pin name it maps to, falling back to the pad number itself when
+    the entry carries nothing usable."""
+    if isinstance(entry, dict):
+        name = entry.get("name")
+        return str(name) if name is not None else fallback
+    if entry:
+        return str(entry)
+    return fallback
+
+
+def _pad_number(pad: dict[str, Any]) -> str:
+    """A pad's own designator — ``"number"`` is
+    :mod:`precis.pcb.easyeda`'s real key (what every cached footprint
+    actually carries); ``"n"`` is accepted defensively for a hand-built
+    pad dict that used the shorter key."""
+    return str(pad.get("number", pad.get("n", "")))
+
+
 def _pin_offsets(
     inst: dict[str, Any], footprints: dict[str, dict[str, Any]]
 ) -> list[tuple[str, float, float]]:
     """(pin_name, dx_mm, dy_mm) for an instance. Real Flow-B pad geometry when
     the footprint is cached; a non-overlapping spread otherwise (so the DSN is
-    structurally valid even before easyeda2kicad conversion lands)."""
+    structurally valid even before easyeda2kicad conversion lands).
+
+    ``pin_map`` is keyed by pad NUMBER, each value the pad's pin (real shape:
+    :func:`_pin_map_name`) — inverted here into pin-name -> pad-number so a
+    requested pin can look its pad up by :func:`_pad_number`. The naive
+    ``{v: k for k, v in pin_map.items()}`` this replaced assumed ``v`` was
+    already a hashable pin-name string; the real, persisted shape is a
+    ``{"name":..., "tags":[...]}`` dict, which crashes that inversion
+    outright (unhashable dict key) — every real cached footprint hit this,
+    never just fell back to the placeholder spread."""
     lcsc = str(inst.get("part_lcsc") or "")
     fp = footprints.get(lcsc) if lcsc else None
     pins = list(inst.get("pins") or [])
     if fp and fp.get("pads") and fp.get("pin_map"):
-        pin_map = fp["pin_map"]  # pad-id -> pin name
-        by_name = {v: k for k, v in pin_map.items()}
+        pin_map = fp["pin_map"]  # pad-number -> pin (name or {"name":...})
+        by_name = {
+            _pin_map_name(entry, str(pad_no)): str(pad_no)
+            for pad_no, entry in pin_map.items()
+        }
         out = []
         for name in pins:
             pad = next(
-                (p for p in fp["pads"] if str(p.get("n")) == str(by_name.get(name))),
+                (p for p in fp["pads"] if _pad_number(p) == by_name.get(name)),
                 None,
             )
             if pad is not None:

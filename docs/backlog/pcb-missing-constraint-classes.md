@@ -215,6 +215,39 @@ and is unused for clearance — lid/display fit needs it.
 **IO side-gravity.** Soft directional bias for unfixed IO toward a chosen
 edge; composes with the mating-axis constraint above.
 
+## E-1. Voltage separation as a routing rule — and it is PAIRWISE
+
+**Requested 2026-08-28.** Required spacing between two conductors is a
+function of the **voltage difference between them**, per IPC-2221 Table
+6-1 (and IEC 60664 for creepage). This is a routing rule, and it belongs in
+the `resolve_net_rules` resolver shipped in `690c811a`.
+
+**The structural catch:** today's resolver returns a **per-net** clearance,
+and `drc.py` takes the stricter of the two nets' values. Voltage separation
+is not expressible that way — it depends on `|V_a − V_b|`, a property of
+the *pair*, not of either net. A 20 V net beside another 20 V net needs
+nothing special; the same 20 V net beside ground needs the full spacing.
+
+So the resolver needs a **pairwise** path alongside the per-net one:
+
+    required_clearance(net_a, net_b) = max(
+        per_net_floor(a), per_net_floor(b),
+        voltage_spacing(|V_a - V_b|, layer_is_outer, coating),
+    )
+
+Nets therefore need a **working voltage** annotation (like `est_current_a`,
+which already exists and drove the track-width work). Note IPC-2221 spacing
+also depends on **coated vs uncoated** and internal vs external — same
+axis-splitting as the width formula.
+
+Same shape as the clearance-vs-creepage distinction in §E0: a scalar
+per-object attribute cannot express a relational constraint. Expect this
+pattern to recur.
+
+**Stakes for the Nano board are low** (20 V ⇒ sub-0.1 mm spacing), but the
+*mechanism* is what matters — it is the same one an HV board would need,
+and retrofitting pairwise rules later is far more invasive.
+
 ## E0. HV slots and creepage — a second distance metric
 
 HV cutout gaps (milled slots between high-voltage nets) are **akin to but

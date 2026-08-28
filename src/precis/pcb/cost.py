@@ -44,6 +44,25 @@ EACH term's own declared direction holds, per-term, not one global
 ``coarse.total <= fine.total`` inequality (which stopped being true the
 moment ``crossings`` needed the opposite direction).
 
+**Discrete vs. continuous, and why every term must be move-reachable.**
+A cost term over a CONTINUOUS variable that rewards an exact coincidence
+(round to a 25 mm grid, an alignment match) is measure-zero: a continuous
+move reaches the rewarded state with probability zero, so the term never
+fires — indistinguishable from a working term by any other test. The
+original ``crossings`` estimator was the degenerate case of this same
+defect: the Euler-bound backing it shipped with was provably always zero
+on any real, star-decomposed board (a forest satisfies the bound
+unconditionally — see ``ir.same_layer_crossing_bound``'s docstring), so
+random states/moves alone could never have produced two distinct values
+either. A term over a DISCRETE variable (which side a label sits on, a
+small candidate set) has no such trap — a plain cost term is fine. Tested
+as a registry-driven property in ``tests/test_pcb_cost.py``: for every
+registered term, generate randomized IR states, apply every available
+``optimize.MoveKind``, and assert the term's own aggregate takes at least
+two distinct values across that exploration — a term that can't vary is
+either dead or measure-zero, and the registry (not a per-term test
+someone has to remember to write) is what demands the check.
+
 **Undefined != zero.** A term with nothing to measure yet at this level
 (gap capacity before L4) must still return a nonzero, *admissible* bound —
 never literally 0, which would tell the optimizer congestion is free and

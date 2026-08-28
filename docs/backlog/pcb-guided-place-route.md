@@ -89,20 +89,50 @@ a `cluster-ops` spawn and a direct `ssh melchior …` were classifier-
 blocked (agent-initiated prod ssh reaching an external API). Hand this to
 the human to run instead:
 
-    ssh -o IdentityAgent=none melchior '/opt/mcps/venv/bin/python -c "
+    PRECIS_DATABASE_URL='<the web service's DSN>' \
+      /opt/mcps/venv/bin/python -c "
+    from precis import secrets
+    from precis.store import Store
+    from precis.config import load_config
     from precis.pcb import jlc_api
+    secrets.bind_store(Store(load_config().database_url))
+    print(\"creds_resolve:\", jlc_api.credentials_available())
     c = jlc_api.JlcApiClient()
-    print(\"creds_resolve:\", c.available())
+    if not c.available:
+        raise SystemExit(\"STOP: credentials did not resolve — nothing was called\")
     try:
         r = c.component_info(\"C1525\")
         print(\"RESULT: success, got_row:\", bool(r))
     except Exception as e:
         print(\"RESULT:\", type(e).__name__, str(e)[:200])
-    "'
+    "
 
 `success` ⇒ scope granted, slice 9 unblocked. `JlcPermissionError` ⇒
 still not granted. `ModuleNotFoundError` ⇒ prod predates `jlc_api`;
 re-probe after the next `/go` deploy.
+
+**Two bugs in the previous version of this probe, both live-fixed
+2026-08-28 — do not reintroduce them:**
+1. `c.available()` — `available` is a **property**, so calling it raised
+   `TypeError: 'bool' object is not callable` before any probing happened.
+2. Far worse, the probe **could not fail meaningfully**.
+   `component_info` returns `None` both when credentials are absent *and*
+   when the part is not found (its own docstring says so), so with no
+   credentials it returned `None` without ever reaching the network — and
+   the probe printed `RESULT: success`. A diagnostic whose success path is
+   reachable without doing the thing it diagnoses is worthless; that is
+   why the corrected version hard-exits when `available` is false.
+
+**Measured 2026-08-28: the credentials do NOT resolve on melchior** under
+a bare `ssh` + `/opt/mcps/venv/bin/python`. That is *not* yet proof the
+vault is empty — `secrets.get_secret` reads env → **process-bound store**
+(`secrets.bind_store`, never bound in a bare `python -c`) → `~/.secrets/pw/<NAME>`
+file. A bare shell has no DSN (`load_config().database_url` is None), so
+the DB vault was never consulted at all. The corrected probe above needs
+the web service's `PRECIS_DATABASE_URL`; reading it from
+`~/Library/LaunchAgents/com.precis.web.plist` is permission-denied for the
+ssh user, and further filesystem inspection of `~/.secrets/pw` is
+classifier-blocked. **A human with that DSN must run it.**
 
 ### Known-inert / partial — do NOT read as working
 - **`SIDE_FLIP` has no cost effect.** A straight-line crossing count at

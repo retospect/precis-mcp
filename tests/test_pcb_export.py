@@ -173,10 +173,21 @@ def test_dsn_placeholder_pins_do_not_overlap():
 
 
 def test_dsn_uses_real_footprint_geometry_when_cached():
+    # Real persisted shape (precis.pcb.easyeda.parse_component / what
+    # part_footprints actually stores): pads keyed by "number", pin_map
+    # values are {"name":..., "tags":[...]} dicts — NOT the flat
+    # {"1": "1"} shape this fixture used to assert against, which masked
+    # a real crash (unhashable dict key) in every production cache hit.
     fps = {
         "C1525": {
-            "pads": [{"n": "1", "x": -0.5, "y": 0.0}, {"n": "2", "x": 0.5, "y": 0.0}],
-            "pin_map": {"1": "1", "2": "2"},
+            "pads": [
+                {"number": "1", "x": -0.5, "y": 0.0},
+                {"number": "2", "x": 0.5, "y": 0.0},
+            ],
+            "pin_map": {
+                "1": {"name": "1", "tags": []},
+                "2": {"name": "2", "tags": []},
+            },
         }
     }
     dsn = export.specctra_dsn(_MODEL, footprints=fps, name="s")
