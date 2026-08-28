@@ -74,7 +74,7 @@ autocatpath 0.18.0 everywhere.
    least verify the first fresh tick's prompt renders the new handle-rich
    sections correctly (one manual tick eyeball).
 
-## Status 2026-08-27 evening — steps 5–7 DONE on prod; HOLD in effect
+## Status 2026-08-28 — hold lifted + executed; open: tick-4 review, re-arm
 
 Done: logbook deleted (4,767→0, cascades verified, ref_events kept);
 dialectic dossier installed verbatim (seed:
@@ -99,8 +99,8 @@ expected; re-put same idem key staggered.
 3. ✓ jb263279 was already terminal (`failed`) — no cancel needed.
 4. ✓ Fleet deployed ed08d4a9 (all hosts green, 13m54s).
 5. OBSERVED HAND TICKS RUN (2026-08-28 early, reason-only, local CLI
-   against prod). Four attempts, three latent bugs found+fixed in the
-   worktree (ship pending):
+   against prod). Four attempts, three latent bugs found+fixed
+   (SHIPPED 8e66df95 + deployed fleet-wide 2026-08-28):
    - Tick 1: died `error_max_budget_usd` — claude_p's $0.10 default can't
      fit a dialectic-dossier rewrite. FIX: tier-aware `_tick_llm_max_usd`
      (frontier $2.50 / big $1.50 / else $0.50, env

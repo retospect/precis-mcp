@@ -532,7 +532,30 @@ def _graph(
         gap = width // (n + 1)
         return [gap * (i + 1) for i in range(n)]
 
-    papers = bundle.sources + bundle.contradicts
+    papers = list(bundle.sources) + list(bundle.contradicts)
+    hub_paper_ids = {p.ref_id for p in papers}
+    # A compound's grounding lives on its conjunct atoms (the compound-shape
+    # gate: "a compound cites its conjunct atoms' artifacts, not papers"),
+    # so the hub's own evidence list is empty by design and the papers row
+    # rendered nothing (fi211522). Aggregate the atoms' evidence instead —
+    # deduped across atoms — and remember which atom(s) each paper grounds
+    # so its edge lands on the atom, not the hub.
+    paper_atom_ids: dict[int, list[int]] = {}
+    if bundle.conjunct_atoms:
+        from precis.errors import BadInput
+        from precis.nanopub import evidence as ev
+
+        seen_paper_ids = {p.ref_id for p in papers}
+        for atom_id, _sentence in bundle.conjunct_atoms:
+            try:
+                atom_bundle = ev.load_bundle(store, atom_id)
+            except BadInput:
+                continue
+            for src in list(atom_bundle.sources) + list(atom_bundle.contradicts):
+                paper_atom_ids.setdefault(src.ref_id, []).append(atom_id)
+                if src.ref_id not in seen_paper_ids:
+                    seen_paper_ids.add(src.ref_id)
+                    papers.append(src)
     paper_xs = _spread(len(papers))
     for x, src in zip(paper_xs, papers):
         nodes.append(
@@ -612,17 +635,20 @@ def _graph(
         }
     )
     for src in papers:
-        edges.append(
-            {
-                "src": f"pc{src.ref_id}",
-                # Evidence edges land on the atoms' hub only when there
-                # are no atoms; with atoms, papers ground the atoms —
-                # but inbound edges are stored per-hub, so draw to hub.
-                "dst": "hub",
-                "label": src.role,
-                "cls": "contradicts" if src.role == "contradicts" else "",
-            }
-        )
+        # A paper aggregated from the atoms draws its edge to each atom it
+        # grounds; a paper on the hub's own evidence list keeps its hub edge
+        # (both, when it grounds both).
+        dsts = ["hub"] if src.ref_id in hub_paper_ids else []
+        dsts += [f"fi{a}" for a in paper_atom_ids.get(src.ref_id, [])]
+        for dst in dsts:
+            edges.append(
+                {
+                    "src": f"pc{src.ref_id}",
+                    "dst": dst,
+                    "label": src.role,
+                    "cls": "contradicts" if src.role == "contradicts" else "",
+                }
+            )
 
     if row and row.batch_id is not None:
         nodes.append(
