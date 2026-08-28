@@ -17,6 +17,11 @@ produces (:func:`precis.pcb.realize.to_gerber_model`) and
 docstring for the exact per-``ctype`` shape). This module never invents a
 second geometry representation for the same board.
 
+**No production caller emits ``ctype='via'`` copper yet** (``realize.py``
+only realizes tracks) — :func:`check_annular_ring` and the via halves of
+:func:`check_clearance`/:func:`check_npth_clearance` are correct and
+covered by synthetic-model tests but never fire on a real board today.
+
 **Two-tier margin, not bare pass/fail** (backlog, verbatim: "report the
 margin"). Every rule reads BOTH tiers off :mod:`precis.pcb.capabilities` —
 ``jlc_min`` (the fab's published, unmanufacturable-below floor) and

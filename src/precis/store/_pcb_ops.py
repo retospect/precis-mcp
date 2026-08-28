@@ -829,7 +829,10 @@ class PcbMixin:
     def pcb_route_status(self, ref_id: int) -> list[dict[str, Any]]:
         """Per-net route status for ``view='route-status'`` — a net with no
         :class:`pcb_routes` row reads as ``'unrouted'`` (the default state,
-        not a missing one)."""
+        not a missing one). ``note`` carries the row's optional legible
+        reason (e.g. a dangling <2-member net is written ``'realized'``
+        with a note explaining why — see ``pcb_route``'s job docstring —
+        so a bare ``status`` doesn't read as an actually-routed net)."""
         with self.pool.connection() as conn:
             board_row = conn.execute(
                 "SELECT board_id FROM pcb_boards "
@@ -843,9 +846,10 @@ class PcbMixin:
                     "net_class": r[1],
                     "domain": r[2],
                     "status": r[3] or "unrouted",
+                    "note": r[4],
                 }
                 for r in conn.execute(
-                    "SELECT n.name, n.net_class, n.domain, rt.status "
+                    "SELECT n.name, n.net_class, n.domain, rt.status, rt.note "
                     "FROM pcb_nets n "
                     "LEFT JOIN pcb_routes rt "
                     "  ON rt.net_id = n.net_id AND rt.board_id = %s "
@@ -1141,7 +1145,11 @@ class PcbMixin:
         """Upsert one ``pcb_routes`` row per named net — the ``pcb_route``
         job's checkpoint write-back. A net absent from ``rows`` (the
         sketch has nothing new to say about it, e.g. plane-served) is left
-        untouched. Returns the number of rows written."""
+        untouched. ``row["note"]`` (optional) persists a human-legible
+        reason alongside ``status`` — e.g. the dangling-net exemption,
+        which writes ``status='realized'`` with a note explaining why
+        rather than a bare status a later reader can't distinguish from an
+        actually-routed net. Returns the number of rows written."""
         n = 0
         with self.tx() as conn:
             for net_name, row in rows.items():
@@ -1156,14 +1164,15 @@ class PcbMixin:
                     """
                     INSERT INTO pcb_routes
                         (board_id, net_id, tree, topology, layer_assign,
-                         status, fail, meta, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+                         status, fail, note, meta, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                     ON CONFLICT (board_id, net_id) DO UPDATE SET
                         tree = EXCLUDED.tree,
                         topology = EXCLUDED.topology,
                         layer_assign = EXCLUDED.layer_assign,
                         status = EXCLUDED.status,
                         fail = EXCLUDED.fail,
+                        note = EXCLUDED.note,
                         meta = EXCLUDED.meta,
                         updated_at = now()
                     """,
@@ -1175,6 +1184,7 @@ class PcbMixin:
                         _jsonb_or_none(row.get("layer_assign")),
                         row.get("status") or "unrouted",
                         _jsonb_or_none(row.get("fail")),
+                        row.get("note"),
                         Jsonb(dict(row.get("meta") or {})),
                     ),
                 )
@@ -1219,7 +1229,7 @@ class PcbMixin:
             rows = conn.execute(
                 "SELECT c.ctype, c.layer, n.name, c.geom "
                 "FROM pcb_copper c JOIN pcb_nets n ON n.net_id = c.net_id "
-                "WHERE c.board_id = %s",
+                "WHERE c.board_id = %s AND n.retired_at IS NULL",
                 (board_id,),
             ).fetchall()
         return [
@@ -1241,7 +1251,7 @@ class PcbMixin:
             row = conn.execute(
                 "SELECT rt.route_id, rt.board_id, rt.net_id FROM pcb_routes rt "
                 "JOIN pcb_nets n ON n.net_id = rt.net_id "
-                "WHERE n.ref_id = %s AND n.name = %s",
+                "WHERE n.ref_id = %s AND n.name = %s AND n.retired_at IS NULL",
                 (ref_id, net_name),
             ).fetchone()
             if row is None:

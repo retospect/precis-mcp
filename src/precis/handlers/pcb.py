@@ -816,7 +816,10 @@ class PcbHandler(Handler):
     def _render_route_status(self, ref_id: int) -> Response:
         """The per-net route status table — a net with no ``pcb_routes`` row
         reads as ``unrouted`` (the default state before ``op='route'`` has
-        ever run against it, not a missing one)."""
+        ever run against it, not a missing one). A row's ``note`` (e.g. a
+        dangling <2-member net's ``'realized'`` exemption — see
+        ``pcb_route``'s job docstring) is appended so it never reads as an
+        actually-routed net."""
         rows = self.store.pcb_route_status(ref_id)
         if not rows:
             return Response(body="no nets on this design yet")
@@ -829,7 +832,7 @@ class PcbHandler(Handler):
                 "net": r["name"],
                 "class": r["net_class"] or "—",
                 "domain": r["domain"] or "electrical",
-                "status": r["status"],
+                "status": r["status"] + (f" ({r['note']})" if r.get("note") else ""),
             }
             for r in rows
         ]
@@ -936,9 +939,13 @@ class PcbHandler(Handler):
         )
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
-        head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        head = (
+            f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)\n"
+            "(no via geometry realized yet — annular-ring/via-clearance "
+            "rules never fire)"
+        )
         if not findings:
-            return Response(body=head + " — no findings ✓")
+            return Response(body=head + "\n— no findings ✓")
         rows = [
             {
                 "severity": f.severity,

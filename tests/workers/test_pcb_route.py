@@ -17,6 +17,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.store import Store
+from precis.workers.auto_check_evaluators import route_complete
 from precis.workers.job_types import pcb_route
 
 pytestmark = pytest.mark.db
@@ -62,6 +63,31 @@ _DESIGN = {
     "connections": [
         {"net": "N1", "refdes": "U1", "pin": "1"},
         {"net": "N1", "refdes": "R1", "pin": "1"},
+    ],
+}
+
+
+#: A design mixing a real 2-member net (N1) with a legitimate <2-member
+#: ("dangling") one — TP_NET, a test-point net with a single connection.
+#: Dangling nets are legal (test point / NC / mounting-hole nets), never a
+#: routing failure — see the dangling-net-exemption test below.
+_DESIGN_WITH_DANGLING = {
+    "components": [
+        {"refdes": "U1", "label": "mcu", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {"refdes": "R1", "label": "r", "x": 5.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {
+            "refdes": "TP1",
+            "label": "test point",
+            "x": 2.0,
+            "y": 3.0,
+            "pins": [{"name": "1"}],
+        },
+    ],
+    "nets": [{"name": "N1", "class": "signal"}, {"name": "TP_NET"}],
+    "connections": [
+        {"net": "N1", "refdes": "U1", "pin": "1"},
+        {"net": "N1", "refdes": "R1", "pin": "1"},
+        {"net": "TP_NET", "refdes": "TP1", "pin": "1"},
     ],
 }
 
@@ -142,6 +168,25 @@ def test_pcb_route_is_rerunnable(store: Store) -> None:
     assert not ctx2.failures
     status_rows = store.pcb_route_status(ref_id)
     assert len(status_rows) == 1  # upsert, not a duplicate row
+
+
+def test_pcb_route_dangling_net_does_not_block_route_complete(store: Store) -> None:
+    """A legitimate <2-member ("dangling") net — a test point, NC net, or
+    mounting-hole net — must not permanently wedge ``route_complete``: it
+    never gets a segment to route, so it must still get an explicit
+    terminal ``pcb_routes`` row (not silently no row at all, which reads
+    as ``'unrouted'`` forever)."""
+    ref_id = _seed(store, "route-dangling", _DESIGN_WITH_DANGLING)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    status_by_name = {r["name"]: r for r in store.pcb_route_status(ref_id)}
+    assert status_by_name["N1"]["status"] == "realized"
+    assert status_by_name["TP_NET"]["status"] == "realized"
+    assert status_by_name["TP_NET"]["note"]  # names the reason, not a bare status
+
+    assert route_complete.evaluate(store, {"pcb": ref_id}) is True
 
 
 def test_pcb_route_fails_legibly_on_no_nets(store: Store) -> None:

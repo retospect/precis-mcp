@@ -9,29 +9,50 @@ model: opus
 
 ## BUILD STATUS (2026-08-28) — resume pointer
 
-**Shipped to main** (latest `7858a1c1`): slices 1–7 plus the crossings
-corrections. That is: schema + board/stackup hedges · catalog ingest,
+**Shipped to main** (latest `0351be2f`): slices 1–8 and 10. That is:
+schema + board/stackup hedges · catalog ingest,
 EasyEDA footprint parser, JLCPCB API client · the L0–L5 IR, objective
 vectors and cost function · gerber X2 + Excellon writer + JLC capability
 table (numbers **verified against JLC's published specs 2026-08-27**,
 not remembered) · footprint escape graph + copper tiling · the joint
 optimizer with placement moves · topology/layer/pin-swap moves + the
-arcs-and-tangents realizer · the real sweep-line crossings term.
+arcs-and-tangents realizer · the real sweep-line crossings term ·
+geometric DRC with its O(n²) reference oracle (slice 8) · the phase-gate
+evaluators, `pcb_place`/`pcb_route` job types and `op=` handler dispatch
+(slice 10). Slices 8+10 landed together in `0351be2f` on a clean full
+gate (15735 passed, 0 failed) after the sibling-congestion window closed.
 
-**Built but NOT yet shipped** (in the worktree at time of writing):
-- **Slice 8** — `pcb/drc.py`, the O(n²) reference oracle,
-  `netlist_drc_clean`, `eyes.drc_lite` retired, `view='drc'` re-backed.
-- **Slice 10** — `placement_legal` / `route_complete` evaluators,
-  `pcb_place` / `pcb_route` job types, `pcb/session.py`, skills.
-Both verified green by direct tooling; the full `scripts/test --impacted`
-gate did NOT complete under heavy sibling-worktree congestion. **Re-run
-the gate before landing** rather than trusting the targeted runs alone.
+**Nothing is built-but-unshipped.** The worktree is level with main.
 
 **Slice 9 (JLCPCB ordering) is the only one not built** — blocked on a
 human action, not engineering: every signed call returns `403 API
 insufficient permissions` until the **Components (and PCB) scope is
 granted on the app in the JLCPCB Open API console**. Auth itself is
 server-verified and correct; the client is written and fixture-tested.
+
+All three credentials **are** present in the PROD vault (`vault.list()`,
+set 2026-08-27 19:42–19:43 UTC). They are NOT in the local dev vault and
+NOT env vars, so a local `credentials_available()` returns `False` — that
+is a false negative, not a missing key. Probing the scope therefore has
+to run where the prod vault resolves, and **an agent cannot do it**: both
+a `cluster-ops` spawn and a direct `ssh melchior …` were classifier-
+blocked (agent-initiated prod ssh reaching an external API). Hand this to
+the human to run instead:
+
+    ssh -o IdentityAgent=none melchior '/opt/mcps/venv/bin/python -c "
+    from precis.pcb import jlc_api
+    c = jlc_api.JlcApiClient()
+    print(\"creds_resolve:\", c.available())
+    try:
+        r = c.component_info(\"C1525\")
+        print(\"RESULT: success, got_row:\", bool(r))
+    except Exception as e:
+        print(\"RESULT:\", type(e).__name__, str(e)[:200])
+    "'
+
+`success` ⇒ scope granted, slice 9 unblocked. `JlcPermissionError` ⇒
+still not granted. `ModuleNotFoundError` ⇒ prod predates `jlc_api`;
+re-probe after the next `/go` deploy.
 
 ### Known-inert / partial — do NOT read as working
 - **`SIDE_FLIP` has no cost effect.** A straight-line crossing count at

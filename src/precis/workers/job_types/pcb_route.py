@@ -16,7 +16,11 @@ means zero routed crossings) and no over-capacity gap the realizer flagged
 it in. Both failure modes name the blocking participants in
 ``pcb_routes.fail`` (backlog: "fail legibly") rather than just flipping a
 bit — this is what lets ``route_complete`` (the gate evaluator) stay a
-cheap status read instead of re-deriving any of this itself.
+cheap status read instead of re-deriving any of this itself. A dangling
+(<2-member) net is the one exception: it has no segments to route at all,
+so it is written ``'realized'`` too (vacuously — nothing was left
+unrouted), with ``pcb_routes.note`` naming why, rather than left with no
+row (which reads as ``'unrouted'`` forever and wedges ``route_complete``).
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
 from precis.pcb.geom import segments_cross
-from precis.pcb.ir import UNSET_LAYER, segment_points
+from precis.pcb.ir import UNSET_LAYER, net_member_counts, segment_points
 from precis.pcb.optimize import OptimizeConfig, digest_toon, optimize
 from precis.workers.job_types import JobTypeSpec
 
@@ -163,14 +167,30 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     sketch = pcb_session.extract_sketch(ir)
     routed_nets = {int(t.net_id) for t in rres.tracks}
+    member_counts = net_member_counts(ir)
     stackup = ir.stackup
     rows: dict[str, dict[str, Any]] = {}
-    n_realized = n_failed = 0
+    n_realized = n_failed = n_dangling = 0
     for net_id in range(ir.n_nets):
         net_name = str(ir.net_name[net_id])
         entry = sketch.get(net_name)
         if entry is None:
-            continue  # dangling (<2-member) net — nothing to route, no row written
+            # A dangling (<2-member) net has no segments, ever — it is
+            # legal (test point / NC / mounting-hole net), not a routing
+            # failure. Writing an explicit terminal 'realized' row here
+            # (rather than leaving no row at all) is the fix for a real
+            # bug: a silently-absent row read as 'unrouted' forever
+            # (pcb_route_status's own documented default), permanently
+            # wedging route_complete for any board with one of these. The
+            # `note` names the reason for a later reader of
+            # pcb_route_status, since a bare status alone can't.
+            if member_counts.get(net_id, 0) < 2:
+                rows[net_name] = {
+                    "status": "realized",
+                    "note": "dangling net (<2 members) — nothing to route",
+                }
+                n_dangling += 1
+            continue
         problems = crossing_fail.get(net_name, []) + congestion_fail.get(net_name, [])
         if problems:
             status = "failed"
@@ -222,6 +242,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "iters": result.iters,
                 "realized": n_realized,
                 "failed": n_failed,
+                "dangling": n_dangling,
                 "warnings": [w.message() for w in rres.warnings][:20],
             }
         },
@@ -229,8 +250,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     ctx.append_chunk(
         "job_summary",
         f"routed {len(rows)} net(s): {n_realized} realized, "
-        f"{n_failed} failed, {len(rres.warnings)} congestion warning(s)\n\n"
-        + digest_toon(result),
+        f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
+        f"route), {len(rres.warnings)} congestion warning(s)\n\n" + digest_toon(result),
     )
 
 

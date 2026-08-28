@@ -627,6 +627,22 @@ def _same_cyclic_order(a: list[int], b: list[int]) -> bool:
 # module operating on L5 copper.
 
 
+def net_member_counts(ir: PcbIR) -> dict[int, int]:
+    """Distinct connected-pin count per net id — a count of 0 or 1 is a
+    "dangling" net (see :func:`unconnected_items`): legal (a test point, an
+    NC net, a mounting-hole net), never fatal, and structurally incapable
+    of ever being routed. Shared by that check and the ``pcb_route`` job's
+    dangling-net exemption: a net this small has nothing to route, ever,
+    so it must not be left permanently absent from ``pcb_routes`` — that
+    absence is what silently wedges the ``route_complete`` gate forever."""
+    pins_per_net: dict[int, set[int]] = {}
+    for pin_id in range(ir.n_pins):
+        net_id = int(ir.pin_net[pin_id])
+        if net_id != NO_NET:
+            pins_per_net.setdefault(net_id, set()).add(pin_id)
+    return {net_id: len(pins_per_net.get(net_id, ())) for net_id in range(ir.n_nets)}
+
+
 def unconnected_items(ir: PcbIR) -> list[dict[str, Any]]:
     """Pins on no net, and nets with fewer than 2 distinct pins (a
     "dangling" net — nothing to connect to)."""
@@ -641,13 +657,7 @@ def unconnected_items(ir: PcbIR) -> list[dict[str, Any]]:
                     "pin": str(ir.pin_label[pin_id]),
                 }
             )
-    pins_per_net: dict[int, set[int]] = {}
-    for pin_id in range(ir.n_pins):
-        net_id = int(ir.pin_net[pin_id])
-        if net_id != NO_NET:
-            pins_per_net.setdefault(net_id, set()).add(pin_id)
-    for net_id in range(ir.n_nets):
-        n = len(pins_per_net.get(net_id, ()))
+    for net_id, n in net_member_counts(ir).items():
         if n < 2:
             out.append(
                 {"code": "dangling-net", "net": str(ir.net_name[net_id]), "pins": n}

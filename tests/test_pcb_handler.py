@@ -207,6 +207,61 @@ def test_drc_view_before_any_route_run(pcb):
     assert "no realized copper yet" in drc.body
 
 
+def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
+    # No production caller emits `ctype='via'` copper yet (Finding 2) —
+    # the caveat must be visible on the "clean" path too, not just
+    # alongside real findings. Components sit far apart (unlike _DESIGN's
+    # tight 0402 spacing) so the generic courtyard fallback radius doesn't
+    # itself manufacture a courtyard-overlap finding here.
+    clean_design = {
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "mcu",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "R1",
+                "label": "r",
+                "x": 20.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            },
+        ],
+        "nets": [{"name": "N1"}],
+        "connections": [
+            {"net": "N1", "refdes": "U1", "pin": "1"},
+            {"net": "N1", "refdes": "R1", "pin": "1"},
+        ],
+    }
+    pcb.put(id="drc-clean", args=clean_design)
+    ref = pcb.store.get_ref(kind="pcb", id="drc-clean")
+    board_id = pcb.store.pcb_ensure_board(ref.id)
+    net_ids = pcb.store.pcb_net_ids(ref.id)
+    pcb.store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["N1"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [1.0, 0.0]}
+                    ],
+                    "width_mm": 0.5,
+                },
+            },
+        ],
+    )
+    drc = pcb.get(id="drc-clean", view="drc")
+    assert "no findings" in drc.body
+    assert "no via geometry realized yet" in drc.body
+
+
 def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
     # Seed pcb_copper directly (the pcb_route job's own write path,
     # precis.pcb.session/workers.job_types.pcb_route) rather than running
@@ -251,6 +306,10 @@ def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
     drc = pcb.get(id="sensor-node", view="drc")
     assert "error" in drc.body
     assert "clearance" in drc.body
+    # No via geometry exists in production yet — the via-related rules
+    # (annular ring, via clearance) never fire; the view must say so
+    # rather than reading as though vias were checked.
+    assert "no via geometry realized yet" in drc.body
 
 
 def test_proximity_view(pcb):
@@ -764,6 +823,66 @@ def test_route_status_view_reflects_seeded_routes(pcb, store):
     resp = pcb.get(id="sensor-node", view="route-status")
     assert "sketched" in resp.body
     assert "1 sketched" in resp.body
+
+
+def test_pcb_copper_list_excludes_a_retired_net(pcb, store):
+    """A copper row on a retired net must not leak into ``view='drc'``'s
+    input model (gr — Finding 3: ``pcb_copper_list`` was missing the same
+    ``n.retired_at IS NULL`` filter every sibling method in this file
+    applies)."""
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    net_id = store.pcb_net_ids(ref.id)["I2C_SCL"]
+    store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_id,
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [1.0, 0.0]}
+                    ],
+                    "width_mm": 0.25,
+                },
+            }
+        ],
+    )
+    assert store.pcb_copper_list(board_id)  # present while the net is live
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_nets SET retired_at = now() WHERE net_id = %s", (net_id,)
+        )
+        conn.commit()
+    assert store.pcb_copper_list(board_id) == []
+
+
+def test_pcb_rip_route_ignores_a_retired_net(pcb, store):
+    """A retired net's stale ``pcb_routes`` row must not be rippable by
+    name — a later live net that reuses that name (rename/merge) could
+    otherwise have ITS route ripped by a rip-up call meant for the retired
+    one (gr — Finding 3: ``pcb_rip_route`` was missing the same
+    ``n.retired_at IS NULL`` filter every sibling method in this file
+    applies)."""
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    net_id = store.pcb_net_ids(ref.id)["I2C_SCL"]
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pcb_routes (board_id, net_id, status) VALUES (%s, %s, %s)",
+            (board_id, net_id, "realized"),
+        )
+        conn.execute(
+            "UPDATE pcb_nets SET retired_at = now() WHERE net_id = %s", (net_id,)
+        )
+        conn.commit()
+    assert store.pcb_rip_route(ref.id, "I2C_SCL") is False
 
 
 # ── congestion / planes views (pcb-guided-place-route Slice 10) ─────────
