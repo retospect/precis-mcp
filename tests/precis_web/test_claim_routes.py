@@ -356,6 +356,48 @@ def test_claim_preview_fragment(claim_client: TestClient, hub: Hub) -> None:
     # No fake "click to open →" affordance — it was a plain <p> that did
     # nothing when clicked; the anchor under the popover is the click.
     assert "click to open" not in r.text
+    # A review surface — no clamp on the claim sentence.
+    assert "line-clamp-3" not in r.text
+
+
+def test_claim_preview_threads_full_sentence(
+    claim_client: TestClient, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The popover shows :func:`claim_full_sentence`'s result, not the
+    (possibly shorter) title carried in the shared evidence shape — mirrors
+    the /claim h1's own full-sentence override."""
+    import precis_web.routes.claim as claim_route
+
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+    monkeypatch.setattr(
+        claim_route,
+        "claim_full_sentence",
+        lambda store, rid: "FULL SENTENCE SENTINEL" if rid == hub_ref_id else None,
+    )
+
+    r = claim_client.get(f"/preview/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "FULL SENTENCE SENTINEL" in r.text
+
+
+def test_claim_preview_falls_back_to_short_claim_without_body_chunk(
+    claim_client: TestClient, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hub predating the finding_body write (``claim_full_sentence``
+    returns ``None``) degrades to the shared evidence shape's title, not a
+    blank popover."""
+    import precis_web.routes.claim as claim_route
+
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+    monkeypatch.setattr(claim_route, "claim_full_sentence", lambda store, rid: None)
+
+    r = claim_client.get(f"/preview/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert _CLAIM.sentence in r.text
 
 
 def _seed_hub_with_chunk(hub: Hub) -> tuple[int, str, str]:
@@ -572,9 +614,15 @@ def test_claim_view_renders_table_math_and_all_three_passages(
     ``/claim/<head>`` render must: turn the table into a real ``<table>``
     (not one flattened pipe run — fi191167), mark the quote container
     ``tex-scope`` so client KaTeX picks up the TeX span, list all three
-    passages (not just the ★ print set), and leave the claim TITLE as
-    plain text (titles never get math-processed — the "Already decided"
-    policy)."""
+    passages (not just the ★ print set), and mark the claim TITLE
+    ``tex-scope`` too.
+
+    Reversal (2026-08-28, Reto): the 2026-08-04 "Already decided"
+    claim-titles-are-plain-text policy (commit 679393c9) kept the title
+    unprocessed until a real hub (fi236297) rendered raw ``$math$`` in its
+    big title — Reto asked for KaTeX over claim titles too, superseding
+    that call. This test used to assert the opposite (``tex-scope not in
+    title_line``); it now asserts the title carries ``tex-scope``."""
     store = hub.live_store
     claim_hub = mint_hub(store, _CLAIM)
 
@@ -641,9 +689,12 @@ def test_claim_view_renders_table_math_and_all_three_passages(
     assert "(originator)" in body
     assert "(corroborator)" in body
     assert "(contradictor)" in body
-    # The claim title stays plain text — no math engine over it.
+    # The claim title is math-processed too (2026-08-28 reversal, Reto):
+    # the 2026-08-04 "Already decided" claim-titles-are-plain-text policy
+    # (679393c9) held until a real hub (fi236297) rendered raw $math$ in
+    # its title — Reto asked for KaTeX over claim titles, superseding it.
     title_line = next(line for line in body.splitlines() if "<h1" in line)
-    assert "tex-scope" not in title_line
+    assert "tex-scope" in title_line
 
 
 def test_claim_view_non_hub_finding_shows_missing(

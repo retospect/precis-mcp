@@ -1799,6 +1799,20 @@ def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
     assert "authors" not in args
 
 
+def test_paper_edit_redirect_lands_back_on_meta_tab(client, runtime) -> None:
+    """After a Meta-tab save, the redirect must carry the reader back to the
+    Meta tab (``?tab=Meta`` — the same mechanism ``tags``/``reviewed``/
+    ``unacquirable`` already redirect through), not the default Navigate tab
+    (bug report: /papers/helical91, 2026-08-28)."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"title": "New title"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
+
+
 def test_paper_edit_forwards_journal_and_entry_type(client, runtime) -> None:
     """journal/entry_type (paper-meta-surfacing) forward like any other
     blank-means-unchanged metadata field."""
@@ -2333,7 +2347,7 @@ def test_paper_edit_renames_slug_and_moves_pdf(client, runtime, tmp_path) -> Non
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/papers/10"
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
     assert (10, "cite_key", "piela07") in store.identifier_writes
     # PDF moved old -> new sharded path.
     assert not old.exists()

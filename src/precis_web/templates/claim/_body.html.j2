@@ -10,7 +10,13 @@
 </div>
 {% else %}
 
-<h1 class="text-lg font-semibold text-slate-800 leading-snug">{{ claim }}</h1>
+{# tex-scope: claim sentences may carry $…$/$$…$$ TeX; base.html.j2's
+   init script runs client-side KaTeX over any tex-scope element on load
+   and after htmx swaps. Reversal (2026-08-28, Reto): titles WERE kept
+   plain text under the 2026-08-04 "Already decided" policy (679393c9),
+   until a real hub (fi236297) rendered raw $math$ in its title — Reto
+   asked for math-processing on claim titles too, superseding that call. #}
+<h1 class="tex-scope text-lg font-semibold text-slate-800 leading-snug">{{ claim }}</h1>
 <p class="mt-1 text-xs text-slate-400">
   <span class="font-mono">{{ head }}</span>
   {% if status %}· status <span class="font-mono">{{ status }}</span>{% endif %}
@@ -202,10 +208,10 @@
       </span>
     </p>
     {% if c.quote_html %}
-    {# tex-scope: this is verbatim paper text, which legitimately carries
-       $…$/$$…$$ TeX (the claim title above never does — the decided
-       claim-titles-are-plain-text policy) — the base.html.j2 init script
-       runs client-side KaTeX over this element. #}
+    {# tex-scope: verbatim paper text, which legitimately carries $…$/$$…$$
+       TeX — the base.html.j2 init script runs client-side KaTeX over this
+       element. The claim title above is tex-scope too now (2026-08-28
+       reversal — see its comment). #}
     <blockquote class="tex-scope mt-1 border-l-2 border-slate-200 pl-3 text-slate-600">{{ c.quote_html }}</blockquote>
     {% else %}
     <p class="mt-1 text-slate-400 italic">passage text not available</p>
@@ -284,7 +290,7 @@
         {% if u.is_chunk %}{{ ('[' ~ u.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-slate-600">{{ u.handle }}</span>{% endif %}
       {% endif %}
       <span class="text-[11px] rounded bg-slate-100 text-slate-500 px-1.5 py-0.5">{{ u.kind }}</span>
-      {% if u.title %}<span class="text-slate-700">{{ u.title }}</span>{% endif %}
+      {% if u.title %}<span class="tex-scope text-slate-700">{{ u.title }}</span>{% endif %}
       {% if u.year %}<span class="text-slate-400">({{ u.year }})</span>{% endif %}
     </li>
     {% endfor %}

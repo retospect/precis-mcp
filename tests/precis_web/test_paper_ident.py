@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -89,6 +90,34 @@ def test_paper_abstract_strips_tags_and_clamps() -> None:
     assert paper_abstract(_ref(meta=None)) == ""
 
 
+def test_paper_head_reviewed_from_human_verified_at() -> None:
+    head = paper_head(
+        _ref(
+            title="Checked",
+            human_verified_at=datetime(2026, 8, 20, 9, 30),
+            human_verified_by="reto",
+        ),
+        held=True,
+    )
+    assert head.reviewed is True
+    assert head.reviewed_at == "2026-08-20"
+    assert head.reviewed_by == "reto"
+
+
+def test_paper_head_not_reviewed_when_unset() -> None:
+    head = paper_head(_ref(title="Unchecked"), held=True)
+    assert head.reviewed is False
+    assert head.reviewed_at is None
+    assert head.reviewed_by is None
+
+
+def test_paper_head_from_facts_never_reviewed() -> None:
+    # No ref on hand to check human_verified_at against — the badge never
+    # shows solid for a facts-only header.
+    head = paper_head_from_facts(ref_id=3, title="Bare facts", year=1999)
+    assert head.reviewed is False
+
+
 def test_paper_head_from_facts_degrades_cleanly() -> None:
     head = paper_head_from_facts(ref_id=3, title="Bare\nfacts", year=1999)
     assert isinstance(head, PaperHead)
@@ -109,6 +138,8 @@ def test_as_dict_is_json_safe_and_carries_multi_author() -> None:
     # must round-trip through json.
     assert json.loads(json.dumps(d))["multi_author"] is True
     assert d["title"] == "T"
+    assert d["reviewed"] is False
+    assert d["reviewed_at"] is None
 
 
 def test_paper_ident_kinds_are_the_paper_family() -> None:
@@ -156,3 +187,39 @@ def test_macro_compact_is_single_span() -> None:
     assert "2018" in html
     # compact mode is one inline <span>, not the two-line <div>.
     assert "<div" not in html
+
+
+def test_macro_reviewed_year_badge_is_solid_held() -> None:
+    head = paper_head(
+        _ref(
+            title="Checked",
+            year=2022,
+            human_verified_at=datetime(2026, 8, 20, 9, 30),
+            human_verified_by="reto",
+        ),
+        held=True,
+    )
+    html = _render(head)
+    assert "bg-sky-600" in html
+    assert "text-white" in html
+    assert "Reviewed ✓ 2026-08-20 by reto" in html
+    # unreviewed plain-text colour is not also present for this badge.
+    assert "text-sky-700" not in html
+
+
+def test_macro_reviewed_year_badge_is_solid_external() -> None:
+    head = paper_head(
+        _ref(title="Checked", year=2022, human_verified_at=datetime(2026, 8, 20)),
+        held=False,
+    )
+    html = _render(head)
+    assert "bg-amber-600" in html
+    assert "text-white" in html
+
+
+def test_macro_unreviewed_year_badge_stays_plain_text() -> None:
+    head = paper_head(_ref(title="Widgets", year=2020), held=True)
+    html = _render(head)
+    assert "text-sky-700" in html
+    assert "bg-sky-600" not in html
+    assert "Reviewed" not in html

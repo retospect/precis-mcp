@@ -246,11 +246,12 @@
 
 <style>
   .tree-node.selected { background: #ecfdf5; }
-  /* Two-line clamp instead of one-line truncate: at ~500px pane width a
-     single line eats all but the first few words of a claim sentence
-     (hover still shows the full title). overflow:hidden also zeroes the
-     flex min-width, so the span shrinks instead of overflowing the row. */
-  .np-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  /* No clamp: a review row should show the whole claim sentence, not a
+     truncated preview. min-width:0 keeps the flex-shrink behaviour the old
+     overflow:hidden gave for free (a flex item's automatic minimum size is
+     its content size otherwise, which would push the row wide instead of
+     wrapping); overflow-wrap lets a long unbroken run still break. */
+  .np-title { min-width: 0; overflow-wrap: break-word; }
   .np-loading { opacity: .45; transition: opacity .15s; }
   .np-hint { font: 13px system-ui; color: #94a3b8; padding: 1.5rem; }
   .np-steps { line-height: 0; }

@@ -12,7 +12,11 @@
   {% if missing %}
   <p class="text-xs text-slate-500 italic">not a claim hub</p>
   {% else %}
-  <p class="text-sm font-medium text-slate-800 line-clamp-3">{{ claim }}</p>
+  {# No line-clamp — this is a review surface, the full sentence should
+     read in full rather than truncate. tex-scope: claim sentences may
+     carry $…$/$$…$$ TeX (KaTeX render, base.html.j2) — matches the
+     /claim h1's 2026-08-28 reversal (claim/_body.html.j2's comment). #}
+  <p class="tex-scope text-sm font-medium text-slate-800">{{ claim }}</p>
   {% if inflight %}
   <p class="text-[11px] text-amber-700 italic">still tracing — no citable originator yet</p>
   {% endif %}

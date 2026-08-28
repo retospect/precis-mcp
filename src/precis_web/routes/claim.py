@@ -182,10 +182,17 @@ async def claim_view(request: Request, head: str) -> HTMLResponse:
 @router.get("/preview/claim/{head}", response_class=HTMLResponse)
 async def claim_preview(request: Request, head: str) -> HTMLResponse:
     """Compact hover card for a ``[fi123]`` / ``[<pub_id>]`` claim-hub cite."""
-    data = render_claim_evidence(get_store(request), head)
-    ctx = (
-        {"head": head, "missing": True} if data is None else {**data, "missing": False}
-    )
+    store = get_store(request)
+    data = render_claim_evidence(store, head)
+    if data is None:
+        ctx = {"head": head, "missing": True}
+    else:
+        # Full sentence, not the short title — this is a review surface too
+        # (the popover is what a reviewer hovers before opening the full
+        # /claim page); falls back to the short claim when the hub predates
+        # the finding_body write (see claim_full_sentence).
+        claim = claim_full_sentence(store, data["hub_ref_id"]) or data["claim"]
+        ctx = {**data, "missing": False, "claim": claim}
     return templates.TemplateResponse(request, "claim/popover.html.j2", ctx)
 
 

@@ -11,23 +11,35 @@
    literal ternaries (not `text-{{accent}}-700`) so Tailwind's source
    scanner sees them.
 
+   `h.reviewed` (refs.human_verified_at set — precis_web/paper_ident.py)
+   swaps the year badge from plain coloured text to a solid/filled chip —
+   "this paper's meta has been checked" reads visibly on every card the
+   header appears on, not just the paper's own Meta tab.
+
    `compact=true` collapses to a single line for dense list rows (the
    claim-page evidence rows) where a two-line block per item would be too
    tall; `show_handle=true` appends the mono handle (list rows that don't
    already anchor on it). #}
 {% macro paper_head(h, show_handle=false, compact=false) %}
 {% if compact %}
-<span class="break-words">
-  {% if h.year %}<span class="font-semibold {{ 'text-sky-700' if h.held else 'text-amber-700' }}">{{ h.year }}</span> {% endif %}
+{# tex-scope: titles can carry $…$/$$…$$ TeX (KaTeX render, base.html.j2).
+   Put on the outer element, not per-span, so one KaTeX pass covers the
+   whole compact line. #}
+<span class="tex-scope break-words">
+  {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-sky-600 px-1 text-white' if h.held else 'rounded bg-amber-600 px-1 text-white' }}{% else %}{{ 'text-sky-700' if h.held else 'text-amber-700' }}{% endif %}"
+    {% if h.reviewed %}title="Reviewed ✓ {{ h.reviewed_at }}{% if h.reviewed_by %} by {{ h.reviewed_by }}{% endif %}"{% endif %}>{{ h.year }}</span> {% endif %}
   <span class="text-slate-700">{{ h.title }}</span>
   {% if h.journal %}<span class="italic text-slate-400"> · {{ h.journal }}</span>{% endif %}
   {% if h.first_author %}<span class="text-slate-400"> · {{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}</span>{% endif %}
   {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
 </span>
 {% else %}
-<div class="min-w-0">
+{# tex-scope: same rationale as the compact variant above — one outer
+   element, one KaTeX pass over both lines. #}
+<div class="tex-scope min-w-0">
   <p class="text-sm leading-snug break-words">
-    {% if h.year %}<span class="font-semibold {{ 'text-sky-700' if h.held else 'text-amber-700' }}">{{ h.year }}</span> {% endif %}
+    {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-sky-600 px-1 text-white' if h.held else 'rounded bg-amber-600 px-1 text-white' }}{% else %}{{ 'text-sky-700' if h.held else 'text-amber-700' }}{% endif %}"
+      {% if h.reviewed %}title="Reviewed ✓ {{ h.reviewed_at }}{% if h.reviewed_by %} by {{ h.reviewed_by }}{% endif %}"{% endif %}>{{ h.year }}</span> {% endif %}
     <span class="font-medium text-slate-800">{{ h.title }}</span>
     {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
   </p>

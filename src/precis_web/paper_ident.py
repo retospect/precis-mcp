@@ -21,6 +21,12 @@ hold, amber ``↗`` for one we don't): a paper whose full text is in the
 corpus reads sky, a stub / external reference reads amber. ``held`` is the
 caller's call — it knows whether body chunks exist; this module only
 formats.
+
+A paper whose meta has been human-reviewed (``refs.human_verified_at`` set,
+the Meta tab's "Mark reviewed" stamp) reads with a solid/filled year badge
+instead of the plain text colour — :attr:`PaperHead.reviewed` — a visible
+"this has been checked" cue on every card the paper's identity appears on,
+not just its own Meta tab.
 """
 
 from __future__ import annotations
@@ -65,6 +71,16 @@ class PaperHead:
     last_author: str
     cite_key: str | None
     held: bool
+    reviewed_at: str | None = None
+    reviewed_by: str | None = None
+
+    @property
+    def reviewed(self) -> bool:
+        """True once the paper's meta has been human-reviewed
+        (``refs.human_verified_at`` set) — the macro reads this to swap the
+        year badge to a solid/filled treatment. Always ``False`` for a
+        :func:`paper_head_from_facts` header (no ref on hand to check)."""
+        return self.reviewed_at is not None
 
     @property
     def multi_author(self) -> bool:
@@ -89,6 +105,9 @@ class PaperHead:
             "last_author": self.last_author,
             "cite_key": self.cite_key,
             "held": self.held,
+            "reviewed_at": self.reviewed_at,
+            "reviewed_by": self.reviewed_by,
+            "reviewed": self.reviewed,
             "multi_author": self.multi_author,
         }
 
@@ -115,6 +134,7 @@ def paper_head(ref: Any, *, held: bool, handle: str = "") -> PaperHead:
     first = names[0] if names else ""
     last = names[-1] if names else ""
     title = (getattr(ref, "title", "") or "").split("\n", 1)[0].strip()
+    verified_at = getattr(ref, "human_verified_at", None)
     return PaperHead(
         ref_id=int(getattr(ref, "id", 0) or 0),
         handle=handle,
@@ -125,6 +145,8 @@ def paper_head(ref: Any, *, held: bool, handle: str = "") -> PaperHead:
         last_author=last,
         cite_key=getattr(ref, "slug", None),
         held=held,
+        reviewed_at=verified_at.strftime("%Y-%m-%d") if verified_at else None,
+        reviewed_by=getattr(ref, "human_verified_by", None) or None,
     )
 
 
@@ -139,7 +161,9 @@ def paper_head_from_facts(
     """A :class:`PaperHead` from the bare facts a caller already has
     (title + year), when the full ``refs`` row isn't on hand — e.g. a claim
     evidence edge whose paper ref wasn't in the batch. Venue / authors come
-    back empty and the macro degrades to the one available line."""
+    back empty and the macro degrades to the one available line;
+    ``reviewed_at``/``reviewed_by`` stay ``None`` (no ref to check
+    ``human_verified_at`` against), so the badge never shows solid here."""
     return PaperHead(
         ref_id=ref_id,
         handle=handle,

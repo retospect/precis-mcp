@@ -1878,7 +1878,15 @@ async def edit(
     # A review can't cover metadata that has since changed — clear any
     # existing sign-off. Idempotent: clearing an unset stamp is a no-op.
     store.clear_human_verified(ref_id)
-    return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
+    # Land back on the Meta tab, not the default Navigate — the user was
+    # just editing metadata (bug report: /papers/helical91, 2026-08-28).
+    # `?tab=Meta` is the SAME deep-link mechanism the `reviewed` /
+    # `unacquirable` / `tags` handlers already redirect through (the
+    # `detail` route's `tab` query param, `_render_detail`'s
+    # `initial_tab`) — reused here rather than inventing a second one; a
+    # plain `/papers/<id>` load (no param) still gets the usual
+    # triage-or-Navigate default.
+    return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
 
 
 def _rename_slug(

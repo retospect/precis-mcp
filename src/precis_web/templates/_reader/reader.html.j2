@@ -34,7 +34,10 @@
   {# compact header strip — title + canonical handle + sidebar toggle #}
   <div class="flex items-center gap-3 py-2">
     <a href="{{ doc.list_url }}" class="text-sm text-slate-500 hover:underline">&larr; {{ doc.list_label }}</a>
-    <h1 class="truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
+    {# tex-scope: a paper/pres title can carry $…$/$$…$$ TeX (KaTeX render,
+       base.html.j2). The title="" tooltip stays plain text — attributes
+       can't render HTML. #}
+    <h1 class="tex-scope truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
     <span class="shrink-0 font-mono text-xs text-slate-400">{{ doc.handle }}{% if doc.slug %} · {{ doc.slug }}{% endif %}</span>
     <button type="button" @click="sidebarOpen = !sidebarOpen"
             class="ml-auto shrink-0 rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">
