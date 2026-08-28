@@ -344,3 +344,33 @@ def test_render_quote_empty_text_is_empty() -> None:
 
     assert html == ""
     assert truncated is False
+
+
+def test_render_claim_evidence_publish_state_none_without_row(hub: Hub) -> None:
+    """A hub with no ``nanopub_publish`` row — nanopub work not started —
+    renders ``publish_state``/``publish_at`` as ``None`` (the Claims-rail
+    chip keeps its pre-ladder baseline colour)."""
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    assert data["publish_state"] is None
+    assert data["publish_at"] is None
+
+
+def test_render_claim_evidence_publish_state_from_live_row(hub: Hub) -> None:
+    """A live publish row surfaces its ladder state + updated_at — the
+    Claims-rail chip colour and tooltip datestamp."""
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    row = store.nanopub_create_publish_row(claim_hub)
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    assert data["publish_state"] == "candidate"
+    assert data["publish_at"] == row.updated_at

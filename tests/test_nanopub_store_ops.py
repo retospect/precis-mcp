@@ -139,3 +139,32 @@ def test_batch_family_is_append_only_and_upgrade_inserts(store: Any) -> None:
 
     # Anchored publish-row flip is CAS'd on 'signed'.
     assert not store.nanopub_set_batch(row.id, batch)  # still candidate
+
+
+def test_publish_states_bulk_prefers_live_row_over_terminal(store: Any) -> None:
+    """One query, many hubs: live row wins over any terminal history; a
+    hub with only terminal rows reports the latest one; a hub with no
+    rows is absent; empty input short-circuits."""
+    # hub_a: rejected once, then a fresh live candidate — live wins.
+    hub_a = seed_ref(store, title="Bulk A.", kind="finding")
+    row_a1 = store.nanopub_create_publish_row(hub_a)
+    store.nanopub_transition(row_a1.id, to_state="reviewed", expect=("candidate",))
+    store.nanopub_transition(row_a1.id, to_state="rejected", expect=("reviewed",))
+    row_a2 = store.nanopub_create_publish_row(hub_a)
+    # hub_b: terminal only.
+    hub_b = seed_ref(store, title="Bulk B.", kind="finding")
+    row_b = store.nanopub_create_publish_row(hub_b)
+    store.nanopub_transition(row_b.id, to_state="reviewed", expect=("candidate",))
+    store.nanopub_transition(row_b.id, to_state="rejected", expect=("reviewed",))
+    # hub_c: no publish row.
+    hub_c = seed_ref(store, title="Bulk C.", kind="finding")
+
+    states = store.nanopub_publish_states_bulk([hub_a, hub_b, hub_c])
+
+    assert states[hub_a] == (
+        "candidate",
+        store.nanopub_publish_row_by_id(row_a2.id).updated_at,
+    )
+    assert states[hub_b][0] == "rejected"
+    assert hub_c not in states
+    assert store.nanopub_publish_states_bulk([]) == {}

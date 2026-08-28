@@ -640,6 +640,7 @@ def _render_one(
     chunk_cache: dict[str, dict[str, Any]] | None = None,
     paper_refs: dict[int, Any] | None = None,
     conjunct_atom_ids: list[int] | None = None,
+    publish: tuple[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shape one already-resolved hub's evidence for the web — the shared
     tail both :func:`render_claim_evidence` (singular) and
@@ -779,6 +780,12 @@ def _render_one(
         "coverage_note": evidence.coverage_note,
         "citation_misses": _citation_miss_rows(hub_ref),
         "inflight": not cite_keys,
+        # Nanopub publish ladder (candidate → reviewed → signed → anchored
+        # → published, or a terminal state) + when the hub entered it —
+        # the Claims-rail chip colour/tooltip. ``None`` = no publish row
+        # (nanopub work not started).
+        "publish_state": publish[0] if publish else None,
+        "publish_at": publish[1] if publish else None,
     }
 
 
@@ -838,6 +845,7 @@ def render_claim_evidence(store: Store, head: str) -> dict[str, Any] | None:
         chunk_cache=chunk_cache,
         paper_refs=paper_refs,
         conjunct_atom_ids=conjunct_atoms_bulk(store, [ref_id])[ref_id],
+        publish=store.nanopub_publish_states_bulk([ref_id]).get(ref_id),
     )
 
 
@@ -923,6 +931,9 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
     # Conjunct atoms batched once (mirrors cite_key_map) so claim_trust's
     # compound check issues no per-hub derive_conjuncts queries.
     atoms_by_hub = conjunct_atoms_bulk(store, hub_ref_ids)
+    # Nanopub publish states batched once (mirrors cite_key_map) — the
+    # Claims-rail chip colour/tooltip source.
+    publish_by_hub = store.nanopub_publish_states_bulk(hub_ref_ids)
 
     out: list[dict[str, Any]] = []
     for head, ref_id in head_ref.items():
@@ -940,6 +951,7 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
                 chunk_cache=chunk_cache,
                 paper_refs=paper_refs,
                 conjunct_atom_ids=atoms_by_hub.get(ref_id, []),
+                publish=publish_by_hub.get(ref_id),
             )
         )
     return out

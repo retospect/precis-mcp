@@ -806,12 +806,29 @@
       {% if claims_evidence %}
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Claims</div>
+        {# Chip colour = the hub's nanopub publish-ladder state (candidate →
+           reviewed → signed → anchored → published; rose/struck = a terminal
+           mishap). signed=sky / published=emerald match the /nanopub
+           workbench badges; violet = no publish row yet (the pre-ladder
+           baseline, the rail's original colour). Tooltip carries the state
+           + when the hub entered it (publish row updated_at, UTC). #}
+        {% set np_chip = {
+          'candidate':  'bg-amber-50 text-amber-700 hover:bg-amber-100',
+          'reviewed':   'bg-indigo-50 text-indigo-700 hover:bg-indigo-100',
+          'signed':     'bg-sky-50 text-sky-700 hover:bg-sky-100',
+          'anchored':   'bg-teal-50 text-teal-700 hover:bg-teal-100',
+          'published':  'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+          'rejected':   'bg-rose-50 text-rose-600 hover:bg-rose-100',
+          'retracted':  'bg-rose-50 text-rose-600 hover:bg-rose-100 line-through',
+          'superseded': 'bg-slate-100 text-slate-500 hover:bg-slate-200 line-through',
+        } %}
         <div class="flex max-h-40 flex-wrap gap-1 overflow-y-auto">
           {% for entry in claims_evidence %}
           {% set starred = (entry.originators + entry.corroborators) | selectattr('starred') | map(attribute='handle') | list %}
+          {% set np_tip = 'nanopub: ' ~ (entry.publish_state or 'not started') ~ (' — since ' ~ entry.publish_at.strftime('%Y-%m-%d %H:%M') ~ 'Z' if entry.publish_at else '') %}
           <a href="/claim/{{ entry.head }}" data-claim-head="{{ entry.head }}"
-             class="max-w-[16rem] truncate rounded bg-violet-50 px-1.5 py-0.5 text-[11px] text-violet-700 hover:bg-violet-100"
-             title="{{ entry.claim }}">{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
+             class="max-w-[16rem] truncate rounded px-1.5 py-0.5 text-[11px] {{ np_chip.get(entry.publish_state, 'bg-violet-50 text-violet-700 hover:bg-violet-100') }}"
+             title="{{ entry.claim }}&#10;{{ np_tip }}">{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
           {% endfor %}
         </div>
       </div>

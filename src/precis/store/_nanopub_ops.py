@@ -16,6 +16,7 @@ INSERTs a new proof row, never rewrites the pending one).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -192,6 +193,31 @@ class NanopubMixin:
                 (row_id,),
             ).fetchone()
         return _row_to_publish(row) if row else None
+
+    def nanopub_publish_states_bulk(
+        self, claim_ref_ids: Iterable[int]
+    ) -> dict[int, tuple[str, datetime]]:
+        """``{claim_ref_id: (state, updated_at)}`` for MANY hubs in one
+        query — the smartdraft Claims-rail batch discipline (its bulk
+        renderer resolves a render-window's worth of hubs per request;
+        a per-hub :meth:`nanopub_publish_row` would re-add N round trips).
+
+        Per hub: the live (non-terminal) row when one exists — the partial
+        unique index guarantees at most one — else the most recently
+        updated terminal row (so a retracted/superseded/rejected hub still
+        reports what happened to it rather than vanishing). Hubs with no
+        publish row at all are simply absent from the result."""
+        ids = list(set(claim_ref_ids))
+        if not ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (claim_ref_id) claim_ref_id, state, updated_at "
+                "FROM nanopub_publish WHERE claim_ref_id = ANY(%s) "
+                "ORDER BY claim_ref_id, (state = ANY(%s)) ASC, updated_at DESC",
+                (ids, list(TERMINAL_STATES)),
+            ).fetchall()
+        return {int(r[0]): (str(r[1]), r[2]) for r in rows}
 
     def nanopub_create_publish_row(
         self, claim_ref_id: int, *, artifact_type: str = "claim"

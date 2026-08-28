@@ -536,14 +536,11 @@ def search(
     legs; `per_paper=` spreads across papers; `good=True` queues a deep
     search; `title=`/`author=` look up by byline.
 
-    Claims (finding): `trust=` `'signed'` / `'verified'` / `'disputed'` /
-    `'any'` filters by how far up the publish ladder a claim hub climbed
-    — orthogonal to `status=`, which is the chase lifecycle.
+    Claims (finding): `trust='signed'/'verified'/'disputed'/'any'`
+    filters by publish-ladder height; `status=` is the chase lifecycle.
 
-    Discovery: `uncited=<draft>` excludes everything that draft already
-    cites (directly, or via a cited claim hub's supporters) — surfacing
-    sources you missed, the query-driven twin of
-    `get(kind='draft', view='backfill')`'s text-driven recall.
+    Discovery: `uncited=<draft>` drops sources that draft already cites —
+    surfacing what it hasn't grounded yet.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """
