@@ -73,6 +73,17 @@ dependencies = [
     # python_version = "3.12"): numpy 2.5 dropped py3.11 and ships PEP 695
     # `type`-statement stubs that only parse under a >=3.12 mypy target.
     "numpy>=1.24",
+    # PCB copper tiling (pcb-guided-place-route slice 5): polygon booleans,
+    # antipad subtraction, sliver detection, weighted-Voronoi expansion.
+    # CORE, not an extra, deliberately — DRC/plane reads run inline in serve,
+    # so extras-gating would repeat the asa-venv silent-fail trap (a feature
+    # that is simply absent in prod until someone notices). Confined to
+    # tiling.py / planes.py / realize.py; `pcb/geom.py` keeps its
+    # "no dependencies" convention untouched. NOTE the justification is the
+    # TILING pass specifically — clearance queries do NOT need it (our
+    # geometry alphabet is small and those distances are closed-form), so if
+    # tiling is ever cut this dep should be re-examined, not inherited.
+    "shapely>=2.0",
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",
     "pyyaml>=6.0",

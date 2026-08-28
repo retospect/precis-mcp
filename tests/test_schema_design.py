@@ -105,6 +105,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "nanopub_publish.grounding",
         "part_footprints.centroid",
         "part_footprints.courtyard",
+        # 0140: precomputed footprint escape graph (shells/gaps/
+        # per_shell_capacity/required_layers) — footprint-intrinsic, cached
+        # once, never recomputed per placement.
+        "part_footprints.escape",
         "part_footprints.pads",
         "part_footprints.pin_map",
         # 0139: the untouched EasyEDA component JSON, kept so a future

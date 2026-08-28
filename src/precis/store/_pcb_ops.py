@@ -1264,10 +1264,14 @@ class PcbMixin:
         }
 
     def part_footprint_get(self, lcsc: str) -> dict[str, Any] | None:
-        """The Flow B EasyEDA cache row for a C-number, or None."""
+        """The Flow B EasyEDA cache row for a C-number, or None. ``escape``
+        is the precomputed footprint escape graph (pcb-guided-place-route
+        Slice 5, `precis.pcb.escape.compute_escape_graph`) — footprint-
+        intrinsic, so it round-trips here rather than in any board-scoped
+        table."""
         with self.pool.connection() as conn:
             r = conn.execute(
-                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw "
+                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape "
                 "FROM part_footprints WHERE lcsc = %s",
                 (lcsc,),
             ).fetchone()
@@ -1282,23 +1286,28 @@ class PcbMixin:
             "kicad_mod": r[4],
             "source": r[5],
             "raw": r[6],
+            "escape": r[7],
         }
 
     def part_footprint_put(self, lcsc: str, data: dict[str, Any]) -> None:
         """Cache a fetched footprint (Flow B). Upsert by C-number. ``raw``
         (the untouched EasyEDA component JSON) round-trips so a future
-        parser improvement can reparse from cache without re-fetching."""
+        parser improvement can reparse from cache without re-fetching.
+        ``escape`` (the precomputed escape graph, opaque here — see
+        :mod:`precis.pcb.escape`) round-trips the same way as every other
+        field: an upsert with the key omitted (or ``None``) writes NULL,
+        same as ``kicad_mod``/``source`` above."""
         with self.tx() as conn:
             conn.execute(
                 """
                 INSERT INTO part_footprints
-                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (lcsc) DO UPDATE SET
                     pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
                     courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
                     kicad_mod=EXCLUDED.kicad_mod, source=EXCLUDED.source,
-                    raw=EXCLUDED.raw, fetched_at=now()
+                    raw=EXCLUDED.raw, escape=EXCLUDED.escape, fetched_at=now()
                 """,
                 (
                     lcsc,
@@ -1309,6 +1318,7 @@ class PcbMixin:
                     data.get("kicad_mod"),
                     data.get("source"),
                     _jsonb_or_none(data.get("raw")),
+                    _jsonb_or_none(data.get("escape")),
                 ),
             )
 
