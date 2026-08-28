@@ -171,6 +171,56 @@ Read the `setup` column of every hit. If one matches, reuse its
 `id` rather than spawning a parallel chase; attach your own context
 with `put(kind='memory', link='finding:<id>')`.
 
+## How settled is this claim? — the `trust=` axis
+## Search only claims a human has signed
+## Which of these claims can I lean on in a draft?
+
+`status=` is the **chase lifecycle** (how far the citation chase got).
+It says nothing about whether anyone checked the claim. `trust=` is the
+second, orthogonal axis — how far up the publish ladder a claim hub
+actually climbed:
+
+| `trust=` | keeps a hit when |
+|---|---|
+| `'signed'` | a human attesting key stands behind it (`signed`/`anchored`/`published`) |
+| `'verified'` | ≥1 *verified* supporting edge **and** no live `contradicts` edge |
+| `'disputed'` | it holds a live `contradicts` edge — the inspection cohort |
+| `'any'` / omitted | no filter |
+
+```python
+search(kind="finding", q="amine CO2 capacity", trust="signed")
+search(kind="finding", q="amine CO2 capacity", trust="disputed")  # what's opposed?
+```
+
+An ordinary chase finding has no publish posture and never will, so it
+fails every tier but `'any'` — "give me settled claims" never answers
+with a row that was never on the ladder. The filter runs after
+retrieval, so a page can come back short; that is the honest answer
+when little is settled, not a reason to widen. Ordering is untouched —
+relevance stays the ranking signal.
+
+**Read the whole row, not just the state.** Once any hit is a claim
+hub the table widens to `id | title | state | support | flags | setup |
+primary`:
+
+- `state` — the publish rung, or `unminted`.
+- `support` — `3✓+1?`: three supporting edges carry a verification
+  verdict, one is **withheld** (the publish preflight will refuse it).
+- `flags` — `disputed` (a live `contradicts` edge) and `drifted` (the
+  claim was reworded out from under its frozen string).
+
+The negatives ride in the same row as the hit deliberately. A claim
+layer that showed only its promotions is how a contradicted claim gets
+laundered into a draft.
+
+**A claim can move backwards.** When the widening pass attaches a
+`contradicts` edge, the hub's publish posture follows the evidence: a
+`reviewed`/`signed` hub reopens to `candidate` (it must earn approval
+again), while an `anchored`/`published` one cannot be reopened — its
+bytes are frozen — so it raises an alert for a human to supersede or
+retract. So a `state` you read yesterday is not a promise about today;
+re-check before citing.
+
 ## Read a finding
 ## Look up a finding by id
 ## What does finding 42 say?

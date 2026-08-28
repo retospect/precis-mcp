@@ -454,6 +454,12 @@ def search(
     # specific lifecycle cohort, or '*' to see all. Declared at the
     # verb level so the schema advertises it to strict-schema clients.
     status: str | None = None,
+    # finding-specific epistemic filter, orthogonal to status= (which is
+    # the chase lifecycle). 'signed' = a human attesting key stands behind
+    # the claim; 'verified' = at least one verified supporting edge and no
+    # live contradicts; 'disputed' = the contradicted cohort; 'any' = no
+    # filter. Declared at the verb level so strict-schema clients keep it.
+    trust: str | None = None,
     # Broad / high-recall retrieval (paper kind). ``queries=`` are extra
     # question reformulations and ``answers=`` are hypothetical-answer
     # passages (HyDE); each becomes a ranked leg reciprocal-rank-fused
@@ -520,6 +526,10 @@ def search(
     Broad retrieval (paper): `queries=`/`answers=` (HyDE) fuse ranked
     legs; `per_paper=` spreads across papers; `good=True` queues a deep
     search; `title=`/`author=` look up by byline.
+
+    Claims (finding): `trust=` `'signed'` / `'verified'` / `'disputed'` /
+    `'any'` filters by how far up the publish ladder a claim hub climbed
+    — orthogonal to `status=`, which is the chase lifecycle.
 
     Full reference: get(kind='skill', id='precis-search-help').
     """
@@ -674,6 +684,8 @@ def search(
         payload["view"] = view
     if status is not None:
         payload["status"] = status
+    if trust is not None:
+        payload["trust"] = trust
     if mode is not None:
         payload["mode"] = mode
     # Broad-retrieval knobs — forwarded only when set so a plain search

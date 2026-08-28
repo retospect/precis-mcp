@@ -76,7 +76,8 @@ sibling modules so this file stays legible:
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg.errors import UniqueViolation
 
@@ -99,6 +100,11 @@ from precis.taproot import authoring, hub
 from precis.utils import handle_registry
 from precis.utils.ref_hybrid import fused_ref_hits
 
+if TYPE_CHECKING:
+    from precis.nanopub.overview import HubOverviewRow
+
+log = logging.getLogger(__name__)
+
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
 _DERIVED_FROM = "derived-from"
@@ -112,6 +118,26 @@ _AWAITS_EVIDENCE = "awaits-evidence"
 # *tag* rather than a status, a minted hub is visible without the
 # ``status='*'`` workaround regardless of the hub's status value.
 _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
+
+# ── the trust axis ────────────────────────────────────────────────────
+# Orthogonal to ``STATUS:`` — that is the *chase lifecycle* (how far the
+# citation chase got), which says nothing about whether anyone checked the
+# claim. ``trust=`` is the epistemic axis: how far up the publish ladder
+# (``precis.nanopub.state``) a claim hub has actually climbed.
+_TRUST_SIGNED = "signed"
+_TRUST_VERIFIED = "verified"
+_TRUST_DISPUTED = "disputed"
+_TRUST_ANY = "any"
+_TRUST_VALUES = (_TRUST_SIGNED, _TRUST_VERIFIED, _TRUST_DISPUTED, _TRUST_ANY)
+#: Publish states that mean "a human key attested this claim".
+_SIGNED_STATES = ("signed", "anchored", "published")
+#: ``trust=`` filters *after* retrieval (the posture lives in publish rows
+#: and links, not in the search index), so the retrieval leg has to over-
+#: fetch or the filter would just thin an already-truncated page. Factor,
+#: not unbounded: a trust query is a narrowing question, and a page that
+#: still comes back short is honest about how little is settled.
+_TRUST_POOL_FACTOR = 5
+_TRUST_POOL_MAX = 100
 
 
 class FindingHandler(NumericRefHandler):
@@ -858,11 +884,66 @@ class FindingHandler(NumericRefHandler):
             chunk_kinds=["finding_body"],
         )
 
+    def _postures(
+        self, ref_ids: list[int], *, strict: bool = False
+    ) -> dict[int, HubOverviewRow]:
+        """Publish/evidence posture for whichever hits are claim hubs.
+
+        One bounded query (``nanopub.overview.hub_rows(ref_ids=…)``) per
+        result page. Non-hub hits simply have no row.
+
+        ``strict`` decides what a failed read means, and the two callers
+        genuinely differ. For the **columns** it is signage: a posture we
+        couldn't read renders blank, which is degraded but honest, and a
+        transient DB blip must never break a search. For the **filter**
+        the same empty dict would be a lie — ``_passes_trust(None, …)`` is
+        ``False`` for every tier, so a swallowed error would empty the
+        page and render as "nothing is settled", which is exactly the
+        answer someone deciding what to cite must not be handed. So the
+        filter passes ``strict=True`` and lets the error surface.
+        """
+        if not ref_ids:
+            return {}
+        from precis.nanopub.overview import hub_rows
+
+        try:
+            return {row.ref_id: row for row in hub_rows(self.store, ref_ids=ref_ids)}
+        except Exception:
+            if strict:
+                raise
+            log.warning("finding search: posture read failed", exc_info=True)
+            return {}
+
+    def _trust_pool(self, page_size: int, trust: str | None) -> int:
+        """Retrieval limit for a page — widened when ``trust=`` will cull."""
+        if not trust or trust == _TRUST_ANY:
+            return page_size
+        return min(page_size * _TRUST_POOL_FACTOR, _TRUST_POOL_MAX)
+
+    def _apply_trust(
+        self, refs: list[Ref], *, trust: str | None, page_size: int
+    ) -> list[Ref]:
+        """Cull an over-fetched pool to the requested trust tier, then trim.
+
+        Order is untouched: relevance stays the ranking signal, exactly as
+        ``precis-search-help`` promises. ``trust=`` removes rows, it never
+        re-ranks them — a settled-but-barely-relevant claim outranking a
+        dead-on candidate would be a worse answer, not a safer one.
+        """
+        if not trust or trust == _TRUST_ANY:
+            return refs[:page_size]
+        # strict=True: an unreadable posture must not masquerade as "not
+        # settled" — see :meth:`_postures`.
+        postures = self._postures([int(r.id) for r in refs], strict=True)
+        kept = [r for r in refs if _passes_trust(postures.get(int(r.id)), trust)]
+        return kept[:page_size]
+
     def search(
         self,
         *,
         q: str | None = None,
         status: str | None = None,
+        trust: str | None = None,
         tags: list[str] | None = None,
         page_size: int = 10,
         mode: str | None = None,
@@ -912,15 +993,56 @@ class FindingHandler(NumericRefHandler):
         NOT include hubs unless asked for directly (``status='canonical'`` or
         ``status='*'``).
 
+        ``trust=`` is the **second, orthogonal axis**: not how far the
+        chase got (that's ``status=``) but how far up the publish ladder
+        the claim itself climbed.
+
+        =================== ====================================================
+        ``trust=``          keeps a hit when
+        =================== ====================================================
+        ``'signed'``        its publish row is ``signed``/``anchored``/
+                            ``published`` — a human attesting key stands
+                            behind it
+        ``'verified'``      it holds at least one *verified* supporting
+                            edge and no live ``contradicts`` edge
+        ``'disputed'``      it holds a live ``contradicts`` edge — the
+                            inspection cohort, deliberately reachable
+        ``'any'`` / omitted no filter
+        =================== ====================================================
+
+        A hit with no publish posture at all (an ordinary
+        ``STATUS:established`` chase finding) fails every tier but
+        ``'any'``: "give me settled claims" must not answer with rows that
+        were never on the ladder. The filter runs after retrieval, so the
+        retrieval leg over-fetches (:data:`_TRUST_POOL_FACTOR`) and the
+        page can still come back short — which is the honest answer when
+        little is settled, not a bug to pad around. Ordering is *not*
+        touched: relevance remains the ranking signal.
+
         Renders results as a TOON table (``id | title | setup |
-        primary``) so the agent gets a scannable list — the begat
+        primary``, plus ``state | support | flags`` once any hit is a
+        claim hub) so the agent gets a scannable list — the begat
         chain detail lives behind ``get(kind='finding', id=N)``.
         """
         base_tags: list[str] = list(tags) if tags else []
+        resolved_trust = (trust or "").strip().lower() or None
+        if resolved_trust is not None and resolved_trust not in _TRUST_VALUES:
+            raise BadInput(
+                f"unknown trust={trust!r}",
+                options=list(_TRUST_VALUES),
+                next=(
+                    "search(kind='finding', q='…', trust='signed') for claims "
+                    "a human key stands behind"
+                ),
+            )
 
         if status is None:
             return self._search_default_cohort(
-                q=q, base_tags=base_tags, page_size=page_size, mode=mode
+                q=q,
+                base_tags=base_tags,
+                page_size=page_size,
+                mode=mode,
+                trust=resolved_trust,
             )
 
         # Explicit status= (including '*') — exact single-status filter,
@@ -942,7 +1064,12 @@ class FindingHandler(NumericRefHandler):
         if q is None or not q.strip():
             if normalized:
                 refs = self.store.list_refs(
-                    kind=self.kind, tags=normalized, limit=page_size
+                    kind=self.kind,
+                    tags=normalized,
+                    limit=self._trust_pool(page_size, resolved_trust),
+                )
+                refs = self._apply_trust(
+                    refs, trust=resolved_trust, page_size=page_size
                 )
                 return self._render_finding_table(refs, query=None)
             raise BadInput(
@@ -953,11 +1080,19 @@ class FindingHandler(NumericRefHandler):
                 ),
             )
 
-        refs = self._hybrid_hits(q=q, tags=normalized, limit=page_size, mode=mode)
+        refs = self._hybrid_hits(
+            q=q,
+            tags=normalized,
+            limit=self._trust_pool(page_size, resolved_trust),
+            mode=mode,
+        )
+        refs = self._apply_trust(refs, trust=resolved_trust, page_size=page_size)
         if not refs:
             tag_suffix = (
                 f" with status={resolved_status!r}" if resolved_status != "*" else ""
             )
+            if resolved_trust:
+                tag_suffix += f" at trust={resolved_trust!r}"
             body = f"no finding matches {q!r}{tag_suffix}"
             from precis.utils.next_block import render_next_section
 
@@ -971,6 +1106,14 @@ class FindingHandler(NumericRefHandler):
                     "loosen the query",
                 ),
             ]
+            if resolved_trust:
+                nav.insert(
+                    0,
+                    (
+                        f"search(kind='finding', q={q!r}, status={resolved_status!r})",
+                        "drop the trust filter",
+                    ),
+                )
             body += render_next_section(nav)
             return Response(body=body)
 
@@ -983,6 +1126,7 @@ class FindingHandler(NumericRefHandler):
         base_tags: list[str],
         page_size: int,
         mode: str | None = None,
+        trust: str | None = None,
     ) -> Response:
         """The defaulted (``status is None``) search cohort: union of
         ``STATUS:established`` rows and ``TAPROOT:claim`` hubs.
@@ -1003,22 +1147,31 @@ class FindingHandler(NumericRefHandler):
             _tags_with(base_tags, _TAPROOT_CLAIM_TAG), kind=self.kind
         )
 
+        pool = self._trust_pool(page_size, trust)
         if q is None or not q.strip():
             established_refs = self.store.list_refs(
-                kind=self.kind, tags=established_tags, limit=page_size
+                kind=self.kind, tags=established_tags, limit=pool
             )
-            hub_refs = self.store.list_refs(
-                kind=self.kind, tags=hub_tags, limit=page_size
+            hub_refs = self.store.list_refs(kind=self.kind, tags=hub_tags, limit=pool)
+            refs = self._apply_trust(
+                _merge_dedup(established_refs, hub_refs),
+                trust=trust,
+                page_size=page_size,
             )
-            refs = _merge_dedup(established_refs, hub_refs)[:page_size]
             return self._render_finding_table(refs, query=None)
 
-        refs = _merge_dedup(
-            self._hybrid_hits(q=q, tags=established_tags, limit=page_size, mode=mode),
-            self._hybrid_hits(q=q, tags=hub_tags, limit=page_size, mode=mode),
-        )[:page_size]
+        refs = self._apply_trust(
+            _merge_dedup(
+                self._hybrid_hits(q=q, tags=established_tags, limit=pool, mode=mode),
+                self._hybrid_hits(q=q, tags=hub_tags, limit=pool, mode=mode),
+            ),
+            trust=trust,
+            page_size=page_size,
+        )
         if not refs:
             body = f"no finding matches {q!r} with status='established'"
+            if trust:
+                body += f" at trust={trust!r}"
             from precis.utils.next_block import render_next_section
 
             nav: list[tuple[str, str]] = [
@@ -1039,32 +1192,56 @@ class FindingHandler(NumericRefHandler):
     def _render_finding_table(self, refs: list[Ref], *, query: str | None) -> Response:
         """Render the finding-search TOON table.
 
-        Shape: ``id | title | setup | primary``. ``setup`` is
-        ``meta.scope`` flattened to ``key=value`` pairs; ``primary``
-        is ``meta.primary_cite_key`` when the chase has terminated
-        (empty for in-flight rows).
+        Shape: ``id | title | setup | primary``, widened to ``id | title |
+        state | support | flags | setup | primary`` as soon as **any** hit
+        is a claim hub. ``setup`` is ``meta.scope`` flattened to
+        ``key=value`` pairs; ``primary`` is ``meta.primary_cite_key`` when
+        the chase has terminated (empty for in-flight rows).
+
+        **Why the posture columns.** Before them the table was
+        epistemically blind: a hub minted an hour ago and born withheld
+        rendered identically to one signed, anchored and published, so
+        nothing in the result told a writer which claims the corpus
+        actually stands behind — and the settled layer is only worth
+        searching first if you can see that it is settled. ``state`` is
+        the publish rung (or ``unminted``), ``support`` counts verified
+        supporting edges and, after ``+``, the withheld ones the publish
+        preflight will refuse, and ``flags`` carries the negatives —
+        ``disputed`` (a live ``contradicts`` edge) and ``drifted`` (the
+        claim was reworded out from under its frozen string). The
+        negatives ride in the same row as the hit on purpose: a claim
+        layer that shows only its promotions is how a contradicted claim
+        gets laundered into a draft.
+
+        The three columns are omitted entirely when no hit carries a
+        posture — a plain ``STATUS:established`` chase finding has no
+        publish row and never will, so an established-only result stays
+        exactly as narrow as it was.
         """
         from precis.format import render_agent_table
 
         if not refs:
             return Response(body="no finding entries match")
 
+        postures = self._postures([int(r.id) for r in refs])
         rows: list[dict[str, str]] = []
         for r in refs:
             meta = r.meta or {}
             scope = meta.get("scope") or {}
             setup_str = ", ".join(f"{k}={v}" for k, v in sorted(scope.items()) if v)
             primary = meta.get("primary_cite_key") or ""
-            rows.append(
-                {
-                    "id": str(r.id),
-                    "title": r.title,
-                    "setup": setup_str,
-                    "primary": primary,
-                }
-            )
+            row = {
+                "id": str(r.id),
+                "title": r.title,
+                "setup": setup_str,
+                "primary": primary,
+            }
+            row.update(_posture_cells(postures.get(int(r.id))))
+            rows.append(row)
 
         schema = ["id", "title", "setup", "primary"]
+        if postures:
+            schema = ["id", "title", "state", "support", "flags", "setup", "primary"]
         if query is not None:
             header = f"# {len(refs)} finding match(es) for {query!r}"
         else:
@@ -1404,6 +1581,48 @@ def _merge_dedup(primary: list[Ref], secondary: list[Ref]) -> list[Ref]:
             merged.append(r)
             seen.add(r.id)
     return merged
+
+
+def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
+    """Does this hit clear the ``trust=`` tier?
+
+    A hit with **no** posture row — a plain ``STATUS:established`` chase
+    finding, which has no publish row and no evidence edges — fails every
+    tier except ``'any'``. That is the point of the facet: asking for
+    settled claims must not hand back rows that were never in the ladder.
+    """
+    if trust in ("", _TRUST_ANY):
+        return True
+    if row is None:
+        return False
+    if trust == _TRUST_SIGNED:
+        return row.state in _SIGNED_STATES
+    if trust == _TRUST_VERIFIED:
+        # Verified *and* unopposed: a hub with a live contradicts edge is
+        # exactly what the ratchet hides, so it never answers "settled".
+        return row.verified_count > 0 and not row.disputed
+    if trust == _TRUST_DISPUTED:
+        return row.disputed
+    return True
+
+
+def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
+    """The ``state``/``support``/``flags`` cells for one hit."""
+    if row is None:
+        return {"state": "", "support": "", "flags": ""}
+    support = ""
+    if row.verified_count or row.withheld_count:
+        support = f"{row.verified_count}✓"
+        if row.withheld_count:
+            support += f"+{row.withheld_count}?"
+    flags = [
+        f for f, on in (("disputed", row.disputed), ("drifted", row.drifted)) if on
+    ]
+    return {
+        "state": row.state or "unminted",
+        "support": support,
+        "flags": ",".join(flags),
+    }
 
 
 __all__ = ["FindingHandler"]

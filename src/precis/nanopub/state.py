@@ -59,3 +59,30 @@ def check_transition(from_state: str, to_state: str) -> None:
             f"illegal publish transition {from_state!r} → {to_state!r} "
             f"(allowed: {', '.join(allowed) or 'none — terminal state'})"
         )
+
+
+#: Freeze rungs, weakest first — what a publish state has made immutable.
+#: ``''`` nothing · ``'string'`` the claim sentence · ``'bytes'`` the signed
+#: artifact · ``'published'`` public and forever.
+FROZEN_NONE = ""
+FROZEN_STRING = "string"
+FROZEN_BYTES = "bytes"
+FROZEN_PUBLISHED = "published"
+
+
+def frozen_rung(state: str | None) -> str:
+    """Which rung of the frozen-ness ladder ``state`` sits on.
+
+    The ladder is documented in :mod:`precis.nanopub.overview`; this is
+    the single pure reader of it, so the review surface's display and
+    :mod:`precis.nanopub.demote`'s policy can never disagree about where
+    the freeze line falls. ``None`` (unminted hub) and every terminal
+    state read as unfrozen — a terminal row is not a live posture.
+    """
+    if state in ("signed", "anchored"):
+        return FROZEN_BYTES
+    if state == "reviewed":
+        return FROZEN_STRING
+    if state == "published":
+        return FROZEN_PUBLISHED
+    return FROZEN_NONE

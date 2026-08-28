@@ -91,9 +91,19 @@ Built (slices 4–5, publish path — POST gated, nothing published):
   claims (mintable, never publishable).
 - :mod:`.overview` — the "see all the things" read: every claim hub by
   publish state in one query (disputed bucket sorted by dispute age,
-  drifted flags, withheld counts) + the **frozen-ness ladder**
+  drifted flags, withheld/verified counts) + the **frozen-ness ladder**
   (``reviewed`` freezes the string; ``signed``/``anchored`` freeze the
-  artifact bytes; ``published`` is public forever).
+  artifact bytes; ``published`` is public forever — the rung itself is
+  ``state.frozen_rung``, read by both this display and ``demote``).
+  ``hub_rows(ref_ids=…)`` narrows the same query to a hit set, which is
+  what puts publish posture in ``search(kind='finding')``'s table.
+- :mod:`.demote` — the ladder walked **downward**, the answer to
+  taproot's ratchet: a newly written ``contradicts`` edge reopens a
+  ``reviewed``/``signed`` hub to ``candidate`` (frozen fields discarded,
+  the append-only artifact row untouched) and, past the anchor, raises
+  for a human supersede/retract instead of touching anything. The
+  backward transitions were always legal in ``state.TRANSITIONS``;
+  nothing had ever walked them because *evidence* turned.
 - :mod:`.registry` — the registry POST, **the one true point of no
   return**, triple-gated: ``interactive=True`` (a person runs it) +
   ``live=True`` (dry run otherwise) + zero blocking preflight issues.

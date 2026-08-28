@@ -799,6 +799,210 @@ class TestSearchSurfacesHubs:
         assert str(hub_id) not in out_tags.body
 
 
+class TestSearchTrustAxis:
+    """``trust=`` — the epistemic axis, orthogonal to the chase ``status=``.
+
+    A hub's publish posture (``precis.nanopub.state``) plus its evidence
+    edges decide the tier; the columns make that posture visible in the
+    result table, which is the whole point of searching the claim layer
+    before the passages under it.
+    """
+
+    _CLAIM = CanonicalClaim(
+        sentence="Amine loading raises CO2 capacity in mesoporous silica.",
+        scope={"sorbent": "silica"},
+    )
+
+    @staticmethod
+    def _at_state(store, hub_id: int, state: str) -> None:
+        row = store.nanopub_create_publish_row(hub_id)
+        if state != "candidate":
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE nanopub_publish SET state = %s WHERE id = %s",
+                    (state, row.id),
+                )
+                conn.commit()
+
+    @staticmethod
+    def _attach(store, hub_id: int, paper_ref_id: int, *, meta: dict) -> None:
+        from precis.taproot.hub import attach_evidence
+
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=paper_ref_id,
+            role="corroborates",
+            meta=meta,
+            set_by="system",
+        )
+
+    def test_unknown_trust_value_is_a_sharp_bad_input(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.search(q="amine", trust="probably")
+        assert "signed" in str(exc.value.options)
+
+    def test_trust_signed_keeps_only_attested_claims(self, store) -> None:
+        h = _make_handler(store)
+        signed = mint_hub(store, self._CLAIM)
+        unsigned = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Amine loading raises CO2 capacity in zeolites.",
+                scope={"sorbent": "zeolite"},
+            ),
+        )
+        self._at_state(store, signed, "signed")
+        self._at_state(store, unsigned, "candidate")
+
+        out = h.search(q="Amine loading", trust="signed")
+
+        assert str(signed) in out.body
+        assert f"\n{unsigned}\t" not in out.body
+
+    def test_trust_verified_needs_a_verdict_and_no_dispute(self, store) -> None:
+        """A verified supporting edge qualifies; a live ``contradicts`` edge
+        disqualifies even when the support is there — the ratchet's blind
+        spot is exactly a well-supported claim something now opposes."""
+        h = _make_handler(store)
+        paper = _seed_paper(store, cite_key="verif23a")
+        verified = mint_hub(store, self._CLAIM)
+        self._attach(
+            store,
+            verified,
+            paper,
+            meta={
+                "support": "yes",
+                "support_reason": "direct measurement",
+                "verified_by": "test",
+            },
+        )
+
+        withheld = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Amine loading raises CO2 capacity in zeolites.",
+                scope={"sorbent": "zeolite"},
+            ),
+        )
+        self._attach(store, withheld, paper, meta={"source_handle": "pc1"})
+
+        out = h.search(q="Amine loading", trust="verified")
+
+        assert str(verified) in out.body
+        assert f"\n{withheld}\t" not in out.body
+
+    def test_trust_disputed_reaches_the_contradicted_cohort(self, store) -> None:
+        from precis.taproot.hub import attach_evidence
+
+        h = _make_handler(store)
+        paper = _seed_paper(store, cite_key="contra23a")
+        disputed = mint_hub(store, self._CLAIM)
+        attach_evidence(
+            store,
+            hub_ref_id=disputed,
+            paper_ref_id=paper,
+            role="contradicts",
+            meta={"support": "no"},
+            set_by="system",
+        )
+        quiet = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Amine loading raises CO2 capacity in zeolites.",
+                scope={"sorbent": "zeolite"},
+            ),
+        )
+
+        out = h.search(q="Amine loading", trust="disputed")
+
+        assert str(disputed) in out.body
+        assert f"\n{quiet}\t" not in out.body
+
+    def test_trust_excludes_findings_that_were_never_on_the_ladder(self, store) -> None:
+        """An ordinary chase finding has no publish posture and never will —
+        "give me settled claims" must not answer with it."""
+        h = _make_handler(store)
+        _seed_paper(store, cite_key="chase23a")
+        resp = h.put(
+            title="Amine loading raises CO2 capacity somewhere",
+            body="an in-flight amine loading claim",
+            cited_in="chase23a",
+        )
+        chase_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        out = h.search(q="Amine loading", trust="verified", status="*")
+
+        assert f"\n{chase_id}\t" not in out.body
+
+    def test_posture_columns_render_state_support_and_flags(self, store) -> None:
+        h = _make_handler(store)
+        paper = _seed_paper(store, cite_key="post23a")
+        hub_id = mint_hub(store, self._CLAIM)
+        self._at_state(store, hub_id, "reviewed")
+        self._attach(
+            store,
+            hub_id,
+            paper,
+            meta={"support": "yes", "support_reason": "r", "verified_by": "test"},
+        )
+
+        out = h.search(q="Amine loading")
+
+        assert "state" in out.body and "support" in out.body and "flags" in out.body
+        assert "reviewed" in out.body
+        assert "1✓" in out.body
+
+    def test_posture_read_failure_never_fakes_an_unsettled_answer(
+        self, store, monkeypatch
+    ) -> None:
+        """A failed posture read must not be indistinguishable from "nothing
+        is settled".
+
+        The columns are signage and degrade to blanks, but the *filter* acts
+        on the same read — and a swallowed error there would empty the page
+        and render as "no finding matches … at trust='signed'", which is the
+        one answer someone deciding what to cite must never be handed on a
+        transient DB blip. So the filter path raises and the render path
+        does not."""
+        h = _make_handler(store)
+        hub_id = mint_hub(store, self._CLAIM)
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("posture read exploded")
+
+        monkeypatch.setattr("precis.nanopub.overview.hub_rows", _boom)
+
+        # Filtering: the error surfaces rather than becoming an empty page.
+        with pytest.raises(RuntimeError):
+            h.search(q="Amine loading", trust="signed")
+
+        # Signage: an unfiltered search still answers, columns degraded.
+        out = h.search(q="Amine loading")
+        assert str(hub_id) in out.body
+
+    def test_established_only_result_keeps_the_narrow_table(self, store) -> None:
+        """No hub in the hit set → no posture columns. A chase finding can
+        never carry a publish row, so the extra width would be all blanks."""
+        h = _make_handler(store)
+        _seed_paper(store, cite_key="narrow23a")
+        resp = h.put(
+            title="a narrow-table probe claim",
+            body="narrow table probe body",
+            cited_in="narrow23a",
+        )
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        from precis.store.types import Tag
+
+        store.add_tag(finding_id, Tag.closed("STATUS", "established"), set_by="system")
+
+        out = h.search(q="narrow-table probe")
+
+        assert str(finding_id) in out.body
+        assert "flags" not in out.body
+
+
 # ── put(supporters=...) — Taproot claim-hub authoring ────────
 
 

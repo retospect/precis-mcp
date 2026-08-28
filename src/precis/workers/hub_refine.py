@@ -88,6 +88,18 @@ a blind periodic rescan (the incremental-trigger design,
    the rejection memo. Either way the candidate is judged once; the
    ``contradicts`` gate keeps on-topic-but-non-supporting papers out of
    the living cite without paying to re-verify them each pass.
+   **A ``contradicts`` verdict additionally writes the edge**
+   (:func:`_attach_contradicts`) — the same call ADR 0073 makes on the
+   reground path. Until 2026-08 this arm memoed it and wrote nothing, so
+   the one automated pass that could find contradicting evidence
+   discarded every find: the memo is a private note to the pass, not a
+   fact about the claim. The memo entry still lands (convergence — a
+   contradicting source must never re-enter discovery), and the new edge
+   queues the hub's **demotion** (:mod:`precis.nanopub.demote`), drained
+   after the transaction commits: a ``reviewed``/``signed`` hub reopens
+   to ``candidate``, an ``anchored``/``published`` one raises for a human
+   because its bytes are frozen. That queue is the only thing that makes
+   the lifecycle two-directional — everything else here promotes.
 6. **Stamp** — ``meta.last_refined_at`` and ``meta.last_refined_sha`` (the
    claim sentence's :func:`taproot.canon.claim_sha` at refine time) are set
    unconditionally (even an empty pass with zero new candidates), so the
@@ -236,6 +248,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.nanopub.demote import DemotionRequest, run_demotions
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
@@ -321,6 +334,63 @@ def _verified_stamp(sha: str) -> dict[str, Any]:
         "verified_at": datetime.now(UTC).isoformat(),
         "verified_claim_sha": sha,
     }
+
+
+def _attach_contradicts(
+    store: Store,
+    conn: Connection,
+    *,
+    hub_ref_id: int,
+    source_ref_id: int,
+    handle: str | None,
+    reason: str | None,
+    caveats: list[str],
+    sha: str,
+    via: str,
+    pending_checks: list[int] | None,
+    pending_demotions: list[DemotionRequest] | None,
+) -> None:
+    """Write one ``contradicts`` edge from the enrichment arm, and queue
+    the hub's demotion.
+
+    Meta keeps the *plain* contradicts shape the re-attach path writes
+    (``support: "no"``, no verification stamp): a ``contradicts`` edge is
+    outside the publish preflight's withheld cohort — it blocks via the
+    contradicts gate outright — so a ``verified_*`` stamp on it would say
+    nothing the gate reads. ``widen`` is the provenance marker, mirroring
+    the reground path's ``meta.reground``, so every edge this arm writes
+    stays queryable as a set.
+
+    The demotion is *queued*, never applied here: this runs inside the
+    caller's open transaction and ``nanopub_reopen`` opens its own pool
+    connection (see :mod:`precis.nanopub.demote`).
+    """
+    attach_evidence(
+        store,
+        hub_ref_id=hub_ref_id,
+        paper_ref_id=source_ref_id,
+        role="contradicts",
+        meta={
+            "support": "no",
+            "support_reason": reason,
+            "caveats": caveats,
+            "source_handle": handle,
+            "widen": {"verdict": "CONTRADICTS", "sha": sha, "via": via},
+        },
+        set_by="system",
+        conn=conn,
+        pending_checks=pending_checks,
+    )
+    if pending_demotions is not None:
+        pending_demotions.append(
+            DemotionRequest(
+                hub_ref_id=hub_ref_id,
+                reason=(
+                    f"widening pass attached a contradicts edge from source "
+                    f"#{source_ref_id}"
+                ),
+            )
+        )
 
 
 #: ``finding.meta`` keys this pass reads/writes.
@@ -1424,6 +1494,12 @@ class RegroundApplyResult:
     pruned: int = 0
     withheld: int = 0
     contradicts_reattached: int = 0
+    #: Publish-row demotions this applier landed. The prune stage's
+    #: contradicts *conversions* run here, after the refine transaction
+    #: has committed, so they demote inline rather than through the
+    #: caller's ``pending_demotions`` queue — without this field they
+    #: would be invisible to the pass summary's ``demoted`` counter.
+    demoted: int = 0
     stranded_refused: bool = False
     flags: tuple[str, ...] = ()
 
@@ -1439,6 +1515,7 @@ class RegroundApplyResult:
             "pruned": self.pruned,
             "withheld": self.withheld,
             "contradicts_reattached": self.contradicts_reattached,
+            "demoted": self.demoted,
             "stranded_refused": self.stranded_refused,
             "flags": list(self.flags),
         }
@@ -2031,6 +2108,29 @@ def apply_reground_plan(
             withheld += 1
             flags.append(f"contradicts-reattach-failed:{c.src_ref_id}")
 
+    demoted = 0
+    if reattached:
+        # The applier runs after the refine transaction has committed, so
+        # the demotion can be applied inline rather than queued. Counted
+        # onto the result so the pass summary sees a prune-stage demotion
+        # the same way it sees a discover-stage one.
+        demoted = sum(
+            1
+            for d in run_demotions(
+                store,
+                [
+                    DemotionRequest(
+                        hub_ref_id=plan.hub_ref_id,
+                        reason=(
+                            f"reground converted {reattached} evidence edge(s) to "
+                            f"contradicts"
+                        ),
+                    )
+                ],
+            )
+            if d.applied
+        )
+
     with store.pool.connection() as conn:
         committed = live_evidence_handles(conn, plan.hub_ref_id)
 
@@ -2147,6 +2247,7 @@ def apply_reground_plan(
         pruned=pruned,
         withheld=withheld,
         contradicts_reattached=reattached,
+        demoted=demoted,
         stranded_refused=stranded_refused,
         flags=tuple(flags),
     )
@@ -2357,6 +2458,7 @@ def _reground_verify_candidate(
     plan: RegroundPlan,
     attached_this_pass: set[int],
     pending_checks: list[int] | None,
+    pending_demotions: list[DemotionRequest] | None = None,
 ) -> None:
     """Judge ONE reground candidate with the strict judge and write the
     consequence. The reground counterpart of the Verify→Write tail above.
@@ -2492,6 +2594,19 @@ def _reground_verify_candidate(
         pending_checks=pending_checks,
     )
     attached_this_pass.add(source_ref_id)
+    if role == "contradicts" and pending_demotions is not None:
+        # Same consequence as the enrichment arm's contradicts edge: the
+        # hub's publish posture no longer reflects its evidence. Queued,
+        # not applied — this runs inside the caller's transaction.
+        pending_demotions.append(
+            DemotionRequest(
+                hub_ref_id=hub_ref_id,
+                reason=(
+                    f"reground judge attached a contradicts edge from source "
+                    f"#{source_ref_id}"
+                ),
+            )
+        )
     if role == _ROLE:
         plan.adds.append(
             RegroundAdd(
@@ -2640,6 +2755,7 @@ def _refine_one_hub(
     topk: int,
     min_sim: float | None,
     pending_checks: list[int] | None = None,
+    pending_demotions: list[DemotionRequest] | None = None,
     reground: RegroundConfig | None = None,
     plan_out: list[RegroundPlan] | None = None,
 ) -> None:
@@ -2968,6 +3084,7 @@ def _refine_one_hub(
                     plan=plan,
                     attached_this_pass=attached_this_pass,
                     pending_checks=pending_checks,
+                    pending_demotions=pending_demotions,
                 )
                 continue
             verification = _verify_support_with_caveats(
@@ -3022,6 +3139,38 @@ def _refine_one_hub(
                     "supports": supports,
                     "contradicts": contradicts,
                 }
+                if contradicts:
+                    # A primary-against passage is information, not noise —
+                    # the same call ADR 0073 makes on the reground path
+                    # (:func:`_reground_verify_candidate`). Until 2026-08 the
+                    # enrichment arm discarded it: the verdict went into the
+                    # memo and the edge was never written, so the one
+                    # automated pass that could find contradicting evidence
+                    # threw the finding on the floor and the hub kept
+                    # ratcheting up. The memo entry above STILL lands (a
+                    # contradicting source must never re-enter discovery and
+                    # re-spend the verifier) — the edge is additional, not a
+                    # replacement.
+                    _attach_contradicts(
+                        store,
+                        conn,
+                        hub_ref_id=hub_ref_id,
+                        source_ref_id=source_ref_id,
+                        handle=handle_registry.try_format(
+                            ref.kind, block.id, chunk=True
+                        ),
+                        reason=verification.get("support_reason"),
+                        caveats=list(verification.get("caveats") or []),
+                        sha=new_sha,
+                        via=cand.via,
+                        pending_checks=pending_checks,
+                        pending_demotions=pending_demotions,
+                    )
+                    # No ``attached_this_pass`` bookkeeping here: this arm
+                    # only runs with ``reground is None``, where ``slot`` is
+                    # the bare source ref id, so ``seen_slots`` already caps
+                    # a source at one visit per pass. The per-source attach
+                    # cap exists for reground's passage-level dedup.
                 # A citation-reached rejection is ALSO a citation miss: "we
                 # read the paper the claim cites and the content isn't there"
                 # — marked on the memo + recorded as a queryable red flag.
@@ -3121,6 +3270,7 @@ def reground_one_hub(
     resolved_topk = topk if topk is not None else _topk_default()
     resolved_min_sim = min_sim if min_sim is not None else _min_sim_default()
     pending_checks: list[int] = []
+    pending_demotions: list[DemotionRequest] = []
     plans: list[RegroundPlan] = []
     with store.pool.connection() as conn:
         _refine_one_hub(
@@ -3131,11 +3281,13 @@ def reground_one_hub(
             topk=resolved_topk,
             min_sim=resolved_min_sim,
             pending_checks=pending_checks,
+            pending_demotions=pending_demotions,
             reground=cfg,
             plan_out=plans,
         )
         conn.commit()
     run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
+    run_demotions(store, pending_demotions)
     if not plans:
         # The hub drained without a plan (vanished, or became compound
         # between claim and processing) — nothing was judged, nothing to
@@ -3201,6 +3353,7 @@ def run_hub_refine_pass(
     failed = 0
     pruned = 0
     withheld = 0
+    demoted = 0
 
     for hub_ref_id in hub_ids:
         try:
@@ -3209,6 +3362,7 @@ def run_hub_refine_pass(
             # only after the commit below — never inside the transaction
             # (see ``taproot.hub.attach_evidence``).
             pending_checks: list[int] = []
+            pending_demotions: list[DemotionRequest] = []
             plans: list[RegroundPlan] = []
             with store.pool.connection() as conn:
                 _refine_one_hub(
@@ -3219,11 +3373,18 @@ def run_hub_refine_pass(
                     topk=resolved_topk,
                     min_sim=resolved_min_sim,
                     pending_checks=pending_checks,
+                    pending_demotions=pending_demotions,
                     reground=resolved_reground,
                     plan_out=plans,
                 )
                 conn.commit()
             run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
+            # The publish posture follows the evidence: a hub that gained a
+            # contradicts edge above walks back down the freeze ladder (or,
+            # if its bytes are frozen, raises for a human).
+            demoted += sum(
+                1 for d in run_demotions(store, pending_demotions) if d.applied
+            )
             # Prunes run only now — after the adds above are committed and
             # can be read back (docs/backlog/taproot-reground.md's
             # add-first contract, enforced in code).
@@ -3231,6 +3392,7 @@ def run_hub_refine_pass(
                 applied = apply_reground_plan(store, plan)
                 pruned += applied.pruned
                 withheld += applied.withheld
+                demoted += applied.demoted
             ok += 1
         except Exception:  # pragma: no cover — defensive, mirrors inbound_chase.py
             log.warning(
@@ -3239,6 +3401,8 @@ def run_hub_refine_pass(
             failed += 1
 
     result = {"claimed": claimed, "ok": ok, "failed": failed}
+    if demoted:
+        result["demoted"] = demoted
     if resolved_reground is not None:
         result["pruned"] = pruned
         result["withheld"] = withheld

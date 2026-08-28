@@ -36,6 +36,15 @@ stays authoritative; the nanopub is the frozen published form.
   `reviewed`). A hub with a live `contradicts` edge renders an
   UNMINTABLE warning — disputed claims are visible internally,
   unpublishable externally, until adjudicated by artifacts.
+- **State moves backwards too.** When the widening pass attaches a
+  `contradicts` edge, the hub's posture follows the evidence: a
+  `reviewed` or `signed` hub is reopened to `candidate` (the frozen
+  string/artifact pointer is discarded; the append-only artifact row
+  stays) and has to be approved again against the new evidence. Past the
+  anchor nothing reopens — an anchored/published artifact's bytes are
+  frozen and a third party holds the trusty URI — so an alert is raised
+  for a human to supersede or retract instead. A state you read earlier
+  is not a promise about now; re-read before acting on it.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
   candidate envelope as `args={'payload': {...}}`; omit it and whatever

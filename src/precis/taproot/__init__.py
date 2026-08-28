@@ -35,26 +35,38 @@ placed, grounded, widened, weighed, opposed, adjudicated, gated, published:
 6. **Weigh** — how much *independent* support? — partial: the union-find
    supporter count (``handlers/_finding_evidence.py``) is display-only and
    gates nothing
-7. **Oppose** — what conflicts with this? — **found but discarded** on the
-   enrichment path: ``workers/_chase_llm.py::_verify_support_with_caveats``
-   returns a ``contradicts`` flag that hub_refine memoes as rejected instead
-   of writing the edge. Reground's strict judge (also dark) does write it:
-   a CONTRADICTS verdict re-attaches as a ``contradicts`` edge rather than
-   dropping the old one
+7. **Oppose** — what conflicts with this? — live on **both** judge paths
+   (2026-08). Reground's strict judge writes a CONTRADICTS verdict as a
+   ``contradicts`` edge rather than dropping the old one, and the
+   enrichment path now does the same:
+   ``workers/_chase_llm.py::_verify_support_with_caveats``'s
+   ``contradicts`` flag reaches ``hub_refine._attach_contradicts``. It
+   used to be *found and discarded* there — memoed as rejected, edge
+   never written — so the one automated pass that could find opposing
+   evidence threw every find away. The rejection memo still lands
+   alongside the edge (convergence: judged once, never re-verified)
 8. **Adjudicate** — is the conflict real, and who wins? — **absent**
 9. **Gate** — publishable? — live, admissibility only
 10. **Publish** — mint · sign · anchor — live, human doors
 
 Two structural cautions this ordering hides. **The ratchet**: every stage
-promotes and almost nothing demotes, so a claim accumulates support and never
-re-opens when contradicting evidence lands later — ``chase_trigger``'s
-``TAPROOT_DUE`` marking is the only re-opening mechanism, and it is dark.
+promotes and — until the demoter below — nothing demoted, so a claim
+accumulated support and never re-opened when contradicting evidence landed
+later. There are now two re-opening mechanisms: ``chase_trigger``'s
+``TAPROOT_DUE`` marking (dark), and :mod:`precis.nanopub.demote`, which a
+newly written ``contradicts`` edge triggers — a ``reviewed``/``signed``
+hub reopens to ``candidate``, an ``anchored``/``published`` one can only
+alert for a human supersede/retract because its bytes are frozen. Stage 8
+is still absent, so a re-opened claim is *unblessed*, never adjudicated.
 **Scale changes the risk profile of a wrong judge**: at a handful of
 hand-written edges a bad LLM verdict is a nuisance; at ~1.5k hubs × k
-candidates the same error rate is a corpus-wide event. Every automated writer
-here needs a confidence floor, an idempotency story, and a dry-run mode before
-its first large run — ``place``'s confidence gate on ``contradicts`` is one
-instance of that pattern, not a one-off.
+candidates the same error rate is a corpus-wide event — and a bad judge
+wired to a *demoter* can un-approve the corpus as fast as a good one
+approves it, which is why the demotion trigger is a committed
+``contradicts`` edge and never a bare suspicion. Every automated writer
+here needs a confidence floor, an idempotency story, and a dry-run mode
+before its first large run — ``place``'s confidence gate on
+``contradicts`` is one instance of that pattern, not a one-off.
 
 **Support is a verdict, never a default** (2026-08). An evidence edge's
 ``links.meta.support`` is written only together with ``support_reason`` +

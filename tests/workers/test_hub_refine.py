@@ -234,11 +234,17 @@ def test_partial_support_carries_caveats_onto_the_edge(store: Any) -> None:
     assert meta["caveats"] == ["only tested at room temperature"]
 
 
-def test_contradicting_partial_is_memoed_not_attached(store: Any) -> None:
+def test_contradicting_partial_is_memoed_and_attached_as_contradicts(
+    store: Any,
+) -> None:
     """A ``partial`` flagged ``contradicts`` (on-topic but runs counter to /
-    does not substantiate the claim) is NOT attached as corroboration -- it
-    lands in the rejection memo like a ``no``, so it never dilutes the living
-    cite and is judged once."""
+    does not substantiate the claim) is NOT attached as corroboration -- but
+    it IS written as a ``contradicts`` edge (ADR 0073), and still memoed so
+    it is judged exactly once.
+
+    The memo alone was the old behaviour: the verdict stayed a private note
+    to the pass and the graph never learned that a source ran counter to the
+    claim, which is how a hub kept ratcheting up past its own evidence."""
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="MOF crystallites are ~7 nm single-crystal cubes.")
     paper, _chunk_id = _seed_paper_chunk(
@@ -248,7 +254,16 @@ def test_contradicting_partial_is_memoed_not_attached(store: Any) -> None:
     with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
-    assert _edges_from(store, paper) == []
+    edges = _edges_from(store, paper)
+    assert len(edges) == 1
+    dst, relation, meta = edges[0]
+    assert (dst, relation) == (hub, "contradicts")
+    # Plain contradicts shape: no verification stamp (the gate blocks on the
+    # edge outright, so a verified_* stamp would say nothing it reads).
+    assert meta["support"] == "no"
+    assert "verified_by" not in meta
+    assert meta["widen"]["verdict"] == "CONTRADICTS"
+
     rejected = _hub_meta(store, hub).get("taproot_rejected") or {}
     assert str(paper) in rejected
     assert rejected[str(paper)]["supports"] == "partial"
@@ -257,8 +272,8 @@ def test_contradicting_partial_is_memoed_not_attached(store: Any) -> None:
 
 def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
     """Convergence: a memoed contradicting ``partial`` is precheck-skipped on
-    the next (DUE-retriggered) pass -- never a repeat LLM verify, never a
-    late attach."""
+    the next (DUE-retriggered) pass -- never a repeat LLM verify, and never a
+    second edge."""
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="A contradicting-partial convergence probe.")
     paper, _chunk_id = _seed_paper_chunk(
@@ -268,7 +283,7 @@ def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
     with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mv.call_count == 1
-    assert _edges_from(store, paper) == []
+    assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["contradicts"]
 
     # Re-trigger via a fresh DUE tag; the memoed paper must not re-verify.
     store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
@@ -276,7 +291,7 @@ def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert mv2.call_count == 0  # precheck-skipped via the memo
-    assert _edges_from(store, paper) == []
+    assert [rel for _dst, rel, _m in _edges_from(store, paper)] == ["contradicts"]
 
 
 def test_empty_pass_still_stamps_last_refined_at(store: Any) -> None:
@@ -963,10 +978,11 @@ def test_ac4_second_pass_makes_no_new_verify_for_same_pair(store: Any) -> None:
 
 def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
     """A citation-reached ``partial`` flagged ``contradicts`` (a stronger
-    miss than a plain ``no``) is NOT attached and DOES land in
+    miss than a plain ``no``) is not corroboration and DOES land in
     ``meta.citation_misses`` — the deliberate inclusion beyond the AC's
     literal ``supports=no`` (a cited source that contradicts the claim is a
-    red flag too)."""
+    red flag too). The edge it writes is ``contradicts``, never
+    ``corroborates``."""
     embedder = make_mock_bge_m3()
     hub, _citing, citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
         store, embedder, claim="A claim its cited source contradicts.", tag="ac3contra"
@@ -975,8 +991,10 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
     with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
 
-    # Contradicting partial → not corroboration, so no edge.
-    assert [e for e in _edges_from(store, cited) if e[0] == hub] == []
+    # Contradicting partial → never corroboration; a contradicts edge instead.
+    assert [rel for dst, rel, _m in _edges_from(store, cited) if dst == hub] == [
+        "contradicts"
+    ]
 
     meta = _hub_meta(store, hub)
     rejected = meta.get("taproot_rejected") or {}

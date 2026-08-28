@@ -18,6 +18,7 @@ Also the home of the **frozen-ness ladder** the review surface renders
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -50,6 +51,14 @@ class HubOverviewRow:
     disputed_since: datetime | None
     #: Inbound evidence edges neither verified nor signed off.
     withheld_count: int
+    #: Inbound evidence edges carrying a support verdict or a human
+    #: sign-off — the exact complement of ``withheld_count``, so the pair
+    #: always sums to the hub's live supporting-edge count. Same
+    #: approximation as ``withheld_count``: this counts the *presence* of
+    #: a stamp, where the publish preflight additionally invalidates one
+    #: whose ``verified_claim_sha`` no longer matches (surfaced as
+    #: ``drifted``).
+    verified_count: int = 0
 
     @property
     def drifted(self) -> bool:
@@ -62,14 +71,15 @@ class HubOverviewRow:
 
     @property
     def frozen(self) -> str:
-        """The frozen-ness rung: '', 'string', 'bytes', 'published'."""
-        if self.state in ("signed", "anchored"):
-            return "bytes"
-        if self.state == "reviewed":
-            return "string"
-        if self.state == "published":
-            return "published"
-        return ""
+        """The frozen-ness rung: '', 'string', 'bytes', 'published'.
+
+        The ladder itself lives in :func:`precis.nanopub.state.frozen_rung`
+        so this display and :mod:`precis.nanopub.demote`'s policy read one
+        definition of where the freeze line falls.
+        """
+        from precis.nanopub.state import frozen_rung
+
+        return frozen_rung(self.state)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,7 +266,9 @@ def tree_ids(roots: list[HubTreeNode]) -> set[int]:
     return out
 
 
-def hub_rows(store: Store) -> list[HubOverviewRow]:
+def hub_rows(
+    store: Store, *, ref_ids: Sequence[int] | None = None
+) -> list[HubOverviewRow]:
     """Every live claim hub — ``TAPROOT:claim`` **and** ``STATUS:canonical``
     (:func:`~precis.taproot.canon.claim_hub_predicate_sql`; a ``finding``
     carrying ``TAPROOT:claim`` alone is a chase-tree finding, not a hub,
@@ -264,7 +276,16 @@ def hub_rows(store: Store) -> list[HubOverviewRow]:
     with its publish posture, one query. Disputed first (oldest dispute on
     top), then minted hubs in mint order (publish-row ``created_at`` —
     stable across state transitions, so signing a hub never moves its
-    row), then unminted."""
+    row), then unminted.
+
+    ``ref_ids`` narrows to a given set of hubs (an empty sequence returns
+    nothing without touching the DB) — the read behind a search result's
+    posture columns, where the whole-corpus sweep would be waste. Ids that
+    are not live claim hubs simply don't come back, so a caller may pass a
+    mixed hit set and read a missing row as "no posture"."""
+    if ref_ids is not None and not ref_ids:
+        return []
+    ref_filter = "TRUE" if ref_ids is None else "r.ref_id = ANY(%(ref_ids)s)"
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
@@ -272,7 +293,8 @@ def hub_rows(store: Store) -> list[HubOverviewRow]:
                    p.id, p.state, p.approved_title, p.claim_sha,
                    p.trusty_uri, p.batch_id, p.updated_at,
                    d.since AS disputed_since,
-                   COALESCE(w.n, 0) AS withheld_count
+                   COALESCE(w.n, 0) AS withheld_count,
+                   COALESCE(w.v, 0) AS verified_count
               FROM refs r
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
@@ -286,21 +308,31 @@ def hub_rows(store: Store) -> list[HubOverviewRow]:
                     HAVING COUNT(*) > 0
               ) d ON TRUE
               LEFT JOIN LATERAL (
-                    SELECT COUNT(*) AS n
+                    SELECT COUNT(*) FILTER (
+                             WHERE l.meta->>'support' IS NULL
+                               AND l.meta->'publish_signoff' IS NULL
+                           ) AS n,
+                           COUNT(*) FILTER (
+                             WHERE l.meta->>'support' IS NOT NULL
+                                OR l.meta->'publish_signoff' IS NOT NULL
+                           ) AS v
                       FROM links l
                       JOIN refs pr ON pr.ref_id = l.src_ref_id
                                   AND pr.deleted_at IS NULL
                      WHERE l.dst_ref_id = r.ref_id
                        AND l.relation IN ('establishes', 'corroborates')
-                       AND l.meta->>'support' IS NULL
-                       AND l.meta->'publish_signoff' IS NULL
               ) w ON TRUE
              WHERE r.kind = 'finding' AND r.deleted_at IS NULL
+               AND {ref_filter}
                AND {claim_hub_predicate_sql()}
              ORDER BY d.since ASC NULLS LAST, p.created_at ASC NULLS LAST,
                       r.ref_id
             """,
-            {"terminal": list(TERMINAL_STATES), **CLAIM_HUB_PREDICATE_PARAMS},
+            {
+                "terminal": list(TERMINAL_STATES),
+                "ref_ids": list(ref_ids) if ref_ids is not None else None,
+                **CLAIM_HUB_PREDICATE_PARAMS,
+            },
         ).fetchall()
     return [
         HubOverviewRow(
@@ -316,6 +348,7 @@ def hub_rows(store: Store) -> list[HubOverviewRow]:
             disputed=r[9] is not None,
             disputed_since=r[9],
             withheld_count=int(r[10]),
+            verified_count=int(r[11]),
         )
         for r in rows
     ]
