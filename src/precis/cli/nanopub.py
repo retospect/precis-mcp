@@ -18,6 +18,9 @@ Subcommands:
   Layer-A mint gate runs here.
 * ``check FI``          — run the gates advisory, no writes.
 * ``sign FI``           — mint + sign (``--attest`` for the human key).
+* ``intro``             — sign + publish the attesting key→ORCID
+  introduction nanopub (``--live`` to POST; then add its trusty URI to
+  the ORCID record out-of-band — that back-link is the actual binding).
 * ``reopen FI``         — flip a pre-anchor row back to candidate.
 * ``view FI``           — the TriG rendering (same as
   ``get(kind='finding', view='nanopub')``).
@@ -142,6 +145,29 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p_ae = allow_sub.add_parser("end", help="Close an entry's validity window.")
     p_ae.add_argument("entry_id", type=int)
 
+    p_intro = s.add_parser(
+        "intro",
+        help="Publish the attesting key→ORCID introduction nanopub.",
+    )
+    p_intro.add_argument(
+        "--name",
+        required=True,
+        help="Your public name (foaf:name in the assertion) — an "
+        "introduction names a human.",
+    )
+    p_intro.add_argument(
+        "--key-location",
+        default=None,
+        help="URL where the public key is hosted (npx:hasKeyLocation).",
+    )
+    p_intro.add_argument(
+        "--live",
+        action="store_true",
+        help="Required to POST: the introduction propagates across "
+        "registry mirrors forever. Without it: dry run (signs locally, "
+        "prints the TriG).",
+    )
+
     p_pub = s.add_parser("publish", help="Registry POST — THE point of no return.")
     p_pub.add_argument("hub")
     p_pub.add_argument(
@@ -233,6 +259,8 @@ def run(args: argparse.Namespace) -> None:
             _signoff(args, store)
         elif cmd == "allow":
             _allow(args, store)
+        elif cmd == "intro":
+            _intro(args, store)
         elif cmd == "publish":
             _publish(args, store)
         elif cmd == "mirror":
@@ -526,6 +554,41 @@ def _mirror(args: argparse.Namespace, store) -> None:
     if flagged or alerts:
         print(f"flags: {flagged} newly derived; concurrence alerts: {alerts}")
     _stats()
+
+
+def _intro(args: argparse.Namespace, store) -> None:
+    from precis.nanopub import intro
+
+    # This CLI subcommand IS the interactive surface — a person runs it,
+    # and --live is the explicit point-of-no-return acknowledgement.
+    result = intro.introduce(
+        store,
+        name=args.name,
+        key_location=args.key_location,
+        live=args.live,
+        interactive=True,
+    )
+    print(f"identity:    {result.orcid}")
+    print(f"fingerprint: {result.key_fingerprint}")
+    print(f"trusty URI:  {result.trusty_uri}")
+    if result.live:
+        print(
+            f"PUBLISHED introduction → {result.registry_url} "
+            f"({result.byte_count} bytes) — propagating across mirrors; "
+            "from here, change = supersede.\n"
+            "Now close the loop OUT-OF-BAND (only the iD holder can): "
+            "sign in at orcid.org and add the trusty URI above under "
+            "'Websites & social links' (visibility: public). The "
+            "introduction alone proves nothing — the back-link from your "
+            "ORCID record is what binds the key to you."
+        )
+    else:
+        print(result.trig)
+        print(
+            f"dry run — would POST {result.byte_count} bytes to "
+            f"{result.registry_url}; re-run with --live to publish "
+            "(irreversible)"
+        )
 
 
 def _publish(args: argparse.Namespace, store) -> None:

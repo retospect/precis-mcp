@@ -70,6 +70,13 @@ Built (slices 1–3, all local / reversible):
   registered to (vault ``NANOPUB_ATTESTING_ORCID``) or the sign is
   refused — so the account field is an authorization check, not a label,
   and no claim is ever attributed to a person who never held the key.
+- :mod:`.intro` — the public key→ORCID registration: an introduction
+  nanopub (``npx:declaredBy`` + embedded public key, signed with the
+  attesting key itself) via ``precis nanopub intro`` — same
+  interactive+live double gate as :mod:`.registry`. The nanopub is only
+  half the binding; the person must add its trusty URI to their ORCID
+  record (only the iD holder can), which is the out-of-band proof.
+  Live URI recorded in vault ``NANOPUB_ATTESTING_INTRO_URI``.
 - :mod:`.ots` — OpenTimestamps: nightly Merkle batch over signed
   artifacts (leaf digests = ``byte_sha256`` of the exact stored bytes),
   one calendar stamp per batch, pending→upgraded sweep with a
