@@ -116,6 +116,59 @@ def test_aluminum_drill_minimum_is_manufacturable():
     assert hi > lo
 
 
+def test_via_diameter_never_undercuts_drill_plus_annular_ring():
+    # The 2026-08-28 fix, made durable: via_diameter_mm, drill_mm and
+    # annular_ring_mm are geometrically coupled (diameter >= drill +
+    # 2 x annular_ring) — the bug this test guards against is exactly
+    # having a NUMBER right today but drifting out of sync again later,
+    # since the three used to be margined as three independent tunables.
+    # Every row, both tiers; a None field (not applicable to that
+    # process, e.g. aluminum has no vias) is skipped, not a violation.
+    violations = []
+    for row in caps.load_capabilities():
+        for tier_name, tier in (
+            ("jlc_min", row.jlc_min),
+            ("house_default", row.house_default),
+        ):
+            dia = tier.get("via_diameter_mm")
+            drill = tier.get("drill_mm")
+            ring = tier.get("annular_ring_mm")
+            if dia is None or drill is None or ring is None:
+                continue
+            required = drill + 2.0 * ring
+            if dia < required - 1e-9:
+                violations.append((row.process, tier_name, dia, required))
+    assert violations == []
+
+
+def test_via_diameter_is_derived_not_the_raw_json_floor():
+    # capabilities.py must not just pass the JSON's stored via_diameter_mm
+    # (the published floor) straight through -- it has to win the max()
+    # against the geometric requirement whenever the ring is a real ring,
+    # which it is for both FR-4 rows.
+    for process in ("2layer", "4layer"):
+        row = caps.capability_for(process)
+        for tier in (row.jlc_min, row.house_default):
+            dia = tier["via_diameter_mm"]
+            drill = tier["drill_mm"]
+            ring = tier["annular_ring_mm"]
+            assert dia is not None and drill is not None and ring is not None
+            assert dia == pytest.approx(drill + 2.0 * ring)
+
+
+def test_npth_annular_ring_has_no_in_table_coupling():
+    # Audited alongside via_diameter_mm (2026-08-28): npth_annular_ring_mm
+    # is measured against a per-design NPTH hole diameter, never a value
+    # stored in this table, so unlike via_diameter_mm it has nothing to
+    # derive here -- this test just pins that it stays a plain, present
+    # figure for both FR-4 rows (a future coupling, if one is added, would
+    # need its own invariant like the via one above).
+    for process in ("2layer", "4layer"):
+        row = caps.capability_for(process)
+        assert row.jlc_min["npth_annular_ring_mm"] is not None
+        assert row.house_default["npth_annular_ring_mm"] is not None
+
+
 def test_no_low_confidence_field_carries_a_bare_unexplained_number():
     # A field flagged "low" confidence must never carry a non-null number
     # without an explanatory note attached — a bare "low" tag on a real

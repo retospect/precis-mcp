@@ -62,12 +62,22 @@ before they reach a draft:
 
 ## Three things that will bite
 
-1. **Via metrics will read zero** — the realizer emits only tracks, so no
-   via copper is persisted and every via DRC rule is unreachable. Report
-   N/A, **never** as a favourable via count. ⚠ *This is actively being
-   fixed* (see the master spec's gap work); if via geometry lands before
-   the evaluation runs, this caveat is obsolete and real via numbers become
-   reportable. Re-check status before writing the section.
+1. ~~**Via metrics will read zero**~~ — **OBSOLETE as of `3cfa3d2e`
+   (2026-08-28).** Via geometry now lands in the realizer and is persisted
+   as `ctype='via'` copper, so via counts are **real and reportable**, and
+   the annular-ring / via-clearance DRC rules genuinely fire. This matters
+   for the UCSD set, where through-hole via count is one of the four
+   published metrics.
+
+   Two caveats to state honestly when reporting via numbers:
+   - Via **ampacity** uses a conservative heuristic (`via_capacity_a`,
+     anchored at the low end of ~1–2 A per 0.3 mm via), not an IPC-grade
+     derivation — barrel plating thickness is not stored anywhere. So
+     via *counts* on high-current nets are deliberately pessimistic.
+   - Via **placement** assumes all pads sit on stackup layer 0 (the IR has
+     no per-instance mount-side field yet), so a track off that layer gets
+     a stitched group at both endpoints. Fine for one-sided boards;
+     overstates vias for two-sided assembly.
 2. **Ablations on `SIDE_FLIP` and `ROTATE` are vacuous** — both are
    provably cost-neutral (no registered term reads `seg_side` or
    `inst_rot`). `PIN_SWAP`'s effect is real and measured by its own

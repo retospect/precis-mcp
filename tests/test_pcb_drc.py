@@ -223,8 +223,18 @@ def test_check_annular_ring_fires_on_a_real_realized_via():
     """The exact gap this task closes: check_annular_ring was correct but
     had ZERO production input before realize.py emitted via geometry (the
     master backlog's own documented gap). Run it against REAL realize.py
-    output — not the synthetic ``_via`` dict fixture above — and confirm
-    it actually fires now."""
+    output — not the synthetic ``_via`` dict fixture above.
+
+    **2026-08-28 update**: this used to assert the finding FIRED, because
+    the fab-floor via_diameter_mm/drill_mm pairing (0.4/0.25mm, house
+    default) rang at (0.4-0.25)/2 = 0.075mm -- below this process's own
+    jlc_min ring (0.15mm), i.e. every default-sized via was genuinely
+    unmanufacturable per capabilities.py's own published figures. That was
+    the defect (via_diameter_mm margined as an independent tunable instead
+    of derived from drill+ring) -- now that via_diameter_mm is DERIVED
+    (:func:`precis.pcb.capabilities._derive_via_diameter_mm`), a
+    default-sized via's ring matches house_default's own annular_ring_mm
+    exactly, and this must stay QUIET."""
     graph = {
         "instances": [
             {"refdes": "U0", "x": 0.0, "y": 0.0},
@@ -248,12 +258,7 @@ def test_check_annular_ring_fires_on_a_real_realized_via():
         result, ir, layers=layers, outline=[[0, -5], [20, -5], [20, 5], [0, 5]]
     )
     findings = drc.check_annular_ring(model, _CAP4)
-    # The fab-floor via_diameter_mm/drill_mm pairing (0.4/0.25mm, house
-    # default) rings at (0.4-0.25)/2 = 0.075mm, below this process's own
-    # jlc_min (0.15mm) -- so a default-sized via is genuinely unmanufacturable
-    # per capabilities.py's own published figures, and the finding must fire.
-    assert findings
-    assert all(f.severity == "error" for f in findings)
+    assert findings == []
 
 
 def test_check_annular_ring_none_field_never_crashes():

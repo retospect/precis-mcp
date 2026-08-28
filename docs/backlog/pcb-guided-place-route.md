@@ -116,9 +116,23 @@ re-probe after the next `/go` deploy.
 - **`drc.py` reads only the fab capability table**, not
   `pcb_net_classes` rule overrides; that schema does not exist yet.
   Hook point documented in the module docstring.
-- **No via geometry is realized, so every via DRC rule never fires.**
-  Caveated in `view='drc'` output and the `drc.py` docstring; drop the
-  caveat when the realizer emits vias.
+- ~~No via geometry is realized~~ — **CLOSED `3cfa3d2e`.** The realizer
+  emits `RealizedVia` (span-only, never a scalar layer), `pcb_route`
+  persists `ctype='via'` copper, and the annular-ring / via-clearance
+  rules now fire. The `view='drc'` caveat has been removed. Two known
+  simplifications: via ampacity is a conservative heuristic (plating
+  thickness is not stored), and all pads are assumed on stackup layer 0
+  (no per-instance mount-side field), which overstates vias for two-sided
+  assembly.
+- **⚠ The via house-defaults are mutually inconsistent** — `drill_mm`
+  0.25 with `via_diameter_mm` 0.40 gives a 0.075 mm annular ring, below
+  both the 0.18 mm `jlc_min` and the 0.30 mm house default sitting in the
+  same table. Every default-sized via therefore trips `check_annular_ring`.
+  Root cause: the `house_default = 1.5 × jlc_min` margin rule is applied
+  **per-field to fields that are geometrically coupled**
+  (`via_diameter >= drill + 2 × annular_ring`). Fix by *deriving* the
+  diameter rather than storing it independently, plus an invariant test —
+  not by hand-patching one number.
 - **Layer *roles* are read from the stackup's `role` field**, not yet
   emergent as §Layer ROLE describes.
 - **Layer count is hard-guarded to 4** (`handlers/pcb.py:374`): place/route

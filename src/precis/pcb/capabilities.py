@@ -32,6 +32,18 @@ published "recommended" figure where one exists, whichever is higher —
 except ``soldermask_dam_mm``, whose default clears the 2oz-copper minimum
 rather than the 1oz ``jlc_min``, so a copper-weight change on the order
 doesn't silently violate it.
+
+**``via_diameter_mm`` is DERIVED, not independently margined** (2026-08-28
+fix): a via's diameter, drill and annular ring are geometrically coupled
+(``diameter >= drill + 2 x annular_ring``) — applying the flat 1.5x-margin
+rule to each of the three SEPARATELY, as if they were independent, silently
+produced a ``house_default`` via whose ring (0.075mm) was below even
+``jlc_min``'s own ring (0.18mm). :func:`load_capabilities` now computes each
+tier's effective ``via_diameter_mm`` as ``max(published minimum finished-via
+diameter, drill_mm + 2 x annular_ring_mm)`` at THAT tier — the JSON's stored
+``via_diameter_mm`` is JLC's published floor (an independent, real
+constraint), never the final number. :func:`_derive_via_diameter_mm` is the
+one place this happens; no other consumer re-derives it.
 """
 
 from __future__ import annotations
@@ -84,21 +96,47 @@ def _load_raw() -> dict[str, Any]:
     return data
 
 
+def _derive_via_diameter_mm(tier: dict[str, float | None]) -> float | None:
+    """One tier's effective ``via_diameter_mm`` — ``max(published floor,
+    drill + 2 x annular_ring)`` (module docstring). The JSON's stored
+    ``via_diameter_mm`` is treated as the published floor input, not the
+    final tunable: a process with no vias at all (the floor is ``None``,
+    e.g. single-sided aluminum) stays ``None``, and a tier missing either
+    coupled field (shouldn't happen for a real row, but a data gap must
+    never crash) falls back to the floor unchanged."""
+    floor = tier.get("via_diameter_mm")
+    if floor is None:
+        return None
+    drill = tier.get("drill_mm")
+    ring = tier.get("annular_ring_mm")
+    if drill is None or ring is None:
+        return floor
+    return max(floor, drill + 2.0 * ring)
+
+
 def load_capabilities() -> list[CapabilityRow]:
-    """Every capability row in the table, in file order."""
-    return [
-        CapabilityRow(
-            process=r["process"],
-            label=r["label"],
-            source=r["source"],
-            retrieved=r["retrieved"],
-            jlc_min=dict(r["jlc_min"]),
-            house_default=dict(r["house_default"]),
-            field_confidence=dict(r.get("field_confidence", {})),
-            process_notes=r.get("process_notes", ""),
+    """Every capability row in the table, in file order. ``via_diameter_mm``
+    is derived per tier (:func:`_derive_via_diameter_mm`), not read verbatim
+    off the JSON — every caller of this function sees the corrected number."""
+    rows = []
+    for r in _load_raw()["rows"]:
+        jlc_min = dict(r["jlc_min"])
+        house_default = dict(r["house_default"])
+        jlc_min["via_diameter_mm"] = _derive_via_diameter_mm(jlc_min)
+        house_default["via_diameter_mm"] = _derive_via_diameter_mm(house_default)
+        rows.append(
+            CapabilityRow(
+                process=r["process"],
+                label=r["label"],
+                source=r["source"],
+                retrieved=r["retrieved"],
+                jlc_min=jlc_min,
+                house_default=house_default,
+                field_confidence=dict(r.get("field_confidence", {})),
+                process_notes=r.get("process_notes", ""),
+            )
         )
-        for r in _load_raw()["rows"]
-    ]
+    return rows
 
 
 def capability_for(process: str) -> CapabilityRow:
