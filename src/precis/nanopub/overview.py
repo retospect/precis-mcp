@@ -58,7 +58,17 @@ class HubOverviewRow:
     #: a stamp, where the publish preflight additionally invalidates one
     #: whose ``verified_claim_sha`` no longer matches (surfaced as
     #: ``drifted``).
+    #:
+    #: **Judged, not affirmative.** A ``corroborates``-role edge can carry
+    #: ``support: "no"`` — ``taproot/authoring.py`` writes whatever verdict
+    #: the supporter attests — and such an edge is verified (someone read
+    #: it) while supporting nothing. Anything asking "does the corpus stand
+    #: behind this claim?" wants :attr:`supported_count`, never this.
     verified_count: int = 0
+    #: Inbound evidence edges whose verdict is **affirmative** —
+    #: ``support`` in ``yes``/``partial``, or a human ``publish_signoff``.
+    #: The subset of ``verified_count`` that actually backs the claim.
+    supported_count: int = 0
 
     @property
     def drifted(self) -> bool:
@@ -294,7 +304,8 @@ def hub_rows(
                    p.trusty_uri, p.batch_id, p.updated_at,
                    d.since AS disputed_since,
                    COALESCE(w.n, 0) AS withheld_count,
-                   COALESCE(w.v, 0) AS verified_count
+                   COALESCE(w.v, 0) AS verified_count,
+                   COALESCE(w.s, 0) AS supported_count
               FROM refs r
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
@@ -315,7 +326,11 @@ def hub_rows(
                            COUNT(*) FILTER (
                              WHERE l.meta->>'support' IS NOT NULL
                                 OR l.meta->'publish_signoff' IS NOT NULL
-                           ) AS v
+                           ) AS v,
+                           COUNT(*) FILTER (
+                             WHERE l.meta->>'support' IN ('yes', 'partial')
+                                OR l.meta->'publish_signoff' IS NOT NULL
+                           ) AS s
                       FROM links l
                       JOIN refs pr ON pr.ref_id = l.src_ref_id
                                   AND pr.deleted_at IS NULL
@@ -349,6 +364,7 @@ def hub_rows(
             disputed_since=r[9],
             withheld_count=int(r[10]),
             verified_count=int(r[11]),
+            supported_count=int(r[12]),
         )
         for r in rows
     ]

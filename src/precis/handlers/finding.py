@@ -1003,8 +1003,10 @@ class FindingHandler(NumericRefHandler):
         ``'signed'``        its publish row is ``signed``/``anchored``/
                             ``published`` — a human attesting key stands
                             behind it
-        ``'verified'``      it holds at least one *verified* supporting
-                            edge and no live ``contradicts`` edge
+        ``'verified'``      it holds at least one edge whose verdict is
+                            *affirmative* (never merely present — a
+                            ``corroborates`` edge can be verified ``no``)
+                            and no live ``contradicts`` edge
         ``'disputed'``      it holds a live ``contradicts`` edge — the
                             inspection cohort, deliberately reachable
         ``'any'`` / omitted no filter
@@ -1204,9 +1206,10 @@ class FindingHandler(NumericRefHandler):
         nothing in the result told a writer which claims the corpus
         actually stands behind — and the settled layer is only worth
         searching first if you can see that it is settled. ``state`` is
-        the publish rung (or ``unminted``), ``support`` counts verified
-        supporting edges and, after ``+``, the withheld ones the publish
-        preflight will refuse, and ``flags`` carries the negatives —
+        the publish rung (or ``unminted``), ``support`` reads
+        ``2✓ 1✗ 1?`` — affirmative verdicts, negative verdicts (an edge
+        *can* be verified and refuting), and withheld ones the publish
+        preflight will refuse — and ``flags`` carries the rest —
         ``disputed`` (a live ``contradicts`` edge) and ``drifted`` (the
         claim was reworded out from under its frozen string). The
         negatives ride in the same row as the hit on purpose: a claim
@@ -1598,23 +1601,38 @@ def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
     if trust == _TRUST_SIGNED:
         return row.state in _SIGNED_STATES
     if trust == _TRUST_VERIFIED:
+        # ``supported_count``, NOT ``verified_count``: a ``corroborates``
+        # edge can carry a *negative* verdict (``support: "no"`` — see
+        # ``taproot/authoring.py``), which is verified and supports
+        # nothing. Counting it would let a hub whose only evidence refutes
+        # it answer "verified", the exact inversion of the question.
         # Verified *and* unopposed: a hub with a live contradicts edge is
         # exactly what the ratchet hides, so it never answers "settled".
-        return row.verified_count > 0 and not row.disputed
+        return row.supported_count > 0 and not row.disputed
     if trust == _TRUST_DISPUTED:
         return row.disputed
     return True
 
 
 def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
-    """The ``state``/``support``/``flags`` cells for one hit."""
+    """The ``state``/``support``/``flags`` cells for one hit.
+
+    ``support`` reads ``2✓ 1✗ 1?`` — affirmative verdicts, *negative*
+    verdicts, withheld. The ✗ is not decoration: an edge whose verdict is
+    ``support: "no"`` is verified and supports nothing, so folding it in
+    with the ✓ (as this did until it was caught on the shipped diff) would
+    render a refuted hub as a well-supported one.
+    """
     if row is None:
         return {"state": "", "support": "", "flags": ""}
     support = ""
+    refuted = row.verified_count - row.supported_count
     if row.verified_count or row.withheld_count:
-        support = f"{row.verified_count}✓"
+        support = f"{row.supported_count}✓"
+        if refuted > 0:
+            support += f" {refuted}✗"
         if row.withheld_count:
-            support += f"+{row.withheld_count}?"
+            support += f" {row.withheld_count}?"
     flags = [
         f for f, on in (("disputed", row.disputed), ("drifted", row.drifted)) if on
     ]

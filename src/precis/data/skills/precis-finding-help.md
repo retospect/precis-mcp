@@ -183,7 +183,7 @@ actually climbed:
 | `trust=` | keeps a hit when |
 |---|---|
 | `'signed'` | a human attesting key stands behind it (`signed`/`anchored`/`published`) |
-| `'verified'` | ≥1 *verified* supporting edge **and** no live `contradicts` edge |
+| `'verified'` | ≥1 edge whose verdict is **affirmative** (`yes`/`partial`, or a human sign-off) **and** no live `contradicts` edge |
 | `'disputed'` | it holds a live `contradicts` edge — the inspection cohort |
 | `'any'` / omitted | no filter |
 
@@ -204,8 +204,10 @@ hub the table widens to `id | title | state | support | flags | setup |
 primary`:
 
 - `state` — the publish rung, or `unminted`.
-- `support` — `3✓+1?`: three supporting edges carry a verification
-  verdict, one is **withheld** (the publish preflight will refuse it).
+- `support` — `2✓ 1✗ 1?`: two edges carry an **affirmative** verdict,
+  one carries a **negative** one (an edge can be verified and refuting —
+  `support: "no"` on a `corroborates` edge is a real shape), one is
+  **withheld** (the publish preflight will refuse it).
 - `flags` — `disputed` (a live `contradicts` edge) and `drifted` (the
   claim was reworded out from under its frozen string).
 

@@ -893,6 +893,36 @@ class TestSearchTrustAxis:
         assert str(verified) in out.body
         assert f"\n{withheld}\t" not in out.body
 
+    def test_a_negative_verdict_never_counts_as_verified(self, store) -> None:
+        """A `corroborates` edge can carry `support: "no"` — `authoring.py`
+        writes whatever verdict the supporter attests. Such an edge IS
+        verified (someone read it) and supports nothing, so counting mere
+        verdict-presence would let a hub whose only evidence refutes it
+        answer `trust='verified'` — the exact inversion of the question.
+
+        Regression: shipped that way in 08bbc7a3, caught against live hub
+        fi176523, whose sole edge is exactly this shape."""
+        h = _make_handler(store)
+        paper = _seed_paper(store, cite_key="refuted23a")
+        refuted = mint_hub(store, self._CLAIM)
+        self._attach(
+            store,
+            refuted,
+            paper,
+            meta={
+                "support": "no",
+                "support_reason": "the passage does not carry the claim",
+                "verified_by": "test",
+            },
+        )
+
+        out = h.search(q="Amine loading", trust="verified")
+        assert f"\n{refuted}\t" not in out.body
+
+        # …and the row says so out loud rather than hiding it in a ✓.
+        shown = h.search(q="Amine loading")
+        assert "0✓ 1✗" in shown.body
+
     def test_trust_disputed_reaches_the_contradicted_cohort(self, store) -> None:
         from precis.taproot.hub import attach_evidence
 
