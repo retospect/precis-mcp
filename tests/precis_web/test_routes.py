@@ -1650,12 +1650,12 @@ def test_paper_detail_renders(client) -> None:
 
 
 def test_paper_detail_meta_form_has_s2_fill_button(client) -> None:
-    """The Meta edit form carries the "Fill blanks from Semantic Scholar"
-    button + its prefill helper wired to the GET s2-prefill endpoint (E:
-    auto-populate empty metadata like authors)."""
+    """The Meta edit form carries the "Fill blanks from Crossref /
+    Semantic Scholar" button + its prefill helper wired to the GET
+    s2-prefill endpoint (E: auto-populate empty metadata like authors)."""
     resp = client.get("/papers/10")
     assert resp.status_code == 200
-    assert "Fill blanks from Semantic Scholar" in resp.text
+    assert "Fill blanks from Crossref / Semantic Scholar" in resp.text
     assert "__paperFillBlanks" in resp.text
     assert "/s2-prefill" in resp.text
 
@@ -2447,7 +2447,11 @@ def test_triage_lookup_prefills_from_s2(client) -> None:
         "doi": "10.1038/nature01797",
         "abstract": "We report ballistic transport.",
     }
-    with patch("precis.ingest.lookup.lookup_title", return_value=hit):
+    # Crossref overlay misses → the S2 record is used as-is.
+    with (
+        patch("precis.ingest.lookup.lookup_title", return_value=hit),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=None),
+    ):
         resp = client.post(
             "/papers/10/triage-lookup", data={"title": "ballistic carbon nanotube"}
         )
@@ -2456,6 +2460,45 @@ def test_triage_lookup_prefills_from_s2(client) -> None:
     # The edit form is pre-filled with the looked-up title + DOI.
     assert "Ballistic carbon nanotube field-effect transistors" in resp.text
     assert "10.1038/nature01797" in resp.text
+
+
+def test_triage_lookup_crossref_overlay_replaces_s2_authors(client) -> None:
+    """When the S2 title hit carries a DOI, the Crossref publisher record
+    is overlaid — its full, consistently spaced byline replaces S2's
+    jammed-initials one in the prefill."""
+    pytest.importorskip("habanero")
+    from unittest.mock import patch
+
+    hit = {
+        "title": "Electric Field Effect in Atomically Thin Carbon Films",
+        "authors": [{"name": "A.K. Geim"}, {"name": "S. Morozov"}],
+        "year": 2004,
+        "doi": "10.1126/science.1102896",
+        "abstract": "",
+    }
+    crossref = {
+        "title": "Electric Field Effect in Atomically Thin Carbon Films",
+        "authors": [
+            {"given": "A. K.", "family": "Geim"},
+            {"given": "S. V.", "family": "Morozov"},
+        ],
+        "year": 2004,
+        "doi": "10.1126/science.1102896",
+        "journal": "Science",
+        "abstract": "",
+        "source": "crossref",
+    }
+    with (
+        patch("precis.ingest.lookup.lookup_title", return_value=hit),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=crossref),
+    ):
+        resp = client.post(
+            "/papers/10/triage-lookup", data={"title": "electric field effect"}
+        )
+    assert resp.status_code == 200
+    assert "A. K. Geim" in resp.text
+    assert "S. V. Morozov" in resp.text
+    assert "A.K. Geim" not in resp.text
 
 
 def test_triage_lookup_miss_shows_message(client) -> None:
@@ -2487,10 +2530,12 @@ def test_s2_prefill_returns_metadata_json(client) -> None:
         "abstract": "We report ballistic transport.",
     }
     # Force the title-search fallback (DOI/arXiv exact lookup → None) so the
-    # test is independent of what identifiers the fake paper #10 carries.
+    # test is independent of what identifiers the fake paper #10 carries;
+    # the Crossref overlay misses too, so the S2 record is used verbatim.
     with (
         patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=None),
         patch("precis.ingest.lookup.lookup_title", return_value=hit),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=None),
     ):
         resp = client.get("/papers/10/s2-prefill")
     assert resp.status_code == 200
@@ -2523,6 +2568,7 @@ def test_s2_prefill_returns_journal_but_not_entry_type(client) -> None:
     with (
         patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=None),
         patch("precis.ingest.lookup.lookup_title", return_value=hit),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=None),
     ):
         resp = client.get("/papers/10/s2-prefill")
     assert resp.status_code == 200
@@ -2539,12 +2585,108 @@ def test_s2_prefill_miss_returns_not_ok(client) -> None:
     with (
         patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=None),
         patch("precis.ingest.lookup.lookup_title", return_value=None),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=None),
     ):
         resp = client.get("/papers/10/s2-prefill")
     assert resp.status_code == 200
     d = resp.json()
     assert d["ok"] is False
     assert d.get("message")
+
+
+def test_s2_prefill_crossref_overlay_wins_biblio_keeps_s2_extras(client) -> None:
+    """A DOI known to the record triggers the Crossref overlay: authors /
+    journal come from the publisher record (full middle initials, spaced),
+    while S2-only fields (plain-text abstract, arXiv id) survive the merge."""
+    pytest.importorskip("habanero")
+    from unittest.mock import patch
+
+    s2 = {
+        "title": "Electric Field Effect in Atomically Thin Carbon Films",
+        "authors": [{"name": "A.K. Geim"}, {"name": "S. Morozov"}],
+        "year": 2004,
+        "doi": "10.1126/science.1102896",
+        "arxiv_id": "cond-mat/0410550",
+        "abstract": "We describe monocrystalline graphitic films.",
+        "journal": "Science (S2 venue)",
+    }
+    crossref = {
+        "title": "Electric Field Effect in Atomically Thin Carbon Films",
+        "authors": [
+            {"given": "A. K.", "family": "Geim"},
+            {"given": "S. V.", "family": "Morozov"},
+        ],
+        "year": 2004,
+        "doi": "10.1126/science.1102896",
+        "journal": "Science",
+        "abstract": "",
+        "source": "crossref",
+    }
+    with (
+        patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=s2),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=crossref),
+    ):
+        resp = client.get("/papers/10/s2-prefill")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["ok"] is True
+    assert d["authors"].splitlines() == ["A. K. Geim", "S. V. Morozov"]
+    assert d["journal"] == "Science"
+    # S2-only fields survive: Crossref had no (usable) abstract or arXiv id.
+    assert d["abstract"] == "We describe monocrystalline graphitic films."
+    assert d["arxiv"] == "cond-mat/0410550"
+
+
+def test_s2_prefill_crossref_carries_when_s2_down(client) -> None:
+    """S2 completely failing no longer sinks the endpoint when a DOI is
+    held — the Crossref overlay alone produces the prefill, with its
+    JATS-XML abstract stripped to plain text."""
+    pytest.importorskip("habanero")
+    from unittest.mock import patch
+
+    crossref = {
+        "title": "Electric Field Effect in Atomically Thin Carbon Films",
+        "authors": [{"given": "K. S.", "family": "Novoselov"}],
+        "year": 2004,
+        "doi": "10.1126/science.1102896",
+        "journal": "Science",
+        "abstract": "<jats:p>We describe graphitic films.</jats:p>",
+        "source": "crossref",
+    }
+    with (
+        patch(
+            "precis.ingest.semantic_scholar.get_paper_by_id",
+            side_effect=Exception("s2 down"),
+        ),
+        patch("precis.ingest.lookup.lookup_title", side_effect=Exception("s2 down")),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=crossref),
+    ):
+        resp = client.get("/papers/10/s2-prefill")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["ok"] is True
+    assert d["authors"] == "K. S. Novoselov"
+    assert d["abstract"] == "We describe graphitic films."
+
+
+def test_s2_prefill_s2_down_and_no_crossref_reports_failure(client) -> None:
+    """Both sources dark → the S2-failure message (not a bare no-match)."""
+    pytest.importorskip("habanero")
+    from unittest.mock import patch
+
+    with (
+        patch(
+            "precis.ingest.semantic_scholar.get_paper_by_id",
+            side_effect=Exception("s2 down"),
+        ),
+        patch("precis.ingest.lookup.lookup_title", side_effect=Exception("s2 down")),
+        patch("precis.ingest.crossref.lookup_crossref", return_value=None),
+    ):
+        resp = client.get("/papers/10/s2-prefill")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["ok"] is False
+    assert "failed" in d["message"]
 
 
 def test_edit_clears_needs_triage_tag(client, runtime) -> None:

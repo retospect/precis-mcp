@@ -1450,6 +1450,14 @@ async def triage_lookup(
             "Edit the fields by hand below.",
         )
 
+    # Same Crossref authority overlay as ``s2_prefill`` — the S2 title
+    # search just discovered a DOI; the publisher record has the byline
+    # S2 mangles (jammed initials, dropped middle names).
+    cr_doi = (result.get("doi") or "").strip()
+    overlay = _crossref_overlay(cr_doi) if cr_doi else None
+    if overlay:
+        result = {**result, **overlay}
+
     names = author_names(result.get("authors") or [])
     prefill = {
         "title": result.get("title", ""),
@@ -1469,23 +1477,61 @@ async def triage_lookup(
     )
 
 
+def _crossref_overlay(doi: str) -> dict[str, Any] | None:
+    """Crossref record for *doi*, shaped for the prefill payload —
+    ``None`` on any miss/failure so the caller falls back to S2 alone.
+
+    Only truthy fields are returned (the caller dict-merges this **over**
+    the S2 result), and the abstract is JATS-stripped — Crossref stores
+    abstracts as ``<jats:p>…`` XML, which must not land in a form field.
+    Lazy imports: ``habanero`` lives in the ``[paper]`` extra, and a
+    venv without it should degrade to the S2-only behaviour, not 500.
+    """
+    try:
+        from precis.handlers._paper_format import _strip_jats
+        from precis.ingest.crossref import lookup_crossref
+    except ImportError:
+        return None
+    from precis import settings
+
+    mailto = (settings.get_str("contact.crossref_mailto") or "").strip()
+    try:
+        result = lookup_crossref(doi, mailto=mailto)
+    except Exception:
+        return None
+    if not result or not result.get("title"):
+        return None
+    overlay = {k: result.get(k) for k in ("title", "authors", "year", "doi", "journal")}
+    abstract = (result.get("abstract") or "").strip()
+    if abstract:
+        overlay["abstract"] = _strip_jats(abstract)
+    return {k: v for k, v in overlay.items() if v}
+
+
 @router.get("/{ref_id}/s2-prefill", response_model=None)
 async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
     """Fetch bibliographic metadata for this paper so the Meta edit form can
     **fill only its empty fields** (client-side; nothing is persisted until
     the operator Saves). Read-only — never writes.
 
-    Looks the paper up by its most reliable identifier first: a held DOI or
-    arXiv id resolves an exact Semantic Scholar record; otherwise fall back to
-    a title search (same path as ``triage-lookup``). Authors come back in
+    Two sources, layered by authority. The S2 cascade runs first — a held
+    DOI or arXiv id resolves an exact record, else a title search (same
+    path as ``triage-lookup``) — because S2 *discovers* identifiers and
+    contributes fields Crossref lacks (abstract as plain text, arXiv id).
+    Then, when a DOI is known (held, or just discovered by S2), the
+    Crossref record is **overlaid on top**: authors/title/year/journal
+    come from the publisher record, which carries the full, consistently
+    formatted byline where S2's is jammed initials with dropped middle
+    names ("A.K. Geim" / "S. Morozov" for `10.1126/science.1102896`,
+    where Crossref has "A. K. Geim" / "S. V. Morozov"). A Crossref miss
+    or failure degrades to the S2-only result. Authors come back in
     natural order to match the editor's one-per-line convention
     (``_author_edit_lines``).
 
-    ``journal`` prefills from S2's ``venue`` field. ``entry_type`` is
-    deliberately NOT returned — ``semantic_scholar._normalize`` hardcodes
-    it to ``"article"`` (S2 doesn't classify document type), so it carries
-    no real signal and would silently clobber a genuine Crossref-derived
-    value if the client ever filled it (docs/backlog/
+    ``journal`` prefills from Crossref's ``container-title`` (or S2's
+    ``venue`` when only S2 answered). ``entry_type`` is deliberately NOT
+    returned — the client fills a fixed key set and doesn't consume it,
+    and S2's value is hardcoded ``"article"`` (docs/backlog/
     paper-meta-surfacing.md)."""
     store = get_store(request)
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
@@ -1503,6 +1549,7 @@ async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
     title = (ref.title or "").strip()
 
     result: dict[str, Any] | None = None
+    s2_failed = False
     try:
         if doi:
             result = get_paper_by_id(f"DOI:{doi}", api_key=s2_key)
@@ -1511,15 +1558,23 @@ async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
         if not result and title:
             # ``lookup_title`` (unlike ``get_paper_by_id``) re-raises after its
             # retry budget, so a down / rate-limited S2 would 500 this endpoint
-            # rather than degrade — catch it and return the same JSON-error shape
-            # the client (__paperFillBlanks) already handles.
+            # rather than degrade — catch it and fall through: a held DOI can
+            # still resolve via the Crossref overlay below.
             result = lookup_title(title, s2_key=s2_key)
     except Exception:
-        return JSONResponse(
-            {"ok": False, "message": "Semantic Scholar lookup failed — try again."}
-        )
+        s2_failed = True
+        result = None
+
+    cr_doi = (doi or (result.get("doi") if result else "") or "").strip()
+    overlay = _crossref_overlay(cr_doi) if cr_doi else None
+    if overlay:
+        result = {**(result or {}), **overlay}
 
     if not result or not result.get("title"):
+        if s2_failed:
+            return JSONResponse(
+                {"ok": False, "message": "Semantic Scholar lookup failed — try again."}
+            )
         hint = title or doi or arxiv
         return JSONResponse(
             {

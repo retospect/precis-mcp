@@ -225,6 +225,27 @@ class TestNormalizeAuthors:
             }
         ]
 
+    def test_jammed_initials_get_spaced(self) -> None:
+        # The dominant Semantic Scholar byline style — dotted initials
+        # jammed against the next capital — is repaired on every write
+        # path: flat strings, {"name"} dicts, and structured ``given``.
+        assert normalize_authors(["A.K. Geim"]) == [{"name": "A. K. Geim"}]
+        assert normalize_authors([{"name": "J.R.R. Tolkien"}]) == [
+            {"name": "J. R. R. Tolkien"}
+        ]
+        assert normalize_authors([{"given": "A.K.", "family": "Geim"}]) == [
+            {"given": "A. K.", "family": "Geim"}
+        ]
+
+    def test_initials_tidy_leaves_edge_cases_alone(self) -> None:
+        # Hyphenated initials, multi-letter abbreviations, and already
+        # correct spacing are untouched; doubled whitespace collapses.
+        assert normalize_authors(["A.-K. Geim"]) == [{"name": "A.-K. Geim"}]
+        assert normalize_authors(["K. S.  Novoselov"]) == [{"name": "K. S. Novoselov"}]
+        assert normalize_authors([{"name": "St. John Smith"}]) == [
+            {"name": "St. John Smith"}
+        ]
+
     def test_semicolon_packed_string(self) -> None:
         assert normalize_authors("Smith, Jane; Dellago, Christoph") == [
             {"given": "Jane", "family": "Smith"},

@@ -69,6 +69,13 @@ __all__ = [
 # ``pdf_sidecar.is_garbage_author``).
 _ALL_CAPS_TOKEN_RE = re.compile(r"^[A-Z]{2,}$")
 
+# A dotted initial jammed against the next capital ("A.K." / "A.K") — the
+# dominant Semantic Scholar byline style. Hyphenated initials ("A.-K.")
+# don't match (next char is "-"), and multi-letter abbreviations ("St.",
+# "PhD.") don't either (the char before the dot must itself be the
+# single capital).
+_JAMMED_INITIAL_RE = re.compile(r"\b([A-Z]\.)(?=[A-Z])")
+
 # Section-heading / front-matter words that leak into an author field
 # from a mis-parsed PDF or markup byline. Matched case-insensitively
 # against the whole (punctuation-stripped) entry, not a substring.
@@ -120,6 +127,21 @@ def is_junk_author_name(name: str) -> bool:
     if s.strip(".,:;").lower() in _JUNK_STOPWORDS:
         return True
     return False
+
+
+def _tidy_initials(s: str) -> str:
+    """Deterministic spacing repair on a name string.
+
+    Unjams runs of dotted initials ("A.K. Geim" → "A. K. Geim",
+    "J.R.R. Tolkien" → "J. R. R. Tolkien") and collapses doubled
+    whitespace. Purely typographic — never adds, drops, or reorders name
+    parts, so it can't lose information. Known trade-off: a dotted
+    corporate acronym in an author slot ("U.S. Geological Survey" →
+    "U. S. Geological Survey") gets the same spacing; accepted, since
+    person initials outnumber dotted corporate authors overwhelmingly
+    and the change is cosmetic. Pure — never raises.
+    """
+    return " ".join(_JAMMED_INITIAL_RE.sub(r"\1 ", s).split())
 
 
 def author_display(entry: Any, *, order: str = "natural") -> str:
@@ -183,7 +205,12 @@ def normalize_authors(raw: Any) -> list[dict[str, Any]]:
     along untouched.
 
     * Already-structured ``{"given"/"family", ...}`` entries pass
-      through as-is (junk-guarded on the rendered display name).
+      through (junk-guarded on the rendered display name).
+    * Every ``given`` / ``name`` string gets the :func:`_tidy_initials`
+      spacing repair ("A.K. Geim" → "A. K. Geim") — typographic only,
+      never reorders or drops name parts. ``family`` is left untouched
+      (initial runs don't occur there; not touching it minimises
+      mangling risk).
     * ``{"name": ...}`` dicts and bare strings are junk-guarded, then
       split into ``{"given", "family"}`` ONLY when unambiguous — a
       single comma ("Family, Given"). A natural "Given Family" string
@@ -212,7 +239,7 @@ def _normalize_one_author(a: Any) -> dict[str, Any] | None:
     """Normalize a single raw author entry — see :func:`normalize_authors`."""
     if isinstance(a, dict):
         family = (a.get("family") or "").strip()
-        given = (a.get("given") or "").strip()
+        given = _tidy_initials((a.get("given") or "").strip())
         if family or given:
             display = f"{given} {family}".strip()
             if is_junk_author_name(display):
@@ -224,13 +251,13 @@ def _normalize_one_author(a: Any) -> dict[str, Any] | None:
                 entry["family"] = family
             _carry_optional_author_keys(a, entry)
             return entry
-        name = (a.get("name") or "").strip()
+        name = _tidy_initials((a.get("name") or "").strip())
         if not name or is_junk_author_name(name):
             return None
         entry = _split_author_name(name)
         _carry_optional_author_keys(a, entry)
         return entry
-    name = str(a or "").strip()
+    name = _tidy_initials(str(a or "").strip())
     if not name or is_junk_author_name(name):
         return None
     return _split_author_name(name)
