@@ -207,3 +207,129 @@ def test_outline_scoreboard_absent_when_no_hub(draft: DraftHandler, hub: Hub) ->
 
     out = draft.get(id="nt").body
     assert "taproot:" not in out
+
+
+# ── gr263023: cite-time signal for a badly-postured cited hub ────────────
+
+
+def test_hygiene_flags_refuted_disputed_but_not_clean_cited_hub(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A draft citing three hubs — one whose only evidence is a
+    ``support: "no"`` verdict (refuted), one carrying a live
+    ``contradicts`` edge (disputed), and one cleanly supported — surfaces
+    exactly the first two by handle + condition, and says nothing about
+    the clean one. Default finding search stays unfiltered by design
+    (gr263023); this is the cite-time backstop that reaches the writer
+    without a second lookup."""
+    from precis.taproot.hub import attach_evidence
+
+    store = hub.live_store
+    paper = seed_ref(store, title="Evidence Paper", kind="paper")
+
+    refuted_out = seed_claim_hub(
+        store,
+        sentence="Refuted claim: X does not affect Y.",
+        scope={"material": "X"},
+        supporters=[
+            {
+                "paper": paper,
+                "support": "no",
+                "support_reason": "the passage does not carry the claim",
+                "verified_by": "test",
+            }
+        ],
+    )
+    refuted_id = refuted_out["hub_ref_id"]
+
+    disputed_out = seed_claim_hub(
+        store,
+        sentence="Disputed claim: Z accelerates W.",
+        scope={"material": "Z"},
+        supporters=[],
+    )
+    disputed_id = disputed_out["hub_ref_id"]
+    attach_evidence(
+        store,
+        hub_ref_id=disputed_id,
+        paper_ref_id=paper,
+        role="contradicts",
+        meta={"support": "no"},
+        set_by="system",
+    )
+
+    clean_out = seed_claim_hub(
+        store,
+        sentence="Clean claim: A enhances B.",
+        scope={"material": "A"},
+        supporters=[
+            {
+                "paper": paper,
+                "support": "yes",
+                "support_reason": "direct measurement",
+                "verified_by": "test",
+            }
+        ],
+    )
+    clean_id = clean_out["hub_ref_id"]
+
+    refuted_h = handle_registry.format_handle("finding", refuted_id)
+    disputed_h = handle_registry.format_handle("finding", disputed_id)
+    clean_h = handle_registry.format_handle("finding", clean_id)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=(
+            f"See [{refuted_h}], [{disputed_h}], and [{clean_h}] for "
+            "the state of the art."
+        ),
+        at={"after": "¶" + th},
+    )
+
+    out = draft.get(id="nt").body
+    assert "bad posture" in out
+    assert f"{refuted_h} (refuted)" in out
+    assert f"{disputed_h} (disputed)" in out
+    assert clean_h not in out.split("## Hygiene")[-1]
+
+    full = draft.get(id="nt", view="hygiene").body
+    assert f"{refuted_h} (refuted)" in full
+    assert f"{disputed_h} (disputed)" in full
+
+
+def test_hygiene_silent_when_every_cited_hub_is_clean(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    store = hub.live_store
+    paper = seed_ref(store, title="Evidence Paper", kind="paper")
+    clean_out = seed_claim_hub(
+        store,
+        sentence="Clean claim: C stabilizes D.",
+        scope={"material": "C"},
+        supporters=[
+            {
+                "paper": paper,
+                "support": "yes",
+                "support_reason": "direct measurement",
+                "verified_by": "test",
+            }
+        ],
+    )
+    clean_h = handle_registry.format_handle("finding", clean_out["hub_ref_id"])
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"See [{clean_h}] for background.",
+        at={"after": "¶" + th},
+    )
+
+    out = draft.get(id="nt").body
+    assert "bad posture" not in out

@@ -1210,8 +1210,11 @@ class FindingHandler(NumericRefHandler):
         ``2✓ 1✗ 1?`` — affirmative verdicts, negative verdicts (an edge
         *can* be verified and refuting), and withheld ones the publish
         preflight will refuse — and ``flags`` carries the rest —
-        ``disputed`` (a live ``contradicts`` edge) and ``drifted`` (the
-        claim was reworded out from under its frozen string). The
+        ``disputed`` (a live ``contradicts`` edge), ``drifted`` (the
+        claim was reworded out from under its frozen string), and
+        ``refuted`` (every judged edge came back negative — ``supported_
+        count == 0`` while ``verified_count > 0``; a hub with only
+        *unjudged* evidence is not refuted, it is unverified). The
         negatives ride in the same row as the hit on purpose: a claim
         layer that shows only its promotions is how a contradicted claim
         gets laundered into a draft.
@@ -1586,6 +1589,17 @@ def _merge_dedup(primary: list[Ref], secondary: list[Ref]) -> list[Ref]:
     return merged
 
 
+def is_refuted(row: HubOverviewRow) -> bool:
+    """``refuted``: every judged evidence edge came back negative —
+    ``supported_count == 0`` while ``verified_count > 0``. A hub whose
+    edges are merely *unjudged* (``verified_count == 0`` too) is not
+    refuted, it is unverified — flagging it here would be the exact
+    inversion gr263023 warns against. Shared by :func:`_posture_cells`
+    (the search-table ``flags`` column) and ``handlers/draft.py``'s
+    hygiene view (the cite-time signal), so the two never drift apart."""
+    return row.supported_count == 0 and row.verified_count > 0
+
+
 def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
     """Does this hit clear the ``trust=`` tier?
 
@@ -1626,15 +1640,22 @@ def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
     if row is None:
         return {"state": "", "support": "", "flags": ""}
     support = ""
-    refuted = row.verified_count - row.supported_count
+    negative = row.verified_count - row.supported_count
     if row.verified_count or row.withheld_count:
         support = f"{row.supported_count}✓"
-        if refuted > 0:
-            support += f" {refuted}✗"
+        if negative > 0:
+            support += f" {negative}✗"
         if row.withheld_count:
             support += f" {row.withheld_count}?"
+    refuted = is_refuted(row)
     flags = [
-        f for f, on in (("disputed", row.disputed), ("drifted", row.drifted)) if on
+        f
+        for f, on in (
+            ("disputed", row.disputed),
+            ("drifted", row.drifted),
+            ("refuted", refuted),
+        )
+        if on
     ]
     return {
         "state": row.state or "unminted",

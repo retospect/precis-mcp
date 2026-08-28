@@ -208,8 +208,11 @@ primary`:
   one carries a **negative** one (an edge can be verified and refuting —
   `support: "no"` on a `corroborates` edge is a real shape), one is
   **withheld** (the publish preflight will refuse it).
-- `flags` — `disputed` (a live `contradicts` edge) and `drifted` (the
-  claim was reworded out from under its frozen string).
+- `flags` — `disputed` (a live `contradicts` edge), `drifted` (the
+  claim was reworded out from under its frozen string), and `refuted`
+  (every judged edge came back negative — nothing verified affirms the
+  claim; a hub with only *unjudged* evidence is unverified, not refuted,
+  and does not get this flag).
 
 The negatives ride in the same row as the hit deliberately. A claim
 layer that showed only its promotions is how a contradicted claim gets

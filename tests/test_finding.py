@@ -922,6 +922,25 @@ class TestSearchTrustAxis:
         # …and the row says so out loud rather than hiding it in a ✓.
         shown = h.search(q="Amine loading")
         assert "0✓ 1✗" in shown.body
+        # gr263023: a hub whose only evidence refutes it must carry the
+        # ``refuted`` flag, live prod example fi176523.
+        assert "refuted" in shown.body
+
+    def test_unjudged_hub_is_not_flagged_refuted(self, store) -> None:
+        """A hub with only a *withheld* (unjudged) edge is unverified, not
+        refuted — ``verified_count == 0`` must never trip the flag even
+        though ``supported_count == 0`` also holds. Getting this backwards
+        (flagging every merely-unverified hub as refuted) would be worse
+        than the bug gr263023 reports."""
+        h = _make_handler(store)
+        paper = _seed_paper(store, cite_key="withheld23a")
+        withheld = mint_hub(store, self._CLAIM)
+        self._attach(store, withheld, paper, meta={"source_handle": "pc1"})
+
+        out = h.search(q="Amine loading")
+
+        assert "refuted" not in out.body
+        assert "0✓" in out.body and "1?" in out.body
 
     def test_trust_disputed_reaches_the_contradicted_cohort(self, store) -> None:
         from precis.taproot.hub import attach_evidence

@@ -10,6 +10,7 @@ taproot-vocab write, so a raw `store.add_link` / UPDATE is fine here).
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 from typing import Any
 
@@ -591,14 +592,14 @@ def test_finding_view_evidence_marks_only_zero_block_papers_unfetched(
 
 
 def test_independent_supporter_counts_zero_when_no_supporters(store: Any) -> None:
-    assert _independent_supporter_counts([], {}) == (0, 0)
+    assert _independent_supporter_counts([], {}) == (0, 0, 0)
 
 
 def test_independent_supporter_counts_single_supporter(store: Any) -> None:
     p = _paper_with_authors(store, title="Solo", authors=[{"name": "A. One"}])
     refs_by_id = store.fetch_refs_by_ids([p])
 
-    assert _independent_supporter_counts([_edge(p)], refs_by_id) == (1, 1)
+    assert _independent_supporter_counts([_edge(p)], refs_by_id) == (1, 1, 0)
 
 
 def test_independent_supporter_counts_collapses_shared_author(store: Any) -> None:
@@ -613,7 +614,11 @@ def test_independent_supporter_counts_collapses_shared_author(store: Any) -> Non
     )
     refs_by_id = store.fetch_refs_by_ids([p1, p2])
 
-    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (1, 2)
+    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (
+        1,
+        2,
+        0,
+    )
 
 
 def test_independent_supporter_counts_distinct_authors_stay_separate(
@@ -623,7 +628,11 @@ def test_independent_supporter_counts_distinct_authors_stay_separate(
     p2 = _paper_with_authors(store, title="Paper two", authors=[{"name": "Cy Fu"}])
     refs_by_id = store.fetch_refs_by_ids([p1, p2])
 
-    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (2, 2)
+    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (
+        2,
+        2,
+        0,
+    )
 
 
 def test_independent_supporter_counts_transitive_chain_collapses_to_one(
@@ -642,7 +651,7 @@ def test_independent_supporter_counts_transitive_chain_collapses_to_one(
 
     assert _independent_supporter_counts(
         [_edge(p1), _edge(p2), _edge(p3)], refs_by_id
-    ) == (1, 3)
+    ) == (1, 3, 0)
 
 
 def test_independent_supporter_counts_no_authors_stays_singleton(store: Any) -> None:
@@ -652,7 +661,56 @@ def test_independent_supporter_counts_no_authors_stays_singleton(store: Any) -> 
     p2 = _paper(store, title="No-author paper B")
     refs_by_id = store.fetch_refs_by_ids([p1, p2])
 
-    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (2, 2)
+    assert _independent_supporter_counts([_edge(p1), _edge(p2)], refs_by_id) == (
+        2,
+        2,
+        0,
+    )
+
+
+def test_independent_supporter_counts_excludes_explicit_non_support(
+    store: Any,
+) -> None:
+    """gr263023: an edge someone read and judged non-supporting
+    (``support == "no"``) is not a supporter under any reading, and is
+    dropped from both the supporter and paper counts — but its exclusion
+    is reported, never silent."""
+    p = _paper_with_authors(store, title="Refuted", authors=[{"name": "A. One"}])
+    refs_by_id = store.fetch_refs_by_ids([p])
+    edge = dataclasses.replace(_edge(p), support="no")
+
+    assert _independent_supporter_counts([edge], refs_by_id) == (0, 0, 1)
+
+
+def test_independent_supporter_counts_unjudged_edge_still_counts(
+    store: Any,
+) -> None:
+    """An edge with no verdict at all (``support is None``) is a
+    *candidate* supporter and still counts — most of the corpus is
+    unverified, so excluding every unjudged edge would collapse nearly
+    every hub's count to zero (this pins the fix did NOT do that)."""
+    p = _paper_with_authors(store, title="Unjudged", authors=[{"name": "A. One"}])
+    refs_by_id = store.fetch_refs_by_ids([p])
+
+    assert _edge(p).support is None
+    assert _independent_supporter_counts([_edge(p)], refs_by_id) == (1, 1, 0)
+
+
+def test_independent_supporter_counts_mixed_yes_and_no(store: Any) -> None:
+    """One affirmative, one judged-non-supporting: only the affirmative
+    edge counts, and the one exclusion is reported."""
+    p1 = _paper_with_authors(store, title="Supports", authors=[{"name": "Jane Doe"}])
+    p2 = _paper_with_authors(store, title="Refutes", authors=[{"name": "Cy Fu"}])
+    refs_by_id = store.fetch_refs_by_ids([p1, p2])
+
+    yes_edge = dataclasses.replace(_edge(p1), support="yes")
+    no_edge = dataclasses.replace(_edge(p2), support="no")
+
+    assert _independent_supporter_counts([yes_edge, no_edge], refs_by_id) == (
+        1,
+        1,
+        1,
+    )
 
 
 def test_finding_view_evidence_renders_independent_supporters_line(
@@ -691,6 +749,113 @@ def test_finding_view_evidence_independent_supporters_zero_with_only_contradicto
     resp = handler.get(id=hub, view="evidence")
 
     assert "independent supporters: 0 (0 papers)" in resp.body
+
+
+def test_finding_view_evidence_excludes_explicit_non_support_corroborator(
+    store: Any,
+) -> None:
+    """gr263023 / prod hub fi176523: a hub's *only* evidence edge is a
+    corroborator explicitly judged non-supporting (``support: "no"``,
+    e.g. "read it, does not support"). Before this fix the line printed
+    "independent supporters: 1 (1 papers)" — a refuted claim rendering as
+    a supported one. It must now report zero, and name the exclusion."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    refuter = _paper(store, title="Read it, does not support", year=2001)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=refuter,
+        role="corroborates",
+        meta={"support": "no", "support_reason": "read it, does not support"},
+    )
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert (
+        "independent supporters: 0 (0 papers; 1 non-supporting edge excluded)"
+        in resp.body
+    )
+
+
+def test_finding_view_evidence_excludes_multiple_non_support_edges_plural(
+    store: Any,
+) -> None:
+    """Two judged-non-supporting corroborators, no affirmative ones:
+    zero supporters, "edges" plural, both excluded."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    a = _paper(store, title="Refuter A", year=2001)
+    b = _paper(store, title="Refuter B", year=2002)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=a,
+        role="corroborates",
+        meta={"support": "no"},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=b,
+        role="corroborates",
+        meta={"support": "no"},
+    )
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert (
+        "independent supporters: 0 (0 papers; 2 non-supporting edges excluded)"
+        in resp.body
+    )
+
+
+def test_finding_view_evidence_mixed_support_counts_only_affirmative(
+    store: Any,
+) -> None:
+    """One affirmative corroborator and one judged-non-supporting one:
+    only the affirmative counts, and the one exclusion is reported."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    supporter = _paper(store, title="Confirms it", year=2001)
+    refuter = _paper(store, title="Does not support", year=2002)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=supporter,
+        role="corroborates",
+        meta={"support": "yes"},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=refuter,
+        role="corroborates",
+        meta={"support": "no"},
+    )
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert (
+        "independent supporters: 1 (1 papers; 1 non-supporting edge excluded)"
+        in resp.body
+    )
+
+
+def test_finding_view_evidence_unjudged_corroborator_still_counts(store: Any) -> None:
+    """An unjudged corroborator (no ``support`` key at all) is still a
+    candidate supporter — pinning that the gr263023 fix did NOT collapse
+    the common (still-unverified) case, and the line stays byte-identical
+    to the pre-fix format when nothing was excluded."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    supporter = _paper(store, title="Unjudged corroborator", year=2001)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=supporter, role="corroborates")
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert "independent supporters: 1 (1 papers)" in resp.body
+    assert "excluded" not in resp.body
 
 
 # ── view='evidence' patent rendering (patent-evidence-parity.md Phase 3) ──

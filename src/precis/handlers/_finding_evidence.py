@@ -41,8 +41,15 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     A one-line ``independent supporters: N (M papers)`` summary follows
     the support sections (:func:`_independent_supporter_counts`) —
     distinct supporting (establishes/corroborates) papers, with
-    shared-author papers collapsed to one supporter. Advisory only: a
-    defeasible truth-proxy signal, never a gate and never a verdict.
+    shared-author papers collapsed to one supporter, and any edge
+    explicitly judged non-supporting (``support == "no"``, gr263023)
+    excluded from both N and M — an unjudged edge still counts (most of
+    the corpus is unverified), but a judged refutation never renders as
+    support. When one or more edges were excluded the line names the
+    count instead of going quiet: ``independent supporters: 0 (0 papers;
+    1 non-supporting edge excluded)``; with zero excluded the line is
+    unchanged from before this fix. Advisory only: a defeasible
+    truth-proxy signal, never a gate and never a verdict.
 
     A hub marked a ``hypothesis`` in ``refs.meta``
     (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE``) has zero
@@ -126,10 +133,15 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     if evidence.coverage_note:
         lines += ["", evidence.coverage_note]
 
-    independent, papers = _independent_supporter_counts(
+    independent, papers, excluded = _independent_supporter_counts(
         evidence.originators + evidence.corroborators, refs_by_id
     )
-    lines += ["", f"independent supporters: {independent} ({papers} papers)"]
+    summary = f"independent supporters: {independent} ({papers} papers"
+    if excluded:
+        noun = "edge" if excluded == 1 else "edges"
+        summary += f"; {excluded} non-supporting {noun} excluded"
+    summary += ")"
+    lines += ["", summary]
 
     lines += ["", "## contradicts", ""]
     lines.append(_table(evidence.contradictors) if evidence.contradictors else "(none)")
@@ -198,15 +210,32 @@ def _falsification_section(store: Store, ref: Ref) -> list[str]:
 def _independent_supporter_counts(
     supporters: list[seniority.EvidenceEdge],
     refs_by_id: dict[int, Ref],
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Group *supporters* (a hub's originator + corroborator edges —
     ``establishes``/``corroborates`` only, never ``contradicts``) into
     **independent supporters**: distinct supporting papers, with any
     papers that share an author collapsed into one supporter — shared
     authorship is not independent replication. Returns
-    ``(independent_supporter_count, paper_count)``; read-only, derived
-    fresh from ``evidence`` + the already-fetched ``refs_by_id`` on every
-    call — no stored count.
+    ``(independent_supporter_count, paper_count, excluded_count)``;
+    read-only, derived fresh from ``evidence`` + the already-fetched
+    ``refs_by_id`` on every call — no stored count.
+
+    **Judged-non-supporting edges are excluded first** (gr263023): an
+    edge with ``support == "no"`` was read by whoever attached it
+    (:func:`precis.taproot.authoring` writes whatever verdict the
+    supporter attests) and judged not to back the claim, so it is not a
+    supporter under any reading, however it was filed. An edge with no
+    verdict at all (``support is None`` — most of the corpus is still
+    unjudged) stays a *candidate* supporter and is still counted:
+    excluding every unjudged edge would collapse nearly every hub's
+    count to zero and destroy the signal. This mirrors the
+    affirmative-vs-judged split in
+    :class:`precis.nanopub.overview.HubOverviewRow` (``supported_count``
+    vs ``verified_count``): excluded here is the "judged, not
+    affirmative" complement, kept here is "affirmative or unjudged".
+    ``excluded_count`` is surfaced by the caller rather than silently
+    folded into the paper/supporter counts, so a reader sees that a
+    refutation was filtered out instead of the line simply going quiet.
 
     Grouping is a union-find over normalized author display names
     (:func:`precis.utils.authors.author_names`, case-folded) so it's a
@@ -216,9 +245,11 @@ def _independent_supporter_counts(
     merged with anything — sparse author data undercounts collapses
     (never fabricates one).
     """
+    excluded = sum(1 for e in supporters if e.support == "no")
+    supporters = [e for e in supporters if e.support != "no"]
     paper_ids = sorted({e.paper_ref_id for e in supporters})
     if not paper_ids:
-        return 0, 0
+        return 0, 0, excluded
 
     parent: dict[int, int] = {pid: pid for pid in paper_ids}
 
@@ -245,7 +276,7 @@ def _independent_supporter_counts(
             union(group[0], other_pid)
 
     roots = {find(pid) for pid in paper_ids}
-    return len(roots), len(paper_ids)
+    return len(roots), len(paper_ids), excluded
 
 
 def _collapse_patent_families(

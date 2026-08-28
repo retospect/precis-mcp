@@ -2309,7 +2309,7 @@ class DraftHandler(Handler):
         """Whole-draft specificity debt, surfaced on every ``get`` — not
         just a fresh write — so a legacy/bulk-authored draft that never
         passed through an incremental ``put``/``edit`` still gets flagged.
-        Two checks, both advisory (never blocking):
+        Three checks, all advisory (never blocking):
 
         * **undefined abbreviations** — acronym-shaped tokens anywhere in
           the draft with no glossary ``term``/inline definition/silence.
@@ -2319,12 +2319,23 @@ class DraftHandler(Handler):
         * **whole-paper citations** — ``[pa<id>]``/``[pk<id>]`` (no chunk)
           anywhere in the draft, with the ``dc<id>`` they live in so
           they're locatable.
+        * **badly-postured cited claim hubs** — a hub this draft cites
+          outbound (``[fi<id>]``, via the same ``cites`` edges
+          :func:`~precis.nanopub.overview.draft_cited_hub_ids` reads)
+          that is ``refuted`` (every judged edge came back negative —
+          :func:`~precis.handlers.finding.is_refuted`), ``disputed`` (a
+          live ``contradicts`` edge), or ``drifted`` (reworded out from
+          under its frozen string) — see :meth:`_hygiene_hub_posture_lines`.
+          gr263023: default finding search deliberately keeps such hubs
+          visible rather than filtering them out, so this is the
+          cite-time backstop — a writer sees the signal without leaving
+          the draft.
 
-        A third, informational-only line (never a ``⚠``) scoreboards how
+        A fourth, informational-only line (never a ``⚠``) scoreboards how
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
-        A fourth line — DOI completeness/validity over the same cited
+        A fifth line — DOI completeness/validity over the same cited
         papers (docs/backlog/draft-doi-completeness-check.md), advisory
         only — see :meth:`_hygiene_doi_line`.
 
@@ -2375,6 +2386,9 @@ class DraftHandler(Handler):
                 "precision matters — [pc<id>] via search(kind='paper', …) "
                 "or get(kind='paper', id='<slug>~lo..hi', view='toc')."
             )
+
+        hub_posture = self._hygiene_hub_posture_lines(ref_id, limit=limit)
+        out.extend(hub_posture)
 
         cited_ref_ids = self._cited_paper_ref_ids(chunks)
 
@@ -2431,6 +2445,55 @@ class DraftHandler(Handler):
                 if target is not None:
                     out.append(target.dst_ref_id)
         return out
+
+    def _hygiene_hub_posture_lines(
+        self, ref_id: int, *, limit: int | None
+    ) -> list[str]:
+        """gr263023: the default finding-search result deliberately keeps
+        a refuted/disputed/drifted claim hub visible rather than
+        filtering it out (:func:`~precis.handlers.finding.is_refuted` —
+        every judged edge came back negative), so a citing draft is the
+        one place the signal must reach without a second lookup. Reads
+        this draft's outbound ``cites`` targets
+        (:func:`~precis.nanopub.overview.draft_cited_hub_ids`) and their
+        posture (:func:`~precis.nanopub.overview.hub_rows`, ref-scoped —
+        no new SQL), then lists exactly the ones that hit ``refuted``,
+        ``disputed`` (a live ``contradicts`` edge), or ``drifted``
+        (reworded out from under its frozen string). Same elide-with-a-
+        pointer convention as the other checks in :meth:`_hygiene_lines`;
+        ``[]`` when the draft cites no hub, or every cited hub is clean."""
+        from precis.handlers.finding import is_refuted
+        from precis.nanopub.overview import draft_cited_hub_ids, hub_rows
+
+        cited = draft_cited_hub_ids(self.store, ref_id)
+        if not cited:
+            return []
+        rows = hub_rows(self.store, ref_ids=sorted(cited))
+        entries: list[str] = []
+        for row in rows:
+            conds = [
+                name
+                for name, on in (
+                    ("disputed", row.disputed),
+                    ("drifted", row.drifted),
+                    ("refuted", is_refuted(row)),
+                )
+                if on
+            ]
+            if conds:
+                entries.append(f"fi{row.ref_id} ({', '.join(conds)})")
+        if not entries:
+            return []
+        shown = ", ".join(entries if limit is None else entries[:limit])
+        tail = (
+            f" (+{len(entries) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(entries) > limit
+            else ""
+        )
+        return [
+            f"⚠ {len(entries)} cited claim hub(s) with a bad posture: {shown}{tail}."
+        ]
 
     def _taproot_hub_scoreboard(self, cited_ref_ids: list[int]) -> tuple[int, int]:
         """``(grounded, total)`` over ``cited_ref_ids``
