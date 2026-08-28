@@ -67,10 +67,11 @@ ruled out: PdCuNi alloy 2.84
     "tried": its :class:`precis.quest.frontier.ProvisionalCandidate.measures`
     (the merged trusted + recovered-untrusted view) is read via
     ``dataclasses.replace`` onto a throwaway :class:`Candidate` copy, so it
-    sorts into the same list below — but its value renders with a ``≈`` and
-    it can never take the ``(BEST)`` label, which belongs to confirmed
-    measurements only (the prompt's authority rule: a provisional value never
-    counts as a confirmed barrier).
+    sorts into the same list below — but it renders NAME-ONLY
+    (``(measured, unconfirmed)``), no value and never the ``(BEST)`` label:
+    this line exists for proposal dedup, and an untrusted number in it reads
+    as a prior (the prompt's authority rule: the frontier table is the only
+    number source).
     """
     if fr is None:
         from precis.quest.frontier import quest_frontier
@@ -110,16 +111,22 @@ ruled out: PdCuNi alloy 2.84
             unmeasured.append(f"{cand.name} (awaiting)")
 
     measured.sort(key=lambda t: t[0] if sense == "min" else -t[0])
-    # (BEST) marks the best CONFIRMED value only — a provisional value renders
-    # with ≈ and never takes the label, per the tick prompt's authority rule.
+    # (BEST) marks the best CONFIRMED value only. A provisional entry renders
+    # NAME-ONLY: this line exists for proposal dedup, and an untrusted number
+    # here reads as a prior — the first post-reset tick built a whole
+    # "disappeared sub-0.7 eV leads / data loss" theory from ≈-marked
+    # pre-trust values (incl. a broken-NEB ≈0). The frontier table is the
+    # only number source; names alone still say "tried, don't re-propose".
     best_confirmed = next(
         (i for i, (_, _, prov) in enumerate(measured[:limit]) if not prov), None
     )
     bits: list[str] = []
     for i, (value, name, prov) in enumerate(measured[:limit]):
+        if prov:
+            bits.append(f"{name} (measured, unconfirmed)")
+            continue
         best = " (BEST)" if i == best_confirmed else ""
-        mark = "≈" if prov else ""
-        bits.append(f"{name} {mark}{value:g}{best}")
+        bits.append(f"{name} {value:g}{best}")
     bits.extend(unmeasured[: max(0, limit - len(bits))])
 
     if not bits and not ruled_out:

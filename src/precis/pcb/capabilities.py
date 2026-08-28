@@ -108,7 +108,9 @@ def capability_for(process: str) -> CapabilityRow:
     rows = {r.process: r for r in load_capabilities()}
     row = rows.get(process)
     if row is None:
-        raise KeyError(f"unknown pcb capability process {process!r}; known: {sorted(rows)}")
+        raise KeyError(
+            f"unknown pcb capability process {process!r}; known: {sorted(rows)}"
+        )
     return row
 
 

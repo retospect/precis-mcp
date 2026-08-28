@@ -79,10 +79,13 @@ class TestTriedSetSummary:
         # best (lowest barrier) sorts first and carries the BEST marker
         assert summary.index("Ag adatom 0.74 (BEST)") < summary.index("Cu adatom 0.96")
 
-    def test_provisional_value_marked_and_never_best(self, store: Any) -> None:
+    def test_provisional_renders_name_only_and_never_best(self, store: Any) -> None:
         # A provisional value (no converged relax) sorts into the same list
-        # but renders ≈ and cannot take (BEST) — that label belongs to the
-        # best CONFIRMED measurement, even when a provisional value beats it.
+        # but renders NAME-ONLY — no number, no (BEST). The line exists for
+        # proposal dedup; an untrusted number in it reads as a prior (the
+        # first post-reset qu164903 tick built a "disappeared leads" theory
+        # from ≈-marked pre-trust values). (BEST) still belongs to the best
+        # CONFIRMED measurement even when a provisional value beats it.
         qid = _mk_quest(store, "A Pd catalyst striving")
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
@@ -94,8 +97,9 @@ class TestTriedSetSummary:
         store.stamp_ref_meta(ag, {"barrier": 0.74})  # better, but unconfirmed
 
         summary = explore_mod.tried_set_summary(store, qid)
-        assert "Ag adatom ≈0.74" in summary
-        assert "Ag adatom ≈0.74 (BEST)" not in summary
+        assert "Ag adatom (measured, unconfirmed)" in summary
+        assert "0.74" not in summary  # the untrusted number never renders
+        assert "≈" not in summary
         assert "Cu adatom 0.96 (BEST)" in summary
 
     def test_lists_ruled_out_separately(self, store: Any) -> None:

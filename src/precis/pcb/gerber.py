@@ -119,13 +119,17 @@ def _aperture_for_pad(pad: dict[str, Any], apertures: _ApertureTable) -> int:
 # ─────────────────────────────────────────────────────────────────────
 # draws: strokes (tracks/silk) and flashes (pads/via barrels)
 # ─────────────────────────────────────────────────────────────────────
-def _emit_flash(pad: dict[str, Any], apertures: _ApertureTable, body: list[str]) -> None:
+def _emit_flash(
+    pad: dict[str, Any], apertures: _ApertureTable, body: list[str]
+) -> None:
     aid = _aperture_for_pad(pad, apertures)
     body.append(f"D{aid}*")
     body.append(f"{_coord(float(pad['x']), float(pad['y']))}D03*")
 
 
-def _emit_stroke(draw: dict[str, Any], apertures: _ApertureTable, body: list[str]) -> None:
+def _emit_stroke(
+    draw: dict[str, Any], apertures: _ApertureTable, body: list[str]
+) -> None:
     """A polyline/arc-chain draw at ``draw['width_mm']`` — used for both
     copper tracks and silkscreen lines (they differ only in which layer/file
     they land in, decided by the caller)."""
@@ -253,7 +257,12 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
         elif ctype == "pour" and item.get("layer") == layer:
             _emit_region(item, body)
         elif ctype == "via" and layer in _via_layers(item, layers):
-            pad = {"shape": "circle", "x": item["x"], "y": item["y"], "w": item["dia_mm"]}
+            pad = {
+                "shape": "circle",
+                "x": item["x"],
+                "y": item["y"],
+                "w": item["dia_mm"],
+            }
             _emit_flash(pad, apertures, body)
     for pad in model.get("pads", []):
         if pad.get("layer") == layer:
@@ -346,7 +355,7 @@ def excellon_files(model: dict[str, Any], *, name: str = "design") -> dict[str, 
         for item in model.get("copper", [])
         if item.get("ctype") == "via"
     ]
-    non_plated = []
+    non_plated: list[dict[str, Any]] = []
     for d in model.get("drills", []):
         (plated if d.get("plated", True) else non_plated).append(d)
     out = {}

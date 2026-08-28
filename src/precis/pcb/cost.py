@@ -134,7 +134,9 @@ class CostConfig:
 
     # -- the one dial --------------------------------------------------
     risk_to_money: float = 100.0  # USD per unit of criticality-weighted margin risk
-    schedule: float = 0.0  # 0 = exploratory .. 1 = hardened barrier (see hardened_penalty)
+    schedule: float = (
+        0.0  # 0 = exploratory .. 1 = hardened barrier (see hardened_penalty)
+    )
     p_norm: float | None = None  # None = exact max; a float = smoother p-norm soft-max
 
     # -- money rates (USD) ----------------------------------------------
@@ -142,11 +144,15 @@ class CostConfig:
     layer_usd: float = 5.0
     via_usd: float = 0.02
     extended_part_fee_usd: float = 3.0
-    default_instance_area_mm2: float = 2.0  # coarse per-instance area assumption before L3 positions exist
+    default_instance_area_mm2: float = (
+        2.0  # coarse per-instance area assumption before L3 positions exist
+    )
 
     # -- margin budgets ---------------------------------------------------
     default_pitch_mm: float = 0.3  # trace width + clearance, generic class fallback
-    assumed_max_gap_mm: float = 80.0  # generous board-scale gap assumption for the pre-L4 bound
+    assumed_max_gap_mm: float = (
+        80.0  # generous board-scale gap assumption for the pre-L4 bound
+    )
     inductance_budget_nh: float = 5.0
     inductance_nh_per_mm: float = 1.0  # crude partial-inductance-of-a-loop proxy
     min_loop_mm: float = 0.3  # smallest physically possible loop (via diameter scale) for the pre-L3 bound
@@ -169,7 +175,9 @@ class CostConfig:
 
     # -- catalog / annotation side-channels (not IR fields; optional) ----
     net_annotations: dict[int, obj.NetAnnotation] = field(default_factory=dict)
-    extended_parts: frozenset[int] | None = None  # override ir.inst_extended_part if supplied
+    extended_parts: frozenset[int] | None = (
+        None  # override ir.inst_extended_part if supplied
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,7 +240,9 @@ def money_total(terms: list[TermValue]) -> float:
     return sum(t.raw for t in terms if t.family is Family.MONEY)
 
 
-def margin_penalties(terms: list[TermValue], specs: dict[str, TermSpec], schedule: float) -> list[float]:
+def margin_penalties(
+    terms: list[TermValue], specs: dict[str, TermSpec], schedule: float
+) -> list[float]:
     """Criticality-weighted, hardened penalty for every MARGIN term value
     — one entry per (term, region), not collapsed, so the caller can still
     trace which one is peaking."""
@@ -262,7 +272,9 @@ def aggregate_margin(penalties: list[float], *, p_norm: float | None = None) -> 
     return m * (sum((p / m) ** p_norm for p in penalties)) ** (1.0 / p_norm)
 
 
-def evaluate_cost(ir: PcbIR, level: Level, config: CostConfig = CostConfig()) -> CostResult:
+def evaluate_cost(
+    ir: PcbIR, level: Level, config: CostConfig = CostConfig()
+) -> CostResult:
     """The ONE cost function. Evaluates every registered term's estimator
     at ``level`` (fidelity only — see module docstring), sums the money
     family, max-aggregates the criticality-weighted margin family, and
@@ -273,7 +285,9 @@ def evaluate_cost(ir: PcbIR, level: Level, config: CostConfig = CostConfig()) ->
     money = money_total(terms)
     penalties = margin_penalties(terms, _BY_NAME, config.schedule)
     risk = aggregate_margin(penalties, p_norm=config.p_norm)
-    return CostResult(total=money + config.risk_to_money * risk, money=money, risk=risk, terms=terms)
+    return CostResult(
+        total=money + config.risk_to_money * risk, money=money, risk=risk, terms=terms
+    )
 
 
 # ── money terms ──────────────────────────────────────────────────────
@@ -324,8 +338,16 @@ def _layer_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]
         used = 1  # a board needs at least one layer; nothing assigned yet
         bound = True
     else:
-        layers = {int(ir.seg_layer[s]) for s in range(ir.n_segments) if int(ir.seg_layer[s]) != UNSET_LAYER}
-        layers |= {int(ir.net_plane_layer[n]) for n in range(ir.n_nets) if int(ir.net_plane_layer[n]) != UNSET_LAYER}
+        layers = {
+            int(ir.seg_layer[s])
+            for s in range(ir.n_segments)
+            if int(ir.seg_layer[s]) != UNSET_LAYER
+        }
+        layers |= {
+            int(ir.net_plane_layer[n])
+            for n in range(ir.n_nets)
+            if int(ir.net_plane_layer[n]) != UNSET_LAYER
+        }
         used = max(1, len(layers))
         bound = False
     return [
@@ -415,7 +437,9 @@ def _gap_capacity(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue
             )
             continue
         capacity = float(ir.seg_gap_capacity[s])
-        fraction = 1.0 / capacity if capacity > 0 else 10.0  # no room at all: far over budget, not undefined
+        fraction = (
+            1.0 / capacity if capacity > 0 else 10.0
+        )  # no room at all: far over budget, not undefined
         out.append(
             TermValue(
                 "gap_capacity",
@@ -452,7 +476,9 @@ def _loop_inductance(ir: PcbIR, level: Level, config: CostConfig) -> list[TermVa
         # return path" — objectives_for_connection only sets it non-None
         # for power/ground classes, and this term only checks `is None`,
         # never the value. Real pairing arrives with net_class rules data.
-        vector, _reason = obj.objectives_for_connection(net_class, str(ir.net_domain[net_id]), return_net=net_id)
+        vector, _reason = obj.objectives_for_connection(
+            net_class, str(ir.net_domain[net_id]), return_net=net_id
+        )
         if vector.return_net is None or vector.low_impedance <= 0.0:
             continue
         net_name = str(ir.net_name[net_id])
@@ -503,7 +529,10 @@ def _coupling(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
             net_a, net_b = int(ir.seg_net[sa]), int(ir.seg_net[sb])
             if net_a == net_b:
                 continue
-            ann_a, ann_b = _annotation(net_a, ir, config), _annotation(net_b, ir, config)
+            ann_a, ann_b = (
+                _annotation(net_a, ir, config),
+                _annotation(net_b, ir, config),
+            )
             if level < Level.L3:
                 k = config.coupling_bound_k
                 bound = True
@@ -588,7 +617,13 @@ def _thermal_rise(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue
 
 
 TERMS: list[TermSpec] = [
-    TermSpec("board_area", Family.MONEY, Criticality.FUNCTIONAL, "fab price scales with panel area", _board_area),
+    TermSpec(
+        "board_area",
+        Family.MONEY,
+        Criticality.FUNCTIONAL,
+        "fab price scales with panel area",
+        _board_area,
+    ),
     TermSpec(
         "layer_count",
         Family.MONEY,
@@ -596,7 +631,13 @@ TERMS: list[TermSpec] = [
         "each copper layer is a discrete lamination/drill fab step",
         _layer_count,
     ),
-    TermSpec("via_count", Family.MONEY, Criticality.MARGINAL, "each via is a separately drilled/plated hole", _via_count),
+    TermSpec(
+        "via_count",
+        Family.MONEY,
+        Criticality.MARGINAL,
+        "each via is a separately drilled/plated hole",
+        _via_count,
+    ),
     TermSpec(
         "extended_part_fees",
         Family.MONEY,

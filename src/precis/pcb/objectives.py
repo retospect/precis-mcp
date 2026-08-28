@@ -60,7 +60,9 @@ class NetAnnotation:
     exists yet.
     """
 
-    impedance_ohm: float | None  # None => unknown; treated as high-Z (worst-case victim)
+    impedance_ohm: (
+        float | None
+    )  # None => unknown; treated as high-Z (worst-case victim)
     edge_rate_v_per_ns: float | None  # None => quiescent/DC; not an aggressor
     signal_level: SignalLevel
 
@@ -71,11 +73,25 @@ class NetAnnotation:
 #: zero (undefined != zero, the same rule cost.py enforces) when no
 #: annotation has been authored yet.
 _FUNCTION_DEFAULTS: dict[str, NetAnnotation] = {
-    "crystal": NetAnnotation(impedance_ohm=_REF_HIGH_Z_OHM, edge_rate_v_per_ns=0.0, signal_level=SignalLevel.LOW),
-    "switcher_sw": NetAnnotation(impedance_ohm=1.0, edge_rate_v_per_ns=5.0, signal_level=SignalLevel.POWER),
-    "adc_input": NetAnnotation(impedance_ohm=_REF_HIGH_Z_OHM, edge_rate_v_per_ns=0.0, signal_level=SignalLevel.LOW),
-    "digital_logic": NetAnnotation(impedance_ohm=1.0e3, edge_rate_v_per_ns=1.0, signal_level=SignalLevel.LOGIC),
-    "power_rail": NetAnnotation(impedance_ohm=0.1, edge_rate_v_per_ns=0.0, signal_level=SignalLevel.POWER),
+    "crystal": NetAnnotation(
+        impedance_ohm=_REF_HIGH_Z_OHM,
+        edge_rate_v_per_ns=0.0,
+        signal_level=SignalLevel.LOW,
+    ),
+    "switcher_sw": NetAnnotation(
+        impedance_ohm=1.0, edge_rate_v_per_ns=5.0, signal_level=SignalLevel.POWER
+    ),
+    "adc_input": NetAnnotation(
+        impedance_ohm=_REF_HIGH_Z_OHM,
+        edge_rate_v_per_ns=0.0,
+        signal_level=SignalLevel.LOW,
+    ),
+    "digital_logic": NetAnnotation(
+        impedance_ohm=1.0e3, edge_rate_v_per_ns=1.0, signal_level=SignalLevel.LOGIC
+    ),
+    "power_rail": NetAnnotation(
+        impedance_ohm=0.1, edge_rate_v_per_ns=0.0, signal_level=SignalLevel.POWER
+    ),
 }
 
 #: A conservative default when neither a datasheet annotation nor a
@@ -83,11 +99,15 @@ _FUNCTION_DEFAULTS: dict[str, NetAnnotation] = {
 #: assumed edge rate (not asserted an aggressor without evidence) — never
 #: zero-out the annotation just because nothing was authored.
 _UNKNOWN_DEFAULT = NetAnnotation(
-    impedance_ohm=_REF_HIGH_Z_OHM, edge_rate_v_per_ns=None, signal_level=SignalLevel.LOGIC
+    impedance_ohm=_REF_HIGH_Z_OHM,
+    edge_rate_v_per_ns=None,
+    signal_level=SignalLevel.LOGIC,
 )
 
 
-def annotation_for(function_hint: str | None, override: NetAnnotation | None = None) -> NetAnnotation:
+def annotation_for(
+    function_hint: str | None, override: NetAnnotation | None = None
+) -> NetAnnotation:
     """The per-net annotation to use: an explicit ``override`` (datasheet-
     derived) wins; else the function-keyed library default; else the
     conservative unknown default. Never returns "no annotation" — the
@@ -225,7 +245,9 @@ def objectives_for_connection(
     caller can't silently cost a fluidic net with electrical physics.
     """
     if net_domain != "electrical":
-        raise ValueError(f"objectives are electrical-only in v1, got domain={net_domain!r}")
+        raise ValueError(
+            f"objectives are electrical-only in v1, got domain={net_domain!r}"
+        )
     key = net_class.strip().lower()
     template, reason = _CLASS_PRESETS.get(key, _CLASS_PRESETS["signal"])
     wants_loop = key in _POWER_CLASSES or key in _GROUND_CLASSES
@@ -265,7 +287,9 @@ def victim_susceptibility(v: NetAnnotation) -> float:
     return max(0.0, min(1.0, z / _REF_HIGH_Z_OHM))
 
 
-def coupling(aggressor: NetAnnotation, victim: NetAnnotation, k_geometry: float) -> float:
+def coupling(
+    aggressor: NetAnnotation, victim: NetAnnotation, k_geometry: float
+) -> float:
     """``coupling(a -> v) = aggressor_strength(a) x victim_susceptibility(v)
     x k(geometry)`` (backlog formula, verbatim). ``k_geometry in [0, 1]``
     is the caller's spatial-decay factor — cost.py supplies a
@@ -275,4 +299,8 @@ def coupling(aggressor: NetAnnotation, victim: NetAnnotation, k_geometry: float)
     geometry term varies over a far wider range than the annotation
     error, so refining these constants further would just be over-fitting
     (backlog, verbatim rationale)."""
-    return aggressor_strength(aggressor) * victim_susceptibility(victim) * max(0.0, min(1.0, k_geometry))
+    return (
+        aggressor_strength(aggressor)
+        * victim_susceptibility(victim)
+        * max(0.0, min(1.0, k_geometry))
+    )

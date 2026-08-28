@@ -102,7 +102,9 @@ class PcbIR:
     stackup: list[dict[str, Any]]
 
     # ---- L0: pins + nets (hypergraph) ---------------------------------
-    instance_refdes: np.ndarray  # object[n_inst] -> str (opaque id = index; refdes is a late label)
+    instance_refdes: (
+        np.ndarray
+    )  # object[n_inst] -> str (opaque id = index; refdes is a late label)
     inst_extended_part: np.ndarray  # bool[n_inst] (JLC "Extended" part fee applies)
     pin_instance: np.ndarray  # int32[n_pins]
     pin_label: np.ndarray  # object[n_pins] -> str (pad name; export label only)
@@ -132,7 +134,9 @@ class PcbIR:
     inst_fixed: np.ndarray  # bool[n_inst]
 
     # ---- L4: metric annotations -----------------------------------------
-    seg_gap_capacity: np.ndarray  # float64[n_seg], strands-that-fit; nan = not yet computed
+    seg_gap_capacity: (
+        np.ndarray
+    )  # float64[n_seg], strands-that-fit; nan = not yet computed
     seg_region_density: np.ndarray  # float64[n_seg], nan = not yet computed
 
     # ---- L5: realized copper ---------------------------------------------
@@ -175,7 +179,12 @@ class PcbIR:
 
     # -- mutators: each owns exactly which levels it dirties -----------
     def move_instance(
-        self, inst_id: int, *, x: float | None = None, y: float | None = None, rot: float | None = None
+        self,
+        inst_id: int,
+        *,
+        x: float | None = None,
+        y: float | None = None,
+        rot: float | None = None,
     ) -> None:
         """L3 move. Dirties L3 at ``inst_id``; dirties L4/L5 **locally** —
         only the segments whose endpoints touch this instance — never the
@@ -202,7 +211,9 @@ class PcbIR:
         untouched — a layer reassignment doesn't change which side of an
         obstacle a connection takes, nor any component's position."""
         if not (0 <= layer < self.n_layers):
-            raise ValueError(f"layer {layer} out of range for a {self.n_layers}-layer stackup")
+            raise ValueError(
+                f"layer {layer} out of range for a {self.n_layers}-layer stackup"
+            )
         self.seg_layer[seg_id] = layer
         self.dirty_l1[seg_id] = True
         self.dirty_l4[seg_id] = True
@@ -215,7 +226,9 @@ class PcbIR:
         instead), so they're dirtied at L1/L4/L5 same as a layer
         reassignment; L3 is untouched (no component moved)."""
         if not (0 <= layer < self.n_layers):
-            raise ValueError(f"layer {layer} out of range for a {self.n_layers}-layer stackup")
+            raise ValueError(
+                f"layer {layer} out of range for a {self.n_layers}-layer stackup"
+            )
         self.net_plane_layer[net_id] = layer
         for seg_id in np.flatnonzero(self.seg_net == net_id):
             self.dirty_l1[seg_id] = True
@@ -250,7 +263,9 @@ class PcbIR:
         segment incident to this pin."""
         lo, hi = int(self.rotation_index[pin_id]), int(self.rotation_index[pin_id + 1])
         if len(dart_order) != hi - lo:
-            raise ValueError(f"pin {pin_id} has {hi - lo} incident darts, got {len(dart_order)}")
+            raise ValueError(
+                f"pin {pin_id} has {hi - lo} incident darts, got {len(dart_order)}"
+            )
         self.rotation_darts[lo:hi] = dart_order
         for dart in dart_order:
             seg_id = dart // 2
@@ -289,7 +304,9 @@ class PcbIR:
             mask[seg_ids] = False
 
 
-def _build_segments_index(seg_pin_a: np.ndarray, seg_pin_b: np.ndarray, pin_instance: np.ndarray) -> dict[int, list[int]]:
+def _build_segments_index(
+    seg_pin_a: np.ndarray, seg_pin_b: np.ndarray, pin_instance: np.ndarray
+) -> dict[int, list[int]]:
     idx: dict[int, list[int]] = {}
     for seg_id, (pa, pb) in enumerate(zip(seg_pin_a, seg_pin_b)):
         for inst_id in (int(pin_instance[pa]), int(pin_instance[pb])):
@@ -297,7 +314,9 @@ def _build_segments_index(seg_pin_a: np.ndarray, seg_pin_b: np.ndarray, pin_inst
     return idx
 
 
-def from_graph(graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = None) -> PcbIR:
+def from_graph(
+    graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = None
+) -> PcbIR:
     """Build an L0 :class:`PcbIR` from the plain-dict graph shape shared
     with :mod:`precis.pcb.eyes` (``{"instances":[...], "nets":[...],
     "unconnected":[...]}``) — no DB, so this stays independently
@@ -315,7 +334,14 @@ def from_graph(graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = 
     ``x``/``y`` for an instance, matching what the netlist/placement store
     actually knows at hydration time.
     """
-    stackup = stackup if stackup is not None else []
+    # Default to the house 4-layer stackup: a bare `from_graph(graph)` must
+    # yield an IR whose layer mutators work (`set_layer(0, 1)`, plane
+    # promotion) — an empty stackup makes every layer index "out of range"
+    # and only an explicit `stackup=[]` caller could want that.
+    if stackup is None:
+        from precis.pcb import DEFAULT_STACKUP
+
+        stackup = DEFAULT_STACKUP
     instances = graph.get("instances") or []
     refdes_to_id = {inst["refdes"]: i for i, inst in enumerate(instances)}
     n_inst = len(instances)
@@ -362,7 +388,9 @@ def from_graph(graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = 
     n_seg = len(seg_net)
     n_nets = len(net_name)
 
-    rotation_index = np.zeros(n_pins + 1, dtype=np.int32)  # empty CSR: no embedding chosen yet
+    rotation_index = np.zeros(
+        n_pins + 1, dtype=np.int32
+    )  # empty CSR: no embedding chosen yet
 
     inst_x = np.full(n_inst, np.nan)
     inst_y = np.full(n_inst, np.nan)
@@ -376,7 +404,9 @@ def from_graph(graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = 
     ir = PcbIR(
         stackup=stackup,
         instance_refdes=_obj_array([inst["refdes"] for inst in instances]),
-        inst_extended_part=np.array([bool(inst.get("extended_part")) for inst in instances], dtype=bool),
+        inst_extended_part=np.array(
+            [bool(inst.get("extended_part")) for inst in instances], dtype=bool
+        ),
         pin_instance=np.array(pin_instance, dtype=np.int32),
         pin_label=_obj_array(pin_label),
         pin_net=np.array(pin_net, dtype=np.int32),
@@ -396,7 +426,10 @@ def from_graph(graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = 
         inst_x=inst_x,
         inst_y=inst_y,
         inst_rot=np.zeros(n_inst),
-        inst_fixed=np.array([(inst.get("fixed") or "") in ("xy", "both") for inst in instances], dtype=bool),
+        inst_fixed=np.array(
+            [(inst.get("fixed") or "") in ("xy", "both") for inst in instances],
+            dtype=bool,
+        ),
         seg_gap_capacity=np.full(n_seg, np.nan),
         seg_region_density=np.full(n_seg, np.nan),
         seg_copper_length_mm=np.full(n_seg, np.nan),
@@ -406,7 +439,9 @@ def from_graph(graph: dict[str, Any], *, stackup: list[dict[str, Any]] | None = 
         dirty_l4=np.zeros(n_seg, dtype=bool),
         dirty_l5=np.zeros(n_seg, dtype=bool),
     )
-    ir._segs_of_instance = _build_segments_index(ir.seg_pin_a, ir.seg_pin_b, ir.pin_instance)
+    ir._segs_of_instance = _build_segments_index(
+        ir.seg_pin_a, ir.seg_pin_b, ir.pin_instance
+    )
     return ir
 
 
@@ -442,7 +477,9 @@ def propose_rotation_from_positions(ir: PcbIR) -> dict[int, list[int]]:
 
         def _angle(dart: int, px: float = px, py: float = py) -> float:
             seg_id, end = divmod(dart, 2)
-            other_pin = int(ir.seg_pin_b[seg_id]) if end == 0 else int(ir.seg_pin_a[seg_id])
+            other_pin = (
+                int(ir.seg_pin_b[seg_id]) if end == 0 else int(ir.seg_pin_a[seg_id])
+            )
             ox, oy = _pos(other_pin)
             if math.isnan(ox) or math.isnan(oy):
                 return 0.0
@@ -512,7 +549,9 @@ def unconnected_items(ir: PcbIR) -> list[dict[str, Any]]:
     for net_id in range(ir.n_nets):
         n = len(pins_per_net.get(net_id, ()))
         if n < 2:
-            out.append({"code": "dangling-net", "net": str(ir.net_name[net_id]), "pins": n})
+            out.append(
+                {"code": "dangling-net", "net": str(ir.net_name[net_id]), "pins": n}
+            )
     return out
 
 
@@ -523,7 +562,10 @@ def _layer_graph(ir: PcbIR, layer: int) -> tuple[int, int, list[list[int]]]:
     of the problem that genuinely doesn't decompose per layer per the
     backlog — left to the optimizer's constraint set, not this bound)."""
     seg_ids = [s for s in range(ir.n_segments) if int(ir.seg_layer[s]) == layer]
-    pins = sorted({int(ir.seg_pin_a[s]) for s in seg_ids} | {int(ir.seg_pin_b[s]) for s in seg_ids})
+    pins = sorted(
+        {int(ir.seg_pin_a[s]) for s in seg_ids}
+        | {int(ir.seg_pin_b[s]) for s in seg_ids}
+    )
     adj: dict[int, list[int]] = {p: [] for p in pins}
     for s in seg_ids:
         a, b = int(ir.seg_pin_a[s]), int(ir.seg_pin_b[s])
@@ -573,7 +615,9 @@ def same_layer_crossing_bound(ir: PcbIR, layer: int, *, refine: bool = False) ->
     v, e, components = _layer_graph(ir, layer)
     if not refine:
         return _euler_bound(v, e)
-    return sum(_euler_bound(len(comp), _edges_in(ir, layer, comp)) for comp in components)
+    return sum(
+        _euler_bound(len(comp), _edges_in(ir, layer, comp)) for comp in components
+    )
 
 
 def _euler_bound(v: int, e: int) -> int:
@@ -587,7 +631,9 @@ def _edges_in(ir: PcbIR, layer: int, pins: list[int]) -> int:
     return sum(
         1
         for s in range(ir.n_segments)
-        if int(ir.seg_layer[s]) == layer and int(ir.seg_pin_a[s]) in pin_set and int(ir.seg_pin_b[s]) in pin_set
+        if int(ir.seg_layer[s]) == layer
+        and int(ir.seg_pin_a[s]) in pin_set
+        and int(ir.seg_pin_b[s]) in pin_set
     )
 
 
@@ -691,6 +737,9 @@ def plane_connectivity(ir: PcbIR, net_id: int) -> PlaneConnectivity:
     stitches = [
         v
         for v in range(ir.n_vias)
-        if int(ir.via_net[v]) == net_id and bool(int(ir.via_layer_span[v]) & (1 << layer))
+        if int(ir.via_net[v]) == net_id
+        and bool(int(ir.via_layer_span[v]) & (1 << layer))
     ]
-    return PlaneConnectivity(net_id=net_id, layer=layer, stitch_vias=stitches, ok=len(stitches) >= 2)
+    return PlaneConnectivity(
+        net_id=net_id, layer=layer, stitch_vias=stitches, ok=len(stitches) >= 2
+    )

@@ -90,6 +90,35 @@ def _tick_llm_timeout_s() -> float:
     return _TICK_LLM_TIMEOUT_S
 
 
+#: Per-call budget for the tick's LLM calls, threaded to the claude_p
+#: transport's ``--max-budget-usd`` — TIER-AWARE. The library-wide claude_p
+#: default ($0.10) killed the first post-reset dialectic-dossier tick
+#: mid-generation (``error_max_budget_usd``, 2026-08-27 — a full
+#: per-hypothesis rewrite is a longer output than the pre-reset ticks; a
+#: completed haiku tick metered ~$0.14), and a flat $0.50 then killed the
+#: escalated FRONTIER (opus-class) review the same way — senior-tier
+#: pricing needs senior-tier headroom, and the pre-fix $0.10 cap means prod
+#: review ticks can rarely have completed at all. Scoped here rather than
+#: raised globally so the figure lane and other claude_p users keep their
+#: tighter cap. The env override, when set, applies to EVERY tier (operator
+#: escape hatch).
+_TICK_LLM_MAX_USD_ENV = "PRECIS_QUEST_TICK_MAX_USD"
+_TICK_LLM_MAX_USD = 0.50
+_TICK_LLM_MAX_USD_BY_TIER = {"frontier": 2.50, "big": 1.50}
+
+
+def _tick_llm_max_usd(tier: Any = None) -> float:
+    raw = os.environ.get(_TICK_LLM_MAX_USD_ENV)
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _TICK_LLM_MAX_USD_BY_TIER.get(str(tier or ""), _TICK_LLM_MAX_USD)
+
+
 def _cap_partial(text: str, cap: int = _PARTIAL_RESULT_CAP) -> str:
     if len(text) <= cap:
         return text
@@ -1424,10 +1453,34 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
+#: Top-level keys a tick payload can carry — used to sanity-check the
+#: transport's pre-parsed ``.data`` before trusting it. A transport JSON
+#: extractor that mis-parses a nested response (the ≤2-deep-regex claude_p
+#: bug, 2026-08-27) hands back an inner *fragment* — a dict, but with none
+#: of these keys — and preferring it unchecked turned every such tick into
+#: a silent no-op.
+_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "logbook",
+        "ledger_ops",
+        "dossier_text",
+        "dossier_markdown",
+        "proposals",
+        "searches",
+        "directions",
+    }
+)
+
+
 def _payload_from_result(res: Any) -> dict[str, Any] | None:
-    """Prefer the router's parsed ``.data``; fall back to parsing ``.text``."""
+    """Prefer the router's parsed ``.data``; fall back to parsing ``.text``.
+
+    ``.data`` only wins when it looks like a tick payload (carries at least
+    one :data:`_PAYLOAD_KEYS` key) — otherwise it is a transport mis-parse
+    and the raw text is the better source.
+    """
     data = getattr(res, "data", None)
-    if isinstance(data, dict) and data:
+    if isinstance(data, dict) and data and (_PAYLOAD_KEYS & data.keys()):
         return data
     return _extract_json(getattr(res, "text", "") or "")
 
@@ -1612,6 +1665,7 @@ def _commit_rung(
             source=_COMMIT_SOURCE,
             ref_id=quest_id,
             timeout_s=_tick_llm_timeout_s(),
+            max_usd=_tick_llm_max_usd(attempt_tier),
         )
     )
     if getattr(res, "error", None) or getattr(res, "paused", False):
@@ -1708,6 +1762,7 @@ def _reprompt_narrative_compress(
                 source=_COMPRESS_SOURCE,
                 ref_id=quest_id,
                 timeout_s=_tick_llm_timeout_s(),
+                max_usd=_tick_llm_max_usd(tier),
             )
         )
     except Exception:
@@ -2182,6 +2237,7 @@ class _TickRun:
                 # partial output on abort instead of dropping the connection's
                 # entire generation.
                 timeout_s=_tick_llm_timeout_s(),
+                max_usd=_tick_llm_max_usd(resolved_tier),
                 stream=True,
             )
         )

@@ -59,14 +59,31 @@ _MODEL = {
         },
     ],
     "pads": [
-        {"layer": "F.Cu", "net": "VCC", "shape": "circle", "x": 2.0, "y": 2.0, "w": 0.8},
-        {"layer": "B.Cu", "net": "GND", "shape": "rect", "x": 3.0, "y": 3.0, "w": 1.0, "h": 0.6},
+        {
+            "layer": "F.Cu",
+            "net": "VCC",
+            "shape": "circle",
+            "x": 2.0,
+            "y": 2.0,
+            "w": 0.8,
+        },
+        {
+            "layer": "B.Cu",
+            "net": "GND",
+            "shape": "rect",
+            "x": 3.0,
+            "y": 3.0,
+            "w": 1.0,
+            "h": 0.6,
+        },
     ],
     "silkscreen": {
         "top": [
             {
                 "width_mm": 0.15,
-                "segments": [{"shape": "line", "start": [0.0, 14.0], "end": [5.0, 14.0]}],
+                "segments": [
+                    {"shape": "line", "start": [0.0, 14.0], "end": [5.0, 14.0]}
+                ],
             }
         ],
         "bottom": [],
@@ -151,10 +168,12 @@ def test_via_flashes_on_every_span_layer_by_default():
 
 def test_via_span_restricts_flash_layers():
     model = {**_MODEL, "layers": ["F.Cu", "In1.Cu", "B.Cu"]}
+    copper = _MODEL["copper"]
+    assert isinstance(copper, list)
     model = {
         **model,
         "copper": [
-            *_MODEL["copper"][:3],
+            *copper[:3],
             {
                 "ctype": "via",
                 "net": "GND",

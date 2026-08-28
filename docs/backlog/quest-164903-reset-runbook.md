@@ -87,18 +87,51 @@ job meta.partial; jb263279 invalid (transcription, replaced) — cancel
 pending. GPU-slot token missing on MCP put → infra:child-killed attrition
 expected; re-put same idem key staggered.
 
-**HELD (Reto, "more gates coming") — prod writes awaiting go:**
-1. Ledger wipe: 296 old ledger nodes + stale attempt/frontier-tree
-   containers (prose bookkeeping only, zero simulation data; content
-   preserved in salvage+mints; it is the 62%-of-prompt pathology).
-2. qu164903 `meta.rubric_objectives` update → current axes
-   (span_at_Uopt, U_L, energy, P_side; drop log_tof) — the REAL cause of
-   the empty trusted frontier (qualification code is already generic).
-3. Cancel tag on invalid jb263279.
-4. Fleet deploy (main is ≥7 commits ahead: gate change, skills, tick.py
-   derived-z + frontier sort + axes-prose fixes).
-5. Then: Reto's 1–2 observed hand ticks (quest stays dormant; one manual
-   dispatch at a time) → re-arm decision.
+**HOLD LIFTED (Reto, 2026-08-27 late eve) — all held items executed:**
+1. ✓ Ledger wipe: 290 live pinned chunks retired (1 ledger container +
+   288 nodes + 2 stale frontier-tree containers, dossier ref 164905) via
+   `retire_chunk` cascade; both containers ensure-recreate empty on the
+   next tick. Verified 0 live pinned remain.
+2. ✓ `meta.rubric_objectives` → `[span_at_Uopt, U_L_abs, energy, P_side]`
+   all sense=min (the axes compute.py's trusted pipeline emits; U_L_abs
+   per the "rubric minimizes |U_L|" contract). Closes the DATA half of
+   gripe 263257 — comment there when verified on a live frontier read.
+3. ✓ jb263279 was already terminal (`failed`) — no cancel needed.
+4. ✓ Fleet deployed ed08d4a9 (all hosts green, 13m54s).
+5. OBSERVED HAND TICKS RUN (2026-08-28 early, reason-only, local CLI
+   against prod). Four attempts, three latent bugs found+fixed in the
+   worktree (ship pending):
+   - Tick 1: died `error_max_budget_usd` — claude_p's $0.10 default can't
+     fit a dialectic-dossier rewrite. FIX: tier-aware `_tick_llm_max_usd`
+     (frontier $2.50 / big $1.50 / else $0.50, env
+     `PRECIS_QUEST_TICK_MAX_USD` overrides all tiers).
+   - Tick 2: "succeeded" as a SILENT NO-OP — claude_p's `_JSON_BLOCK_RE`
+     matches ≤2-deep braces; site-symbolic proposals nest 5 deep, so
+     `res.data` came back as the last shallow fragment and shadowed the
+     text fallback. FIX: `raw_decode`-based scanner + `_PAYLOAD_KEYS`
+     guard in `tick._payload_from_result`. Every armed tick would have
+     no-op'd this way. Also found: the "Tried:" dedup line leaked
+     pre-trust ≈numbers (model built a "disappeared leads" theory from
+     them). FIX: provisional entries render name-only.
+   - Tick 3: escalated to FRONTIER (2 dry ticks → "stalled"), opus died
+     at the flat $0.50 → the tier map above.
+   - Tick 4 SUCCEEDED (opus frontier review, $1.74): 5 logbook entries,
+     dossier rewritten, 6 ledger nodes, 1 proposal (Ir-pair 2/9 ML
+     coverage test, correct subsurface set_element, parent-linked,
+     motivated by fi263612). Writing quality high: self-downgraded H1's
+     unsourceable 0.994 headline, "trust-anchor before breadth" decision,
+     caught the degenerate-NEB row, novel systemic finding (poison_margin
+     negative on EVERY row; SO2 unscreened — pinned as ledger gap).
+     Gates all engaged ([unverified model claim] prefix, [buildable]
+     lead, review decision entry). CAVEAT: the rewrite flattened the
+     seed's `###`-sectioned dialectic into prose paragraphs — content
+     survived, form drifted; consider tightening the dossier-format
+     prompt if the skeleton matters. searches_run=0 is by design
+     (compute=False gates lit-search).
+6. NEXT: Reto reviews tick 4's writing (dossier readback + raw payload
+   sent in-session) → optional second observed tick with `--compute`
+   (would dispatch the Ir-pair sim) → re-arm decision. Fixes must ship+
+   deploy before re-arm (worker ticks run deployed code).
 Reto's parallel queue: 24 hypothesis approve/sign payloads at
 /claim/fi<id>; redlines on the seed dossier welcome (edits cheap).
 

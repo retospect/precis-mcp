@@ -45,7 +45,11 @@ def test_every_row_has_source_and_retrieved_date():
 def test_capability_for_known_process():
     row = caps.capability_for("4layer")
     assert row.process == "4layer"
-    assert row.jlc_min["trace_width_mm"] <= row.house_default["trace_width_mm"]
+    jlc_min = row.jlc_min["trace_width_mm"]
+    house_default = row.house_default["trace_width_mm"]
+    assert jlc_min is not None
+    assert house_default is not None
+    assert jlc_min <= house_default
 
 
 def test_capability_for_unknown_process_raises_with_known_list():
@@ -55,10 +59,12 @@ def test_capability_for_unknown_process_raises_with_known_list():
 
 def test_headroom_is_margin_above_jlc_min():
     row = caps.capability_for("2layer")
-    h = caps.headroom(row, "trace_width_mm", row.house_default["trace_width_mm"])
-    assert h == pytest.approx(
-        row.house_default["trace_width_mm"] - row.jlc_min["trace_width_mm"]
-    )
+    house_default = row.house_default["trace_width_mm"]
+    jlc_min = row.jlc_min["trace_width_mm"]
+    assert house_default is not None
+    assert jlc_min is not None
+    h = caps.headroom(row, "trace_width_mm", house_default)
+    assert h == pytest.approx(house_default - jlc_min)
     assert h > 0
 
 
@@ -102,8 +108,12 @@ def test_aluminum_drill_minimum_is_manufacturable():
     # previous jlc_min (0.30) and house_default (0.35) were both below it,
     # making the house default itself unmanufacturable.
     row = caps.capability_for("aluminum")
-    assert row.jlc_min["drill_mm"] == pytest.approx(0.65)
-    assert row.house_default["drill_mm"] > row.jlc_min["drill_mm"]
+    jlc_min = row.jlc_min["drill_mm"]
+    house_default = row.house_default["drill_mm"]
+    assert jlc_min == pytest.approx(0.65)
+    assert jlc_min is not None
+    assert house_default is not None
+    assert house_default > jlc_min
 
 
 def test_no_low_confidence_field_carries_a_bare_unexplained_number():

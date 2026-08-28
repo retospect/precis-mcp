@@ -40,7 +40,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,10 +72,13 @@ _DEFAULT_MAX_USD = 0.10
 # extra headroom absorbs container-cold-start + retry latency.
 _DEFAULT_TIMEOUT_S = 120
 
-# Regex that finds the LAST balanced ``{ … }`` block in stdout — the
-# model is instructed to emit JSON, sometimes prefixed by a sentence
-# of prose. Grab the rightmost block.
-_JSON_BLOCK_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
+# (The old regex approach here only matched braces nested ≤2 deep, so a
+# payload with a deeper structure — e.g. a quest tick's
+# ``proposals[].structure.ops[].site.anchors`` — could never match whole
+# and ``data`` came back as the payload's LAST shallow *fragment*, which
+# then shadowed every ``res.data or parse(res.text)`` fallback downstream:
+# the tick "succeeded" as a silent no-op. Parsing now walks the text with
+# ``json.JSONDecoder.raw_decode`` — string-aware, any depth.)
 
 
 class ClaudePError(ClaudeProcessError):
@@ -411,28 +413,35 @@ def _extract_usage(env: dict[str, Any]) -> dict[str, int | None]:
 
 
 def _parse_last_json_block(text: str) -> dict[str, Any] | None:
-    """Extract and parse the LAST ``{ … }`` block in ``text``.
+    """Extract and parse the LAST complete JSON object in ``text``.
 
-    The model is told to emit JSON, but it sometimes prefixes the
-    output with a sentence of explanation. We grab the rightmost
-    balanced block to tolerate that. Returns ``None`` when no
-    parseable block exists.
+    The model is told to emit JSON, but it sometimes prefixes the output
+    with a sentence of explanation (or fences it). Scanning with
+    :meth:`json.JSONDecoder.raw_decode` from each candidate ``{`` is
+    string-aware and depth-unlimited, so a nested payload parses whole
+    instead of surrendering its last shallow fragment; a successfully
+    parsed object is skipped over, so its *nested* objects are never
+    re-offered as candidates. Returns ``None`` when no parseable object
+    exists.
     """
     if not text:
         return None
-    matches = _JSON_BLOCK_RE.findall(text)
-    if not matches:
-        return None
-    # Try the rightmost block first; if it fails to parse, walk
-    # backwards (some outputs nest braces in prose).
-    for block in reversed(matches):
+    decoder = json.JSONDecoder()
+    last: dict[str, Any] | None = None
+    i = 0
+    while True:
+        start = text.find("{", i)
+        if start < 0:
+            break
         try:
-            parsed = json.loads(block)
+            parsed, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError:
+            i = start + 1
             continue
         if isinstance(parsed, dict):
-            return parsed
-    return None
+            last = parsed
+        i = max(end, start + 1)
+    return last
 
 
 __all__ = [
