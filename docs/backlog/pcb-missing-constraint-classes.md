@@ -121,6 +121,39 @@ Extensions:
   between holes beats each hole being individually round.
 - **Board outline dimensions snap too** — 50×70, not 51.3×68.7.
 
+### Regularity (arrays, aligned parts) — comes free from SNAP
+
+We mildly prefer regular arrangements: aligned parts, even spacing, labels
+on a common side. **Do not add a separate regularity objective**, and do
+not expect it to emerge — nothing in loop area, thermal or crossings
+rewards alignment, so "see what emerges" yields nothing.
+
+Grid snapping already produces it: parts snapped to a coarse grid are
+aligned and evenly spaced *by construction*. One mechanism, two payoffs
+(CAD-friendliness and visual regularity).
+
+**The general rule this is an instance of — worth internalizing, it has
+bitten three times:**
+
+> Whether a preference can be a pure cost term depends on whether its
+> variable is **discrete or continuous**. Discrete → the term fires.
+> Continuous → the term is measure-zero and needs a move class.
+
+Applications: *component coordinates* are continuous ⇒ alignment and
+round-number preferences need the SNAP move. *Label side* is discrete (a
+small candidate set per part) ⇒ "agree with your group's dominant side"
+works as a plain cost term. The three instances of getting this wrong:
+the crossings estimator that was provably always zero, the round-number
+term, and regularity.
+
+### Subcircuit replication (stronger than regularity)
+
+For repeated blocks — the Nano board's four rail-LED pairs, its three
+near-identical bucks — **solve one placement and replicate it with an
+offset**, rather than asking SA to independently rediscover the same
+arrangement N times. Gives exact regularity *and* collapses the search
+space. Analogue of cloning in IC placement.
+
 ## C2. Constraint lifecycle: optimized → locked (enclosure handoff)
 
 The intended workflow: **v1 lets screws and mounting holes float** and

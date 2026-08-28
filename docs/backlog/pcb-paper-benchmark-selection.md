@@ -156,6 +156,33 @@ methodological finding about building optimizers with LLM assistance, and
 reporting it is stronger than quietly not mentioning it — it also motivates
 the O(n²) reference oracle as a *deliverable*, not scaffolding.
 
+**Discrete vs. continuous decides whether a preference can be a cost
+term.** A cost term over a *continuous* variable that rewards an exact
+coincidence (alignment, a round coordinate, a crossing count that requires
+exact collinearity) is **measure-zero** — it never fires, and is
+indistinguishable from a working term. Such preferences need a dedicated
+move class that proposes the exact state. Over a *discrete* variable (which
+side a label sits on) a plain cost term works. Three defects in this build
+were instances of getting this wrong. Stating the rule is more useful than
+listing the bugs.
+
+**"Tested but unreachable" as a defect class.** Three independent instances
+in one subsystem: via DRC rules with no via geometry to check, a track
+width in a function with zero production callers, and the entire gerber
+export tail (`export_fab` has no caller at all). Each was fully implemented
+and green against synthetic fixtures fed directly to unreachable code.
+Coverage measured against *reachable* code would have flagged all three;
+line coverage flagged none. This is a sharper methodological finding than
+any individual bug.
+
+**A reference oracle only checks the inputs you feed it.** Our O(n²)
+clearance oracle — the trusted ground truth for the accelerated engine —
+itself contained a bug (comparing only each group's first primitive when
+testing for a shared layer, so multi-layer vias with partially-overlapping
+spans were skipped). It surfaced only once *real* via geometry existed to
+feed it. Oracles reduce risk; they do not eliminate it, and they need
+realistic inputs rather than fixtures.
+
 **State the PCB-benchmark gap ourselves** (no ISPD/ICCAD PCB contest,
 2012–2025) rather than letting a reviewer state it.
 
