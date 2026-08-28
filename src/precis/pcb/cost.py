@@ -214,26 +214,42 @@ class TermSpec:
 
 def hardened_penalty(fraction: float, schedule: float) -> float:
     """The margin penalty shape — superlinear in ``fraction`` (budget
-    consumed / budget) always, sharpening from quadratic
-    (``schedule=0``) toward a steep barrier (``schedule=1``) as the
+    consumed / budget) always, sharpening from quadratic (``schedule=0``)
+    toward a steep barrier hugging ``fraction=1`` (``schedule=1``) as the
     schedule advances. **This is the entire hardening mechanism** —
     convexity IS the schedule, not a second thing layered on top.
-    Monotonic non-decreasing in ``fraction`` for any fixed ``schedule``,
-    which is exactly the property :func:`evaluate_cost`'s admissibility
-    needs: a coarse (smaller) fraction never produces a *larger*
-    penalty than the fine (larger, truer) one.
+
+    Two properties any barrier-shaping formula here must have, and the
+    reason this isn't simply ``fraction ** (2 + k*schedule)``: raising a
+    number *less than 1* to a *higher* power makes it **smaller**, so a
+    naive growing exponent would make the SAME sub-budget fraction look
+    *cheaper* as the schedule hardens — backwards. Instead the exponent
+    stays fixed (quadratic core) and a schedule-weighted extra term is
+    *added*, one that grows with both ``fraction`` and ``schedule`` — a
+    comfortably low fraction (say 0.2) stays cheap at any schedule, while
+    a fraction near the budget gets increasingly punished as the
+    schedule advances, which is the actual "barrier tightens" behaviour
+    the hardening schedule is supposed to produce.
+
+    Monotonic non-decreasing in ``fraction`` for any fixed ``schedule``
+    (needed for :func:`evaluate_cost`'s admissibility: a coarse, smaller
+    fraction never produces a larger penalty than the fine, truer one)
+    **and** non-decreasing in ``schedule`` for any fixed fraction (needed
+    for the schedule to actually harden anything). Continuous at
+    ``fraction == 1``.
     """
     if fraction <= 0.0:
         return 0.0
     schedule = max(0.0, min(1.0, schedule))
-    exponent = 2.0 + 6.0 * schedule  # quadratic .. octic
     if fraction < 1.0:
-        return fraction**exponent
-    # Beyond the budget: continuous with the branch above at fraction==1,
-    # steepening with schedule so an actual violation must shrink back to
-    # zero by the time the schedule hardens, rather than being tradeable
+        return fraction**2 * (1.0 + schedule * 4.0 * fraction**6)
+    # Beyond the budget: continuous with the branch above at fraction==1
+    # (which evaluates to 1 + 4*schedule there), then steepens the
+    # overage slope with schedule so an actual violation must shrink
+    # back to zero as the schedule hardens, rather than being tradeable
     # away by a cheap enough alternative.
-    return 1.0 + (fraction - 1.0) * (10.0 + 90.0 * schedule)
+    at_budget = 1.0 + 4.0 * schedule
+    return at_budget + (fraction - 1.0) * (10.0 + 90.0 * schedule)
 
 
 def money_total(terms: list[TermValue]) -> float:

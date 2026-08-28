@@ -45,11 +45,10 @@ def test_every_row_has_source_and_retrieved_date():
 def test_capability_for_known_process():
     row = caps.capability_for("4layer")
     assert row.process == "4layer"
-    jlc_min = row.jlc_min["trace_width_mm"]
-    house_default = row.house_default["trace_width_mm"]
-    assert jlc_min is not None
-    assert house_default is not None
-    assert jlc_min <= house_default
+    lo = row.jlc_min["trace_width_mm"]
+    hi = row.house_default["trace_width_mm"]
+    assert lo is not None and hi is not None  # published for 4-layer
+    assert lo <= hi
 
 
 def test_capability_for_unknown_process_raises_with_known_list():
@@ -59,12 +58,14 @@ def test_capability_for_unknown_process_raises_with_known_list():
 
 def test_headroom_is_margin_above_jlc_min():
     row = caps.capability_for("2layer")
-    house_default = row.house_default["trace_width_mm"]
-    jlc_min = row.jlc_min["trace_width_mm"]
-    assert house_default is not None
-    assert jlc_min is not None
-    h = caps.headroom(row, "trace_width_mm", house_default)
-    assert h == pytest.approx(house_default - jlc_min)
+    hi = row.house_default["trace_width_mm"]
+    lo = row.jlc_min["trace_width_mm"]
+    # Narrowing doubles as a real assertion: unlike the aluminum row's
+    # unpublished fields, 2-layer trace width IS published, so a None here
+    # is a data regression rather than an expected "not applicable".
+    assert hi is not None and lo is not None
+    h = caps.headroom(row, "trace_width_mm", hi)
+    assert h == pytest.approx(hi - lo)
     assert h > 0
 
 
@@ -108,12 +109,11 @@ def test_aluminum_drill_minimum_is_manufacturable():
     # previous jlc_min (0.30) and house_default (0.35) were both below it,
     # making the house default itself unmanufacturable.
     row = caps.capability_for("aluminum")
-    jlc_min = row.jlc_min["drill_mm"]
-    house_default = row.house_default["drill_mm"]
-    assert jlc_min == pytest.approx(0.65)
-    assert jlc_min is not None
-    assert house_default is not None
-    assert house_default > jlc_min
+    lo = row.jlc_min["drill_mm"]
+    hi = row.house_default["drill_mm"]
+    assert lo is not None and hi is not None
+    assert lo == pytest.approx(0.65)
+    assert hi > lo
 
 
 def test_no_low_confidence_field_carries_a_bare_unexplained_number():

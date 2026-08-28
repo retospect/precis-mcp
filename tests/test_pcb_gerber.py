@@ -8,13 +8,14 @@ from __future__ import annotations
 import re
 import zipfile
 from io import BytesIO
+from typing import Any
 
 from precis.pcb import gerber
 
 # ── a small synthetic 2-layer board: two tracks sharing a width (dedup),
 # one arc segment, a pour on B.Cu, a via, pads on both outer layers, an
 # outline, and a bit of top silkscreen ─────────────────────────────────
-_MODEL = {
+_MODEL: dict[str, Any] = {
     "layers": ["F.Cu", "B.Cu"],
     "outline": [[0.0, 0.0], [20.0, 0.0], [20.0, 15.0], [0.0, 15.0]],
     "copper": [

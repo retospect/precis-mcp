@@ -200,7 +200,7 @@ class PcbIR:
         if rot is not None:
             self.inst_rot[inst_id] = rot
         self.dirty_l3[inst_id] = True
-        for seg_id in self._segs_of_instance.get(inst_id, ()):
+        for seg_id in self._segs_of_instance.get(inst_id, []):
             self.dirty_l4[seg_id] = True
             self.dirty_l5[seg_id] = True
 
@@ -329,10 +329,14 @@ def from_graph(
     alternative is a future move class (`re-root the star`), not a
     correctness requirement of this slice.
 
-    L1 layers, the L2 embedding, and L3 positions are left **unset** (no
-    placeholder derived from anything) unless the graph already supplies
-    ``x``/``y`` for an instance, matching what the netlist/placement store
-    actually knows at hydration time.
+    L1 layers and L3 positions are left **unset** unless the graph already
+    supplies them, matching what the netlist/placement store actually
+    knows at hydration time. The L2 rotation CSR is *shaped* by real
+    topology (every dart gets a slot, sized by each pin's actual degree)
+    but its initial **content is plain segment-creation order** — not a
+    geometry-derived embedding, just an arbitrary starting order a caller
+    is free to overwrite via :meth:`PcbIR.set_rotation` (see
+    :func:`propose_rotation_from_positions` for a principled one).
     """
     # Default to the house 4-layer stackup: a bare `from_graph(graph)` must
     # yield an IR whose layer mutators work (`set_layer(0, 1)`, plane
@@ -388,9 +392,21 @@ def from_graph(
     n_seg = len(seg_net)
     n_nets = len(net_name)
 
-    rotation_index = np.zeros(
-        n_pins + 1, dtype=np.int32
-    )  # empty CSR: no embedding chosen yet
+    # CSR slots are allocated by actual pin degree (every dart needs a
+    # home), but the *order* within each pin's slot is plain segment-
+    # creation order — arbitrary, not geometry-derived. That is the
+    # honest reading of "no placeholder derived from anything": the
+    # shape reflects real topology (how many darts a pin has), the
+    # content doesn't pretend to already be a chosen embedding.
+    darts_by_pin: list[list[int]] = [[] for _ in range(n_pins)]
+    for seg_id in range(n_seg):
+        darts_by_pin[seg_pin_a[seg_id]].append(seg_id * 2)
+        darts_by_pin[seg_pin_b[seg_id]].append(seg_id * 2 + 1)
+    rotation_index = np.zeros(n_pins + 1, dtype=np.int32)
+    flat_darts: list[int] = []
+    for p in range(n_pins):
+        rotation_index[p + 1] = rotation_index[p] + len(darts_by_pin[p])
+        flat_darts.extend(darts_by_pin[p])
 
     inst_x = np.full(n_inst, np.nan)
     inst_y = np.full(n_inst, np.nan)
@@ -422,7 +438,7 @@ def from_graph(
         via_net=np.zeros(0, dtype=np.int32),
         seg_side=np.zeros(n_seg, dtype=np.int8),
         rotation_index=rotation_index,
-        rotation_darts=np.zeros(0, dtype=np.int32),
+        rotation_darts=np.array(flat_darts, dtype=np.int32),
         inst_x=inst_x,
         inst_y=inst_y,
         inst_rot=np.zeros(n_inst),

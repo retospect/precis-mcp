@@ -24,30 +24,42 @@ from precis.pcb.ir import (
 )
 
 
-def _net(name, cls, *refdes, domain="electrical"):
+def _net(name, cls, *refdes, domain="electrical", pin="1"):
+    # `pin` is shared by every member here — fine as long as no instance
+    # in this fixture appears in *two* nets with the same pin name (a real
+    # pin belongs to exactly one net; from_graph dedups purely on
+    # (refdes, pin), so reusing a name across nets would silently merge
+    # two distinct nets' membership onto one pin).
     return {
         "name": name,
         "net_class": cls,
         "domain": domain,
-        "members": [{"refdes": r, "pin": "1"} for r in refdes],
+        "members": [{"refdes": r, "pin": pin} for r in refdes],
     }
 
 
 def _star_graph():
     """A 4-instance, 2-net fixture: N1 stars U1-U2-U3 (2 segments), N2
-    connects U3-U4 (1 segment)."""
+    connects U3-U4 (1 segment). U3's two memberships use distinct pin
+    names ("1" vs "2") — a component with more than one pin, as any real
+    multi-pin part is."""
     return {
         "instances": [{"refdes": r} for r in ("U1", "U2", "U3", "U4")],
         "nets": [
             _net("N1", "signal", "U1", "U2", "U3"),
-            _net("N2", "power", "U3", "U4"),
+            {
+                "name": "N2",
+                "net_class": "power",
+                "domain": "electrical",
+                "members": [{"refdes": "U3", "pin": "2"}, {"refdes": "U4", "pin": "1"}],
+            },
         ],
     }
 
 
 # ── construction ─────────────────────────────────────────────────────
 def test_from_graph_star_decomposition():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert ir.n_instances == 4
     assert ir.n_nets == 2
     # N1 has 3 members -> 2 segments (star, hub = first member U1)
@@ -60,9 +72,12 @@ def test_from_graph_star_decomposition():
 
 
 def test_from_graph_leaves_l1_l2_l3_unset():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert (ir.seg_layer == -1).all()
-    assert ir.rotation_darts.shape[0] == 0
+    # L2's CSR is *shaped* (every dart has a slot) but its content is
+    # plain creation order, not a chosen embedding — validate_embedding
+    # against real positions is what actually tells "unset" from "set".
+    assert ir.rotation_darts.shape[0] == 2 * ir.n_segments
     import math
 
     assert all(math.isnan(x) for x in ir.inst_x)
@@ -81,7 +96,7 @@ def test_from_graph_unconnected_pins_and_positions():
 
 # ── invalidation cascade ─────────────────────────────────────────────
 def test_move_instance_dirties_l3_l4_l5_locally_leaves_l1_l2_clean():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     u1 = 0  # incident to exactly one segment (N1's U1-U2 star edge... U1 is the hub, incident to 2)
     ir.move_instance(u1, x=5.0, y=6.0)
 
@@ -103,7 +118,7 @@ def test_move_instance_dirties_l3_l4_l5_locally_leaves_l1_l2_clean():
 
 
 def test_set_layer_dirties_l1_l4_l5_leaves_l2_l3_clean():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)
     assert ir.dirty_l1[0] and not ir.dirty_l1[1]
     assert ir.dirty_l4[0] and ir.dirty_l5[0]
@@ -113,14 +128,13 @@ def test_set_layer_dirties_l1_l4_l5_leaves_l2_l3_clean():
 
 def test_set_layer_rejects_out_of_range():
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
-    import pytest
 
     with pytest.raises(ValueError):
         ir.set_layer(0, len(DEFAULT_STACKUP))
 
 
 def test_set_side_dirties_l2_l4_l5_leaves_l1_l3_clean():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.set_side(0, 1)
     assert ir.dirty_l2[0] and not ir.dirty_l2[1]
     assert ir.dirty_l4[0] and ir.dirty_l5[0]
@@ -129,7 +143,7 @@ def test_set_side_dirties_l2_l4_l5_leaves_l1_l3_clean():
 
 
 def test_promote_plane_dirties_only_that_nets_segments():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     n2 = 1  # "N2" power net -> its single segment
     ir.promote_plane(n2, 0)
     assert int(ir.net_plane_layer[n2]) == 0
@@ -142,7 +156,7 @@ def test_promote_plane_dirties_only_that_nets_segments():
 
 
 def test_clean_clears_the_named_level_only():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
     ir.clean(Level.L1)
     assert not ir.dirty_l1.any()
@@ -151,7 +165,7 @@ def test_clean_clears_the_named_level_only():
 
 # ── layer bitmask / via-span ─────────────────────────────────────────
 def test_via_layer_span_is_a_bitmask():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     through = ir.add_via(layer_span=0b1111, net_id=0)  # spans all 4 layers
     top_only = ir.add_via(layer_span=0b0001, net_id=NO_NET)  # a keepout on layer 0 only
     assert bool(int(ir.via_layer_span[through]) & (1 << 2))  # blocks layer 2 too
@@ -162,74 +176,72 @@ def test_via_layer_span_is_a_bitmask():
 
 
 def test_add_via_does_not_dirty_anything():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.add_via(layer_span=1, net_id=0)
     assert not ir.dirty_l1.any() and not ir.dirty_l4.any() and not ir.dirty_l5.any()
 
 
 # ── explicit embedding: propose + validate, never derive ──────────────
 def test_propose_rotation_skips_pins_without_positions():
-    ir = from_graph(_star_graph())  # no positions set
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)  # no positions set
     proposal = propose_rotation_from_positions(ir)
     assert proposal == {}
 
 
-def test_set_rotation_is_the_only_way_to_populate_l2():
-    ir = from_graph(_star_graph())
-    _ = ir.instance_refdes  # sanity: module has no compute_embedding entry point at all
+def test_no_compute_embedding_entry_point_exists():
+    # the whole invariant: no code path can silently re-derive L2 from
+    # positions — there is no such method on the class or the module.
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert not hasattr(ir, "compute_embedding")
     import precis.pcb.ir as ir_mod
 
     assert not hasattr(ir_mod, "compute_embedding")
 
 
-#: L2 rotation storage is unbuilt: `from_graph` constructs an all-zeros
-#: `rotation_index` CSR with empty `rotation_darts` (and a sibling test pins
-#: that birth state), so `set_rotation` has no slot to write into and raises
-#: for every pin. These three tests encode the *intended* propose→apply→
-#: validate contract — xfail until the pcb session sizes the CSR by pin
-#: incidence (gripe filed 2026-08-28; born-failing in the slice-2 qland).
-_L2_UNBUILT = pytest.mark.xfail(
-    raises=(ValueError, AssertionError),
-    reason="rotation CSR never allocated — set_rotation cannot write (slice-2 qland debt)",
-    strict=True,
-)
+def _three_leaf_star():
+    """A degree-3 hub H with leaves A/B/C at 0°/120°/240° — a degree-2 star
+    can't exercise rotation order at all (any 2-element cyclic sequence is
+    trivially a rotation of itself; nothing to get wrong), so the
+    embedding tests need a real fork."""
+    return {
+        "instances": [{"refdes": r} for r in ("H", "A", "B", "C")],
+        "nets": [_net("N", "signal", "H", "A", "B", "C")],
+    }
 
 
-@_L2_UNBUILT
 def test_propose_then_apply_then_validate_round_trips():
-    graph = _star_graph()
-    # place U1 (hub of N1) at origin, U2 east, U3 north — an L-shaped star
-    graph["instances"][0].update(x=0.0, y=0.0)
-    graph["instances"][1].update(x=10.0, y=0.0)
-    graph["instances"][2].update(x=0.0, y=10.0)
-    graph["instances"][3].update(x=10.0, y=10.0)
+    graph = _three_leaf_star()
+    graph["instances"][0].update(x=0.0, y=0.0)  # H
+    graph["instances"][1].update(x=10.0, y=0.0)  # A: 0deg
+    graph["instances"][2].update(x=-5.0, y=8.660)  # B: 120deg
+    graph["instances"][3].update(x=-5.0, y=-8.660)  # C: 240deg
     ir = from_graph(graph)
 
     proposal = propose_rotation_from_positions(ir)
-    pin_u1 = 0  # U1's pin is pin id 0 (first created)
-    assert pin_u1 in proposal
+    pin_h = 0  # H's pin is pin id 0 (first created, hub of the star)
+    assert pin_h in proposal
+    assert len(proposal[pin_h]) == 3
     for pin_id, order in proposal.items():
         ir.set_rotation(pin_id, order)
 
     assert validate_embedding(ir) == []  # stored embedding matches current positions
 
 
-@_L2_UNBUILT
 def test_validate_embedding_catches_a_move_without_mutating_storage():
-    graph = _star_graph()
-    graph["instances"][0].update(x=0.0, y=0.0)
-    graph["instances"][1].update(x=10.0, y=0.0)
-    graph["instances"][2].update(x=0.0, y=10.0)
-    graph["instances"][3].update(x=10.0, y=10.0)
+    graph = _three_leaf_star()
+    graph["instances"][0].update(x=0.0, y=0.0)  # H
+    graph["instances"][1].update(x=10.0, y=0.0)  # A: 0deg
+    graph["instances"][2].update(x=-5.0, y=8.660)  # B: 120deg
+    graph["instances"][3].update(x=-5.0, y=-8.660)  # C: 240deg
     ir = from_graph(graph)
     for pin_id, order in propose_rotation_from_positions(ir).items():
         ir.set_rotation(pin_id, order)
     stored_before = ir.rotation_darts.copy()
 
-    # move U2 to the opposite side of U1 from U3 -> the angular order at
-    # U1's pin should now disagree with what's stored
-    ir.move_instance(1, x=-10.0, y=0.0)
+    # move A from 0deg to 150deg -> past B (120deg), reversing A and B's
+    # relative order around H — a genuine reordering, not a rotation of
+    # the original cyclic order.
+    ir.move_instance(1, x=-8.660, y=5.0)
     mismatched = validate_embedding(ir)
     assert mismatched  # something disagrees now
     # the read-only check must never have touched storage
@@ -250,9 +262,8 @@ def test_unconnected_items_reports_pin_and_dangling_net():
     assert "dangling-net" in codes
 
 
-@_L2_UNBUILT
 def test_unconnected_items_clean_fixture_reports_nothing():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert unconnected_items(ir) == []
 
 
@@ -297,14 +308,14 @@ def test_same_layer_crossing_bound_refine_is_at_least_coarse():
 
 
 def test_crossing_bound_never_negative_on_empty_layer():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert same_layer_crossing_bound(ir, 3) == 0  # nothing assigned to layer 3
     assert per_layer_planar(ir, 3)
 
 
 # ── plane connectivity ────────────────────────────────────────────────
 def test_plane_connectivity_zero_stitches_not_ok():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)
     result = plane_connectivity(ir, 0)
     assert isinstance(result, PlaneConnectivity)
@@ -313,14 +324,14 @@ def test_plane_connectivity_zero_stitches_not_ok():
 
 
 def test_plane_connectivity_one_stitch_is_a_single_point_of_failure():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)
     ir.add_via(layer_span=(1 << 1), net_id=0)
     assert not plane_connectivity(ir, 0).ok
 
 
 def test_plane_connectivity_two_stitches_ok():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)
     ir.add_via(layer_span=(1 << 1), net_id=0)
     ir.add_via(layer_span=(1 << 1) | (1 << 0), net_id=0)
@@ -330,7 +341,7 @@ def test_plane_connectivity_two_stitches_ok():
 
 
 def test_plane_connectivity_ignores_vias_on_other_layers_or_nets():
-    ir = from_graph(_star_graph())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)
     ir.add_via(layer_span=(1 << 0), net_id=0)  # right net, wrong layer
     ir.add_via(layer_span=(1 << 1), net_id=1)  # right layer, wrong net
@@ -339,7 +350,7 @@ def test_plane_connectivity_ignores_vias_on_other_layers_or_nets():
 
 # ── L4 metric annotations ────────────────────────────────────────────
 def test_compute_gap_capacity_leaves_unplaced_segments_nan():
-    ir = from_graph(_star_graph())  # no positions
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)  # no positions
     compute_gap_capacity(ir)
     import math
 
