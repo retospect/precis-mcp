@@ -286,10 +286,28 @@
   // ``htmx:afterSwap``, and a plain innerHTML assignment fires neither, so
   // a grounding quote's $…$ would sit here as raw TeX. (All three no-op if
   // the library is absent, matching paper-viewer.js::_loadRefs.)
+  // An inline <script> inserted by innerHTML is inert — the HTML spec
+  // refuses to execute it. A framed pane was a real document whose scripts
+  // ran on load, so de-iframing silently killed the claim page's own
+  // wiring (the evidence DAG's boxes stopped opening their detail card).
+  // Re-create each script element so it runs; fragment scripts are
+  // IIFE-wrapped, so re-running one on the next swap redeclares nothing.
+  const runScripts = node => {
+    node.querySelectorAll("script").forEach(old => {
+      const s = document.createElement("script");
+      for (const a of old.attributes) s.setAttribute(a.name, a.value);
+      s.textContent = old.textContent;
+      old.replaceWith(s);
+    });
+  };
+
   const afterSwap = node => {
     if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(node);
     if (window.htmx) window.htmx.process(node);
     if (window.renderTexScopes) window.renderTexScopes(node);
+    // Last: the fragment's own scripts bind to a DOM the steps above have
+    // finished processing.
+    runScripts(node);
   };
 
   // One loader for every way a pane gets content. Dims the pane while the

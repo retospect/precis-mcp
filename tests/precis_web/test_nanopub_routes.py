@@ -160,6 +160,32 @@ def test_a_grounding_tables_math_reaches_the_client_and_gets_typeset(
     assert "window.renderTexScopes(node)" in client.get(f"/nanopub/fi{hub}").text
 
 
+def test_a_swapped_fragments_own_scripts_still_run(
+    client: TestClient, runtime_with_store
+) -> None:
+    """The claim fragment carries the script that wires its evidence DAG,
+    and the workbench re-executes it after a swap.
+
+    An inline ``<script>`` inserted via ``innerHTML`` is inert per the HTML
+    spec. A framed pane was a real document whose scripts ran on load, so
+    de-iframing left the DAG's boxes with no click handler — they opened
+    nothing. The script is function-scoped for the same reason: re-running
+    a top-level ``const NP_DETAIL`` on the next swap would throw.
+    """
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A claim with a DAG.", paper, chunk)
+    frag = client.get(f"/claim/fi{hub}", headers={"HX-Request": "true"})
+    assert "<script" in frag.text
+    assert "NP_DETAIL" in frag.text and "np-node" in frag.text
+    # Function-scoped, so a second swap into the same pane redeclares nothing.
+    assert "(function () {" in frag.text
+    assert "})();" in frag.text
+    shell = client.get("/nanopub")
+    assert "const runScripts" in shell.text
+    assert "runScripts(node)" in shell.text
+
+
 def test_hub_page_shows_state_and_action(
     client: TestClient, runtime_with_store
 ) -> None:

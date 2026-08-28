@@ -272,7 +272,13 @@
   </details>
 </section>
 
+{# IIFE, not top-level statements: the workbench swaps this fragment into a
+   pane and re-executes the script by hand (an innerHTML'd <script> is inert
+   — nanopub/index.html.j2::runScripts), so a second claim in the same pane
+   would redeclare a top-level ``const`` and throw. Function scope makes
+   every swap independent. #}
 <script>
+  (function () {
   const NP_DETAIL = {{ np.graph.detail | tojson }};
   const npPane = document.getElementById("np-detail");
   function npEsc(s) {
@@ -297,4 +303,5 @@
             d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-emerald-700 hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
     npPane.innerHTML = h;
   }));
+  })();
 </script>
