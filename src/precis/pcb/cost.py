@@ -121,6 +121,7 @@ from precis.pcb import objectives as obj
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, same_layer_crossing_count
 from precis.pcb.rules import (
+    implied_via_count,
     ipc2221_capacity_a,
     net_current_a_or_none,
     resolve_net_rules,
@@ -484,7 +485,35 @@ def _via_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     # minimum for a count-based MONEY term (unlike a MARGIN term, a 0
     # here can't hide risk from a max-aggregation — it just doesn't add
     # to a sum yet, same as any other not-yet-decided money term).
-    n = ir.n_vias if level >= Level.L1 else 0
+    #
+    # **Derived from segment layer assignments, never `ir.n_vias`**
+    # (2026-08-28 fix). `ir.n_vias` only grows via `PcbIR.add_via`, which
+    # has ZERO production callers anywhere in this package -- nothing ever
+    # created an IR via, so this term was structurally always zero,
+    # letting the optimizer pay nothing for a layer change while
+    # `realize.py` independently emitted real vias wherever a track's
+    # layer differed from `realize.PAD_LAYER`. `implied_via_count`
+    # (`rules.py`) is now the ONE place that predicate lives -- this term
+    # sums it over every segment; `realize._vias_for_track` calls the
+    # exact same function for the geometry it actually draws, so the two
+    # can never drift apart again (see that function's docstring for the
+    # full story, and `tests/test_pcb_cost.py::
+    # test_via_count_matches_realized_vias` for the anti-drift pin).
+    n = (
+        sum(
+            implied_via_count(
+                ir,
+                s,
+                fab_caps=config.fab_caps,
+                class_rules=config.class_rules,
+                temp_rise_c=config.thermal_temp_rise_c,
+                copper_oz=config.thermal_copper_oz,
+            )
+            for s in range(ir.n_segments)
+        )
+        if level >= Level.L1
+        else 0
+    )
     return [
         TermValue(
             "via_count",

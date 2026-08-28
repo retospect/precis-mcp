@@ -77,21 +77,25 @@ from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist
 from precis.pcb.ir import UNSET_LAYER, PcbIR, nearest_other_instance
 from precis.pcb.rules import (
+    PAD_LAYER,
     NetRules,
+    implied_via_count,
+    layer_is_outer,
     net_current_a_or_none,
     resolve_net_rules,
-    via_count_for_current,
 )
 
-#: Every instance's pad(s) are assumed to sit on this stackup layer — the
-#: IR carries no per-instance mount-side field yet (module docstring:
-#: "components live on outer layers in this build"), so index 0 (the first
-#: outer layer, F.Cu in :data:`precis.pcb.DEFAULT_STACKUP`) is the one
-#: fixed reference every via transition is computed against, not a
-#: per-instance lookup that doesn't exist. Revisit once the IR grows a real
-#: per-instance layer/side field (a placement decision, not a realizer
-#: one).
-PAD_LAYER = 0
+#: Re-exported from :mod:`precis.pcb.rules` (the constant's new home) so
+#: every existing ``from precis.pcb.realize import PAD_LAYER`` call site
+#: keeps working. Moved there (2026-08-28, alongside :func:`precis.pcb.
+#: rules.implied_via_count`) because :mod:`precis.pcb.cost`'s ``via_count``
+#: term needs the SAME "did this segment change layer" test this module's
+#: :func:`_vias_for_track` applies, and ``cost.py`` has no existing import
+#: relationship with ``realize.py`` to piggyback on — ``rules.py`` is the
+#: shared, lower-level module both already depend on, so hoisting there
+#: (rather than having ``cost.py`` newly import ``realize.py``) adds no
+#: coupling that wasn't already there.
+PAD_LAYER = PAD_LAYER
 
 # ── config + obstacles ───────────────────────────────────────────────────
 
@@ -348,22 +352,6 @@ class RealizedVia:
     endpoint: str
 
 
-def _layer_is_outer(ir: PcbIR, layer: int) -> bool:
-    """Whether ``layer`` is an OUTER stackup layer (index 0 or the last
-    index — F.Cu/B.Cu in :data:`precis.pcb.DEFAULT_STACKUP`; "layers are
-    integer indexes" per ``ir.py``'s own discipline, never a name compare).
-    ``UNSET_LAYER`` (no L1 assignment yet, or a dog-bone stub whose pad
-    sits on whichever layer its component is placed on — components live
-    on outer layers in this build) defaults to ``True``: the common case,
-    and IPC-2221's more generous (lower-width-for-the-same-current)
-    assumption, matching :mod:`precis.pcb.cost`'s own "assume outer until
-    proven otherwise" admissible-bound choice for the same question."""
-    n = len(ir.stackup)
-    if n == 0 or layer == UNSET_LAYER:
-        return True
-    return layer <= 0 or layer >= n - 1
-
-
 def _resolve_track_rules(
     ir: PcbIR, net_id: int, layer: int, config: RealizeConfig
 ) -> NetRules:
@@ -376,7 +364,7 @@ def _resolve_track_rules(
     current_a = net_current_a_or_none(float(ir.net_current_a[net_id]))
     return resolve_net_rules(
         net_class,
-        layer_is_outer=_layer_is_outer(ir, layer),
+        layer_is_outer=layer_is_outer(ir, layer),
         fab_caps=config.fab_caps,
         overrides=overrides,
         current_a=current_a,
@@ -455,28 +443,45 @@ def _vias_for_track(
     A dog-bone stub is explicitly OUT of scope (module docstring: the
     via-to-plane connection is ``planes.py``'s job, a later module) and an
     unassigned (``UNSET_LAYER``) or already-pad-layer track has nothing to
-    transition — both return no vias.
+    transition — both return no vias. Both checks, PLUS the via COUNT
+    itself, are delegated to :func:`precis.pcb.rules.implied_via_count`
+    (2026-08-28) rather than re-derived here — that function is the exact
+    same predicate this docstring used to describe standalone, hoisted out
+    so :mod:`precis.pcb.cost`'s ``via_count`` MONEY term can share it and
+    the two can never drift apart again (see that function's own docstring
+    for the defect this closes: an optimizer that paid nothing for a via
+    while this function quietly emitted real ones).
 
     Sized via the SAME resolver every other consumer uses
     (:func:`precis.pcb.rules.resolve_net_rules` — never a second sizing
     path); a fab process publishing no via figures (``via_dia_mm``/
     ``via_drill_mm`` both ``None``) means genuinely nothing to size
-    against, not an invented default. Via COUNT scales with the net's
-    current annotation (:func:`precis.pcb.rules.via_count_for_current`) —
-    a single via cannot carry a real power rail. The stitched group is
-    spread along a straight line through each endpoint at via-pitch
-    spacing (no real footprint/keepout geometry exists yet to route an
-    array around), one group at the start point and one at the end point —
-    both this track's own two pads need the same layer transition.
+    against, not an invented default. The stitched group is spread along a
+    straight line through each endpoint at via-pitch spacing (no real
+    footprint/keepout geometry exists yet to route an array around), one
+    group at the start point and one at the end point — both this track's
+    own two pads need the same layer transition; ``implied_via_count``'s
+    total is always even (one stitched group of the SAME size at each of
+    the two endpoints), so splitting it in half below exactly recovers the
+    per-endpoint count :func:`precis.pcb.rules.via_count_for_current`
+    itself produced.
     """
-    if track.is_dogbone or track.layer in (UNSET_LAYER, PAD_LAYER):
+    total = implied_via_count(
+        ir,
+        track.seg_id,
+        fab_caps=config.fab_caps,
+        class_rules=config.class_rules,
+        temp_rise_c=config.temp_rise_c,
+        copper_oz=config.copper_oz,
+    )
+    if total == 0:
         return ()
     rules = _resolve_track_rules(ir, track.net_id, track.layer, config)
-    if rules.via_dia_mm is None or rules.via_drill_mm is None:
-        return ()
+    assert rules.via_dia_mm is not None and rules.via_drill_mm is not None, (
+        "implied_via_count already returns 0 when either is unresolved"
+    )
     layer_lo, layer_hi = min(PAD_LAYER, track.layer), max(PAD_LAYER, track.layer)
-    current_a = net_current_a_or_none(float(ir.net_current_a[track.net_id]))
-    n = via_count_for_current(current_a, rules.via_dia_mm)
+    n = total // 2
     pitch = rules.via_dia_mm + config.clearance_mm
     start = (float(track.segments[0]["start"][0]), float(track.segments[0]["start"][1]))
     end = (float(track.segments[-1]["end"][0]), float(track.segments[-1]["end"][1]))

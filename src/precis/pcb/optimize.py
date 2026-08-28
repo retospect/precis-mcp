@@ -36,12 +36,22 @@ fast any one call happens to be at a 30-component test board. Instead:
   never re-deriving the whole board's terms.
 - ``layer_count``, ``via_count``, ``extended_part_fees`` and
   ``thermal_rise`` are **provably invariant under a placement-only move**
-  (they read ``seg_layer``/``n_vias``/``inst_extended_part``/``net_class``
-  — none of which a translate/rotate/swap touches), so they are evaluated
-  ONCE at construction and never touched again for the rest of slice 6's
-  restricted move set. Slice 7's layer/topology moves will need to dirty
-  them again; that is exactly the kind of registry-entry addition the
-  move-mix schedule below is shaped to absorb.
+  (they read ``seg_layer``/``net_plane_layer``/``inst_extended_part``/
+  ``net_class`` — none of which a translate/rotate/swap touches), so they
+  are evaluated ONCE at construction and never touched again for the rest
+  of slice 6's restricted move set. Slice 7's layer/topology moves dirty
+  ``layer_count`` (:meth:`OptimizeEngine._refresh_layer_count`, a full
+  O(n_segments) rescan — the set of layers in use is a whole-board
+  aggregate, same carve-out as ``board_area``) and, since 2026-08-28,
+  ``via_count`` too (:meth:`OptimizeEngine._refresh_via_count_for_segment`
+  — via count is a per-segment SUM, not a set aggregate, so unlike
+  ``layer_count`` it gets a real O(1) bounded delta: see
+  :func:`precis.pcb.rules.implied_via_count`'s docstring for why a via
+  count only ever depends on its OWN segment's net/layer fields). Before
+  that fix ``via_count`` read ``ir.n_vias``, a field nothing in production
+  ever grew, so treating it as move-invariant was accidentally correct
+  (0 always) rather than a real locality argument — this is exactly the
+  kind of registry-entry addition the module docstring anticipated.
 - ``board_area`` is the one registered term that genuinely cannot
   decompose locally — a bounding box is a whole-board aggregate by
   definition, not an oversight of this engine. It is recomputed via
@@ -168,6 +178,7 @@ from precis.pcb.ir import (
     segment_points,
 )
 from precis.pcb.pinswap import PinSwapGroup
+from precis.pcb.rules import implied_via_count
 
 # ── move set (slice 6: placement only) ──────────────────────────────────
 
@@ -606,6 +617,12 @@ class OptimizeEngine:
 
         self._money_static_by_name: dict[str, float] = {}
         self._money_board_area = 0.0
+        #: seg_id -> that segment's OWN implied via count (:func:`precis.
+        #: pcb.rules.implied_via_count`), the per-segment breakdown behind
+        #: the ``via_count`` entry in ``_money_static_by_name`` — kept so
+        #: :meth:`_refresh_via_count_for_segment` can diff exactly ONE
+        #: segment's old vs. new count instead of resumming the board.
+        self._seg_via_count: dict[int, int] = {}
 
         # Layer-move eligibility: LAYER_ASSIGN targets "signal" role
         # layers only (a routed trace belongs on a routing layer, not a
@@ -651,14 +668,31 @@ class OptimizeEngine:
                     self._margin[("coupling", key)] = t
 
         # static (placement-invariant) terms: one full pass, never again.
+        # `via_count` is deliberately NOT read off this pass -- see below,
+        # it needs its own per-segment seed so later moves get a real
+        # per-segment diff to work from, not just a scalar to overwrite.
         full = evaluate_cost(ir, self.level, cfg.cost)
         for t in full.terms:
-            if t.name in ("layer_count", "via_count", "extended_part_fees"):
+            if t.name in ("layer_count", "extended_part_fees"):
                 self._money_static_by_name[t.name] = (
                     self._money_static_by_name.get(t.name, 0.0) + t.raw
                 )
             elif t.name == "thermal_rise":
                 self._margin[("thermal_rise", t.region)] = t
+
+        via_usd_total = 0.0
+        for s in range(ir.n_segments):
+            n = implied_via_count(
+                ir,
+                s,
+                fab_caps=cfg.cost.fab_caps,
+                class_rules=cfg.cost.class_rules,
+                temp_rise_c=cfg.cost.thermal_temp_rise_c,
+                copper_oz=cfg.cost.thermal_copper_oz,
+            )
+            self._seg_via_count[s] = n
+            via_usd_total += n * cfg.cost.via_usd
+        self._money_static_by_name["via_count"] = via_usd_total
 
         self._refresh_board_area()
 
@@ -823,12 +857,50 @@ class OptimizeEngine:
         change the *set* of layers in use (LAYER_ASSIGN, PLANE_PROMOTE,
         PLANE_DEMOTE). This is exactly the "slice 7's layer/topology moves
         will need to dirty them again" the module docstring flagged
-        ahead of time; ``via_count``/``extended_part_fees`` stay static —
-        no move class this slice registers touches vias or extended-part
-        membership."""
+        ahead of time; ``extended_part_fees`` stays static — no move class
+        this slice registers touches extended-part membership. ``via_count``
+        gets its OWN, more local refresh (:meth:`_refresh_via_count_for_
+        segment`) rather than this whole-board recompute — see that
+        method's docstring for why a per-segment SUM affords a real O(1)
+        delta where a set-of-layers-in-use aggregate like this one does
+        not."""
         self._money_static_by_name["layer_count"] = layer_count_term(
             self.ir, self.level, self.config.cost
         ).raw
+
+    def _refresh_via_count_for_segment(self, seg_id: int) -> None:
+        """Recompute segment ``seg_id``'s OWN implied via count
+        (:func:`precis.pcb.rules.implied_via_count`) and fold the delta
+        into the cached ``via_count`` money total — O(1), never a board
+        rescan. Sound because ``implied_via_count`` reads only ``seg_id``'s
+        own ``seg_net``/``seg_layer``/``net_plane_layer`` fields (see that
+        function's docstring), so no OTHER segment's cached count can ever
+        go stale as a side effect of this one segment's move.
+
+        Called from every move kind that can change what
+        ``implied_via_count`` reads for a segment: ``LAYER_ASSIGN``
+        (``seg_layer``, one segment) and ``PLANE_PROMOTE``/``PLANE_DEMOTE``
+        via :meth:`_rescan_net` (``net_plane_layer``, that net's own
+        segments — never the whole board). Placement moves (TRANSLATE/
+        ROTATE/SWAP/SIDE_FLIP/PIN_SWAP) never call this: none of them touch
+        a field this function reads, matching the module docstring's
+        placement-invariance claim exactly."""
+        old = self._seg_via_count.get(seg_id, 0)
+        new = implied_via_count(
+            self.ir,
+            seg_id,
+            fab_caps=self.config.cost.fab_caps,
+            class_rules=self.config.cost.class_rules,
+            temp_rise_c=self.config.cost.thermal_temp_rise_c,
+            copper_oz=self.config.cost.thermal_copper_oz,
+        )
+        if new == old:
+            return
+        self._seg_via_count[seg_id] = new
+        delta_usd = (new - old) * self.config.cost.via_usd
+        self._money_static_by_name["via_count"] = (
+            self._money_static_by_name.get("via_count", 0.0) + delta_usd
+        )
 
     # -- gap-capacity delta (the involved one — see module docstring) ----
     def _refresh_gap(self, seg_id: int) -> None:
@@ -964,10 +1036,14 @@ class OptimizeEngine:
         """Local refresh for PLANE_PROMOTE/PLANE_DEMOTE: every segment of
         ``net_id`` (its ``gap_capacity`` value depends on
         ``net_plane_layer`` now — see :func:`precis.pcb.cost.
-        gap_capacity_term`'s plane-exclusion branch), scoped to that net's
+        gap_capacity_term`'s plane-exclusion branch, and its
+        ``implied_via_count`` does too — a plane-promoted net's segments
+        dog-bone instead of transitioning layers), scoped to that net's
         own segments only, never the whole board."""
         seg_ids = tuple(int(s) for s in np.flatnonzero(self.ir.seg_net == net_id))
         self._rescan_segments(seg_ids)
+        for s in seg_ids:
+            self._refresh_via_count_for_segment(s)
 
     # -- aggregate cost ----------------------------------------------------
     def money(self) -> float:
@@ -1029,6 +1105,7 @@ class OptimizeEngine:
         self._recompute_seg_crossings(seg, old_layer, layer)
         self._rescan_segments((seg,))
         self._refresh_layer_count()
+        self._refresh_via_count_for_segment(seg)
 
     def _apply_side_flip(self, move: Move, *, forward: bool) -> None:
         seg = move.segments[0]

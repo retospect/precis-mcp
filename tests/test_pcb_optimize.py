@@ -248,6 +248,68 @@ def test_layer_assign_and_plane_promote_refresh_layer_count():
     assert after >= before  # a plane layer entering "used" never lowers the count
 
 
+# ── via_count term (gr, 2026-08-28): derived from seg_layer, no longer
+# structurally zero -- see precis.pcb.rules.implied_via_count's docstring
+# for the defect this closes (ir.n_vias had zero production writers).
+def test_layer_assign_refreshes_via_count_by_a_local_bounded_delta():
+    """The engine's own O(1) delta (:meth:`OptimizeEngine.
+    _refresh_via_count_for_segment`), pinned directly: every segment starts
+    on PAD_LAYER (the engine's own construction-time seed), so every
+    per-segment via count starts at zero; a single LAYER_ASSIGN move must
+    change ONLY its own segment's cached count -- never any other
+    segment's -- and the aggregate ``via_count`` money delta must be
+    exactly that one segment's own count times ``via_usd``, the same
+    bounded-delta contract ``crossings``/``gap_capacity`` already obey."""
+    ir = _seeded_ir(10, graph_seed=60, seed_rng_seed=61)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=61))
+    assert all(n == 0 for n in engine._seg_via_count.values())
+    before_usd = engine._money_static_by_name["via_count"]
+    assert before_usd == pytest.approx(0.0)
+
+    seg = 0
+    other_layer = next(layer for layer in engine._signal_layers if layer != 0)
+    move = Move(
+        MoveKind.LAYER_ASSIGN, segments=(seg,), old_int=(0,), new_int=(other_layer,)
+    )
+    engine.apply_move(move)
+
+    changed = {s: n for s, n in engine._seg_via_count.items() if n != 0}
+    assert changed == {seg: engine._seg_via_count[seg]}  # ONLY the touched segment
+    assert engine._seg_via_count[seg] > 0
+    after_usd = engine._money_static_by_name["via_count"]
+    assert after_usd - before_usd == pytest.approx(
+        engine._seg_via_count[seg] * engine.config.cost.via_usd
+    )
+
+    engine.undo_move(move)
+    assert engine._seg_via_count[seg] == 0
+    assert engine._money_static_by_name["via_count"] == pytest.approx(before_usd)
+
+
+def test_plane_promote_zeroes_via_count_for_a_transitioned_segment():
+    """A plane-promoted net's segments dog-bone instead of transitioning
+    layers (:func:`precis.pcb.rules.implied_via_count`'s dog-bone branch)
+    -- exercised here through a segment that already had real implied vias
+    from an earlier LAYER_ASSIGN, mirroring ``gap_capacity``'s own
+    plane-promote-clears-the-penalty test above."""
+    ir = _seeded_ir(10, graph_seed=63, seed_rng_seed=64)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=64))
+    seg = 0
+    net = int(ir.seg_net[seg])
+    other_layer = next(layer for layer in engine._signal_layers if layer != 0)
+    engine.apply_move(
+        Move(
+            MoveKind.LAYER_ASSIGN, segments=(seg,), old_int=(0,), new_int=(other_layer,)
+        )
+    )
+    assert engine._seg_via_count[seg] > 0
+
+    assert engine._plane_layers
+    plane_layer = engine._plane_layers[0]
+    engine.apply_move(Move(MoveKind.PLANE_PROMOTE, net=net, new_int=(plane_layer,)))
+    assert engine._seg_via_count[seg] == 0
+
+
 # ── crossings term (gr, 2026-08-28): GEOMETRIC backing, LAYER_ASSIGN's
 # real cost effect ────────────────────────────────────────────────────
 def _crossing_ir_with_positions():

@@ -15,6 +15,7 @@ import random
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP
+from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
@@ -26,6 +27,7 @@ from precis.pcb.cost import (
     TermSpec,
     TermValue,
     _thermal_rise,
+    _via_count,
     aggregate_margin,
     crossings_term_for_layer,
     evaluate_cost,
@@ -47,6 +49,7 @@ from precis.pcb.optimize import (
     OptimizeEngine,
     seed_placement,
 )
+from precis.pcb.realize import RealizeConfig, realize
 from precis.pcb.rules import ipc2221_capacity_a
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
@@ -321,14 +324,22 @@ def test_admissibility_direction_holds_across_a_hardened_schedule_too():
 #: nothing in this test's exploration (board topology, positions, every
 #: :class:`~precis.pcb.optimize.MoveKind`, or the ``CostConfig``
 #: side-channels a term reads) touches the field it depends on. Empty as
-#: of this writing: ``via_count``/``extended_part_fees`` are invariant
-#: under every MoveKind (see optimize.py's "evaluated ONCE at
-#: construction" note) but DO vary with board topology, which
-#: :func:`_reachability_board` randomizes per trial — state diversity,
-#: not a move, is what exercises them, and that's a legitimate way to
-#: satisfy this property, not a workaround. If a future term turns out
-#: to need an exception, name it here with its own reason; never widen
-#: this to a blanket skip.
+#: of this writing: ``extended_part_fees`` is invariant under every
+#: MoveKind (see optimize.py's "evaluated ONCE at construction" note) but
+#: DOES vary with board topology, which :func:`_reachability_board`
+#: randomizes per trial — state diversity, not a move, is what exercises
+#: it, and that's a legitimate way to satisfy this property, not a
+#: workaround. ``via_count`` USED to need the same carve-out (it read
+#: ``ir.n_vias``, invariant under every MoveKind since nothing ever grew
+#: it — see :func:`precis.pcb.rules.implied_via_count`'s docstring for
+#: that defect) but no longer does: it is now genuinely
+#: ``MoveKind.LAYER_ASSIGN``/``PLANE_PROMOTE``/``PLANE_DEMOTE``-reachable,
+#: which is exactly what lets this property test catch it varying below
+#: WITHOUT the ``ir.add_via`` seeding this test used to lean on (that
+#: seeding is now provably inert for ``via_count`` — see
+#: ``test_via_count_nonzero_through_the_real_production_path_not_seeded``).
+#: If a future term turns out to need an exception, name it here with its
+#: own reason; never widen this to a blanket skip.
 _NOT_MOVE_REACHABLE: dict[str, str] = {}
 
 
@@ -337,10 +348,13 @@ def _reachability_board(rng: random.Random) -> dict:
     :func:`_random_state`: a mix of every net class (power/ground so
     ``loop_inductance`` has live candidates, rf/clock so ``coupling``
     does), a coin-flip current annotation per net (``thermal_rise``'s two
-    branches), a coin-flip ``extended_part`` per instance and a random
-    handful of vias — the two MONEY terms no MoveKind ever touches
-    (:data:`_NOT_MOVE_REACHABLE`'s docstring), varied here by state
-    diversity instead."""
+    branches), and a coin-flip ``extended_part`` per instance — the one
+    remaining MONEY term no MoveKind ever touches (:data:`_NOT_MOVE_
+    REACHABLE`'s docstring), varied here by state diversity instead.
+    ``via_count`` no longer needs a topology carve-out (see that
+    docstring) -- it varies through real ``LAYER_ASSIGN``/``PLANE_
+    PROMOTE``/``PLANE_DEMOTE`` moves below instead, the same as
+    ``layer_count``."""
     n_inst = rng.randint(6, 12)
     instances = [
         {"refdes": f"U{i}", "extended_part": rng.random() < 0.3} for i in range(n_inst)
@@ -439,8 +453,12 @@ def test_every_registered_term_is_move_reachable():
         graph = _reachability_board(state_rng)
         ir = from_graph(graph, stackup=DEFAULT_STACKUP)
         seed_placement(ir, state_rng)
-        for _ in range(state_rng.randint(0, 3)):
-            ir.add_via(layer_span=0b0011)
+        # No `ir.add_via` seeding here (2026-08-28): that used to be the
+        # only thing making `via_count` vary in this test, which is
+        # exactly the hole `test_via_count_nonzero_through_the_real_
+        # production_path_not_seeded` closes explicitly -- `via_count` now
+        # varies for real, through the `LAYER_ASSIGN`/`PLANE_PROMOTE`/
+        # `PLANE_DEMOTE` moves the loop below already applies.
 
         cost_config = CostConfig(
             assumed_max_gap_mm=500.0,
@@ -736,4 +754,74 @@ def test_thermal_rise_admissible_before_layer_assignment_is_known():
 
 def test_thermal_rise_registered_term_direction_is_lower():
     (spec,) = [t for t in TERMS if t.name == "thermal_rise"]
+    assert spec.direction is BoundDirection.LOWER
+
+
+# ── via_count: derived from segment layer assignments, never `ir.n_vias`
+# (gr, 2026-08-28). `ir.n_vias` only grows via `PcbIR.add_via`, which has
+# ZERO production callers anywhere in this package -- this term read that
+# dead field and was structurally always zero, so the optimizer paid
+# nothing for a layer change while `realize.py` independently emitted real
+# vias wherever a track's layer differed from `realize.PAD_LAYER`. See
+# `precis.pcb.rules.implied_via_count`'s docstring for the shared rule
+# that now backs both sides.
+def test_via_count_nonzero_through_the_real_production_path_not_seeded():
+    """Reachable via ``from_graph -> set_layer -> evaluate_cost`` -- the
+    real path a caller actually exercises -- never by seeding
+    ``ir.add_via`` into a fixture (the hole the pre-fix reachability
+    property test papered over, see ``test_every_registered_term_is_
+    move_reachable`` above): ``add_via`` is now provably inert for this
+    term, pinned explicitly below."""
+    ir = from_graph(_current_net_graph(None, "signal"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)  # In1.Cu -- not PAD_LAYER (0): a real layer transition
+    (t,) = _via_count(ir, Level.L4, CostConfig())
+    assert t.raw > 0.0
+
+    ir_seeded = from_graph(_current_net_graph(None, "signal"), stackup=DEFAULT_STACKUP)
+    ir_seeded.add_via(layer_span=0b0011)  # seeding an IR via row alone
+    (t_seeded,) = _via_count(ir_seeded, Level.L4, CostConfig())
+    assert (
+        t_seeded.raw == 0.0
+    )  # ...buys this term nothing: the segment never left PAD_LAYER
+
+
+def test_via_count_zero_when_the_segment_stays_on_pad_layer():
+    ir = from_graph(_current_net_graph(None, "signal"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 0)  # PAD_LAYER -- nothing to transition
+    (t,) = _via_count(ir, Level.L4, CostConfig())
+    assert t.raw == 0.0
+
+
+def test_via_count_zero_below_l1():
+    ir = from_graph(_current_net_graph(None, "signal"), stackup=DEFAULT_STACKUP)
+    ir.set_layer(0, 1)
+    (t,) = _via_count(ir, Level.L0, CostConfig())
+    assert t.raw == 0.0
+    assert t.is_bound
+
+
+def test_via_count_matches_realized_vias_exactly():
+    """The anti-drift pin, and the whole point of this fix: for the SAME
+    IR, the USD ``cost.py`` charges for vias must correspond EXACTLY to
+    the number of vias ``realize.realize()`` actually emits -- this is the
+    test that would have caught the original defect, where ``via_count``
+    silently charged 0 while ``realize.py`` emitted real geometry onto the
+    gerbers."""
+    ir = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
+    ir.move_instance(0, x=0.0, y=0.0, rot=0.0)
+    ir.move_instance(1, x=10.0, y=0.0, rot=0.0)
+    ir.set_layer(0, 1)  # a real layer transition, with a current annotation
+    fab_caps = capability_for("4layer")
+    cost_config = CostConfig(fab_caps=fab_caps, via_usd=0.02)
+    realize_config = RealizeConfig(fab_caps=fab_caps)
+
+    (t,) = _via_count(ir, Level.L4, cost_config)
+    result = realize(ir, config=realize_config)
+
+    assert result.vias  # sanity: the production path really emits vias here
+    assert t.raw == pytest.approx(len(result.vias) * cost_config.via_usd)
+
+
+def test_via_count_registered_term_direction_is_lower():
+    (spec,) = [t for t in TERMS if t.name == "via_count"]
     assert spec.direction is BoundDirection.LOWER

@@ -153,8 +153,18 @@ def test_pcb_route_widens_a_high_current_net_well_past_the_old_flat_default(
 
     board_id = store.pcb_ensure_board(ref_id)
     with store.pool.connection() as conn:
+        # `ctype = 'track'` only (2026-08-28): `pcb_copper` can now also
+        # carry `ctype = 'via'` rows (realize.py emits real via geometry
+        # at a layer transition, and the optimizer's own `via_count` term
+        # -- see precis.pcb.cost/rules -- is exactly what makes a
+        # LAYER_ASSIGN move that creates one no longer free, so whether one
+        # survives annealing is genuinely seed/board dependent). A via's
+        # `geom` has no `width_mm` key -- this test is about TRACK width,
+        # so it must not silently pick up an unrelated via row.
         rows = conn.execute(
-            "SELECT geom->>'width_mm' FROM pcb_copper WHERE board_id = %s", (board_id,)
+            "SELECT geom->>'width_mm' FROM pcb_copper "
+            "WHERE board_id = %s AND ctype = 'track'",
+            (board_id,),
         ).fetchall()
     assert rows
     widths = [float(r[0]) for r in rows]
