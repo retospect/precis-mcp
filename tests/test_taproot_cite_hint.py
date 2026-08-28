@@ -143,6 +143,129 @@ def test_pc_cite_many_to_many_lists_both_hubs(draft: DraftHandler, hub: Hub) -> 
     assert f"[{hub_b_handle}]" in r.body
 
 
+def test_pc_cite_hint_clean_hub_has_no_posture_marker(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A clean hub's nudge line carries no posture decoration at all —
+    byte-identical to the pre-posture nudge text."""
+    paper = seed_ref(hub.live_store, title="Top-gated AGNR FETs", kind="paper")
+    chunk_id = _seed_pc(hub.live_store, paper_ref_id=paper)
+
+    out = seed_claim_hub(
+        hub.live_store,
+        sentence="Top-gated 9-atom AGNR FETs reach Ion/Ioff ~1e5.",
+        scope={"material": "AGNR"},
+        supporters=[
+            {
+                "paper": paper,
+                "support": "yes",
+                "support_reason": "direct measurement",
+                "verified_by": "test",
+            }
+        ],
+    )
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"On-currents are strong [pc{chunk_id}].",
+        at={"after": "¶" + th},
+    )
+
+    hub_handle = handle_registry.format_handle("finding", out["hub_ref_id"])
+    assert (
+        f"\n\n◆ taproot: pc{chunk_id} grounds claim hub [{hub_handle}] "
+        f'("Top-gated 9-atom AGNR FETs reach Ion/Ioff ~1e5.") — cite '
+        f"[{hub_handle}] for living resolution, or "
+        f"[{hub_handle}>pc{chunk_id}] to pin this passage." in r.body
+    )
+    assert "posture" not in r.body
+
+
+def test_pc_cite_hint_marks_refuted_hub(draft: DraftHandler, hub: Hub) -> None:
+    """A hub whose only evidence is a negative verdict (refuted) gets a
+    posture marker on its nudge line."""
+    paper = seed_ref(hub.live_store, title="Refuting Paper", kind="paper")
+    chunk_id = _seed_pc(hub.live_store, paper_ref_id=paper)
+
+    out = seed_claim_hub(
+        hub.live_store,
+        sentence="Refuted claim: X does not affect Y.",
+        scope={"material": "X"},
+        supporters=[
+            {
+                "paper": paper,
+                "support": "no",
+                "support_reason": "the passage does not carry the claim",
+                "verified_by": "test",
+            }
+        ],
+    )
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Some effect is claimed [pc{chunk_id}].",
+        at={"after": "¶" + th},
+    )
+
+    hub_handle = handle_registry.format_handle("finding", out["hub_ref_id"])
+    assert f"[{hub_handle}]" in r.body
+    assert "[⚠ posture: refuted]" in r.body
+    # The warning must precede the "cite this" recommendation: a writer
+    # skimming acts on whichever comes first.
+    assert r.body.index("[⚠ posture: refuted]") < r.body.index("for living")
+
+
+def test_pc_cite_hint_marks_disputed_hub(draft: DraftHandler, hub: Hub) -> None:
+    """A hub carrying a live ``contradicts`` edge (disputed) gets a
+    posture marker on its nudge line."""
+    from precis.taproot.hub import attach_evidence
+
+    store = hub.live_store
+    paper = seed_ref(store, title="Corroborating Paper", kind="paper")
+    chunk_id = _seed_pc(store, paper_ref_id=paper)
+    contradictor = seed_ref(store, title="Contradicting Paper", kind="paper")
+
+    out = seed_claim_hub(
+        store,
+        sentence="Disputed claim: Z accelerates W.",
+        scope={"material": "Z"},
+        supporters=[{"paper": paper}],
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=out["hub_ref_id"],
+        paper_ref_id=contradictor,
+        role="contradicts",
+        meta={"support": "no"},
+        set_by="system",
+    )
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Z reportedly accelerates W [pc{chunk_id}].",
+        at={"after": "¶" + th},
+    )
+
+    hub_handle = handle_registry.format_handle("finding", out["hub_ref_id"])
+    assert f"[{hub_handle}]" in r.body
+    assert "[⚠ posture: disputed]" in r.body
+
+
 def test_pc_cite_no_hub_emits_no_hint(draft: DraftHandler, hub: Hub) -> None:
     paper = seed_ref(hub.live_store, title="Ungrounded Paper", kind="paper")
     chunk_id = _seed_pc(hub.live_store, paper_ref_id=paper)

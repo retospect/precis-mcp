@@ -17,13 +17,17 @@ these into its ``put``/``edit``/``get`` bodies.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING
 
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
+    from precis.nanopub.overview import HubOverviewRow
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 #: Malformed temperature / unit notation the draft prose should not carry.
 #: The canonical form is the literal sign with no space — ``63°C`` (degree
@@ -230,6 +234,36 @@ def whole_paper_cite_hint(new_text: str, old_text: str) -> str:
     )
 
 
+def _hub_posture_marker(row: HubOverviewRow | None) -> str:
+    """`` [⚠ posture: …]`` marker for :func:`pc_cite_claim_hub_hint`, or
+    ``""`` when the hub is clean (or its posture is unknown). Same
+    three conditions, same ``is_refuted`` predicate, and the same
+    ``disputed``/``drifted``/``refuted`` ordering as ``handlers/draft.py::
+    _hygiene_hub_posture_lines`` — the nudge and the hygiene report must
+    never disagree about what "bad posture" means.
+
+    Bracketed and unpunctuated because it renders *mid-sentence*, right
+    after the hub is named and before the line recommends citing it: a
+    writer skimming must meet the warning before the instruction, or the
+    instruction is what they act on."""
+    if row is None:
+        return ""
+    from precis.handlers.finding import is_refuted
+
+    conds = [
+        name
+        for name, on in (
+            ("disputed", row.disputed),
+            ("drifted", row.drifted),
+            ("refuted", is_refuted(row)),
+        )
+        if on
+    ]
+    if not conds:
+        return ""
+    return f" [⚠ posture: {', '.join(conds)}]"
+
+
 def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
     """Nudge toward an existing Taproot claim hub when a paper/patent
     cite token (``[pc<id>]``/``[pa<id>]``/``[pk<id>]``) in ``text``
@@ -246,12 +280,27 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
     the cites actually present in ``text`` (the touched chunk), not
     the whole draft — cheap on the write path. Deduped by
     ``hub_ref_id`` — a paper grounding the same hub via two cite
-    tokens in one chunk gets one nudge line."""
+    tokens in one chunk gets one nudge line.
+
+    Each line also carries the hub's posture (:func:`_hub_posture_marker`)
+    when it's ``refuted``/``disputed``/``drifted`` — steering a writer onto
+    a bad-posture hub at the exact moment of citing would otherwise be
+    silent. The marker sits directly after the hub is named and *before*
+    the "cite this" recommendation, so a skimmer meets the warning before
+    the instruction. A clean hub's line carries no marker at all
+    (byte-identical to the pre-posture output). Posture is fetched in ONE ``hub_rows`` call
+    for every hub collected, after the token loop — this runs on the draft
+    write path, which must stay cheap. If that lookup raises, the nudge
+    still renders (without posture) rather than taking down the write
+    path: unlike ``finding.py::_postures``' strict mode — where a swallowed
+    error would silently change a *filter's* results — this only omits
+    decoration from an advisory hint, so degrading to "no posture shown"
+    is honest, not a masked correctness bug. Do not "fix" this to raise."""
     from precis.taproot.lookup import hubs_grounded_by_paper
     from precis.utils.mentions import resolve_handle_target
 
     seen_hub_ref_ids: set[int] = set()
-    lines: list[str] = []
+    hits: list[tuple[str, int, str, str]] = []
     for tok in find_paper_cite_tokens(text):
         target = resolve_handle_target(store, tok)
         if target is None:
@@ -263,11 +312,30 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
             seen_hub_ref_ids.add(hub_ref_id)
             claim = hub["claim"] or ""
             hub_handle = handle_registry.format_handle("finding", hub_ref_id)
-            lines.append(
-                f"\n\n◆ taproot: {tok} grounds claim hub [{hub_handle}] "
-                f'("{claim}") — cite [{hub_handle}] for living '
-                f"resolution, or [{hub_handle}>{tok}] to pin this passage."
-            )
+            hits.append((tok, hub_ref_id, hub_handle, claim))
+    if not hits:
+        return ""
+
+    postures: dict[int, HubOverviewRow] = {}
+    try:
+        from precis.nanopub.overview import hub_rows
+
+        postures = {
+            row.ref_id: row for row in hub_rows(store, ref_ids=sorted(seen_hub_ref_ids))
+        }
+    except Exception:  # pragma: no cover — advisory decoration, not correctness
+        log.warning("pc_cite_claim_hub_hint: posture read failed", exc_info=True)
+
+    lines: list[str] = []
+    for tok, hub_ref_id, hub_handle, claim in hits:
+        marker = _hub_posture_marker(postures.get(hub_ref_id))
+        lines.append(
+            f"\n\n◆ taproot: {tok} grounds claim hub [{hub_handle}] "
+            f'("{claim}")'
+            f"{marker}"
+            f" — cite [{hub_handle}] for living "
+            f"resolution, or [{hub_handle}>{tok}] to pin this passage."
+        )
     return "".join(lines)
 
 

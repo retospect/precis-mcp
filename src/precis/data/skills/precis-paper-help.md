@@ -190,8 +190,8 @@ web reader's Semantic/Keyword sidebar reads the same data); fall back to
 the keyword column where a gloss hasn't been written yet.
 
 Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
-(`cite/ris`), `endnote` (`cite/endnote`), `links`. The `view=` kwarg
-and `slug/<view>` path are equivalent (except for DOIs — see above).
+(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`. The `view=`
+kwarg and `slug/<view>` path are equivalent (except for DOIs — see above).
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper
@@ -261,6 +261,22 @@ Every link touching the paper, both directions — outbound
 `cites`/`related-to`/… and inbound rows rendered in passive form
 (`cited by`, `supported by`, …). Each row is expandable via the
 `get(...)` call it prints.
+
+## What Taproot claim hubs does this paper ground?
+## Does this paper already establish/corroborate/contradict a claim?
+
+```python
+get(kind="paper", id="pa40", view="claims")
+```
+
+Every live Taproot claim hub this paper carries an inbound evidence edge
+to (`establishes`/`corroborates`/`contradicts`), with each hub's posture
+(`state`/`support`/`flags` — refuted/disputed/drifted show up here too)
+and the `role` this paper's own edge plays. A hub grounded here but not
+yet assigned a `pub_id` renders `pub_id: <uncited>` — it's a mint-
+frontier signal, not a citable claim yet. This is NOT the patent kind's
+`view='claims'` (that one is a patent's legal claim set) — the name is
+shared, the meaning is per-kind.
 
 ## Chunk-level citation grounding (dark, opt-in)
 ## Does this specific claim actually check out against what it cites?

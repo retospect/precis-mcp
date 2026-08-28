@@ -107,6 +107,7 @@ _SUPPORTED_VIEWS = (
     "log",
     "abbrevs",
     "links",
+    "claims",
 )
 
 
@@ -1449,6 +1450,13 @@ class PaperHandler(Handler):
         if view == "bibliography":
             return self._render_bibliography(ref)
 
+        if view == "claims":
+            # Taproot claim hubs THIS paper grounds — not to be confused
+            # with the patent kind's ``view='claims'`` (that one is the
+            # patent's own legal claim set; different animal, same view
+            # name, no collision since views are scoped per kind).
+            return self._render_claims(ref)
+
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
@@ -1578,6 +1586,89 @@ class PaperHandler(Handler):
                 (
                     "get(kind='skill', id='precis-citation-help')",
                     "the verifier-workflow agent surface",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _render_claims(self, ref: Ref) -> Response:
+        """``view='claims'`` — the Taproot claim hubs THIS paper grounds
+        (an inbound ``establishes``/``corroborates``/``contradicts``
+        evidence edge), i.e. "what claims does this paper ground?". This
+        is a *different* ``view='claims'`` than the patent kind's (a
+        patent's own legal claim set) — the name collides across kinds
+        only in spelling, never in dispatch, since views are looked up
+        per ``self.spec.kind``.
+
+        Reads :func:`~precis.taproot.lookup.hubs_grounded_by_paper` with
+        ``require_pub_id=False`` — unlike the cite-time nudge
+        (``_draft_lint.pc_cite_claim_hub_hint``, which wants only citable
+        hubs), a hub this paper grounds but not yet assigned a ``pub_id``
+        is exactly the mint-frontier signal a reader here wants, not
+        noise to hide. Such a row renders ``pub_id: <uncited>`` so a
+        reader doesn't try to cite it.
+
+        Posture (``state``/``support``/``flags``) comes from
+        ``handlers/finding.py::_posture_cells`` over one batched
+        ``hub_rows(ref_ids=[...])`` call — reused rather than a second
+        posture rendering, so the two surfaces can't drift apart.
+        ``role`` is the evidence relation this paper's own edge carries,
+        so a paper that CONTRADICTS a hub reads distinctly from one that
+        establishes/corroborates it.
+        """
+        from precis.handlers.finding import _posture_cells
+        from precis.nanopub.overview import hub_rows
+        from precis.taproot.lookup import hubs_grounded_by_paper
+
+        slug = ref.slug or "???"
+        hubs = hubs_grounded_by_paper(self.store, ref.id, require_pub_id=False)
+        if not hubs:
+            body = f"# {slug} — no claim hubs"
+            body += render_next_section(
+                [
+                    (
+                        f"put(kind='finding', title='<claim sentence>', "
+                        f"supporters=[{{'paper': '{_pa(ref)}', "
+                        "'source_handle': '<pc_id>'}])",
+                        "mint a claim hub grounded in this paper",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        postures = {
+            row.ref_id: row
+            for row in hub_rows(self.store, ref_ids=[h["hub_ref_id"] for h in hubs])
+        }
+        rows: list[dict[str, str]] = []
+        hub_handles: list[str] = []
+        for h in hubs:
+            hub_handle = handle_registry.format_handle("finding", h["hub_ref_id"])
+            hub_handles.append(hub_handle)
+            pub_id = h["pub_id"] if h["pub_id"] is not None else "<uncited>"
+            claim = _excerpt(_clean_inline_text(h["claim"] or ""), limit=80)
+            cells = _posture_cells(postures.get(h["hub_ref_id"]))
+            rows.append(
+                {
+                    "hub": f"[{hub_handle}]",
+                    "pub_id": str(pub_id),
+                    "role": h["role"],
+                    "claim": claim,
+                    **cells,
+                }
+            )
+
+        head = f"# {slug} — {len(rows)} claim hub(s) grounded"
+        table = render_agent_table(
+            rows,
+            schema=["hub", "pub_id", "role", "claim", "state", "support", "flags"],
+        )
+        body = f"{head}\n\n{table}"
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='finding', id='{hub_handles[0]}')",
+                    "read one hub's full evidence graph",
                 ),
             ]
         )
