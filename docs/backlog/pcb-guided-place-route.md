@@ -9,7 +9,7 @@ model: opus
 
 ## BUILD STATUS (2026-08-28) — resume pointer
 
-**Shipped to main** (latest `0351be2f`): slices 1–8 and 10. That is:
+**Shipped to main** (latest `b50bbb87`): slices 1–8 and 10. That is:
 schema + board/stackup hedges · catalog ingest,
 EasyEDA footprint parser, JLCPCB API client · the L0–L5 IR, objective
 vectors and cost function · gerber X2 + Excellon writer + JLC capability
@@ -23,6 +23,28 @@ evaluators, `pcb_place`/`pcb_route` job types and `op=` handler dispatch
 gate (15735 passed, 0 failed) after the sibling-congestion window closed.
 
 **Nothing is built-but-unshipped.** The worktree is level with main.
+
+A post-ship review of `0351be2f` found three more defects, all fixed and
+shipped in `b50bbb87`: (1) `route_complete` was permanently unsatisfiable
+on any board with a legitimate <2-member net (test point / NC / mounting
+hole) — the route job skipped writing a row, the gate read the missing
+row as `unrouted`, and the phase machine wedged forever with no error.
+Now such a net gets an explicit `realized` row carrying a *note* saying
+why, and the member-count rule lives once in `ir.net_member_counts()`
+instead of being duplicated in two components that drifted apart.
+(2) Every via DRC rule (`check_annular_ring`, the via halves of
+clearance/NPTH) is **unreachable in production** — the realizer emits
+only tracks, so no `ctype='via'` copper is ever persisted. The rules are
+correct and tested against synthetic models; they simply have no input
+yet. `view='drc'` now says so on both the clean and findings paths, so a
+clean DRC is not misread as "vias checked". Remove the caveat when
+`planes.py` lands via geometry. (3) `pcb_rip_route` / `pcb_copper_list`
+were missing the `retired_at IS NULL` filter their siblings all apply.
+
+Still open, filed not fixed: **`gr266041`** — `op=` idempotency coalesces
+a resubmit onto an in-flight job that predates an `op='pin_side'` /
+`op='plane_net'` edit, because the content hash covers design inputs but
+not those session edits. Needs a product call.
 
 **Slice 9 (JLCPCB ordering) is the only one not built** — blocked on a
 human action, not engineering: every signed call returns `403 API
@@ -66,6 +88,9 @@ re-probe after the next `/go` deploy.
 - **`drc.py` reads only the fab capability table**, not
   `pcb_net_classes` rule overrides; that schema does not exist yet.
   Hook point documented in the module docstring.
+- **No via geometry is realized, so every via DRC rule never fires.**
+  Caveated in `view='drc'` output and the `drc.py` docstring; drop the
+  caveat when the realizer emits vias.
 - **Layer *roles* are read from the stackup's `role` field**, not yet
   emergent as §Layer ROLE describes.
 
