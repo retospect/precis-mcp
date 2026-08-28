@@ -81,21 +81,37 @@ fast any one call happens to be at a 30-component test board. Instead:
   candidate list's size ("dozens, not thousands" per the backlog), never
   by segment count.
 - ``crossings`` (:func:`precis.pcb.cost.crossings_term_for_layer`, backed
-  by :func:`precis.pcb.ir.same_layer_crossing_bound`'s coarse Euler bound)
-  is maintained as a per-layer running ``(V, E)`` pair
-  (``_layer_v``/``_layer_e``, plus a per-``(pin, layer)`` reference count
-  so a vertex is only dropped from ``V`` once no segment on that layer
-  touches it any more), NOT by re-scanning a layer's segment list on every
-  move — with as few as two eligible signal layers (the backlog's
-  "signal layer assignment is binary" 4-layer default), a layer's own
-  segment count is a sizeable fraction of the whole board, so a rescan
-  would be an O(board) delta in disguise despite "only two layers changed
-  looking cheap". A ``LAYER_ASSIGN`` move updates exactly the (at most
-  two) touched layers' ``(V, E)`` in O(1) — see
-  :meth:`OptimizeEngine._update_crossings` — then recomputes
-  :func:`~precis.pcb.ir.euler_bound` from the cached integers, an O(1)
-  closed-form evaluation, never a graph walk. Every other move kind never
-  touches ``seg_layer``, so it never calls this at all.
+  since 2026-08-28 by :func:`precis.pcb.ir.same_layer_crossing_count`'s
+  geometric sweep-line count — the Euler-bound backing this engine used
+  to maintain via a per-layer running ``(V, E)`` pair was retired: it was
+  provably always zero on a real board (a star-decomposed segment graph
+  is a vertex-disjoint forest — see that function's own docstring for the
+  proof), so an ``(V, E)`` cache tracking it, however O(1) per move,
+  was maintaining an incremental delta for a quantity that could never
+  move. The GEOMETRIC count cannot be maintained the same way — a
+  vertex/edge tally has nothing to do with whether two segments' straight
+  lines happen to cross — so the incremental structure changed shape, not
+  just its backing formula:
+  ``_segments_by_layer`` (``{layer: {seg_id, ...}}``, the segment
+  membership index a geometric recount needs to enumerate "the rest of
+  that layer") plus ``_seg_crossing_partners`` (``{seg_id: {other_seg_id,
+  ...}}``, which OTHER same-layer segments ``seg_id`` currently crosses —
+  a symmetric adjacency cache) plus ``_layer_crossing_count`` (the
+  per-layer total, ``sum(len(partners)) / 2`` maintained as a running
+  int, never recomputed from the sets). :meth:`OptimizeEngine.
+  _recompute_seg_crossings` is the bounded delta: for ONE touched segment,
+  discard its cached partnerships (O(old partner count)), then retest it
+  against every OTHER segment CURRENTLY on its (possibly new) layer —
+  O(layer size), never O(board) — exactly the "recount intersections
+  involving the touched segments against the rest of that layer, not all
+  pairs" shape the fix's design called for. Called once per segment
+  incident to a moved instance (TRANSLATE/ROTATE/SWAP, inside
+  :meth:`_rescan_after_move` — geometry changed) and once for a
+  ``LAYER_ASSIGN`` move's single segment (layer membership changed).
+  SIDE_FLIP and PIN_SWAP never touch a segment's INSTANCE-centroid
+  endpoints (see those move kinds' own notes below), so neither ever
+  calls this — provably cost-neutral for ``crossings`` specifically, not
+  merely untested.
 
 **What is NOT claimed local, on purpose.** Aggregating the margin family
 (:func:`precis.pcb.cost.aggregate_margin`'s max) over the already-cached
@@ -143,7 +159,14 @@ from precis.pcb.cost import (
     layer_count_term,
     loop_inductance_term,
 )
-from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, euler_bound, nearest_other_instance
+from precis.pcb.geom import segments_cross
+from precis.pcb.ir import (
+    UNSET_LAYER,
+    Level,
+    PcbIR,
+    nearest_other_instance,
+    segment_points,
+)
 from precis.pcb.pinswap import PinSwapGroup
 
 # ── move set (slice 6: placement only) ──────────────────────────────────
@@ -284,31 +307,31 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: :func:`precis.pcb.pinswap.offsets_from_pads` now wires through for
 #: PIN_SWAP) needs to land into.
 #:
-#: **SIDE_FLIP is cost-neutral too, and — found on contact shipping the
-#: `crossings` term (2026-08-28) — genuinely CANNOT be otherwise under an
-#: admissible estimator at this slice's fidelity, not merely "not wired
-#: up yet" the way ROTATE is.** ``crossings`` (below) is backed by
-#: :func:`precis.pcb.ir.same_layer_crossing_bound`, an Euler edge-count
-#: bound over which LAYER a segment sits on — it is, by its own
-#: docstring, "still embedding-agnostic", i.e. structurally independent
-#: of ``seg_side``. A term that responded to a side flip would need an
-#: embedding-aware crossing count, which needs realize.py's face tracing
-#: (explicitly future work, same docstring) or would have to stop being
-#: an admissible *bound* to fake a dependency — both out of scope here.
-#: So although `LAYER_ASSIGN and SIDE_FLIP are no longer cost-neutral`
-#: was this slice's stated goal, only `LAYER_ASSIGN` actually can be
-#: under the admissibility constraint; this is reported rather than
-#: papered over with an inadmissible proxy. SIDE_FLIP remains exercised
-#: here (dirty cascade honoured) so the plumbing is ready the moment
-#: ``sketch.py``'s anchor vocabulary (still an explicitly open backlog
-#: item) gives a side choice real geometric meaning.
+#: **SIDE_FLIP is cost-neutral too, and still genuinely CANNOT be
+#: otherwise at this engine's fidelity — the reason changed on 2026-08-28
+#: when `crossings` moved from the Euler bound to a GEOMETRIC sweep-line
+#: count, but the conclusion didn't.** ``crossings`` is now backed by
+#: :func:`precis.pcb.ir.same_layer_crossing_count`, which reads segment
+#: endpoints at INSTANCE-centroid granularity (the same fidelity every
+#: other L3 term here uses — no sub-instance pad geometry exists in the
+#: IR yet). ``seg_side`` records WHICH SIDE of an obstacle a connection
+#: routes, a property the realizer's arcs/tangents would need but that
+#: never perturbs an instance's own (x, y) — so a straight-line count
+#: between component centroids is structurally blind to it, same as it
+#: is blind to `inst_rot`. A term that responded to a side flip would
+#: need real sub-instance geometry (the same missing ingredient ROTATE's
+#: note names) or realize.py's face tracing — both out of scope here.
+#: SIDE_FLIP remains exercised here (dirty cascade honoured) so the
+#: plumbing is ready the moment ``sketch.py``'s anchor vocabulary (still
+#: an explicitly open backlog item) gives a side choice real geometric
+#: meaning.
 #:
 #: LAYER_ASSIGN and PLANE_PROMOTE/DEMOTE are NOT cost-neutral: LAYER_
-#: ASSIGN's ``layer_count`` money term AND (new) ``crossings`` margin term
+#: ASSIGN's ``layer_count`` money term AND ``crossings`` margin term
 #: respond to it; PLANE_PROMOTE/DEMOTE's ``layer_count`` (via
 #: ``net_plane_layer``) AND ``gap_capacity`` (the plane-exclusion branch)
 #: respond to those moves — see :meth:`OptimizeEngine._refresh_layer_count`,
-#: :meth:`OptimizeEngine._update_crossings` and
+#: :meth:`OptimizeEngine._recompute_seg_crossings` and
 #: :func:`precis.pcb.cost.gap_capacity_term`. PIN_SWAP is its own
 #: separate story: see :mod:`precis.pcb.pinswap`'s module docstring — its
 #: effect is real and measured by that module's own crossing evaluator
@@ -558,17 +581,18 @@ class OptimizeEngine:
         self._seg_gap_distance = np.full(ir.n_segments, math.inf)
         self._seg_nearest_instance = np.full(ir.n_segments, -1, dtype=np.int64)
 
-        # crossings state: per-layer running (V, E) for the O(1)-per-move
-        # `crossings` Euler-bound recompute (module docstring's crossings-
-        # term section). `_layer_pin_count[pin, layer]` is a reference
-        # count -- how many CURRENTLY-layer-assigned segments touch this
-        # pin on this layer -- so a vertex is dropped from `_layer_v` only
-        # once nothing on that layer touches it any more; `_layer_e` is a
-        # plain per-layer segment count. Populated by
-        # `_init_crossing_state`, maintained by `_update_crossings`.
-        self._layer_pin_count = np.zeros((ir.n_pins, ir.n_layers), dtype=np.int32)
-        self._layer_v = [0] * ir.n_layers
-        self._layer_e = [0] * ir.n_layers
+        # crossings state: GEOMETRIC (module docstring's crossings-term
+        # section, revised 2026-08-28) -- `_segments_by_layer[layer]` is the
+        # segment-membership index a bounded recount needs to enumerate
+        # "the rest of that layer"; `_seg_crossing_partners[seg_id]` is the
+        # set of OTHER same-layer segments `seg_id` currently, geometrically
+        # crosses (symmetric: `seg_id in partners[other]` too);
+        # `_layer_crossing_count[layer]` is the running per-layer total,
+        # never recomputed by summing the sets. Populated by
+        # `_init_crossing_state`, maintained by `_recompute_seg_crossings`.
+        self._segments_by_layer: dict[int, set[int]] = {}
+        self._seg_crossing_partners: dict[int, set[int]] = {}
+        self._layer_crossing_count = [0] * ir.n_layers
 
         # margin cache: (term_name, key) -> latest TermValue. `key` is a
         # segment id for gap_capacity/loop_inductance, a sorted segment-id
@@ -640,37 +664,65 @@ class OptimizeEngine:
 
     def _init_crossing_state(self) -> None:
         """One-time full-board pass (mirrors :meth:`_init_caches`'s own
-        "the only full board pass" contract): seed ``_layer_v``/
-        ``_layer_e`` from whatever ``seg_layer`` the IR already carries at
-        construction (typically all ``UNSET_LAYER`` for a fresh board, but
-        never assumed to be), then populate the ``crossings`` margin cache
-        for every layer via :meth:`_refresh_crossings`. Runs BEFORE
-        :meth:`_seed_layers` so that method's own default-layer assignment
-        goes through :meth:`_update_crossings` like any other
-        ``seg_layer`` change, rather than needing its own special-cased
-        bulk seed."""
+        "the only full board pass" contract): build ``_segments_by_layer``
+        from whatever ``seg_layer`` the IR already carries at construction
+        (typically all ``UNSET_LAYER`` for a fresh board, but never
+        assumed to be), then a ONE-TIME O(sum of layer_size^2) pairwise
+        pass populates ``_seg_crossing_partners``/``_layer_crossing_count``
+        exactly (same one-time-full-pass budget ``_init_caches``'s own
+        O(candidates^2) coupling double loop already spends) before
+        :meth:`_refresh_crossings_term` seeds the margin cache for every
+        layer. Runs BEFORE :meth:`_seed_layers` so that method's own
+        default-layer assignment goes through
+        :meth:`_recompute_seg_crossings` like any other ``seg_layer``
+        change, rather than needing its own special-cased bulk seed."""
         ir = self.ir
         for s in range(ir.n_segments):
             layer = int(ir.seg_layer[s])
             if layer == UNSET_LAYER:
                 continue
-            self._layer_e[layer] += 1
-            for pin in (int(ir.seg_pin_a[s]), int(ir.seg_pin_b[s])):
-                if self._layer_pin_count[pin, layer] == 0:
-                    self._layer_v[layer] += 1
-                self._layer_pin_count[pin, layer] += 1
+            self._segments_by_layer.setdefault(layer, set()).add(s)
+            self._seg_crossing_partners.setdefault(s, set())
+        for layer, seg_ids in self._segments_by_layer.items():
+            ids = sorted(seg_ids)
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    sa, sb = ids[i], ids[j]
+                    if self._segs_cross(sa, sb):
+                        self._seg_crossing_partners[sa].add(sb)
+                        self._seg_crossing_partners[sb].add(sa)
+                        self._layer_crossing_count[layer] += 1
         for layer in range(ir.n_layers):
-            self._refresh_crossings(layer)
+            self._refresh_crossings_term(layer)
 
-    def _refresh_crossings(self, layer: int) -> None:
+    def _segs_cross(self, sa: int, sb: int) -> bool:
+        """The exact geometric test one candidate pair needs — same-net
+        (star spokes off one hub) never counts regardless of geometry, an
+        unplaced (NaN) endpoint on EITHER segment excludes the pair rather
+        than manufacturing a phantom crossing at the origin, and
+        :func:`~precis.pcb.geom.segments_cross` supplies the rest
+        (shared-endpoint / collinear / touch-only exclusion) — the same
+        primitive :func:`precis.pcb.ir.same_layer_crossing_count` uses for
+        the full-board sweep, so the incremental and from-scratch paths
+        can never silently diverge on what counts as a crossing."""
+        ir = self.ir
+        if int(ir.seg_net[sa]) == int(ir.seg_net[sb]):
+            return False
+        pa, pb = segment_points(ir, sa), segment_points(ir, sb)
+        if pa is None or pb is None:
+            return False
+        return segments_cross(pa[0], pa[1], pb[0], pb[1])
+
+    def _refresh_crossings_term(self, layer: int) -> None:
         """Recompute the ``crossings`` :class:`~precis.pcb.cost.TermValue`
-        for one layer from the cached ``(V, E)`` pair — an O(1) closed-form
-        call to :func:`precis.pcb.ir.euler_bound`, never a graph scan.
-        Mirrors :func:`precis.pcb.cost.crossings_term_for_layer` exactly
-        (same formula, same fraction/justification shape) so the two stay
-        provably identical — see the delta-correctness tests."""
-        bound = euler_bound(self._layer_v[layer], self._layer_e[layer])
-        fraction = bound / self.config.cost.crossings_tolerance
+        for one layer from the cached running total — O(1), never a
+        rescan. Mirrors :func:`precis.pcb.cost.crossings_term_for_layer`'s
+        L3+ (geometric) branch exactly (same formula, same
+        fraction/justification shape) so the two stay provably identical
+        — see the delta-correctness tests."""
+        fraction = (
+            self._layer_crossing_count[layer] / self.config.cost.crossings_tolerance
+        )
         self._margin[("crossings", layer)] = TermValue(
             "crossings",
             Family.MARGIN,
@@ -680,35 +732,55 @@ class OptimizeEngine:
             is_bound=True,
         )
 
-    def _update_crossings(self, seg_id: int, old_layer: int, new_layer: int) -> None:
-        """O(1) incremental maintenance of the per-layer ``(V, E)`` state
-        backing the ``crossings`` margin cache — see the module
-        docstring's locality section. Exact, not approximate:
-        ``_layer_v``/``_layer_e`` are running counts, never re-derived by
-        scanning a layer's segment list, so this matches
-        :func:`precis.pcb.ir.same_layer_crossing_bound`'s coarse
-        (``refine=False``) formula precisely regardless of board size —
-        the delta-correctness tests pin this down against a full
-        :func:`~precis.pcb.cost.evaluate_cost` re-run."""
-        if old_layer == new_layer:
-            return
-        ir = self.ir
-        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-        if old_layer != UNSET_LAYER:
-            self._layer_e[old_layer] -= 1
-            for pin in (a, b):
-                self._layer_pin_count[pin, old_layer] -= 1
-                if self._layer_pin_count[pin, old_layer] == 0:
-                    self._layer_v[old_layer] -= 1
+    def _recompute_seg_crossings(
+        self, seg_id: int, old_layer: int, new_layer: int
+    ) -> None:
+        """The bounded per-move crossing delta (module docstring's
+        crossings-term section): discard ``seg_id``'s cached partnerships
+        (O(old partner count)), then — if it still has a layer — retest it
+        against every OTHER segment CURRENTLY on ``new_layer`` (O(layer
+        size), via ``_segments_by_layer``, never O(board)). Correct
+        regardless of call order or how many times one move touches the
+        same pair (e.g. two segments of the SAME moved instance): each
+        call fully resets its own segment's contribution before rebuilding
+        it fresh from the CURRENT (already-updated) geometry of every
+        counterpart, so whichever segment is processed second simply
+        rediscovers the first's already-current state — see the
+        delta-correctness tests, which pin this down against a full
+        :func:`~precis.pcb.cost.evaluate_cost` re-run after every move,
+        including moves that touch more than one segment at once."""
+        old_partners = self._seg_crossing_partners.get(seg_id, set())
+        touched_layers: set[int] = set()
+        if old_partners:
+            for p in old_partners:
+                self._seg_crossing_partners[p].discard(seg_id)
+            if old_layer != UNSET_LAYER:
+                self._layer_crossing_count[old_layer] -= len(old_partners)
+                touched_layers.add(old_layer)
+        self._seg_crossing_partners[seg_id] = set()
+
+        if old_layer != new_layer:
+            if old_layer != UNSET_LAYER:
+                self._segments_by_layer.get(old_layer, set()).discard(seg_id)
+            if new_layer != UNSET_LAYER:
+                self._segments_by_layer.setdefault(new_layer, set()).add(seg_id)
+
         if new_layer != UNSET_LAYER:
-            for pin in (a, b):
-                if self._layer_pin_count[pin, new_layer] == 0:
-                    self._layer_v[new_layer] += 1
-                self._layer_pin_count[pin, new_layer] += 1
-            self._layer_e[new_layer] += 1
-        for layer in {old_layer, new_layer}:
-            if layer != UNSET_LAYER:
-                self._refresh_crossings(layer)
+            candidates = self._segments_by_layer.get(new_layer, ())
+            new_partners = {
+                other
+                for other in candidates
+                if other != seg_id and self._segs_cross(seg_id, other)
+            }
+            self._seg_crossing_partners[seg_id] = new_partners
+            for p in new_partners:
+                self._seg_crossing_partners.setdefault(p, set()).add(seg_id)
+            if new_partners:
+                self._layer_crossing_count[new_layer] += len(new_partners)
+                touched_layers.add(new_layer)
+
+        for layer in touched_layers:
+            self._refresh_crossings_term(layer)
 
     def _seed_layers(self) -> None:
         """One-time seed (mirrors :func:`seed_placement`'s "seed then
@@ -728,7 +800,7 @@ class OptimizeEngine:
         for s in range(ir.n_segments):
             if int(ir.seg_layer[s]) == UNSET_LAYER:
                 ir.set_layer(s, default_layer)
-                self._update_crossings(s, UNSET_LAYER, default_layer)
+                self._recompute_seg_crossings(s, UNSET_LAYER, default_layer)
                 seeded.append(s)
         self._refresh_layer_count()
         # This IS the engine consuming the dirty flags `set_layer` raised
@@ -838,6 +910,14 @@ class OptimizeEngine:
                 # that set can never newly evaluate to None here.
                 assert lt is not None
                 self._margin[("loop_inductance", s)] = lt
+            # `crossings` depends only on `s`'s OWN two endpoints (component-
+            # centroid granularity, same as loop_inductance above) — never
+            # on another instance's proximity like gap_capacity's `reassigned`
+            # set — so only `direct` segments ever need a recount, and their
+            # layer never changes from a placement move (only LAYER_ASSIGN
+            # touches `seg_layer`).
+            layer = int(ir.seg_layer[s])
+            self._recompute_seg_crossings(s, layer, layer)
 
         touched_candidates = direct & self._coupling_candidate_set
         for sa in touched_candidates:
@@ -946,7 +1026,7 @@ class OptimizeEngine:
         old_layer = int(self.ir.seg_layer[seg])
         layer = move.new_int[0] if forward else move.old_int[0]
         self.ir.set_layer(seg, layer)
-        self._update_crossings(seg, old_layer, layer)
+        self._recompute_seg_crossings(seg, old_layer, layer)
         self._rescan_segments((seg,))
         self._refresh_layer_count()
 

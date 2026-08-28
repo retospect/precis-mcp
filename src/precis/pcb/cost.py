@@ -19,13 +19,30 @@ the single easiest way to make an optimizer thrash):
   (quadratic) toward a barrier. This is the *only* thing ``schedule``
   controls.
 
-**Admissibility.** Every estimator must be optimistic: it may understate
-cost or overstate feasibility, never the reverse (A* admissibility). The
-payoff: a state that looks bad at a coarse level really is bad and can be
-pruned without discarding a good solution. Tested as a property in
-``tests/test_pcb_cost.py`` — generate random IR states, evaluate the same
-object at a coarse and a fine level, assert coarse ``total`` never
-exceeds fine ``total``.
+**Admissibility is two-sided (revised 2026-08-28).** Every estimator must
+be optimistic in its OWN declared direction — never the reverse — but
+"optimistic" means different things for different terms, so each
+:class:`TermSpec` now carries an explicit :class:`BoundDirection`:
+
+- **LOWER** (the original rule, and every term registered before
+  ``crossings``): the estimate may understate cost or overstate
+  feasibility, never the reverse (A* admissibility). Payoff: a state that
+  looks bad at a coarse level really is bad and can be pruned without
+  discarding a good solution — coarse ``raw`` <= fine ``raw``.
+- **UPPER** (``crossings`` only, see that term's docstring): the estimate
+  may overstate cost, never understate it — coarse ``raw`` >= fine
+  ``raw``. Payoff mirrors LOWER exactly: a state that looks GOOD (a small
+  or zero upper bound) really is good, so driving it to zero is a real,
+  trustworthy guarantee, which is exactly what a LOWER bound cannot give
+  you (a LOWER bound of zero says nothing about the truth).
+
+Both directions are sound; what matters is that each term's direction is
+DECLARED and TESTED, not that every term points the same way. Tested as a
+property in ``tests/test_pcb_cost.py`` — generate random IR states,
+evaluate every registered term at a coarse and a fine level, and assert
+EACH term's own declared direction holds, per-term, not one global
+``coarse.total <= fine.total`` inequality (which stopped being true the
+moment ``crossings`` needed the opposite direction).
 
 **Undefined != zero.** A term with nothing to measure yet at this level
 (gap capacity before L4) must still return a nonzero, *admissible* bound —
@@ -81,7 +98,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from precis.pcb import objectives as obj
-from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, same_layer_crossing_bound
+from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, same_layer_crossing_count
 
 
 class Family(Enum):
@@ -90,6 +107,19 @@ class Family(Enum):
 
     MONEY = "money"  # normalized to USD; SUM
     MARGIN = "margin"  # normalized to fraction-of-budget; MAX / soft-max
+
+
+class BoundDirection(Enum):
+    """Which side of the truth a term's estimate is allowed to err on —
+    see the module docstring's "admissibility is two-sided" section. Every
+    term registered before ``crossings`` is ``LOWER``; ``crossings`` is
+    the first (and, as of this writing, only) ``UPPER`` term. A term
+    declaring the wrong direction is exactly the failure mode the
+    per-term admissibility property test in ``tests/test_pcb_cost.py``
+    exists to catch."""
+
+    LOWER = "lower"  # coarse raw <= fine raw (may understate, never overstate)
+    UPPER = "upper"  # coarse raw >= fine raw (may overstate, never understate)
 
 
 class Criticality(Enum):
@@ -215,6 +245,7 @@ class TermSpec:
     criticality: Criticality
     justification: str
     estimate: TermFn
+    direction: BoundDirection = BoundDirection.LOWER
 
     def __post_init__(self) -> None:
         if not self.justification or not self.justification.strip():
@@ -730,22 +761,41 @@ def crossings_term_for_layer(
     recompute exactly this term for the (at most two) layers a
     ``LAYER_ASSIGN`` move touches, never the whole board.
 
-    **Backed by** :func:`precis.pcb.ir.same_layer_crossing_bound` — an
-    ADMISSIBLE LOWER BOUND (Euler edge-count), never an exact crossing
-    count (an exact, embedding-aware count needs realize.py's face
-    tracing, which doesn't exist yet — see that function's own docstring).
-    Deliberately the coarse (``refine=False``) whole-layer bound at every
-    ``level`` (this term is level-invariant, same shape as
-    ``thermal_rise``): the finer per-connected-component
-    (``refine=True``) variant needs dynamic per-layer connected-component
-    tracking to stay incrementally maintainable under
-    :mod:`precis.pcb.optimize`'s O(1)-per-move locality budget, so
-    sharpening this further is future work, not this slice's — the same
-    honest deferral :func:`~precis.pcb.ir.same_layer_crossing_bound`'s own
-    docstring already makes about a genuinely exact count. Always
-    ``is_bound=True``: even the finer variant is still just a bound, so
-    there is no "becomes a real measurement at some level" branch the way
-    ``gap_capacity`` has.
+    **Backed by** :func:`precis.pcb.ir.same_layer_crossing_count` (found
+    on contact 2026-08-28, replacing the Euler-bound backing this term
+    shipped with — see :func:`precis.pcb.ir.same_layer_crossing_bound`'s
+    docstring for the forest proof of why that bound is provably always
+    zero on a real, star-decomposed board and therefore cannot be a cost
+    signal at all): a sweep-line count of ACTUAL straight-line segment
+    intersections at L3, ``O(n log n + k)``.
+
+    **``BoundDirection.UPPER`` — the direction flip this fix required.**
+    The geometric count is an upper bound on eventually-REALIZED
+    crossings (realize.py's router can sometimes route around a
+    straight-line crossing), never a lower one — the opposite of every
+    other registered term. Fidelity increases as ``level`` rises the same
+    way it does elsewhere, but for an UPPER-bound term "coarser" must
+    mean "more pessimistic" (never understate), the mirror image of every
+    LOWER-bound term's "undefined != zero" rule:
+    - ``level < Level.L1`` (no layer assignment decided yet): the
+      worst-case placeholder is "every segment on the board could, in the
+      end, land on this one layer" — ``C(n_segments, 2)`` same-layer
+      pairs, all of which *might* cross. Loose, but always true regardless
+      of how assignment eventually resolves.
+    - ``Level.L1 <= level < Level.L3`` (layer known, no positions yet):
+      tighter — ``C(m, 2)`` where ``m`` is the segment count ACTUALLY
+      assigned to this layer, since every same-layer pair might cross in
+      the worst case (this always dominates the true count: it doesn't
+      even exclude same-net pairs, which can never cross, making it
+      looser still but simpler and still valid).
+    - ``level >= Level.L3``: the real geometric sweep-line count.
+    Each tier is provably >= the next (``C(n_segments,2) >= C(m,2) >=``
+    the true geometric count, since the geometric count only counts a
+    SUBSET of same-layer pairs), so the per-term admissibility property
+    holds by construction. ``is_bound=True`` at every level, including
+    L3+: even the exact geometric count is still only a bound on the
+    REALIZED crossing count, never a claim to already BE it (contrast
+    ``gap_capacity``, which does become a genuine measurement at L4).
 
     **Margin family, budget ZERO** (backlog, verbatim: a same-layer
     crossing is a manufacturing/topology violation — it cannot be
@@ -753,9 +803,9 @@ def crossings_term_for_layer(
     money the way real per-net gap headroom is). So there is no "how much
     of a real physical budget is this" question; instead
     ``config.crossings_tolerance`` (a small FIXED constant) sets the raw
-    Euler-bound-crossing-count scale at which the fraction reaches "at
-    budget" (1.0), and ALL of the schedule-driven softening (early,
-    exploratory) / hardening (late, barrier) behaviour comes from
+    crossing-count scale at which the fraction reaches "at budget" (1.0),
+    and ALL of the schedule-driven softening (early, exploratory) /
+    hardening (late, barrier) behaviour comes from
     :func:`hardened_penalty`'s own convexity dial, reused exactly as
     every other margin term reuses it — not a second hardening mechanism.
     The backlog's "tolerance shrinks over the schedule" describes exactly
@@ -766,9 +816,24 @@ def crossings_term_for_layer(
     what makes early passes able to walk through a crossing state and
     late passes unable to — not a literally shrinking denominator, which
     would duplicate the mechanism :mod:`precis.pcb.cost` already owns.
+
+    **Known, unchanged gap: plane-served nets are NOT excluded here.**
+    The architecture section's "signal-net crossings (plane-served nets
+    excluded)" describes the eventual objective; this term (both before
+    and after this fix) does not yet read ``net_plane_layer`` — carried
+    over unchanged rather than folded into this fix's scope, exactly the
+    same honest-deferral shape as ``SIDE_FLIP``'s known inertness in
+    :mod:`precis.pcb.optimize`.
     """
-    bound = same_layer_crossing_bound(ir, layer, refine=False)
-    fraction = bound / config.crossings_tolerance
+    if level >= Level.L3:
+        count = same_layer_crossing_count(ir, layer)
+    else:
+        # Pre-L3 UPPER-bound placeholder: no positions exist yet, so the
+        # safe (never-understating) count is "every same-layer pair might
+        # cross" -- see the docstring's per-tier breakdown.
+        m = ir.n_segments if level < Level.L1 else int((ir.seg_layer == layer).sum())
+        count = m * (m - 1) // 2
+    fraction = count / config.crossings_tolerance
     return TermValue(
         "crossings",
         Family.MARGIN,
@@ -782,15 +847,10 @@ def crossings_term_for_layer(
 
 
 def _crossings(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
-    """Every layer's ``crossings`` value. A layer nobody has been assigned
-    to yet (including every layer before L1, when ``seg_layer`` is
-    entirely ``UNSET_LAYER``) reads 0 through the exact same formula —
-    not a swallowed-signal special case: which layer (if any) a segment
-    will eventually land on is a placement/assignment choice that hasn't
-    been made yet, the same genuine pre-decision indeterminacy
-    ``coupling``'s pre-L3 ``coupling_bound_k=0.0`` documents (module
-    docstring's "NOT the undefined==zero trap" distinction) — it is not
-    hiding a cost that is definitely present."""
+    """Every layer's ``crossings`` value — see
+    :func:`crossings_term_for_layer` for the full per-level formula
+    (an UPPER-bound placeholder before L3 positions exist, the real
+    geometric sweep-line count once they do)."""
     return [
         crossings_term_for_layer(ir, layer, level, config)
         for layer in range(ir.n_layers)
@@ -804,6 +864,7 @@ TERMS: list[TermSpec] = [
         Criticality.FUNCTIONAL,
         "fab price scales with panel area",
         _board_area,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "layer_count",
@@ -811,6 +872,7 @@ TERMS: list[TermSpec] = [
         Criticality.FUNCTIONAL,
         "each copper layer is a discrete lamination/drill fab step",
         _layer_count,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "via_count",
@@ -818,6 +880,7 @@ TERMS: list[TermSpec] = [
         Criticality.MARGINAL,
         "each via is a separately drilled/plated hole",
         _via_count,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "extended_part_fees",
@@ -825,6 +888,7 @@ TERMS: list[TermSpec] = [
         Criticality.COSMETIC,
         "JLC's flat per-line surcharge for Extended-library parts",
         _extended_part_fees,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "gap_capacity",
@@ -832,6 +896,7 @@ TERMS: list[TermSpec] = [
         Criticality.CATASTROPHIC,
         "a trace physically cannot exceed the width a gap allows — a manufacturing impossibility, not a preference",
         _gap_capacity,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "loop_inductance",
@@ -839,6 +904,7 @@ TERMS: list[TermSpec] = [
         Criticality.FUNCTIONAL,
         "return-path loop inductance grows with pin-to-return separation and degrades decoupling/EMI",
         _loop_inductance,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "coupling",
@@ -846,6 +912,7 @@ TERMS: list[TermSpec] = [
         Criticality.FUNCTIONAL,
         "aggressor edge rate x victim susceptibility x proximity is the physical coupled-noise mechanism",
         _coupling,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "thermal_rise",
@@ -853,6 +920,7 @@ TERMS: list[TermSpec] = [
         Criticality.MARGINAL,
         "current-carrying traces heat per IPC-2221; exceeding the class budget risks yield/reliability",
         _thermal_rise,
+        direction=BoundDirection.LOWER,
     ),
     TermSpec(
         "crossings",
@@ -861,6 +929,7 @@ TERMS: list[TermSpec] = [
         "a same-layer crossing cannot be realized as sketched without spending a via or a "
         "reroute -- the exact thing the layered ratsnest exists to make legible and resolvable",
         _crossings,
+        direction=BoundDirection.UPPER,
     ),
 ]
 

@@ -248,79 +248,101 @@ def test_layer_assign_and_plane_promote_refresh_layer_count():
     assert after >= before  # a plane layer entering "used" never lowers the count
 
 
-# ── crossings term (gr, 2026-08-28): LAYER_ASSIGN's real cost effect ────
-def _k5_ir_with_positions():
-    """K5 (Euler-bound-nonzero) fixture — deliberately reusing pin "1" per
-    instance across every net (test_pcb_cost.py's own construction,
-    mirrored here) so the layer graph is genuinely non-planar, unlike a
-    realistic star-decomposed netlist (test_pcb_cost.py's
-    ``test_crossings_term_is_zero_on_a_realistic_star_decomposed_netlist``
-    documents why that distinction matters — LAYER_ASSIGN only has a real
-    effect on a fixture shaped like this one today).
-
-    Positions are spread far apart (1000 mm pitch) rather than through
-    ``seed_placement``'s tight clustering, so ``gap_capacity`` stays a
-    negligible fraction of its budget and doesn't compete with
-    ``crossings`` for the margin ``max`` — the point of these tests is
-    ``crossings`` specifically, not an accidental fight between terms."""
-    n = 5
-    instances = [{"refdes": f"U{i}"} for i in range(n)]
-    nets = [
-        {
-            "name": f"E{i}_{j}",
-            "net_class": "signal",
-            "domain": "electrical",
-            "members": [
-                {"refdes": f"U{i}", "pin": "1"},
-                {"refdes": f"U{j}", "pin": "1"},
-            ],
-        }
-        for i in range(n)
-        for j in range(i + 1, n)
-    ]
-    ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
-    for i in range(n):
-        ir.inst_x[i] = float(i * 1000.0)
-        ir.inst_y[i] = 0.0
-    return ir
+# ── crossings term (gr, 2026-08-28): GEOMETRIC backing, LAYER_ASSIGN's
+# real cost effect ────────────────────────────────────────────────────
+def _crossing_ir_with_positions():
+    """A GEOMETRIC fixture — replaces the old K5 pin-reuse construction,
+    which faked non-planarity for the now-retired Euler-bound backing
+    (see :func:`precis.pcb.ir.same_layer_crossing_bound`'s docstring for
+    the forest proof of why that trick was ever necessary, and why it
+    can't back a real cost signal). Net A (U0-U1) and net B (U2-U3) are
+    ORDINARY 2-pin nets forming an X — the crossing comes from real 2D
+    geometry, not from an artificial multi-edge-per-vertex graph. N2
+    (hub U4, three spokes) adds a genuine star alongside them, the same
+    shape ``from_graph`` produces for any real multi-member net, so this
+    fixture is simultaneously realistic AND guaranteed non-zero — exactly
+    the combination the pre-fix bug (`same_layer_crossing_bound` was
+    always zero on real, star-decomposed nets) could never produce."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 40.0, "y": 40.0},
+            {"refdes": "U2", "x": 0.0, "y": 40.0},
+            {"refdes": "U3", "x": 40.0, "y": 0.0},
+            {"refdes": "U4", "x": 20.0, "y": 60.0},
+            {"refdes": "U5", "x": 10.0, "y": 80.0},
+            {"refdes": "U6", "x": 30.0, "y": 80.0},
+            {"refdes": "U7", "x": 20.0, "y": 100.0},
+        ],
+        "nets": [
+            {
+                "name": "A",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            },
+            {
+                "name": "B",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U2", "pin": "1"}, {"refdes": "U3", "pin": "1"}],
+            },
+            {
+                "name": "N2",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U4", "pin": "1"},
+                    {"refdes": "U5", "pin": "1"},
+                    {"refdes": "U6", "pin": "1"},
+                    {"refdes": "U7", "pin": "1"},
+                ],
+            },
+        ],
+    }
+    return from_graph(graph, stackup=DEFAULT_STACKUP)
 
 
 def test_layer_assign_is_no_longer_cost_neutral():
     """The whole point of registering ``crossings``: unlike before, a
-    LAYER_ASSIGN move can produce a real, non-zero ``total()`` delta."""
-    ir = _k5_ir_with_positions()
+    LAYER_ASSIGN move that RESOLVES a real geometric crossing produces a
+    real, non-zero, cost-REDUCING ``total()`` delta. Targets net A's
+    segment (id 0) explicitly — the one actually party to the A x B
+    crossing — rather than a random segment, since (unlike the retired
+    Euler-bound backing) moving an UNRELATED segment (e.g. one of N2's
+    non-crossing star spokes) is legitimately still cost-neutral for
+    ``crossings`` under the geometric backing."""
+    ir = _crossing_ir_with_positions()
     engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
     crossings_before = engine._margin[("crossings", 0)].raw
-    assert crossings_before > 0.0  # K5, all on layer 0
+    assert crossings_before > 0.0  # A x B geometric crossing, both start on layer 0
     before = engine.total()
 
-    rng = random.Random(2)
-    move = None
-    for _ in range(50):
-        candidate = MOVE_GENERATORS[MoveKind.LAYER_ASSIGN](engine, rng, 5.0)
-        if candidate is not None:
-            move = candidate
-            break
-    assert move is not None
-
+    other_layer = next(layer for layer in engine._signal_layers if layer != 0)
+    move = Move(
+        MoveKind.LAYER_ASSIGN, segments=(0,), old_int=(0,), new_int=(other_layer,)
+    )
     engine.apply_move(move)
     after = engine.total()
     assert after != before
-    assert after < before  # moving one K5 edge off layer 0 resolves the crossing
+    assert after < before  # moving net A's segment off layer 0 resolves the crossing
     assert engine._margin[("crossings", 0)].raw < crossings_before
+    assert engine._margin[("crossings", 0)].raw == pytest.approx(0.0)
 
 
 def test_side_flip_remains_cost_neutral_even_with_crossings_registered():
     """**Reported, not silently worked around**: unlike LAYER_ASSIGN,
-    SIDE_FLIP genuinely cannot become cost-sensitive under an admissible
-    estimator at this slice's fidelity. ``crossings`` is backed by
-    :func:`precis.pcb.ir.same_layer_crossing_bound`, an embedding-agnostic
-    Euler bound over WHICH LAYER a segment sits on (that function's own
-    docstring: "still embedding-agnostic") — it structurally cannot read
-    ``seg_side``. See the module docstring's SIDE_FLIP note for the full
-    reasoning; this test pins the resulting (still correct) behaviour."""
-    ir = _k5_ir_with_positions()
+    SIDE_FLIP genuinely cannot become cost-sensitive at this engine's
+    fidelity. ``crossings`` is backed by
+    :func:`precis.pcb.ir.same_layer_crossing_count`, which reads segment
+    endpoints at INSTANCE-centroid granularity — a side flip never
+    perturbs an instance's own (x, y), so a straight-line count is
+    structurally blind to it (the module docstring's SIDE_FLIP note has
+    the full reasoning). This test pins the resulting (still correct)
+    behaviour on the SAME geometrically-crossing fixture."""
+    ir = _crossing_ir_with_positions()
     engine = OptimizeEngine(ir, OptimizeConfig(seed=5))
+    assert engine._margin[("crossings", 0)].raw > 0.0  # a real crossing is present
     before = engine.total()
     rng = random.Random(6)
     move = MOVE_GENERATORS[MoveKind.SIDE_FLIP](engine, rng, 5.0)
@@ -332,12 +354,20 @@ def test_side_flip_remains_cost_neutral_even_with_crossings_registered():
 def test_delta_correctness_for_crossings_over_random_moves():
     """Delta correctness — incremental delta equals full re-evaluation —
     specifically exercised on a fixture where ``crossings`` is actually
-    non-zero at some point during the run (``_seeded_ir``'s star-
-    decomposed netlist, used by the module's general delta-correctness
-    test below, never makes ``crossings`` non-zero at all — see
-    test_pcb_cost.py's documented finding — so that test alone would
-    never catch a ``crossings``-specific incremental bug)."""
-    ir = _k5_ir_with_positions()
+    non-zero at some point during the run (``_seeded_ir``'s netlist, used
+    by the module's general delta-correctness test below, is not
+    GUARANTEED to ever produce a real geometric crossing under
+    ``seed_placement``'s connectivity-clustering seed — clustering
+    deliberately keeps connected instances close together, which tends to
+    AVOID crossings — so that test alone would never reliably catch a
+    ``crossings``-specific incremental bug). Covers LAYER_ASSIGN and
+    TRANSLATE explicitly — the two move kinds that can actually change
+    ``crossings``' value (LAYER_ASSIGN by moving a segment between
+    layers, TRANSLATE by moving a segment's own geometry) — alongside
+    SIDE_FLIP/ROTATE (provably cost-neutral for this term, exercised for
+    contrast). This is the test that caught silent-fatal bugs in slices
+    3, 6 and 7."""
+    ir = _crossing_ir_with_positions()
     cost_config = CostConfig()
     engine = OptimizeEngine(ir, OptimizeConfig(seed=3, cost=cost_config))
     move_rng = random.Random(4)

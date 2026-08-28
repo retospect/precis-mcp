@@ -19,6 +19,7 @@ from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
     TERMS,
+    BoundDirection,
     CostConfig,
     Criticality,
     Family,
@@ -35,7 +36,7 @@ from precis.pcb.ir import (
     Level,
     compute_gap_capacity,
     from_graph,
-    same_layer_crossing_bound,
+    same_layer_crossing_count,
 )
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
@@ -226,81 +227,129 @@ def _random_state(rng: random.Random):
     return ir
 
 
+def _term_scalar(terms: list[TermValue], family: Family) -> float:
+    """Collapse one term's per-region :class:`TermValue`\\ s to the SAME
+    scalar :func:`evaluate_cost` itself uses to combine them into
+    ``total`` — money terms SUM, margin terms take the (raw) PEAK — so
+    the per-term admissibility check below compares apples to apples with
+    how the term actually enters the aggregate cost, not an aggregation
+    invented just for this test."""
+    if not terms:
+        return 0.0
+    if family is Family.MONEY:
+        return sum(t.raw for t in terms)
+    return max(t.raw for t in terms)
+
+
 @pytest.mark.parametrize("trial", range(200))
-def test_admissibility_coarse_never_exceeds_fine(trial):
-    """The estimator-hierarchy regression check: generate a random state,
-    evaluate the SAME object at a coarse (L1) and a fine (L4) level, and
-    assert the coarse total never overstates the fine one. Run over many
-    generated cases — this is the only thing that catches an estimator
-    quietly losing its admissibility."""
+def test_admissibility_direction_per_term(trial):
+    """The estimator-hierarchy regression check, REVISED 2026-08-28 to
+    assert each term's OWN declared :class:`BoundDirection` rather than
+    one global ``coarse.total <= fine.total`` inequality. That global
+    inequality stopped being sound the moment ``crossings`` became a
+    genuine UPPER bound (the geometric sweep-line count backing it can
+    only ever overstate, never understate, the eventual realized crossing
+    count — see :func:`precis.pcb.ir.same_layer_crossing_count`'s
+    docstring) — a coarse UPPER-bound placeholder is *supposed* to sit
+    ABOVE the fine value, the opposite of every LOWER-bound term, so
+    summing everything into one number and demanding it only shrinks
+    would have silently broken the very property this test exists to
+    protect. Run over many generated cases, one assertion PER REGISTERED
+    TERM — this is what actually catches a term quietly declaring, or
+    losing, the wrong direction, not a relaxed global check that happens
+    to still pass."""
     rng = random.Random(trial)
     ir = _random_state(rng)
     config = CostConfig(
         assumed_max_gap_mm=500.0
     )  # generous: keeps the coarse gap bound valid regardless of jitter
 
-    coarse = evaluate_cost(ir, Level.L1, config)
-    fine = evaluate_cost(ir, Level.L4, config)
+    for spec in TERMS:
+        coarse = _term_scalar(spec.estimate(ir, Level.L1, config), spec.family)
+        fine = _term_scalar(spec.estimate(ir, Level.L4, config), spec.family)
+        if spec.direction is BoundDirection.LOWER:
+            assert coarse <= fine + 1e-9, (
+                f"trial {trial}: {spec.name} declares LOWER but coarse={coarse} "
+                f"> fine={fine}"
+            )
+        else:
+            assert coarse >= fine - 1e-9, (
+                f"trial {trial}: {spec.name} declares UPPER but coarse={coarse} "
+                f"< fine={fine}"
+            )
 
-    assert coarse.total <= fine.total + 1e-9, (
-        f"trial {trial}: coarse={coarse.total} > fine={fine.total}; "
-        f"coarse terms={coarse.terms}; fine terms={fine.terms}"
-    )
 
-
-def test_admissibility_holds_across_a_hardened_schedule_too():
+def test_admissibility_direction_holds_across_a_hardened_schedule_too():
+    """The hardening schedule reshapes :func:`hardened_penalty`, never the
+    raw ``estimate()`` values this direction property is actually about
+    (no term's ``estimate`` reads ``config.schedule``) — so this pins that
+    down explicitly across a spread of schedule values, the same per-term
+    check as above rather than the retired global ``total`` comparison."""
     rng = random.Random(12345)
     ir = _random_state(rng)
     for schedule in (0.0, 0.3, 0.7, 1.0):
         config = CostConfig(assumed_max_gap_mm=500.0, schedule=schedule)
-        coarse = evaluate_cost(ir, Level.L1, config)
-        fine = evaluate_cost(ir, Level.L4, config)
-        assert coarse.total <= fine.total + 1e-9
+        for spec in TERMS:
+            coarse = _term_scalar(spec.estimate(ir, Level.L1, config), spec.family)
+            fine = _term_scalar(spec.estimate(ir, Level.L4, config), spec.family)
+            if spec.direction is BoundDirection.LOWER:
+                assert coarse <= fine + 1e-9
+            else:
+                assert coarse >= fine - 1e-9
 
 
-# ── crossings: registered margin term backed by ir.same_layer_crossing_bound
-def _complete_graph(n: int, layer: int = 0):
-    """K_n, one net per pair, deliberately reusing pin "1" for every
-    membership of a given instance -- the SAME construction
-    tests/test_pcb_ir.py's own K5 fixture uses (mirrored here rather than
-    imported across test modules) so every instance is exactly one vertex
-    in the layer graph. This is NOT how a real netlist looks (a real
-    physical pin belongs to exactly one net) -- see
-    test_crossings_term_is_zero_on_a_realistic_star_decomposed_netlist
-    below for why that distinction matters."""
-    instances = [{"refdes": f"U{i}"} for i in range(n)]
-    nets = [
-        {
-            "name": f"E{i}_{j}",
-            "net_class": "signal",
-            "domain": "electrical",
-            "members": [
-                {"refdes": f"U{i}", "pin": "1"},
-                {"refdes": f"U{j}", "pin": "1"},
-            ],
-        }
-        for i in range(n)
-        for j in range(i + 1, n)
-    ]
-    ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
-    ir.seg_layer[:] = layer
-    return ir
+# ── crossings: registered margin term, GEOMETRICALLY backed since 2026-08-28
+# by ir.same_layer_crossing_count (see that function's docstring, and
+# ir.same_layer_crossing_bound's, for the forest proof of why the
+# original Euler-bound backing was provably always zero on a real board).
+def _crossing_pair_graph():
+    """Two 2-member nets whose straight-line airwires visibly cross -- the
+    two diagonals of a square (U0-U1 and U2-U3). Neither net shares an
+    instance or a pin with the other, so `from_graph`'s star decomposition
+    (trivial for a 2-member net) yields exactly one segment per net --
+    the SAME fixture shape tests/test_pcb_ir.py uses for
+    `same_layer_crossing_count` (mirrored here rather than imported
+    across test modules)."""
+    return {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 10.0},
+            {"refdes": "U2", "x": 0.0, "y": 10.0},
+            {"refdes": "U3", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "A",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            },
+            {
+                "name": "B",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U2", "pin": "1"}, {"refdes": "U3", "pin": "1"}],
+            },
+        ],
+    }
 
 
 def test_crossings_term_registered_in_margin_family_with_justification():
     (spec,) = [t for t in TERMS if t.name == "crossings"]
     assert spec.family is Family.MARGIN
     assert spec.justification and spec.justification.strip()
+    assert spec.direction is BoundDirection.UPPER
 
 
-def test_crossings_term_matches_ir_bound_and_is_always_a_bound():
-    ir = _complete_graph(5)  # K5: 5 vertices, 10 edges -> Euler bound = 1
+def test_crossings_term_matches_ir_geometric_count_and_is_always_a_bound():
+    ir = from_graph(_crossing_pair_graph(), stackup=DEFAULT_STACKUP)
+    ir.seg_layer[:] = 0
     config = CostConfig()
     t = crossings_term_for_layer(ir, 0, Level.L4, config)
     assert t.family is Family.MARGIN
     assert t.is_bound
     assert t.raw == pytest.approx(
-        same_layer_crossing_bound(ir, 0, refine=False) / config.crossings_tolerance
+        same_layer_crossing_count(ir, 0) / config.crossings_tolerance
     )
     assert t.raw > 0.0
 
@@ -310,82 +359,111 @@ def test_crossings_term_worse_with_a_crossing_than_with_it_resolved():
     worse than the same fixture with one moved to another layer -- and the
     term's value decreases when a LAYER_ASSIGN-shaped move (`set_layer`)
     resolves it."""
-    ir = _complete_graph(5)
+    ir = from_graph(_crossing_pair_graph(), stackup=DEFAULT_STACKUP)
+    ir.seg_layer[:] = 0
     config = CostConfig()
     crossing = crossings_term_for_layer(ir, 0, Level.L4, config)
     assert crossing.raw > 0.0
 
-    ir.set_layer(0, 1)  # move one K5 edge off layer 0
+    ir.set_layer(0, 1)  # move net A's segment off layer 0
     resolved = crossings_term_for_layer(ir, 0, Level.L4, config)
     assert resolved.raw < crossing.raw
     assert resolved.raw == pytest.approx(0.0)
 
 
-def test_crossings_term_is_level_invariant_admissibility_holds_trivially():
-    """`crossings` is deliberately level-invariant (module docstring: the
-    finer per-connected-component variant needs dynamic connectivity
-    tracking this slice's O(1)-per-move locality budget can't afford), so
-    coarse (L1) and fine (L4) values are exactly equal here -- admissible
-    (coarse <= fine) by equality, extending
-    test_admissibility_coarse_never_exceeds_fine's own property to a
-    fixture where the term is actually non-zero rather than trivially so."""
-    ir = _complete_graph(5)
-    config = CostConfig()
-    coarse = crossings_term_for_layer(ir, 0, Level.L1, config)
-    fine = crossings_term_for_layer(ir, 0, Level.L4, config)
-    assert coarse.raw == pytest.approx(fine.raw)
-    assert coarse.raw > 0.0
-
-
-def test_crossings_term_is_zero_on_a_realistic_star_decomposed_netlist():
-    """**Found on contact (2026-08-28), reported rather than silently
-    worked around.** `same_layer_crossing_bound` is the coarse, whole-
-    layer Euler edge-count bound (E - (3V-6)). `from_graph`'s star
-    decomposition, combined with the "one physical pin belongs to exactly
-    one net" invariant every real netlist has, means a layer's segment
-    graph is ALWAYS a vertex-disjoint forest of per-net stars (no two
-    different nets' segments ever share a pin/vertex) -- and a forest
-    always satisfies E <= V-1 <= 3V-6 for V>=3, so this bound is
-    PROVABLY zero for any board `from_graph` produces the normal way,
-    not merely "usually small". `_complete_graph` above only gets a
-    non-zero bound by deliberately reusing one pin id per instance across
-    many "nets" (an artificial construction, not a real netlist shape).
-    Consequence: on a real board, `crossings` is currently a real,
-    correct, admissible term that will not yet move LAYER_ASSIGN's cost
-    -- a genuine gap between this term's admissibility (satisfied) and
-    its usefulness on this system's actual segment topology (not yet),
-    worth a design follow-up (a denser segment decomposition, or an
-    estimator that isn't pure per-layer V/E Euler counting) rather than
-    silently pretending the mechanism helps today."""
-    n = 14
-    instances = [{"refdes": f"U{i}"} for i in range(n)]
-    nets = []
-    for i in range(n - 1):
-        nets.append(
-            {
-                "name": f"N{i}",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": f"U{i}", "pin": f"n{i}a"},
-                    {"refdes": f"U{i + 1}", "pin": f"n{i}b"},
-                ],
-            }
-        )
-    for i in range(max(1, n // 3)):
-        nets.append(
-            {
-                "name": f"X{i}",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": f"U{idx}", "pin": f"x{i}_{j}"}
-                    for j, idx in enumerate((0, i + 1, (i + 2) % n))
-                ],
-            }
-        )
-    ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
+def test_crossings_term_upper_bound_shrinks_toward_the_geometric_count_by_level():
+    """`crossings` is an UPPER bound (BoundDirection.UPPER), so "coarser"
+    means "more pessimistic" here, the mirror image of every LOWER-bound
+    term: the pre-L1 placeholder (every segment on the board could land on
+    this layer) is loosest, the pre-L3 placeholder (real per-layer segment
+    count, no positions yet -- every same-layer PAIR might cross) is
+    tighter, and the L3+ geometric sweep-line count is tightest/exact.
+    Each tier must be >= the next -- the per-term half of what
+    test_admissibility_direction_per_term checks generically, pinned down
+    concretely and STRICTLY (not merely non-decreasing) on a fixture with
+    a genuine crossing (A x B), a non-crossing same-layer segment (C, so
+    the L1 pair-count bound overstates the true L4 count), and a segment
+    on a DIFFERENT layer (D, so the L0 whole-board bound overstates the
+    true per-layer L1 count)."""
+    graph = _crossing_pair_graph()
+    graph["instances"] += [
+        {"refdes": "U4", "x": 100.0, "y": 100.0},
+        {"refdes": "U5", "x": 110.0, "y": 100.0},
+        {"refdes": "U6", "x": 200.0, "y": 200.0},
+        {"refdes": "U7", "x": 210.0, "y": 200.0},
+    ]
+    graph["nets"] += [
+        {
+            "name": "C",
+            "net_class": "signal",
+            "domain": "electrical",
+            "members": [{"refdes": "U4", "pin": "1"}, {"refdes": "U5", "pin": "1"}],
+        },
+        {
+            "name": "D",
+            "net_class": "signal",
+            "domain": "electrical",
+            "members": [{"refdes": "U6", "pin": "1"}, {"refdes": "U7", "pin": "1"}],
+        },
+    ]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.seg_layer[:] = 0
-    assert ir.n_segments > n  # plenty of segments crammed onto one layer
-    assert same_layer_crossing_bound(ir, 0, refine=False) == 0
-    assert crossings_term_for_layer(ir, 0, Level.L4, CostConfig()).raw == 0.0
+    ir.set_layer(3, 1)  # net D's segment (id 3) moves to layer 1
+    config = CostConfig()
+
+    l0 = crossings_term_for_layer(ir, 0, Level.L0, config)
+    l1 = crossings_term_for_layer(ir, 0, Level.L1, config)
+    l4 = crossings_term_for_layer(ir, 0, Level.L4, config)
+    assert (
+        l0.raw > l1.raw > l4.raw
+    )  # 4 segs -> C(4,2)=6; 3 on layer0 -> C(3,2)=3; 1 true crossing
+    assert l4.raw == pytest.approx(1.0 / config.crossings_tolerance)
+    assert all(t.is_bound for t in (l0, l1, l4))  # never claims to BE ground truth
+
+
+def test_crossings_term_is_nonzero_on_a_realistic_star_decomposed_netlist_with_crossings():
+    """**The opposite of the pre-fix regression test this replaces.**
+    Before 2026-08-28, `same_layer_crossing_bound` was PROVABLY zero on
+    any star-decomposed board (a forest, per that function's docstring),
+    so a star's spoke could visibly cross another net's segment and the
+    old term would still read exactly 0 -- the defect this fix exists
+    for. This fixture is exactly that: net A is a real star (hub U0, two
+    spokes), net B is an ordinary 2-pin net whose segment geometrically
+    crosses one of A's spokes. The GEOMETRIC backing must catch it."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},  # star hub
+            {"refdes": "U1", "x": 10.0, "y": 10.0},  # spoke 1 (crosses net B)
+            {
+                "refdes": "U2",
+                "x": 10.0,
+                "y": -10.0,
+            },  # spoke 2 (parallel to B, no cross)
+            {"refdes": "U3", "x": 0.0, "y": 10.0},  # net B
+            {"refdes": "U4", "x": 10.0, "y": 0.0},  # net B
+        ],
+        "nets": [
+            {
+                "name": "A",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "1"},
+                    {"refdes": "U1", "pin": "1"},
+                    {"refdes": "U2", "pin": "1"},
+                ],
+            },
+            {
+                "name": "B",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U3", "pin": "1"}, {"refdes": "U4", "pin": "1"}],
+            },
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.seg_layer[:] = 0
+    assert ir.n_segments == 3  # net A's star (2 spokes) + net B's single segment
+    assert same_layer_crossing_count(ir, 0) == 1  # A's U0-U1 spoke x B's U3-U4
+    t = crossings_term_for_layer(ir, 0, Level.L4, CostConfig())
+    assert t.raw > 0.0

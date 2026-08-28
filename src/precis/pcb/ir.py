@@ -691,26 +691,39 @@ def _layer_graph(ir: PcbIR, layer: int) -> tuple[int, int, list[list[int]]]:
 
 
 def same_layer_crossing_bound(ir: PcbIR, layer: int, *, refine: bool = False) -> int:
-    """An **admissible lower bound** on the number of same-layer crossings
-    a layout of this layer's segment graph requires — never an exact
-    count, because exact counting needs the L2 embedding *and* L3
-    geometry realize.py doesn't own yet. Uses the classical planar-graph
-    edge bound: a simple planar graph on V≥3 vertices has at most 3V-6
-    edges, so ``E - (3V - 6)`` edges (when positive) provably cannot be
-    drawn without crossing (Euler's formula; this is the same inequality
-    behind the crossing-number lower bound literature). That satisfies
-    admissibility for free — no geometry needed, no possibility of
-    overstating.
+    """**DEMOTED (2026-08-28) to a pure FEASIBILITY predicate — this is
+    NOT the ``crossings`` cost-term backing any more; see
+    :func:`same_layer_crossing_count` for that.** This function answers
+    "is this layer's segment graph forced non-planar" (equivalently: can
+    it even in principle be drawn on one layer without a crossing) —
+    which is what it always actually computed, despite once being used as
+    a cost estimate for "how many crossings does the CURRENT layout have".
+
+    **Why it is provably unusable as a cost backing, found on contact
+    2026-08-28**: this is the classical Euler planar-graph edge bound —
+    a simple planar graph on V≥3 vertices has at most 3V-6 edges, so
+    ``E - (3V - 6)`` edges (when positive) cannot ALL be drawn without
+    some crossing. :func:`from_graph` star-decomposes every net (one hub
+    pin, spokes to the rest), and a real board's physical pin belongs to
+    exactly ONE net — so two different nets' segments never share a
+    vertex, which makes a layer's ENTIRE segment graph a vertex-disjoint
+    FOREST of per-net stars. A forest always satisfies ``E <= V-1 <=
+    3V-6``, so this bound evaluates to exactly zero on any board built the
+    normal way — not "usually small", PROVABLY zero, forever, regardless
+    of how badly the layout actually overlaps in 2D. A forest is planar
+    in the abstract (this function is honest about that) and can still be
+    DRAWN with arbitrarily many crossings — abstract planarity says
+    nothing about a particular embedding's geometry, which is exactly
+    what a layout's actual crossing count depends on. Kept, unmodified,
+    as the cheap, geometry-free "could this layer even in principle avoid
+    a crossing" check (:func:`per_layer_planar`) — a real, useful
+    question, just a different one from "does it currently cross".
 
     ``refine=False`` (coarse/L1): one bound over the whole layer's graph —
     O(1) after counting V, E. ``refine=True`` (finer/L2): the same bound
     computed **per connected component and summed**, which is provably
     ≥ the coarse bound (components can't share crossings), so it is
-    tighter without changing the underlying formula — "estimator fidelity
-    increases," not "the cost function changes" (backlog: these must stay
-    separate). Still embedding-agnostic; a genuinely exact,
-    embedding-aware count is future work once realize.py's face tracing
-    exists — noted honestly rather than faked.
+    tighter without changing the underlying formula.
     """
     v, e, components = _layer_graph(ir, layer)
     if not refine:
@@ -722,14 +735,14 @@ def same_layer_crossing_bound(ir: PcbIR, layer: int, *, refine: bool = False) ->
 
 def euler_bound(v: int, e: int) -> int:
     """The Euler planar-edge-count bound itself — public (not
-    ``_euler_bound``) so :mod:`precis.pcb.cost`'s ``crossings`` term and
-    :mod:`precis.pcb.optimize`'s incremental per-layer (V, E) cache (see
-    that module's crossings-term section) can recompute exactly this
-    formula from a running vertex/edge count without re-deriving V and E
-    from a full per-layer graph scan on every move — the same formula
-    :func:`same_layer_crossing_bound`'s coarse (``refine=False``) path
-    uses, so the two stay provably identical rather than two
-    implementations of the same bound drifting apart."""
+    ``_euler_bound``) so callers needing the raw feasibility formula (and
+    :func:`same_layer_crossing_bound`'s own two call shapes) share one
+    implementation rather than drifting apart. **No longer the
+    ``crossings`` cost term's backing** (see
+    :func:`same_layer_crossing_count`'s and
+    :func:`same_layer_crossing_bound`'s docstrings for why: this formula
+    is provably zero on any star-decomposed board, which is every board
+    :func:`from_graph` produces)."""
     if v < 3:
         return 0
     return max(0, e - (3 * v - 6))
@@ -753,7 +766,12 @@ def per_layer_planar(ir: PcbIR, layer: int) -> bool:
     finer future refinement); False means it definitely is not planar
     (some crossing is unavoidable, since the bound is proven, not
     heuristic). Uses the refined (per-component) bound, since that's the
-    tighter and therefore more useful "definitely not planar" signal."""
+    tighter and therefore more useful "definitely not planar" signal.
+    **A feasibility question, not a "does it currently cross" one** — see
+    :func:`same_layer_crossing_bound`'s docstring; True here is fully
+    compatible with the CURRENT layout having many real, geometric
+    crossings (:func:`same_layer_crossing_count`), since a forest is
+    always abstractly planar yet can be drawn crossing itself freely."""
     return same_layer_crossing_bound(ir, layer, refine=True) == 0
 
 
@@ -866,6 +884,86 @@ def compute_region_density(ir: PcbIR, *, cell_mm: float = 5.0) -> None:
         cells.setdefault(cell, []).append(seg_id)
     for seg_id, cell in midpoints.items():
         ir.seg_region_density[seg_id] = float(len(cells[cell]))
+
+
+# ── L3 geometric crossing count: the real `crossings` cost-term backing ──
+# (found on contact 2026-08-28 — see `same_layer_crossing_bound`'s
+# docstring for the forest proof of why the Euler bound above cannot back
+# this term). Uses plain L3 instance-centroid geometry, same fidelity as
+# `compute_gap_capacity`/`nearest_other_instance` above — no shapely, no
+# sub-instance pad offsets (those live only in pinswap.py's own local
+# geometry, not in the IR).
+
+
+def segment_points(
+    ir: PcbIR, seg_id: int
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """``seg_id``'s two endpoints at INSTANCE-centroid granularity — the
+    same L3 fidelity every geometric cost.py estimator already uses
+    (``loop_inductance``, ``coupling``; see optimize.py's ROTATE note for
+    why component rotation/sub-instance pad offset isn't modeled here).
+    ``None`` if either endpoint's instance has no L3 position yet —
+    callers exclude that segment rather than treating a NaN position as
+    the origin, which would manufacture phantom crossings at (0, 0) among
+    every unplaced net (the geometric mirror of the "undefined != zero"
+    rule the rest of this module's L4 section already follows). Shared by
+    :func:`same_layer_crossing_count` (the full per-layer sweep) and
+    :mod:`precis.pcb.optimize`'s per-move crossing delta, so both derive
+    the identical geometry from one place."""
+    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+    ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
+    xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
+    xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
+    if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
+        return None
+    return (xa, ya), (xb, yb)
+
+
+def same_layer_crossing_count(ir: PcbIR, layer: int) -> int:
+    """A **sweep-line count of ACTUAL straight-line segment intersections**
+    on ``layer`` — the real ``crossings`` cost-term backing (see
+    :mod:`precis.pcb.cost`'s ``BoundDirection.UPPER`` on that term), and
+    the fix for :func:`same_layer_crossing_bound`'s "provably always
+    zero" defect: this measures what actually crosses in the CURRENT
+    layout, not whether the layer's graph is abstractly forced
+    non-planar. ``O(n log n + k)`` via :func:`precis.pcb.geom.
+    sweep_line_crossings` (see that function's own docstring for the
+    exact complexity tradeoff made).
+
+    **This is an UPPER bound on eventually-REALIZED crossings, never a
+    lower one** — realize.py's router can sometimes route around a
+    straight-line crossing (a via, a detour), so this can only ever
+    overstate the eventual routed count. Zero here is the strong,
+    useful guarantee ("straight-line crossings of zero ⇒ routed
+    crossings of zero"); a positive count is a real, present conflict at
+    THIS fidelity, not a hint that might evaporate at higher fidelity —
+    the opposite direction from every LOWER-bound estimator in this
+    module.
+
+    Degenerate cases, decided explicitly (delegated to
+    :func:`precis.pcb.geom.sweep_line_crossings`, which is where the
+    reasoning for each lives):
+    - two segments of the SAME net (spokes of one star hub) never count,
+      regardless of geometry.
+    - segments sharing an endpoint coordinate don't count either.
+    - collinear overlap / touch-without-crossing are NOT counted, only
+      genuine transversal 'X' crossings.
+    - a segment with an unplaced (NaN) endpoint is EXCLUDED entirely
+      (:func:`segment_points` returns ``None`` for it) — never treated as
+      sitting at the origin, which would manufacture crossings among every
+      unplaced net's segments.
+    """
+    from precis.pcb.geom import sweep_line_crossings
+
+    segments: list[tuple[int, tuple[float, float], tuple[float, float]]] = []
+    for s in range(ir.n_segments):
+        if int(ir.seg_layer[s]) != layer:
+            continue
+        points = segment_points(ir, s)
+        if points is None:
+            continue
+        segments.append((int(ir.seg_net[s]), points[0], points[1]))
+    return sweep_line_crossings(segments)
 
 
 def plane_connectivity(ir: PcbIR, net_id: int) -> PlaneConnectivity:

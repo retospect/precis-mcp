@@ -622,13 +622,20 @@ venvs pick it up via the normal deploy.
   near it (~10–30 on a real board). A term needing a board-wide
   re-evaluation per move is disqualified however cheap it looks — rule
   simplicity does not save an O(board) delta.
-  **MEASURED throughput (slice 6, 2026-08-28) — ~1200 moves/s** on a
-  synthetic 30-component / 49-segment board (20 000 iterations in
-  16.5 s). This **replaces the ~10⁴ moves/s figure previously asserted
-  here**, which was an unmeasured estimate, ~8× optimistic, and had been
-  propagating into design decisions unchallenged. Consequence: 10⁵ moves
-  ≈ 80 s (fine), 10⁶ ≈ 15 min, 10⁷ ≈ hours — so "minutes per board"
-  holds only at the LOW end of the SA appetite range. Still acceptable
+  **MEASURED throughput — ~880 moves/s** (2026-08-28, synthetic
+  30-component / 49-segment board, all move classes). Trajectory across
+  the build, all on the same host/board: ~1200 placement-only (slice 6)
+  → ~1050 with topology moves (slice 7) → ~1348 with the Euler-bound
+  crossings term → **~880 with the real sweep-line crossings term**.
+  The last step is a genuine ~35 % regression and the honest price of
+  measuring crossings instead of not measuring them; it stays bounded
+  because the per-move delta is O(layer size), never O(board).
+  This **replaces the ~10⁴ moves/s figure originally asserted here**,
+  which was an unmeasured estimate, an order of magnitude optimistic,
+  and had been propagating into design decisions unchallenged.
+  Consequence: 10⁵ moves ≈ 2 min (fine), 10⁶ ≈ 19 min, 10⁷ ≈ hours — so
+  "minutes per board" holds only at the LOW end of the SA appetite
+  range. Still acceptable
   (place/route are enqueued worker jobs by construction, never inline),
   but if slice 7's topology moves enlarge the search space enough to
   need 10⁶+, vectorizing the delta becomes load-bearing rather than

@@ -22,6 +22,8 @@ from precis.pcb.ir import (
     plane_connectivity,
     propose_rotation_from_positions,
     same_layer_crossing_bound,
+    same_layer_crossing_count,
+    segment_points,
     unconnected_items,
     validate_embedding,
 )
@@ -314,6 +316,82 @@ def test_crossing_bound_never_negative_on_empty_layer():
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert same_layer_crossing_bound(ir, 3) == 0  # nothing assigned to layer 3
     assert per_layer_planar(ir, 3)
+
+
+# ── same_layer_crossing_count: the GEOMETRIC crossings backing ──────────
+# (found on contact 2026-08-28 — replaces same_layer_crossing_bound as the
+# `crossings` cost term's backing; see that function's own docstring for
+# the forest proof of why it had to).
+def _crossing_pair_graph():
+    """Two 2-member nets whose straight-line airwires visibly cross — the
+    two diagonals of a square (U0-U1 and U2-U3). Neither net shares an
+    instance or a pin with the other, so `from_graph`'s star decomposition
+    (trivial for a 2-member net) yields exactly one segment per net."""
+    return {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 10.0, "y": 10.0},
+            {"refdes": "U2", "x": 0.0, "y": 10.0},
+            {"refdes": "U3", "x": 10.0, "y": 0.0},
+        ],
+        "nets": [
+            _net("A", "signal", "U0", "U1"),
+            _net("B", "signal", "U2", "U3"),
+        ],
+    }
+
+
+def test_same_layer_crossing_count_finds_a_genuine_geometric_crossing():
+    ir = from_graph(_crossing_pair_graph(), stackup=DEFAULT_STACKUP)
+    ir.seg_layer[:] = 0
+    assert same_layer_crossing_count(ir, 0) == 1
+
+    # move one segment to another layer -- the crossing resolves, on
+    # EITHER layer (only one segment sits alone on each now)
+    ir.set_layer(0, 1)
+    assert same_layer_crossing_count(ir, 0) == 0
+    assert same_layer_crossing_count(ir, 1) == 0
+
+
+def test_same_layer_crossing_count_zero_for_star_spokes_sharing_a_hub():
+    """The case that would otherwise make every net look self-crossing: a
+    star's spokes all emanate from the SAME hub pin position. Naively
+    treating them as ordinary segments risks manufacturing false
+    crossings between spokes that only ever touch at that shared point;
+    `same_layer_crossing_count` must not."""
+    graph = {
+        "instances": [{"refdes": "HUB", "x": 0.0, "y": 0.0}]
+        + [
+            {"refdes": f"U{i}", "x": 10.0 * math.cos(a), "y": 10.0 * math.sin(a)}
+            for i, a in enumerate((0.3, 1.1, 2.4, 3.9, 5.2))
+        ],
+        "nets": [_net("N", "signal", "HUB", "U0", "U1", "U2", "U3", "U4")],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.seg_layer[:] = 0
+    assert ir.n_segments == 5  # one star, 5 spokes off HUB
+    assert same_layer_crossing_count(ir, 0) == 0
+
+
+def test_same_layer_crossing_count_excludes_unplaced_segments_not_origin():
+    """An unplaced (NaN) pin must be EXCLUDED, never treated as sitting at
+    (0, 0) -- that would manufacture phantom crossings among every
+    unplaced net's segments."""
+    graph = _crossing_pair_graph()
+    del graph["instances"][2]["x"], graph["instances"][2]["y"]  # U2 unplaced
+    del graph["instances"][3]["x"], graph["instances"][3]["y"]  # U3 unplaced
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.seg_layer[:] = 0
+    assert segment_points(ir, 1) is None  # net B's segment: unplaced
+    assert same_layer_crossing_count(ir, 0) == 0
+
+
+def test_segment_points_returns_instance_centroids_or_none():
+    ir = from_graph(_crossing_pair_graph(), stackup=DEFAULT_STACKUP)
+    assert segment_points(ir, 0) == ((0.0, 0.0), (10.0, 10.0))
+
+    ir2 = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)  # no positions at all
+    assert segment_points(ir2, 0) is None
 
 
 # ── plane connectivity ────────────────────────────────────────────────
