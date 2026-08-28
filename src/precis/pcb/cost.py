@@ -37,8 +37,9 @@ docstring, what the coarse bound assumes and why it's still ≤ the truth.
 **Two families, aggregated differently.** Money terms (board area, layer
 count, via count, part fees) normalize to USD and **sum** — money is
 fungible and additive. Margin terms (clearance, loop inductance,
-coupling, thermal rise) normalize to *fraction of that term's own budget*
-and aggregate by **max** (or a soft p-norm) — a sum would let 500 nets at
+coupling, thermal rise, same-layer crossings) normalize to *fraction of
+that term's own budget* and aggregate by **max** (or a soft p-norm) — a
+sum would let 500 nets at
 5% of budget drown the one net actually at 99%, which is exactly the net
 that matters. See :func:`aggregate_margin`.
 
@@ -80,7 +81,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from precis.pcb import objectives as obj
-from precis.pcb.ir import UNSET_LAYER, Level, PcbIR
+from precis.pcb.ir import UNSET_LAYER, Level, PcbIR, same_layer_crossing_bound
 
 
 class Family(Enum):
@@ -169,6 +170,14 @@ class CostConfig:
     # (`_wants_coupling`) already keeps the *class* of risk visible via
     # the other margin terms.
     coupling_bound_k: float = 0.0
+    # `crossings`' margin BUDGET is zero (a same-layer crossing is a
+    # violation, never a quantity to trade -- see crossings_term_for_layer)
+    # -- this is not a budget, it is the raw Euler-bound crossing COUNT at
+    # which the fraction reaches "at budget" (1.0). Fixed, deliberately NOT
+    # schedule-dependent: schedule-driven softening/hardening comes ONLY
+    # from hardened_penalty's own convexity dial (reused, never duplicated
+    # -- see that function's and crossings_term_for_layer's docstrings).
+    crossings_tolerance: float = 1.0
     thermal_budget_fraction: dict[str, float] = field(
         default_factory=lambda: {"power": 0.4, "ground": 0.3}
     )  # net_class -> assumed loading fraction of a generic-width ampacity budget; 0 for other classes
@@ -712,6 +721,82 @@ def _thermal_rise(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue
     return out
 
 
+def crossings_term_for_layer(
+    ir: PcbIR, layer: int, level: Level, config: CostConfig
+) -> TermValue:
+    """One layer's ``crossings`` :class:`TermValue` — extracted the same
+    way :func:`board_area_term`/:func:`layer_count_term` were (module
+    docstring's per-item pattern) so :mod:`precis.pcb.optimize` can
+    recompute exactly this term for the (at most two) layers a
+    ``LAYER_ASSIGN`` move touches, never the whole board.
+
+    **Backed by** :func:`precis.pcb.ir.same_layer_crossing_bound` — an
+    ADMISSIBLE LOWER BOUND (Euler edge-count), never an exact crossing
+    count (an exact, embedding-aware count needs realize.py's face
+    tracing, which doesn't exist yet — see that function's own docstring).
+    Deliberately the coarse (``refine=False``) whole-layer bound at every
+    ``level`` (this term is level-invariant, same shape as
+    ``thermal_rise``): the finer per-connected-component
+    (``refine=True``) variant needs dynamic per-layer connected-component
+    tracking to stay incrementally maintainable under
+    :mod:`precis.pcb.optimize`'s O(1)-per-move locality budget, so
+    sharpening this further is future work, not this slice's — the same
+    honest deferral :func:`~precis.pcb.ir.same_layer_crossing_bound`'s own
+    docstring already makes about a genuinely exact count. Always
+    ``is_bound=True``: even the finer variant is still just a bound, so
+    there is no "becomes a real measurement at some level" branch the way
+    ``gap_capacity`` has.
+
+    **Margin family, budget ZERO** (backlog, verbatim: a same-layer
+    crossing is a manufacturing/topology violation — it cannot be
+    realized without a via or a reroute — not a quantity to trade against
+    money the way real per-net gap headroom is). So there is no "how much
+    of a real physical budget is this" question; instead
+    ``config.crossings_tolerance`` (a small FIXED constant) sets the raw
+    Euler-bound-crossing-count scale at which the fraction reaches "at
+    budget" (1.0), and ALL of the schedule-driven softening (early,
+    exploratory) / hardening (late, barrier) behaviour comes from
+    :func:`hardened_penalty`'s own convexity dial, reused exactly as
+    every other margin term reuses it — not a second hardening mechanism.
+    The backlog's "tolerance shrinks over the schedule" describes exactly
+    this effect in plain language: the SAME raw fraction gets punished
+    increasingly harshly as ``config.schedule`` advances (both the
+    quadratic-core term below budget and the steepening overage slope
+    above it grow with schedule — see :func:`hardened_penalty`), which is
+    what makes early passes able to walk through a crossing state and
+    late passes unable to — not a literally shrinking denominator, which
+    would duplicate the mechanism :mod:`precis.pcb.cost` already owns.
+    """
+    bound = same_layer_crossing_bound(ir, layer, refine=False)
+    fraction = bound / config.crossings_tolerance
+    return TermValue(
+        "crossings",
+        Family.MARGIN,
+        f"layer{layer}",
+        fraction,
+        "a same-layer crossing is an unresolved airwire conflict that cannot be realized "
+        "without a via or a reroute -- exactly what the layered ratsnest's layer "
+        "assignment and side choice exist to resolve",
+        is_bound=True,
+    )
+
+
+def _crossings(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    """Every layer's ``crossings`` value. A layer nobody has been assigned
+    to yet (including every layer before L1, when ``seg_layer`` is
+    entirely ``UNSET_LAYER``) reads 0 through the exact same formula —
+    not a swallowed-signal special case: which layer (if any) a segment
+    will eventually land on is a placement/assignment choice that hasn't
+    been made yet, the same genuine pre-decision indeterminacy
+    ``coupling``'s pre-L3 ``coupling_bound_k=0.0`` documents (module
+    docstring's "NOT the undefined==zero trap" distinction) — it is not
+    hiding a cost that is definitely present."""
+    return [
+        crossings_term_for_layer(ir, layer, level, config)
+        for layer in range(ir.n_layers)
+    ]
+
+
 TERMS: list[TermSpec] = [
     TermSpec(
         "board_area",
@@ -768,6 +853,14 @@ TERMS: list[TermSpec] = [
         Criticality.MARGINAL,
         "current-carrying traces heat per IPC-2221; exceeding the class budget risks yield/reliability",
         _thermal_rise,
+    ),
+    TermSpec(
+        "crossings",
+        Family.MARGIN,
+        Criticality.CATASTROPHIC,
+        "a same-layer crossing cannot be realized as sketched without spending a via or a "
+        "reroute -- the exact thing the layered ratsnest exists to make legible and resolvable",
+        _crossings,
     ),
 ]
 

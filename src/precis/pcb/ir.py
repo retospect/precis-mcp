@@ -714,13 +714,22 @@ def same_layer_crossing_bound(ir: PcbIR, layer: int, *, refine: bool = False) ->
     """
     v, e, components = _layer_graph(ir, layer)
     if not refine:
-        return _euler_bound(v, e)
+        return euler_bound(v, e)
     return sum(
-        _euler_bound(len(comp), _edges_in(ir, layer, comp)) for comp in components
+        euler_bound(len(comp), _edges_in(ir, layer, comp)) for comp in components
     )
 
 
-def _euler_bound(v: int, e: int) -> int:
+def euler_bound(v: int, e: int) -> int:
+    """The Euler planar-edge-count bound itself — public (not
+    ``_euler_bound``) so :mod:`precis.pcb.cost`'s ``crossings`` term and
+    :mod:`precis.pcb.optimize`'s incremental per-layer (V, E) cache (see
+    that module's crossings-term section) can recompute exactly this
+    formula from a running vertex/edge count without re-deriving V and E
+    from a full per-layer graph scan on every move — the same formula
+    :func:`same_layer_crossing_bound`'s coarse (``refine=False``) path
+    uses, so the two stay provably identical rather than two
+    implementations of the same bound drifting apart."""
     if v < 3:
         return 0
     return max(0, e - (3 * v - 6))

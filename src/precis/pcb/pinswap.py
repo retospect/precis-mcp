@@ -35,7 +35,12 @@ domain data, not an IR field), never wired into
 defaults to ``(0.0, 0.0)`` (its instance's own centroid) — the same
 "unmodeled = centroid" state every other pin in the IR is already in, so
 a group with no offset data degrades to a genuinely no-op swap rather
-than a crash.
+than a crash. :func:`offsets_from_pads` (and the :func:`group_from_pads`
+convenience wrapper around it) is what actually WIRES a footprint's
+canonical pads into a group's ``offsets`` — matching pad ``number`` to
+:attr:`PcbIR.pin_label` per instance; it supplies geometry only, never an
+admissible-set/exclusion judgment, which stays the caller's job either
+way.
 
 **The cost matrix is a linearized approximation of a jointly-quadratic
 problem, and that is stated here rather than glossed over.** The TRUE
@@ -57,6 +62,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 from precis.pcb.geom import Point, segments_cross
 from precis.pcb.ir import PcbIR
@@ -79,6 +85,73 @@ class PinSwapGroup:
     pins: tuple[int, ...]
     offsets: dict[int, Point] = field(default_factory=dict)
     excluded: frozenset[int] = frozenset()
+
+
+# ── wiring real footprint geometry into a group's offsets ───────────────
+
+
+def offsets_from_pads(
+    ir: PcbIR, instance: int, pads: list[dict[str, Any]]
+) -> dict[int, Point]:
+    """The geometry half of a :class:`PinSwapGroup` — NEVER the
+    admissible-set half. Maps ``pads`` (:mod:`precis.pcb.escape`'s
+    canonical per-footprint pad list: ``number``/``x``/``y``, mm,
+    relative to the footprint's own placement origin — the same frame
+    :attr:`PcbIR.inst_x`/``inst_y`` anchors) onto ``instance``'s own pin
+    ids via :attr:`PcbIR.pin_label` — the netlist's pin name, which is
+    also the pad ``number`` every EasyEDA/JLC-assemblable footprint keys
+    on (:mod:`precis.pcb.easyeda`'s ``_parse_pad``).
+
+    Which pins are candidates for swapping (and which are excluded) is a
+    caller judgment this function never makes — see the module docstring
+    and :class:`PinSwapGroup`'s own "never inferred" contract; this is
+    purely "given a pin id, where does it physically sit".
+
+    A pad with no matching pin (renamed, or on a net this design doesn't
+    carry) or a pin with no matching pad (no footprint geometry cached
+    yet) is simply absent from the returned dict — never a
+    :class:`KeyError`. :class:`PinSwapGroup`'s own default (a pin absent
+    from ``offsets`` sits at the instance centroid, ``(0.0, 0.0)``)
+    already makes that a safe no-op, the same clean-degradation property
+    the module docstring requires: a group built from a footprint with no
+    (or incomplete) pad data degrades to exactly the behaviour a group
+    with no offsets at all already has, never a crash and never an
+    invented equivalence."""
+    by_label: dict[str, int] = {}
+    for pin_id in range(ir.n_pins):
+        if int(ir.pin_instance[pin_id]) == instance:
+            by_label[str(ir.pin_label[pin_id])] = pin_id
+    offsets: dict[int, Point] = {}
+    for pad in pads:
+        matched_pin = by_label.get(str(pad["number"]))
+        if matched_pin is None:
+            continue
+        offsets[matched_pin] = (float(pad["x"]), float(pad["y"]))
+    return offsets
+
+
+def group_from_pads(
+    ir: PcbIR,
+    instance: int,
+    pins: tuple[int, ...],
+    pads: list[dict[str, Any]],
+    *,
+    excluded: frozenset[int] = frozenset(),
+) -> PinSwapGroup:
+    """Convenience constructor: the caller-supplied admissible set
+    (``pins``, ``excluded`` — a pin-equivalence judgment that is
+    datasheet-derived and stays entirely the caller's job, never inferred
+    here) plus real per-pin geometry looked up from ``pads`` via
+    :func:`offsets_from_pads`. This is the "wire escape.py's derived pad
+    geometry through" half of pin swap; a caller with no ``pads`` (or an
+    empty list) gets back exactly :class:`PinSwapGroup`'s own no-offsets
+    default — a safe no-op, never a fabricated equivalence."""
+    return PinSwapGroup(
+        instance=instance,
+        pins=pins,
+        offsets=offsets_from_pads(ir, instance, pads),
+        excluded=excluded,
+    )
 
 
 # ── local geometry: this instance's own airwires only ───────────────────
@@ -300,6 +373,8 @@ def propose_reassignment(
 __all__ = [
     "PinSwapGroup",
     "build_cost_matrix",
+    "group_from_pads",
+    "offsets_from_pads",
     "propose_reassignment",
     "total_group_crossings",
 ]

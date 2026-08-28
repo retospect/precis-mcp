@@ -376,9 +376,62 @@ an optimistic **bound**, never as nothing.
 - **Margin terms** → normalized by their own budget, giving a
   dimensionless *fraction of allowance consumed* (this clearance is
   0.6 of fab headroom; this coupling is 0.3 of the victim's noise
-  budget). Clearance, inductance, coupling, thermal rise, gap capacity.
+  budget). Clearance, inductance, coupling, thermal rise, gap capacity,
+  **and same-layer crossings**.
 - **Money terms** → normalized to currency from live JLC pricing.
   Board area, layer count, via count, Extended-part fees.
+
+**`crossings` was MISSING from this list until 2026-08-28 — a real spec
+bug, found on contact in slice 7.** The layered-ratsnest section calls a
+same-layer crossing "exactly the thing that must be resolved", but the
+term list never included it, so `LAYER_ASSIGN` and `SIDE_FLIP` shipped
+**cost-neutral**: the optimizer could not reduce crossings because
+nothing measured them, and the entire rationale for layering the
+ratsnest was unimplemented. Reads `ir.same_layer_crossing_bound`.
+Margin family, but its budget is **zero** — a same-layer crossing is a
+violation, not a quantity to trade — so the fraction is
+`crossings / tolerance` with tolerance shrinking over the hardening
+schedule: soft early so the optimizer can pass through crossing states,
+hard at the end. Lesson worth keeping: an architecture section and a
+term list can disagree silently, and the code will faithfully implement
+the term list.
+
+**FOLLOW-UP FINDING (2026-08-28) — the first crossings estimator was
+admissible but PROVABLY ALWAYS ZERO.** `ir.same_layer_crossing_bound`
+is the Euler bound `E − (3V−6)`. `from_graph` star-decomposes nets, and
+one physical pin belongs to exactly one net, so a layer's segment graph
+is always a **vertex-disjoint forest** — and a forest satisfies
+`E ≤ V−1 ≤ 3V−6` unconditionally. The bound is therefore zero by
+construction on any board built the normal way, not merely small.
+Root cause: it answers *"is this graph forced non-planar?"* (for a
+forest, never) instead of *"do these segments cross in the current
+layout?"* (constantly). A forest is planar in the abstract and can
+still be drawn with many crossings.
+**Fix: the cost term is a sweep-line count of actual segment
+intersections at L3** (`O(n log n + k)`), which measures the thing we
+mean. The Euler bound stays, demoted to a pure *feasibility* predicate
+(is this layer forced non-planar), which is what it was always
+actually computing.
+
+**This revises the admissibility rule to be TWO-SIDED.** The geometric
+crossing count is an **upper** bound on routed crossings (the realizer
+can sometimes route around one), whereas the rule as first written
+demanded coarse estimates be *lower* bounds. Both directions are sound;
+the guarantee simply mirrors:
+- **lower bound** ⇒ "looks bad ⇒ really is bad" (safe to prune).
+- **upper bound** ⇒ "looks good ⇒ really is good" — straight-line
+  crossings of zero guarantees routed crossings of zero, which is
+  exactly the guarantee needed to drive a term to zero.
+What matters is that each estimator's **direction is declared and
+tested**, not that every estimator points the same way. The property
+test must assert the declared direction per term rather than a single
+global inequality.
+
+**Still open after this fix: `SIDE_FLIP` remains cost-neutral.** A
+straight-line count at L3 does not read `seg_side`, so side choices
+have no cost effect until either the realizer's geometry enters the
+loop or gap-capacity accounting becomes side-aware. Recorded as a known
+inert move class rather than left to be misread as working.
 
 **Aggregation: money ADDS, risk does NOT average away.** Sum the money
 family. Take **exact max** over the margin family —

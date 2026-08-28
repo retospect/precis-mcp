@@ -248,6 +248,131 @@ def test_layer_assign_and_plane_promote_refresh_layer_count():
     assert after >= before  # a plane layer entering "used" never lowers the count
 
 
+# ── crossings term (gr, 2026-08-28): LAYER_ASSIGN's real cost effect ────
+def _k5_ir_with_positions():
+    """K5 (Euler-bound-nonzero) fixture — deliberately reusing pin "1" per
+    instance across every net (test_pcb_cost.py's own construction,
+    mirrored here) so the layer graph is genuinely non-planar, unlike a
+    realistic star-decomposed netlist (test_pcb_cost.py's
+    ``test_crossings_term_is_zero_on_a_realistic_star_decomposed_netlist``
+    documents why that distinction matters — LAYER_ASSIGN only has a real
+    effect on a fixture shaped like this one today).
+
+    Positions are spread far apart (1000 mm pitch) rather than through
+    ``seed_placement``'s tight clustering, so ``gap_capacity`` stays a
+    negligible fraction of its budget and doesn't compete with
+    ``crossings`` for the margin ``max`` — the point of these tests is
+    ``crossings`` specifically, not an accidental fight between terms."""
+    n = 5
+    instances = [{"refdes": f"U{i}"} for i in range(n)]
+    nets = [
+        {
+            "name": f"E{i}_{j}",
+            "net_class": "signal",
+            "domain": "electrical",
+            "members": [
+                {"refdes": f"U{i}", "pin": "1"},
+                {"refdes": f"U{j}", "pin": "1"},
+            ],
+        }
+        for i in range(n)
+        for j in range(i + 1, n)
+    ]
+    ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
+    for i in range(n):
+        ir.inst_x[i] = float(i * 1000.0)
+        ir.inst_y[i] = 0.0
+    return ir
+
+
+def test_layer_assign_is_no_longer_cost_neutral():
+    """The whole point of registering ``crossings``: unlike before, a
+    LAYER_ASSIGN move can produce a real, non-zero ``total()`` delta."""
+    ir = _k5_ir_with_positions()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    crossings_before = engine._margin[("crossings", 0)].raw
+    assert crossings_before > 0.0  # K5, all on layer 0
+    before = engine.total()
+
+    rng = random.Random(2)
+    move = None
+    for _ in range(50):
+        candidate = MOVE_GENERATORS[MoveKind.LAYER_ASSIGN](engine, rng, 5.0)
+        if candidate is not None:
+            move = candidate
+            break
+    assert move is not None
+
+    engine.apply_move(move)
+    after = engine.total()
+    assert after != before
+    assert after < before  # moving one K5 edge off layer 0 resolves the crossing
+    assert engine._margin[("crossings", 0)].raw < crossings_before
+
+
+def test_side_flip_remains_cost_neutral_even_with_crossings_registered():
+    """**Reported, not silently worked around**: unlike LAYER_ASSIGN,
+    SIDE_FLIP genuinely cannot become cost-sensitive under an admissible
+    estimator at this slice's fidelity. ``crossings`` is backed by
+    :func:`precis.pcb.ir.same_layer_crossing_bound`, an embedding-agnostic
+    Euler bound over WHICH LAYER a segment sits on (that function's own
+    docstring: "still embedding-agnostic") — it structurally cannot read
+    ``seg_side``. See the module docstring's SIDE_FLIP note for the full
+    reasoning; this test pins the resulting (still correct) behaviour."""
+    ir = _k5_ir_with_positions()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=5))
+    before = engine.total()
+    rng = random.Random(6)
+    move = MOVE_GENERATORS[MoveKind.SIDE_FLIP](engine, rng, 5.0)
+    assert move is not None
+    engine.apply_move(move)
+    assert engine.total() == pytest.approx(before)
+
+
+def test_delta_correctness_for_crossings_over_random_moves():
+    """Delta correctness — incremental delta equals full re-evaluation —
+    specifically exercised on a fixture where ``crossings`` is actually
+    non-zero at some point during the run (``_seeded_ir``'s star-
+    decomposed netlist, used by the module's general delta-correctness
+    test below, never makes ``crossings`` non-zero at all — see
+    test_pcb_cost.py's documented finding — so that test alone would
+    never catch a ``crossings``-specific incremental bug)."""
+    ir = _k5_ir_with_positions()
+    cost_config = CostConfig()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3, cost=cost_config))
+    move_rng = random.Random(4)
+    kinds = [
+        MoveKind.LAYER_ASSIGN,
+        MoveKind.SIDE_FLIP,
+        MoveKind.TRANSLATE,
+        MoveKind.ROTATE,
+    ]
+    saw_nonzero_crossings = False
+    for trial in range(200):
+        kind = kinds[move_rng.randrange(len(kinds))]
+        move = MOVE_GENERATORS[kind](engine, move_rng, 8.0)
+        if move is None:
+            continue
+        engine.apply_move(move)
+        if move_rng.random() < 0.5:
+            engine.undo_move(move)
+        if any(
+            name == "crossings" and tv.raw > 0.0
+            for (name, _key), tv in engine._margin.items()
+        ):
+            saw_nonzero_crossings = True
+
+        full = evaluate_cost(ir, Level.L4, cost_config)
+        assert engine.money() == pytest.approx(full.money, rel=1e-9, abs=1e-9), trial
+        assert engine.risk() == pytest.approx(full.risk, rel=1e-9, abs=1e-9), trial
+        assert engine.total() == pytest.approx(full.total, rel=1e-9, abs=1e-9), (
+            f"trial {trial}: engine={engine.total()} full={full.total}"
+        )
+    assert (
+        saw_nonzero_crossings
+    )  # the interesting (non-zero) case was actually exercised
+
+
 # ── slice 7: pin swap ─────────────────────────────────────────────────
 def _pin_swap_ir_and_group():
     """Two nets whose airwires obviously cross under the CURRENT pin

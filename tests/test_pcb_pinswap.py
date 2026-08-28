@@ -15,6 +15,8 @@ from precis.pcb.pinswap import (
     _cycles,
     _hungarian,
     build_cost_matrix,
+    group_from_pads,
+    offsets_from_pads,
     propose_reassignment,
     total_group_crossings,
 )
@@ -170,3 +172,64 @@ def test_offset_default_is_instance_centroid():
         total_group_crossings(ir, bare) == 0
     )  # every pin at the same point -> no crossings
     assert propose_reassignment(ir, bare) is None
+
+
+# ── wiring escape.py-shaped pad geometry into a group's offsets ─────────
+#: escape.py's canonical pad shape carries more fields than these
+#: (w/h/rot/...), but offsets_from_pads only ever reads "number"/"x"/"y".
+_FIXTURE_PADS = [
+    {"number": "left", "x": -1.0, "y": 0.0, "w": 0.5, "h": 0.5},
+    {"number": "right", "x": 1.0, "y": 0.0, "w": 0.5, "h": 0.5},
+]
+
+
+def test_offsets_from_pads_matches_pad_number_to_pin_label():
+    ir, _group, pin_left, pin_right = _fixture()
+    offsets = offsets_from_pads(ir, 0, _FIXTURE_PADS)
+    assert offsets == {pin_left: (-1.0, 0.0), pin_right: (1.0, 0.0)}
+
+
+def test_group_from_pads_reproduces_the_hand_built_fixture():
+    """The same beneficial swap the hand-built ``offsets=`` fixture finds
+    (task: "pin swap with real offsets measurably reduces cost on a
+    fixture where a swap obviously helps"), but wired through real
+    footprint pad geometry instead of a hand-authored offsets dict."""
+    ir, _hand_group, pin_left, pin_right = _fixture()
+    group = group_from_pads(ir, 0, (pin_left, pin_right), _FIXTURE_PADS)
+    assert group.offsets == {pin_left: (-1.0, 0.0), pin_right: (1.0, 0.0)}
+
+    before = total_group_crossings(ir, group)
+    assert before == 1
+
+    pairs = propose_reassignment(ir, group)
+    assert pairs  # a beneficial swap is found from wired-through geometry
+    for a, b in pairs:
+        ir.swap_pins(a, b)
+
+    after = total_group_crossings(ir, group)
+    assert after == 0
+    assert after < before
+
+
+def test_offsets_from_pads_unmatched_pad_or_pin_is_silently_absent():
+    """A pad naming a pin that doesn't exist on this instance, or a pin
+    with no matching pad, never raises -- absent from the dict, which
+    PinSwapGroup's own (0.0, 0.0) default already treats as a safe
+    no-op (module docstring: never a crash, never an invented
+    equivalence)."""
+    ir, _group, pin_left, _pin_right = _fixture()
+    pads = [
+        {"number": "left", "x": -1.0, "y": 0.0},
+        {"number": "nonexistent", "x": 9.0, "y": 9.0},
+    ]
+    offsets = offsets_from_pads(ir, 0, pads)
+    assert offsets == {pin_left: (-1.0, 0.0)}
+
+
+def test_group_from_pads_with_no_pads_is_a_safe_no_op():
+    ir, _group, pin_left, pin_right = _fixture()
+    group = group_from_pads(ir, 0, (pin_left, pin_right), [])
+    assert group.offsets == {}
+    # every pin defaults to the instance centroid -> nothing to gain
+    assert total_group_crossings(ir, group) == 0
+    assert propose_reassignment(ir, group) is None
