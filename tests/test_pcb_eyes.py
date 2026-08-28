@@ -1,5 +1,8 @@
 """Pure unit tests for the PCB eyes — geometry, ratsnest +
-crossing count, DRC-lite, signal trace, measures. No DB.
+crossing count, signal trace, measures. No DB.
+
+``drc_lite`` is retired (pcb-guided-place-route Slice 8, superseded by
+:mod:`precis.pcb.drc` behind ``view='drc'``) — see ``tests/test_pcb_drc.py``.
 """
 
 from __future__ import annotations
@@ -83,82 +86,6 @@ def test_no_crossing_when_separated():
     nets = [_net("N1", "signal", "A", "B"), _net("N2", "signal", "C", "D")]
     wires = ratsnest.build_airwires(placed, nets)
     assert ratsnest.crossings(wires) == []
-
-
-# ── DRC-lite ─────────────────────────────────────────────────────────
-def test_drc_flags_unconnected_and_dangling_and_bypass():
-    graph = {
-        "instances": [
-            {
-                "refdes": "U1",
-                "x": 0,
-                "y": 0,
-                "roles": [],
-                "label": "MCU",
-                "height_mm": None,
-                "n_pins": 2,
-            },
-            {
-                "refdes": "R1",
-                "x": 5,
-                "y": 0,
-                "roles": [],
-                "label": "10k",
-                "height_mm": None,
-                "n_pins": 2,
-            },
-        ],
-        "nets": [
-            {
-                "name": "VCC",
-                "net_class": "power",
-                "members": [{"refdes": "U1", "pin": "VDD"}],
-            },  # 1 pin → dangling + no cap
-        ],
-        "unconnected": [{"refdes": "R1", "pin": "1"}],
-    }
-    codes = {f["code"] for f in eyes.drc_lite(graph)}
-    assert "unconnected-pin" in codes
-    assert "dangling-net" in codes
-    assert "no-bypass-cap" in codes
-
-
-def test_drc_bypass_satisfied_by_cap_on_net():
-    graph = {
-        "instances": [
-            {
-                "refdes": "U1",
-                "x": 0,
-                "y": 0,
-                "roles": [],
-                "label": "MCU",
-                "height_mm": None,
-                "n_pins": 2,
-            },
-            {
-                "refdes": "C1",
-                "x": 1,
-                "y": 0,
-                "roles": [],
-                "label": "100nF",
-                "height_mm": None,
-                "n_pins": 2,
-            },
-        ],
-        "nets": [
-            {
-                "name": "VCC",
-                "net_class": "power",
-                "members": [
-                    {"refdes": "U1", "pin": "VDD"},
-                    {"refdes": "C1", "pin": "1"},
-                ],
-            },
-        ],
-        "unconnected": [],
-    }
-    codes = {f["code"] for f in eyes.drc_lite(graph)}
-    assert "no-bypass-cap" not in codes
 
 
 # ── signal trace ─────────────────────────────────────────────────────

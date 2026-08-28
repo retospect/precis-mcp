@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
@@ -26,6 +27,8 @@ from precis.workers.auto_check_evaluators import (
     derived_job_succeeded,
     discord_reply_received,
     paper_ingested,
+    placement_legal,
+    route_complete,
     tag_present,
     time_past,
     validate_auto_check_spec,
@@ -78,6 +81,9 @@ def test_validate_known_registry_keys() -> None:
         "child_job_succeeded",
         "derived_job_succeeded",
         "all_child_findings_resolved",
+        "placement_legal",
+        "route_complete",
+        "netlist_drc_clean",
     }
 
 
@@ -785,3 +791,148 @@ def test_resolvable_leaf_behind_the_batch_limit_is_not_starved(
     assert "STATUS:done" in {str(t) for t in store.tags_for(target)}, (
         "a resolvable leaf behind the batch cutoff must still get evaluated"
     )
+
+
+# ── placement_legal / route_complete (pcb-guided-place-route Slice 10) ────
+
+
+def _pcb_hub(store: Store) -> Hub:
+    return Hub(store=store)
+
+
+def _seed_pcb(store: Store, slug: str) -> int:
+    from precis.handlers.pcb import PcbHandler
+
+    handler = PcbHandler(hub=_pcb_hub(store))
+    handler.put(
+        id=slug,
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "mcu",
+                    "part": "C001",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "pins": [{"name": "1"}],
+                },
+                {
+                    "refdes": "R1",
+                    "label": "r",
+                    "part": "C002",
+                    "x": 5.0,
+                    "y": 0.0,
+                    "pins": [{"name": "1"}],
+                },
+            ],
+            "nets": [{"name": "N1"}],
+            "connections": [
+                {"net": "N1", "refdes": "U1", "pin": "1"},
+                {"net": "N1", "refdes": "R1", "pin": "1"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    return ref.id
+
+
+def test_placement_legal_missing_pcb_spec_rejected() -> None:
+    with pytest.raises(BadInput, match="needs a pcb design"):
+        placement_legal.evaluate(None, {})  # type: ignore[arg-type]
+
+
+def test_placement_legal_false_when_unplaced(store: Store) -> None:
+    ref_id = _seed_pcb(store, "gate-unplaced")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_instances SET x = NULL, y = NULL "
+            "WHERE ref_id = %s AND refdes = 'U1'",
+            (ref_id,),
+        )
+        conn.commit()
+    assert placement_legal.evaluate(store, {"pcb": "gate-unplaced"}) is False
+
+
+def test_placement_legal_true_when_placed_no_footprint_data(store: Store) -> None:
+    _seed_pcb(store, "gate-placed")
+    # Neither part has a cached footprint courtyard — the overlap/outline
+    # checks are best-effort and skip both, per the module docstring.
+    assert placement_legal.evaluate(store, {"pcb": "gate-placed"}) is True
+
+
+def test_placement_legal_false_on_courtyard_overlap(store: Store) -> None:
+    ref_id = _seed_pcb(store, "gate-overlap")
+    # Both parts sit at x=0/x=5 with a courtyard box wide enough to overlap.
+    store.part_footprint_put("C001", {"courtyard": {"bbox": [-3, -3, 3, 3]}})
+    store.part_footprint_put("C002", {"courtyard": {"bbox": [-3, -3, 3, 3]}})
+    assert placement_legal.evaluate(store, {"pcb": "gate-overlap"}) is False
+    # Ref-id addressing works too.
+    assert placement_legal.evaluate(store, {"pcb": ref_id}) is False
+
+
+def test_placement_legal_false_outside_outline(store: Store) -> None:
+    ref_id = _seed_pcb(store, "gate-outline")
+    store.part_footprint_put("C001", {"courtyard": {"bbox": [-1, -1, 1, 1]}})
+    store.part_footprint_put("C002", {"courtyard": {"bbox": [-1, -1, 1, 1]}})
+    board_id = store.pcb_ensure_board(ref_id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pcb_features (ref_id, board_id, ftype, geom) "
+            "VALUES (%s, %s, 'outline', %s)",
+            (
+                ref_id,
+                board_id,
+                Jsonb({"path": [[-2, -2], [2, -2], [2, 2], [-2, 2]]}),
+            ),
+        )
+        conn.commit()
+    # R1 sits at x=5, well outside the drawn [-2,2]x[-2,2] outline.
+    assert placement_legal.evaluate(store, {"pcb": "gate-outline"}) is False
+
+
+def test_route_complete_missing_pcb_spec_rejected() -> None:
+    with pytest.raises(BadInput, match="needs a pcb design"):
+        route_complete.evaluate(None, {})  # type: ignore[arg-type]
+
+
+def test_route_complete_false_with_no_routes(store: Store) -> None:
+    _seed_pcb(store, "route-none")
+    assert route_complete.evaluate(store, {"pcb": "route-none"}) is False
+
+
+def test_route_complete_false_when_any_net_unrealized(store: Store) -> None:
+    ref_id = _seed_pcb(store, "route-partial")
+    board_id = store.pcb_ensure_board(ref_id)
+    with store.pool.connection() as conn:
+        net_row = conn.execute(
+            "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = 'N1'",
+            (ref_id,),
+        ).fetchone()
+        assert net_row is not None
+        net_id = net_row[0]
+        conn.execute(
+            "INSERT INTO pcb_routes (board_id, net_id, status) VALUES (%s, %s, %s)",
+            (board_id, net_id, "sketched"),
+        )
+        conn.commit()
+    assert route_complete.evaluate(store, {"pcb": "route-partial"}) is False
+
+
+def test_route_complete_true_when_all_realized(store: Store) -> None:
+    ref_id = _seed_pcb(store, "route-done")
+    board_id = store.pcb_ensure_board(ref_id)
+    with store.pool.connection() as conn:
+        net_row = conn.execute(
+            "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = 'N1'",
+            (ref_id,),
+        ).fetchone()
+        assert net_row is not None
+        net_id = net_row[0]
+        conn.execute(
+            "INSERT INTO pcb_routes (board_id, net_id, status) VALUES (%s, %s, %s)",
+            (board_id, net_id, "realized"),
+        )
+        conn.commit()
+    assert route_complete.evaluate(store, {"pcb": "route-done"}) is True
+    assert route_complete.evaluate(store, {"pcb": ref_id}) is True

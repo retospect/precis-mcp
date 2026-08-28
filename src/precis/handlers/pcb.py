@@ -10,20 +10,29 @@ pixels. The verbs map onto the seven-verb surface:
   Re-runnable. Every design gets a default board (``pcb-guided-place-route``
   Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
   electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
+  ``args={'op': ...}`` is the pcb-guided-place-route Slice 10 tool surface:
+  ``op='place'``/``op='route'`` **enqueue** a ``pcb_place``/``pcb_route``
+  worker job (never compute inline — the optimizer measures ~880 moves/s,
+  minutes per board) idempotent per (design, op, content-hash); ``op='move'``/
+  ``'rip'``/``'pin_side'``/``'plane_net'``/``'class_rules'`` are cheap inline
+  edits. See ``precis-route-help``.
 - ``get``    — list designs (no id); a design's netlist TOC (``id=slug``,
   now with the board/stackup + net_classes + route-status summary); one
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
-  'feasibility'|'route-status'``); or an *export* (``view='bom'|'cpl'|
-  'netlist'|'dsn'|'mechanical'`` writes a JLCPCB fab artifact;
-  ``view='route'`` runs the Freerouting place↔route round-trip —
-  :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
+  'feasibility'|'route-status'|'congestion'|'planes'``); or an *export*
+  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'`` writes a JLCPCB fab
+  artifact; ``view='route'`` runs the Freerouting place↔route round-trip,
+  the demoted escape hatch — :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
 - ``search`` — over design names + descriptions (the one summary card).
 - ``delete`` — soft-retire a whole design.
 
-Routing (Freerouting) and gerbers are *rented* downstream of the IR; export is
-the only place the design leaves the relational graph. See ``precis-pcb-help``.
+The in-house topological place+route engine (:mod:`precis.pcb.optimize` /
+:mod:`precis.pcb.realize`, run via the ``pcb_place``/``pcb_route`` jobs) is
+the primary path; Freerouting/gerbers-via-DSN is the rented, demoted escape
+hatch. Export is the one place the design leaves the relational graph.
+See ``precis-pcb-help`` and ``precis-route-help``.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -40,9 +50,12 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
 from precis.pcb import eyes, place, ratsnest
 from precis.pcb import route as pcb_route
+from precis.pcb import session as pcb_session
+from precis.pcb.capabilities import capability_for
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
@@ -68,8 +81,26 @@ _EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical")
 _ROUTE_VIEWS = ("route",)
 #: pcb-guided-place-route Slice 1 — per-net route status (all-unrouted v1).
 _STATUS_VIEWS = ("route-status",)
+#: pcb-guided-place-route Slice 10 — the enqueued optimizer/realizer's
+#: read-side: congestion warnings from the latest ``op='route'`` run, and
+#: authored plane assignments.
+_SESSION_VIEWS = ("congestion", "planes")
 _OTHER_VIEWS = ("links",)
-_VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_ROUTE_VIEWS, *_STATUS_VIEWS, *_OTHER_VIEWS)
+_VIEWS = (
+    *_PROBE_VIEWS,
+    *_EXPORT_VIEWS,
+    *_ROUTE_VIEWS,
+    *_STATUS_VIEWS,
+    *_SESSION_VIEWS,
+    *_OTHER_VIEWS,
+)
+
+#: pcb-guided-place-route Slice 10 tool surface — the two heavy ops that
+#: enqueue a worker job (never compute inline) and the inline edits that
+#: are cheap enough to run in the request path.
+_JOB_OPS = ("place", "route")
+_INLINE_EDIT_OPS = ("move", "rip", "pin_side", "plane_net", "class_rules")
+_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS)
 
 
 class PcbHandler(Handler):
@@ -89,15 +120,17 @@ class PcbHandler(Handler):
             "stackup + net_classes + route-status summary), one "
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
-            "'trace'|'proximity'|'measures'|'feasibility'|'route-status'), or "
-            "an export (view='bom'|'cpl'|'netlist'|'dsn'|'mechanical' writes a "
-            "JLCPCB fab artifact; view='route' runs the Freerouting "
-            "place↔route round-trip), all with args={...}; "
-            "put(args={'autoplace':{'iters':N}}) auto-places to minimise "
-            "crossings (fixed parts pinned); search over names; delete "
-            "soft-retires. "
+            "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
+            "'congestion'|'planes'), or an export (view='bom'|'cpl'|'netlist'|"
+            "'dsn'|'mechanical' writes a JLCPCB fab artifact; view='route' runs "
+            "the demoted Freerouting escape hatch), all with args={...}; "
+            "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
+            "job (never inline; idempotent per design+op+content-hash) — "
+            "args={'autoplace':{...}} is a deprecated alias for op='place'; "
+            "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'}) "
+            "are cheap inline edits; search over names; delete soft-retires. "
             "Postgres-canonical; routing/gerbers are downstream export. "
-            "See precis-pcb-help."
+            "See precis-pcb-help and precis-route-help."
         ),
         supports_get=True,
         supports_put=True,
@@ -112,6 +145,7 @@ class PcbHandler(Handler):
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError("pcb: store required")
+        self.hub = hub
         self.store = hub.store
         self.embedder = hub.embedder
 
@@ -136,6 +170,16 @@ class PcbHandler(Handler):
             )
         slug = str(id).strip()
         args = args or {}
+        op = args.get("op")
+        if op is not None:
+            # pcb-guided-place-route Slice 10 tool surface: place/route/the
+            # inline edits address an EXISTING design and never blend with
+            # bulk netlist authoring in the same call (unlike the retired
+            # `autoplace` alias below, which historically did) — keeps the
+            # enqueue/edit paths from having to reason about a simultaneous
+            # components/nets diff.
+            ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
+            return self._dispatch_op(ref, str(op), args)
         components = list(args.get("components") or [])
         nets = list(args.get("nets") or [])
         connections = list(args.get("connections") or [])
@@ -175,8 +219,21 @@ class PcbHandler(Handler):
             raise BadInput(f"pcb: {exc}") from exc
 
         if autoplace:
-            return self._autoplace(
-                ref, autoplace if isinstance(autoplace, dict) else {}
+            # Retired as a computed-inline behavior (pcb-guided-place-route
+            # Slice 10) — enqueues the SAME `pcb_place` job `op='place'`
+            # does; kept as a one-release alias so an existing caller's
+            # `args={'autoplace':{...}}` still works, just asynchronously
+            # now. See precis-route-help for the replacement.
+            opts = autoplace if isinstance(autoplace, dict) else {}
+            body = self._enqueue_op(ref, "place", opts)
+            return Response(
+                body=(
+                    "⚠️  DEPRECATED: args={'autoplace':...} now ENQUEUES a "
+                    "worker job instead of computing inline — use "
+                    "args={'op':'place', ...} directly (same params, same "
+                    "job); this alias will be removed. See precis-route-help.\n\n"
+                    + body
+                )
             )
 
         verb = "created" if created else "extended"
@@ -274,24 +331,166 @@ class PcbHandler(Handler):
         )
         return res, moved
 
-    def _autoplace(self, ref: Any, opts: dict[str, Any]) -> Response:
-        measures = self.store.pcb_measures_list(ref.id)
-        res, moved = self._place_and_store(
-            ref.id,
-            iters=int(opts.get("iters") or 1500),
-            seed=int(opts.get("seed") or 0),
-            measures=measures,
+    # ── pcb-guided-place-route Slice 10 tool surface ────────────────────
+    def _dispatch_op(self, ref: Any, op: str, args: dict[str, Any]) -> Response:
+        """``put(args={'op': ..., ...})`` — the enqueued heavy ops
+        (``place``/``route``, never computed inline) and the cheap inline
+        edits. See precis-route-help for the full surface."""
+        if op in _JOB_OPS:
+            return Response(body=self._enqueue_op(ref, op, args))
+        if op == "move":
+            return self._op_move(ref, args)
+        if op == "rip":
+            return self._op_rip(ref, args)
+        if op == "pin_side":
+            return self._op_pin_side(ref, args)
+        if op == "plane_net":
+            return self._op_plane_net(ref, args)
+        if op == "class_rules":
+            return self._op_class_rules(ref, args)
+        raise BadInput(
+            f"unknown op {op!r}",
+            options=list(_OPS),
+            next=(
+                "put(kind='pcb', id='slug', args={'op':'place'}) or "
+                "args={'op':'route'} (enqueued jobs); or one of "
+                f"{_INLINE_EDIT_OPS} for an inline edit — see precis-route-help"
+            ),
         )
-        return Response(
-            body=(
-                f"# autoplaced {ref.slug} — {moved} part(s) moved, {res.iters} iters\n"
-                f"crossings: {res.crossings_before} → {res.crossings_after}\n"
-                f"ratsnest:  {res.length_before:g} → {res.length_after:g} mm\n"
-                f"objective: {res.objective_before:g} → {res.objective_after:g}\n"
-                "Next: get(view='crossings') to inspect, get(view='feasibility') "
-                "for the H/V via estimate, or pin parts with fixed= and re-run."
+
+    def _enqueue_op(self, ref: Any, op: str, opts: dict[str, Any]) -> str:
+        """Enqueue a ``pcb_place``/``pcb_route`` worker job — NEVER
+        computes inline (the serve thread-pool starvation lesson; the
+        optimizer measures ~880 moves/s, so minutes per board, not
+        milliseconds). Idempotent per (design, op, content-hash): a
+        re-submit against unchanged design state + params collapses onto
+        the in-flight/prior job rather than minting a duplicate."""
+        graph = self.store.pcb_graph(ref.id)
+        stackup = (graph.get("board") or {}).get("stackup") or []
+        if len(stackup) != 4:
+            raise BadInput(
+                f"pcb: {ref.slug!r} has a {len(stackup)}-layer stackup — v1 "
+                "place/route only supports the default 4-layer board",
+                next="a non-4-layer stackup is out of v1 scope (2-layer "
+                "boards route power like signals, a different problem)",
             )
+        params: dict[str, Any] = {"pcb_ref_id": ref.id}
+        if opts.get("iters") is not None:
+            params["iters"] = int(opts["iters"])
+        if opts.get("seed") is not None:
+            params["seed"] = int(opts["seed"])
+        digest = pcb_session.content_hash(graph, params)
+        job_resp = self.hub.sibling("job").put(
+            job_type=f"pcb_{op}",
+            executor="job_inproc",
+            parent_id=ref.id,
+            params=params,
+            idem_key=f"pcb_{op}:{ref.id}:{digest}",
         )
+        status_view = "route-status" if op == "route" else "crossings"
+        return (
+            f"# {op} {ref.slug} — enqueued\n{job_resp.body}\n\n"
+            f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
+            "to check progress once the job lands."
+        )
+
+    def _op_move(self, ref: Any, args: dict[str, Any]) -> Response:
+        refdes = str(args.get("refdes") or "").strip()
+        if not refdes:
+            raise BadInput(
+                "op='move' needs args.refdes",
+                next="args={'op':'move','refdes':'U1','x':10.0,'y':5.0,'rot':90}",
+            )
+        x, y, rot = args.get("x"), args.get("y"), args.get("rot")
+        kwargs: dict[str, Any] = {}
+        if x is not None:
+            kwargs["x"] = float(x)
+        if y is not None:
+            kwargs["y"] = float(y)
+        if rot is not None:
+            kwargs["rot"] = float(rot)
+        if "fixed" in args:
+            kwargs["fixed"] = args["fixed"]
+        if not kwargs:
+            raise BadInput(
+                "op='move' needs at least one of x / y / rot / fixed",
+                next="args={'op':'move','refdes':'U1','fixed':'xy'}",
+            )
+        ok = self.store.pcb_move_instance(ref.id, refdes, **kwargs)
+        if not ok:
+            raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
+        return Response(body=f"# {refdes} moved — {kwargs}")
+
+    def _op_rip(self, ref: Any, args: dict[str, Any]) -> Response:
+        net = str(args.get("net") or "").strip()
+        if not net:
+            raise BadInput(
+                "op='rip' needs args.net",
+                next="args={'op':'rip','net':'I2C_SCL'}",
+            )
+        ripped = self.store.pcb_rip_route(ref.id, net)
+        if not ripped:
+            return Response(body=f"net {net!r} has no route to rip (already unrouted)")
+        return Response(
+            body=f"# ripped {net} — sketch cleared, back to unrouted\n"
+            "Next: put(args={'op':'route'}) to re-decide its topology, or "
+            "args={'op':'pin_side'} to steer it first."
+        )
+
+    def _op_pin_side(self, ref: Any, args: dict[str, Any]) -> Response:
+        net = str(args.get("net") or "").strip()
+        a, b = str(args.get("a") or "").strip(), str(args.get("b") or "").strip()
+        side = args.get("side")
+        if not (net and a and b) or side is None:
+            raise BadInput(
+                "op='pin_side' needs args.net, args.a, args.b (each "
+                "'REFDES.PIN'), args.side",
+                next="args={'op':'pin_side','net':'I2C_SCL','a':'U1.SCL',"
+                "'b':'R1.1','side':1}",
+            )
+        ok = self.store.pcb_pin_topology(ref.id, net, a, b, int(side))
+        if not ok:
+            raise NotFound(f"net {net!r} not found in {ref.slug!r}")
+        return Response(
+            body=f"# pinned {a} ↔ {b} on {net} to side={side}\n"
+            "Takes effect on the next put(args={'op':'route'})."
+        )
+
+    def _op_plane_net(self, ref: Any, args: dict[str, Any]) -> Response:
+        layer = str(args.get("layer") or "").strip()
+        net = str(args.get("net") or "").strip()
+        if not (layer and net):
+            raise BadInput(
+                "op='plane_net' needs args.layer and args.net",
+                next="args={'op':'plane_net','layer':'In1.Cu','net':'GND'}",
+            )
+        design = self.store.pcb_load(ref.id)
+        layer_names = [str(entry.get("name")) for entry in design["board"]["stackup"]]
+        if layer not in layer_names:
+            raise BadInput(
+                f"layer {layer!r} is not in this board's stackup",
+                options=layer_names,
+            )
+        plane_id = self.store.pcb_assign_plane(ref.id, layer, net)
+        if not plane_id:
+            raise NotFound(f"net {net!r} not found in {ref.slug!r}")
+        return Response(
+            body=f"# {net} assigned to plane layer {layer}\n"
+            "Takes effect on the next put(args={'op':'route'}) — its pins "
+            "fan out (dog-bone) instead of routing."
+        )
+
+    def _op_class_rules(self, ref: Any, args: dict[str, Any]) -> Response:
+        name = str(args.get("name") or "").strip()
+        rules = args.get("rules")
+        if not name or not isinstance(rules, dict):
+            raise BadInput(
+                "op='class_rules' needs args.name and args.rules (a dict)",
+                next="args={'op':'class_rules','name':'i2c',"
+                "'rules':{'clearance_mm':0.2}}",
+            )
+        self.store.pcb_set_class_rules(ref.id, name, rules)
+        return Response(body=f"# net class {name!r} rules set: {rules}")
 
     # ── the eyes ───────────────────────────────────────
     def _render_view(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
@@ -306,6 +505,12 @@ class PcbHandler(Handler):
             return self._render_route(ref_id, args)
         if view in _STATUS_VIEWS:
             return self._render_route_status(ref_id)
+        if view == "congestion":
+            return self._render_congestion(ref_id)
+        if view == "planes":
+            return self._render_planes(ref_id)
+        if view == "drc":
+            return self._render_drc(ref_id)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -369,25 +574,6 @@ class PcbHandler(Handler):
                 + "\n"
                 + render_agent_table(
                     rows, schema=["net_a", "wire_a", "net_b", "wire_b"]
-                )
-            )
-        if view == "drc":
-            findings = eyes.drc_lite(graph)
-            if not findings:
-                return Response(body="# DRC-lite — no findings ✓")
-            rows = [
-                {
-                    "severity": f["severity"],
-                    "code": f["code"],
-                    "where": f["where"],
-                    "message": f["message"],
-                }
-                for f in findings
-            ]
-            return Response(
-                body=f"# DRC-lite — {len(findings)} finding(s)\n"
-                + render_agent_table(
-                    rows, schema=["severity", "code", "where", "message"]
                 )
             )
         if view == "proximity":
@@ -629,8 +815,8 @@ class PcbHandler(Handler):
     # ── route status (pcb-guided-place-route Slice 1) ──────────────────
     def _render_route_status(self, ref_id: int) -> Response:
         """The per-net route status table — a net with no ``pcb_routes`` row
-        reads as ``unrouted`` (v1 has no sketcher/realizer yet, so every net
-        renders unrouted until a later slice writes routes)."""
+        reads as ``unrouted`` (the default state before ``op='route'`` has
+        ever run against it, not a missing one)."""
         rows = self.store.pcb_route_status(ref_id)
         if not rows:
             return Response(body="no nets on this design yet")
@@ -651,6 +837,123 @@ class PcbHandler(Handler):
             body=f"# route status — {len(rows)} net(s): {summary}\n"
             + render_agent_table(
                 table_rows, schema=["net", "class", "domain", "status"]
+            )
+        )
+
+    def _render_congestion(self, ref_id: int) -> Response:
+        """The latest ``op='route'`` run's congestion digest — per-gap
+        capacity warnings stamped onto ``refs.meta.last_route`` by the
+        ``pcb_route`` job (backlog acceptance criterion: a routing failure
+        must name the blocking gap, the participants, and the clearance
+        arithmetic, not just report "unrouted")."""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        if ref is None:
+            raise NotFound(f"pcb id={ref_id} not found")
+        last_route = (ref.meta or {}).get("last_route")
+        if not last_route:
+            return Response(
+                body="no route run yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'op':'route'}) then re-check this view."
+            )
+        warnings = last_route.get("warnings") or []
+        head = (
+            f"# congestion — last route: {last_route.get('realized', 0)} realized, "
+            f"{last_route.get('failed', 0)} failed, {len(warnings)} gap warning(s)"
+        )
+        if not warnings:
+            return Response(body=head + "\n(no over-capacity gaps ✓)")
+        return Response(body=head + "\n" + "\n".join(f"- {w}" for w in warnings))
+
+    def _render_planes(self, ref_id: int) -> Response:
+        """Authored plane assignments (``pcb_planes``, ``op='plane_net'``)
+        — which nets are plane-served on which layer, so the LLM can see
+        the fanout-vs-route split before running ``op='route'``."""
+        rows = self.store.pcb_planes_list(ref_id)
+        if not rows:
+            return Response(
+                body="no plane assignments yet\n\nNext: put(kind='pcb', "
+                "id='slug', args={'op':'plane_net','layer':'In1.Cu',"
+                "'net':'GND'})"
+            )
+        table_rows = [{"layer": r["layer"], "net": r["net"]} for r in rows]
+        return Response(
+            body=f"# planes — {len(rows)} assignment(s)\n"
+            + render_agent_table(table_rows, schema=["layer", "net"])
+        )
+
+    def _render_drc(self, ref_id: int) -> Response:
+        """Geometric DRC on REALIZED copper (pcb-guided-place-route Slice
+        8, :mod:`precis.pcb.drc`) — the L5 check, re-backing this view now
+        that a ``pcb_route`` run leaves real copper in ``pcb_copper`` to
+        check. Superseded ``eyes.drc_lite`` (graph-shape sanity only, no
+        geometry); the graph-feasibility half of DRC (``ir.py``, L0-L4)
+        stays inside the optimizer, not this view. Every call is itself a
+        DRC "run" — findings are persisted to ``pcb_drc_findings`` under a
+        fresh ``run_id`` so ``netlist_drc_clean`` and a human reviewer can
+        both read the same durable record afterward."""
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        if board is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        copper = self.store.pcb_copper_list(int(board["board_id"]))
+        if not copper:
+            return Response(
+                body="no realized copper yet\n\nNext: put(kind='pcb', "
+                "id='slug', args={'op':'route'}) to realize copper, then "
+                "re-check this view."
+            )
+        stackup = board["stackup"]
+        try:
+            capability = capability_for(pcb_drc.process_for_stackup(stackup))
+        except ValueError as exc:
+            raise BadInput(f"pcb: {exc}") from exc
+        model = {
+            "layers": [str(layer.get("name")) for layer in stackup],
+            "copper": copper,
+        }
+        courtyards = [
+            (
+                i["refdes"],
+                float(i["x"]),
+                float(i["y"]),
+                pcb_drc.DEFAULT_COURTYARD_RADIUS_MM,
+            )
+            for i in design["instances"]
+            if i["x"] is not None and i["y"] is not None
+        ]
+        findings = pcb_drc.run_geometric_drc(
+            model,
+            capability=capability,
+            outline=self._outline_from_features(ref_id),
+            courtyards=courtyards,
+        )
+        run_id = uuid.uuid4().hex
+        self.store.pcb_write_drc_findings(
+            int(board["board_id"]), run_id, [f.to_row() for f in findings]
+        )
+        n_error = sum(1 for f in findings if f.severity == "error")
+        n_warn = len(findings) - n_error
+        head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        if not findings:
+            return Response(body=head + " — no findings ✓")
+        rows = [
+            {
+                "severity": f.severity,
+                "rule": f.rule,
+                "where": f.where,
+                "margin_mm": "" if f.margin_mm is None else f"{f.margin_mm:+.3f}",
+                "detail": f.detail,
+            }
+            for f in findings
+        ]
+        return Response(
+            body=head
+            + "\n"
+            + render_agent_table(
+                rows, schema=["severity", "rule", "where", "margin_mm", "detail"]
             )
         )
 

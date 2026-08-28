@@ -400,6 +400,26 @@ def _load_embed_batch() -> JobTypeSpec:
     return embed_batch.SPEC
 
 
+def _load_pcb_place() -> JobTypeSpec:
+    # Placement-only anneal over a pcb design's graph (pcb-guided-place-
+    # route Slice 10 tool surface) — the enqueued half of
+    # put(kind='pcb', args={'op': 'place'}). Runs via plugin dispatch under
+    # the job_inproc executor.
+    from precis.workers.job_types import pcb_place
+
+    return pcb_place.SPEC
+
+
+def _load_pcb_route() -> JobTypeSpec:
+    # Joint place+sketch anneal + realize checkpoint (pcb-guided-place-
+    # route Slice 10 tool surface) — the enqueued half of
+    # put(kind='pcb', args={'op': 'route'}). Runs via plugin dispatch under
+    # the job_inproc executor.
+    from precis.workers.job_types import pcb_route
+
+    return pcb_route.SPEC
+
+
 def _load_derived_drain() -> JobTypeSpec:
     # Bounded in-proc work order draining a SMALL-tier derived LLM queue
     # (summarize/classify) — melchior-pinned, router-capped, never cloud.
@@ -621,6 +641,12 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "derived_drain":
         _REGISTRY["derived_drain"] = _load_derived_drain()
         return _REGISTRY["derived_drain"]
+    if name == "pcb_place":
+        _REGISTRY["pcb_place"] = _load_pcb_place()
+        return _REGISTRY["pcb_place"]
+    if name == "pcb_route":
+        _REGISTRY["pcb_route"] = _load_pcb_route()
+        return _REGISTRY["pcb_route"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -659,6 +685,8 @@ def known_job_types() -> list[str]:
         "quest_tick",
         "embed_batch",
         "derived_drain",
+        "pcb_place",
+        "pcb_route",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

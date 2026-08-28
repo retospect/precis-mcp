@@ -7,6 +7,64 @@ model: opus
 
 # LLM-guided topological place+route for the pcb kind (sketch-as-canonical)
 
+## BUILD STATUS (2026-08-28) — resume pointer
+
+**Shipped to main** (latest `7858a1c1`): slices 1–7 plus the crossings
+corrections. That is: schema + board/stackup hedges · catalog ingest,
+EasyEDA footprint parser, JLCPCB API client · the L0–L5 IR, objective
+vectors and cost function · gerber X2 + Excellon writer + JLC capability
+table (numbers **verified against JLC's published specs 2026-08-27**,
+not remembered) · footprint escape graph + copper tiling · the joint
+optimizer with placement moves · topology/layer/pin-swap moves + the
+arcs-and-tangents realizer · the real sweep-line crossings term.
+
+**Built but NOT yet shipped** (in the worktree at time of writing):
+- **Slice 8** — `pcb/drc.py`, the O(n²) reference oracle,
+  `netlist_drc_clean`, `eyes.drc_lite` retired, `view='drc'` re-backed.
+- **Slice 10** — `placement_legal` / `route_complete` evaluators,
+  `pcb_place` / `pcb_route` job types, `pcb/session.py`, skills.
+Both verified green by direct tooling; the full `scripts/test --impacted`
+gate did NOT complete under heavy sibling-worktree congestion. **Re-run
+the gate before landing** rather than trusting the targeted runs alone.
+
+**Slice 9 (JLCPCB ordering) is the only one not built** — blocked on a
+human action, not engineering: every signed call returns `403 API
+insufficient permissions` until the **Components (and PCB) scope is
+granted on the app in the JLCPCB Open API console**. Auth itself is
+server-verified and correct; the client is written and fixture-tested.
+
+### Known-inert / partial — do NOT read as working
+- **`SIDE_FLIP` has no cost effect.** A straight-line crossing count at
+  L3 cannot read `seg_side`; needs realizer geometry in the loop or
+  side-aware gap capacity.
+- **`PIN_SWAP` needs admissible-pin data** (datasheet-derived
+  equivalence classes + hard exclusions: ESP32 strapping pins, JTAG,
+  ADC2-vs-WiFi). Footprint *offsets* are now wired; the equivalence
+  sets are not. Degrades to a safe no-op — never invents equivalences.
+- **`ROTATE` is cost-neutral** — no registered term reads `inst_rot`.
+- **`drc.py` reads only the fab capability table**, not
+  `pcb_net_classes` rule overrides; that schema does not exist yet.
+  Hook point documented in the module docstring.
+- **Layer *roles* are read from the stackup's `role` field**, not yet
+  emergent as §Layer ROLE describes.
+
+### Bugs this build produced that were SILENT — all found by tests or
+measurement, none by review, none crashed or failed type checking
+1. `hardened_penalty` inverted: sub-budget fractions got *cheaper* as
+   the schedule hardened (slice 3).
+2. SA compared costs across different schedules ⇒ 1-in-3000 acceptance;
+   the optimizer wasn't optimizing (slice 6).
+3. SA temperature decayed to ~1e-22 before layer moves became eligible
+   ⇒ 2174 proposals, 0 accepted; fixed by stage-boundary reheat (7).
+4. The crossings estimator was **provably always zero** on any real
+   board (forest ⇒ Euler bound never fires).
+5. **Every via was invisible to clearance DRC** — vias carry
+   `layers`/`span`, the indexed engine read `layer`, so all vias were
+   dropped from every layer's candidate set. A shorted board would have
+   passed clean. Found by the O(n²) oracle at gap 0.0 (slice 8).
+Keep the oracle and the delta-correctness property tests permanently;
+they are what makes this class of bug findable.
+
 ## Motivation / why
 
 The v1 routing story (export a Specctra DSN, run the Freerouting jar, parse

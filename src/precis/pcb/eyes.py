@@ -1,4 +1,4 @@
-"""DRC-lite, proximity, signal-trace, and measure evaluation.
+"""Ratsnest/crossings, proximity, signal-trace, and measure evaluation.
 
 Pure folds over the graph dict the store hands up
 (:meth:`precis.store._pcb_ops.PcbMixin.pcb_graph`):
@@ -8,6 +8,12 @@ Pure folds over the graph dict the store hands up
       "nets":       [{name, net_class, members:[{refdes, pin}]}],
       "unconnected":[{refdes, pin}],
     }
+
+``drc_lite`` is RETIRED (pcb-guided-place-route Slice 8) — ``view='drc'``
+is now backed by :mod:`precis.pcb.drc` (geometric DRC on realized copper,
+L5); the graph-shape half of what ``drc_lite`` checked (unconnected pins,
+dangling nets) lives in :mod:`precis.pcb.ir`'s graph-feasibility functions
+instead. This module keeps ratsnest/crossings/proximity/measures only.
 """
 
 from __future__ import annotations
@@ -15,10 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 from precis.pcb.geom import Point, dist
-
-# Heuristic: a net whose name/class says "power rail" wants a decoupling cap.
-_POWER_CLASSES = frozenset({"power", "pwr"})
-_CAP_HINTS = ("nf", "uf", "µf", "pf", "cap")
 
 # ── measure direction ────────────────────────────────
 # pcb_measures.direction: min|max|target|keep_above|keep_below. It decides
@@ -50,57 +52,6 @@ def _placed(graph: dict[str, Any]) -> dict[str, Point]:
         for i in graph["instances"]
         if i.get("x") is not None and i.get("y") is not None
     }
-
-
-def _is_cap(label: str | None) -> bool:
-    lo = (label or "").lower()
-    return any(h in lo for h in _CAP_HINTS)
-
-
-def drc_lite(graph: dict[str, Any]) -> list[dict[str, str]]:
-    """Basic electrical sanity the LLM should see *before* the router. Each finding: ``{severity, code, where, message}``."""
-    out: list[dict[str, str]] = []
-
-    # 1. unconnected pins
-    for u in graph.get("unconnected") or []:
-        out.append(
-            {
-                "severity": "warn",
-                "code": "unconnected-pin",
-                "where": f"{u['refdes']}.{u['pin']}",
-                "message": "pin is on no net",
-            }
-        )
-
-    # 2. dangling nets (a single pin — nothing to connect to)
-    for net in graph["nets"]:
-        n = len(net.get("members") or [])
-        if n < 2:
-            out.append(
-                {
-                    "severity": "warn",
-                    "code": "dangling-net",
-                    "where": net["name"],
-                    "message": f"net has {n} pin(s); needs ≥2 to be a connection",
-                }
-            )
-
-    # 3. power rail without a decoupling cap (needs pin tags / a cap member)
-    labels = {i["refdes"]: i.get("label") for i in graph["instances"]}
-    for net in graph["nets"]:
-        if (net.get("net_class") or "").strip().lower() not in _POWER_CLASSES:
-            continue
-        members = net.get("members") or []
-        if not any(_is_cap(labels.get(m["refdes"])) for m in members):
-            out.append(
-                {
-                    "severity": "warn",
-                    "code": "no-bypass-cap",
-                    "where": net["name"],
-                    "message": "power net has no decoupling capacitor on it",
-                }
-            )
-    return out
 
 
 def proximity(graph: dict[str, Any], a: str, b: str) -> dict[str, Any]:

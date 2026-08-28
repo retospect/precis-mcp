@@ -39,6 +39,12 @@ def _jsonb_or_none(value: Any) -> Jsonb | None:
     return Jsonb(value) if value is not None else None
 
 
+#: Sentinel default for :meth:`PcbMixin.pcb_move_instance`'s ``fixed=``
+#: kwarg — lets a caller pass ``fixed=None`` to explicitly CLEAR the lock,
+#: distinct from omitting the kwarg (leave the lock alone).
+_UNSET: Any = object()
+
+
 class PcbMixin:
     pool: Any
     tx: Any
@@ -889,6 +895,89 @@ class PcbMixin:
             n += 1
         return n
 
+    # -- geometric DRC findings (pcb-guided-place-route Slice 8) ----------
+    def pcb_write_drc_findings(
+        self,
+        board_id: int,
+        run_id: str,
+        findings: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Persist one DRC run's findings — ``pcb_drc_findings`` is
+        durable and linkable (0138): every row is a plain INSERT, never
+        mutated or DELETEd by a later run (unlike ``pcb_copper``'s
+        DELETE+INSERT regeneration discipline — a DRC run is a dated
+        finding, not a derived-and-replaced artifact)."""
+        if conn is not None:
+            self._pcb_write_drc_findings(conn, board_id, run_id, findings)
+            return
+        with self.tx() as c:
+            self._pcb_write_drc_findings(c, board_id, run_id, findings)
+
+    def _pcb_write_drc_findings(
+        self,
+        conn: Connection,
+        board_id: int,
+        run_id: str,
+        findings: list[dict[str, Any]],
+    ) -> None:
+        for f in findings:
+            conn.execute(
+                "INSERT INTO pcb_drc_findings "
+                "(board_id, run_id, rule, severity, objects, detail) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    board_id,
+                    run_id,
+                    f["rule"],
+                    f["severity"],
+                    Jsonb(f.get("objects") or []),
+                    f.get("detail"),
+                ),
+            )
+
+    def pcb_drc_findings_latest(
+        self, ref_id: int
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """The most recent DRC run's ``(run_id, findings)`` for the design's
+        board — ``(None, [])`` when there is no board yet or no run has
+        ever been recorded (the ``netlist_drc_clean`` gate evaluator reads
+        this: no run yet means "not yet", not "clean")."""
+        with self.pool.connection() as conn:
+            board_row = conn.execute(
+                "SELECT board_id FROM pcb_boards "
+                "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if board_row is None:
+                return None, []
+            board_id = int(board_row[0])
+            run_row = conn.execute(
+                "SELECT run_id FROM pcb_drc_findings "
+                "WHERE board_id = %s ORDER BY created_at DESC LIMIT 1",
+                (board_id,),
+            ).fetchone()
+            if run_row is None:
+                return None, []
+            run_id = str(run_row[0])
+            rows = conn.execute(
+                "SELECT rule, severity, objects, detail, waived_by "
+                "FROM pcb_drc_findings WHERE board_id = %s AND run_id = %s "
+                "ORDER BY finding_id",
+                (board_id, run_id),
+            ).fetchall()
+            return run_id, [
+                {
+                    "rule": r[0],
+                    "severity": r[1],
+                    "objects": r[2],
+                    "detail": r[3],
+                    "waived_by": r[4],
+                }
+                for r in rows
+            ]
+
     def pcb_set_placement(
         self,
         ref_id: int,
@@ -915,6 +1004,356 @@ class PcbMixin:
                     (Jsonb(dict(meta)), ref_id),
                 )
         return moved
+
+    # -- pcb-guided-place-route Slice 10: job write-back + inline editors --
+
+    def pcb_set_pose(
+        self,
+        ref_id: int,
+        pose: dict[str, tuple[float, float, float]],
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> int:
+        """Write new ``(x, y, rot)`` for instances by refdes — the joint
+        placement+topology optimizer's write-back (``pcb_place``/
+        ``pcb_route`` jobs).
+
+        Same fixed-respecting discipline as :meth:`pcb_set_placement`, but
+        per-axis: a ``fixed='rot'`` instance still gets ``(x, y)`` written,
+        a ``fixed='xy'`` instance still gets rotation written, and
+        ``fixed='both'`` blocks everything. ``pcb_set_placement`` is left
+        untouched rather than folded into this — its only caller (the v1
+        autoplace/route-round-trip path) never writes rotation, so a
+        coarser blanket guard is the honest shape there. Returns the
+        number of instances that had at least one axis written."""
+        moved = 0
+        with self.tx() as conn:
+            for refdes, (x, y, rot) in pose.items():
+                moved += conn.execute(
+                    "UPDATE pcb_instances SET "
+                    "  x = CASE WHEN fixed IS NULL OR fixed NOT IN ('xy', 'both') "
+                    "           THEN %s ELSE x END, "
+                    "  y = CASE WHEN fixed IS NULL OR fixed NOT IN ('xy', 'both') "
+                    "           THEN %s ELSE y END, "
+                    "  rot = CASE WHEN fixed IS NULL OR fixed NOT IN ('rot', 'both') "
+                    "           THEN %s ELSE rot END "
+                    "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+                    (float(x), float(y), float(rot), ref_id, refdes),
+                ).rowcount
+            if meta is not None:
+                conn.execute(
+                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                    (Jsonb(dict(meta)), ref_id),
+                )
+        return moved
+
+    def pcb_move_instance(
+        self,
+        ref_id: int,
+        refdes: str,
+        *,
+        x: float | None = None,
+        y: float | None = None,
+        rot: float | None = None,
+        fixed: str | None = _UNSET,
+    ) -> bool:
+        """The inline move/rotate/(un)lock editor. Unlike
+        :meth:`pcb_set_pose`'s optimizer write-back, this IS the authorized
+        edit path, so it never refuses a ``fixed`` instance — an LLM
+        deliberately repositioning a locked part is not the failure mode
+        the optimizer's guard exists for. ``fixed`` defaults to a sentinel
+        so a caller can pass ``fixed=None`` to explicitly CLEAR the lock,
+        distinct from omitting it (leave the lock alone). Returns whether a
+        live instance was found and updated."""
+        sets: list[str] = []
+        params: list[Any] = []
+        if x is not None:
+            sets.append("x = %s")
+            params.append(float(x))
+        if y is not None:
+            sets.append("y = %s")
+            params.append(float(y))
+        if rot is not None:
+            sets.append("rot = %s")
+            params.append(float(rot))
+        if fixed is not _UNSET:
+            sets.append("fixed = %s")
+            params.append(fixed)
+        if not sets:
+            return False
+        params += [ref_id, refdes]
+        with self.tx() as conn:
+            n = conn.execute(
+                f"UPDATE pcb_instances SET {', '.join(sets)} "  # nosec B608 — sets[] is a fixed internal column-name list, never caller input
+                "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+                params,
+            ).rowcount
+        return n > 0
+
+    def pcb_net_ids(self, ref_id: int) -> dict[str, int]:
+        """``{net name: net_id}`` for a design — the join key
+        :meth:`pcb_routes_write`/:meth:`pcb_copper_replace`'s callers use to
+        turn the IR's name-addressed sketch back into real FKs."""
+        with self.pool.connection() as conn:
+            return {
+                r[0]: int(r[1])
+                for r in conn.execute(
+                    "SELECT name, net_id FROM pcb_nets "
+                    "WHERE ref_id = %s AND retired_at IS NULL",
+                    (ref_id,),
+                ).fetchall()
+            }
+
+    def pcb_routes_get(self, ref_id: int) -> dict[str, dict[str, Any]]:
+        """Every net's persisted sketch (tree/topology/layer_assign/status/
+        fail/meta), by net name — feeds
+        :func:`precis.pcb.session.apply_route_overrides` so a pinned side
+        choice survives the next ``pcb_route`` run's IR rebuild. A net with
+        no ``pcb_routes`` row yet reads as the all-empty/``'unrouted'``
+        default, same convention as :meth:`pcb_route_status`."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT n.name, rt.tree, rt.topology, rt.layer_assign, "
+                "       rt.status, rt.fail, rt.meta "
+                "FROM pcb_nets n "
+                "JOIN pcb_boards b ON b.ref_id = n.ref_id AND b.name = 'main' "
+                "  AND b.retired_at IS NULL "
+                "LEFT JOIN pcb_routes rt "
+                "  ON rt.net_id = n.net_id AND rt.board_id = b.board_id "
+                "WHERE n.ref_id = %s AND n.retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for name, tree, topology, layer_assign, status, fail, meta in rows:
+            out[name] = {
+                "tree": tree or [],
+                "topology": topology or [],
+                "layer_assign": layer_assign or [],
+                "status": status or "unrouted",
+                "fail": fail,
+                "meta": meta or {},
+            }
+        return out
+
+    def pcb_routes_write(
+        self, ref_id: int, board_id: int, rows: dict[str, dict[str, Any]]
+    ) -> int:
+        """Upsert one ``pcb_routes`` row per named net — the ``pcb_route``
+        job's checkpoint write-back. A net absent from ``rows`` (the
+        sketch has nothing new to say about it, e.g. plane-served) is left
+        untouched. Returns the number of rows written."""
+        n = 0
+        with self.tx() as conn:
+            for net_name, row in rows.items():
+                net = conn.execute(
+                    "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+                    "AND retired_at IS NULL",
+                    (ref_id, net_name),
+                ).fetchone()
+                if net is None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO pcb_routes
+                        (board_id, net_id, tree, topology, layer_assign,
+                         status, fail, meta, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (board_id, net_id) DO UPDATE SET
+                        tree = EXCLUDED.tree,
+                        topology = EXCLUDED.topology,
+                        layer_assign = EXCLUDED.layer_assign,
+                        status = EXCLUDED.status,
+                        fail = EXCLUDED.fail,
+                        meta = EXCLUDED.meta,
+                        updated_at = now()
+                    """,
+                    (
+                        board_id,
+                        int(net[0]),
+                        _jsonb_or_none(row.get("tree")),
+                        _jsonb_or_none(row.get("topology")),
+                        _jsonb_or_none(row.get("layer_assign")),
+                        row.get("status") or "unrouted",
+                        _jsonb_or_none(row.get("fail")),
+                        Jsonb(dict(row.get("meta") or {})),
+                    ),
+                )
+                n += 1
+        return n
+
+    def pcb_copper_replace(self, board_id: int, rows: list[dict[str, Any]]) -> int:
+        """Regenerate a board's derived copper wholesale — DELETE + INSERT,
+        the same cascade discipline as chunks->embeddings the table's own
+        comment promises (never a partial UPDATE)."""
+        with self.tx() as conn:
+            conn.execute("DELETE FROM pcb_copper WHERE board_id = %s", (board_id,))
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO pcb_copper "
+                    "(board_id, ctype, layer, net_id, route_id, geom) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (
+                        board_id,
+                        r["ctype"],
+                        r["layer"],
+                        r["net_id"],
+                        r.get("route_id"),
+                        Jsonb(r["geom"]),
+                    ),
+                )
+        return len(rows)
+
+    def pcb_copper_list(self, board_id: int) -> list[dict[str, Any]]:
+        """Every derived copper row for a board, flattened into
+        :mod:`precis.pcb.drc`'s copper-model item shape (``{"ctype",
+        "layer", "net", ...geom fields}``) — the same flat ``ctype``/
+        ``layer``/``net``/``width_mm``/``segments`` convention
+        :mod:`precis.pcb.realize` and :mod:`precis.pcb.gerber` already
+        share, so ``view='drc'`` can hand this straight to
+        :func:`precis.pcb.drc.run_geometric_drc` with no reshaping.
+        ``net_id`` (the real FK ``pcb_copper.geom`` doesn't carry) is
+        resolved to its net NAME here via a join — geometric DRC findings
+        read by name, matching every other engine's "names are for
+        humans/export, not internal identity" discipline at this layer."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT c.ctype, c.layer, n.name, c.geom "
+                "FROM pcb_copper c JOIN pcb_nets n ON n.net_id = c.net_id "
+                "WHERE c.board_id = %s",
+                (board_id,),
+            ).fetchall()
+        return [
+            {"ctype": ctype, "layer": layer, "net": net_name, **(geom or {})}
+            for ctype, layer, net_name, geom in rows
+        ]
+
+    def pcb_rip_route(self, ref_id: int, net_name: str) -> bool:
+        """The rip-up primitive: reset one net's sketch back to
+        ``'unrouted'`` and drop its realized copper — the LLM's lever when
+        the realizer reports an over-capacity gap (backlog's rip-up loop).
+        A subsequent ``op='route'`` re-decides that net's topology fresh —
+        a rip clears the whole persisted sketch, not just the realized
+        geometry, since a pinned choice that caused the squeeze shouldn't
+        survive the rip that was meant to escape it. Returns whether a
+        route row existed to rip (``False`` for an already-unrouted net —
+        nothing to rip)."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT rt.route_id, rt.board_id, rt.net_id FROM pcb_routes rt "
+                "JOIN pcb_nets n ON n.net_id = rt.net_id "
+                "WHERE n.ref_id = %s AND n.name = %s",
+                (ref_id, net_name),
+            ).fetchone()
+            if row is None:
+                return False
+            route_id, board_id, net_id = int(row[0]), int(row[1]), int(row[2])
+            conn.execute(
+                "UPDATE pcb_routes SET tree = NULL, topology = NULL, "
+                "layer_assign = NULL, status = 'unrouted', fail = NULL, "
+                "updated_at = now() WHERE route_id = %s",
+                (route_id,),
+            )
+            conn.execute(
+                "DELETE FROM pcb_copper WHERE board_id = %s AND net_id = %s",
+                (board_id, net_id),
+            )
+        return True
+
+    def pcb_pin_topology(
+        self, ref_id: int, net_name: str, a: str, b: str, side: int
+    ) -> bool:
+        """Pin one segment's side choice — a targeted MERGE into the net's
+        persisted ``pcb_routes.topology`` (replacing at most the one entry
+        keyed by ``(a, b)``, never the wholesale replace
+        :meth:`pcb_routes_write`'s checkpoint does), so the pin survives
+        until the next ``op='route'`` run reads it back via
+        :func:`precis.pcb.session.apply_route_overrides`. Creates the
+        net's ``pcb_routes`` row (status ``'unrouted'``) if none exists yet
+        — pinning a side is a legitimate first edit to an as-yet-unrouted
+        net's sketch. Returns whether the net resolved."""
+        key = "|".join(sorted((a, b)))
+        with self.tx() as conn:
+            board_id = self._pcb_ensure_board(conn, ref_id)
+            net = conn.execute(
+                "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+                "AND retired_at IS NULL",
+                (ref_id, net_name),
+            ).fetchone()
+            if net is None:
+                return False
+            net_id = int(net[0])
+            row = conn.execute(
+                "SELECT route_id, topology FROM pcb_routes "
+                "WHERE board_id = %s AND net_id = %s",
+                (board_id, net_id),
+            ).fetchone()
+            entries = list(row[1]) if row is not None and row[1] else []
+            entries = [
+                e
+                for e in entries
+                if "|".join(sorted((e.get("a", ""), e.get("b", "")))) != key
+            ]
+            entries.append({"a": a, "b": b, "side": int(side)})
+            if row is None:
+                conn.execute(
+                    "INSERT INTO pcb_routes (board_id, net_id, topology, status) "
+                    "VALUES (%s, %s, %s, 'unrouted')",
+                    (board_id, net_id, Jsonb(entries)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE pcb_routes SET topology = %s, updated_at = now() "
+                    "WHERE route_id = %s",
+                    (Jsonb(entries), int(row[0])),
+                )
+        return True
+
+    def pcb_assign_plane(self, ref_id: int, layer_name: str, net_name: str) -> int:
+        """Author a plane assignment (``pcb_planes``) — the inline "assign
+        plane net" editor. Idempotent by (board, layer, net); returns the
+        plane_id, or 0 when ``net_name`` doesn't resolve on this design."""
+        with self.tx() as conn:
+            board_id = self._pcb_ensure_board(conn, ref_id)
+            net = conn.execute(
+                "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+                "AND retired_at IS NULL",
+                (ref_id, net_name),
+            ).fetchone()
+            if net is None:
+                return 0
+            row = conn.execute(
+                """
+                INSERT INTO pcb_planes (board_id, layer, net_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
+                DO UPDATE SET meta = pcb_planes.meta
+                RETURNING plane_id
+                """,
+                (board_id, layer_name, int(net[0])),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def pcb_planes_list(self, ref_id: int) -> list[dict[str, Any]]:
+        """Authored plane assignments — the ``view='planes'`` read."""
+        with self.pool.connection() as conn:
+            return [
+                {"layer": r[0], "net": r[1], "region_hint": r[2]}
+                for r in conn.execute(
+                    "SELECT pl.layer, n.name, pl.region_hint "
+                    "FROM pcb_planes pl "
+                    "JOIN pcb_boards b ON b.board_id = pl.board_id "
+                    "JOIN pcb_nets n ON n.net_id = pl.net_id "
+                    "WHERE b.ref_id = %s AND pl.retired_at IS NULL "
+                    "ORDER BY pl.layer, n.name",
+                    (ref_id,),
+                ).fetchall()
+            ]
+
+    def pcb_set_class_rules(self, ref_id: int, name: str, rules: dict[str, Any]) -> int:
+        """Thin single-class wrapper around
+        :meth:`pcb_upsert_net_classes` — the inline "set class rules"
+        editor's write path."""
+        return self.pcb_upsert_net_classes(ref_id, {name: rules})
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Live measures of a design."""

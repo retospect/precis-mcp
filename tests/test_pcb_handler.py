@@ -197,11 +197,60 @@ def test_ratsnest_view_excludes_plane_nets(pcb):
     assert "GND" not in rn.body and "VCC3V3" not in rn.body
 
 
-def test_drc_view(pcb):
+def test_drc_view_before_any_route_run(pcb):
+    # Geometric DRC (pcb-guided-place-route Slice 8) checks REALIZED copper
+    # (pcb_copper) — before op='route' has ever run there is none, and the
+    # view says so rather than reporting a false "clean" or crashing. See
+    # tests/test_pcb_drc.py for the engine's own rule/oracle coverage.
     pcb.put(id="sensor-node", args=_DESIGN)
     drc = pcb.get(id="sensor-node", view="drc")
-    # C1/R1 have unconnected second pins; flag them
-    assert "unconnected-pin" in drc.body
+    assert "no realized copper yet" in drc.body
+
+
+def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
+    # Seed pcb_copper directly (the pcb_route job's own write path,
+    # precis.pcb.session/workers.job_types.pcb_route) rather than running
+    # the full optimizer — this test is only exercising the store->drc.py
+    # ->handler wiring, not the router itself (see test_pcb_drc.py for the
+    # engine's own rule/oracle coverage).
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = pcb.store.get_ref(kind="pcb", id="sensor-node")
+    board_id = pcb.store.pcb_ensure_board(ref.id)
+    net_ids = pcb.store.pcb_net_ids(ref.id)
+    pcb.store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["I2C_SCL"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [1.0, 0.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            },
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["GND"],
+                "route_id": None,
+                # 0.02mm edge-to-edge gap -- well under any process's
+                # jlc_min trace_spacing_mm.
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.22], "end": [1.0, 0.22]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            },
+        ],
+    )
+    drc = pcb.get(id="sensor-node", view="drc")
+    assert "error" in drc.body
+    assert "clearance" in drc.body
 
 
 def test_proximity_view(pcb):
@@ -301,61 +350,164 @@ def test_unknown_view_raises(pcb):
         pcb.get(id="sensor-node", view="bogus")
 
 
-# ── auto-place + feasibility ───────────────────────────
-def test_autoplace_reduces_crossings(pcb):
+# ── auto-place (retired inline alias — pcb-guided-place-route Slice 10) ──
+def test_autoplace_alias_enqueues_a_place_job_with_deprecation_note(pcb, store):
+    """``args={'autoplace':...}`` no longer computes anything itself — it
+    now enqueues the SAME ``pcb_place`` job ``op='place'`` does, and the
+    crossing count is UNCHANGED right after (nothing ran inline). See
+    ``tests/workers/test_pcb_place.py`` for the job's own placement-quality
+    coverage."""
     pcb.put(id="x", args=_CROSSED)  # the X — 1 crossing
     before = pcb.get(id="x", view="crossings")
     assert "crossings — 1" in before.body
-    placed = pcb.put(id="x", args={"autoplace": {"iters": 2000, "seed": 1}})
-    assert "1 → 0" in placed.body  # crossings before → after
+
+    resp = pcb.put(id="x", args={"autoplace": {"iters": 2000, "seed": 1}})
+    assert "DEPRECATED" in resp.body
+    assert "'op':'place'" in resp.body
+    assert "enqueued" in resp.body
+
+    ref = store.get_ref(kind="pcb", id="x")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        job_row = conn.execute(
+            "SELECT meta->>'job_type', meta->'params'->>'pcb_ref_id' "
+            "FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert job_row == ("pcb_place", str(ref.id))
+
+    # no heavy compute ran in the request path — crossings are unchanged.
     after = pcb.get(id="x", view="crossings")
-    assert "no crossings" in after.body
+    assert "crossings — 1" in after.body
 
 
-def test_autoplace_keeps_fixed_part_put(pcb):
-    pcb.put(
-        id="f",
-        args={
-            "components": [
-                {
-                    "refdes": "J1",
-                    "label": "conn",
-                    "x": 0.0,
-                    "y": 0.0,
-                    "fixed": "xy",
-                    "pins": [{"name": "1"}],
-                },
-                {
-                    "refdes": "U1",
-                    "label": "ic",
-                    "x": 40.0,
-                    "y": 40.0,
-                    "pins": [{"name": "1"}],
-                },
-                {
-                    "refdes": "U2",
-                    "label": "ic",
-                    "x": 41.0,
-                    "y": 40.0,
-                    "pins": [{"name": "1"}],
-                },
-            ],
-            "nets": [{"name": "N", "class": "signal"}],
-            "connections": [
-                {"net": "N", "refdes": "U1", "pin": "1"},
-                {"net": "N", "refdes": "U2", "pin": "1"},
-            ],
-        },
+def test_op_place_enqueues_and_is_idempotent_per_content_hash(pcb, store):
+    pcb.put(id="idem-place", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="idem-place")
+    assert ref is not None
+
+    first = pcb.put(id="idem-place", args={"op": "place"})
+    assert "enqueued" in first.body
+    second = pcb.put(id="idem-place", args={"op": "place"})
+    # same design state + same params -> the SAME job (dedupe), not a
+    # second one — the (design, op, content-hash) idempotency contract.
+    assert "existing job" in second.body or "for idem_key=" in second.body
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+        assert row is not None
+        n = row[0]
+    assert n == 1
+
+
+def test_op_place_never_computes_inline(pcb, monkeypatch):
+    """The serve thread-pool starvation lesson (backlog, verbatim): heavy
+    compute must never run in the MCP request path. Patches the optimizer
+    entry point to explode if called — ``op='place'`` must still succeed by
+    only ever enqueuing a job."""
+    from precis.pcb import optimize as pcb_optimize
+
+    def _boom(*_a, **_k):
+        raise AssertionError("optimize() must never run inline from put()")
+
+    monkeypatch.setattr(pcb_optimize, "optimize", _boom)
+    pcb.put(id="op-place-noinline", args=_CROSSED)
+    resp = pcb.put(id="op-place-noinline", args={"op": "place"})
+    assert "enqueued" in resp.body
+
+
+def test_op_route_enqueues_a_pcb_route_job(pcb, store):
+    pcb.put(id="route-enqueue", args=_CROSSED)
+    resp = pcb.put(id="route-enqueue", args={"op": "route"})
+    assert "enqueued" in resp.body
+    ref = store.get_ref(kind="pcb", id="route-enqueue")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'job_type' FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert row == ("pcb_route",)
+
+
+def test_op_place_rejects_non_4_layer_stackup(pcb, store):
+    """v1 place/route only supports the default 4-layer board (backlog,
+    verbatim decision) — a differently-sized stackup is rejected with a
+    clear message rather than silently mis-routing a 2-layer board."""
+    pcb.put(id="op-2layer", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="op-2layer")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_boards SET stackup = "
+            '\'[{"name":"F.Cu","role":"signal"},'
+            '{"name":"B.Cu","role":"signal"}]\'::jsonb '
+            "WHERE board_id = %s",
+            (board_id,),
+        )
+        conn.commit()
+    with pytest.raises(BadInput, match="4-layer"):
+        pcb.put(id="op-2layer", args={"op": "place"})
+
+
+def test_op_unknown_rejected(pcb):
+    pcb.put(id="op-bad", args=_CROSSED)
+    with pytest.raises(BadInput, match="unknown op"):
+        pcb.put(id="op-bad", args={"op": "levitate"})
+
+
+def test_op_move_sets_position_and_lock(pcb, store):
+    pcb.put(id="op-move", args=_CROSSED)
+    resp = pcb.put(
+        id="op-move",
+        args={"op": "move", "refdes": "A", "x": 1.0, "y": 2.0, "fixed": "xy"},
     )
-    pcb.put(id="f", args={"autoplace": {"iters": 300, "seed": 2}})
-    # J1 (fixed) keeps @0,0 in the TOC
-    toc = pcb.get(id="f", view=None)
-    assert "J1" in toc.body
-    j1 = pcb.get(id="f#J1")
-    assert j1 is not None  # still resolvable
-    # confirm via the net/proximity that J1 didn't move
-    pr = pcb.get(id="f", view="proximity", args={"a": "J1", "b": "U1"})
-    assert "mm" in pr.body
+    assert "moved" in resp.body
+    ref = store.get_ref(kind="pcb", id="op-move")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT x, y, fixed FROM pcb_instances WHERE ref_id = %s AND refdes = 'A'",
+            (ref.id,),
+        ).fetchone()
+    assert row == (1.0, 2.0, "xy")
+
+
+def test_op_move_unknown_instance_not_found(pcb):
+    pcb.put(id="op-move-404", args=_CROSSED)
+    with pytest.raises(NotFound):
+        pcb.put(id="op-move-404", args={"op": "move", "refdes": "NOPE", "x": 1.0})
+
+
+def test_op_class_rules_sets_rules(pcb, store):
+    pcb.put(id="op-classrules", args=_CROSSED)
+    pcb.put(
+        id="op-classrules",
+        args={"op": "class_rules", "name": "power", "rules": {"clearance_mm": 0.3}},
+    )
+    ref = store.get_ref(kind="pcb", id="op-classrules")
+    assert ref is not None
+    graph = store.pcb_graph(ref.id)
+    assert graph["net_classes"]["power"] == {"clearance_mm": 0.3}
+
+
+def test_op_plane_net_rejects_unknown_layer(pcb):
+    pcb.put(id="op-plane-bad", args=_CROSSED)
+    with pytest.raises(BadInput, match="not in this board's stackup"):
+        pcb.put(
+            id="op-plane-bad",
+            args={"op": "plane_net", "layer": "Nope.Cu", "net": "N1"},
+        )
+
+
+def test_op_rip_no_route_is_a_noop_response(pcb):
+    pcb.put(id="op-rip", args=_CROSSED)
+    resp = pcb.put(id="op-rip", args={"op": "rip", "net": "N1"})
+    assert "already unrouted" in resp.body
 
 
 def test_feasibility_view(pcb):
@@ -612,3 +764,57 @@ def test_route_status_view_reflects_seeded_routes(pcb, store):
     resp = pcb.get(id="sensor-node", view="route-status")
     assert "sketched" in resp.body
     assert "1 sketched" in resp.body
+
+
+# ── congestion / planes views (pcb-guided-place-route Slice 10) ─────────
+
+
+def test_congestion_and_planes_views_are_discoverable():
+    assert "congestion" in PcbHandler.spec.views
+    assert "planes" in PcbHandler.spec.views
+
+
+def test_congestion_view_before_any_route_run(pcb):
+    pcb.put(id="cong-none", args=_CROSSED)
+    resp = pcb.get(id="cong-none", view="congestion")
+    assert "no route run yet" in resp.body
+
+
+def test_congestion_view_reads_last_route_meta(pcb, store):
+    from psycopg.types.json import Jsonb
+
+    pcb.put(id="cong-seeded", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="cong-seeded")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+            (
+                Jsonb(
+                    {
+                        "last_route": {
+                            "realized": 1,
+                            "failed": 1,
+                            "warnings": ["gap 0.20 mm between A/B needs 0.30 mm"],
+                        }
+                    }
+                ),
+                ref.id,
+            ),
+        )
+        conn.commit()
+    resp = pcb.get(id="cong-seeded", view="congestion")
+    assert "1 realized" in resp.body
+    assert "1 failed" in resp.body
+    assert "needs 0.30 mm" in resp.body
+
+
+def test_planes_view_empty_then_assigned(pcb, store):
+    pcb.put(id="planes-x", args=_CROSSED)
+    empty = pcb.get(id="planes-x", view="planes")
+    assert "no plane assignments" in empty.body
+
+    pcb.put(id="planes-x", args={"op": "plane_net", "layer": "In1.Cu", "net": "N1"})
+    resp = pcb.get(id="planes-x", view="planes")
+    assert "In1.Cu" in resp.body
+    assert "N1" in resp.body

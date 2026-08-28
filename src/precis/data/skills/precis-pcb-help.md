@@ -1,10 +1,10 @@
 ---
 id: precis-pcb-help
 title: precis — the PCB kind (electronics design you read as a graph)
-summary: design a circuit board the LLM authors in batch and reads as a traversable netlist graph — components/pins/nets/placement, never pixels; pick JLCPCB-assemblable parts, place to minimise crossed wires, then export BOM/CPL/DSN and route with Freerouting. Covers schematic capture, netlist, footprints, ratsnest, autoplace, gerbers, EDA/CAD for circuits.
+summary: design a circuit board the LLM authors in batch and reads as a traversable netlist graph — components/pins/nets/placement, never pixels; pick JLCPCB-assemblable parts, place+route via enqueued worker jobs, then export BOM/CPL/DSN. Covers schematic capture, netlist, footprints, ratsnest, place/route, gerbers, EDA/CAD for circuits.
 answers:
   - how do I author a PCB design from a netlist and placement graph?
-  - how do I autoplace components to minimise crossed wires?
+  - how do I place and route a board (op='place'/op='route')?
   - how do I export a BOM/CPL/DSN or route the board?
   - how do I read a PCB design as a graph — pins, nets, neighbours?
 applies-to: get/search/put/delete (kind='pcb'); see also kind='part', kind='datasheet'
@@ -30,10 +30,12 @@ Four verbs, no new ones: `put` (create/extend), `get` (list / netlist TOC /
 one instance / one net / an analysis / an export), `search` (by intent),
 `delete` (soft-retire).
 
-Related skills: [[precis-part-select-help]] (pick real parts),
-[[precis-net-class-help]] (name + classify nets), [[precis-measures-help]]
-(the "measuring tapes"), and the pattern playbooks [[precis-decoupling-help]],
-[[precis-i2c-help]], [[precis-spi-help]], [[precis-datasheet-help]].
+Related skills: [[precis-route-help]] (place/route as enqueued jobs — the
+`op=` surface, once the netlist exists), [[precis-part-select-help]] (pick
+real parts), [[precis-net-class-help]] (name + classify nets),
+[[precis-measures-help]] (the "measuring tapes"), and the pattern playbooks
+[[precis-decoupling-help]], [[precis-i2c-help]], [[precis-spi-help]],
+[[precis-datasheet-help]].
 
 ## Author a design — `put(id=<slug>, args={…})`
 
@@ -158,7 +160,13 @@ get(
 )  # DRC-lite findings (unplaced, off-board, overlaps…)
 get(
     kind="pcb", id="s", view="route-status"
-)  # per-net route status table (v1: no sketcher/realizer yet — all unrouted)
+)  # per-net route status: unrouted|sketched|realized|failed
+get(
+    kind="pcb", id="s", view="congestion"
+)  # the last op='route' run's over-capacity-gap warnings (see precis-route-help)
+get(
+    kind="pcb", id="s", view="planes"
+)  # authored plane assignments (op='plane_net') — which nets are plane-served
 get(
     kind="pcb", id="s", view="proximity", args={"a": "U1", "b": "C1"}
 )  # centroid gap (mm)
@@ -176,17 +184,22 @@ get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tape
   multi-pin part terminates the auto-walk — you supply the next hop from the
   datasheet ([[precis-datasheet-help]]).
 
-## Place it — `put(args={'autoplace':{…}})`
+## Place and route it — `put(args={'op':'place'|'route', …})`
+
+Placement and routing run as **enqueued worker jobs** — never inline in this
+call (a real board is minutes of compute, not milliseconds). `put` returns a
+job id immediately; see **[[precis-route-help]]** for the full `op=` surface
+(`place`/`route`, plus the inline edits `move`/`rip`/`pin_side`/`plane_net`/
+`class_rules`), the congestion/planes read views, and what's still inert.
 
 ```python
-put(kind="pcb", id="s", args={"autoplace": {"iters": 2000, "seed": 0}})
+put(kind="pcb", id="s", args={"op": "place", "iters": 2000, "seed": 0})
+# ... poll get(kind='job', id=<id>) or re-check view='crossings' ...
+put(kind="pcb", id="s", args={"op": "route"})
 ```
 
-Simulated-annealing placement that minimises `crossings + ratsnest-length +
-soft-measure penalty`. **`fixed` parts never move.** It reports
-crossings/length/objective **before → after**. v1 optimises translation at
-centroid granularity (rotation gains effect once real pad offsets are cached).
-Iterate: autoplace → `view='crossings'` → pin a part with `fixed` → re-run.
+`args={'autoplace': {...}}` is a **deprecated alias** for `op='place'` (same
+enqueue, same params) — kept for one release, then removed.
 
 ## Export & route — `get(view=…)`
 
@@ -262,16 +275,22 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
 3. **State intent** — add `measures` (keep the regulator off the antenna, the
    bypass cap *at* the pin) ([[precis-measures-help]]).
 4. **Check connectivity** — `get(id=slug)`, `#REFDES` hops, `view='drc'`.
-5. **Place** — `autoplace`, then `view='crossings'`; pin fixed parts; repeat.
-6. **Export & route** — `view='route'`, then `view='bom'` + `view='cpl'` to
-   order at JLCPCB; `view='mechanical'` for the enclosure.
+5. **Place** — `op='place'` (enqueued), then `view='crossings'`; pin fixed
+   parts; repeat. See [[precis-route-help]].
+6. **Route** — `op='route'` (enqueued); check `view='route-status'` and
+   `view='congestion'`; rip + re-pin + re-route on a failure
+   ([[precis-route-help]]'s rip-up loop).
+7. **Export & order** — `view='bom'` + `view='cpl'` to order at JLCPCB;
+   `view='mechanical'` for the enclosure; `view='route'` (Freerouting) stays
+   available as a demoted escape hatch.
 
 ## Scope (v1)
 
 In: batch netlist authoring, graph traversal, the eyes (crossings / ratsnest /
-DRC-lite / proximity / trace / measures / feasibility), simulated-annealing
-autoplace, BOM/CPL/netlist/DSN/mechanical export, Freerouting round-trip,
-JLCPCB-assemblable part selection with turnover ranking. **Deferred** (ADR 0042
-Phase 2): the precis-owned shove router, real routed-length / length-matching
-measures, rotation in the placer, full 3-D enclosure models, datasheet table
-extraction.
+DRC-lite / proximity / trace / measures / feasibility), in-house topological
+place+route as enqueued worker jobs ([[precis-route-help]]), BOM/CPL/netlist/
+DSN/mechanical export, the Freerouting round-trip (demoted escape hatch),
+JLCPCB-assemblable part selection with turnover ranking. **Deferred**: real
+routed-length / length-matching measures, full 3-D enclosure models,
+datasheet table extraction. See [[precis-route-help]] for the place/route
+engine's own inert-move-class caveats (`SIDE_FLIP`, `PIN_SWAP`).

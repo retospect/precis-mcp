@@ -735,6 +735,31 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # pcb-guided-place-route Slice 10 tool surface: the enqueued half
+        # of put(kind='pcb', args={'op':'place'}) (and the retired
+        # `autoplace` alias, which enqueues the same job). CPU-bound,
+        # in-process, bounded — no `requires` (unlike embed_batch's
+        # {'embedder'}: nothing here reserves a counted external slot).
+        name="pcb_place",
+        label="PCB place (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Placement-only anneal over a pcb design's graph — "
+        "minted by put(kind='pcb', args={'op':'place'}).",
+        doc_skill="precis-route-help",
+    ),
+    ServiceSpec(
+        # Same tool-surface slice; the joint place+sketch anneal +
+        # realize checkpoint behind put(kind='pcb', args={'op':'route'}).
+        name="pcb_route",
+        label="PCB route (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Joint place+sketch anneal + realize checkpoint over a "
+        "pcb design's graph — minted by put(kind='pcb', args={'op':'route'}).",
+        doc_skill="precis-route-help",
+    ),
+    ServiceSpec(
         name="llm_summarize",
         label="LLM summarize (llm-v1)",
         category="discovery",
