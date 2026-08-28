@@ -446,6 +446,16 @@ naming the table's actual dimensions; a zero-match find-replace is
 refused too (chunk untouched); only one of `table=`/`cell=`/`find=`/`sub=`
 per edit.
 
+A LaTeX-imported table flagged `needs-table-review` has no stored grid, and
+these doors used to refuse it outright even though `get()` rendered it fine.
+They now recover the grid by re-parsing the chunk's own raw LaTeX — the same
+path the read side uses — and clear the stale flag once a grid is stored, so
+such a chunk is editable (and citable) like any other. Cells recovered this
+way stay **strings**: raw LaTeX carries no type information. A chunk whose
+`tabular` genuinely isn't in its text still refuses with "no stored data" —
+that refusal is real, and hand-typing a `table=` grid to defeat it risks
+mangling live content.
+
 For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/
 `text=`/find-replace over the whole `table=` **dict**: a value nested in
 a `table=` dict doubles its backslashes on the wire, while

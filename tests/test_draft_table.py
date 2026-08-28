@@ -491,3 +491,115 @@ def test_edit_table_string_channel_roundtrip_latex_export(
     assert r"$\sim$3 aJ" in body
     assert r"$\\sim$" not in body
     assert "textbackslash" not in body
+
+
+# ── needs-table-review recovery (gripe 263197) ────────────────────────
+
+
+def _flagged_latex_chunk(draft: DraftHandler, hub: Hub, raw: str) -> Any:
+    """A LaTeX-imported table chunk as the importer leaves it when
+    ``parse_latex_table`` failed at import time: raw ``tabular`` body in
+    ``text``, no canonical ``meta.table``, ``meta.flag`` set."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["placeholder"], "rows": [["x"]]},
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    hub.live_store.drafts.edit_text(
+        tc.handle, raw, meta_patch={"table": None, "flag": "needs-table-review"}
+    )
+    return tc
+
+
+_RAW_TABULAR = (
+    "{rcc}\n"
+    "\\toprule\n"
+    "$k$ & \\textbf{Simple} & \\textbf{Combinatorial} \\\\\n"
+    "\\midrule\n"
+    "2 & 2 & 1 \\\\\n"
+    "3 & 3 & 4 \\\\\n"
+    "\\bottomrule"
+)
+
+
+def test_edit_table_recovers_grid_from_raw_latex_and_clears_flag(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The read path (``table_payload``) always recovered these chunks, so
+    ``get()`` rendered them while every write door refused — the read/write
+    divergence of gripe 263197. The write path now recovers through the same
+    function, so a flagged chunk is editable without hand-reconstructing its
+    grid."""
+    tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert not meta.get("table")  # precondition: no canonical data
+    assert meta["flag"] == "needs-table-review"
+
+    # A cell edit used to raise "this table chunk has no stored data".
+    draft.edit(id=tc.dc, cell="A1", text="order")
+
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["header"] == ["order", "Simple", "Combinatorial"]
+    # Cells recovered from LaTeX stay strings — the raw source has no type
+    # information, and coercing "2" to 2 would silently retype identifiers.
+    assert meta["table"]["rows"] == [["2", "2", "1"], ["3", "3", "4"]]
+    # the flag only meant "nothing recoverable at import" — now false
+    assert meta.get("flag") is None
+
+
+def test_edit_table_find_replace_works_on_flagged_latex_chunk(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Citation backfill reaches table chunks via ``find=`` — the door the
+    conversion waves actually need."""
+    tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
+    draft.edit(id=tc.dc, find="Combinatorial", text="Combinatorial [fi99]")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["header"][2] == "Combinatorial [fi99]"
+
+
+def test_edit_table_unrecoverable_chunk_still_refuses(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Recovery must not paper over a genuinely dataless chunk: a float
+    wrapper whose ``tabular`` never made it into this chunk has no grid to
+    find, and the honest refusal has to survive."""
+    tc = _flagged_latex_chunk(draft, hub, "[ht]\n\\centering")
+    with pytest.raises(BadInput, match="no stored data"):
+        draft.edit(id=tc.dc, cell="A1", text="nope")
+
+
+def test_edit_table_ragged_parse_falls_through_to_refusal(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Recovery must not half-succeed. A ragged GFM table parses into a
+    header and rows, but ``normalize_table`` rejects the width mismatch —
+    and a partially-recovered grid is worse than none, because the edit
+    would silently persist a table the source text never contained. The
+    parse failure has to land on the same honest refusal as no data at
+    all."""
+    tc = _flagged_latex_chunk(draft, hub, "| a | b |\n| --- | --- |\n| 1 | 2 | 3 |")
+    with pytest.raises(BadInput, match="no stored data"):
+        draft.edit(id=tc.dc, cell="A1", text="nope")
+    # and the chunk is untouched — no partial grid persisted, flag intact
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert not meta.get("table")
+    assert meta["flag"] == "needs-table-review"
+
+
+def test_edit_table_recovers_caption_from_raw_latex(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A caption living only in the raw ``\\caption{}`` survives the first
+    edit — without this it silently vanished when the markdown was
+    re-derived from the recovered grid."""
+    raw = "{cc}\n\\caption{Yield thresholds}\n\\toprule\na & b \\\\\n1 & 2 \\\\\n"
+    tc = _flagged_latex_chunk(draft, hub, raw)
+    draft.edit(id=tc.dc, cell="A1", text="alpha")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert chunk.text.startswith("**Yield thresholds**\n")

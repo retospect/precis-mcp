@@ -59,6 +59,7 @@ from precis.utils.table_data import (
     find_replace_cells,
     normalize_table,
     set_cell,
+    table_payload,
     table_to_markdown,
 )
 from precis.workers.working_set import Extent
@@ -2107,7 +2108,13 @@ class DraftHandler(Handler):
         (4) ``caption=``/``regen=`` alone patch metadata only; (5) otherwise a
         table's ``text=`` is derived, never hand-edited — reject.
         Whichever path fires, the markdown is re-derived from the SAME
-        resolved data + caption and persisted through one ``edit_text`` call."""
+        resolved data + caption and persisted through one ``edit_text`` call.
+
+        A chunk with no canonical ``meta.table`` — a LaTeX import flagged
+        ``needs-table-review`` — is recovered from its own raw text via
+        :func:`table_payload`, the same function the read path uses, and the
+        stale flag is cleared once a grid is persisted (gripe 263197). Only a
+        chunk that recovery genuinely cannot parse still refuses."""
         if chunk is None or chunk.chunk_kind != "table":
             raise BadInput(
                 "table=/cell=/find=/sub=/caption=/regen= apply only to a "
@@ -2141,6 +2148,34 @@ class DraftHandler(Handler):
             )
         cur = self.store.drafts.draft_chunk_meta(handle)
         cur_table = cur.get("table")
+        # Read/write divergence repair (gripe 263197). A LaTeX-imported chunk
+        # flagged `needs-table-review` carries its grid only as raw LaTeX in
+        # `text`, with no canonical `meta.table` — so every structured door
+        # below refused it, while `get()` rendered it perfectly, because the
+        # READ path (`table_payload`) recovers the grid from that same raw
+        # text. Recover here through the SAME function so both paths agree.
+        #
+        # This is a deterministic re-parse of the chunk's own stored text, NOT
+        # a hand-reconstructed grid — the distinction that matters, since
+        # hand-typing `table={header, rows}` risks mangling live append-only
+        # content. The flags are largely stale: they were written by an older
+        # parser, and today's `parse_latex_table` recovers 244 of dr42995's
+        # 251 flagged chunks (97%). The other 7 still hit `no_data_err`, so
+        # the honest refusal survives where recovery genuinely fails.
+        recovered_caption: str | None = None
+        if not cur_table:
+            recovered = table_payload(cur, chunk.text)
+            if recovered and recovered.get("header"):
+                try:
+                    cur_table = normalize_table(
+                        {
+                            "header": recovered["header"],
+                            "rows": recovered.get("rows") or [],
+                        }
+                    )
+                    recovered_caption = recovered.get("caption") or None
+                except Exception:
+                    cur_table = None  # ragged parse — fall through to refusal
         no_data_err = BadInput(
             "this table chunk has no stored data — pass table={header, rows}",
             next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
@@ -2213,9 +2248,18 @@ class DraftHandler(Handler):
         if caption is not None:
             cap = caption.strip() or None
         else:
-            cap = cur.get("caption") or None
+            cap = cur.get("caption") or recovered_caption or None
         md = table_to_markdown(norm, caption=cap)
         patch: dict[str, Any] = {"table": norm}
+        # The review flag only ever meant "no canonical data was recoverable at
+        # import". Once we persist a grid the flag is false, and leaving it set
+        # would keep the chunk in every "table-blocked" census forever — the
+        # exact symptom of 263197. `meta_patch` shallow-merges (`meta || patch`)
+        # and so cannot delete a key; JSON null is enough, since it drops the
+        # row out of `meta->>'flag' = 'needs-table-review'` and out of every
+        # equality check in code.
+        if cur.get("flag") == "needs-table-review":
+            patch["flag"] = None
         if caption is not None:
             patch["caption"] = cap or ""
         if regen is not None:
